@@ -986,7 +986,10 @@ export async function runAdmittedModelCall(
         // locks are committed together before any live shutdown is attempted.
         client.cancelRun("unpriced_provider_response");
       } else {
-        client.holdUnknown(reservationId, "unpriced_provider_response");
+        // Tokens are authoritative even when monetary pricing is unavailable.
+        // Reconcile them while retaining the conservative monetary hold.
+        const reported = reconciledTokenUsage(usage);
+        client.reconcile(reservationId, { ...reported, costUsd: null });
       }
       settled = true;
       hitM4DurabilityFailpoint("after_model_response_commit");

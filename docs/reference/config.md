@@ -986,6 +986,11 @@ or earlier when the remaining tokens fit at most two recent-size requests,
 the model receives one reminder to finish its most likely fix, run the decisive
 check, and report. Requests that cannot fit their input and maximum output in the
 remaining allocation are refused before dispatch, so a run can end below its cap.
+Input counts are estimates. Reported model usage replaces the reservation; a
+token-estimate miss does not abort an otherwise admitted response. If actual
+usage reaches the task cap, admitted tools finish before the partial summary,
+and no further model call is admitted. A response can therefore put actual usage
+above the cap. Independent monetary limits remain enforced.
 In-flight tools finish before a local partial-result summary is emitted. No extra
 model call is spent generating that summary. Unknown usage retains its reserved
 amount. Provider-reported overruns remain subject to execution admission policy.

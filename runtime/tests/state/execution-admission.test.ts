@@ -700,7 +700,7 @@ describe("ExecutionAdmissionRepository", () => {
     });
   });
 
-  it("classifies a known token overrun as provider_overrun even when cost is unknown", () => {
+  it("charges known token actuals while retaining unknown monetary cost", () => {
     const overrun = request("unknown-cost-token-overrun", "turn-1", {
       input: 5,
       output: 5,
@@ -718,16 +718,17 @@ describe("ExecutionAdmissionRepository", () => {
       }),
     ).toMatchObject({
       applied: true,
-      outcome: "provider_overrun",
-      reservedTokens: 10,
-      actualTokens: 11,
-      actualCostUsd: null,
+      outcome: "held_unknown",
     });
     expect(admissions.listAllocations()[0]).toMatchObject({
       usedTokens: 11,
       usedCostUsd: 0.002,
-      blockedByProviderOverrun: true,
+      blockedByProviderOverrun: false,
     });
+    admissions.recover({now:T1});
+    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:11,usedCostUsd:0.002,blockedByProviderOverrun:false});
+    expect(admissions.reconcile(reservation.reservationId,{kind:"reported",usage:{inputTokens:6,outputTokens:5,costUsd:0.001}})).toMatchObject({outcome:"reconciled"});
+    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:11,usedCostUsd:0.001,heldTokens:0});
   });
 
   it("holds unknown cost for an unpriced reservation instead of treating it as free", () => {
@@ -1203,4 +1204,18 @@ it("charges actual tokens above the task cap and denies the next model without c
   const next = request("cap-run", "next", {scopes});
   const queued = admissions.enqueue(next);
   expect(admissions.claim({key:queued.record.key})).toMatchObject({kind:"not_claimed",reason:"budget_exceeded"});
+});
+
+it.each([null, 0.001])("preserves a sibling hold while settling underestimated tokens at cost %s", costUsd => {
+  const scopes = [{key:"siblings",maxTokens:1000}];
+  const first = request("siblings-run","first",{input:20,output:20,scopes});
+  const second = request("siblings-run","second",{input:100,output:100,scopes});
+  admissions.enqueue(first);const a=claimReservation(admissionRecordKey(first.step));admissions.markDispatched(a.reservationId);
+  admissions.enqueue(second);const b=claimReservation(admissionRecordKey(second.step));admissions.markDispatched(b.reservationId);
+  expect(admissions.reconcile(a.reservationId,{kind:"reported",usage:{inputTokens:320,outputTokens:20,costUsd}})).toMatchObject({outcome:costUsd===null?"held_unknown":"reconciled"});
+  expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:340,heldTokens:200,blockedByProviderOverrun:false});
+  admissions.reconcile(b.reservationId,{kind:"reported",usage:{inputTokens:100,outputTokens:100,costUsd:0.001}});
+  admissions.recover({now:T1});
+  expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:540,heldTokens:0,blockedByProviderOverrun:false});
+  expect(admissions.getTaskBudgetUsage("siblings")).toEqual({tokens:540,calls:2});
 });

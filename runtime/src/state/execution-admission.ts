@@ -1756,7 +1756,7 @@ export class ExecutionAdmissionRepository {
       const root = ancestors.find((row) => row.parent_scope_key === null);
       if (!root) return { tokens: 0, calls: 0 };
       return this.#driver.prepareState<[string], { tokens: number; calls: number }>(
-        `SELECT COALESCE(SUM(COALESCE(reservation.actual_tokens, reservation.reserved_tokens)), 0) AS tokens,
+        `SELECT COALESCE(SUM(CASE WHEN reservation.status = 'held_unknown' THEN MAX(COALESCE(reservation.actual_tokens, 0), reservation.reserved_tokens) ELSE COALESCE(reservation.actual_tokens, reservation.reserved_tokens) END), 0) AS tokens,
            COUNT(*) AS calls FROM execution_admission_reservations AS reservation
          JOIN execution_admission_reservation_allocations AS allocation
            ON allocation.reservation_id = reservation.reservation_id
@@ -2576,8 +2576,8 @@ export class ExecutionAdmissionRepository {
       // estimate was low. Future admission checks the shared allocation total;
       // the task loop drains admitted tools and reports a normal budget stop.
       // Explicit overruns, tool contracts and monetary caps keep their existing
-      // fail-closed behavior. Unknown monetary usage also retains that contract.
-      const reconcileModelEstimate = request.kind === "model_turn" && actualCostNanos !== null;
+      // fail-closed behavior. Unknown monetary usage retains its full cost hold.
+      const reconcileModelEstimate = request.kind === "model_turn";
       overrun = input.kind === "provider_overrun" ||
         (hasHardBudgetCap && !reconcileModelEstimate && actualTokens > reservation.reserved_tokens) ||
         ((reconcileModelEstimate ? hasHardCostCap : hasHardBudgetCap) &&
@@ -2587,7 +2587,7 @@ export class ExecutionAdmissionRepository {
         event = "held_unknown";
         reason = input.reason ?? "reported_usage_cost_unknown";
         charge = {
-          tokens: reservation.reserved_tokens,
+          tokens: Math.max(reservation.reserved_tokens, actualTokens),
           costNanos: reservation.reserved_cost_nanos,
           blockByProviderOverrun: false,
         };
@@ -2780,8 +2780,9 @@ export class ExecutionAdmissionRepository {
       .all(reservation.reservation_id);
     for (const link of links) {
       const allocation = this.#requireAllocationLocked(link.scope_key);
+      const previousTokens = Math.max(link.reserved_tokens, reservation.actual_tokens ?? 0);
       if (
-        allocation.used_tokens < link.reserved_tokens ||
+        allocation.used_tokens < previousTokens ||
         allocation.used_cost_nanos < link.reserved_cost_nanos
       ) {
         throw new ExecutionAdmissionStateError(
@@ -2789,7 +2790,7 @@ export class ExecutionAdmissionRepository {
         );
       }
       checkedTokenSum(
-        allocation.used_tokens - link.reserved_tokens,
+        allocation.used_tokens - previousTokens,
         charge.tokens,
       );
       checkedNanoSum(
@@ -2808,7 +2809,7 @@ export class ExecutionAdmissionRepository {
            WHERE scope_key = ?`,
         )
         .run(
-          link.reserved_tokens,
+          previousTokens,
           charge.tokens,
           link.reserved_cost_nanos,
           charge.costNanos,
@@ -3312,7 +3313,7 @@ export class ExecutionAdmissionRepository {
       } else if (link.status === "held_unknown") {
         total.usedTokens = checkedTokenSum(
           total.usedTokens,
-          link.reserved_tokens,
+          Math.max(link.reserved_tokens, link.actual_tokens ?? 0),
         );
         total.usedCostNanos = checkedNanoSum(
           total.usedCostNanos,
