@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { assertWindowsPrivatePathSecurity } from "../agents/workflow-private-path.js";
 import {
   readConfinedFile,
   sameIdentity,
@@ -12,7 +13,13 @@ import { MAX_CRON_FILE_BYTES } from "./cron-delivery-state.js";
 import { writeDurableAtomicFile } from "./durable-atomic-file.js";
 import { acquireLocalSqliteLock, assertLocalPrivateDirectory, type LocalSqliteLockOptions } from "./sqlite-lock.js";
 
-import { assertOwned, CRON_STORAGE_NAME, withCronStorageDirectory } from "./cron-storage-directory.js";
+import {
+  assertOwned,
+  CRON_STORAGE_NAME,
+  publishWindowsCronFile,
+  windowsCronAclError,
+  withCronStorageDirectory,
+} from "./cron-storage-directory.js";
 export { CRON_STORAGE_NAME } from "./cron-storage-directory.js";
 
 export interface CronStorage {
@@ -33,19 +40,43 @@ export async function withCronStorage<Result>(
   return withCronStorageDirectory(workspacePath, create, async ({
     directory: bound, workspaceIdentity, lockDirectory, verify,
   }) => {
+    const readRecord = () => withRegularChild(
+      bound, CRON_STORAGE_NAME, { maximumBytes: MAX_CRON_FILE_BYTES }, async (file) => {
+        assertCronRecordOwned(file.snapshot, file.path);
+        return readConfinedFile(file);
+      },
+    );
     return operation({
       directory: bound,
       workspaceIdentity,
       lockDirectory,
       async read() {
-        return withRegularChild(bound, CRON_STORAGE_NAME, { maximumBytes: MAX_CRON_FILE_BYTES }, async (file) => {
-          assertOwned(file.snapshot);
-          return (await readConfinedFile(file)).toString("utf8");
-        });
+        try {
+          return (await readRecord())?.toString("utf8");
+        } catch (error) {
+          throw windowsUnsafeRecordError(error, bound.operationPath);
+        }
       },
       async write(data) {
         if (!create) throw new Error("Cron storage was opened for reading");
+        if (process.platform === "win32") {
+          // The identity is the one `verify` just rechecked. The publication
+          // script opens a directory handle and refuses unless that handle is
+          // this directory; it does not publish through a pathname.
+          const verified = await verify();
+          if (Buffer.byteLength(data, "utf8") > MAX_CRON_FILE_BYTES) {
+            throw new Error("Cron task file exceeds its byte limit");
+          }
+          await publishWindowsCronFile(bound.operationPath, verified, data, async () => {
+            await verify();
+            return readRecord();
+          });
+          await verify();
+          assertWindowsPrivatePathSecurity(join(bound.operationPath, CRON_STORAGE_NAME), "file", false);
+          return;
+        }
         const path = join(bound.operationPath, CRON_STORAGE_NAME);
+        const temporaryFlags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
         let written: BigIntStats | undefined;
         const verifyWrittenFile = async (candidate: string) => {
           const current = await lstat(candidate, { bigint: true });
@@ -53,12 +84,11 @@ export async function withCronStorage<Result>(
               !sameIdentity(written, current)) {
             throw new Error("Cron temporary publication file was replaced or linked");
           }
-          assertOwned(current);
+          assertCronRecordOwned(current, candidate);
         };
         await writeDurableAtomicFile(path, `${path}.${randomUUID()}.tmp`, data, 0o600, {
-          mkdir: verify,
-          openTemporary: (temporary, mode) => open(temporary,
-            constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode),
+          mkdir: async () => { await verify(); },
+          openTemporary: (temporary, mode) => open(temporary, temporaryFlags, mode),
           write: async (handle, bytes) => { await (handle as FileHandle).writeFile(bytes); },
           sync: (handle) => (handle as FileHandle).sync(),
           close: async (handle) => {
@@ -69,11 +99,14 @@ export async function withCronStorage<Result>(
             await verify();
             await verifyWrittenFile(from);
             await rename(from, to);
-            // These checks guard acknowledgement against a substituted
-            // basename; descriptor roots provide the write confinement.
+            // POSIX descriptor roots confine the write. The inode check guards
+            // acknowledgement against a substituted basename.
             await verifyWrittenFile(to);
           },
-          syncDirectory: async () => { await bound.handle!.sync(); await verify(); },
+          syncDirectory: async () => {
+            await bound.handle!.sync();
+            await verify();
+          },
           remove: async (temporary) => { await rm(temporary, { force: true }); },
         });
       },
@@ -102,4 +135,29 @@ export async function acquireCronStorageLock(
     if (canonical !== directory) throw new Error("Cron lock authority was redirected");
   }
   return acquireLocalSqliteLock(join(storage.lockDirectory, `${stripe}.lock.sqlite`), options);
+}
+
+function assertCronRecordOwned(info: BigIntStats, path: string): void {
+  if (process.platform === "win32") {
+    assertWindowsPrivatePathSecurity(path, "file", false);
+    return;
+  }
+  assertOwned(info);
+}
+
+/**
+ * Name the path, and the repair where one applies, when Windows rejects the
+ * existing task file: an ACL verifier failure gets the repair, a link or
+ * non-regular file is to be removed or replaced, and EACCES / EPERM after
+ * the directory verified is reported as not inspectable with the repair.
+ */
+function windowsUnsafeRecordError(error: unknown, directory: string): unknown {
+  if (process.platform !== "win32") return error;
+  const failure = error as { code?: unknown; name?: unknown } | null;
+  const record = join(directory, CRON_STORAGE_NAME);
+  if (failure?.code === "EACCES" || failure?.code === "EPERM") {
+    return windowsCronAclError(directory, error, "inaccessible", record);
+  }
+  const unsafe = failure?.code === "CHILD_UNSAFE" || failure?.name === "WindowsPrivatePathSecurityError";
+  return unsafe ? windowsCronAclError(directory, error, "record", record) : error;
 }

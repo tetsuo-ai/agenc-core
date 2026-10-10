@@ -146,14 +146,17 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
 
 /**
  * Whether a failed startup restore of durable tasks deserves a warning. A
- * platform without a safe read path cannot restore durable tasks, but a
- * workspace that never had a durable record has
- * nothing to restore, and a warning in every session there buries real
- * failures. Every other failure, and a record that exists but cannot be
- * restored, is reported.
+ * platform without a safe read path, or a Windows `.agenc` whose ACL was
+ * rejected, cannot restore durable tasks, but a workspace that never had a
+ * durable record has nothing to restore, and a warning in every session
+ * there buries real failures. Only a task file proven absent (`ENOENT`) is
+ * quiet. Every other failure, a record that exists, and a record whose
+ * existence cannot be checked (for example `EACCES` or `EPERM`) are
+ * reported; the Windows ACL error message carries the path and the repair.
  */
 export async function cronRestoreFailureNeedsWarning(error: unknown, dir?: string): Promise<boolean> {
-  if ((error as { code?: unknown } | null)?.code !== "DESCRIPTOR_UNSUPPORTED") return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code !== "DESCRIPTOR_UNSUPPORTED" && code !== "CRON_STORAGE_UNSAFE_ACL") return true;
   try {
     await lstat(getCronFilePath(dir));
     return true;

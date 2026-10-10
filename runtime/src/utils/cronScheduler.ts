@@ -42,6 +42,7 @@ import { monotonicMs } from "./monotonic.js";
 import {
   DEFAULT_CRON_JITTER_CONFIG,
   jitteredNextCronRunMs,
+  cronRestoreFailureNeedsWarning,
   listAllCronTasks,
   listSessionCronTasks,
   markCronTasksFired,
@@ -100,16 +101,35 @@ export type CronSchedulerDeps = {
   enqueue: CronEnqueue;
 };
 
+/**
+ * Default load-error report. Like session startup (`bootstrap.ts`), unusable
+ * durable storage with no task file has nothing to restore and is not logged.
+ */
+export async function reportDurableCronLoadError(
+  error: unknown,
+  workspaceRoot: string,
+  log: (message: string) => void = (message) => logForDebugging(message, { level: "warn" }),
+): Promise<void> {
+  let report = true;
+  try {
+    report = await cronRestoreFailureNeedsWarning(error, workspaceRoot);
+  } catch {
+    // Report when the gate itself cannot decide.
+  }
+  if (report) {
+    log(`[CronScheduler] durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 const defaultDeps: CronSchedulerDeps = {
   now: () => Date.now(),
   monotonicNow: () => monotonicMs(),
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: (handle) => clearTimeout(handle),
   loadTasks: (dir, conversationId) => listAllCronTasks(dir, conversationId),
-  onLoadError: (error) => logForDebugging(
-    `[CronScheduler] durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`,
-    { level: "warn" },
-  ),
+  onLoadError: (error, activation) => {
+    void reportDurableCronLoadError(error, activation.workspaceRoot);
+  },
   enqueue: () => {
     // Default stub: never invokes the model. The real call site overrides this
     // with the TUI command queue (enqueuePendingNotification). Keeping a no-op
