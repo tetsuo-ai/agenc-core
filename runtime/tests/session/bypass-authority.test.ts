@@ -89,3 +89,17 @@ test("persistent sandbox opt-out survives permission authority projection", () =
   expect(authority.sandboxPersistentSession).toBe(false);
   expect(sandboxExecutionBrokerAuthorityFromSessionAuthority(authority, "/workspace").persistentSession).toBe(false);
 });
+
+test("default and explicit persistent sessions omit the broker opt-out flag", () => {
+  const omitted = sandboxExecutionBrokerAuthorityFromSessionAuthority(
+    CONFIGURED,
+    "/workspace",
+  );
+  expect(omitted).not.toHaveProperty("persistentSession");
+
+  const enabled = sandboxExecutionBrokerAuthorityFromSessionAuthority(
+    { ...CONFIGURED, sandboxPersistentSession: true },
+    "/workspace",
+  );
+  expect(enabled).not.toHaveProperty("persistentSession");
+});
