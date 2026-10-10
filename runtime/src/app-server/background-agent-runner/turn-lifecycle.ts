@@ -12,6 +12,10 @@ import type { ManagedThread } from "../../agents/thread-manager.js";
 import type { LLMContentPart } from "../../llm/types.js";
 import type { ToolDispatchResult } from "../../tool-registry.js";
 import type { AgentStatus as ThreadAgentStatus } from "../../agents/status.js";
+import {
+  canonicalRunTerminalFromItems,
+  type CanonicalRunTerminal,
+} from "../../session/canonical-run-terminal.js";
 import type { Event } from "../../session/event-log.js";
 import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import type {
@@ -502,36 +506,82 @@ function closeFailedRunTurn(
   });
 }
 
+function isBuriedTerminalAdoptError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    (error.message.includes("already sealed") ||
+      error.message.includes("eventId already allocated"))
+  );
+}
+
 function commitDurableRunTerminal(
   active: ActiveBackgroundAgent,
   runId: string,
   result: RunTerminalResult,
 ): AgenCBackgroundAgentTerminalSnapshot {
   if (active.terminal !== undefined) return active.terminal;
-  closeFailedRunTurn(active, result);
+  const rollout = active.bootstrap.rolloutStore;
   const epoch = active.runEpoch;
+  const remember = (
+    existing: CanonicalRunTerminal,
+  ): AgenCBackgroundAgentTerminalSnapshot => {
+    const terminal: AgenCBackgroundAgentTerminalSnapshot = {
+      openedAt: active.startedAt,
+      epoch,
+      eventId: existing.eventId,
+      rolloutPath: rollout.rolloutPath,
+      result: existing.result,
+    };
+    active.terminal = terminal;
+    return terminal;
+  };
+  // A complete fsynced line is the only terminal this producer adopts.
+  // A queued copy is not durable. Throw before closeFailedRunTurn and
+  // emit so a new turn_failed id is not appended. Stamp of this fixed
+  // run-terminal id throws before lastSeq moves; it does not allocate
+  // another sequence.
+  const existing = rollout.committedRunTerminal(runId, epoch);
+  if (existing !== undefined) return remember(existing);
+  const queued = rollout.queuedRunTerminal(runId, epoch);
+  if (queued !== undefined) {
+    throw new Error(
+      `run_terminal ${queued.eventId} was not fsync-committed`,
+    );
+  }
+  closeFailedRunTurn(active, result);
   const session = active.bootstrap.session;
   const lastSequenceBeforeTerminal =
     positiveSequence(session.eventLog.lastSeq) ?? null;
   const eventId = `run-terminal:${runId}:${epoch}`;
-  const event = session.emit({
-    eventId,
-    id: eventId,
-    msg: {
-      type: "run_terminal",
-      payload: {
-        runId,
-        epoch,
-        status: result.status,
-        exitCode: result.exitCode,
-        stopReason: result.stopReason,
-        finalMessage: result.finalMessage,
-        usage: result.usage,
-        lastSequenceBeforeTerminal,
-        finishedAt: result.finishedAt,
+  let event;
+  try {
+    event = session.emit({
+      eventId,
+      id: eventId,
+      msg: {
+        type: "run_terminal",
+        payload: {
+          runId,
+          epoch,
+          status: result.status,
+          exitCode: result.exitCode,
+          stopReason: result.stopReason,
+          finalMessage: result.finalMessage,
+          usage: result.usage,
+          lastSequenceBeforeTerminal,
+          finishedAt: result.finishedAt,
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    if (isBuriedTerminalAdoptError(error)) {
+      const sealed =
+        rollout.committedRunTerminal(runId, epoch) ??
+        canonicalRunTerminalFromItems(rollout.readAll(), runId, epoch);
+      if (sealed !== undefined) return remember(sealed);
+    }
+    throw error;
+  }
   const sequence = positiveSequence(event.seq);
   if (
     event.id !== eventId ||

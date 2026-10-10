@@ -47,6 +47,7 @@ import {
   type AgentPath,
   type ThreadId,
 } from "../agents/registry.js";
+import type { CanonicalRunTerminal } from "./canonical-run-terminal.js";
 import type { Event, EventMsg } from "./event-log.js";
 import {
   parseRolloutLine,
@@ -998,6 +999,36 @@ export class RolloutStore {
 
   append(event: Event, opts: AppendOptions = {}): boolean {
     return this.store.append(event, opts);
+  }
+
+  /**
+   * Complete `run_terminal` for this epoch in a bounded suffix of the
+   * committed file. Not the degraded ring or the unflushed batch.
+   */
+  committedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    return this.store.readCommittedRunTerminal(runId, epoch);
+  }
+
+  /**
+   * Refuse a lifecycle append that the full journal cannot accept, before
+   * the caller stamps a sequence. An identical retry does not throw.
+   */
+  assertLifecycleAppendBeforeStamp(event: Event): void {
+    this.store.assertLifecycleAppendBeforeStamp(event);
+  }
+
+  /**
+   * `run_terminal` for this epoch held in the in-flight drain slice, the
+   * degraded ring, or the unflushed batch. Not a complete fsynced line.
+   */
+  queuedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    return this.store.queuedRunTerminal(runId, epoch);
   }
 
   /** Lifecycle epoch owned by this canonical rollout writer. */
@@ -3886,10 +3917,25 @@ export class RolloutStore {
     this.store.setOnRolloutCommitted(listener);
   }
 
-  close(): void {
+  close(): void | Promise<void> {
     this.scheduler.stop();
     this.canonicalScanner.close();
-    try { this.store.close(); } finally { this.stateDriver.close(); }
+    let closed: void | Promise<void>;
+    try {
+      closed = this.store.close();
+    } catch (error) {
+      this.stateDriver.close();
+      throw error;
+    }
+    if (closed instanceof Promise) {
+      const settled = closed.finally(() => {
+        this.stateDriver.close();
+      });
+      // Ignored by synchronous callers. Awaiters still observe a rejection.
+      void settled.catch(() => undefined);
+      return settled;
+    }
+    this.stateDriver.close();
   }
 
   private requireRunEpoch(runId: string) {

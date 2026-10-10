@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,7 @@ import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import { MAX_RECOVERY_CANONICAL_LINE_BYTES } from "../../src/state/recovery-contract.js";
 import * as journalRecovery from "../../src/state/startup-run-journal-recovery.js";
 import {
   openStateDatabases,
@@ -148,6 +149,115 @@ function seedCanonicalTerminalRollout(fileName: string, eventId: string): string
     "utf8",
   );
   return rolloutPath;
+}
+
+const INITIAL_JOURNAL_TAIL_BYTES = 64 * 1024;
+/** Same bound as `readCommittedJournalTail`: two maximum canonical lines. */
+const CAPPED_JOURNAL_TAIL_BYTES = MAX_RECOVERY_CANONICAL_LINE_BYTES * 2;
+
+function liveRolloutLock(rolloutPath: string): void {
+  writeFileSync(
+    `${rolloutPath}.lock`,
+    `${JSON.stringify({
+      pid: process.pid,
+      startNs: "live-writer",
+      acquiredAtIso: NOW,
+    })}\n`,
+    { mode: 0o600 },
+  );
+}
+
+function canonicalTerminalLine(
+  eventId: string,
+  finalMessage: string,
+  seq: number,
+): string {
+  return serializeRolloutItem({
+    type: "event_msg",
+    payload: {
+      eventId,
+      id: eventId,
+      seq,
+      msg: {
+        type: "run_terminal",
+        payload: {
+          runId: "run-complete",
+          epoch: 1,
+          status: "completed",
+          exitCode: 0,
+          stopReason: "turn_completed",
+          finalMessage,
+          usage: {
+            inputTokens: 5,
+            outputTokens: 3,
+            totalTokens: 8,
+            costUsd: 0.001,
+          },
+          lastSequenceBeforeTerminal: null,
+          finishedAt: "2026-07-18T12:05:00.000Z",
+        },
+      },
+    },
+  });
+}
+
+function reopenLine(): string {
+  return serializeRolloutItem({
+    type: "event_msg",
+    payload: {
+      eventId: "reopen-outside-tail",
+      id: "reopen-outside-tail",
+      seq: 2,
+      msg: {
+        type: "run_reopened",
+        payload: {
+          runId: "run-complete",
+          previousEpoch: 1,
+          epoch: 2,
+          reason: "operator_retry",
+          reopenedAt: "2026-07-18T12:06:00.000Z",
+        },
+      },
+    },
+  });
+}
+
+/** Newline-terminated records the tail scanner accepts as complete lines. */
+function completePadding(minBytes: number): string {
+  const line = `${JSON.stringify({
+    type: "event_msg",
+    eventVersion: 1,
+    payload: {
+      eventId: "pad-line",
+      id: "pad-line",
+      seq: 40,
+      msg: { type: "turn_started", payload: { turnId: "pad" } },
+    },
+  })}\n`;
+  return line.repeat(Math.ceil(minBytes / Buffer.byteLength(line)));
+}
+
+function seedLiveRollout(fileName: string, body: string): void {
+  seedDurableRuns();
+  new StateRunDurabilityRepository(driver).ensureInitialEpoch({
+    runId: "run-complete",
+    openedAt: NOW,
+  });
+  const sessionDir = join(paths.projectDir, "sessions", "run-complete");
+  mkdirSync(sessionDir, { recursive: true });
+  const rolloutPath = join(sessionDir, fileName);
+  writeFileSync(rolloutPath, body, "utf8");
+  liveRolloutLock(rolloutPath);
+}
+
+function deferredRecoveryCount(): number {
+  return (
+    driver
+      .prepareState<[], { readonly count: number }>(
+        "SELECT COUNT(*) AS count FROM run_recovery_deferred",
+      )
+      .get()?.count ?? 0
+  );
 }
 
 function seedDurableRuns(): readonly number[] {
@@ -685,11 +795,15 @@ describe("durable run inspection", () => {
 
   // Review P1-7: an ordinary desktop refresh of a running session turned it
   // into an "operator action required" run at the next daemon restart.
-  it("serves a live run's current projection without recording a recovery deferral", () => {
+  // A terminal already fsynced into that live journal is a different fact:
+  // status has to report it, still without recording a deferral (#2770).
+  it("projects a live writer's fsynced terminal without recording a recovery deferral", () => {
     const rolloutPath = seedCanonicalTerminalRollout(
       "rollout-live.jsonl",
       "terminal-from-live-jsonl",
     );
+    // An unfinished append after the terminal must not hide the committed line.
+    appendFileSync(rolloutPath, "{\"torn\"");
     // The live writer's lease, held by this process.
     const lockPath = `${rolloutPath}.lock`;
     writeFileSync(
@@ -709,21 +823,34 @@ describe("durable run inspection", () => {
         .get()?.count ?? 0;
 
     for (let i = 0; i < 3; i++) {
-      // The projection is served as it stands: the epoch is open and the
-      // journal's terminal has not been projected because the source is live.
       expect(service.status({ runId: "run-complete" })).toMatchObject({
         runId: "run-complete",
-        status: "running",
-        statusSource: "run_lifecycle_epoch",
+        status: "completed",
+        terminal: true,
+        statusSource: "run_terminal_result",
         durableRun: { status: "completed" },
+      });
+      expect(service.result({ runId: "run-complete" })).toMatchObject({
+        status: "completed",
+        terminal: true,
+        output: {
+          available: true,
+          finalMessage: "Recovered from the journal",
+          lastSequence: 1,
+        },
       });
       expect(service.replay({ runId: "run-complete" })).toMatchObject({
         runId: "run-complete",
       });
     }
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({ eventId: "terminal-from-live-jsonl", status: "completed" });
     expect(deferredRows()).toBe(0);
 
-    // Once the writer is gone the next read projects the journal as usual.
+    // Once the writer is gone the same terminal stays authoritative.
     rmSync(lockPath);
     expect(service.result({ runId: "run-complete" })).toMatchObject({
       status: "completed",
@@ -734,6 +861,237 @@ describe("durable run inspection", () => {
       },
     });
     expect(deferredRows()).toBe(0);
+  });
+
+  it("keeps a live run running when its journal has no terminal", () => {
+    seedDurableRuns();
+    new StateRunDurabilityRepository(driver).ensureInitialEpoch({
+      runId: "run-live",
+      openedAt: NOW,
+    });
+    const sessionDir = join(paths.projectDir, "sessions", "run-live");
+    mkdirSync(sessionDir, { recursive: true });
+    const rolloutPath = join(sessionDir, "rollout-open.jsonl");
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        eventVersion: 1,
+        payload: {
+          eventId: "open-1",
+          id: "open-1",
+          seq: 1,
+          msg: { type: "turn_started", payload: { turnId: "turn-1" } },
+        },
+      })}\n`,
+      "utf8",
+    );
+    writeFileSync(
+      `${rolloutPath}.lock`,
+      `${JSON.stringify({
+        pid: process.pid,
+        startNs: "live-writer",
+        acquiredAtIso: NOW,
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    expect(service.status({ runId: "run-live" })).toMatchObject({
+      status: "running",
+      terminal: false,
+      statusSource: "run_lifecycle_epoch",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult("run-live"),
+    ).toBeUndefined();
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM run_recovery_deferred",
+        )
+        .get()?.count ?? 0,
+    ).toBe(0);
+  });
+
+  it("does not apply a terminal from an epoch the live journal already reopened", () => {
+    const rolloutPath = seedCanonicalTerminalRollout(
+      "rollout-reopened.jsonl",
+      "terminal-before-reopen",
+    );
+    appendFileSync(
+      rolloutPath,
+      serializeRolloutItem({
+        type: "event_msg",
+        payload: {
+          eventId: "reopen-2",
+          id: "reopen-2",
+          seq: 2,
+          msg: {
+            type: "run_reopened",
+            payload: {
+              runId: "run-complete",
+              previousEpoch: 1,
+              epoch: 2,
+              reason: "operator_retry",
+              reopenedAt: "2026-07-18T12:06:00.000Z",
+            },
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      `${rolloutPath}.lock`,
+      `${JSON.stringify({
+        pid: process.pid,
+        startNs: "live-writer",
+        acquiredAtIso: NOW,
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "running",
+      terminal: false,
+      statusSource: "run_lifecycle_epoch",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("projects a live terminal line longer than the initial 64 KiB tail", () => {
+    const line = canonicalTerminalLine(
+      "terminal-long-line",
+      "x".repeat(INITIAL_JOURNAL_TAIL_BYTES),
+      1,
+    );
+    expect(Buffer.byteLength(line)).toBeGreaterThan(INITIAL_JOURNAL_TAIL_BYTES);
+    seedLiveRollout("rollout-long-terminal.jsonl", line);
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({ eventId: "terminal-long-line", status: "completed" });
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("projects a live terminal pushed out by more than 64 KiB of later complete lines", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-before-padding",
+      "Recovered from the journal",
+      1,
+    );
+    const padding = completePadding(INITIAL_JOURNAL_TAIL_BYTES + 1);
+    expect(Buffer.byteLength(padding)).toBeGreaterThan(INITIAL_JOURNAL_TAIL_BYTES);
+    seedLiveRollout("rollout-padded-terminal.jsonl", `${terminal}${padding}`);
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({
+      eventId: "terminal-before-padding",
+      status: "completed",
+    });
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("clears an older live terminal when reopen is outside the initial 64 KiB tail", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-after-missed-reopen",
+      "stale after reopen",
+      3,
+    );
+    const padding = completePadding(INITIAL_JOURNAL_TAIL_BYTES + 1);
+    // Not a writer order: append refuses a reopen that precedes its terminal.
+    // Inside the cap, the look-back still clears that hand-built terminal.
+    seedLiveRollout(
+      "rollout-reopen-outside-tail.jsonl",
+      `${reopenLine()}${padding}${terminal}`,
+    );
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "running",
+      terminal: false,
+      statusSource: "run_lifecycle_epoch",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toBeUndefined();
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("projects a live terminal inside the capped tail of a larger journal", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-inside-cap",
+      "Recovered from the journal",
+      1,
+    );
+    const padding = completePadding(CAPPED_JOURNAL_TAIL_BYTES + 1);
+    expect(Buffer.byteLength(padding)).toBeGreaterThan(CAPPED_JOURNAL_TAIL_BYTES);
+    seedLiveRollout(
+      "rollout-terminal-inside-cap.jsonl",
+      `${padding}${terminal}`,
+    );
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({
+      eventId: "terminal-inside-cap",
+      status: "completed",
+    });
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("does not adopt a live terminal when its superseding reopen is in the capped suffix", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-before-capped-reopen",
+      "stale after reopen",
+      1,
+    );
+    const padding = completePadding(CAPPED_JOURNAL_TAIL_BYTES + 1);
+    expect(Buffer.byteLength(padding)).toBeGreaterThan(CAPPED_JOURNAL_TAIL_BYTES);
+    // Writer order: the terminal is already durable, then run_reopened.
+    // The omitted prefix is larger than the cap. Both facts are in the suffix,
+    // so the reopen still clears the terminal.
+    seedLiveRollout(
+      "rollout-reopen-past-cap.jsonl",
+      `${padding}${terminal}${reopenLine()}`,
+    );
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "running",
+      terminal: false,
+      statusSource: "run_lifecycle_epoch",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toBeUndefined();
+    expect(deferredRecoveryCount()).toBe(0);
   });
 
   it("exports bounded hashes and explicitly excludes workflow evidence", () => {
@@ -1093,6 +1451,173 @@ describe("M5 workflow run inspection (additive fields)", () => {
       // Ordinary inspection still reports the repair error instead of hiding it.
       expect(() => service.status({ runId: WORKFLOW_RUN_ID })).toThrow("SQLITE_FULL");
     } finally { recovery.mockRestore(); }
+  });
+
+  function seedUnprojectedTerminalJournal(): StateRunDurabilityRepository {
+    seedWorkflowEffects();
+    const durability = new StateRunDurabilityRepository(driver);
+    const epoch = durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch;
+    durability.beginEffect({
+      runId: WORKFLOW_RUN_ID,
+      epoch,
+      stepId: "workflow.verify.agent",
+      sessionId: `${WORKFLOW_RUN_ID}-session`,
+      callId: "workflow.verify.agent",
+      toolName: "workflow.verify.agent",
+      recoveryCategory: "side-effecting",
+      intentDigest: `sha256:${"b".repeat(64)}`,
+      eventId: `evt-${++sequence}`,
+      eventSequence: sequence,
+      intentAt: NOW,
+    });
+    durability.markEffectUnknown({
+      runId: WORKFLOW_RUN_ID,
+      stepId: "workflow.verify.agent",
+      eventId: `evt-${++sequence}`,
+      eventSequence: sequence,
+      reason: "verification_agent_lost",
+      observedAt: NOW,
+    });
+    upsertAgentRun(driver, {
+      id: WORKFLOW_RUN_ID,
+      objective: "Goal: fix it",
+      status: "running",
+      startedAt: NOW,
+      lastActiveAt: NOW,
+      currentSessionId: WORKFLOW_RUN_ID,
+    });
+    const sessionDir = join(paths.projectDir, "sessions", WORKFLOW_RUN_ID);
+    mkdirSync(sessionDir, { recursive: true });
+    const rolloutPath = join(sessionDir, "rollout-goal-terminal.jsonl");
+    writeFileSync(
+      rolloutPath,
+      serializeRolloutItem({
+        type: "event_msg",
+        payload: {
+          eventId: "goal-terminal",
+          id: "goal-terminal",
+          seq: 40,
+          msg: {
+            type: "run_terminal",
+            payload: {
+              runId: WORKFLOW_RUN_ID,
+              epoch,
+              status: "failed",
+              exitCode: 1,
+              stopReason: "unknown_outcome_effect",
+              finalMessage: "verification ended unknown",
+              usage: null,
+              lastSequenceBeforeTerminal: 39,
+              finishedAt: "2026-07-18T12:05:00.000Z",
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      `${rolloutPath}.lock`,
+      `${JSON.stringify({
+        pid: process.pid,
+        startNs: "live-writer",
+        acquiredAtIso: NOW,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    return durability;
+  }
+
+  function deferredRecoveryCount(): number {
+    return driver
+      .prepareState<[], { readonly count: number }>(
+        "SELECT COUNT(*) AS count FROM run_recovery_deferred",
+      )
+      .get()?.count ?? 0;
+  }
+
+  it("reports a failed goal from its terminal journal when verification is unknown and the writer is still live", () => {
+    const durability = seedUnprojectedTerminalJournal();
+
+    const status = service.status({ runId: WORKFLOW_RUN_ID });
+    expect(status).toMatchObject({
+      status: "failed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+      durableRun: { status: "failed" },
+      workflow: {
+        control: { state: "terminal" },
+        stopReason: "unknown_outcome_effect",
+      },
+    });
+    expect(
+      status.workflow?.steps.find((step) => step.stage === "workflow.verify")?.status,
+    ).toBe("unknown_outcome");
+    expect(durability.getCurrentTerminalResult(WORKFLOW_RUN_ID)).toMatchObject({
+      eventId: "goal-terminal",
+      status: "failed",
+      lastSequence: 40,
+    });
+    expect(service.result({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+      status: "failed",
+      terminal: true,
+      output: {
+        available: true,
+        finalMessage: "verification ended unknown",
+        stopReason: "unknown_outcome_effect",
+      },
+    });
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("keeps the journal terminal on goal status when the projection write is still full", () => {
+    const durability = seedUnprojectedTerminalJournal();
+    const original = StateRunDurabilityRepository.prototype.recordTerminalResult;
+    const write = vi.spyOn(StateRunDurabilityRepository.prototype, "recordTerminalResult")
+      .mockImplementation(function (
+        this: StateRunDurabilityRepository,
+        input: Parameters<StateRunDurabilityRepository["recordTerminalResult"]>[0],
+      ) {
+        if (input.result.runId === WORKFLOW_RUN_ID) {
+          throw Object.assign(new Error("SQLITE_FULL: database or disk is full"), {
+            code: "SQLITE_FULL",
+          });
+        }
+        return original.call(this, input);
+      });
+    try {
+      const status = service.status({ runId: WORKFLOW_RUN_ID });
+      expect(status).toMatchObject({
+        status: "failed",
+        terminal: true,
+        statusSource: "run_terminal_result",
+        durableRun: { status: "running" },
+      });
+      expect(
+        status.workflow?.steps.find((step) => step.stage === "workflow.verify")?.status,
+      ).toBe("unknown_outcome");
+      expect(durability.getCurrentTerminalResult(WORKFLOW_RUN_ID)).toBeUndefined();
+      expect(service.result({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+        status: "failed",
+        terminal: true,
+        output: { available: true, finalMessage: "verification ended unknown" },
+      });
+      expect(deferredRecoveryCount()).toBe(0);
+    } finally {
+      write.mockRestore();
+    }
+
+    const repaired = service.status({ runId: WORKFLOW_RUN_ID });
+    expect(repaired).toMatchObject({
+      status: "failed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+      durableRun: { status: "failed" },
+    });
+    expect(durability.getCurrentTerminalResult(WORKFLOW_RUN_ID)).toMatchObject({
+      eventId: "goal-terminal",
+      status: "failed",
+    });
+    expect(deferredRecoveryCount()).toBe(0);
   });
 
   it("omits stale provider waits on ended steps, terminal runs, and offline inspection", () => {

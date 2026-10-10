@@ -43,6 +43,7 @@ import {
   type AdmissionKind,
   type RunArtifactPointer,
   type RunStepIdentity,
+  type RunTerminalResult,
   type RunTerminalStatus,
   type RunUsageTotals,
   type WorkflowSpec,
@@ -144,6 +145,12 @@ import {
 export interface WorkflowEffectEventRef {
   readonly eventId: string;
   readonly sequence: number;
+  /**
+   * Set when this call wrote nothing because the journal already holds the
+   * epoch's terminal. The caller projects this result. A new event is not
+   * minted and the attempt's own payload is not substituted.
+   */
+  readonly adoptedTerminal?: RunTerminalResult;
 }
 
 /**
@@ -190,9 +197,53 @@ export interface WorkflowRunJournal {
    * journal emit a faithful `run_terminal` event; test journals ignore it.
    */
   appendTerminal(intent?: WorkflowTerminalJournalIntent): WorkflowEffectEventRef;
+  /**
+   * The terminal already durable in this journal for the current epoch.
+   * Absent on test journals that do not read a rollout.
+   */
+  canonicalTerminal?(): {
+    readonly eventId: string;
+    readonly id: string;
+    readonly sequence: number;
+    readonly result: RunTerminalResult;
+  } | undefined;
+  /**
+   * Terminal for this epoch held in the in-flight drain slice, the degraded
+   * ring, or the unflushed batch. It is not a complete fsynced line, so it
+   * must not be projected and must not be replaced by a detached row.
+   */
+  queuedTerminal?(): ReturnType<
+    NonNullable<WorkflowRunJournal["canonicalTerminal"]>
+  >;
   /** Suspend only after every effect has durably settled. */
   appendSuspended?(input: { readonly suspendedAt: string }): WorkflowEffectEventRef;
   close(): Promise<void>;
+}
+
+function readJournalTerminal(journal: WorkflowRunJournal): ReturnType<
+  NonNullable<WorkflowRunJournal["canonicalTerminal"]>
+> {
+  if (journal.canonicalTerminal === undefined) return undefined;
+  try {
+    return journal.canonicalTerminal();
+  } catch {
+    return undefined;
+  }
+}
+
+function readQueuedJournalTerminal(journal: WorkflowRunJournal): ReturnType<
+  NonNullable<WorkflowRunJournal["queuedTerminal"]>
+> {
+  if (journal.queuedTerminal === undefined) return undefined;
+  try {
+    return journal.queuedTerminal();
+  } catch {
+    return undefined;
+  }
+}
+
+function journalTerminalAlreadySealed(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("already sealed");
 }
 
 /** Terminal facts available when the terminal journal event is allocated. */
@@ -1328,11 +1379,48 @@ export class VerifiedChangeWorkflowController {
   }
 
   async #closeJournal(ctx: RunContext): Promise<void> {
+    const queued = ctx.terminalized
+      ? undefined
+      : readQueuedJournalTerminal(ctx.journal);
     try {
       await ctx.journal.close();
     } catch (error) {
       this.#deps.warn(
         `workflow ${ctx.runId} journal close failed: ${errorMessage(error)}`,
+      );
+    }
+    this.#projectDrainedTerminal(ctx, queued);
+  }
+
+  /**
+   * A terminal that was only queued becomes projectable once close drains it
+   * into a complete fsynced line. A failed fsync truncates that append, so
+   * the line is not in the file and SQLite stays empty. A detached row would
+   * name a different event.
+   */
+  #projectDrainedTerminal(
+    ctx: RunContext,
+    queued: ReturnType<typeof readQueuedJournalTerminal>,
+  ): void {
+    if (
+      queued === undefined ||
+      ctx.terminalized ||
+      ctx.repo.getCurrentTerminalResult(ctx.runId) !== undefined
+    ) {
+      return;
+    }
+    const adopted = readJournalTerminal(ctx.journal);
+    if (adopted === undefined || adopted.eventId !== queued.eventId) return;
+    try {
+      ctx.repo.recordTerminalResult({
+        epoch: ctx.journal.epoch,
+        eventId: adopted.eventId,
+        result: adopted.result,
+      });
+      ctx.terminalized = true;
+    } catch (error) {
+      this.#deps.warn(
+        `workflow ${ctx.runId} terminal projection after drain failed: ${errorMessage(error)}`,
       );
     }
   }
@@ -2963,20 +3051,26 @@ export class VerifiedChangeWorkflowController {
         usage,
         finishedAt,
       });
-      terminalWrite = {
-        epoch: ctx.journal.epoch,
-        eventId: terminalEvent.eventId,
-        result: {
-          runId: ctx.runId,
-          status: terminal.status,
-          exitCode: terminal.status === "completed" ? 0 : 1,
-          stopReason: terminal.stopReason,
-          finalMessage: terminal.finalMessage,
-          usage,
-          lastSequence: terminalEvent.sequence,
-          finishedAt,
-        },
-      };
+      terminalWrite = terminalEvent.adoptedTerminal !== undefined
+        ? {
+            epoch: ctx.journal.epoch,
+            eventId: terminalEvent.eventId,
+            result: terminalEvent.adoptedTerminal,
+          }
+        : {
+            epoch: ctx.journal.epoch,
+            eventId: terminalEvent.eventId,
+            result: {
+              runId: ctx.runId,
+              status: terminal.status,
+              exitCode: terminal.status === "completed" ? 0 : 1,
+              stopReason: terminal.stopReason,
+              finalMessage: terminal.finalMessage,
+              usage,
+              lastSequence: terminalEvent.sequence,
+              finishedAt,
+            },
+          };
       ctx.repo.recordTerminalResult(terminalWrite);
       ctx.terminalized = true;
     } catch (error) {
@@ -2994,20 +3088,47 @@ export class VerifiedChangeWorkflowController {
           this.#deps.warn(`workflow ${ctx.runId} terminal projection retry failed: ${errorMessage(retryError)}`);
         }
       } else {
-        // A broken rollout file must not leave a stopped Goal looking live.
-        // The same durable-only path used by offline cancellation remains
-        // available when SQLite is writable. Never call this completion:
-        // without a terminal journal boundary the work needs recovery.
-        ctx.terminalized = this.#recordDetachedTerminal(
-          ctx.repo,
-          ctx.runId,
-          terminal.status === "cancelled" ? "cancelled" : "failed",
-          `The Goal stopped because its final status could not be saved to the run journal: ${errorMessage(error)}. ${terminal.finalMessage ?? ""}` +
-            (terminal.status === "completed" && ctx.handle !== undefined
-              ? ` Work is preserved in ${ctx.handle.path} (branch ${ctx.handle.branch}).`
-              : ""),
-          { usage, stopReason: terminal.status === "completed" ? "evidence_invalid" : terminal.stopReason },
-        );
+        // The journal append did not return a projection. If the epoch is
+        // already sealed on disk, project that event. A detached row would
+        // be a second terminal identity for the same epoch.
+        const adopted = readJournalTerminal(ctx.journal);
+        if (adopted !== undefined) {
+          try {
+            ctx.repo.recordTerminalResult({
+              epoch: ctx.journal.epoch,
+              eventId: adopted.eventId,
+              result: adopted.result,
+            });
+            ctx.terminalized = true;
+          } catch (retryError) {
+            this.#deps.warn(
+              `workflow ${ctx.runId} terminal projection retry failed: ${errorMessage(retryError)}`,
+            );
+          }
+        } else if (journalTerminalAlreadySealed(error)) {
+          this.#deps.warn(
+            `workflow ${ctx.runId} journal already has a terminal; not recording a detached result`,
+          );
+        } else if (readQueuedJournalTerminal(ctx.journal) !== undefined) {
+          this.#deps.warn(
+            `workflow ${ctx.runId} terminal is queued for fsync and is not yet a complete journal line; not recording a detached result`,
+          );
+        } else {
+          // A broken rollout file must not leave a stopped Goal looking live.
+          // The same durable-only path used by offline cancellation remains
+          // available when SQLite is writable. Never call this completion:
+          // without a terminal journal boundary the work needs recovery.
+          ctx.terminalized = this.#recordDetachedTerminal(
+            ctx.repo,
+            ctx.runId,
+            terminal.status === "cancelled" ? "cancelled" : "failed",
+            `The Goal stopped because its final status could not be saved to the run journal: ${errorMessage(error)}. ${terminal.finalMessage ?? ""}` +
+              (terminal.status === "completed" && ctx.handle !== undefined
+                ? ` Work is preserved in ${ctx.handle.path} (branch ${ctx.handle.branch}).`
+                : ""),
+            { usage, stopReason: terminal.status === "completed" ? "evidence_invalid" : terminal.stopReason },
+          );
+        }
       }
       if (!ctx.terminalized) {
         this.#observePersistenceFailure(ctx.repo, ctx.runId, error, {

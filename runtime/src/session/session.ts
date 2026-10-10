@@ -1,5 +1,8 @@
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
-import { SessionWriteBehindQueue, withSessionWriteBehind } from "./write-behind.js";
+import {
+  SessionWriteBehindQueue,
+  withSessionWriteBehind,
+} from "./write-behind.js";
 /**
  * Session — initialized model agent context.
  *
@@ -38,9 +41,12 @@ import { randomUUID } from "node:crypto";
 import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
 import { boundDisplayCompletionEvent } from "./display-completion.js";
-import { createLazySavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
+import { createLazySavedPluginSecretRedactor } from "../plugins/secret-redaction.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readPersistedUserStopState, type RolloutItem } from "./rollout-item.js";
+import {
+  readPersistedUserStopState,
+  type RolloutItem,
+} from "./rollout-item.js";
 import type { ReadOnlyDelegationConstraint } from "../agents/readonly-delegation.js";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -170,9 +176,7 @@ import type { RolloutStore } from "./rollout-store.js";
 import type { LiveThread } from "../thread-store/live-thread.js";
 import type { RolloutTraceRecorder } from "./rollout-trace.js";
 import type { AppendOptions } from "./session-store.js";
-import {
-  serializedUtf8BytesOrZero as measureToolResultBytes,
-} from "./serialization-size.js";
+import { serializedUtf8BytesOrZero as measureToolResultBytes } from "./serialization-size.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import {
   cloneLlmMessage,
@@ -206,7 +210,11 @@ import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
-import type { UnifiedExecProcessManagerLike, UnifiedExecOwnerBinding, UnifiedExecOwnerLifetime } from "../unified-exec/types.js";
+import type {
+  UnifiedExecProcessManagerLike,
+  UnifiedExecOwnerBinding,
+  UnifiedExecOwnerLifetime,
+} from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
@@ -440,7 +448,9 @@ function idleInputOwnershipFromMessage(
   const record = candidate as { readonly workspaceView?: unknown };
   // Historical envelopes may carry the retired "editor" view; they belong to
   // no live surface and are never drained.
-  return record.workspaceView === "agent" ? { workspaceView: "agent" } : undefined;
+  return record.workspaceView === "agent"
+    ? { workspaceView: "agent" }
+    : undefined;
 }
 
 function mailboxMessageEligibleForOwnership(
@@ -1066,7 +1076,10 @@ export interface McpManager {
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
-  addServer?(config: McpSessionServerConfig, options?: { readonly replace?: boolean }): Promise<McpServerMutationResult>;
+  addServer?(
+    config: McpSessionServerConfig,
+    options?: { readonly replace?: boolean },
+  ): Promise<McpServerMutationResult>;
   /**
    * Canonical live-manager tool boundary for callers that have already
    * acquired session effect admission. Callers must propagate that admitted
@@ -1167,7 +1180,10 @@ export interface McpSessionServerConfig {
   readonly required?: boolean;
   readonly headers?: Readonly<Record<string, string>>;
   readonly localOnly?: boolean;
-  readonly desktopAuthority?: { readonly id: string; readonly signature: string };
+  readonly desktopAuthority?: {
+    readonly id: string;
+    readonly signature: string;
+  };
 }
 
 export interface McpSessionToolInfo {
@@ -1692,7 +1708,9 @@ export interface SessionFileRewindParams {
 }
 
 export type SessionFileRewindErrorCode =
-  "ACTIVE_TURN" | "MESSAGE_NOT_FOUND" | "NO_FILE_HISTORY";
+  | "ACTIVE_TURN"
+  | "MESSAGE_NOT_FOUND"
+  | "NO_FILE_HISTORY";
 
 export type SessionPreviewFileRewindResult =
   | {
@@ -1850,7 +1868,8 @@ function durableHistoryMetadata(candidate: {
 } {
   return {
     toolResultIntegrity:
-      candidate.runtimeOnly?.toolResultIntegrity ?? candidate.toolResultIntegrity,
+      candidate.runtimeOnly?.toolResultIntegrity ??
+      candidate.toolResultIntegrity,
     agentInvocation:
       candidate.runtimeOnly?.agentInvocation ?? candidate.agentInvocation,
     compactionHistory:
@@ -1864,7 +1883,10 @@ function normalizedReasoningProvenance(
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
-  const record = value as { readonly provider?: unknown; readonly model?: unknown };
+  const record = value as {
+    readonly provider?: unknown;
+    readonly model?: unknown;
+  };
   if (
     typeof record.provider !== "string" ||
     record.provider.trim().length === 0 ||
@@ -1893,8 +1915,7 @@ function normalizedProviderReasoning(candidate: {
     typeof candidate.providerReasoningContent === "string"
       ? candidate.providerReasoningContent
       : undefined;
-  const hasFlatProvenance =
-    candidate.providerReasoningProvenance !== undefined;
+  const hasFlatProvenance = candidate.providerReasoningProvenance !== undefined;
   const flatProvenance = normalizedReasoningProvenance(
     candidate.providerReasoningProvenance,
   );
@@ -1906,9 +1927,7 @@ function normalizedProviderReasoning(candidate: {
       ? (candidate.providerReasoning as Record<string, unknown>)
       : undefined;
   const durableContent =
-    typeof durable?.content === "string"
-      ? durable.content
-      : undefined;
+    typeof durable?.content === "string" ? durable.content : undefined;
 
   // Treat every supplied representation as one atomic tuple. A malformed
   // duplicate must not be ignored while another representation is accepted:
@@ -1918,7 +1937,8 @@ function normalizedProviderReasoning(candidate: {
     (hasFlatProvenance && flatProvenance === undefined) ||
     (hasDurable && durable === undefined) ||
     (flatContent === "" &&
-      (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
+      (!Array.isArray(candidate.toolCalls) ||
+        candidate.toolCalls.length === 0 ||
         !isKnownEmptyProviderReasoning(flatContent, flatProvenance)))
   ) {
     return {};
@@ -1927,10 +1947,14 @@ function normalizedProviderReasoning(candidate: {
   if (durable !== undefined) {
     if (durable.version === 2) {
       const durableProvenance = normalizedReasoningProvenance(durable);
-      if (durableContent === undefined || durableProvenance === undefined ||
-          (durableContent === "" &&
-            (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
-              !isKnownEmptyProviderReasoning(durableContent, durableProvenance)))) {
+      if (
+        durableContent === undefined ||
+        durableProvenance === undefined ||
+        (durableContent === "" &&
+          (!Array.isArray(candidate.toolCalls) ||
+            candidate.toolCalls.length === 0 ||
+            !isKnownEmptyProviderReasoning(durableContent, durableProvenance)))
+      ) {
         return {};
       }
       if (
@@ -1946,7 +1970,12 @@ function normalizedProviderReasoning(candidate: {
         providerReasoningProvenance: durableProvenance,
       };
     }
-    if (durable.version !== 1 || durableContent === undefined || durableContent.length === 0) return {};
+    if (
+      durable.version !== 1 ||
+      durableContent === undefined ||
+      durableContent.length === 0
+    )
+      return {};
     if (flatContent !== undefined && flatContent !== durableContent) return {};
     // V1 is deliberately unbound. Never upgrade it from adjacent flat fields;
     // only a producer-written V2 record is authoritative provenance.
@@ -2432,7 +2461,10 @@ export class Session {
   private readonly ownsUnifiedExecManager: boolean;
   private execCloseTask: Promise<void> | undefined;
   private borrowedShutdownTask: Promise<void> | undefined;
-  private readonly compatibilityExecLifetimes = new Map<string, UnifiedExecOwnerLifetime>();
+  private readonly compatibilityExecLifetimes = new Map<
+    string,
+    UnifiedExecOwnerLifetime
+  >();
   readonly fileReadScope: object;
   private readonly ownsFileReadScope: boolean;
 
@@ -2572,7 +2604,10 @@ export class Session {
   rolloutStore: RolloutStore | null = null;
   private transientWriteBehind: SessionWriteBehindQueue | undefined;
   get writeBehind(): SessionWriteBehindQueue {
-    return this.rolloutStore?.store?.writeBehind ?? (this.transientWriteBehind ??= new SessionWriteBehindQueue());
+    return (
+      this.rolloutStore?.store?.writeBehind ??
+      (this.transientWriteBehind ??= new SessionWriteBehindQueue())
+    );
   }
   private shutdownResourceRelease?: () => void | Promise<void>;
 
@@ -2677,8 +2712,11 @@ export class Session {
    * must supply the same registry used by commands and tool evaluation.
    */
   constructor(opts: SessionOpts) {
-    if (opts.unifiedExecOwnership?.binding !== undefined &&
-        opts.unifiedExecOwnership.binding.ownerId !== String(opts.conversationId).trim()) {
+    if (
+      opts.unifiedExecOwnership?.binding !== undefined &&
+      opts.unifiedExecOwnership.binding.ownerId !==
+        String(opts.conversationId).trim()
+    ) {
       throw new Error("exec owner binding does not match session identity");
     }
     this.conversationId = opts.conversationId;
@@ -2908,13 +2946,14 @@ export class Session {
       registry: this.services.registry,
       provider: provider.binding.provider,
       permissionContext,
-      profile: this.config.coordinatorMode === true
-        ? "coordinator"
-        : this.services.runtimeOptions.lightMode === true
-          ? "light"
-          : usesLocalToolProfile(provider.binding.provider)
-          ? "compact"
-          : "standard",
+      profile:
+        this.config.coordinatorMode === true
+          ? "coordinator"
+          : this.services.runtimeOptions.lightMode === true
+            ? "light"
+            : usesLocalToolProfile(provider.binding.provider)
+              ? "compact"
+              : "standard",
     });
     return Object.freeze({
       pending: admittedPending,
@@ -2992,7 +3031,9 @@ export class Session {
    */
   listMcpClients(): readonly MCPServerConnection[] {
     const manager = this.services.mcpManager as unknown as
-      McpManagerLike | null | undefined;
+      | McpManagerLike
+      | null
+      | undefined;
     if (
       manager === null ||
       manager === undefined ||
@@ -3001,16 +3042,28 @@ export class Session {
     ) {
       return [];
     }
-    const saved = this.services.configStore === undefined
-      ? (value: string) => value
-      : createLazySavedPluginSecretRedactor(this.services.configStore.homeContext);
-    const plugin = (manager as McpManagerLike & { redactPluginSecrets?: (value: string) => string }).redactPluginSecrets;
-    return projectMcpManagerToConnections(manager, value => plugin?.call(manager, saved(value)) ?? saved(value));
+    const saved =
+      this.services.configStore === undefined
+        ? (value: string) => value
+        : createLazySavedPluginSecretRedactor(
+            this.services.configStore.homeContext,
+          );
+    const plugin = (
+      manager as McpManagerLike & {
+        redactPluginSecrets?: (value: string) => string;
+      }
+    ).redactPluginSecrets;
+    return projectMcpManagerToConnections(
+      manager,
+      (value) => plugin?.call(manager, saved(value)) ?? saved(value),
+    );
   }
 
   listMcpTools(): readonly unknown[] {
     const manager = this.services.mcpManager as unknown as
-      Pick<McpManager, "getTools"> | null | undefined;
+      | Pick<McpManager, "getTools">
+      | null
+      | undefined;
     if (
       manager === null ||
       manager === undefined ||
@@ -3029,21 +3082,27 @@ export class Session {
     return this.state.unsafePeek().sessionConfiguration;
   }
 
-  createChildExecLifetime(ownerId: string): UnifiedExecOwnerLifetime | undefined {
+  createChildExecLifetime(
+    ownerId: string,
+  ): UnifiedExecOwnerLifetime | undefined {
     if (this.isShuttingDown) throw new Error("session is shutting down");
     if (ownerId.trim() === String(this.conversationId).trim()) {
       throw new Error("exec child cannot alias its parent owner");
     }
     return this.services.unifiedExecManager?.createOwnerLifetime?.(
-      ownerId, this.unifiedExecOwnerBinding,
+      ownerId,
+      this.unifiedExecOwnerBinding,
     );
   }
 
   /** Keep yielded work across turns, but never reuse a turn's admission token. */
-  acquireCompatibilityExecBinding(ownerId: string): UnifiedExecOwnerBinding | undefined {
+  acquireCompatibilityExecBinding(
+    ownerId: string,
+  ): UnifiedExecOwnerBinding | undefined {
     if (this.isShuttingDown) throw new Error("session is shutting down");
     this.services.unifiedExecManager?.assertOwnerAdmission?.(
-      String(this.conversationId), this.unifiedExecOwnerBinding,
+      String(this.conversationId),
+      this.unifiedExecOwnerBinding,
     );
     const id = ownerId.trim();
     if (id === String(this.conversationId).trim()) {
@@ -3537,7 +3596,9 @@ export class Session {
     }
     const withTurnAuthority = <T>(operation: () => T): T =>
       runWithCurrentRuntimeSession(this, () =>
-        withSessionWriteBehind(this.writeBehind, () => runWithCanonicalSettingsAuthority(configStore, operation)),
+        withSessionWriteBehind(this.writeBehind, () =>
+          runWithCanonicalSettingsAuthority(configStore, operation),
+        ),
       );
     if (opts.ctx === undefined) {
       while (this.pendingProviderSwitch !== null) {
@@ -3617,7 +3678,8 @@ export class Session {
     this.interruptedTurnHandoffInFlight = inFlight;
     try {
       await inFlight;
-      if (this.interruptedTurnHandoff === handoff) this.interruptedTurnHandoff = null;
+      if (this.interruptedTurnHandoff === handoff)
+        this.interruptedTurnHandoff = null;
     } finally {
       if (this.interruptedTurnHandoffInFlight === inFlight) {
         this.interruptedTurnHandoffInFlight = null;
@@ -3634,7 +3696,9 @@ export class Session {
       return () => {};
     }
     this.turnDriverReadyListeners.add(listener);
-    return () => { this.turnDriverReadyListeners.delete(listener); };
+    return () => {
+      this.turnDriverReadyListeners.delete(listener);
+    };
   }
 
   installDeferredSessionStartHook(hook: (() => Promise<void>) | null): void {
@@ -3832,7 +3896,9 @@ export class Session {
   emitPhaseEvent(event: PhaseEvent): void {
     if (this.writeBehind.deferring) {
       const captured = structuredClone(event);
-      this.writeBehind.defer("phase-publication", () => this.emitPhaseEvent(captured));
+      this.writeBehind.defer("phase-publication", () =>
+        this.emitPhaseEvent(captured),
+      );
       return;
     }
     this.writeBehind.observe(() => {
@@ -3911,7 +3977,8 @@ export class Session {
       this.lifecycleState !== "open" ||
       this.stoppedByUserSinceLastPrompt ||
       admission.generation !== this.userStopGeneration
-    ) admission.suppressed = true;
+    )
+      admission.suppressed = true;
     return !admission.suppressed;
   }
 
@@ -3933,8 +4000,10 @@ export class Session {
         if (generation !== undefined) return false;
         throw new Error("session is shutting down");
       }
-      const permitted = (): boolean => generation === undefined ||
-        (!this.stoppedByUserSinceLastPrompt && generation === this.userStopGeneration);
+      const permitted = (): boolean =>
+        generation === undefined ||
+        (!this.stoppedByUserSinceLastPrompt &&
+          generation === this.userStopGeneration);
       if (!permitted()) return false;
       if (this.pendingCompactionCleanups.size > 0) {
         await this.repairPendingCompactionCleanups();
@@ -3965,16 +4034,23 @@ export class Session {
         await this.settleInterruptedTurnHandoff();
       }
       if (generation === undefined) {
-        await this.childFollowupAdmission.exit(() => hooks.submit(message, opts));
+        await this.childFollowupAdmission.exit(() =>
+          hooks.submit(message, opts),
+        );
         return true;
       }
       const admission = { generation, suppressed: false };
-      await this.childFollowupAdmission.run(admission, () => hooks.submit(message, opts));
+      await this.childFollowupAdmission.run(admission, () =>
+        hooks.submit(message, opts),
+      );
       return !admission.suppressed;
     });
-    this.submitQueue = run.then(() => {}, () => {
-      /* keep the queue alive for the next submit */
-    });
+    this.submitQueue = run.then(
+      () => {},
+      () => {
+        /* keep the queue alive for the next submit */
+      },
+    );
     return run;
   }
 
@@ -4132,7 +4208,8 @@ export class Session {
       });
       const attemptId = compactionResult.transaction?.attempt_id;
       const displayText = formatCompactionOperatorDisplay(
-        compactionResult.userDisplayMessage ?? compactionMessage(compactionResult),
+        compactionResult.userDisplayMessage ??
+          compactionMessage(compactionResult),
         attemptId,
       );
 
@@ -4907,10 +4984,13 @@ export class Session {
       );
     }
     if (event.msg.type === "tool_call_completed") {
-      let completion = boundDisplayCompletionEvent(event as Parameters<typeof boundDisplayCompletionEvent>[0]);
+      let completion = boundDisplayCompletionEvent(
+        event as Parameters<typeof boundDisplayCompletionEvent>[0],
+      );
       const pending = completion.msg.payload.metadata?.displayAttachments;
       if (Array.isArray(pending) && pending.length > 0 && this.rolloutStore) {
-        const { displayAttachments: _pending, ...metadata } = completion.msg.payload.metadata ?? {};
+        const { displayAttachments: _pending, ...metadata } =
+          completion.msg.payload.metadata ?? {};
         completion = {
           ...completion,
           msg: {
@@ -4918,7 +4998,10 @@ export class Session {
             payload: {
               ...completion.msg.payload,
               metadata,
-              displayAttachments: persistDisplayAttachments(this.rolloutStore.store.sessionDir, pending as import("../mcp-client/display-attachments.js").DisplayAttachment[]),
+              displayAttachments: persistDisplayAttachments(
+                this.rolloutStore.store.sessionDir,
+                pending as import("../mcp-client/display-attachments.js").DisplayAttachment[],
+              ),
             },
           },
         };
@@ -4954,6 +5037,15 @@ export class Session {
     }
     // I-27 + M4: allocate identity/sequence first, but do not let a listener
     // observe a durable transition until its rollout append has fsynced.
+    // A lifecycle refusal has to happen before stamp. The suffix lookup
+    // can miss a buried terminal; the append checker reads the whole file,
+    // and a sequence consumed for that refusal becomes a sequence_gap.
+    if (
+      this.rolloutStore !== null &&
+      (event.msg.type === "run_terminal" || event.msg.type === "run_reopened")
+    ) {
+      this.rolloutStore.assertLifecycleAppendBeforeStamp(event);
+    }
     const stamped = this.eventLog.stamp(event);
     const derivedTurnId =
       appendOpts.turnId ??
@@ -4966,8 +5058,10 @@ export class Session {
         ? measureToolResultBytes(stamped.msg.payload.result)
         : undefined);
     // T6: persist if store is wired. isDurableEvent triggers I-4 fsync.
-    const durable = isDurableEvent(stamped) ||
-      (stamped.msg.type === "tool_call_completed" && (stamped.msg.payload.displayAttachments?.length ?? 0) > 0) ||
+    const durable =
+      isDurableEvent(stamped) ||
+      (stamped.msg.type === "tool_call_completed" &&
+        (stamped.msg.payload.displayAttachments?.length ?? 0) > 0) ||
       appendOpts.durable === true;
     if (this.rolloutStore) {
       const committed = this.rolloutStore.append(stamped, {
@@ -4998,17 +5092,21 @@ export class Session {
   publishPreparedEvent(event: Event): Event {
     if (this.writeBehind.deferring) {
       const captured = structuredClone(event);
-      this.writeBehind.defer("event-publication", () => this.publishPreparedEvent(captured));
+      this.writeBehind.defer("event-publication", () =>
+        this.publishPreparedEvent(captured),
+      );
       return event;
     }
     hitM4DurabilityFailpoint("before_event_publish");
-    this.writeBehind.observe(() => this.eventLog.publish(event, (published) => {
-      // Compatibility consumers belong to the same FIFO publication queue.
-      // A listener may synchronously emit another event; keeping this callback
-      // inside EventLog prevents txEvent from observing N+1 before N.
-      this.txEvent.send(published);
-      hitM4DurabilityFailpoint("after_event_publish");
-    }));
+    this.writeBehind.observe(() =>
+      this.eventLog.publish(event, (published) => {
+        // Compatibility consumers belong to the same FIFO publication queue.
+        // A listener may synchronously emit another event; keeping this callback
+        // inside EventLog prevents txEvent from observing N+1 before N.
+        this.txEvent.send(published);
+        hitM4DurabilityFailpoint("after_event_publish");
+      }),
+    );
     return event;
   }
 
@@ -5028,18 +5126,27 @@ export class Session {
    */
   emitDeferred(
     envelope: Omit<Event, "msg">,
-    buildMsg: () => Extract<EventMsg, { type: "session_usage" | "turn_checkpoint" | "execution_admission" }>,
+    buildMsg: () => Extract<
+      EventMsg,
+      { type: "session_usage" | "turn_checkpoint" | "execution_admission" }
+    >,
     appendOpts: AppendOptions = {},
   ): void {
     const queue = this.writeBehind;
-    const bufferedOneShot = oneShotFastModeActive() && queue.oneShotBuffering && !queue.draining;
-    if ((!queue.deferring && !bufferedOneShot) || this.isRolloutPersistenceSuspended()) {
+    const bufferedOneShot =
+      oneShotFastModeActive() && queue.oneShotBuffering && !queue.draining;
+    if (
+      (!queue.deferring && !bufferedOneShot) ||
+      this.isRolloutPersistenceSuspended()
+    ) {
       this.emit({ ...envelope, msg: buildMsg() }, appendOpts);
       return;
     }
     queue.assertHealthy();
     if (this.canonicalJournalSealed) {
-      throw new Error("cannot append deferred event: canonical run journal is sealed");
+      throw new Error(
+        "cannot append deferred event: canonical run journal is sealed",
+      );
     }
     const stamped = this.eventLog.stampEnvelope(envelope);
     const store = this.rolloutStore;
@@ -5047,8 +5154,13 @@ export class Session {
     queue.enqueue("deferred-event", () => {
       const event: Event = { ...stamped, msg: buildMsg() };
       const durable = isDurableEvent(event) || capturedOptions.durable === true;
-      if (store?.append(event, { ...capturedOptions, durable }) === false && durable) {
-        throw new Error(`durable event ${event.msg.type} sequence ${event.seq ?? "unassigned"} was not fsync-committed`);
+      if (
+        store?.append(event, { ...capturedOptions, durable }) === false &&
+        durable
+      ) {
+        throw new Error(
+          `durable event ${event.msg.type} sequence ${event.seq ?? "unassigned"} was not fsync-committed`,
+        );
       }
       this.publishPreparedEvent(event);
     });
@@ -5450,18 +5562,31 @@ export class Session {
       throw new Error("User-stop generation is exhausted");
     }
     this.userStopGenerationValue += 1;
-    this.rolloutStore?.appendRollout({
-      type: "session_state",
-      payload: { userStop: { stopped: true, generation: this.userStopGenerationValue } },
-    }, { durable: true });
+    this.rolloutStore?.appendRollout(
+      {
+        type: "session_state",
+        payload: {
+          userStop: { stopped: true, generation: this.userStopGenerationValue },
+        },
+      },
+      { durable: true },
+    );
   }
 
   clearUserStop(): void {
     if (!this.stoppedByUserSinceLastPromptFlag) return;
-    this.rolloutStore?.appendRollout({
-      type: "session_state",
-      payload: { userStop: { stopped: false, generation: this.userStopGenerationValue } },
-    }, { durable: true });
+    this.rolloutStore?.appendRollout(
+      {
+        type: "session_state",
+        payload: {
+          userStop: {
+            stopped: false,
+            generation: this.userStopGenerationValue,
+          },
+        },
+      },
+      { durable: true },
+    );
     this.stoppedByUserSinceLastPromptFlag = false;
   }
 
@@ -5481,7 +5606,8 @@ export class Session {
       let state;
       try {
         state = readPersistedUserStopState(item);
-        if (state !== undefined && state.generation < generation) throw new Error("Invalid persisted user-stop generation order");
+        if (state !== undefined && state.generation < generation)
+          throw new Error("Invalid persisted user-stop generation order");
       } catch (error) {
         this.stoppedByUserSinceLastPromptFlag = true;
         throw error;
@@ -5503,17 +5629,21 @@ export class Session {
       ) {
         if (!stopped) generation += 1;
         stopped = true;
-      } else if (event.type === "turn_aborted" && event.payload.reason === "interrupted") {
+      } else if (
+        event.type === "turn_aborted" &&
+        event.payload.reason === "interrupted"
+      ) {
         if (!stopped) generation += 1;
         stopped = true;
-      }
-      else if (
+      } else if (
         !hasExplicitUserStopState &&
-        (event.type === "user_message" || event.type === "message_submission") &&
+        (event.type === "user_message" ||
+          event.type === "message_submission") &&
         typeof event.payload.messageId === "string" &&
         typeof event.payload.acceptedAt === "string" &&
         event.payload.streamId !== "session.shell.execute"
-      ) stopped = false;
+      )
+        stopped = false;
     }
     if (generation < this.userStopGenerationValue) return;
     this.stoppedByUserSinceLastPromptFlag = stopped;
@@ -5827,10 +5957,18 @@ export class Session {
    */
   private async abortAllTasksLocked(reason: TurnAbortReason): Promise<void> {
     const taken = await this.activeTurn.swap(null);
-    if (taken === null) { this.writeBehind.finish(); return; }
+    if (taken === null) {
+      this.writeBehind.finish();
+      return;
+    }
     const tasks = Array.from(taken.tasks.values());
-    try { await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason))); }
-    finally { this.writeBehind.finish(); }
+    try {
+      await Promise.all(
+        tasks.map((task) => this.handleTaskAbort(task, reason)),
+      );
+    } finally {
+      this.writeBehind.finish();
+    }
     // Release any
     // dangling approvals / input pre-emptively so interrupted tasks
     // don't surface stale responses. We reach into `turnState` here
@@ -5862,8 +6000,13 @@ export class Session {
     });
     if (taken === null) return false;
     const tasks = Array.from(taken.tasks.values());
-    try { await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason))); }
-    finally { this.writeBehind.finish(); }
+    try {
+      await Promise.all(
+        tasks.map((task) => this.handleTaskAbort(task, reason)),
+      );
+    } finally {
+      this.writeBehind.finish();
+    }
     await taken.turnState.with((ts) => {
       ts.pendingApprovals.clear();
       ts.pendingRequestPermissions.clear();
@@ -5991,7 +6134,8 @@ export class Session {
       }
     }
     let resolveResponse:
-      ((response: RequestUserInputResponse | null) => void) | undefined;
+      | ((response: RequestUserInputResponse | null) => void)
+      | undefined;
     const responsePromise = new Promise<RequestUserInputResponse | null>(
       (resolve) => {
         resolveResponse = resolve;
@@ -6100,7 +6244,8 @@ export class Session {
       }
     }
     let resolveResponse:
-      ((response: McpElicitationResponse) => void) | undefined;
+      | ((response: McpElicitationResponse) => void)
+      | undefined;
     const responsePromise = new Promise<McpElicitationResponse>((resolve) => {
       resolveResponse = resolve;
     });
@@ -6243,20 +6388,28 @@ export class Session {
    */
   async shutdown(): Promise<void> {
     if (!this.ownsUnifiedExecManager) {
-      if (this.borrowedShutdownTask !== undefined) return this.borrowedShutdownTask;
+      if (this.borrowedShutdownTask !== undefined)
+        return this.borrowedShutdownTask;
       if (this.unifiedExecOwnerBinding !== undefined) {
         // Reject a released projection before hooks, children or shared
         // admission services can be touched. Revoke active admission now;
         // shutdownCore awaits the same strict proof before durable finalizers.
         this.unifiedExecOwnerBinding.assertCurrent();
-        this.execCloseTask ??= this.unifiedExecOwnerBinding.prepareForDurableClose();
+        this.execCloseTask ??=
+          this.unifiedExecOwnerBinding.prepareForDurableClose();
         void this.execCloseTask.catch(() => {});
-      } else if (this.services.unifiedExecManager?.prepareForDurableClose !== undefined) {
-        throw new Error("borrowed exec manager has no scoped cleanup authority");
+      } else if (
+        this.services.unifiedExecManager?.prepareForDurableClose !== undefined
+      ) {
+        throw new Error(
+          "borrowed exec manager has no scoped cleanup authority",
+        );
       }
       // An old completed Session must never run shared-service teardown again
       // after a replacement Session has acquired the same conversation id.
-      this.borrowedShutdownTask = Promise.resolve().then(() => this.shutdownAndRelease());
+      this.borrowedShutdownTask = Promise.resolve().then(() =>
+        this.shutdownAndRelease(),
+      );
       return this.borrowedShutdownTask;
     }
     return this.shutdownAndRelease();
@@ -6278,9 +6431,13 @@ export class Session {
     try {
       this.services.executionAdmission?.release?.();
     } catch (error) {
-      resourceReleaseError = resourceReleaseError === undefined
-        ? error
-        : new AggregateError([resourceReleaseError, error], "session resource release failed");
+      resourceReleaseError =
+        resourceReleaseError === undefined
+          ? error
+          : new AggregateError(
+              [resourceReleaseError, error],
+              "session resource release failed",
+            );
     }
     if (shutdownError !== undefined && resourceReleaseError !== undefined) {
       throw new AggregateError(
@@ -6425,8 +6582,12 @@ export class Session {
         await this.services.unifiedExecManager?.prepareForDurableClose?.();
       } else if (this.unifiedExecOwnerBinding !== undefined) {
         await this.execCloseTask;
-      } else if (this.services.unifiedExecManager?.prepareForDurableClose !== undefined) {
-        throw new Error("borrowed exec manager has no scoped cleanup authority");
+      } else if (
+        this.services.unifiedExecManager?.prepareForDurableClose !== undefined
+      ) {
+        throw new Error(
+          "borrowed exec manager has no scoped cleanup authority",
+        );
       }
       const finalizers = [...this.beforeDurableCloseListeners];
       this.beforeDurableCloseListeners.clear();
@@ -6445,8 +6606,12 @@ export class Session {
     // Flush + close the rollout store (I-4: final durable fsync).
     if (this.rolloutStore) {
       try {
-        try { this.rolloutStore.flushDurable(); }
-        finally { this.rolloutStore.close(); }
+        try {
+          this.rolloutStore.flushDurable();
+        } finally {
+          const closed = this.rolloutStore.close();
+          if (closed instanceof Promise) await closed;
+        }
       } catch (error) {
         durableCloseError ??= error;
       }
@@ -6476,8 +6641,11 @@ export class Session {
         if (mcpDisposeTimer !== undefined) clearTimeout(mcpDisposeTimer);
       }
     }
-    try { this.eventLog.close(); }
-    catch (error) { durableCloseError ??= error; }
+    try {
+      this.eventLog.close();
+    } catch (error) {
+      durableCloseError ??= error;
+    }
     this.txEvent.close();
     const sessionEnvironmentHome = this.services.configStore?.homeContext?.path;
     if (sessionEnvironmentHome !== undefined) {
@@ -6499,7 +6667,8 @@ export class Session {
         closeConversationReadScope,
       } = await import("../tools/system/filesystem.js");
       const sessionTempRoot = this.services.runtimeOptions?.sessionTempRoot;
-      if (this.ownsFileReadScope) closeConversationReadScope(this.fileReadScope);
+      if (this.ownsFileReadScope)
+        closeConversationReadScope(this.fileReadScope);
       if (sessionTempRoot !== undefined) {
         clearSessionReadState(this.conversationId, sessionTempRoot);
       } else {

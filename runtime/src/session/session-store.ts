@@ -1,5 +1,16 @@
-import { SessionWriteBehindQueue, registerSessionWriteBehind, drainRolloutWriteBehind } from "./write-behind.js";
-import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, supportsRelaxedOneShot, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
+import {
+  SessionWriteBehindQueue,
+  registerSessionWriteBehind,
+  drainRolloutWriteBehind,
+} from "./write-behind.js";
+import {
+  assertOneShotRecoverable,
+  beginOneShotWriter,
+  consumeOneShotSeal,
+  supportsRelaxedOneShot,
+  withOneShotWriteScope,
+  type OneShotWriterAuthority,
+} from "../durability/one-shot-durability.js";
 /**
  * Session on-disk store — owns the rollout JSONL file, its fsync
  * guarantees, flock acquisition, atomic write-then-rename, and the
@@ -96,10 +107,21 @@ import {
   isDurableEvent,
 } from "./event-log.js";
 import {
+  canonicalRunTerminalFromGrowingTail,
+  canonicalRunTerminalFromItems,
+  type CanonicalRunTerminal,
+  type CommittedRunTerminalLookup,
+  type CommittedSuffix,
+} from "./canonical-run-terminal.js";
+import {
   parseRolloutLine,
   serializeRolloutItem,
   type RolloutItem,
 } from "./rollout-item.js";
+import {
+  assertRunLifecycleAppendOrder,
+  type RunLifecycleSource,
+} from "./run-lifecycle-append-order.js";
 import type {
   CompactionActiveHistoryEntryV1,
   CompactionPayloadChunkV1,
@@ -123,9 +145,7 @@ import {
 } from "./trajectory-export.js";
 import { resolveHomeContext } from "../config/home.js";
 import { getAgenCHomeDir } from "../utils/envUtils.js";
-import {
-  serializedUtf8BytesOrZero as measureToolResultBytesFromPayload,
-} from "./serialization-size.js";
+import { serializedUtf8BytesOrZero as measureToolResultBytesFromPayload } from "./serialization-size.js";
 
 export const I4_FSYNC_RETRY_MS = 100;
 const I83_SUSPEND_DETECTION_MS = 10_000;
@@ -165,7 +185,9 @@ type LiveHistoryOrdinalSpan = {
   readonly last_sequence: number;
 };
 
-function parsePhysicalRolloutRecord(decoded: string): PhysicalRolloutRecord | undefined {
+function parsePhysicalRolloutRecord(
+  decoded: string,
+): PhysicalRolloutRecord | undefined {
   let value: unknown;
   try {
     value = JSON.parse(decoded);
@@ -176,7 +198,8 @@ function parsePhysicalRolloutRecord(decoded: string): PhysicalRolloutRecord | un
   const type = (value as { readonly type?: unknown }).type;
   if (typeof type !== "string") return undefined;
   const payload = (value as { readonly payload?: unknown }).payload;
-  if (typeof payload !== "object" || payload === null) return { type, payload: undefined };
+  if (typeof payload !== "object" || payload === null)
+    return { type, payload: undefined };
   return { type, payload: payload as Record<string, unknown> };
 }
 
@@ -360,7 +383,11 @@ function noteFailedPayloadLine(
     "compaction_source_release",
     scan.releasedAttemptIds,
   );
-  noteSchemaAttempt(record, "compaction_failed", scan.validatedFailedAttemptIds);
+  noteSchemaAttempt(
+    record,
+    "compaction_failed",
+    scan.validatedFailedAttemptIds,
+  );
   noteTerminalAttempt(
     record,
     attemptId,
@@ -908,7 +935,8 @@ export class SessionLock {
 
   acquire(options: { readonly createParent?: boolean } = {}): void {
     if (this.acquired) return;
-    if (options.createParent !== false) mkdirSync(dirname(this.lockPath), { recursive: true });
+    if (options.createParent !== false)
+      mkdirSync(dirname(this.lockPath), { recursive: true });
 
     // Retry loop: up to 2 passes. First pass may observe a stale lock
     // and reclaim; second pass resolves the O_EXCL race if two
@@ -1758,10 +1786,12 @@ export class SessionStore {
   finishOneShotFastMode(): void {
     this.oneShotFastMode = false;
     this.writeBehind.oneShotBuffering = false;
-    if (!this.flushBatch(true)) throw new Error("cannot leave fast mode without flushing its transcript");
+    if (!this.flushBatch(true))
+      throw new Error("cannot leave fast mode without flushing its transcript");
   }
   enableOneShotFastMode(): void {
-    if (!this.opened || this.closed) throw new Error("fast mode requires an open session store");
+    if (!this.opened || this.closed)
+      throw new Error("fast mode requires an open session store");
     this.oneShotFastMode = true;
     this.writeBehind.oneShotBuffering = true;
   }
@@ -1874,10 +1904,18 @@ export class SessionStore {
         "resume rollout descriptor lease does not match its path",
       );
     }
-    this.relaxedOneShotRequested = opts.relaxedOneShot === true && supportsRelaxedOneShot();
+    this.relaxedOneShotRequested =
+      opts.relaxedOneShot === true && supportsRelaxedOneShot();
     this.checkpointOneShot = opts.checkpointOneShot;
-    if (this.relaxedOneShotRequested && (opts.resume || opts.resumeRolloutPath !== undefined || this.checkpointOneShot === undefined)) {
-      throw new Error("relaxed one-shot requires a fresh run and a final SQLite checkpoint");
+    if (
+      this.relaxedOneShotRequested &&
+      (opts.resume ||
+        opts.resumeRolloutPath !== undefined ||
+        this.checkpointOneShot === undefined)
+    ) {
+      throw new Error(
+        "relaxed one-shot requires a fresh run and a final SQLite checkpoint",
+      );
     }
     this.cwd = opts.cwd;
     this.sessionId = opts.sessionId;
@@ -2004,7 +2042,10 @@ export class SessionStore {
     drainRolloutWriteBehind(this.rolloutPath);
     let resumeFdToClose: number | undefined;
     this.lock.acquire();
-    this.unregisterWriteBehind = registerSessionWriteBehind(this.rolloutPath, this.writeBehind);
+    this.unregisterWriteBehind = registerSessionWriteBehind(
+      this.rolloutPath,
+      this.writeBehind,
+    );
     try {
       if (this.explicitResumeRolloutPath || existsSync(this.rolloutPath)) {
         // Keep the no-follow descriptor open across metadata validation, tail
@@ -2020,7 +2061,8 @@ export class SessionStore {
           : undefined;
         resumeFdToClose = resumeHandle?.fd;
         assertOneShotRecoverable(this.rolloutPath, resumeHandle?.fd);
-        if (this.relaxedOneShotRequested) throw new Error("relaxed one-shot cannot reuse an existing rollout");
+        if (this.relaxedOneShotRequested)
+          throw new Error("relaxed one-shot cannot reuse an existing rollout");
         if (resumeHandle !== undefined) {
           this.resumeSourceIdentity = resumeHandle.identity;
         }
@@ -2159,15 +2201,18 @@ export class SessionStore {
         this.lastSessionMeta = sessionMeta;
       }
       if (this.relaxedOneShotRequested) {
-        if (this.degraded.isDegraded || this.pendingFsyncRetries.size > 0) throw new Error("one-shot metadata is not durably committed");
+        if (this.degraded.isDegraded || this.pendingFsyncRetries.size > 0)
+          throw new Error("one-shot metadata is not durably committed");
         this.oneShotWriter = beginOneShotWriter({
-          rolloutPath: this.rolloutPath, runId: this.sessionId,
+          rolloutPath: this.rolloutPath,
+          runId: this.sessionId,
           checkpoint: this.checkpointOneShot!,
           flushAndSync: () => {
             // Promotion is also a durability boundary: leave buffering before
             // authenticating the prefix, and keep later appends synchronous.
             if (this.oneShotFastMode) this.finishOneShotFastMode();
-            if (this.degraded.isDegraded || this.pendingFsyncRetries.size > 0) throw new Error("one-shot has unresolved persistence failures");
+            if (this.degraded.isDegraded || this.pendingFsyncRetries.size > 0)
+              throw new Error("one-shot has unresolved persistence failures");
             this.syncCanonicalTail();
           },
         });
@@ -2267,7 +2312,9 @@ export class SessionStore {
     const deferred = this.deferredFlushDiagnostics.splice(0);
     for (const d of deferred) {
       if (this.writeBehind.draining) {
-        this.writeBehind.enqueue("persistence-diagnostic", () => this.deliverDiagnostic(d));
+        this.writeBehind.enqueue("persistence-diagnostic", () =>
+          this.deliverDiagnostic(d),
+        );
       } else this.deliverDiagnostic(d);
     }
   }
@@ -2319,13 +2366,42 @@ export class SessionStore {
       const captured = structuredClone(event);
       const options = { ...opts };
       this.writeBehind.defer("canonical-event", () => {
-        const committed = withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
-          () => this.append(captured, options));
-        if (!committed) throw new Error(`durable event ${captured.msg.type} was not fsync-committed`);
+        const committed = withOneShotWriteScope(
+          dirname(dirname(this.sessionDir)),
+          this.sessionId,
+          () => this.append(captured, options),
+        );
+        if (!committed)
+          throw new Error(
+            `durable event ${captured.msg.type} was not fsync-committed`,
+          );
       });
       return true;
     }
     this.lastBoundReadProof = undefined;
+    // A clearing run_reopened is appended after the terminal it supersedes.
+    // The terminal must already be a complete journal line, or ahead of the
+    // reopen in this unflushed batch (one ordered fsync). A terminal that is
+    // only in the in-flight drain slice or the degraded ring is not that
+    // order, and the reopen is refused.
+    if (
+      event.msg.type === "run_terminal" ||
+      event.msg.type === "run_reopened"
+    ) {
+      const lifecycle = assertRunLifecycleAppendOrder(
+        this.readCurrentRolloutBytes(),
+        this.pending,
+        event,
+        this.degraded.bufferedItems(),
+        this.degraded.inFlightItems(),
+      );
+      this.lastBoundReadProof = undefined;
+      // The same terminal again writes nothing; it reports the state of the
+      // copy that already seals the epoch.
+      if (lifecycle.kind === "retry") {
+        return this.lifecycleRetryCommitted(lifecycle.sealedIn);
+      }
+    }
     // I-27: seq monotonicity check. Caller assigns via EventLog; we
     // just verify.
     if (event.seq !== undefined && event.seq <= this.lastSeqWritten) {
@@ -2403,16 +2479,30 @@ export class SessionStore {
    * Append a non-event RolloutItem (session_state / response_item /
    * compacted / turn_context). These don't carry seq so just get
    * batched and eventually flushed.
+   *
+   * `run_terminal` and `run_reopened` go through `append`, which checks
+   * lifecycle order. This path refuses them.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    if (item.type === "event_msg") {
+      const messageType = item.payload.msg.type;
+      if (messageType === "run_terminal" || messageType === "run_reopened") {
+        throw new Error(
+          `refusing to append ${messageType}: lifecycle events cannot use appendRollout`,
+        );
+      }
+    }
     if (this.oneShotFastMode) item = structuredClone(item);
     this.writeBehind.assertHealthy();
     if (this.writeBehind.deferring) {
       const captured = structuredClone(item);
       const options = { ...opts };
       this.writeBehind.defer("canonical-rollout", () => {
-        withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
-          () => this.appendRollout(captured, options));
+        withOneShotWriteScope(
+          dirname(dirname(this.sessionDir)),
+          this.sessionId,
+          () => this.appendRollout(captured, options),
+        );
       });
       return;
     }
@@ -2431,6 +2521,27 @@ export class SessionStore {
     this.pending.push(item);
     if (durable && !this.flushBatch(true)) {
       throw new Error("durable rollout item was not fsync-committed");
+    }
+  }
+
+  /**
+   * Committed state of a lifecycle event that is already held by this store.
+   * In the file: committed unless a persistence failure is unresolved. In the
+   * unflushed batch: flush it now. In the degraded queue: not committed yet.
+   */
+  private lifecycleRetryCommitted(sealedIn: RunLifecycleSource): boolean {
+    switch (sealedIn) {
+      case "journal":
+        return !this.degraded.isDegraded && this.pendingFsyncRetries.size === 0;
+      case "pending":
+        return this.flushBatch(/*durable*/ true);
+      case "inflight":
+      case "degraded":
+        return false;
+      default: {
+        const unreachable: never = sealedIn;
+        throw new Error(`unexpected lifecycle source ${String(unreachable)}`);
+      }
     }
   }
 
@@ -2580,8 +2691,11 @@ export class SessionStore {
         this.fileSize += Buffer.byteLength(lines, "utf8");
         this.trajectoryExport.writeItems(toWrite);
         try {
-          withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
-            () => this.onRolloutCommitted?.(this.rolloutPath));
+          withOneShotWriteScope(
+            dirname(dirname(this.sessionDir)),
+            this.sessionId,
+            () => this.onRolloutCommitted?.(this.rolloutPath),
+          );
         } catch {
           // The rollout is already appended. A mirror callback cannot make this
           // canonical flush fail or cause its items to be re-queued.
@@ -3851,35 +3965,143 @@ export class SessionStore {
   /** Bounded synchronous read under this store's existing lifetime writer lease.
    * Receipts are fsynced before publication; pending non-durable events need
    * not be flushed to read that committed prefix. Never takes a second lease. */
-  scanCanonicalChunks(maxBytes: number, consume: (chunk: Uint8Array) => void): void {
+  scanCanonicalChunks(
+    maxBytes: number,
+    consume: (chunk: Uint8Array) => void,
+  ): void {
     this.writeBehind.barrier();
-    if (!this.opened || this.closed) throw new Error("cannot read a closed canonical store");
+    if (!this.opened || this.closed)
+      throw new Error("cannot read a closed canonical store");
     const identity = this.canonicalSourceIdentity();
     const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
     const fd = this.openCanonicalFile(fsConstants.O_RDONLY | noFollow, 0o600);
     try {
       const before = fstatSync(fd, { bigint: true });
-      if (before.dev.toString() !== identity.dev || before.ino.toString() !== identity.ino ||
-          before.size > BigInt(maxBytes)) throw new Error("Canonical result source changed or exceeds byte limit");
+      if (
+        before.dev.toString() !== identity.dev ||
+        before.ino.toString() !== identity.ino ||
+        before.size > BigInt(maxBytes)
+      )
+        throw new Error(
+          "Canonical result source changed or exceeds byte limit",
+        );
       const chunk = Buffer.allocUnsafe(64 * 1_024);
       const size = Number(before.size);
-      for (let offset = 0; offset < size;) {
+      for (let offset = 0; offset < size; ) {
         const requested = Math.min(chunk.length, size - offset);
         const read = readSync(fd, chunk, 0, requested, offset);
-        if (read !== requested) throw new Error("Canonical result source changed during read");
+        if (read !== requested)
+          throw new Error("Canonical result source changed during read");
         consume(chunk.subarray(0, read));
         offset += read;
       }
       this.assertCanonicalFileStillBound(fd);
       const after = fstatSync(fd, { bigint: true });
       const current = this.canonicalSourceIdentity();
-      if (current.dev !== identity.dev || current.ino !== identity.ino ||
-          before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+      if (
+        current.dev !== identity.dev ||
+        current.ino !== identity.ino ||
+        before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs ||
+        before.ctimeNs !== after.ctimeNs
+      ) {
         throw new Error("Canonical result source changed during read");
       }
     } finally {
       this.closeCanonicalOperationFd(fd);
     }
+  }
+
+  /**
+   * Last complete `run_terminal` for this epoch in the committed file.
+   * A suffix that proves absence returns undefined. A suffix that cannot
+   * decide reads the whole file before the caller is allowed to treat the
+   * epoch as open. Does not see the in-flight slice, the degraded ring,
+   * or the unflushed batch.
+   */
+  readCommittedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    const lookup = this.lookupCommittedRunTerminal(runId, epoch);
+    switch (lookup.status) {
+      case "found":
+        return lookup.terminal;
+      case "absent":
+        return undefined;
+      case "undecided":
+        return canonicalRunTerminalFromItems(this.readAll(), runId, epoch);
+      default: {
+        const unreachable: never = lookup;
+        throw new Error(
+          `unexpected committed terminal lookup ${String(unreachable)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Suffix lookup only. `undecided` means the cap or a failed read, not
+   * a proof that this epoch is open.
+   */
+  lookupCommittedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CommittedRunTerminalLookup {
+    let size: number;
+    try {
+      size = this.boundRolloutSize();
+    } catch {
+      return { status: "undecided" };
+    }
+    return canonicalRunTerminalFromGrowingTail(
+      size,
+      (window) => this.readCommittedSuffix(window),
+      runId,
+      epoch,
+    );
+  }
+
+  /**
+   * Run the append-order check before `EventLog.stamp`. A refusal throws
+   * here, so a second terminal does not consume a sequence the journal
+   * will never store.
+   */
+  assertLifecycleAppendBeforeStamp(event: Event): void {
+    if (
+      event.msg.type !== "run_terminal" &&
+      event.msg.type !== "run_reopened"
+    ) {
+      return;
+    }
+    this.lastBoundReadProof = undefined;
+    assertRunLifecycleAppendOrder(
+      this.readCurrentRolloutBytes(),
+      this.pending,
+      event,
+      this.degraded.bufferedItems(),
+      this.degraded.inFlightItems(),
+    );
+    this.lastBoundReadProof = undefined;
+  }
+
+  /**
+   * `run_terminal` for this epoch that is not yet a complete fsynced line:
+   * the in-flight drain slice, the degraded ring, then the unflushed batch.
+   */
+  queuedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    return canonicalRunTerminalFromItems(
+      [
+        ...this.degraded.inFlightItems(),
+        ...this.degraded.bufferedItems(),
+        ...this.pending,
+      ],
+      runId,
+      epoch,
+    );
   }
 
   /** Read the rollout file fully and return the parsed items. */
@@ -3907,6 +4129,45 @@ export class SessionStore {
       // Intentional: caller can surface as warning.
     }
     return hydrateManifestCompactionItems(items);
+  }
+
+  private boundRolloutSize(): number {
+    if (this.resumeSourceFd !== undefined) {
+      const size = fstatSync(this.resumeSourceFd).size;
+      if (!Number.isSafeInteger(size) || size < 0) {
+        throw new Error("canonical rollout size is not a safe integer");
+      }
+      return size;
+    }
+    if (!existsSync(this.rolloutPath)) return 0;
+    const size = statSync(this.rolloutPath).size;
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error("canonical rollout size is not a safe integer");
+    }
+    return size;
+  }
+
+  private readCommittedSuffix(window: number): CommittedSuffix | undefined {
+    if (!Number.isSafeInteger(window) || window <= 0) return undefined;
+    const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
+    let fd: number | undefined;
+    try {
+      fd = this.openCanonicalFile(fsConstants.O_RDONLY | noFollow, 0o600);
+      const size = fstatSync(fd).size;
+      if (!Number.isSafeInteger(size) || size < 0) return undefined;
+      if (size === 0) return { bytes: Buffer.alloc(0), start: 0, size: 0 };
+      const useWindow = Math.min(window, size);
+      const start = size - useWindow;
+      const bytes = Buffer.allocUnsafe(useWindow);
+      const read = readSync(fd, bytes, 0, useWindow, start);
+      if (read !== useWindow) return undefined;
+      this.assertCanonicalFileStillBound(fd);
+      return { bytes: bytes.subarray(0, read), start, size };
+    } catch {
+      return undefined;
+    } finally {
+      if (fd !== undefined) this.closeCanonicalOperationFd(fd);
+    }
   }
 
   private readCurrentRolloutBytes(): Buffer {
@@ -3980,7 +4241,7 @@ export class SessionStore {
     return bytes;
   }
 
-  close(): void {
+  close(): void | Promise<void> {
     if (this.closed) return;
     const errors: unknown[] = [];
     const capture = (operation: () => void): void => {
@@ -3988,6 +4249,16 @@ export class SessionStore {
         operation();
       } catch (error) {
         errors.push(error);
+      }
+    };
+    const throwCollected = (): void => {
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(
+          errors,
+          "session store close failed while releasing canonical resources",
+          { cause: errors[0] },
+        );
       }
     };
     capture(() => this.writeBehind.finish());
@@ -3998,59 +4269,109 @@ export class SessionStore {
     capture(() => {
       if (this.pending.length > 0) this.flushBatch(true);
     });
-    // gaphunt3 #19: final best-effort drain of the degraded ring buffer
-    // before stopping its retry timer. If the disk recovered after an
-    // I-12/I-38 failure but the 30s retry tick has not yet fired, those
-    // buffered durable events (turn_complete, error, context_compacted,
-    // response_item) would otherwise be silently dropped on shutdown.
-    // Drain + one synchronous append; on persistent failure accept the
-    // loss (the disk is genuinely still unavailable).
-    capture(() => {
-      if (this.degraded.isDegraded) {
-        const remaining = this.degraded.drain();
-        if (remaining.length > 0) {
-          try {
-            const lines = remaining.map(serializeRolloutItem).join("");
-            this.writeBytesWithFsync(lines);
-            this.fileSize += Buffer.byteLength(lines, "utf8");
-            this.trajectoryExport.writeItems(remaining);
-          } catch (err) {
-            this.emitDiagnostic({
-              at: Date.now(),
-              level: "error",
-              cause: "rollout_degraded",
-              message: `${(err as { code?: string }).code ?? "unknown"} during close drain — ${remaining.length} buffered events lost`,
-            });
-          }
-        }
-      }
-    });
+    // Stop the retry timer before waiting. stop() does not drop the
+    // buffer or the slice an unsettled tryFlush is writing.
     capture(() => this.degraded.stop());
-    // Write index snapshot atomically (I-24 tmp+rename for the
-    // snapshot — the rollout body stays append-only with tail
-    // truncation). I-25 says snapshot is advisory; we still emit it
-    // as a reconstruction speedup.
-    capture(() => this.writeIndexSnapshot());
-    capture(() => this.trajectoryExport.close());
-    capture(() => {
-      if (this.resumeSourceFd === undefined) return;
-      const resumeFd = this.resumeSourceFd;
-      this.resumeSourceFd = undefined;
-      this.resumeSourceIdentity = undefined;
-      closeSync(resumeFd);
-    });
-    capture(() => this.oneShotWriter?.release());
-    capture(() => this.lock.release());
-    this.unregisterWriteBehind?.();
-    this.unregisterWriteBehind = undefined;
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) {
-      throw new AggregateError(
-        errors,
-        "session store close failed while releasing canonical resources",
-        { cause: errors[0] },
-      );
+    const finish = (): void => {
+      // gaphunt3 #19: final drain of whatever the in-flight flush did
+      // not commit. A failed fsync rolls the bytes back so a reader
+      // cannot treat them as a committed terminal.
+      capture(() => this.drainDegradedForClose());
+      // Write index snapshot atomically (I-24 tmp+rename for the
+      // snapshot — the rollout body stays append-only with tail
+      // truncation). I-25 says snapshot is advisory; we still emit it
+      // as a reconstruction speedup.
+      capture(() => this.writeIndexSnapshot());
+      capture(() => this.trajectoryExport.close());
+      capture(() => {
+        if (this.resumeSourceFd === undefined) return;
+        const resumeFd = this.resumeSourceFd;
+        this.resumeSourceFd = undefined;
+        this.resumeSourceIdentity = undefined;
+        closeSync(resumeFd);
+      });
+      capture(() => this.oneShotWriter?.release());
+      capture(() => this.lock.release());
+      this.unregisterWriteBehind?.();
+      this.unregisterWriteBehind = undefined;
+      throwCollected();
+    };
+    const flight = this.degraded.inFlightFlush();
+    if (flight === undefined) {
+      finish();
+      return;
     }
+    const settled = flight.then(finish, finish);
+    // A caller that does not await still must not crash shutdown.
+    void settled.catch(() => undefined);
+    return settled;
+  }
+
+  /**
+   * Write the degraded ring after any in-flight flush has settled.
+   * `writeBytesWithFsync` returns false when the bytes were appended
+   * but not fsynced. Those bytes are truncated away: a complete line
+   * left in the file would be projected as a committed terminal.
+   */
+  private drainDegradedForClose(): void {
+    if (!this.degraded.isDegraded) return;
+    const remaining = this.degraded.drain();
+    if (remaining.length === 0) return;
+    const lines = remaining.map(serializeRolloutItem).join("");
+    const before = this.boundRolloutSize();
+    try {
+      const committed = this.writeBytesWithFsync(lines);
+      if (!committed) {
+        try {
+          this.discardUnsyncedAppend(before);
+        } catch {
+          // The refusal below still keeps the line from being treated
+          // as committed. A truncate failure is logged with it.
+        }
+        this.emitDiagnostic({
+          at: Date.now(),
+          level: "error",
+          cause: "fsync_failed",
+          message: `fsync failed during close drain — ${remaining.length} buffered events not committed`,
+        });
+        throw new Error(
+          `close drain was not fsync-committed — ${remaining.length} buffered events not committed`,
+        );
+      }
+      this.fileSize += Buffer.byteLength(lines, "utf8");
+      this.trajectoryExport.writeItems(remaining);
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        err.message.includes("was not fsync-committed")
+      ) {
+        throw err;
+      }
+      this.emitDiagnostic({
+        at: Date.now(),
+        level: "error",
+        cause: "rollout_degraded",
+        message: `${(err as { code?: string }).code ?? "unknown"} during close drain — ${remaining.length} buffered events lost`,
+      });
+    }
+  }
+
+  /** Drop an append whose fsync did not commit, then remember that size. */
+  private discardUnsyncedAppend(size: number): void {
+    const fd = this.openCanonicalFile(fsConstants.O_WRONLY, 0o600);
+    try {
+      ftruncateSync(fd, size);
+      try {
+        this.fsyncImpl(fd);
+      } catch {
+        // Readers in this process see the truncated size. The caller
+        // surfaces the original fsync failure.
+      }
+      this.assertCanonicalFileStillBound(fd);
+    } finally {
+      this.closeCanonicalOperationFd(fd);
+    }
+    this.fileSize = size;
   }
 
   /**
