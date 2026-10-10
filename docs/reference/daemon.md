@@ -1281,12 +1281,27 @@ Continuation text depends on what was truncated:
   `reasoningOnlyRecoveryCount` resets to 0, so only unproductive
   reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
   and sent back, so the next thinking-on call is accepted.
+
+  Two research switches change this on native DeepSeek, both off by
+  default. `reasoning_cap_recovery = "escalate_thinking"` first sends the
+  same request again with thinking kept on at
+  `reasoning_cap_escalate_max_output_tokens` (default three times the
+  per-call limit, bounded by the model upper limit and the 64k escalate
+  ceiling), with no instruction appended; it is not a counted retry, emits
+  warning `reasoning_cap_escalation`, fires once per cap event, and only a
+  second cap in that retry takes the thinking-off sample above, at the
+  configured limit. `runtime_context_in_tool_results = true` carries the
+  next-step instruction, and every other runtime context that follows a
+  tool result, inside that tool result's wire message
+  (`<runtime-context>`) instead of a separate user-role message. See
+  [config.md](config.md#core-and-runtime-selection).
 - Otherwise: `Continue generating directly from where you left off…`
 
 There is no env or `config.toml` override for the 3-retry limit or the
 64_000 escalate target. Escalation runs only with no explicit budget
 (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or
-`providers.<provider>.max_output_tokens`). Distinct from
+`providers.<provider>.max_output_tokens`), except the opt-in
+`escalate_thinking` retry above. Distinct from
 `compact_failed`, `prompt_too_long_exhausted`, and streaming-fallback
 retries. Both recovery paths discard the in-flight
 `StreamingToolExecutor` (`executor_discarded` / `max_output_tokens`).

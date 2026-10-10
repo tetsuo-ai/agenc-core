@@ -36,6 +36,7 @@ import {
   type AgenCToolUseContext,
 } from "./agenc-tool-use-context.js";
 import { cloneLLMMessage, finitePositive } from "./run-turn-messages.js";
+import { supportsToolResultRuntimeContext } from "./reasoning-recovery-capability.js";
 
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 
@@ -70,7 +71,9 @@ async function prepareAgenCTurnContext(
       querySource,
       contentReplacementState: state.contentReplacementState,
     });
-    state.messagesForQuery = prepared.messages;
+    state.messagesForQuery = foldsRuntimeContextIntoToolResults(session, ctx)
+      ? restoreRuntimeContextBoundaries(messages, prepared.messages)
+      : prepared.messages;
     state.snipTokensFreed = prepared.snipTokensFreed;
     if (prepared.committed) {
       state.messages = [...state.messagesForQuery];
@@ -82,6 +85,48 @@ async function prepareAgenCTurnContext(
   // Everything below this index is the sampled batch; a retry that must drop
   // it truncates here (see removeTruncatedAssistantForRetry).
   state.messagesAtSampleStart = state.messages.length;
+}
+
+/** `runtime_context_in_tool_results` on a route whose wire folds runtime context. */
+function foldsRuntimeContextIntoToolResults(session: Session, ctx: TurnContext): boolean {
+  return session.config?.runtimeContextInToolResults === true &&
+    supportsToolResultRuntimeContext(
+      session.services.provider.name,
+      session.config?.model ?? ctx.modelInfo.slug,
+    );
+}
+
+/**
+ * The projection rebuilds every message from its runtime shape, which keeps
+ * only the durable runtime flags: a `user_context` boundary on a history
+ * message (a repeat-tool advisory, hook context, the reasoning-only cap retry
+ * instruction) does not survive it, so those messages reach the wire as plain
+ * user turns. When the wire folds runtime context into the preceding tool
+ * result, put the boundary back from canonical history. The projection maps
+ * each message to one message, so positions correspond; a projection that
+ * changed shape keeps its own messages.
+ */
+function restoreRuntimeContextBoundaries(
+  canonical: readonly LLMMessage[],
+  projected: readonly LLMMessage[],
+): LLMMessage[] {
+  if (canonical.length !== projected.length) return [...projected];
+  return projected.map((message, index) => {
+    const source = canonical[index];
+    if (
+      message.role !== "user" ||
+      source?.role !== "user" ||
+      source.runtimeOnly?.mergeBoundary !== "user_context" ||
+      source.runtimeOnly.agentInvocation !== undefined ||
+      message.runtimeOnly?.mergeBoundary !== undefined
+    ) {
+      return message;
+    }
+    return {
+      ...message,
+      runtimeOnly: { ...message.runtimeOnly, mergeBoundary: "user_context" as const },
+    };
+  });
 }
 
 function getAgenCPreparedTerminal(

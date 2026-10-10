@@ -536,6 +536,13 @@ function buildDeferredConfig(
       : {}),
     ...(modelReasoningEffort !== undefined ? { modelReasoningEffort } : {}),
     ...(config.reasoning_cap_policy !== undefined ? { reasoningCapPolicy: config.reasoning_cap_policy } : {}),
+    ...(config.reasoning_cap_recovery !== undefined ? { reasoningCapRecovery: config.reasoning_cap_recovery } : {}),
+    ...(config.reasoning_cap_escalate_max_output_tokens !== undefined
+      ? { reasoningCapEscalateMaxOutputTokens: config.reasoning_cap_escalate_max_output_tokens }
+      : {}),
+    ...(config.runtime_context_in_tool_results !== undefined
+      ? { runtimeContextInToolResults: config.runtime_context_in_tool_results }
+      : {}),
     ...(config.reasoning_summary !== undefined
       ? { modelReasoningSummary: config.reasoning_summary }
       : {}),
