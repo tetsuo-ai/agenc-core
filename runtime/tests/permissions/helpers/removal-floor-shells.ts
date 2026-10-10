@@ -135,6 +135,16 @@ const wrapperCases: FloorCase[] = [
   ["toybox rm -rf /", "rm -rf"],
   [`toybox sh -c ${REMOVE_ROOT}`, "rm -rf"],
   [`${DOWNLOAD_PIPE} setsid sh`, "curl|sh"],
+  ["ionice rm -rf /", "rm -rf"],
+  ["ionice -c3 rm -rf /", "rm -rf"],
+  ["ionice -c 3 -n 7 -- rm -rf /", "rm -rf"],
+  ["watch rm -rf /", "rm -rf"],
+  ["watch -n1 rm -rf /", "rm -rf"],
+  ["watch -n 1 'rm -rf /'", "rm -rf"],
+  ["watch -x rm -rf /", "rm -rf"],
+  ["watch --exec -- rm -rf /", "rm -rf"],
+  ["env ionice -c3 rm -rf /", "rm -rf"],
+  ["env watch -n1 'rm -rf /'", "rm -rf"],
 ];
 
 function encodedPowerShell(script: string): string {
@@ -187,6 +197,9 @@ export const INERT_SHELL_SCRIPT_COMMANDS: readonly string[] = [
   "pwsh -c 'Remove-Item ./build.log'",
   `pwsh -enc ${encodedPowerShell("Get-Date")}`,
   "setsid ls",
+  "ionice -c3 ls",
+  "watch ls",
+  "watch -n1 'echo rm -rf /'",
   "toybox --long",
   "bash script.sh -c 'rm -rf /'",
   "bash -- -c 'rm -rf /'",
