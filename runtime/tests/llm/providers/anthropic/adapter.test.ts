@@ -1032,6 +1032,7 @@ describe("AnthropicProvider", () => {
     ]);
     expect(response.finishReason).toBe("tool_calls");
     expect(response.usage).toEqual({
+      cacheInputExcludedFromPrompt: true,
       promptTokens: 11,
       completionTokens: 3,
       totalTokens: 14,
