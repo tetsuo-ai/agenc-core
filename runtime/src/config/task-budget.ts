@@ -1,9 +1,10 @@
-/** Default run allocation; explicit zero disables it in every runtime mode. */
-export const DEFAULT_TASK_TOKEN_BUDGET = 219_000;
+import { DEFAULT_TASK_BUDGET_LEVEL } from "./runtime-defaults.js";
 
 /** Named allocations. Keep numeric values centralized for measured tuning. */
 export const TASK_BUDGET_LEVELS = Object.freeze({ eco: 1_000_000, balanced: 2_400_000, max: 0 });
 export type TaskBudgetLevel = keyof typeof TASK_BUDGET_LEVELS;
+/** Default run allocation; explicit zero disables it in every runtime mode. */
+export const DEFAULT_TASK_TOKEN_BUDGET = TASK_BUDGET_LEVELS[DEFAULT_TASK_BUDGET_LEVEL];
 export function isTaskBudgetLevel(value: unknown): value is TaskBudgetLevel {
   return typeof value === "string" && Object.hasOwn(TASK_BUDGET_LEVELS, value);
 }

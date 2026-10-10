@@ -1,3 +1,4 @@
+import { taskUsageTokens, TaskBudget } from "../../../src/session/task-budget.js";
 import { describe, expect, test } from "vitest";
 import {
   parseAnthropicMessagesResponse,
@@ -146,5 +147,28 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
       (120 / 1000) * 0.003 + ((348 + 312) / 1000) * 0.015,
       6,
     );
+  });
+});
+
+
+describe("Anthropic cache-inclusive task accounting", () => {
+  test.each([
+    { input_tokens: 11, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 },
+    { input_tokens: 0, output_tokens: 5, cache_read_input_tokens: 111, cache_creation_input_tokens: 20 },
+    { input_tokens: 11, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 20,
+      cache_creation: { ephemeral_1h_input_tokens: 15 }, output_tokens_details: { thinking_tokens: 4 } },
+  ])("charges every billed token once and blocks the next call: %j", async raw => {
+    const usage = parseUsage(raw);
+    expect(usage.cacheInputExcludedFromPrompt).toBe(true);
+    expect(taskUsageTokens(usage)).toBe(136);
+    const budget = new TaskBudget(140);
+    await budget.invoke(140, async () => ({content: "ok", toolCalls: [], model: MODEL, usage}));
+    expect(budget.tokens).toBe(136);
+    await expect(budget.invoke(5, async () => { throw new Error("must not dispatch"); })).rejects.toThrow("Task budget reached");
+  });
+  test("keeps OpenAI-compatible cache counters inclusive", () => {
+    expect(taskUsageTokens({promptTokens: 131, completionTokens: 5, totalTokens: 136,
+      cachedInputTokens: 100, cacheCreationInputTokens: 20, cacheCreation1hInputTokens: 15,
+      reasoningOutputTokens: 4})).toBe(136);
   });
 });

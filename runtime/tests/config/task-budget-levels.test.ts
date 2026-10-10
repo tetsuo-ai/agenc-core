@@ -4,6 +4,7 @@ import { validateStrictAgenCConfigFields } from "../../src/config/strict-schema.
 import { readStartupCliFlags } from "../../src/bin/startup-cli-flags.js";
 import { startupConfigLayerOptions } from "../../src/bin/startup-selection.js";
 import { TASK_BUDGET_LEVELS, taskBudgetLabel } from "../../src/config/task-budget.js";
+import { DEFAULT_MODEL_VERBOSITY, DEFAULT_TASK_BUDGET_LEVEL } from "../../src/config/runtime-defaults.js";
 
 describe("named task budgets", () => {
   it.each(Object.entries(TASK_BUDGET_LEVELS))("maps %s through CLI and config layers", (name, tokens) => {
@@ -33,10 +34,12 @@ describe("named task budgets", () => {
   it("rejects unknown config levels", () => {
     expect(() => validateStrictAgenCConfigFields({ budget_level: "bad" } as never)).toThrow();
   });
-  it("labels custom caps honestly and keeps the pending default unchanged", () => {
+  it("labels custom caps and resolves the central release defaults", () => {
     expect(taskBudgetLabel(0)).toBe("max (no token cap)");
     expect(taskBudgetLabel(2_400_000)).toBe("balanced (2,400,000 tokens)");
     expect(taskBudgetLabel(219_000)).toBe("custom (219,000 tokens)");
-    expect(defaultConfig().task_token_budget).toBe(219_000);
+    expect(defaultConfig().task_token_budget).toBe(TASK_BUDGET_LEVELS[DEFAULT_TASK_BUDGET_LEVEL]);
+    expect(defaultConfig().model_verbosity).toBe(DEFAULT_MODEL_VERBOSITY);
+    expect(mergeConfigs(defaultConfig(), { model_verbosity: "high" }).model_verbosity).toBe("high");
   });
 });

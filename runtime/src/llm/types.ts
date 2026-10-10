@@ -287,6 +287,8 @@ export type LLMUsageProvenance = "provider" | "synthetic";
 
 export interface LLMUsage {
   promptTokens: number;
+  /** Anthropic reports cache reads and writes outside promptTokens. Other wires include them. */
+  readonly cacheInputExcludedFromPrompt?: true;
   completionTokens: number;
   totalTokens: number;
   /**

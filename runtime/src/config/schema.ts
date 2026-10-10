@@ -1,4 +1,5 @@
 import { DEFAULT_TASK_TOKEN_BUDGET, TASK_BUDGET_LEVELS, type TaskBudgetLevel } from "./task-budget.js";
+import { DEFAULT_MODEL_VERBOSITY } from "./runtime-defaults.js";
 // T10 Group D — AgenC config schema.
 //
 // Merges AgenC config surfaces, profile selection, and runtime additions
@@ -1168,6 +1169,7 @@ export function defaultConfig(): AgenCConfig {
     configVersion: 2,
     model: DEFAULT_BUILT_IN_PROVIDER_SELECTION.model,
     model_provider: DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider,
+    ...(DEFAULT_MODEL_VERBOSITY !== undefined ? { model_verbosity: DEFAULT_MODEL_VERBOSITY } : {}),
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
     reasoning_effort: "medium" as ReasoningEffort,

@@ -1,16 +1,17 @@
 import { createTaskBudgetProgress } from "./task-budget-progress.js";
 import { DEFAULT_TASK_TOKEN_BUDGET } from "../config/task-budget.js";
 import type { LLMMessage, LLMResponse, LLMUsage } from "../llm/types.js";
+import { billableTokenUsage } from "../llm/usage.js";
 import type { Session } from "./session.js";
 
 export class TaskBudgetReachedError extends Error {
   constructor() { super("Task budget reached"); this.name = "TaskBudgetReachedError"; }
 }
 
-/** Provider totals include reasoning and cached input; neither is added twice. */
+/** Account for provider-specific cache counters and inclusive reasoning once. */
 export function taskUsageTokens(usage: LLMUsage): number {
-  return Math.max(usage.totalTokens, usage.promptTokens + usage.completionTokens,
-    usage.promptTokens + (usage.reasoningOutputTokens ?? 0));
+  const { inputTokens, outputTokens } = billableTokenUsage(usage);
+  return inputTokens + outputTokens;
 }
 
 /** One allocation per session/run, including auxiliary and retry wire attempts. */

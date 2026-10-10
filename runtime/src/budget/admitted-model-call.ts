@@ -1,6 +1,7 @@
 /** Shared M3 boundary for logical model calls. */
 
 import type { Session } from "../session/session.js";
+import { billableTokenUsage as reconciledTokenUsage } from "../llm/usage.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -408,21 +409,6 @@ function usageCostUsd(
   };
 }
 
-function reconciledTokenUsage(usage: LLMResponse["usage"]): {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-} {
-  const outputTokens = Math.max(
-    usage.completionTokens,
-    usage.reasoningOutputTokens ?? 0,
-  );
-  const inputTokens = Math.max(
-    usage.promptTokens,
-    (usage.cachedInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0),
-    usage.totalTokens - outputTokens,
-  );
-  return { inputTokens, outputTokens };
-}
 
 function hasUnboundedPaidServerTool(options: LLMChatOptions): boolean {
   return paidServerToolNames(options).length > 0;

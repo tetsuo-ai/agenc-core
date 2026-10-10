@@ -28,7 +28,7 @@ describe("task allocation", () => {
     expect(config).toEqual({ task_token_budget: 0, task_max_calls: 0 });
     expect(() => validateStrictAgenCConfigFields({ ...defaultConfig(), ...config })).not.toThrow();
     const session = (config: object) => ({ config, services: {} }) as unknown as Session;
-    expect(taskBudgetOf(session({}))?.limit).toBe(DEFAULT_TASK_TOKEN_BUDGET);
+    expect(taskBudgetOf(session({}))?.limit).toBe(DEFAULT_TASK_TOKEN_BUDGET || undefined);
     expect(taskBudgetOf(session({ taskTokenBudget: 0, taskMaxCalls: 0 }))).toBeUndefined();
     expect(taskBudgetOf(session({ taskTokenBudget: 0, taskMaxCalls: 2 }))).toMatchObject({ limit: undefined, maxCalls: 2 });
     expect(taskBudgetOf(session({ taskTokenBudget: 5, taskMaxCalls: 0 }))).toMatchObject({ limit: 5, maxCalls: undefined });
