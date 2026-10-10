@@ -774,6 +774,12 @@ export interface LLMChatOptions {
   readonly reasoningEffort?: LLMReasoningEffort;
   /** Disable thinking for one reasoning-only output-cap recovery sample, on supported routes only. */
   readonly disableThinkingForRecovery?: true;
+  /**
+   * Carry runtime context that follows a tool result inside that tool result's
+   * wire message (chat-completions `<runtime-context>` projection), on routes
+   * whose template reads a standalone user-role reminder as a new turn.
+   */
+  readonly runtimeContextInToolResults?: true;
   /** Provider-facing reasoning-summary hint for APIs that expose it. */
   readonly reasoningSummary?: LLMReasoningSummary;
   /** Provider-facing output verbosity hint for APIs that expose it. */

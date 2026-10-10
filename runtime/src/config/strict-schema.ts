@@ -593,6 +593,12 @@ const ROOT_FIELD_VALIDATORS = {
   sandbox: delegatedObjectValidator("sandbox"),
   shell_environment_policy: validateShellEnvironmentPolicy,
   reasoning_cap_policy: enumValidator("reasoning_cap_policy", ["off", "streak2"]),
+  reasoning_cap_recovery: enumValidator("reasoning_cap_recovery", ["thinking_off", "escalate_thinking"]),
+  reasoning_cap_escalate_max_output_tokens: fieldValidator(
+    "reasoning_cap_escalate_max_output_tokens",
+    optionalPositiveInteger,
+  ),
+  runtime_context_in_tool_results: fieldValidator("runtime_context_in_tool_results", optionalBoolean),
   reasoning_effort: enumValidator("reasoning_effort", ["minimal", "low", "medium", "high", "xhigh", "max", "none"]),
   reasoning_summary: enumValidator("reasoning_summary", ["auto", "concise", "detailed", "none"]),
   approvals_reviewer: enumValidator("approvals_reviewer", ["user", "auto_review"]),
