@@ -103,6 +103,16 @@ export async function withCronStorageDirectory<Result>(
 }
 
 const OWNERSHIP_ERROR = "Cron storage must be owned by the current user and not writable by other users";
+const UNSUPPORTED_FILE_ID = 0xffff_ffff_ffff_ffffn;
+
+/**
+ * Windows reports 0 or all ones when a filesystem has no file id. Those
+ * values compare equal across files and would collide in the workspace key.
+ */
+export function hasCronFileIdentity(info: BigIntStats): boolean {
+  return info.dev > 0n && info.ino > 0n &&
+    info.dev !== UNSUPPORTED_FILE_ID && info.ino !== UNSUPPORTED_FILE_ID;
+}
 
 /**
  * Windows has no traversable directory descriptor. `.agenc` is the private
@@ -159,7 +169,7 @@ async function withWindowsCronStorageDirectory<Result>(
 
 async function assertRealDirectory(path: string, expected?: BigIntStats): Promise<BigIntStats> {
   const info = await lstat(path, { bigint: true });
-  if (!info.isDirectory() || info.isSymbolicLink() ||
+  if (!info.isDirectory() || info.isSymbolicLink() || !hasCronFileIdentity(info) ||
       (expected !== undefined && !sameIdentity(expected, info))) {
     throw new Error(OWNERSHIP_ERROR);
   }

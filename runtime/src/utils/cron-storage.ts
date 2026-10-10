@@ -14,7 +14,7 @@ import { MAX_CRON_FILE_BYTES } from "./cron-delivery-state.js";
 import { isUnsupportedDirectorySync, writeDurableAtomicFile } from "./durable-atomic-file.js";
 import { acquireLocalSqliteLock, assertLocalPrivateDirectory, type LocalSqliteLockOptions } from "./sqlite-lock.js";
 
-import { assertOwned, CRON_STORAGE_NAME, withCronStorageDirectory } from "./cron-storage-directory.js";
+import { assertOwned, CRON_STORAGE_NAME, hasCronFileIdentity, withCronStorageDirectory } from "./cron-storage-directory.js";
 export { CRON_STORAGE_NAME } from "./cron-storage-directory.js";
 
 export interface CronStorage {
@@ -55,6 +55,7 @@ export async function withCronStorage<Result>(
         const verifyWrittenFile = async (candidate: string) => {
           const current = await lstat(candidate, { bigint: true });
           if (written === undefined || !current.isFile() || current.nlink !== 1n ||
+              (process.platform === "win32" && !hasCronFileIdentity(current)) ||
               !sameIdentity(written, current)) {
             throw new Error("Cron temporary publication file was replaced or linked");
           }

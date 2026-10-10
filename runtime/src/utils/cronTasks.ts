@@ -162,6 +162,24 @@ export async function cronRestoreFailureNeedsWarning(error: unknown, dir?: strin
   }
 }
 
+/**
+ * The session scheduler loads and owns durable records only on Linux
+ * (`session-cron-scheduler.ts`). Elsewhere a stored durable task would never
+ * fire, so durable creation is refused before any write, and startup and the
+ * gateway keep reporting durable storage as unavailable. The error keeps the
+ * `DESCRIPTOR_UNSUPPORTED` code that existing callers already handle.
+ */
+export function durableCronDispatchSupported(): boolean {
+  return process.platform === "linux";
+}
+
+export function durableCronDispatchUnsupported(): Error {
+  return Object.assign(
+    new Error(`durable scheduled tasks are dispatched only on Linux, not on ${process.platform}`),
+    { code: "DESCRIPTOR_UNSUPPORTED" },
+  );
+}
+
 function parseCronTaskRecords(parsed: unknown): CronTask[] {
   if (!parsed || typeof parsed !== "object") return [];
   const file = parsed as Partial<CronFile>;
@@ -291,6 +309,7 @@ export async function mutateCronFile<Result>(
 }
 
 export async function appendCronTask(task: CronTask, dir?: string): Promise<void> {
+  if (!durableCronDispatchSupported()) throw durableCronDispatchUnsupported();
   await mutateCronFile(dir, (state) => {
     state.tasks.push(task);
   });

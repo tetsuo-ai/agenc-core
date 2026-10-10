@@ -27,7 +27,12 @@ export async function readStartupCronTasks(
   }
   assertStartupActive();
   if (!mayHavePersistedState) return [];
-  const { readCronTasks } = await import("./cronTasks.js");
+  const { durableCronDispatchSupported, durableCronDispatchUnsupported, readCronTasks } =
+    await import("./cronTasks.js");
   assertStartupActive();
-  return readCronTasks(workspaceRoot);
+  const tasks = await readCronTasks(workspaceRoot);
+  // A readable record is not an armed one. Off Linux the session scheduler
+  // drops durable records, so startup reports them instead of arming.
+  if (tasks.length > 0 && !durableCronDispatchSupported()) throw durableCronDispatchUnsupported();
+  return tasks;
 }

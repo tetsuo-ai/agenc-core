@@ -9,6 +9,7 @@ import { buildTool, type ToolDef } from "../Tool.js";
 import { cronToHuman, parseCronExpression } from "../../utils/cron.js";
 import {
   addCronTask,
+  durableCronDispatchSupported,
   getCronFilePath,
   listAllCronTasks,
   listSessionCronTasks,
@@ -141,6 +142,13 @@ export const CronCreateTool = buildTool({
         throw error;
       }
       tasks = listSessionCronTasks(conversationId);
+    }
+    if (needsDurableRead && !durableCronDispatchSupported()) {
+      return {
+        result: false,
+        message: "Durable and delivery-routed crons are dispatched only on Linux; use durable: false for a session job.",
+        errorCode: 8,
+      };
     }
     if (tasks.length >= MAX_JOBS) {
       return {

@@ -7,8 +7,11 @@ there. Windows persists scheduled tasks through the same private-path policy
 as workflow handoff storage: `.agenc` and `scheduled_tasks.json` must pass the
 current-user ACL check, identity comes from a stat of that verified path, and
 publication uses a path temporary whose inode is checked again after the
-write. This is a compatibility change. Session-only in-memory jobs do not
-require durable storage. There is no pathname fallback on macOS or Linux:
+write. This is storage groundwork only: the session scheduler loads and owns
+durable records only on Linux, so on Windows and macOS durable creation,
+including delivery-routed jobs, is refused before any write, and the gateway
+reports delivery state as unavailable. This is a compatibility change.
+Session-only in-memory jobs do not require durable storage. There is no pathname fallback on macOS or Linux:
 checks before and after an ordinary pathname write cannot undo an overwrite
 redirected during the write.
 
@@ -32,9 +35,11 @@ Only missing or malformed task records retain the empty-list behavior. Failed
 durable loads admit only the owning conversation's in-memory jobs; they do not
 dispatch durable jobs. Later rescheduling can retry after storage is repaired.
 Warnings from superseded scheduler scans are discarded. Session startup stays
-silent on a platform without descriptor-confined I/O when the workspace has no
-`.agenc/scheduled_tasks.json`: there is nothing to restore. A record that exists
-there is still reported.
+silent on macOS, and on Linux without descriptor confinement, when the
+workspace has no `.agenc/scheduled_tasks.json`. A record that exists there is
+still reported. On Windows the record can be read, and startup keeps
+`cron_storage_unavailable` until the session scheduler loads and owns that
+record.
 
 Stop **all older AgenC scheduler and gateway processes using a workspace before
 upgrading its writers**, and do the same before rolling back. Old versions use

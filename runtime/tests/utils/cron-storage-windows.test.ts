@@ -1,12 +1,19 @@
 import "../helpers/cron-os-home.js";
-import { readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { getSessionCronTasks, resetStateForTests, setProjectRoot } from "../../src/bootstrap/state.js";
+import { CronDeliveryOutboxStore } from "../../src/gateway/cron-outbox.js";
+import { EventLog } from "../../src/session/event-log.js";
+import { startSessionCronScheduler } from "../../src/session/session-cron-scheduler.js";
+import type { Session } from "../../src/session/session.js";
+import { CronCreateTool } from "../../src/tools/ScheduleCronTool/CronCreateTool.js";
 import { readStartupCronTasks } from "../../src/utils/cron-startup.js";
 import { withCronStorage } from "../../src/utils/cron-storage.js";
-import { readCronTasks } from "../../src/utils/cronTasks.js";
+import { resetCronSchedulerForTests } from "../../src/utils/cronScheduler.js";
+import { appendCronTask, cronRestoreFailureNeedsWarning, readCronTasks } from "../../src/utils/cronTasks.js";
 
 const acl = vi.hoisted(() => ({
   assertWindowsPrivatePathSecurity: vi.fn(),
@@ -19,6 +26,8 @@ const fsHooks = vi.hoisted(() => ({
   agencCreate: undefined as "eexist" | "eexist-private" | undefined,
   realpaths: [] as string[],
   opens: [] as string[],
+  openFlags: [] as Array<readonly [string, unknown]>,
+  identitySentinel: undefined as ((path: string) => boolean) | undefined,
 }));
 const privatePaths = vi.hoisted(() => new Set<string>());
 
@@ -27,8 +36,16 @@ vi.mock("../../src/agents/workflow-private-path.js", () => ({
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
+  // Windows reports 0 or all ones when a filesystem has no file id.
+  const withoutFileId = <Info extends { dev: number | bigint; ino: number | bigint }>(info: Info): Info =>
+    Object.assign(Object.create(Object.getPrototypeOf(info) as object) as Info, info,
+      typeof info.dev === "bigint" ? { dev: 0n, ino: 0n } : { dev: 0, ino: 0 });
   return {
     ...original,
+    lstat: async (...args: Parameters<typeof original.lstat>) => {
+      const info = await original.lstat(...args);
+      return fsHooks.identitySentinel?.(String(args[0])) ? withoutFileId(info) : info;
+    },
     realpath: async (...args: Parameters<typeof original.realpath>) => {
       const path = String(args[0]);
       fsHooks.realpaths.push(path);
@@ -41,6 +58,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       return original.realpath(...args);
     },
     mkdir: async (path: string, options?: { mode?: number; recursive?: boolean }) => {
+      if (path.endsWith(`${sep}.agenc`) && options?.recursive === true) {
+        // Recursive mkdir resolves for an existing directory instead of EEXIST.
+        throw new Error("recursive mkdir cannot report an existing .agenc");
+      }
       if (fsHooks.agencCreate !== undefined && path.endsWith(`${sep}.agenc`)) {
         await original.mkdir(path, options);
         if (fsHooks.agencCreate === "eexist-private") {
@@ -57,6 +78,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     open: async (...args: Parameters<typeof original.open>) => {
       const path = String(args[0]);
       fsHooks.opens.push(path);
+      fsHooks.openFlags.push([path, args[1]]);
       if (
         fsHooks.directorySyncError !== undefined &&
         args[1] === "r" &&
@@ -64,7 +86,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       ) {
         throw fsHooks.directorySyncError;
       }
-      return original.open(...args);
+      const handle = await original.open(...args);
+      if (fsHooks.identitySentinel?.(path)) {
+        const stat = handle.stat.bind(handle);
+        handle.stat = (async (options?: { bigint?: boolean }) =>
+          withoutFileId(await stat(options as never))) as typeof handle.stat;
+      }
+      return handle;
     },
   };
 });
@@ -125,6 +153,8 @@ beforeEach(async () => {
   fsHooks.agencCreate = undefined;
   fsHooks.realpaths = [];
   fsHooks.opens = [];
+  fsHooks.openFlags = [];
+  fsHooks.identitySentinel = undefined;
   root = await mkdtemp(join(tmpdir(), "agenc-cron-windows-"));
   workspace = join(root, "workspace");
   outside = join(root, "outside");
@@ -133,8 +163,17 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   fsHooks.beforeRename = undefined;
+  fsHooks.identitySentinel = undefined;
+  await resetCronSchedulerForTests();
+  resetStateForTests();
   await rm(root, { recursive: true, force: true });
 });
+
+async function cronTool(name: "CronCreate" | "CronList" | "CronDelete", session: Partial<Session>) {
+  const { createModelFacingTools } = await import("../../src/bin/model-facing-tools.js");
+  return createModelFacingTools({ workspaceRoot: workspace, getSession: () => session as Session })
+    .find((tool) => tool.name === name)!;
+}
 
 describe.skipIf(process.platform === "win32")("POSIX cron storage keeps descriptor confinement", () => {
   test.skipIf(process.platform !== "linux")("persists through descriptor handles without the Windows ACL", async () => {
@@ -142,6 +181,18 @@ describe.skipIf(process.platform === "win32")("POSIX cron storage keeps descript
     expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBe(body);
     expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
     expect((await readCronTasks(workspace)).map((entry) => entry.id)).toEqual(["kept"]);
+  });
+
+  test.skipIf(process.platform !== "linux")("keeps durable creation, startup restore, and gateway scheduling on Linux", async () => {
+    await appendCronTask({ ...taskRecord.tasks[0]!, id: "linux-kept" }, workspace);
+    expect((await readStartupCronTasks(workspace, () => {})).map((entry) => entry.id)).toEqual(["linux-kept"]);
+    await expect(new CronDeliveryOutboxStore(workspace).schedule()).resolves.toEqual([]);
+    const create = await cronTool("CronCreate", { conversationId: "linux-durable" });
+    const created = await create.execute({ cron: "* * * * *", prompt: "linux durable work", durable: true });
+    expect(created.isError).toBeFalsy();
+    expect((await readCronTasks(workspace)).map((entry) => entry.prompt))
+      .toEqual([taskRecord.tasks[0]!.prompt, "linux durable work"]);
+    expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
   });
 
   test("rejects an unavailable descriptor alias without applying the Windows fallback", async () => {
@@ -183,7 +234,7 @@ describe("Windows cron storage uses private-path persistence", () => {
     Object.defineProperty(process, "platform", platform);
   });
 
-  test("restores a record when directory descriptors are unavailable", async () => {
+  test("reads back a record when directory descriptors are unavailable", async () => {
     fsHooks.descriptorUnavailable = true;
     fsHooks.realpaths = [];
     fsHooks.opens = [];
@@ -191,7 +242,6 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(usedDescriptorAlias()).toBe(false);
     expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBe(body);
     expect((await readCronTasks(workspace)).map((entry) => entry.id)).toEqual(["kept"]);
-    expect((await readStartupCronTasks(workspace, () => {})).map((entry) => entry.id)).toEqual(["kept"]);
     const paths = acl.assertWindowsPrivatePathSecurity.mock.calls.map(([path]) => basename(String(path)));
     expect(paths).toContain(".agenc");
     expect(paths.some((name) => name.includes("scheduled_tasks.json"))).toBe(true);
@@ -364,5 +414,124 @@ describe("Windows cron storage uses private-path persistence", () => {
     };
     await expect(writeRecord()).rejects.toThrow("Cron temporary publication file was replaced or linked");
     expect(await readFile(planted, "utf8")).toBe("outside");
+  });
+
+  test("warns at startup about an existing durable record instead of arming it", async () => {
+    await writeRecord();
+    const error: unknown = await readStartupCronTasks(workspace, () => {}).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({
+      code: "DESCRIPTOR_UNSUPPORTED",
+      message: expect.stringContaining("dispatched only on Linux"),
+    });
+    expect(await cronRestoreFailureNeedsWarning(error, workspace)).toBe(true);
+    expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(body);
+  });
+
+  test("refuses durable and delivery-routed creates before writing", async () => {
+    const create = await cronTool("CronCreate", { conversationId: "windows-durable" });
+    for (const extra of [
+      { durable: true },
+      { announceChannel: "stdio", announceTo: "windows-recipient" },
+      { webhook: "https://example.invalid/hook" },
+    ]) {
+      const result = await create.execute({ cron: "* * * * *", prompt: "durable work", ...extra });
+      expect(result.isError).toBe(true);
+      expect(String(result.content)).toContain("Use durable:false");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+    setProjectRoot(workspace);
+    expect(await CronCreateTool.validateInput({
+      cron: "* * * * *", prompt: "delivery work", durable: false,
+      announceChannel: "stdio", announceTo: "windows-recipient",
+    }, { sessionId: "windows-durable" } as never)).toMatchObject({ result: false, errorCode: 8 });
+    await expect(appendCronTask({ ...taskRecord.tasks[0]!, id: "direct" }, workspace))
+      .rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    expect(await readdir(workspace)).toEqual([]);
+    expect(getSessionCronTasks()).toEqual([]);
+    expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
+  });
+
+  test("keeps session-only jobs working without durable storage", async () => {
+    const session = { conversationId: "windows-session" };
+    const created = await (await cronTool("CronCreate", session))
+      .execute({ cron: "* * * * *", prompt: "session work" });
+    expect(created.isError).toBeFalsy();
+    const id = (JSON.parse(String(created.content)) as { cron: { id: string; durable: boolean } }).cron;
+    expect(id.durable).toBe(false);
+    expect(getSessionCronTasks().map((entry) => entry.id)).toEqual([id.id]);
+    const listed = await (await cronTool("CronList", session)).execute({});
+    expect(listed.isError).toBeFalsy();
+    expect((JSON.parse(String(listed.content)) as { crons: { id: string }[] }).crons)
+      .toEqual([expect.objectContaining({ id: id.id })]);
+    const deleted = await (await cronTool("CronDelete", session)).execute({ id: id.id });
+    expect(JSON.parse(String(deleted.content))).toEqual({ deleted: true, id: id.id });
+    expect(getSessionCronTasks()).toEqual([]);
+    expect(await readdir(workspace)).toEqual([]);
+  });
+
+  test("fires a session-only job and leaves a stored durable record unarmed", async () => {
+    await writeRecord();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
+    const closes: Array<() => Promise<void>> = [];
+    const abortController = new AbortController();
+    const submit = vi.fn(async (_prompt: string, options: { onAccepted: () => Promise<void> }) => {
+      await options.onAccepted();
+    });
+    const session = {
+      conversationId: "windows-session-fire", abortController, eventLog: new EventLog(),
+      services: { mcpStartupCancellationToken: { signal: abortController.signal } },
+      nextInternalSubId: () => "windows-session-warning",
+      onBeforeDurableClose: (close: () => Promise<void>) => { closes.push(close); },
+      onTurnDriverReady: (ready: () => void) => { ready(); return () => {}; },
+      submit,
+    } as unknown as Session;
+    try {
+      const created = await (await cronTool("CronCreate", session))
+        .execute({ cron: "* * * * *", prompt: "session work", recurring: false });
+      expect(created.isError).toBeFalsy();
+      const scheduler = await startSessionCronScheduler(session, workspace);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await scheduler.drain();
+      expect(submit).toHaveBeenCalledExactlyOnceWith("session work", expect.objectContaining({
+        onAccepted: expect.any(Function),
+      }));
+      expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(body);
+    } finally {
+      await Promise.all(closes.map((close) => close()));
+      vi.useRealTimers();
+    }
+  });
+
+  test("keeps gateway delivery off a readable durable record", async () => {
+    await writeRecord();
+    await expect(new CronDeliveryOutboxStore(workspace).schedule()).rejects.toMatchObject({
+      code: "DESCRIPTOR_UNSUPPORTED",
+      message: expect.stringContaining("dispatched only on Linux"),
+    });
+    expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(body);
+  });
+
+  test("creates the publication temporary exclusively", async () => {
+    await writeRecord();
+    const temporaries = fsHooks.openFlags
+      .filter(([path]) => /scheduled_tasks\.json\.[^/\\]+\.tmp$/u.test(path));
+    expect(temporaries).toHaveLength(1);
+    const flags = Number(temporaries[0]![1]);
+    expect(flags & constants.O_EXCL).toBe(constants.O_EXCL);
+    expect(flags & constants.O_CREAT).toBe(constants.O_CREAT);
+  });
+
+  test("rejects a workspace and metadata directory that report no file id", async () => {
+    fsHooks.identitySentinel = (path) => path.endsWith(`${sep}workspace`) || path.endsWith(`${sep}.agenc`);
+    await expect(writeRecord()).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(await readdir(workspace)).not.toContain("scheduled_tasks.json");
+    expect(await readdir(join(workspace, ".agenc")).catch(() => [])).not.toContain("scheduled_tasks.json");
+  });
+
+  test("rejects a publication temporary that reports no file id", async () => {
+    fsHooks.identitySentinel = (path) => /scheduled_tasks\.json(?:\.[^/\\]+\.tmp)?$/u.test(path);
+    await expect(writeRecord()).rejects.toThrow("Cron temporary publication file was replaced or linked");
+    expect(await readdir(metadataDirectory())).not.toContain("scheduled_tasks.json");
   });
 });

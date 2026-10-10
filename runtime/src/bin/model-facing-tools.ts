@@ -4817,7 +4817,7 @@ function createCronAndWorkflowTools(
         if (!validateCron(schedule)) {
           return cronRefusal("CronCreate", "cron expression must have five fields");
         }
-        const { addCronTask, nextCronRunMs, normalizeDelivery, readCronFile } =
+        const { addCronTask, durableCronDispatchSupported, nextCronRunMs, normalizeDelivery, readCronFile } =
           await import("../utils/cronTasks.js");
         if (nextCronRunMs(schedule, Date.now()) === null) {
           return cronRefusal("CronCreate", `invalid cron expression: ${schedule}`);
@@ -4844,6 +4844,9 @@ function createCronAndWorkflowTools(
         const sessionOnly = readToolRuntimeContext(args)?.sandboxMode === "workspace_write";
         if (sessionOnly && durable) {
           return refusal({ error: "Sandboxed CronCreate supports session-only jobs; durable and delivery jobs require filesystem authority" });
+        }
+        if (durable && !durableCronDispatchSupported()) {
+          return cronRefusal("CronCreate", DURABLE_CRON_UNSUPPORTED);
         }
         if (durable) {
           // A read failure precedes any schedule change. Once addCronTask
