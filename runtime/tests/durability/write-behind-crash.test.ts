@@ -24,6 +24,22 @@ function launch(args: string[]) {
   return { child, result };
 }
 
+function expectOnlyStoreTimingDiagnostics(stderr: string): void {
+  // Store timing is host-dependent and is deliberately outside the journal.
+  // Reject all other stderr, while preserving the crash/recovery assertions.
+  for (const line of stderr.split("\n").filter(Boolean)) {
+    const match = /^agenc: slow_store_op (.+)$/.exec(line);
+    expect(match).not.toBeNull();
+    const warning = JSON.parse(match![1]!);
+    expect(warning).toEqual({
+      label: expect.stringMatching(/^(rollout_flush_(durable|batch)|canonical_rollout_scan)$/),
+      ms: expect.any(Number),
+    });
+    expect(Number.isInteger(warning.ms)).toBe(true);
+    expect(warning.ms).toBeGreaterThanOrEqual(50);
+  }
+}
+
 describe("write-behind process death", () => {
   it.each([
     ["before-flush", "events"], ["after-flush", "events"],
@@ -47,11 +63,11 @@ describe("write-behind process death", () => {
       const crash = launch(["crash", root, `http://127.0.0.1:${address.port}/v1`, mode!]);
       child = crash.child;
       const died = await crash.result;
-      expect(died.stderr).toBe("");
+      expectOnlyStoreTimingDiagnostics(died.stderr);
       expect(died.signal).toBe("SIGKILL");
       expect(requests).toBe(1);
       const recovered = await launch(["recover", root]).result;
-      expect(recovered.stderr).toBe("");
+      expectOnlyStoreTimingDiagnostics(recovered.stderr);
       expect(recovered.code).toBe(0);
       const report = JSON.parse(recovered.stdout.trim().split("\n").at(-1)!);
       expect(report.events)
