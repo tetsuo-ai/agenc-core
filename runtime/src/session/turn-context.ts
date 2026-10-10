@@ -477,6 +477,12 @@ export type SessionSource =
 export interface Config {
   readonly bypassFastMode?: boolean;
   readonly reasoningCapPolicy?: "off" | "streak2";
+  /** Research: reasoning-only cap recovery on native DeepSeek (`reasoning_cap_recovery`). */
+  readonly reasoningCapRecovery?: "thinking_off" | "escalate_thinking";
+  /** Research: ceiling of the thinking-on retry (`reasoning_cap_escalate_max_output_tokens`). */
+  readonly reasoningCapEscalateMaxOutputTokens?: number;
+  /** Research: runtime context rides inside the preceding tool result on native DeepSeek. */
+  readonly runtimeContextInToolResults?: boolean;
   readonly agents?: import("../config/schema.js").AgentsConfig;
   readonly model: string;
   readonly modelVerbosity?: "low" | "medium" | "high";

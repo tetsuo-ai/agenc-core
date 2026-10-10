@@ -880,6 +880,27 @@ export interface AgenCConfig {
   readonly reasoning_effort?: ReasoningEffort;
   /** Experimental bounded native cap recovery extension. Default: off. */
   readonly reasoning_cap_policy?: "off" | "streak2";
+  /**
+   * Research switch: how a reasoning-only output cap on native DeepSeek is
+   * recovered. `thinking_off` (default) retries once with thinking disabled;
+   * `escalate_thinking` first retries the same request with thinking kept on
+   * at a larger output ceiling, and only a second cap takes the thinking-off
+   * retry. Unsupported routes are unaffected.
+   */
+  readonly reasoning_cap_recovery?: "thinking_off" | "escalate_thinking";
+  /**
+   * Output ceiling of the thinking-on retry `escalate_thinking` sends.
+   * Default: three times the per-call limit, bounded by the model's upper
+   * limit and the 64k escalate ceiling.
+   */
+  readonly reasoning_cap_escalate_max_output_tokens?: number;
+  /**
+   * Research switch: on native DeepSeek, carry runtime context that follows a
+   * tool result (per-turn reminders, advisories, the reasoning-only cap retry
+   * instruction) inside that tool result's wire message instead of as a
+   * separate user-role message. Default: false.
+   */
+  readonly runtime_context_in_tool_results?: boolean;
   readonly reasoning_summary?: ReasoningSummary;
   readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
@@ -1043,6 +1064,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "shell_environment_policy",
   "reasoning_effort",
   "reasoning_cap_policy",
+  "reasoning_cap_recovery",
+  "reasoning_cap_escalate_max_output_tokens",
+  "runtime_context_in_tool_results",
   "reasoning_summary",
   "approvals_reviewer",
   "model_verbosity",

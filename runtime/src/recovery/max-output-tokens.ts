@@ -32,6 +32,7 @@ import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import { supportsThinkingOffRecovery } from "../session/session-reasoning-effort.js";
+import { supportsToolResultRuntimeContext } from "../session/reasoning-recovery-capability.js";
 import type { TurnState } from "../session/turn-state.js";
 import { isAttachmentMessage } from "../session/attachment-retention.js";
 import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
@@ -39,7 +40,10 @@ import {
   appendTerminalToolResults,
   buildTerminalToolResult,
 } from "./terminal-tool-result.js";
-import { ESCALATED_MAX_OUTPUT_TOKENS } from "../llm/openai-compatible-token-limits.js";
+import {
+  DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
+  ESCALATED_MAX_OUTPUT_TOKENS,
+} from "../llm/openai-compatible-token-limits.js";
 import {
   classifyUntrustedToolResult,
   frameUntrustedToolResultContent,
@@ -70,12 +74,73 @@ export type MaxOutputTokensOutcome =
   | { readonly kind: "exhausted"; readonly reason: string }
   | { readonly kind: "not_applicable" };
 
+/**
+ * The one thinking-on retry `reasoning_cap_recovery = "escalate_thinking"`
+ * sends after a reasoning-only cap: the same request, thinking kept on, at a
+ * larger output ceiling. Not a counted retry; a second cap in that sample
+ * takes the ordinary thinking-off continuation.
+ */
+export interface ReasoningCapEscalation {
+  readonly maxOutputTokens: number;
+  /** The per-call limit the capped sample ran under, for telemetry. */
+  readonly fromMaxOutputTokens?: number;
+}
+
+/** Default multiple of the per-call output limit for the thinking-on retry. */
+export const REASONING_CAP_ESCALATION_FACTOR = 3;
+
+function positiveInteger(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
+/**
+ * The thinking-on retry budget, or undefined when the mode is off or no
+ * larger budget exists: `reasoning_cap_escalate_max_output_tokens`, else
+ * three times the per-call limit, bounded by the model's upper limit and the
+ * 64k escalate ceiling. A budget that does not exceed the per-call limit
+ * cannot help and disables the retry.
+ */
+export function resolveReasoningCapEscalation(
+  config:
+    | {
+        readonly reasoningCapRecovery?: "thinking_off" | "escalate_thinking";
+        readonly reasoningCapEscalateMaxOutputTokens?: number;
+      }
+    | undefined,
+  modelInfo: {
+    readonly maxOutputTokens?: number;
+    readonly maxOutputTokensUpperLimit?: number;
+  },
+): ReasoningCapEscalation | undefined {
+  if (config?.reasoningCapRecovery !== "escalate_thinking") return undefined;
+  const limit = positiveInteger(modelInfo.maxOutputTokens);
+  const target =
+    positiveInteger(config.reasoningCapEscalateMaxOutputTokens) ??
+    (limit !== undefined ? limit * REASONING_CAP_ESCALATION_FACTOR : undefined);
+  if (target === undefined) return undefined;
+  const upper = Math.min(
+    ESCALATED_MAX_OUTPUT_TOKENS,
+    positiveInteger(modelInfo.maxOutputTokensUpperLimit) ??
+      DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
+  );
+  const maxOutputTokens = Math.min(target, upper);
+  if (limit !== undefined && maxOutputTokens <= limit) return undefined;
+  return {
+    maxOutputTokens,
+    ...(limit !== undefined ? { fromMaxOutputTokens: limit } : {}),
+  };
+}
+
 export interface RunMaxOutputTokensOpts {
   readonly session: Session;
   readonly state: TurnState;
   /** Whether this call should retry the same request at the escalated ceiling. */
   readonly escalateAllowed?: boolean;
   readonly escalatedMaxOutputTokens?: number;
+  /** Present only with `reasoning_cap_recovery = "escalate_thinking"` on a supported route. */
+  readonly reasoningCapEscalation?: ReasoningCapEscalation;
 }
 
 /**
@@ -391,6 +456,29 @@ function appendTerminalExecutorClosureHistory(
   });
 }
 
+/**
+ * The next-step instruction after a reasoning-only cap. With
+ * `runtime_context_in_tool_results` on native DeepSeek it is runtime context:
+ * the wire carries it inside the preceding tool result instead of as a new
+ * user turn, which that route reads as a fresh request. Canonical history
+ * keeps the message either way.
+ */
+function reasoningOnlyRetryMessage(session: Session): LLMMessage {
+  const asRuntimeContext =
+    session.config?.runtimeContextInToolResults === true &&
+    supportsToolResultRuntimeContext(
+      session.services?.provider?.name ?? "",
+      session.config?.model ?? "",
+    );
+  return {
+    role: "user",
+    content: RETRY_REASONING_ONLY_CONTENT,
+    ...(asRuntimeContext
+      ? { runtimeOnly: { mergeBoundary: "user_context" as const } }
+      : {}),
+  };
+}
+
 function removeTruncatedAssistantForRetry(state: TurnState): void {
   // Escalation retries the same request with a larger output ceiling. Do not
   // carry the truncated assistant/tool batch into that retry: cut the durable
@@ -455,24 +543,6 @@ export function runMaxOutputTokensRecovery(
   const referencedHandoffsOnly = truncatedTools &&
     canReferenceMessage && state.truncatedToolCallNames!.every(name => name === "spawn_agent");
   const escalateAllowed = opts.escalateAllowed !== false && !referencedHandoffsOnly;
-
-  // Step 1: escalate path — first attempt, override unset.
-  if (overrideUnset && escalateAllowed) {
-    qualifyReasoningCapRecovery(state, reasoningOnly && supportsThinkingOffRecovery(
-      session.services?.provider?.name ?? "", session.config?.model ?? "",
-    ));
-    state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
-    state.maxOutputTokensOverride =
-      opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
-    state.transition = { reason: "max_output_tokens_escalate" };
-    discardExecutorForMaxOutputTokens(session, state);
-    removeTruncatedAssistantForRetry(state);
-    if (reasoningOnly) {
-      state.messages.push({ role: "user", content: RETRY_REASONING_ONLY_CONTENT });
-    }
-    return { kind: "escalate" };
-  }
-
   // Visible-output and truncated-tool retries retain their cumulative budget.
   // Only native thinking-off recovery spending can be forgiven after a
   // completed productive recovery sample. Mixed unproductive retries still
@@ -480,25 +550,83 @@ export function runMaxOutputTokensRecovery(
   const reasoningRecovery = reasoningOnly && supportsThinkingOffRecovery(
     session.services?.provider?.name ?? "", session.config?.model ?? "",
   );
+
+  // Step 0: `reasoning_cap_recovery = "escalate_thinking"` — the same request
+  // again with thinking kept on at a larger ceiling, no instruction appended.
+  // The capped sample's reasoning is not in history (its message carries no
+  // text and no tool call), so the retry is where that step gets the room it
+  // needed. Once per cap event: a second cap in the retry sees the override
+  // still set, and a cap during the counted thinking-off retries sees their
+  // count; both take the ordinary thinking-off continuation below. A
+  // productive sample resets that count, so a later cap escalates again.
+  if (
+    overrideUnset &&
+    reasoningRecovery &&
+    (state.reasoningOnlyRecoveryCount ?? 0) === 0 &&
+    opts.reasoningCapEscalation !== undefined
+  ) {
+    qualifyReasoningCapRecovery(state, false);
+    state.reasoningOnlyRecoveryPending = undefined;
+    state.maxOutputTokensOverride = opts.reasoningCapEscalation.maxOutputTokens;
+    state.transition = { reason: "max_output_tokens_escalate" };
+    discardExecutorForMaxOutputTokens(session, state);
+    removeTruncatedAssistantForRetry(state);
+    emitWarning(
+      session.eventLog,
+      session.nextInternalSubId(),
+      "reasoning_cap_escalation",
+      JSON.stringify({
+        ...(opts.reasoningCapEscalation.fromMaxOutputTokens !== undefined
+          ? { fromMaxOutputTokens: opts.reasoningCapEscalation.fromMaxOutputTokens }
+          : {}),
+        toMaxOutputTokens: opts.reasoningCapEscalation.maxOutputTokens,
+        reasoningOutputTokens: state.lastResponseUsage?.reasoningOutputTokens ?? 0,
+        scope: "reasoning_only_output_cap_thinking_retry",
+      }),
+    );
+    return { kind: "escalate" };
+  }
+
+  // Step 1: escalate path — first attempt, override unset.
+  if (overrideUnset && escalateAllowed) {
+    qualifyReasoningCapRecovery(state, reasoningRecovery);
+    state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
+    state.maxOutputTokensOverride =
+      opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
+    state.transition = { reason: "max_output_tokens_escalate" };
+    discardExecutorForMaxOutputTokens(session, state);
+    removeTruncatedAssistantForRetry(state);
+    if (reasoningOnly) {
+      state.messages.push(reasoningOnlyRetryMessage(session));
+    }
+    return { kind: "escalate" };
+  }
+
   const spent = state.maxOutputTokensRecoveryCount + (state.reasoningOnlyRecoveryCount ?? 0);
   if (spent < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
-    qualifyReasoningCapRecovery(state, reasoningOnly && supportsThinkingOffRecovery(
-      session.services?.provider?.name ?? "", session.config?.model ?? "",
-    ));
+    qualifyReasoningCapRecovery(state, reasoningRecovery);
     state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     discardExecutorForMaxOutputTokens(session, state, {
       appendCompletedHistory: true,
     });
-    const metaMessage: LLMMessage = {
-      role: "user",
-      content: truncatedTools
-        ? RETRY_TRUNCATED_TOOL_CONTENT + (canReferenceMessage && state.truncatedToolCallNames!.includes("spawn_agent")
-          ? RETRY_REFERENCED_HANDOFF_CONTENT : "")
-        : reasoningOnly ? RETRY_REASONING_ONLY_CONTENT : RESUME_META_CONTENT,
-    };
+    const metaMessage: LLMMessage = truncatedTools
+      ? {
+          role: "user",
+          content: RETRY_TRUNCATED_TOOL_CONTENT + (canReferenceMessage && state.truncatedToolCallNames!.includes("spawn_agent")
+            ? RETRY_REFERENCED_HANDOFF_CONTENT : ""),
+        }
+      : reasoningOnly
+        ? reasoningOnlyRetryMessage(session)
+        : { role: "user", content: RESUME_META_CONTENT };
     state.messages.push(metaMessage);
     if (reasoningRecovery) {
       state.reasoningOnlyRecoveryCount = (state.reasoningOnlyRecoveryCount ?? 0) + 1;
+      // The thinking-on retry already ran at the larger ceiling and capped
+      // again; the thinking-off sample runs at the configured limit, exactly
+      // as it does without the mode.
+      if (opts.reasoningCapEscalation !== undefined) {
+        state.maxOutputTokensOverride = undefined;
+      }
     } else {
       state.maxOutputTokensRecoveryCount += 1;
     }

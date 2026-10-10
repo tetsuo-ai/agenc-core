@@ -82,6 +82,7 @@ import {
 } from "../llm/provider-trace-sink.js";
 import { getAgencHomeDir } from "../session/session-store.js";
 import { resolveMainLoopReasoningEffort, supportsThinkingOffRecovery } from "../session/session-reasoning-effort.js";
+import { supportsToolResultRuntimeContext } from "../session/reasoning-recovery-capability.js";
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -313,6 +314,10 @@ export function buildProviderOptions(
       session.services.provider.name,
       session.config?.model ?? ctx.modelInfo.slug,
     ) ? { disableThinkingForRecovery: true as const } : {}),
+    ...(session.config?.runtimeContextInToolResults === true && supportsToolResultRuntimeContext(
+      session.services.provider.name,
+      session.config?.model ?? ctx.modelInfo.slug,
+    ) ? { runtimeContextInToolResults: true as const } : {}),
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
     responseDetailOverride: ctx.responseDetailOverride ?? undefined,

@@ -472,6 +472,13 @@ thinking disabled. If it returns a tool call or a final answer,
 reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
 and sent back, so the next thinking-on call is accepted.
 
+Two opt-in research switches (`reasoning_cap_recovery = "escalate_thinking"`,
+`runtime_context_in_tool_results`) change the native DeepSeek path: one
+thinking-on retry of the same request at a larger ceiling before the
+thinking-off sample, and runtime context carried inside the preceding tool
+result instead of a user-role message. Both default off; see
+[config.md](reference/config.md#core-and-runtime-selection).
+
 Operator runbook:
 [daemon.md](reference/daemon.md#max-output-tokens-recovery).
 
