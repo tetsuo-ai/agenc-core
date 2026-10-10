@@ -3385,9 +3385,9 @@ async function* runTurnKernelInner(
       return cancelledAfterSampling.terminal;
     }
 
-    // Actual provider usage can exceed the admitted estimate. Drain the
-    // admitted tool work and finish before recovery or compaction spends more.
-    if (taskBudget?.reached) {
+    // Finish only after tool blocks from the admitted response are dispatched.
+    // Pending blocks are handled below, before the post-tool budget check.
+    if (taskBudget?.reached && state.toolUseBlocks.length === 0) {
       yield await finishTaskBudget();
       return { reason: "task_budget" };
     }
@@ -3871,6 +3871,13 @@ async function* runTurnKernelInner(
     });
     for (const event of drainedQueuedCommandEvents) {
       yield event;
+    }
+
+    // Actual usage may have crossed the cap. Tool results are now available;
+    // persist them with the partial summary instead of attempting compaction.
+    if (taskBudget?.reached) {
+      yield await finishTaskBudget();
+      return { reason: "task_budget" };
     }
 
     const postToolAutoCompactLimit =
