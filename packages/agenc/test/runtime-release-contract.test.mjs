@@ -37,7 +37,10 @@ test("get.agenc.ag source preserves the landing page and release routes", () => 
     new URL("../../../packaging/get-agenc-ag/vercel.json", import.meta.url),
     "utf8",
   ));
-  assert.deepEqual(Object.keys(config).sort(), ["headers", "redirects"]);
+  assert.deepEqual(Object.keys(config).sort(), ["git", "headers", "redirects"]);
+  assert.deepEqual(config.git, {
+    deploymentEnabled: { "feat/agenc-login-model-access-20260910": false },
+  });
   assert.deepEqual(config.redirects, [
     {
       source: "/install.sh",
