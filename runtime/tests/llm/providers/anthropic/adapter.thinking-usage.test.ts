@@ -10,6 +10,7 @@ const EXAMPLE_USAGE = {
   output_tokens_details: { thinking_tokens: 312 },
 } as const;
 const EXPECTED_USAGE = {
+  cacheInputExcludedFromPrompt: true,
   promptTokens: 120,
   completionTokens: 348,
   totalTokens: 468,
