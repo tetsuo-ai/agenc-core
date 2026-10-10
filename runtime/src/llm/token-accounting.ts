@@ -123,7 +123,11 @@ export function conservativeBytesPerToken(
   });
   // An unmatched endpoint tells us nothing, and DEFAULT_BYTES_PER_TOKEN is a
   // guess, not a bound. Hold the floor for those.
-  if (config.modelFamily === "unknown") {
+  // The catalog's prose ratio (3.5 bytes/token for DeepSeek) undercounted
+  // dense structured input in observed provider receipts. Use the conservative
+  // fallback floor there, including first calls before empirical calibration.
+  // This remains an estimate; reconciliation must never treat it as a cap.
+  if (config.modelFamily === "unknown" || config.modelFamily === "deepseek") {
     return TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN;
   }
   return Math.max(TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN, config.bytesPerToken);

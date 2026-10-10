@@ -2565,12 +2565,23 @@ export class ExecutionAdmissionRepository {
            LIMIT 1`,
         )
         .get(reservationId) !== undefined;
-      overrun =
-        input.kind === "provider_overrun" ||
-        (hasHardBudgetCap &&
-          (actualTokens > reservation.reserved_tokens ||
-            (actualCostNanos !== null &&
-              actualCostNanos > reservation.reserved_cost_nanos)));
+      const hasHardCostCap = !this.#capturedAdmission && this.#driver
+        .prepareState<[string], { readonly capped: number }>(
+          `SELECT 1 AS capped FROM execution_admission_reservation_allocations AS link
+           JOIN execution_admission_allocations AS allocation ON allocation.scope_key = link.scope_key
+           WHERE link.reservation_id = ? AND allocation.max_cost_nanos IS NOT NULL LIMIT 1`,
+        ).get(reservationId) !== undefined;
+      // A model token reservation is an estimate, not an additional task cap.
+      // Charge known actual usage atomically and release the hold even when the
+      // estimate was low. Future admission checks the shared allocation total;
+      // the task loop drains admitted tools and reports a normal budget stop.
+      // Explicit overruns, tool contracts and monetary caps keep their existing
+      // fail-closed behavior. Unknown monetary usage also retains that contract.
+      const reconcileModelEstimate = request.kind === "model_turn" && actualCostNanos !== null;
+      overrun = input.kind === "provider_overrun" ||
+        (hasHardBudgetCap && !reconcileModelEstimate && actualTokens > reservation.reserved_tokens) ||
+        ((reconcileModelEstimate ? hasHardCostCap : hasHardBudgetCap) &&
+          actualCostNanos !== null && actualCostNanos > reservation.reserved_cost_nanos);
       if (actualCostNanos === null && !overrun) {
         finalStatus = "held_unknown";
         event = "held_unknown";

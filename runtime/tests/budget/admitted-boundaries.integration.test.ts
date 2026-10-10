@@ -394,7 +394,6 @@ describe("admitted execution boundaries with the durable kernel", () => {
   });
 
   it.each([
-    { maxTokens: 10_000 },
     { maxCostUsd: 0.01 },
   ])("makes a provider overrun explicit under %j and locks future descendants", async (limits) => {
     const client = kernel.bindClient({
@@ -693,4 +692,23 @@ describe("admitted execution boundaries with the durable kernel", () => {
       }),
     ).rejects.toMatchObject({ reason: "parent_cancel_locked" });
   });
+});
+
+
+it.each([{delta:1,finishReason:"stop" as const},{delta:300,finishReason:"stop" as const},{delta:170,finishReason:"length" as const}])("reconciles model reservation drift $delta on $finishReason without aborting", async ({delta,finishReason}) => {
+  const client = kernel.bindClient({cwd,scope:{runId:"drift",sessionId:"drift",autonomous:false,maxTokens:20000}});
+  const session = sessionFor(client);
+  let actual = 0;
+  const result = await runAdmittedModelCall({session,provider,messages:[{role:"user",content:"hello"}],options:{maxOutputTokens:256},stepId:"drift-one",model:"grok-4.5",providerName:"grok",invoke:async options => {
+    const promptTokens = options.accountedInputTokens! + delta;
+    const completionTokens = options.maxOutputTokens!;
+    actual = promptTokens + completionTokens;
+    return {...modelResponse({promptTokens,completionTokens,totalTokens:actual,reasoningOutputTokens:completionTokens-1}),finishReason};
+  }});
+  expect(result.finishReason).toBe(finishReason);
+  expect(client.getTaskBudgetUsage?.()).toMatchObject({tokens:actual,calls:1});
+  expect(session.abortTerminal).not.toHaveBeenCalled();
+  expect(session.services.agentControl.shutdownAgentTree).not.toHaveBeenCalled();
+  const next = await client.acquire({stepId:"drift-next",kind:"model_turn",maxInputTokens:10,maxOutputTokens:10,maxCostUsd:0.001});
+  client.void(next.reservation.reservationId,"fixture_complete");
 });

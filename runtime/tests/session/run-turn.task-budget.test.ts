@@ -49,3 +49,19 @@ it.each(["stop", "length"] as const)("retains the last admitted answer when fini
   expect(phases.at(-1)).toMatchObject({ content: expect.stringContaining(content) });
   if (finishReason === "length") expect(phases.at(-1)).toMatchObject({ stopReason: "task_budget" });
 });
+
+
+it("drains the final tool and summarizes when actual usage crosses the token cap", async () => {
+  const provider = mkProvider(); let calls=0; let completed=false;
+  provider.chatStream = async (): Promise<LLMResponse> => {
+    calls++;
+    return {content:"A check is running.",toolCalls:[{id:"last",name:"probe",arguments:"{}"}],model:"test-model",finishReason:"tool_calls",
+      usage:{promptTokens:100000,completionTokens:1,totalTokens:100001,availability:"reported",provenance:"provider"}};
+  };
+  const registry = {tools:[{name:"probe",description:"check",inputSchema:{type:"object"},requiresApproval:false,recoveryCategory:"idempotent",execute:async()=>{await Promise.resolve();completed=true;return {content:"passed",isError:false};}}],toLLMTools:()=>[],dispatch:async()=>({content:"",isError:false})} as unknown as ToolRegistry;
+  const {session}=mkSession({provider,registry});Object.assign(session.config,{taskTokenBudget:100000});
+  const phases:PhaseEvent[]=[];
+  for await(const phase of runTurn(session,mkCtx(),"Check")) phases.push(phase);
+  expect(calls).toBe(1);expect(completed).toBe(true);
+  expect(phases.at(-1)).toMatchObject({stopReason:"task_budget",content:expect.stringContaining("100001 tokens")});
+});

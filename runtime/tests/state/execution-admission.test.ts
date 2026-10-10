@@ -599,7 +599,7 @@ describe("ExecutionAdmissionRepository", () => {
     expect(claimReservation(admissionRecordKey(child.step)).reservationId).toBeTruthy();
   });
 
-  it("honors a durable parent cap even when the child request omits the limit", () => {
+  it("reconciles a model estimate miss under an inherited parent cap", () => {
     const parent = request("capped-parent", "first", {
       scopes: [{ key: "parent-cap", maxTokens: 1000 }],
     });
@@ -615,7 +615,7 @@ describe("ExecutionAdmissionRepository", () => {
     admissions.markDispatched(lease.reservationId);
     expect(admissions.reconcile(lease.reservationId, {
       kind: "reported", usage: { inputTokens: 7, outputTokens: 4, costUsd: 0.001 },
-    })).toMatchObject({ outcome: "provider_overrun" });
+    })).toMatchObject({ outcome: "reconciled" });
   });
 
   it("makes provider overrun explicit, blocks the allocation, and cancels descendants", () => {
@@ -1172,4 +1172,35 @@ describe("durable admission limit dimensions", () => {
       details: { budgetDimension: "tokens", allocationKey: "root" },
     });
   });
+});
+
+
+it.each([1, 300])("charges a %i token estimate miss once and preserves shared capacity across recovery", delta => {
+  const scopes = [{ key: "model-estimate-root", maxTokens: 1000 }];
+  const first = request("estimate-run", "first", { input: 20, output: 20, scopes });
+  admissions.enqueue(first);
+  const lease = claimReservation(admissionRecordKey(first.step));
+  admissions.markDispatched(lease.reservationId);
+  const settlement = { kind: "reported" as const, usage: { inputTokens: 20 + delta, outputTokens: 20, costUsd: 0.005 } };
+  expect(admissions.reconcile(lease.reservationId, settlement)).toMatchObject({ outcome: "reconciled" });
+  expect(admissions.reconcile(lease.reservationId, settlement)).toMatchObject({ outcome: "duplicate" });
+  expect(admissions.listAllocations()[0]).toMatchObject({ usedTokens: 40 + delta, heldTokens: 0, blockedByProviderOverrun: false });
+  admissions.recover({ now: T1 });
+  expect(admissions.listAllocations()[0]).toMatchObject({ usedTokens: 40 + delta, heldTokens: 0, blockedByProviderOverrun: false });
+  const child = request("estimate-child", "next", { parentRunId: "estimate-run", scopes: [{key:"estimate-child",parentKey:"model-estimate-root"}] });
+  admissions.enqueue(child);
+  expect(claimReservation(admissionRecordKey(child.step)).reservationId).toBeTruthy();
+});
+
+it("charges actual tokens above the task cap and denies the next model without cancelling admitted work", () => {
+  const scopes = [{ key: "actual-cap", maxTokens: 100 }];
+  const first = request("cap-run", "first", { input: 20, output: 20, scopes });
+  admissions.enqueue(first);
+  const lease = claimReservation(admissionRecordKey(first.step));
+  admissions.markDispatched(lease.reservationId);
+  expect(admissions.reconcile(lease.reservationId, {kind:"reported",usage:{inputTokens:101,outputTokens:20,costUsd:0.005}})).toMatchObject({outcome:"reconciled"});
+  expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:121,heldTokens:0,blockedByProviderOverrun:false});
+  const next = request("cap-run", "next", {scopes});
+  const queued = admissions.enqueue(next);
+  expect(admissions.claim({key:queued.record.key})).toMatchObject({kind:"not_claimed",reason:"budget_exceeded"});
 });
