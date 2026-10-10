@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { getSessionCronTasks, resetStateForTests, setProjectRoot } from "../../src/bootstrap/state.js";
+import { addSessionCronTask, getSessionCronTasks, resetStateForTests, setProjectRoot, setScheduledTasksEnabled } from "../../src/bootstrap/state.js";
 import { CronDeliveryOutboxStore } from "../../src/gateway/cron-outbox.js";
 import { EventLog } from "../../src/session/event-log.js";
 import { startSessionCronScheduler } from "../../src/session/session-cron-scheduler.js";
@@ -12,8 +12,9 @@ import type { Session } from "../../src/session/session.js";
 import { CronCreateTool } from "../../src/tools/ScheduleCronTool/CronCreateTool.js";
 import { readStartupCronTasks } from "../../src/utils/cron-startup.js";
 import { withCronStorage } from "../../src/utils/cron-storage.js";
-import { resetCronSchedulerForTests } from "../../src/utils/cronScheduler.js";
+import { CronScheduler, cronEnqueueToCommandQueue, getCronScheduler, resetCronSchedulerForTests } from "../../src/utils/cronScheduler.js";
 import { appendCronTask, cronRestoreFailureNeedsWarning, readCronTasks } from "../../src/utils/cronTasks.js";
+import { getCommandQueueSnapshot, resetCommandQueueForTesting } from "../../src/utils/messageQueueManager.js";
 
 const acl = vi.hoisted(() => ({
   assertWindowsPrivatePathSecurity: vi.fn(),
@@ -27,9 +28,10 @@ const fsHooks = vi.hoisted(() => ({
   realpaths: [] as string[],
   opens: [] as string[],
   openFlags: [] as Array<readonly [string, unknown]>,
-  identitySentinel: undefined as ((path: string) => boolean) | undefined,
+  identitySentinel: undefined as ((path: string) => FileIdMode | undefined) | undefined,
 }));
 const privatePaths = vi.hoisted(() => new Set<string>());
+type FileIdMode = "zero" | "all-ones" | "dev-zero" | "ino-all-ones";
 
 vi.mock("../../src/agents/workflow-private-path.js", () => ({
   assertWindowsPrivatePathSecurity: acl.assertWindowsPrivatePathSecurity,
@@ -37,14 +39,27 @@ vi.mock("../../src/agents/workflow-private-path.js", () => ({
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
   // Windows reports 0 or all ones when a filesystem has no file id.
-  const withoutFileId = <Info extends { dev: number | bigint; ino: number | bigint }>(info: Info): Info =>
-    Object.assign(Object.create(Object.getPrototypeOf(info) as object) as Info, info,
-      typeof info.dev === "bigint" ? { dev: 0n, ino: 0n } : { dev: 0, ino: 0 });
+  const withoutFileId = <Info extends { dev: number | bigint; ino: number | bigint }>(
+    info: Info,
+    mode: FileIdMode | undefined,
+  ): Info => {
+    if (mode === undefined) return info;
+    const value = (id: "dev" | "ino"): number | bigint => {
+      const missing = mode === "zero" || mode === "all-ones" ||
+        (mode === "dev-zero" && id === "dev") || (mode === "ino-all-ones" && id === "ino");
+      if (!missing) return info[id];
+      const ones = mode === "all-ones" || mode === "ino-all-ones";
+      if (typeof info.dev === "bigint") return ones ? 0xffff_ffff_ffff_ffffn : 0n;
+      return ones ? Number.MAX_SAFE_INTEGER : 0;
+    };
+    return Object.assign(Object.create(Object.getPrototypeOf(info) as object) as Info, info,
+      { dev: value("dev"), ino: value("ino") });
+  };
   return {
     ...original,
     lstat: async (...args: Parameters<typeof original.lstat>) => {
       const info = await original.lstat(...args);
-      return fsHooks.identitySentinel?.(String(args[0])) ? withoutFileId(info) : info;
+      return withoutFileId(info, fsHooks.identitySentinel?.(String(args[0])));
     },
     realpath: async (...args: Parameters<typeof original.realpath>) => {
       const path = String(args[0]);
@@ -87,10 +102,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         throw fsHooks.directorySyncError;
       }
       const handle = await original.open(...args);
-      if (fsHooks.identitySentinel?.(path)) {
+      const mode = fsHooks.identitySentinel?.(path);
+      if (mode !== undefined) {
         const stat = handle.stat.bind(handle);
         handle.stat = (async (options?: { bigint?: boolean }) =>
-          withoutFileId(await stat(options as never))) as typeof handle.stat;
+          withoutFileId(await stat(options as never), mode)) as typeof handle.stat;
       }
       return handle;
     },
@@ -165,6 +181,7 @@ afterEach(async () => {
   fsHooks.beforeRename = undefined;
   fsHooks.identitySentinel = undefined;
   await resetCronSchedulerForTests();
+  resetCommandQueueForTesting();
   resetStateForTests();
   await rm(root, { recursive: true, force: true });
 });
@@ -522,16 +539,107 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(flags & constants.O_CREAT).toBe(constants.O_CREAT);
   });
 
-  test("rejects a workspace and metadata directory that report no file id", async () => {
-    fsHooks.identitySentinel = (path) => path.endsWith(`${sep}workspace`) || path.endsWith(`${sep}.agenc`);
+  const fileIdModes: FileIdMode[] = ["zero", "all-ones", "dev-zero", "ino-all-ones"];
+
+  test.each(fileIdModes)("rejects a workspace that reports no file id (%s)", async (mode) => {
+    fsHooks.identitySentinel = (path) => (path.endsWith(`${sep}workspace`) ? mode : undefined);
     await expect(writeRecord()).rejects.toThrow(PERMISSIONS_ERROR);
-    expect(await readdir(workspace)).not.toContain("scheduled_tasks.json");
-    expect(await readdir(join(workspace, ".agenc")).catch(() => [])).not.toContain("scheduled_tasks.json");
+    expect(await readdir(workspace)).toEqual([]);
+    expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
   });
 
-  test("rejects a publication temporary that reports no file id", async () => {
-    fsHooks.identitySentinel = (path) => /scheduled_tasks\.json(?:\.[^/\\]+\.tmp)?$/u.test(path);
+  test.each(fileIdModes)("rejects a metadata directory that alone reports no file id (%s)", async (mode) => {
+    fsHooks.identitySentinel = (path) => (path.endsWith(`${sep}.agenc`) ? mode : undefined);
+    await expect(writeRecord()).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(await readdir(join(workspace, ".agenc")).catch(() => [])).toEqual([]);
+  });
+
+  test.each(fileIdModes)("rejects a publication temporary that reports no file id (%s)", async (mode) => {
+    fsHooks.identitySentinel = (path) =>
+      (/scheduled_tasks\.json(?:\.[^/\\]+\.tmp)?$/u.test(path) ? mode : undefined);
     await expect(writeRecord()).rejects.toThrow("Cron temporary publication file was replaced or linked");
     expect(await readdir(metadataDirectory())).not.toContain("scheduled_tasks.json");
+  });
+
+  const storedRecord = (recurring: boolean): string => `${JSON.stringify({
+    tasks: [{
+      id: recurring ? "stored-recurring" : "stored-once",
+      cron: "* * * * *",
+      prompt: "stored durable work",
+      createdAt: Date.parse("2026-07-07T11:59:00Z"),
+      ...(recurring ? { recurring: true } : {}),
+    }],
+  }, null, 2)}\n`;
+
+  // Seeds a readable durable record, runs `activate` under fake timers, and
+  // proves no process scheduler queued or rewrote that record.
+  async function expectStoredRecordUnarmed(
+    recurring: boolean,
+    activate: () => Promise<void>,
+    expectedPrompts: readonly string[],
+    scheduler: () => CronScheduler = getCronScheduler,
+  ): Promise<void> {
+    const stored = storedRecord(recurring);
+    await withCronStorage(workspace, true, async (storage) => {
+      await storage.write(stored);
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
+    try {
+      await activate();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await scheduler().drain();
+      expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(stored);
+      expect(getCommandQueueSnapshot().map((command) => command.value)).toEqual(expectedPrompts);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  test.each([true, false])("legacy session-only CronCreate leaves a stored durable record unarmed (recurring=%s)",
+    async (recurring) => {
+      await expectStoredRecordUnarmed(recurring, async () => {
+        setProjectRoot(workspace);
+        const created = await CronCreateTool.call(
+          { cron: "* * * * *", prompt: "session work", recurring: false, durable: false },
+          { sessionId: "windows-legacy" } as never,
+        );
+        expect(created.data.durable).toBe(false);
+      }, ["session work"]);
+    });
+
+  test("CronDelete without a session driver leaves a stored durable record unarmed", async () => {
+    await expectStoredRecordUnarmed(true, async () => {
+      addSessionCronTask({
+        id: "session-delete", cron: "* * * * *", prompt: "deleted session work", createdAt: Date.now(),
+        queueOwner: { kind: "session", conversationId: "windows-delete" },
+      });
+      const deleted = await (await cronTool("CronDelete", { conversationId: "windows-delete" }))
+        .execute({ id: "session-delete" });
+      expect(JSON.parse(String(deleted.content))).toEqual({ deleted: true, id: "session-delete" });
+    }, []);
+  });
+
+  test("a scheduler with the default loader leaves a stored durable record unarmed", async () => {
+    const scheduler = new CronScheduler({ enqueue: cronEnqueueToCommandQueue }, { dir: undefined });
+    try {
+      await expectStoredRecordUnarmed(true, async () => {
+        setScheduledTasksEnabled(true);
+        scheduler.start({ queueOwner: { kind: "session", conversationId: "windows-default" }, workspaceRoot: workspace });
+        await scheduler.reschedule();
+      }, [], () => scheduler);
+    } finally {
+      scheduler.stop();
+      await scheduler.drain();
+    }
+  });
+
+  test("a mount-style process scheduler activation leaves a stored durable record unarmed", async () => {
+    await expectStoredRecordUnarmed(false, async () => {
+      setScheduledTasksEnabled(true);
+      const scheduler = getCronScheduler();
+      scheduler.start({ queueOwner: { kind: "session", conversationId: "windows-mount" }, workspaceRoot: workspace });
+      await scheduler.reschedule();
+    }, []);
   });
 });

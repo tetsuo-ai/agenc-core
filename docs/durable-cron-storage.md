@@ -7,11 +7,13 @@ there. Windows persists scheduled tasks through the same private-path policy
 as workflow handoff storage: `.agenc` and `scheduled_tasks.json` must pass the
 current-user ACL check, identity comes from a stat of that verified path, and
 publication uses a path temporary whose inode is checked again after the
-write. This is storage groundwork only: the session scheduler loads and owns
-durable records only on Linux, so on Windows and macOS durable creation,
-including delivery-routed jobs, is refused before any write, and the gateway
-reports delivery state as unavailable. This is a compatibility change.
-Session-only in-memory jobs do not require durable storage. There is no pathname fallback on macOS or Linux:
+write. This is storage groundwork only: durable records are dispatched only on
+Linux. On Windows and macOS no scheduler in the process loads them, durable
+creation (including delivery-routed jobs) is refused before any write, startup
+reports an existing record as `cron_storage_unavailable`, and the gateway
+reports delivery state as unavailable. A stored record is left byte for byte
+unchanged. This is a compatibility change. Session-only in-memory jobs do not
+require durable storage. There is no pathname fallback on macOS or Linux:
 checks before and after an ordinary pathname write cannot undo an overwrite
 redirected during the write.
 
@@ -37,9 +39,9 @@ dispatch durable jobs. Later rescheduling can retry after storage is repaired.
 Warnings from superseded scheduler scans are discarded. Session startup stays
 silent on macOS, and on Linux without descriptor confinement, when the
 workspace has no `.agenc/scheduled_tasks.json`. A record that exists there is
-still reported. On Windows the record can be read, and startup keeps
-`cron_storage_unavailable` until the session scheduler loads and owns that
-record.
+still reported. On Windows the record can be read and listed, but startup
+reports it as `cron_storage_unavailable` and no scheduler arms it until durable
+dispatch is supported there.
 
 Stop **all older AgenC scheduler and gateway processes using a workspace before
 upgrading its writers**, and do the same before rolling back. Old versions use
