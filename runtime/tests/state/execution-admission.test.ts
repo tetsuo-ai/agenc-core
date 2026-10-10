@@ -816,55 +816,16 @@ describe("ExecutionAdmissionRepository", () => {
 
   it("updates late token actuals without losing unknown monetary holds", () => {
     const late = request("late-overrun", "turn-1", {
-      input: 5,
-      output: 5,
-      cost: 0.01,
+      input: 5, output: 5, cost: 0.01,
       scopes: [{ key: "late-overrun-budget", maxTokens: 100, maxCostUsd: 1 }],
-      const report = (tokens: number) => ({kind:"reported" as const,usage:{inputTokens:tokens-7,outputTokens:7,costUsd:null}});
-    expect(admissions.reconcile(reservation.reservationId,report(14))).toMatchObject({applied:false,outcome:"duplicate"});
-    expect(admissions.reconcile(reservation.reservationId,report(16))).toMatchObject({applied:true,outcome:"held_unknown"});
-    expect(admissions.reconcile(reservation.reservationId,report(12))).toMatchObject({applied:false,outcome:"duplicate"});
-    admissions.recover({now:T1});
-    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:16,usedCostUsd:0.01,heldTokens:0,blockedByProviderOverrun:false});
-    expect(admissions.reconcile(reservation.reservationId,{kind:"reported",usage:{inputTokens:7,outputTokens:7,costUsd:0.001}})).toMatchObject({outcome:"reconciled"});
-    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:14,usedCostUsd:0.001,heldTokens:0});
-  });
+    });
     admissions.enqueue(late);
     const reservation = claimReservation(admissionRecordKey(late.step));
     admissions.markDispatched(reservation.reservationId);
     admissions.holdUnknown(reservation.reservationId, "crash_after_dispatch");
-
-    expect(
-      admissions.reconcile(reservation.reservationId, {
-        kind: "reported",
-        usage: { inputTokens: 7, outputTokens: 7, costUsd: null },
-      }),
-    ).toMatchObject({
-      applied: true,
-      outcome: "held_unknown",
-      const report = (tokens: number) => ({kind:"reported" as const,usage:{inputTokens:tokens-7,outputTokens:7,costUsd:null}});
-    expect(admissions.reconcile(reservation.reservationId,report(14))).toMatchObject({applied:false,outcome:"duplicate"});
-    expect(admissions.reconcile(reservation.reservationId,report(16))).toMatchObject({applied:true,outcome:"held_unknown"});
-    expect(admissions.reconcile(reservation.reservationId,report(12))).toMatchObject({applied:false,outcome:"duplicate"});
-    admissions.recover({now:T1});
-    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:16,usedCostUsd:0.01,heldTokens:0,blockedByProviderOverrun:false});
-    expect(admissions.reconcile(reservation.reservationId,{kind:"reported",usage:{inputTokens:7,outputTokens:7,costUsd:0.001}})).toMatchObject({outcome:"reconciled"});
-    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:14,usedCostUsd:0.001,heldTokens:0});
-  });
-    expect(admissions.listAllocations()[0]).toMatchObject({
-      usedTokens: 14,
-      usedCostUsd: 0.01,
-      blockedByProviderOverrun: false,
-      const report = (tokens: number) => ({kind:"reported" as const,usage:{inputTokens:tokens-7,outputTokens:7,costUsd:null}});
-    expect(admissions.reconcile(reservation.reservationId,report(14))).toMatchObject({applied:false,outcome:"duplicate"});
-    expect(admissions.reconcile(reservation.reservationId,report(16))).toMatchObject({applied:true,outcome:"held_unknown"});
-    expect(admissions.reconcile(reservation.reservationId,report(12))).toMatchObject({applied:false,outcome:"duplicate"});
-    admissions.recover({now:T1});
-    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:16,usedCostUsd:0.01,heldTokens:0,blockedByProviderOverrun:false});
-    expect(admissions.reconcile(reservation.reservationId,{kind:"reported",usage:{inputTokens:7,outputTokens:7,costUsd:0.001}})).toMatchObject({outcome:"reconciled"});
-    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:14,usedCostUsd:0.001,heldTokens:0});
-  });
     const report = (tokens: number) => ({kind:"reported" as const,usage:{inputTokens:tokens-7,outputTokens:7,costUsd:null}});
+    expect(admissions.reconcile(reservation.reservationId,report(14))).toMatchObject({applied:true,outcome:"held_unknown"});
+    expect(admissions.listAllocations()[0]).toMatchObject({usedTokens:14,usedCostUsd:0.01,blockedByProviderOverrun:false});
     expect(admissions.reconcile(reservation.reservationId,report(14))).toMatchObject({applied:false,outcome:"duplicate"});
     expect(admissions.reconcile(reservation.reservationId,report(16))).toMatchObject({applied:true,outcome:"held_unknown"});
     expect(admissions.reconcile(reservation.reservationId,report(12))).toMatchObject({applied:false,outcome:"duplicate"});
