@@ -27,6 +27,11 @@ function storedData(home: HomeContext): SecureStorageData {
 }
 
 function installSecureStorage(): void {
+  // Cache expiry must read the same isolated store, never the host keychain.
+  vi.doMock("../../src/utils/secureStorage/native.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../../src/utils/secureStorage/native.js")>(),
+    readNativeSecureStorage: (home: HomeContext) => storedData(home),
+  }));
   vi.doMock(secureStorageModulePath, () => ({
     getSecureStorage: (home: HomeContext) => ({
       name: "provider-credential-authority-test",
@@ -86,6 +91,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.doUnmock(secureStorageModulePath);
+  vi.doUnmock("../../src/utils/secureStorage/native.js");
   vi.doUnmock("../../src/services/xai/oauth.js");
   vi.doUnmock("../../src/utils/model/providers.js");
   vi.clearAllMocks();

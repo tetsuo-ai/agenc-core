@@ -13,6 +13,7 @@ const AUDITED_ADMISSION_READS = new Set([
   "SELECT * FROM execution_admission_journal WHERE sequence = ?",
   "SELECT * FROM execution_admission_reservations WHERE reservation_id = ?",
   "SELECT 1 AS capped FROM execution_admission_reservation_allocations AS link JOIN execution_admission_allocations AS allocation ON allocation.scope_key = link.scope_key WHERE link.reservation_id = ? AND (allocation.max_tokens IS NOT NULL OR allocation.max_cost_nanos IS NOT NULL) LIMIT 1",
+  "SELECT 1 AS capped FROM execution_admission_reservation_allocations AS link JOIN execution_admission_allocations AS allocation ON allocation.scope_key = link.scope_key WHERE link.reservation_id = ? AND allocation.max_cost_nanos IS NOT NULL LIMIT 1",
   "SELECT 1 AS found FROM execution_admission_cancellations WHERE run_id = ? LIMIT 1",
   "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
   "SELECT deadline_at FROM execution_admission_run_limits WHERE run_id = ?",

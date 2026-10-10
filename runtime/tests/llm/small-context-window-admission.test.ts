@@ -77,8 +77,9 @@ describe("the conservative token estimate", () => {
     expect(conservativeBytesPerToken("ollama", "qwen2.5-coder:7b")).toBe(3.8);
     // The model's own family wins over the runtime serving it, which is what
     // we want: `deepseek-r1:7b` on ollama is tokenized as deepseek, not as
-    // whatever ollama happens to serve most often.
-    expect(conservativeBytesPerToken("ollama", "deepseek-r1:7b")).toBe(3.5);
+    // whatever ollama happens to serve most often. DeepSeek uses the more
+    // conservative code/tool-prompt fallback until provider calibration.
+    expect(conservativeBytesPerToken("ollama", "deepseek-r1:7b")).toBe(2);
     // And the runtime answers for a model it has no entry for at all.
     expect(conservativeBytesPerToken("ollama", "some-local-build:7b")).toBe(3.8);
   });

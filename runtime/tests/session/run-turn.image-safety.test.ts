@@ -183,6 +183,8 @@ function sessionFor(
   // The session-root config names the model the stream phase dispatches to.
   (fixture.session as { config: Config }).config = {
     ...fixture.session.config,
+    // Refusal recovery is tested independently of the per-task allowance.
+    task_token_budget: 0,
     model,
   };
   return fixture;
