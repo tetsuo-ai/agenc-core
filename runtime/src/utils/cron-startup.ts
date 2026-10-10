@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
+import { durableCronDispatchSupported, durableCronDispatchUnsupported } from "./cron-dispatch-platform.js";
 import { CRON_STORAGE_NAME, withCronStorageDirectory } from "./cron-storage-directory.js";
 import type { CronTask } from "./cronTasks.js";
 
@@ -27,8 +28,7 @@ export async function readStartupCronTasks(
   }
   assertStartupActive();
   if (!mayHavePersistedState) return [];
-  const { durableCronDispatchSupported, durableCronDispatchUnsupported, readCronTasks } =
-    await import("./cronTasks.js");
+  const { readCronTasks } = await import("./cronTasks.js");
   assertStartupActive();
   const tasks = await readCronTasks(workspaceRoot);
   // A readable record is not an armed one. Off Linux the session scheduler

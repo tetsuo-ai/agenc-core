@@ -21,11 +21,14 @@ import {
 import { computeNextCronRun, parseCronExpression } from "./cron.js";
 import { logForDebugging } from "./debug.js";
 import { acquireCronStorageLock, withCronStorage } from "./cron-storage.js";
+import { durableCronDispatchSupported, durableCronDispatchUnsupported } from "./cron-dispatch-platform.js";
 import {
   MAX_CRON_FILE_BYTES,
   parseCronDeliveryOutbox,
   type CronDeliveryOutbox,
 } from "./cron-delivery-state.js";
+
+export { durableCronDispatchSupported, durableCronDispatchUnsupported } from "./cron-dispatch-platform.js";
 
 /**
  * Delivery routing for gateway-executed cron tasks (TODO task 16). A task
@@ -160,24 +163,6 @@ export async function cronRestoreFailureNeedsWarning(error: unknown, dir?: strin
   } catch (statError) {
     return (statError as NodeJS.ErrnoException).code !== "ENOENT";
   }
-}
-
-/**
- * The session scheduler loads and owns durable records only on Linux
- * (`session-cron-scheduler.ts`). Elsewhere a stored durable task would never
- * fire, so durable creation is refused before any write, and startup and the
- * gateway keep reporting durable storage as unavailable. The error keeps the
- * `DESCRIPTOR_UNSUPPORTED` code that existing callers already handle.
- */
-export function durableCronDispatchSupported(): boolean {
-  return process.platform === "linux";
-}
-
-export function durableCronDispatchUnsupported(): Error {
-  return Object.assign(
-    new Error(`durable scheduled tasks are dispatched only on Linux, not on ${process.platform}`),
-    { code: "DESCRIPTOR_UNSUPPORTED" },
-  );
 }
 
 function parseCronTaskRecords(parsed: unknown): CronTask[] {
