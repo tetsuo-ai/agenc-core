@@ -2606,7 +2606,12 @@ export class ExecutionAdmissionRepository {
       }
     }
 
-    if (resolvesHeldUnknown && finalStatus === "held_unknown") {
+    // A late report may identify tokens even while price remains unknown.
+    // Preserve a token high-water mark until fully priced settlement arrives;
+    // repeated reports must not charge twice or lower the conservative hold.
+    if (resolvesHeldUnknown && finalStatus === "held_unknown" &&
+        (actualTokens === null || (reservation.actual_tokens !== null &&
+          actualTokens <= reservation.actual_tokens))) {
       return {
         applied: false,
         outcome: "duplicate",
