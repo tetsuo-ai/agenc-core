@@ -184,7 +184,7 @@ function sessionFor(
   (fixture.session as { config: Config }).config = {
     ...fixture.session.config,
     // Refusal recovery is tested independently of the per-task allowance.
-    task_token_budget: 0,
+    taskTokenBudget: 0,
     model,
   };
   return fixture;
