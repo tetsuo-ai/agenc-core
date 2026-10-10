@@ -545,6 +545,41 @@ describe("transitionSandboxExecutionBroker", () => {
     expect(resumeAuthorities).toEqual([broker.executionAuthority()]);
   });
 
+  it("treats omitted and true persistentSession as the same live authority", async () => {
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: "/stable-workspace",
+    });
+    const quiesce = vi.fn(async () => {});
+    const resume = vi.fn(async () => {});
+    registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "authority-observer",
+      quiesce,
+      resume,
+    });
+
+    const live = broker.executionAuthority();
+    expect(live).not.toHaveProperty("persistentSession");
+
+    await transitionSandboxExecutionBrokerAuthority(broker, {
+      ...live,
+      persistentSession: true,
+    });
+    await transitionSandboxExecutionBrokerAuthority(broker, { ...live });
+    expect(quiesce).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+
+    await transitionSandboxExecutionBrokerAuthority(broker, {
+      ...live,
+      persistentSession: false,
+    });
+    expect(quiesce).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledOnce();
+    expect(broker.executionAuthority()).toMatchObject({
+      persistentSession: false,
+    });
+  });
+
   it("closes at read-only when a failed commit cannot restore authority", async () => {
     const broker = new SandboxExecutionBroker({
       mode: "workspace_write",

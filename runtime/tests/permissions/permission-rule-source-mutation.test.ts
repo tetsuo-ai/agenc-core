@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { mutatePermissionRuleSource } from "../../src/permissions/permission-updates.js";
+import {
+  mutatePermissionRuleSource,
+  replacePermissionRuleSourceBuckets,
+} from "../../src/permissions/permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionBehavior,
@@ -161,5 +164,59 @@ describe("mutatePermissionRuleSource", () => {
     expect(removed.buckets.allow).toEqual([]);
     expect(sessionAllow(removed.next)).toEqual([]);
     expect(sessionStash(removed.next)).toEqual([]);
+  });
+});
+
+describe("replacePermissionRuleSourceBuckets", () => {
+  test("replaces every session behavior without leaking into another destination", () => {
+    const seeded = addSessionRule(
+      createEmptyToolPermissionContext(),
+      FILE_READ,
+    ).next;
+    const next = replacePermissionRuleSourceBuckets(seeded, "session", {
+      allow: [],
+      deny: [FILE_READ],
+      ask: [DANGEROUS_BASH],
+    });
+
+    expect(next.alwaysAllowRules.session).toEqual([]);
+    expect(next.alwaysDenyRules.session).toEqual(["FileRead"]);
+    expect(next.alwaysAskRules.session).toEqual(["system.bash"]);
+    expect(next.alwaysDenyRules.userSettings).toBeUndefined();
+    expect(next.mode).toBe("default");
+  });
+
+  test("auto mode stashes a dangerous allow instead of publishing it live", () => {
+    const auto = createEmptyToolPermissionContext({
+      mode: "auto",
+      autoModeActive: true,
+    });
+    const next = replacePermissionRuleSourceBuckets(auto, "session", {
+      allow: [DANGEROUS_BASH, FILE_READ],
+      deny: [],
+      ask: [],
+    });
+
+    expect(sessionAllow(next)).toEqual(["FileRead"]);
+    expect(sessionStash(next)).toEqual(["system.bash"]);
+    expect(next.mode).toBe("auto");
+    expect(next.autoModeActive).toBe(true);
+  });
+
+  test("plan mode with live auto semantics also hides a dangerous allow", () => {
+    const planAuto = createEmptyToolPermissionContext({
+      mode: "plan",
+      autoModeActive: true,
+    });
+    const next = replacePermissionRuleSourceBuckets(planAuto, "session", {
+      allow: [DANGEROUS_BASH],
+      deny: [],
+      ask: [],
+    });
+
+    expect(sessionAllow(next)).toEqual([]);
+    expect(sessionStash(next)).toEqual(["system.bash"]);
+    expect(next.mode).toBe("plan");
+    expect(next.autoModeActive).toBe(true);
   });
 });
