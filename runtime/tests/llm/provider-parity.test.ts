@@ -1377,6 +1377,9 @@ describe("provider parity", () => {
         expect(response.model).toBe(entry.model);
         expect(response.usage).toEqual({
           ...BASE_USAGE,
+          ...(entry.provider === "anthropic"
+            ? { cacheInputExcludedFromPrompt: true }
+            : {}),
           ...(CHAT_COMPLETIONS_PROVIDERS.has(entry.provider)
             ? { cacheWritesUnreported: true }
             : {}),

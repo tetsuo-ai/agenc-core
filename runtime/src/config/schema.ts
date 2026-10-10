@@ -1,3 +1,5 @@
+import { DEFAULT_TASK_TOKEN_BUDGET, TASK_BUDGET_LEVELS, type TaskBudgetLevel } from "./task-budget.js";
+import { DEFAULT_MODEL_VERBOSITY } from "./runtime-defaults.js";
 // T10 Group D — AgenC config schema.
 //
 // Merges AgenC config surfaces, profile selection, and runtime additions
@@ -982,6 +984,13 @@ export interface AgenCConfig {
   readonly capped_default_max_output_tokens?: boolean;
   readonly max_turns?: number;
   readonly max_budget_usd?: number;
+  /** Per-session task allocation including reasoning. Zero explicitly disables it. */
+  readonly task_token_budget?: number;
+  /** Named allocation; higher config layers replace lower numeric/level choices. */
+  readonly budget_level?: TaskBudgetLevel;
+  readonly task_max_calls?: number;
+  /** Experimental signed host-check registration; never raises task_token_budget. */
+  readonly experimental_task_budget_progress?: string;
   readonly autonomous_mode?: boolean;
   /**
    * Coordinator mode: the main session orchestrates work through
@@ -1124,6 +1133,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "capped_default_max_output_tokens",
   "max_turns",
   "max_budget_usd",
+  "task_token_budget",
+  "budget_level",
+  "task_max_calls",
+  "experimental_task_budget_progress",
   "autonomous_mode",
   "coordinator_mode",
   "transaction_guard",
@@ -1156,6 +1169,7 @@ export function defaultConfig(): AgenCConfig {
     configVersion: 2,
     model: DEFAULT_BUILT_IN_PROVIDER_SELECTION.model,
     model_provider: DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider,
+    ...(DEFAULT_MODEL_VERBOSITY !== undefined ? { model_verbosity: DEFAULT_MODEL_VERBOSITY } : {}),
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
     reasoning_effort: "medium" as ReasoningEffort,
@@ -1211,6 +1225,7 @@ export function defaultConfig(): AgenCConfig {
     // `0` ends the turn as soon as the ladder is exhausted.
     provider_outage_wait_ms: DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
     provider_outage_retry_ms: DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
+    task_token_budget: DEFAULT_TASK_TOKEN_BUDGET,
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
     // want a runaway-loop backstop can set `max_turns` (or its documented env
@@ -1326,6 +1341,16 @@ export function mergeConfigs(
     base as Record<string, unknown>,
     override as Record<string, unknown>,
   ) as AgenCConfig;
+  // Treat the level and numeric cap as one selection across config layers.
+  // A numeric value wins when both are supplied in the same layer (including 0).
+  if (override.task_token_budget !== undefined) {
+    const level = override.budget_level;
+    return deepFreeze({ ...merged, budget_level:
+      level !== undefined && TASK_BUDGET_LEVELS[level] === override.task_token_budget ? level : undefined });
+  }
+  if (override.budget_level !== undefined) {
+    return deepFreeze({ ...merged, task_token_budget: TASK_BUDGET_LEVELS[override.budget_level] });
+  }
   return deepFreeze(merged);
 }
 

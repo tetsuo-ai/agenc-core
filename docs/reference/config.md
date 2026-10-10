@@ -514,7 +514,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`. |
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
-| `model_verbosity` | `low`, `medium`, or `high`. Sets response detail via the native verbosity parameter on supported direct OpenAI models; other routes (including DeepSeek, GLM, Anthropic and ChatGPT subscription models) use a Response Detail instruction. Applies at the top level or in a profile. A runtime response-detail override takes precedence; clearing it restores the configured value. Unset adds no response-detail instruction or native verbosity parameter. This controls user-facing prose, not the work, checks, or required error reporting. |
+| `model_verbosity` | `low`, `medium`, or `high`. Sets response detail via the native verbosity parameter on supported direct OpenAI models; other routes (including DeepSeek, GLM, Anthropic and ChatGPT subscription models) use a Response Detail instruction. Applies at the top level or in a profile. A runtime response-detail override takes precedence; clearing it restores the configured value. Without an explicit setting, `DEFAULT_MODEL_VERBOSITY` in `runtime/src/config/runtime-defaults.ts` supplies the release default. When that switch is undefined, no response-detail instruction or native verbosity parameter is added. This controls user-facing prose, not the work, checks, or required error reporting. |
 | `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price), Anthropic fast mode on Claude Opus 5.5, Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic), and xAI priority processing on Grok 4.7 and Grok 4.6 (`service_tier: "priority"`, 2x price, API-key billing only; a session signed in with X does not send it). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
 | `personality` | `none`, `friendly`, or `pragmatic`. |
 | `agent_max_threads` | Positive concurrent-agent thread cap. |
@@ -945,3 +945,51 @@ agenc config validate
 
 The TUI command is `/config`.
 Environment overrides and removed names are cataloged in [env.md](env.md).
+
+### Per-task token and call allocation
+
+`experimental_task_budget_progress` is an optional host-owned JSON registration
+string for the isolated adaptive-budget experiment. Its fields are `initialTokens`,
+`nonce`, `publicKey`, `receiptPath`, and `commandDigest`; `receiptPath` identifies
+the signed host progress receipt. It is unset by default and is not part of the
+named budget levels or a production progress policy.
+
+Choose a named token allocation with `budget_level = "eco"` (1,000,000 tokens),
+`budget_level = "balanced"` (2,400,000), or `budget_level = "max"` (no token cap).
+The CLI equivalent is `--budget eco|balanced|max`. `/budget` shows the active
+session's allocation; `/budget balanced` saves the choice for new sessions.
+An existing session retains its allocation and usage. Independent call and cost
+limits still apply to `max`.
+
+A higher configuration layer replaces a lower layer's named or numeric choice.
+An explicit `task_token_budget` wins over `budget_level` in the same layer,
+including zero. The CLI rejects passing both `--budget` and
+`--task-token-budget`. `/status` shows the current allocation. The default allocation is selected by `DEFAULT_TASK_BUDGET_LEVEL` in
+`runtime/src/config/runtime-defaults.ts`; explicit choices override it.
+
+`task_token_budget` limits total model input and output tokens, including reasoning
+and cached input once. `task_max_calls` optionally limits model wire attempts.
+The token budget uses the same named default in every mode; the call limit is off
+unless configured. Both accept non-negative integers; `0` explicitly disables that
+limit. CLI overrides are
+`--task-token-budget <tokens>` and `--task-max-calls <calls>`. For example,
+`--task-token-budget 500000` raises the allowance; `--task-token-budget 0`
+disables it. To remove a configured call limit too, use `--task-max-calls 0`.
+
+The allocation belongs to the session/run, including retries, auxiliary model
+calls, and delegated agents. Model-call reservations share the root allocation
+atomically; undispatched reservations are refunded, while dispatched attempts
+with unknown usage remain charged across restart. Restoring a session cannot
+raise its persisted call ceiling. Use a fresh session for each independent task. At 80% of either allocation,
+or earlier when the remaining tokens fit at most two recent-size requests,
+the model receives one reminder to finish its most likely fix, run the decisive
+check, and report. Requests that cannot fit their input and maximum output in the
+remaining allocation are refused before dispatch, so a run can end below its cap.
+Input counts are estimates. Reported model usage replaces the reservation; a
+token-estimate miss does not abort an otherwise admitted response. If actual
+usage reaches the task cap, admitted tools finish before the partial summary,
+and no further model call is admitted. A response can therefore put actual usage
+above the cap. Independent monetary limits remain enforced.
+In-flight tools finish before a local partial-result summary is emitted. No extra
+model call is spent generating that summary. Unknown usage retains its reserved
+amount. Provider-reported overruns remain subject to execution admission policy.

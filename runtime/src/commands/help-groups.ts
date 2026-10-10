@@ -22,7 +22,7 @@ export const HELP_WORKFLOW_GROUPS: readonly HelpWorkflowGroup[] = [
   },
   {
     title: "Model / Provider",
-    commands: ["model", "provider"],
+    commands: ["model", "provider", "budget"],
   },
   {
     title: "Tools / MCP",

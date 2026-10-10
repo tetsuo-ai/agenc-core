@@ -22,6 +22,7 @@ export interface AdmissionClientScope {
   readonly deadlineAt?: string;
   readonly maxCostUsd?: number;
   readonly maxTokens?: number;
+  readonly maxModelCalls?: number;
   /** Durable assignment identity when a keep-alive worker has a task cap. */
   readonly taskId?: string;
   /** Any run or period allocation imposes a hard monetary ceiling. */
@@ -128,6 +129,7 @@ export interface ExecutionAdmissionClient {
     /** Additional cap for this child run, or for taskId when supplied. */
     readonly maxCostUsd?: number;
     readonly maxTokens?: number;
+    readonly maxModelCalls?: number;
     /** Stable assignment identity. Rebinding it preserves spent and held usage. */
     readonly taskId?: string;
   }): ExecutionAdmissionClient;
@@ -148,6 +150,8 @@ export interface ExecutionAdmissionClient {
     readonly limit?: number;
   }): readonly AdmissionJournalEvent[];
   getUsageSummary?(): AdmissionUsageSummary;
+  /** Root task spend, including dispatched attempts whose usage remains unknown. */
+  getTaskBudgetUsage?(): { readonly tokens: number; readonly calls: number };
   /** This bound run/task's usage only, excluding delegated descendants. */
   getDirectUsageSummary?(): AdmissionUsageSummary;
   /** Snapshot only. Minimum remaining dollars across durable task, ancestor

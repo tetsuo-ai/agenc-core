@@ -46,6 +46,7 @@ import type {
 } from "../llm/types.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
+import { TaskBudgetReachedError } from "../session/task-budget.js";
 import type { GrokCapabilityConfig } from "../config/schema.js";
 import {
   isDirectXaiInferenceHost,
@@ -1180,7 +1181,7 @@ async function runGrokNativeWebSearch(
     });
   } catch (error) {
     abortSignalFromArgs(args)?.throwIfAborted();
-    if (error instanceof AdmissionDeniedError) throw error;
+    if (error instanceof AdmissionDeniedError || error instanceof TaskBudgetReachedError) throw error;
     return undefined;
   }
 }
@@ -3404,7 +3405,7 @@ async function runWebFetchExtraction(
       : undefined;
   } catch (error) {
     input.signal?.throwIfAborted();
-    if (error instanceof AdmissionDeniedError) throw error;
+    if (error instanceof AdmissionDeniedError || error instanceof TaskBudgetReachedError) throw error;
     return undefined;
   }
 }

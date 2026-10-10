@@ -600,10 +600,13 @@ export function readAnthropicReasoningOutputTokens(
  * is stored as `completionTokens`. Mark that subset so the session budget
  * adds completion once. A reasoning count above completion stays unmarked
  * and is still added on top.
+ * Also mark Anthropic's exclusive input counter. Cache reads and writes are
+ * billed in addition to input_tokens, unlike OpenAI-compatible input counters.
  */
 export function markAnthropicReasoningIncludedInCompletion(
   usage: LLMUsage,
 ): LLMUsage {
+  usage = { ...usage, cacheInputExcludedFromPrompt: true };
   const reasoning = usage.reasoningOutputTokens;
   if (reasoning === undefined || reasoning > usage.completionTokens) {
     return usage;

@@ -1093,7 +1093,7 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     const client = value.bindClient({
       cwd,
       scope: { runId: "atomic_overrun_root", sessionId: "atomic_overrun_root", autonomous: false },
-      budget: { runMaxTokens: 100 },
+      budget: { runMaxTokens: 100, runMaxCostUsd: 1 },
     });
     const lease = await acquire(client);
     client.markDispatched(lease.reservation.reservationId, {
@@ -1117,7 +1117,7 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
         client.reconcile(lease.reservation.reservationId, {
           inputTokens: 2,
           outputTokens: 1,
-          costUsd: 0,
+          costUsd: 0.01,
         }),
       ).toThrow(/fault-injected canonical cascade failure/);
 
@@ -1185,7 +1185,7 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
         client.reconcile(lease.reservation.reservationId, {
           inputTokens: 2,
           outputTokens: 1,
-          costUsd: 0,
+          costUsd: 0.01,
         }),
       ).toMatchObject({ applied: true, outcome: "provider_overrun" });
       expect(

@@ -100,7 +100,8 @@ export type TerminalReason =
   | "stop_hook_prevented"
   | "hook_stopped"
   | "max_turns"
-  | "max_budget_usd"
+  | "task_budget"
+        | "max_budget_usd"
   | "cancelled"
   | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
   | "effect_review_required" // live-effect gate refused a call nobody can unblock now (#2501)

@@ -1,3 +1,4 @@
+import { taskUsageTokens } from "../../../../src/session/task-budget.js";
 import { describe, expect, test, vi } from "vitest";
 import { AnthropicProvider } from "./adapter.js";
 import {
@@ -67,6 +68,9 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
       expect(response.usage.promptTokens).toBe(11);
       expect(response.usage.completionTokens).toBe(3);
       expect(response.usage.totalTokens).toBe(14);
+      expect(response.usage.cacheInputExcludedFromPrompt).toBe(true);
+      expect(taskUsageTokens(response.usage)).toBe(26);
+      expect(response.usage.availability).toBe("unknown");
       // Cache / reasoning / web-search telemetry must survive the partial path.
       expect(response.usage.cachedInputTokens).toBe(7);
       expect(response.usage.cacheCreationInputTokens).toBe(5);
@@ -89,7 +93,7 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
             'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
             'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
             'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-            'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":5}}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}\n\n',
             'event: message_stop\ndata: {"type":"message_stop"}\n\n',
           ]),
         )
@@ -107,6 +111,7 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
       );
 
       expect(response.partial).toBeFalsy();
+      expect(taskUsageTokens(response.usage)).toBe(125);
       expect(response.finishReason).toBe("stop");
       // The zero from the later event is authoritative; the stale 9 is dropped.
       expect(response.usage.promptTokens).toBe(0);

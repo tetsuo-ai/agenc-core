@@ -1460,6 +1460,8 @@ export interface AgentCreateParams extends JsonObject {
   readonly profile?: string;
   /** Absolute explicit config layer selected by the invoking client. */
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   /** Additional working directories selected by repeated CLI flags. */
   readonly addDirs?: readonly string[];
   readonly instructions?: string;

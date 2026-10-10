@@ -315,6 +315,7 @@ export type {
   AutoCompactImpl,
 } from "./run-turn-compaction.js";
 
+import { taskBudgetOf } from "./task-budget.js";
 import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
 
 export interface RunTurnOptions {
@@ -551,6 +552,7 @@ function terminalToStopReason(
   switch (reason) {
     case "completed":
     case "max_turns":
+    case "task_budget":
     case "max_budget_usd":
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
@@ -1125,6 +1127,7 @@ async function finishSamplingRequest(
   if (streamModelError && (stallRetryStarted || isStreamProgressStop(streamModelError))) {
     throw streamModelError;
   }
+  if (streamModelError && taskBudgetOf(session)?.reached) throw streamModelError;
   await postSampleRecovery(state, ctx, session, signal);
 
   // If recovery applied a transition (any of I-10's triggers fired),
@@ -1895,6 +1898,7 @@ export async function* runTurnKernel(
       const messages = {
         max_turns:
           "Turn stopped at the iteration limit before completing the task. Send a new prompt to continue.",
+        task_budget: content || "Task budget reached; work may be incomplete.",
         max_budget_usd:
           "Turn stopped at the cost limit before completing the task. Send a new prompt to continue.",
         no_progress:
@@ -2764,6 +2768,32 @@ async function* runTurnKernelInner(
     session.rolloutStore.flushDurable();
   }
 
+  let usage: LLMUsage = fastUsage ?? {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    availability: "unknown",
+    provenance: "synthetic",
+  };
+  let lastContent = "";
+  const stepTrail = new StepLimitTrail();
+  const taskBudget = taskBudgetOf(session);
+  const finishTaskBudget = async (): Promise<PhaseEvent> => {
+    await drainInFlight(state, ctx, session);
+    const partialText = state.assistantMessages.at(-1)?.text;
+    if (partialText) lastContent = partialText;
+    lastContent = taskBudget!.summary(lastContent);
+    state.messages.push({ role: "assistant", content: lastContent });
+    opts.assistantOutputSink?.reset();
+    opts.assistantOutputSink?.writeCanonicalDelta(lastContent);
+    session.emit({ id: session.nextInternalSubId(), msg: {
+      type: "agent_message", payload: { message: lastContent },
+    } });
+    await syncSessionState();
+    emitTurnComplete(lastContent, "task_budget");
+    return { type: "turn_complete", content: lastContent, usage, stopReason: "task_budget" };
+  };
+
   // Run pre-sampling compact before any phase runs. Returns
   // whether compaction happened. (No prewarmed client session exists
   // today, so there is nothing to reset on compaction.)
@@ -2830,6 +2860,10 @@ async function* runTurnKernelInner(
       };
       return terminal;
     }
+    if (taskBudget?.reached) {
+      yield await finishTaskBudget();
+      return { reason: "task_budget" };
+    }
     emitTurnWarning(
       session,
       PRE_SAMPLING_COMPACT_FAILED_CAUSE,
@@ -2847,15 +2881,6 @@ async function* runTurnKernelInner(
   commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
   let deadlineTurnReminderInjected = false;
 
-  let usage: LLMUsage = fastUsage ?? {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    availability: "unknown",
-    provenance: "synthetic",
-  };
-  let lastContent = "";
-  const stepTrail = new StepLimitTrail();
   const stepReminders = new Set<number>();
   let emptyResponseRetryCount =
     state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
@@ -2923,6 +2948,14 @@ async function* runTurnKernelInner(
       yield cancelledAtLoopStart.event;
       return cancelledAtLoopStart.terminal;
     }
+
+    taskBudgetOf(session); // Include durable usage from delegated work.
+    if (taskBudget?.reached) {
+      yield await finishTaskBudget();
+      return { reason: "task_budget" };
+    }
+    const taskReminder = taskBudget?.reminder();
+    if (taskReminder) state.messages.push(taskReminder);
 
     // Guardian-rejection circuit-breaker interrupt.
     // Detection-site writers call `recordDenial(turnId)` on the breaker
@@ -3241,6 +3274,8 @@ async function* runTurnKernelInner(
       // sampling request so the terminal turn_complete event carries
       // cumulative token consumption across continuation iterations.
       usage = cumulativeUsage(usage, result.usage);
+      // Preserve visible text before a recovery transition resets sample state.
+      if (result.assistantText.length > 0) lastContent = result.assistantText;
       const removedCorrectionIndex = clearTextToolCallCorrectionPrompt(state, consumedCorrection);
       if (removedCorrectionIndex !== undefined && removedCorrectionIndex < persistedMessageCount) {
         persistedMessageCount -= 1;
@@ -3252,8 +3287,14 @@ async function* runTurnKernelInner(
       resetRecoveryReentriesAfterProgress(state);
       modelNeedsFollowUp = result.needsFollowUp;
       if (result.terminal) {
+        // The last admitted response may contain useful partial work even when
+        // its output recovery cannot fit another call in the task allocation.
         if (result.assistantText.length > 0) {
           lastContent = result.assistantText;
+        }
+        if (taskBudget?.reached) {
+          yield await finishTaskBudget();
+          return { reason: "task_budget" };
         }
         await syncSessionState();
         emitTurnComplete(
@@ -3307,6 +3348,10 @@ async function* runTurnKernelInner(
         };
         return terminal;
       }
+      if (taskBudget?.reached) {
+        yield await finishTaskBudget();
+        return { reason: "task_budget" };
+      }
       if (underlying instanceof DeferredCompactionError) {
         await syncSessionState();
         emitTurnComplete(lastContent, "compact_failed", underlying);
@@ -3338,6 +3383,13 @@ async function* runTurnKernelInner(
     if (cancelledAfterSampling !== null) {
       yield cancelledAfterSampling.event;
       return cancelledAfterSampling.terminal;
+    }
+
+    // Finish only after tool blocks from the admitted response are dispatched.
+    // Pending blocks are handled below, before the post-tool budget check.
+    if (taskBudget?.reached && state.toolUseBlocks.length === 0) {
+      yield await finishTaskBudget();
+      return { reason: "task_budget" };
     }
 
     // Recovery re-entry? postSampleRecovery or continuationNudge may
@@ -3484,6 +3536,10 @@ async function* runTurnKernelInner(
         // the turn with a warning plus compact_failed so rollout
         // reducers see a closed boundary without killing the run.
         await drainInFlight(state, ctx, session);
+        if (taskBudget?.reached) {
+          yield await finishTaskBudget();
+          return { reason: "task_budget" };
+        }
         const underlying = compactFailureError(error);
         emitTurnWarning(
           session,
@@ -3815,6 +3871,13 @@ async function* runTurnKernelInner(
     });
     for (const event of drainedQueuedCommandEvents) {
       yield event;
+    }
+
+    // Actual usage may have crossed the cap. Tool results are now available;
+    // persist them with the partial summary instead of attempting compaction.
+    if (taskBudget?.reached) {
+      yield await finishTaskBudget();
+      return { reason: "task_budget" };
     }
 
     const postToolAutoCompactLimit =

@@ -51,12 +51,14 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
       runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
         dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true }),
     } });
+    Object.assign(session.config, { taskTokenBudget: 0 });
     Object.assign(session.services, { permissionModeRegistry: new PermissionModeRegistry({
       ...session.permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
     }) });
     const ctx = mkCtx({ cwd: "/workspace", permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
       modelInfo: { ...mkCtx().modelInfo, contextWindow: 1_048_576, maxOutputTokens: 8192 },
-      config: { ...mkCtx().config, bypassFastMode: fast } });
+      // Replay the complete recorded trace; task-budget stopping has separate coverage.
+      config: { ...mkCtx().config, taskTokenBudget: 0, bypassFastMode: fast } });
     await drain(runTurn(session, ctx, fixture.user, { systemPrompt: fixture.system, history: fixture.history,
       exactOutput: true }));
     expect(bodies).toHaveLength(fixture.responses.length);

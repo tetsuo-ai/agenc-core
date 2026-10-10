@@ -56,6 +56,13 @@ function stubSession(opts: {
 }
 
 describe("statusCommand", () => {
+  it("shows an unavailable task budget for a view without session config", () => {
+    expect(collectStatus(stubSession(), "/ws", 5000)).toContainEqual({ key: "Task budget", value: "unavailable" });
+  });
+  it("shows the active named task allocation", () => {
+    const session = Object.assign(stubSession(), { config: { taskTokenBudget: 2_400_000 } });
+    expect(collectStatus(session, "/ws", 5000)).toContainEqual({ key: "Task budget", value: "balanced (2,400,000 tokens)" });
+  });
   it("collects sessionId, cwd, model, provider, turn count, uptime, permission mode", () => {
     const registry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "acceptEdits" }),

@@ -40,6 +40,8 @@ describe("independent provider reserve through real turn preflight", () => {
     const dispatch = async () => ({ content: "fresh-boundary", isError: false });
     const registry = { tools: [{ name: "read_probe", description: "read", inputSchema: { type: "object" }, requiresApproval: false, recoveryCategory: "read-only", execute: dispatch }], toLLMTools: () => [], dispatch } as unknown as ToolRegistry;
     const { session, events } = mkSession({ provider, registry });
+    // Exercise the near-million-token context boundary independently of task spend.
+    Object.assign(session.config, { taskTokenBudget: 0 });
     const ctx = mkCtx({ modelInfo: { ...mkCtx().modelInfo, contextWindow: 950000, maxOutputTokens: 131072, autoCompactTokenLimit: 140000 } });
     let attempts = 0;
     setAutoCompactImplForTests(async (_messages, _ctx, _tracking, _snip, injection): Promise<AutoCompactResult> => {

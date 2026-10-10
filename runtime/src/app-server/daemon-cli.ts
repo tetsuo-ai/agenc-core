@@ -3461,6 +3461,7 @@ export async function restoreRecoveredAgentRuntime(
             ...optionalMetadataString(run.metadata, "provider"),
             ...optionalMetadataString(run.metadata, "profile"),
           }),
+      ...retainedTaskBudget(run.metadata),
       ...optionalAbsoluteMetadataPath(run.metadata, "configPath"),
       ...(initialMessages !== undefined ? { initialMessages } : {}),
       ...(replayToolCalls.length > 0 ? { replayToolCalls } : {}),
@@ -4255,4 +4256,19 @@ function isDaemonConnectionAuthenticationFailure(message: JsonObject): boolean {
 function readNonEmptyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function retainedTaskBudget(metadata: JsonObject | undefined): {
+  taskTokenBudget?: number; taskMaxCalls?: number;
+} {
+  const result: { taskTokenBudget?: number; taskMaxCalls?: number } = {};
+  for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+    const value = metadata?.[key];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`invalid retained ${key}`);
+    }
+    result[key] = value;
+  }
+  return result;
 }

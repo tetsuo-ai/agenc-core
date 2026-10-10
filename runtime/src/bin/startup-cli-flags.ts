@@ -1,3 +1,4 @@
+import { isTaskBudgetLevel, TASK_BUDGET_LEVELS, type TaskBudgetLevel } from "../config/task-budget.js";
 /** Parse literal startup flags without loading model or settings authorities. */
 import {
   isUserAddressablePermissionMode,
@@ -15,6 +16,9 @@ import {
 import { validateAndDedupeAdditionalWorkingDirectoryInputs } from "../contracts/additional-working-directories.js";
 
 export interface StartupCliFlags {
+  readonly taskTokenBudget?: number;
+  readonly budgetLevel?: TaskBudgetLevel;
+  readonly taskMaxCalls?: number;
   readonly provider?: string;
   readonly model?: string;
   readonly profile?: string;
@@ -40,6 +44,26 @@ export function readStartupCliFlags(
   const userArgv = argv.slice(2);
   const { optionArgs } = tokenizeCliOptionRegion(userArgv);
   assertNoRetiredStartupFlags(optionArgs);
+  const taskBudgetFlag = (flag: string): number | undefined => {
+    const present = optionArgs.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+    if (!present) return undefined;
+    const raw = extractFlagValue(optionArgs, flag);
+    const value = raw === null || raw.trim() === "" ? NaN : Number(raw);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${flag} requires a non-negative safe integer (0 disables the limit)`);
+    }
+    return value;
+  };
+  const rawBudget = extractFlagValue(optionArgs, "--budget");
+  const hasBudget = optionArgs.some((arg) => arg === "--budget" || arg.startsWith("--budget="));
+  if (hasBudget && !isTaskBudgetLevel(rawBudget)) throw new Error("--budget requires eco, balanced, or max");
+  const budgetLevel = isTaskBudgetLevel(rawBudget) ? rawBudget : undefined;
+  const numericBudget = taskBudgetFlag("--task-token-budget");
+  if (budgetLevel !== undefined && numericBudget !== undefined) {
+    throw new Error("Use either --budget or --task-token-budget, not both");
+  }
+  const taskTokenBudget = budgetLevel === undefined ? numericBudget : TASK_BUDGET_LEVELS[budgetLevel];
+  const taskMaxCalls = taskBudgetFlag("--task-max-calls");
   const provider = extractFlagValue(optionArgs, "--provider") ?? undefined;
   const model = extractFlagValue(optionArgs, "--model") ?? undefined;
   const profile = extractFlagValue(optionArgs, "--profile") ?? undefined;
@@ -79,6 +103,9 @@ export function readStartupCliFlags(
   const simpleMode = optionArgs.includes("--bare");
   const lightMode = optionArgs.includes("--light");
   return Object.freeze({
+    ...(taskTokenBudget !== undefined ? { taskTokenBudget } : {}),
+    ...(budgetLevel !== undefined ? { budgetLevel } : {}),
+    ...(taskMaxCalls !== undefined ? { taskMaxCalls } : {}),
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
     ...(profile ? { profile } : {}),

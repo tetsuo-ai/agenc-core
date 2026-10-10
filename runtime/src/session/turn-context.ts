@@ -522,6 +522,9 @@ export interface Config {
   readonly maxTurns?: number;
   /** Canonical per-session USD cap; checked before every sampling iteration. */
   readonly maxBudgetUsd?: number;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
+  readonly experimentalTaskBudgetProgress?: string;
   /** Canonical durable checkpoint/resume policy captured for this session. */
   readonly durableTurns?: DurableTurnsConfig;
   /** Completion gate policy for non-interactive verification rounds. */

@@ -59,6 +59,7 @@ const MINIMAL_NAMES = [
   "openai-logout",
   "cost",
   "model",
+  "budget",
   "provider",
   "effort",
   "resolve",

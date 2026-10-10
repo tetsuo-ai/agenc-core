@@ -20,7 +20,8 @@ export function bypassFastModeEnabled(session: Session, ctx: TurnContext): boole
 export function requiresAtomicSpendAdmission(session: Session): boolean {
   const scope = session.services.executionAdmission?.scope;
   return scope?.hasHardCostCap === true || scope?.hasHardTokenCap === true ||
-    scope?.maxCostUsd !== undefined || scope?.maxTokens !== undefined;
+    scope?.maxCostUsd !== undefined || scope?.maxTokens !== undefined ||
+    scope?.maxModelCalls !== undefined;
 }
 export function oneShotFastModeActive(): boolean { return active.getStore() === true; }
 export function withOneShotFastMode<T>(run: () => T): T { return active.run(true, run); }

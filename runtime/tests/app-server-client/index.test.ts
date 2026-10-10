@@ -384,6 +384,8 @@ describe("app-server-client daemon helpers", () => {
         model: "grok-4.3",
         profile: "fast",
         configPath: "operator.toml",
+        taskTokenBudget: 219000,
+        taskMaxCalls: 17,
         addDirs: [...additionalDirectories, additionalDirectories[0]!],
         initialContent: [
           { type: "text", text: "describe this" },
@@ -407,6 +409,8 @@ describe("app-server-client daemon helpers", () => {
           model: "grok-4.3",
           profile: "fast",
           configPath: "/workspace/operator.toml",
+          taskTokenBudget: 219000,
+          taskMaxCalls: 17,
           addDirs: additionalDirectories,
           initialContent: [
             { type: "text", text: "describe this" },

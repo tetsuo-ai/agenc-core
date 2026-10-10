@@ -316,6 +316,7 @@ describe("streamModel — live assistant text sanitization", () => {
     const dispatch = vi.fn(async () => ({
       content: "ok",
       toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
       model,
       finishReason: "stop" as const,
     }));

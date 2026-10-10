@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "artifactSha256": "a7bd98b801bb62510bf1fafc1c35094a79d6fd43aeab6d4bdf26aef3c3ded0fb",
+  "artifactSha256": "4be72c02fd30b8b5283c339a6f13d72a8a78d69227d800b8da059cfdc6f46769",
   "sources": {
     "scripts/fresh-state-schema-artifact.mjs": "547b4b3b6c5d1d81975bd6a6c81e558f2e6de7302098dbf7b945869cc94c6b5b",
     "scripts/generate-fresh-state-schema.ts": "0bf6a6142f91e732eda5f64aa36bcfd3949faad488af0f55bffc6c1ef7c90e7f",
@@ -45,7 +45,8 @@
     "src/state/migrations/035_idempotent_unknown_effect_outcome.ts": "ff2ad6995a716949b1c48b7668fc4a27479f144c85fbdd89f1374c79b132560b",
     "src/state/migrations/036_canonical_projection_marker.ts": "e6e7e71f2a714470a0ae48aed18b9ff436906cef6c5f485983f221fe9055d29a",
     "src/state/migrations/037_workflow_pause.ts": "5b8bf90539421362a860046c4a9cfd9c6829dc15253e74a1eea008fb077000f1",
-    "src/state/migrations/index.ts": "ed8b4f054fa92dacfee6bccb0c945509c848495a8d52230612c01b3b7f06d1f1",
+    "src/state/migrations/038_task_model_call_budget.ts": "5b96aea581d66567b198e2f8401eefc2dab08fcfa2fdd1b954524b662b82e919",
+    "src/state/migrations/index.ts": "cdd2c1d3047976fe553804e99d65292bb71f0db10b9ec0fed148f9cc34990672",
     "src/state/migrations/types.ts": "2a4d0620a863f3eeee287163cc91ce09963098471f9c13583a8f2a2c5f468026",
     "src/utils/loadAjv.ts": "48f631137c1292a5d3b3c14bcb2a67f7bff665233eee7d67a4455644a94b7629"
   }

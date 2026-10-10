@@ -1,3 +1,4 @@
+import { parseAnthropicMessagesResponse } from "../../src/llm/wire/messages-anthropic.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -394,7 +395,6 @@ describe("admitted execution boundaries with the durable kernel", () => {
   });
 
   it.each([
-    { maxTokens: 10_000 },
     { maxCostUsd: 0.01 },
   ])("makes a provider overrun explicit under %j and locks future descendants", async (limits) => {
     const client = kernel.bindClient({
@@ -693,4 +693,39 @@ describe("admitted execution boundaries with the durable kernel", () => {
       }),
     ).rejects.toMatchObject({ reason: "parent_cancel_locked" });
   });
+});
+
+
+it.each([{delta:1,finishReason:"stop" as const},{delta:300,finishReason:"stop" as const},{delta:170,finishReason:"length" as const}])("reconciles model reservation drift $delta on $finishReason without aborting", async ({delta,finishReason}) => {
+  const client = kernel.bindClient({cwd,scope:{runId:"drift",sessionId:"drift",autonomous:false,maxTokens:20000}});
+  const session = sessionFor(client);
+  let actual = 0;
+  const result = await runAdmittedModelCall({session,provider,messages:[{role:"user",content:"hello"}],options:{maxOutputTokens:256},stepId:"drift-one",model:"grok-4.5",providerName:"grok",invoke:async options => {
+    const promptTokens = options.accountedInputTokens! + delta;
+    const completionTokens = options.maxOutputTokens!;
+    actual = promptTokens + completionTokens;
+    return {...modelResponse({promptTokens,completionTokens,totalTokens:actual,reasoningOutputTokens:completionTokens-1}),finishReason};
+  }});
+  expect(result.finishReason).toBe(finishReason);
+  expect(client.getTaskBudgetUsage?.()).toMatchObject({tokens:actual,calls:1});
+  expect(session.abortTerminal).not.toHaveBeenCalled();
+  expect(session.services.agentControl.shutdownAgentTree).not.toHaveBeenCalled();
+  const next = await client.acquire({stepId:"drift-next",kind:"model_turn",maxInputTokens:10,maxOutputTokens:10,maxCostUsd:0.001});
+  client.void(next.reservation.reservationId,"fixture_complete");
+});
+
+
+it("settles Anthropic cache-inclusive usage durably and denies the next reservation", async () => {
+  const client = kernel.bindClient({cwd,scope:{runId:"anthropic-cache",sessionId:"anthropic-cache",autonomous:false,maxTokens:20000}});
+  const session = sessionFor(client);
+  const model = "claude-haiku-4.5";
+  const anthropic = {name:"anthropic",getExecutionProfile:async () => ({provider:"anthropic",model,usageReporting:"authoritative",supportsMaxOutputTokens:true})} as unknown as LLMProvider;
+  await runAdmittedModelCall({session,provider:anthropic,messages:[{role:"user",content:"hello"}],options:{maxOutputTokens:256},stepId:"cached-call",model,providerName:"anthropic",invoke:async () =>
+    parseAnthropicMessagesResponse(model, {model,stop_reason:"end_turn",content:[{type:"text",text:"ok"}],usage:{input_tokens:100,cache_read_input_tokens:18000,cache_creation_input_tokens:1700,output_tokens:200,cache_creation:{ephemeral_1h_input_tokens:700},output_tokens_details:{thinking_tokens:150}}}, {model,messages:[{role:"user",content:"hello"}],tools:[]})
+  });
+  expect(client.getTaskBudgetUsage?.()).toMatchObject({tokens:20000,calls:1});
+  expect(session.abortTerminal).not.toHaveBeenCalled();
+  const restored = kernel.bindClient({cwd,scope:{runId:"anthropic-cache",sessionId:"anthropic-cache",autonomous:false,maxTokens:20000}});
+  expect(restored.getTaskBudgetUsage?.()).toMatchObject({tokens:20000,calls:1});
+  await expect(restored.acquire({stepId:"after-cache",kind:"model_turn",maxInputTokens:1,maxOutputTokens:1,maxCostUsd:0})).rejects.toThrow();
 });

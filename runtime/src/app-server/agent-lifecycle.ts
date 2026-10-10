@@ -994,6 +994,17 @@ export class AgenCDaemonAgentManager {
         (canonicalRuntimeSettings === undefined
           ? metadataString(retainedMetadata, "profile")
           : (canonicalRuntimeSettings.profile ?? undefined));
+      const taskBudget: { taskTokenBudget?: number; taskMaxCalls?: number } = {};
+      for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+        const value = params[key] ?? retainedMetadata?.[key];
+        if (value === undefined) continue;
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "INVALID_ARGUMENT", `agent.create ${key} must be a non-negative safe integer`,
+          );
+        }
+        taskBudget[key] = value;
+      }
       const configPath = params.configPath ?? retainedConfigPath;
       if (configPath !== undefined && !isAbsolute(configPath)) {
         throw new AgenCDaemonAgentLifecycleError(
@@ -1075,6 +1086,7 @@ export class AgenCDaemonAgentManager {
           : profile !== undefined
             ? { profile }
             : {}),
+        ...taskBudget,
         ...(configPath !== undefined ? { configPath } : {}),
         ...(addDirs !== undefined ? { addDirs: [...addDirs] } : {}),
         ...(permissionMode !== undefined ? { permissionMode } : {}),
@@ -1106,6 +1118,7 @@ export class AgenCDaemonAgentManager {
               ...(model !== undefined ? { model } : {}),
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
+              ...taskBudget,
               ...(configPath !== undefined ? { configPath } : {}),
               ...(addDirs !== undefined ? { addDirs } : {}),
               ...(params.initialContent !== undefined
@@ -1149,6 +1162,7 @@ export class AgenCDaemonAgentManager {
               ...(model !== undefined ? { model } : {}),
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
+              ...taskBudget,
               ...(configPath !== undefined ? { configPath } : {}),
               ...(addDirs !== undefined ? { addDirs } : {}),
               ...(permissionMode !== undefined ? { permissionMode } : {}),
@@ -1483,6 +1497,8 @@ export class AgenCDaemonAgentManager {
     readonly provider?: string;
     readonly profile?: string;
     readonly configPath?: string;
+    readonly taskTokenBudget?: number;
+    readonly taskMaxCalls?: number;
     readonly addDirs?: readonly string[];
     readonly permissionMode?:
       | "default"
@@ -1538,6 +1554,12 @@ export class AgenCDaemonAgentManager {
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      ...(params.taskTokenBudget !== undefined
+        ? { taskTokenBudget: params.taskTokenBudget }
+        : {}),
+      ...(params.taskMaxCalls !== undefined
+        ? { taskMaxCalls: params.taskMaxCalls }
+        : {}),
       ...(params.configPath !== undefined
         ? { configPath: params.configPath }
         : {}),

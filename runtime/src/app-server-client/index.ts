@@ -86,6 +86,8 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly deferInitialTurn?: boolean;
@@ -125,6 +127,8 @@ export interface ResumeAgenCDaemonPromptAgentOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
@@ -169,6 +173,12 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.taskTokenBudget !== undefined
+      ? { taskTokenBudget: options.taskTokenBudget }
+      : {}),
+    ...(options.taskMaxCalls !== undefined
+      ? { taskMaxCalls: options.taskMaxCalls }
+      : {}),
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
       : {}),
@@ -217,6 +227,12 @@ export async function resumeAgenCDaemonPromptAgent(
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.taskTokenBudget !== undefined
+      ? { taskTokenBudget: options.taskTokenBudget }
+      : {}),
+    ...(options.taskMaxCalls !== undefined
+      ? { taskMaxCalls: options.taskMaxCalls }
+      : {}),
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
       : {}),
@@ -318,6 +334,8 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   /** Live daemon-owned authority returned by `agent.attach`. */
   readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
   /**
@@ -733,6 +751,12 @@ async function createBoundAgenCDaemonOnlyTuiContext(
         }),
     ...(selectedProfile !== undefined && selectedProfile !== null
       ? { profile: selectedProfile }
+      : {}),
+    ...(options.taskTokenBudget !== undefined
+      ? { taskTokenBudget: options.taskTokenBudget }
+      : {}),
+    ...(options.taskMaxCalls !== undefined
+      ? { taskMaxCalls: options.taskMaxCalls }
       : {}),
     ...(options.configPath !== undefined
       ? { configPath: options.configPath }

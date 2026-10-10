@@ -1374,6 +1374,8 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
   readonly model?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
@@ -1389,6 +1391,12 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
     provider: canonical.provider,
     model: canonical.model,
     ...(canonical.profile !== null ? { profile: canonical.profile } : {}),
+    ...(params.taskTokenBudget !== undefined
+      ? { taskTokenBudget: params.taskTokenBudget }
+      : {}),
+    ...(params.taskMaxCalls !== undefined
+      ? { taskMaxCalls: params.taskMaxCalls }
+      : {}),
     ...(params.configPath !== undefined
       ? { configPath: params.configPath }
       : {}),
@@ -1458,6 +1466,8 @@ function buildBootstrapArgv(
     readonly model?: string;
     readonly profile?: string;
     readonly configPath?: string;
+    readonly taskTokenBudget?: number;
+    readonly taskMaxCalls?: number;
     readonly addDirs?: readonly string[];
     readonly permissionMode?:
       | "default"
