@@ -196,7 +196,7 @@ export function formatCliHelpText(): string {
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
     "  --budget <eco|balanced|max>              Task token budget: 1M, 2.4M, or unlimited",
-    "  --task-token-budget <tokens>            Per-task input + output cap (default 219000; 0 disables)",
+    "  --task-token-budget <tokens>            Override the default task allocation (0 disables)",
     "  --task-max-calls <calls>                Optional per-task model call cap (0 disables)",
     "  --deadline <+seconds|ISO-8601>           Print mode: stop the run by this time (exit 5)",
     "  --deadline-reserve <seconds>             Print mode: time before the deadline to wrap up",
