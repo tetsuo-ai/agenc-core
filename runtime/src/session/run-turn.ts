@@ -3385,6 +3385,13 @@ async function* runTurnKernelInner(
       return cancelledAfterSampling.terminal;
     }
 
+    // Actual provider usage can exceed the admitted estimate. Drain the
+    // admitted tool work and finish before recovery or compaction spends more.
+    if (taskBudget?.reached) {
+      yield await finishTaskBudget();
+      return { reason: "task_budget" };
+    }
+
     // Recovery re-entry? postSampleRecovery or continuationNudge may
     // have set state.transition — all 8 reasons route to PrepareContext
     // per PhaseTransition table.
