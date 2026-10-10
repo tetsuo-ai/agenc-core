@@ -2801,6 +2801,9 @@ async function* runTurnKernelInner(
   // sample has established compaction pressure. Check that request before send.
   let deferredCompaction = continuedFromFastMode;
   let requiredCompactionAttempted = false;
+  // One proactive attempt per prepared dispatch. The re-prepared request is
+  // admitted when it fits; it is not compacted a second time in that retry.
+  let proactiveDispatchCompactionAttempted = false;
   const deferCompactionRefusal = (): void => {
     deferredCompaction = true;
     session.emit({
@@ -3219,12 +3222,70 @@ async function* runTurnKernelInner(
         turnQuerySource,
         opts.assistantOutputSink,
         async (request) => {
-          if (!deferredCompaction) return true;
-          if (await preparedRequestFitsContext(
-            request, session, ctx, signal,
-            state.pendingAdmissionFallback?.toModel ??
-              session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug,
-          )) {
+          const requestedModel = state.pendingAdmissionFallback?.toModel ??
+            session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug;
+          const requestFits = () => preparedRequestFitsContext(
+            request, session, ctx, signal, requestedModel,
+          );
+          const autoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
+          /*
+           * The post-tool gate measures the query that was just sent. Tool
+           * results appended after that snapshot can push the next prepared
+           * request past the proactive threshold — and past the window —
+           * before that gate runs again. On a provider without a native
+           * tokenizer the conservative-fallback estimate is already the
+           * number admission will refuse on, so compact from it while the
+           * request is still unsent (#2520). Pre-turn compaction covers the
+           * first sample; this only guards later dispatches.
+           */
+          const preparedOverThreshold =
+            state.turnCount > 1 &&
+            autoCompactLimit !== undefined &&
+            getActiveContextTokenUsage(session, ctx, state) >= autoCompactLimit;
+          if (!deferredCompaction && preparedOverThreshold) {
+            if (proactiveDispatchCompactionAttempted) {
+              proactiveDispatchCompactionAttempted = false;
+              return requestFits();
+            }
+            proactiveDispatchCompactionAttempted = true;
+            persistNewResponseItems();
+            const compacted = await runAutoCompact(
+              session, ctx, "before_last_user_message", "context_limit", "in_turn", state,
+              {
+                querySource: turnQuerySource,
+                durableMessageCount: compactionDurableCount(),
+                onDurableHistoryReplaced: onCompactionReplacedHistory,
+                onAdvisoryRefusal: deferCompactionRefusal,
+              },
+            );
+            if (compacted) {
+              session.bindProviderConversation();
+              return false;
+            }
+            proactiveDispatchCompactionAttempted = false;
+            /*
+             * Advisory no-shrink / summary rejection sets deferredCompaction
+             * and returns without climbing the ladder. That refusal must not
+             * spend the one re-prepare: the mandatory attempt below owns it,
+             * and a successful shrink has to come back here for the smaller
+             * request. Returning false here discarded that shrink and ended
+             * the turn as compact_failed.
+             */
+            if (!deferredCompaction) {
+              if (await requestFits()) return true;
+              const tiers = state.compactionLadder?.tiersAttempted ?? [];
+              throw new DeferredCompactionError(
+                "Compaction could not shrink the context enough for the next request and reserved output." +
+                  (tiers.length > 0 ? ` (compact_ladder_exhausted: tiers=[${tiers.join(",")}])` : "") +
+                  (session.services?.runtimeOptions?.nonInteractive !== true ? "; run /compact to retry manually" : ""),
+              );
+            }
+          }
+          if (!deferredCompaction) {
+            proactiveDispatchCompactionAttempted = false;
+            return true;
+          }
+          if (await requestFits()) {
             if (requiredCompactionAttempted) deferredCompaction = false;
             requiredCompactionAttempted = false;
             return true;
