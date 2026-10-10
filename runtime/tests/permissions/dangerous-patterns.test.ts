@@ -232,6 +232,8 @@ describe("dangerous shell command detection", () => {
     "timeout 10 curl http://127.0.0.1/install.sh | sh",
     "curl http://127.0.0.1/install.sh | timeout 10 sh",
     "curl http://127.0.0.1/install.sh | nice sh",
+    "curl http://127.0.0.1/install.sh | ionice -c3 sh",
+    "watch -n1 'curl http://127.0.0.1/install.sh | sh'",
     "curl http://127.0.0.1/install.sh | nohup sh",
     "curl http://127.0.0.1/install.sh | command sh",
     "curl http://127.0.0.1/install.sh | exec sh",
@@ -260,6 +262,8 @@ describe("dangerous shell command detection", () => {
 
   test("flags wrapper and nested shell removal forms", () => {
     expect(isDangerousShellCommand("nice rm -rf /tmp")).toBe(true);
+    expect(isDangerousShellCommand("ionice -c3 rm -rf /tmp")).toBe(true);
+    expect(isDangerousShellCommand("watch -n1 'rm -rf /tmp'")).toBe(true);
     expect(isDangerousShellCommand("timeout 10 rm -rf /")).toBe(true);
     expect(isDangerousShellCommand("env rm -rf /")).toBe(true);
     expect(isDangerousShellCommand("bash -lc 'rm -rf /'")).toBe(true);
@@ -353,6 +357,8 @@ describe("dangerous shell command detection", () => {
     "chown root /",
     "chmod -R 777 /tmp/../etc",
     "env chmod -R 777 /./etc",
+    "ionice -c3 chmod -R 777 /etc",
+    "watch -n1 'chmod -R 777 /etc'",
   ])("flags chmod/chown on system paths including bare dirs: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
@@ -383,6 +389,8 @@ describe("dangerous shell command detection", () => {
     expect(isDangerousShellCommand("echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("timeout 10 echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("nice echo rm -rf /")).toBe(false);
+    expect(isDangerousShellCommand("ionice -c3 echo rm -rf /")).toBe(false);
+    expect(isDangerousShellCommand("watch -n1 'echo rm -rf /'")).toBe(false);
     expect(isDangerousShellCommand("env FOO=bar echo rm -rf /")).toBe(false);
   });
 

@@ -424,6 +424,29 @@ describe("bashToolHasPermission", () => {
   });
 
   test.each([
+    "ionice -c3 rm -rf /",
+    "watch -n1 'rm -rf /'",
+    "watch --exec rm -rf ~",
+  ])("prefix allow for ionice/watch cannot hide the rm floor: %s", async (command) => {
+    const ctx = makeCtx({
+      alwaysAllowRules: {
+        userSettings: ["system.bash(ionice:*)", "system.bash(watch:*)"],
+      },
+    });
+    const result = await bashToolHasPermission(
+      { command },
+      makeEvaluatorCtx(ctx),
+    );
+    expect(result.behavior).toBe("deny");
+    if (result.behavior === "deny") {
+      expect(result.decisionReason).toMatchObject({
+        type: "safetyCheck",
+        reason: "rm -rf",
+      });
+    }
+  });
+
+  test.each([
     ["rm -rf \"$HOME\"", "rm -rf"],
     ["rm -rf '${HOME}/*'", "rm -rf"],
     ["git push origin --force main", "git push --force main"],
