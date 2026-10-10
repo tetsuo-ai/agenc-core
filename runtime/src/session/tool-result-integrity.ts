@@ -228,6 +228,35 @@ export function createToolResultIntegrity(params: {
   };
 }
 
+/**
+ * Capture a validated immutable text body now, hash only when its integrity
+ * fields are consumed (serialization, verification, or a normal-path handoff).
+ * Structured bodies retain eager validation/hashing because their contents
+ * can mutate. Invalid text and scope IDs still fail at the result boundary.
+ */
+export function createDeferredTextToolResultIntegrity(params: {
+  readonly runId: string;
+  readonly toolCallId: string;
+  readonly content: unknown;
+}): ToolResultIntegrity {
+  if (typeof params.content !== "string") return createToolResultIntegrity(params);
+  const { runId, toolCallId, content } = params;
+  assertBoundedIdentity(runId, "runId", MAX_TOOL_RESULT_SCOPE_ID_BYTES);
+  assertBoundedIdentity(toolCallId, "toolCallId", MAX_TOOL_CALL_ID_UTF8_BYTES);
+  assertWellFormedUtf16(content, "string");
+  let materialized: ToolResultIntegrity | undefined;
+  const read = () => materialized ??= createToolResultIntegrity({ runId, toolCallId, content });
+  return {
+    version: TOOL_RESULT_INTEGRITY_VERSION,
+    algorithm: TOOL_RESULT_DIGEST_ALGORITHM,
+    runId,
+    toolCallId,
+    get resultId() { return read().resultId; },
+    get original() { return read().original; },
+    get persisted() { return read().persisted; },
+  };
+}
+
 export function withPersistedToolResultRepresentation(
   integrity: ToolResultIntegrity,
   representation: Exclude<ToolResultRepresentation, "original">,

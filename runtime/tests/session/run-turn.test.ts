@@ -64,6 +64,8 @@ import {
 } from "../utils/messageQueueManager.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { createToolResultIntegrity } from "./tool-result-integrity.js";
+import { withCheckpointProjectionCache } from "../../src/session/checkpoint-projection-cache.js";
+import { llmMessageToCheckpointResponseItem } from "../../src/session/message-history-conversion.js";
 import { buildInitialTurnState } from "./turn-state.js";
 import { RolloutStore } from "./rollout-store.js";
 import { reconstructFromRollout } from "./rollout-reconstruction.js";
@@ -1569,6 +1571,53 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
+  test("actual persisted tool messages reuse their checkpoint projection without rechecking the old result", async () => {
+    let requests = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async () => {
+        requests += 1;
+        return {
+          content: requests === 1 ? "" : "finished",
+          toolCalls: requests === 1 ? [{ id: "checkpoint-call", name: "checkpoint_echo", arguments: "{}" }] : [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: requests === 1 ? "tool_calls" : "stop",
+        };
+      },
+    };
+    const result = { content: "ordinary echo output\n", isError: false };
+    const registry = {
+      tools: [{ name: "checkpoint_echo", description: "read-only echo",
+        inputSchema: { type: "object", additionalProperties: false },
+        requiresApproval: false, isReadOnly: true, recoveryCategory: "idempotent",
+        execute: async () => result }],
+      toLLMTools: () => [],
+      dispatch: async () => result,
+    } as unknown as ToolRegistry;
+    const { session, getState } = mkSession({ provider, registry });
+    const appendRollout = vi.fn();
+    session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
+      append: vi.fn(), appendRollout,
+      rolloutPath: "/tmp/checkpoint-projection-test.jsonl",
+    } as unknown as Session["rolloutStore"];
+    await drain(session.runTurn("echo once", { ctx: mkCtx() }));
+    expect(requests).toBe(2);
+    const message = (getState().history as LLMMessage[]).find((item) => item.role === "tool");
+    expect(message).toBeDefined();
+    expect(message!.runtimeOnly?.toolResultIntegrity).toBeDefined();
+    expect(appendRollout.mock.calls.some(([item]) => item.type === "response_item" &&
+      item.payload.role === "tool" && item.payload.toolResultIntegrity !== undefined)).toBe(true);
+    const full = vi.fn(llmMessageToCheckpointResponseItem);
+    const project = withCheckpointProjectionCache(full);
+    const first = project(message!);
+    const second = project(message!);
+    expect(full).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
+    expect(JSON.stringify(second)).toBe(JSON.stringify(llmMessageToCheckpointResponseItem(message!)));
+  });
+
   test("a burst of medium tool results is bounded by the aggregate budget (wiring)", async () => {
     // Each result stays below the single-result cap, so only the explicit
     // aggregate per-group budget can bound the sum: 10 × 12K = 120K chars in
@@ -2816,6 +2865,24 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       if (event.type === "turn_complete") break;
     }
 
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+
+  test("releases the active task when the terminal persistence barrier fails", async () => {
+    const { session } = mkSession({
+      provider: mkProvider({ content: "reply" }),
+      registry: mkRegistry(),
+    });
+    const failure = new Error("terminal persistence failed");
+    await expect((async () => {
+      for await (const event of session.runTurn("hello", { ctx: mkCtx() })) {
+        if (event.type === "turn_complete") {
+          session.writeBehind.beginStep();
+          session.writeBehind.defer("failed-terminal-append", () => { throw failure; });
+          break;
+        }
+      }
+    })()).rejects.toBe(failure);
     expect(session.activeTurn.unsafePeek()).toBeNull();
   });
 

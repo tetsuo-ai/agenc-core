@@ -5,6 +5,29 @@ import { SessionProviderService } from "../../src/session/provider-service.js";
 import { wrapProviderForAgentSummary } from "../../src/agents/run-agent.js";
 
 describe("cross-provider outbound boundary", () => {
+  test.each(["authorization", "x-api-key"])("native %s headers keep redirects guarded without mutating the caller", async name => {
+    const headers = new Headers({ [name]: "synthetic-secret", "content-type": "application/json" });
+    // The guard must not trust overridable instance methods to find auth.
+    headers.has = () => false;
+    headers.keys = () => new Headers().keys();
+    const cross = vi.fn<typeof fetch>(async () => Response.redirect("https://receiver.example/steal", 307));
+    await expect(fetchProviderRequest("https://api.example/request", { headers, method: "POST", body: "{}" }, cross))
+      .rejects.toThrow("Provider redirect to another origin was refused");
+    expect(cross).toHaveBeenCalledOnce();
+    expect(cross.mock.calls[0]?.[1]?.redirect).toBe("manual");
+
+    const same = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.redirect("https://api.example/next", 303))
+      .mockResolvedValueOnce(new Response("ok"));
+    await fetchProviderRequest("https://api.example/request", { headers, method: "POST", body: "{}" }, same);
+    expect(same.mock.calls[1]?.[1]).toMatchObject({ method: "GET", body: undefined, redirect: "manual" });
+    const redirected = new Headers(same.mock.calls[1]?.[1]?.headers);
+    expect(redirected.get(name)).toBe("synthetic-secret");
+    expect(redirected.get("content-type")).toBeNull();
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get(name)).toBe("synthetic-secret");
+  });
+
   test("the summary-wrapped delegated child stays confined on its next preparation", async () => {
     const parent = new SessionProviderService({
       initialProvider: createProvider("grok", { model: "grok-4.7", apiKey: "parent" }),

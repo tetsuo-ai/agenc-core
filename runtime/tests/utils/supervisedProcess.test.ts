@@ -1634,12 +1634,17 @@ describe("process-tree root safety", () => {
       expect(normalizeCSource(mainImplementation)).toBe(
         normalizeCSource(`
           int main(int argc, char **argv) {
+            if (argc == 2 && strcmp(argv[1], "--one-shot-server-v1") == 0) return run_one_shot_server();
             sigset_t wait_mask;
             int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
 
             if (argc == 2 && strcmp(argv[1], "--describe-protocol") == 0)
               return describe_v2_protocol();
-            int launch_status = argc == 2 && strcmp(argv[1], "--bootstrap-v2") == 0
+            if (argc == 2 && strcmp(argv[1], "--describe-protocol-v3") == 0)
+              return describe_v3_protocol();
+            v3_reporting = argc == 2 && strcmp(argv[1], "--bootstrap-v3") == 0;
+            int launch_status = v3_reporting ? launch_v3_supervised_target(&wait_mask)
+                : argc == 2 && strcmp(argv[1], "--bootstrap-v2") == 0
                 ? launch_v2_supervised_target(&wait_mask)
                 : launch_supervised_target(argc, &wait_mask);
             if (launch_status != AGENC_BROKER_SUCCESS) {
@@ -1649,6 +1654,7 @@ describe("process-tree root safety", () => {
                 AGENC_BROKER_SUCCESS) {
               return AGENC_BROKER_ERROR_EXIT;
             }
+            if (v3_reporting) return complete_v3_cleanup(root_status);
             if (complete_broker_cleanup() != AGENC_BROKER_SUCCESS) {
               return AGENC_BROKER_ERROR_EXIT;
             }

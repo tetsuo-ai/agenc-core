@@ -22,17 +22,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 6.918654,
-            "maxMs": 96.132624,
-            "medianMs": 88.165849,
-            "minMs": 80.222548,
+            "madMs": 1.610582,
+            "maxMs": 92.484318,
+            "medianMs": 75.572115,
+            "minMs": 73.043005,
             "sampleCount": 5,
             "samplesMs": [
-              88.165849,
-              96.132624,
-              80.222548,
-              81.247195,
-              88.589151
+              76.758495,
+              73.961533,
+              73.043005,
+              92.484318,
+              75.572115
             ]
           },
           "fixtureDigest": "0ca9b86d1a9d5bac08bdeb5ded3c9183569ada6b552ba01d662b8e1365cff2fe",
@@ -43,23 +43,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 187047936,
+              "maximumObservedBytes": 184750080,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                130789376,
-                140947456,
-                161017856,
-                161017856,
-                179707904,
-                179707904,
-                181805056,
-                181805056,
-                184950784,
-                184950784,
-                187047936
+                117657600,
+                138989568,
+                141373440,
+                141373440,
+                143732736,
+                143732736,
+                145502208,
+                145502208,
+                182652928,
+                182652928,
+                184750080
               ]
             },
-            "peakRssBytes": 187047936,
+            "peakRssBytes": 185208832,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -78,17 +78,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 1.56001,
-            "maxMs": 174.170922,
-            "medianMs": 166.66015,
-            "minMs": 164.398123,
+            "madMs": 4.228911,
+            "maxMs": 160.057141,
+            "medianMs": 152.205305,
+            "minMs": 147.976394,
             "sampleCount": 5,
             "samplesMs": [
-              174.170922,
-              168.22016,
-              165.653009,
-              164.398123,
-              166.66015
+              160.057141,
+              158.666691,
+              149.381011,
+              152.205305,
+              147.976394
             ]
           },
           "fixtureDigest": "ccbf8b3d5336415b2ded77d1c42203949fafd1496957db250011cf0bd2cd00ce",
@@ -99,23 +99,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 198680576,
+              "maximumObservedBytes": 201060352,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                130785280,
-                174088192,
-                180379648,
-                180379648,
-                186671104,
-                186671104,
-                191389696,
-                191389696,
-                195534848,
-                195534848,
-                198680576
+                118308864,
+                143417344,
+                182149120,
+                182149120,
+                186474496,
+                186474496,
+                192765952,
+                192765952,
+                196734976,
+                196734976,
+                201060352
               ]
             },
-            "peakRssBytes": 203010048,
+            "peakRssBytes": 203923456,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -134,17 +134,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 4.937322,
-            "maxMs": 336.323041,
-            "medianMs": 321.664848,
-            "minMs": 316.727526,
+            "madMs": 9.368663,
+            "maxMs": 320.996473,
+            "medianMs": 311.617179,
+            "minMs": 299.292726,
             "sampleCount": 5,
             "samplesMs": [
-              328.034147,
-              321.664848,
-              316.727526,
-              336.323041,
-              320.723507
+              320.996473,
+              302.248516,
+              311.66051,
+              299.292726,
+              311.617179
             ]
           },
           "fixtureDigest": "0f4385af1bcdc19019e76509840700e8cfd68621daaa29a63ec4c05a4464cfac",
@@ -155,23 +155,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 216887296,
+              "maximumObservedBytes": 208056320,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                132788224,
-                182894592,
-                194928640,
-                194928640,
-                207441920,
-                207441920,
-                215306240,
-                215306240,
-                215314432,
-                215314432,
-                216887296
+                118423552,
+                147165184,
+                195084288,
+                195084288,
+                207073280,
+                207073280,
+                208056320,
+                208056320,
+                207769600,
+                207769600,
+                207609856
               ]
             },
-            "peakRssBytes": 219070464,
+            "peakRssBytes": 212971520,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -204,17 +204,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 0.109747,
-            "maxMs": 3.716738,
-            "medianMs": 2.676236,
-            "minMs": 2.145951,
+            "madMs": 0.225872,
+            "maxMs": 3.017394,
+            "medianMs": 2.367348,
+            "minMs": 2.023555,
             "sampleCount": 5,
             "samplesMs": [
-              3.716738,
-              2.676236,
-              2.754665,
-              2.145951,
-              2.566489
+              3.017394,
+              2.367348,
+              2.565278,
+              2.023555,
+              2.141476
             ]
           },
           "fixtureDigest": "5fdb1381163adfa352201f2446aeeacb8d3f5652fdb4f2d14e34a3ae73f48fe6",
@@ -225,23 +225,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 91111424,
+              "maximumObservedBytes": 93798400,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                82198528,
-                83771392,
-                86917120,
-                86917120,
-                88489984,
-                88489984,
-                89538560,
-                89538560,
-                90587136,
-                90587136,
-                91111424
+                85344256,
+                87310336,
+                89276416,
+                89276416,
+                90652672,
+                90652672,
+                91832320,
+                91832320,
+                92815360,
+                92815360,
+                93798400
               ]
             },
-            "peakRssBytes": 91111424,
+            "peakRssBytes": 93798400,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -259,17 +259,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 0.242399,
-            "maxMs": 5.818451,
-            "medianMs": 5.10683,
-            "minMs": 4.294596,
+            "madMs": 0.293168,
+            "maxMs": 5.833512,
+            "medianMs": 4.876371,
+            "minMs": 4.468939,
             "sampleCount": 5,
             "samplesMs": [
-              5.818451,
-              5.10683,
-              5.255866,
-              4.864431,
-              4.294596
+              5.833512,
+              4.876371,
+              5.169539,
+              4.657211,
+              4.468939
             ]
           },
           "fixtureDigest": "a46028608f2726a48af61c9fb505a7cecce18d6e5f4c570fb9747ed5b9ebf728",
@@ -280,23 +280,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 105558016,
+              "maximumObservedBytes": 108957696,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                83537920,
-                88256512,
-                90877952,
-                90877952,
-                94023680,
-                94023680,
-                97169408,
-                97169408,
-                102412288,
-                102412288,
-                105558016
+                86347776,
+                92049408,
+                94605312,
+                94605312,
+                98537472,
+                98537472,
+                101093376,
+                101093376,
+                106795008,
+                106795008,
+                108957696
               ]
             },
-            "peakRssBytes": 105558016,
+            "peakRssBytes": 109154304,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -314,17 +314,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 1.329489,
-            "maxMs": 15.249963,
-            "medianMs": 13.337526,
-            "minMs": 9.386062,
+            "madMs": 0.62043,
+            "maxMs": 10.685206,
+            "medianMs": 10.064776,
+            "minMs": 9.211359,
             "sampleCount": 5,
             "samplesMs": [
-              15.249963,
-              14.007424,
-              12.008037,
-              13.337526,
-              9.386062
+              10.064776,
+              10.513636,
+              9.27063,
+              9.211359,
+              10.685206
             ]
           },
           "fixtureDigest": "83b961c07a66f67bd9408e666deccce73a7030fa14f72050fa1b042f1df6beb6",
@@ -335,23 +335,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 122937344,
+              "maximumObservedBytes": 129720320,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                85929984,
-                95367168,
-                106377216,
-                106377216,
-                115290112,
-                115290112,
-                121643008,
-                121643008,
-                120840192,
-                120840192,
-                122937344
+                88039424,
+                98066432,
+                103571456,
+                103571456,
+                109273088,
+                109273088,
+                115367936,
+                115367936,
+                123232256,
+                123232256,
+                129720320
               ]
             },
-            "peakRssBytes": 124264448,
+            "peakRssBytes": 129720320,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -365,8 +365,8 @@
   ],
   "environment": {
     "cpu": {
-      "logicalCount": 64,
-      "model": "AMD Ryzen Threadripper PRO 9975WX 32-Cores"
+      "logicalCount": 24,
+      "model": "AMD Ryzen 9 9900X 12-Core Processor"
     },
     "filesystems": {
       "sourceCheckout": {
@@ -375,16 +375,16 @@
       },
       "temporaryFixtures": {
         "blockSizeBytes": 4096,
-        "type": "16914836"
+        "type": "2035054128"
       }
     },
     "memory": {
-      "totalBytes": 1081089323008
+      "totalBytes": 32214446080
     },
     "os": {
       "arch": "x64",
       "platform": "linux",
-      "release": "7.0.0-31-generic"
+      "release": "7.0.0-34-generic"
     },
     "ripgrep": {
       "distribution": "pinned_package",
@@ -460,7 +460,7 @@
     {
       "normalization": "utf8_lf",
       "path": "package-lock.json",
-      "sha256": "4db926f7280af2b9c321ee7989a5dcb2d785c61c1c42cd42052487e8a801c1cd"
+      "sha256": "d3bfbebdca5c2950acef8502e79363f563dbd02df7805059dd9844e6b9429e96"
     },
     {
       "normalization": "utf8_lf",
@@ -540,7 +540,7 @@
     {
       "normalization": "utf8_lf",
       "path": "runtime/native/agenc-process-broker.c",
-      "sha256": "c4a5b48ea40478e3bd0862063de922b4dae02fbef3623d55b5733b0b8c3e0725"
+      "sha256": "ab5855212356aa8ca2d6f47056bd43211cadc66cf24447465175bd39508e43d0"
     },
     {
       "normalization": "utf8_lf",
@@ -550,7 +550,7 @@
     {
       "normalization": "utf8_lf",
       "path": "runtime/package.json",
-      "sha256": "e0d992678efb4e6336a9ff8be725fb6c4dbd2620ba776d4ffa31554c03285011"
+      "sha256": "75d731b03f6b141ec94b117e9a6a89e8093dd57967665cd2d58c653b58ab625f"
     }
   ],
   "planDigest": "672538014498283c935efce76c0a5244abd280aadaeb5a03a9d835f041db2ebe",
@@ -572,7 +572,7 @@
         },
         {
           "path": "runtime/src/agents/jobs/csv-schema.ts",
-          "sha256": "791a5549e06630cf78507c547b4c54f228c2112e7f167f55b01fe317404a5200"
+          "sha256": "da97ec8ac4d146403e38ebf541b9de228e39609d26f4549ee6fdca4aaca04784"
         },
         {
           "path": "runtime/src/agents/jobs/job-orchestrator.ts",
@@ -583,48 +583,12 @@
           "sha256": "33f621304bfb4e7d97dd9e91f94c2f444aef932a8534ac79860a6fb4a8b00ce2"
         },
         {
-          "path": "runtime/src/app-server/protocol/index.ts",
-          "sha256": "b03c19b96370767af1c886a1d6bc08a0c827dcef680902f9bf20074d32bef289"
-        },
-        {
-          "path": "runtime/src/config/credential-classification.ts",
-          "sha256": "8c498568b103a85308d51b2627631dcdf1c37d30d57e2fb13d538fda87202c09"
-        },
-        {
-          "path": "runtime/src/config/env.ts",
-          "sha256": "81e9ff278592b1c3f56afd99e8a2f5aef57696fe8fc2d159141531d6102c46aa"
-        },
-        {
           "path": "runtime/src/config/home.ts",
           "sha256": "451624618b9bf31ea8a790d03796e1082fbbc6124e511969cc568a42054512c0"
         },
         {
-          "path": "runtime/src/config/json.ts",
-          "sha256": "484e1487b3ab879482a38bb1327485b487b02e0ba85cf15e6daca96b2577cf45"
-        },
-        {
-          "path": "runtime/src/config/mcp-oauth.ts",
-          "sha256": "02aa27382e73afddd2a36f86f417c3c59014cd2f9bd8470e7bae8d49381a2c66"
-        },
-        {
-          "path": "runtime/src/config/provider-model-authority.ts",
-          "sha256": "a12b4f3c83db60b2023336e6970ed134c1aa50b7a0cd00fc078f6d3674885a65"
-        },
-        {
-          "path": "runtime/src/config/schema.ts",
-          "sha256": "ef4f25e28407509f9e7aec9f6e047f4c3f1a6227176eab60256e9efeac5f8613"
-        },
-        {
-          "path": "runtime/src/config/strict-schema.ts",
-          "sha256": "503db49c9a4dcda8dd93fe8ea16533345a5ce1357c297c3fa001186a26879032"
-        },
-        {
           "path": "runtime/src/constants/oauth.ts",
           "sha256": "416a6fd778483d13dd129a11f9ffab1e392cf89962a8676b51b7e697a4632df8"
-        },
-        {
-          "path": "runtime/src/context/personality-spec-instructions.ts",
-          "sha256": "333dba158f8076dcfdd01b0dbcadf05710376b9b5d3f82266786d4dddda96266"
         },
         {
           "path": "runtime/src/contracts/agent-invocation-envelope.ts",
@@ -636,99 +600,39 @@
         },
         {
           "path": "runtime/src/contracts/run-contracts.ts",
-          "sha256": "c7d16d99871954599794ea4ea4910cc7812e20203cad02fa7dfbda45080b6243"
+          "sha256": "3ebf5d4423c473b127aef26d61e3460a7142087e6a06288606ecad7471454b66"
+        },
+        {
+          "path": "runtime/src/contracts/turn-terminal.ts",
+          "sha256": "7923cd1f078f0e5522c1a244a2c7dc103056b257760947d9b79065b3bcae7c20"
         },
         {
           "path": "runtime/src/durability/offline-rollout.ts",
-          "sha256": "5bd8ebafef4f96cbb74805b81c764d98fdd172eb1e499bc92c2f55aa19219c96"
+          "sha256": "ded76f4e5034f68d943e42401b505864492fa3bfe371021896cca354e7e06f8a"
+        },
+        {
+          "path": "runtime/src/durability/one-shot-durability.ts",
+          "sha256": "724ba4906dfd5db09eb6fab93bde57e6c0359fe2ef99e533f34cd60879de6b21"
         },
         {
           "path": "runtime/src/eval-contract/canonical-json.ts",
           "sha256": "624f80d9e820c831b34918cb72f421e3bdb0a2fa3e6eee4645c32a7391859786"
         },
         {
-          "path": "runtime/src/heartbeat/config.ts",
-          "sha256": "796abcf1f073f340fffdb91f9d67aad58b3dced1810a62d6a2ba81b1b7c7d841"
-        },
-        {
-          "path": "runtime/src/identifiers/server-name.ts",
-          "sha256": "9df3646219a3f50aec2adc099d6941abf5d62c8a6c0e065a9e4eebbfb7b8e45b"
-        },
-        {
-          "path": "runtime/src/llm/_deps/runtime-errors.ts",
-          "sha256": "567aa2e8ecd2b5788985c6dcedb5df476964d42982cdbbe71ff5cbf460f7d7a8"
-        },
-        {
           "path": "runtime/src/llm/content-conversion.ts",
           "sha256": "0e226b50c339f6fb4f2d92b48a1ceaef3372751258f13e4326c2781dbb06dea9"
         },
         {
-          "path": "runtime/src/llm/errors.ts",
-          "sha256": "9b77faf47c6a913295dcb1a31a65eff637cf5f5c2c623c899a66312b7df1d3f7"
-        },
-        {
-          "path": "runtime/src/llm/registry/agenc-deepseek.ts",
-          "sha256": "dd3e7be7f0299f9cc6facff3a7500a5115606c79aab1b2190c68642024b6a7b4"
-        },
-        {
           "path": "runtime/src/llm/registry/deepseek-models.ts",
-          "sha256": "f15b2f1fd715b10114570823475e5d21caa4dae93c597d571b5d0a16fe3d3804"
+          "sha256": "f687a254e0a589b9a1b96551c6cd6e46e63fc6a58db56b6d39f2851868d4faa8"
         },
         {
-          "path": "runtime/src/llm/registry/gemini-thinking-models.ts",
-          "sha256": "ef2f35a7d0209850f0680e32f02223ffa28bc5092f5760e69f8122cd231bd9a7"
+          "path": "runtime/src/llm/types.ts",
+          "sha256": "ea66ccf51d09ce93d6f3a489bf4e0bbb892849a50a3204864aa3d746dadaa9cf"
         },
         {
-          "path": "runtime/src/llm/registry/model-catalog.ts",
-          "sha256": "da5a8ebd4005c300af9e99ea5072a5151225bdb445d648916e74daf702b1fd03"
-        },
-        {
-          "path": "runtime/src/llm/registry/ollama-cloud-models.ts",
-          "sha256": "f0ee5e0ca7edd7010e8f42d5435c5449a380ad7d4ecc5eb755272caea7ef2c95"
-        },
-        {
-          "path": "runtime/src/llm/registry/openai-reasoning-models.ts",
-          "sha256": "33f8818602dc8eaa37b28540c079dfd77a0cef3988819a057dade3f0600c8b80"
-        },
-        {
-          "path": "runtime/src/llm/registry/openrouter-free-models.ts",
-          "sha256": "b64a57d67f5cd1da170f83eb8a9a995347294c3ca3cef9f7080ced693e166131"
-        },
-        {
-          "path": "runtime/src/llm/registry/provider-info.ts",
-          "sha256": "93ce38ea762cc7f4e8a408b6068f82183cbacd63cf8e43ff8c0c92ced9694890"
-        },
-        {
-          "path": "runtime/src/llm/registry/provider-ingress.ts",
-          "sha256": "571523340cbfc6797b8801e74edf71038f8ca101a7bec0cf03359fff5e0e3d65"
-        },
-        {
-          "path": "runtime/src/llm/registry/qwen-coder-30b.ts",
-          "sha256": "11bef6c8efb9cdb378a6b11d2edba2b15f96d22cdd07a19d41ae94f58e0d0348"
-        },
-        {
-          "path": "runtime/src/llm/registry/qwen-flash-next.ts",
-          "sha256": "f2e3881fbfb9770e5a80e714119be547a4a3893b54a83690cfe7215e4fa47d3a"
-        },
-        {
-          "path": "runtime/src/mcp-client/server-name.ts",
-          "sha256": "075db9f6673b479c4420a47c7c6b3fb04f1770539f41e464523e09a03c9506b8"
-        },
-        {
-          "path": "runtime/src/permissions/rules.ts",
-          "sha256": "ddec673b4f4ead7814ac1ff7877379b3301e02505ed0faeee13b5ad1015d02e8"
-        },
-        {
-          "path": "runtime/src/permissions/tool-names.ts",
-          "sha256": "df078c2298903038d0afd241189e6e7132c75212f3d2e2d0f73a680fb2ca3ac6"
-        },
-        {
-          "path": "runtime/src/permissions/types.ts",
-          "sha256": "a8c9a51bc6548c35574064a8d51c897a962ec71b2ccc5d9cbc99ebdca00f1173"
-        },
-        {
-          "path": "runtime/src/provider-identity.ts",
-          "sha256": "c17d50d638978c7b84ef4e9568bc13ba6f38169a88656738b93ff8f6fd7f6540"
+          "path": "runtime/src/one-shot-fast-mode.ts",
+          "sha256": "320a5b91fe10932fa7b98c8db773bfa4b3171cc6071df49dbf4cd01a4b6b1866"
         },
         {
           "path": "runtime/src/sandbox/execution-prepared-spawn.ts",
@@ -740,15 +644,11 @@
         },
         {
           "path": "runtime/src/secrets/sanitizer.ts",
-          "sha256": "d5efe9bf050660d1e4390f947a0ac98c0d2ae93aaead374cceee9158be8bec85"
-        },
-        {
-          "path": "runtime/src/services/autoFix/autoFixConfig.ts",
-          "sha256": "e7003e118cd1e3e8f7093ed9f8767a89fb3af99199fd10f2f8546ac3717d250d"
+          "sha256": "297133d9ddd9def87ef8085cd59778543e153b8b7e10763d53f597fc8739f3be"
         },
         {
           "path": "runtime/src/services/compact/payload-manifest.ts",
-          "sha256": "fb36bd670c97f2064e1c09fdf412742415c5c3c21e7223fc859fd044c175fd8b"
+          "sha256": "58c005675dc773ab4285176eecbc2c7251ca2010118dac841eb9926d073bd741"
         },
         {
           "path": "runtime/src/services/compact/projection-digest.ts",
@@ -760,7 +660,7 @@
         },
         {
           "path": "runtime/src/services/compact/transaction-types.ts",
-          "sha256": "b4acc4d64eb3278107f11c73e81cd987d8422b9a6cd1a4d90184b24997c390ba"
+          "sha256": "54f3620cbf9eed88d84e1c1dbef0068a1e1c8c4806a55edfab241e9c671936bc"
         },
         {
           "path": "runtime/src/session/_deps/utils.ts",
@@ -768,7 +668,7 @@
         },
         {
           "path": "runtime/src/session/compaction-event-reader.ts",
-          "sha256": "7ae00594cd835ec76263cacdef6f3f2c679a80210b432af82fcb965819a8cdcb"
+          "sha256": "f7b9142002ba96ffd405a55611d8f36c934f7c190a390c9f86adb83635cc49c3"
         },
         {
           "path": "runtime/src/session/compaction-history-marker.ts",
@@ -783,20 +683,28 @@
           "sha256": "f82e586d4cb2119ce1940cf2f596a20a2993f44dd9fc5ac36c8b92f62547a457"
         },
         {
-          "path": "runtime/src/session/environment.ts",
-          "sha256": "8a3c73ee103a37198de0baff969e77b75dfe8cf5dafed0f127c3d72d83ba391e"
+          "path": "runtime/src/session/event-log.ts",
+          "sha256": "b44a23c1442911e691b1bef2ce7b857930aad729103dcde328e98f92e7b572fc"
         },
         {
-          "path": "runtime/src/session/event-log.ts",
-          "sha256": "a5d4c122612cb8d45cca8e4e018f97f6327d921f6dee3d05b76a5f14744126ff"
+          "path": "runtime/src/session/provider-replay-redaction.ts",
+          "sha256": "7a99f95a11938c419f681db6df8350117fcbf834533d2456072ca7a8ceaeea86"
+        },
+        {
+          "path": "runtime/src/session/reasoning-cap-policy.ts",
+          "sha256": "6a6013d7f89c7b524aae159986abcf7f7fec1c94179c13b35750ea8a9d3135bf"
+        },
+        {
+          "path": "runtime/src/session/reasoning-recovery-capability.ts",
+          "sha256": "46a02de91cc6625dd026e4c5ce08bdfdb622803082c568f996db2fcb0aa87577"
         },
         {
           "path": "runtime/src/session/rollout-item.ts",
-          "sha256": "827216dc351075007747221068dea49e6cd1b0824e4ea830aa1ae451ac99c3ce"
+          "sha256": "87ff651dd07aec7ae4f5647e3fb0fc32f45586eaa5b42787e24b6d76055d5677"
         },
         {
-          "path": "runtime/src/session/runtime-options.ts",
-          "sha256": "c66a7a523b371242548524a1ad413da31566003aedfc781cd23f99db92831351"
+          "path": "runtime/src/session/runtime-options-context.ts",
+          "sha256": "fb89fee3b19de9c48a38405d3e5d15f8e69ee8c0df3d8aa781fc4c5e4facf86a"
         },
         {
           "path": "runtime/src/session/serialization-size.ts",
@@ -804,15 +712,31 @@
         },
         {
           "path": "runtime/src/session/session-store.ts",
-          "sha256": "b211e033cc6f6d7faa57f274b4e0c7ab244db25260f1c2438e9e7d146c1ce586"
+          "sha256": "0b9047741c20f4b58b3a9fb01e8dcf5e02ac31d8ba2a37aaa8854060b70ef31a"
         },
         {
           "path": "runtime/src/session/tool-result-integrity.ts",
-          "sha256": "65dfeee171896211b4b1ce0b1e5b9ee72ac93c63c375164b3916128bbb39354c"
+          "sha256": "22dd9f07212dd8abaa9f1e7197a52588a16041759c59235a3ad26c26fc5bb33d"
+        },
+        {
+          "path": "runtime/src/session/trajectory-export-constants.ts",
+          "sha256": "0d840848db88d66549c080a635f882e2c5a284950b3e5b119fcc6781982a21bc"
         },
         {
           "path": "runtime/src/session/trajectory-export.ts",
-          "sha256": "c39370882ca0cc647cef2d55c9254bb4160d49230b84a6382b66a5208628a900"
+          "sha256": "07a5eb4a4e6e64c47ac72e464dc1c887407e233daca3b3271fd1a53d811ab6b4"
+        },
+        {
+          "path": "runtime/src/session/turn-checkpoint-slice.ts",
+          "sha256": "8bc46a5f0f294e888b64582c2acb1d1e19ed0831b69f71c3ce3d62249b612b44"
+        },
+        {
+          "path": "runtime/src/session/usage-summary.ts",
+          "sha256": "16b45fc4dc0fdf469f60dd3241b4b03fe3cfc1c0edbc8062d01dfa861bd0f5f5"
+        },
+        {
+          "path": "runtime/src/session/write-behind.ts",
+          "sha256": "b82ad11fa523107fadc395c2f114efef74661ed710c0316b1691e41bf0e6d9d9"
         },
         {
           "path": "runtime/src/state/agent-runs.ts",
@@ -820,23 +744,31 @@
         },
         {
           "path": "runtime/src/state/csv-agent-jobs.ts",
-          "sha256": "6ca5bfe770c56e8dd36590a505538c3f7205dbb3f87cc7097a31ca061fad45b1"
+          "sha256": "5bc83555f510bb4f3d6c82d89e2d3bf1407caae255dfcb35a9df0d32715bf1b9"
         },
         {
           "path": "runtime/src/state/effect-review.ts",
-          "sha256": "c3ae962a13e967b43127ed5f46897a2c659712b5c44c5c969a277fe62dc77241"
+          "sha256": "05087d701c8c4eb0d482b91269afdc0ef5a167ac99141a3de92f55a79e66ce96"
         },
         {
           "path": "runtime/src/state/recovery-contract.ts",
           "sha256": "8a06f4073b9c746164acba2796d93602e20c8274d26653345e5ed30b11f0f0d2"
         },
         {
+          "path": "runtime/src/state/recovery-journal-contract.ts",
+          "sha256": "2d7eb796624afafff7b15ac5d64250446f2bdeb022372d50dabf2329ab70ef87"
+        },
+        {
+          "path": "runtime/src/state/recovery-journal-schema.ts",
+          "sha256": "1c841a20ba23c1b4b0741cfb46150335232dd5d0bc1ea370625020425dfa81cf"
+        },
+        {
           "path": "runtime/src/state/run-cancellation.ts",
-          "sha256": "14060d164a0c769688866ca5c284b05f534db2f25207d96d7fd6bee1def18ffc"
+          "sha256": "0715485f006433e404b1ec9738d5726f3d0c6723e4b5c8bd21399a0602e708a2"
         },
         {
           "path": "runtime/src/state/run-durability.ts",
-          "sha256": "057263948d4c3829ffeb0494d03602ea9520377eb883e8597d9404eefb758e65"
+          "sha256": "fa7a0fe0e3638fa1c5d11287a34aaee8bede4cdb43f75247abe5a84b17d2edde"
         },
         {
           "path": "runtime/src/state/runtime-settings-snapshot.ts",
@@ -847,20 +779,8 @@
           "sha256": "b52b7d8a1e31f9f7415a6f1442ddc2bde5719840bfa29039d6011911ae6ade1f"
         },
         {
-          "path": "runtime/src/tui/keybindings/grammar.ts",
-          "sha256": "92facc3063c821f7492cf5598819f76526d4658043d0a4a899ae5f1d2a08d359"
-        },
-        {
-          "path": "runtime/src/tui/keybindings/types.ts",
-          "sha256": "e9d7bb17a985096b78d830c34fedd75e45b8c3ca0e4ce499ea0477f69b858c37"
-        },
-        {
-          "path": "runtime/src/types/permissions.ts",
-          "sha256": "74bd617009fc60616035e6df0853bf6bf5e8019b0c8284513fda458e25730a54"
-        },
-        {
           "path": "runtime/src/utils/async-lock.ts",
-          "sha256": "9aa2cd91a8ccb0882c3e74816fcb8aa75d51338b48d147d3b5b1570cf52b371c"
+          "sha256": "addfb2f425c35803502fe81b4075148625a07d9116da5279d83340aa800af011"
         },
         {
           "path": "runtime/src/utils/async-queue.ts",
@@ -869,6 +789,14 @@
         {
           "path": "runtime/src/utils/behavior-subject.ts",
           "sha256": "3a787b9362c8be5c05e64132dcf753b0d368b93d22520220ef061fc98d6365ad"
+        },
+        {
+          "path": "runtime/src/utils/child-signal.ts",
+          "sha256": "e64d807c3ec505b4b8d608c43835fefcaffe215c6a54f61d4dc873fec0f39ecc"
+        },
+        {
+          "path": "runtime/src/utils/direct-bwrap-handoff.ts",
+          "sha256": "b91a61f02b628a37f488ce51914fda87d0ed653c368a40d9955fcd6c8bdab358"
         },
         {
           "path": "runtime/src/utils/durable-atomic-file.ts",
@@ -880,31 +808,23 @@
         },
         {
           "path": "runtime/src/utils/envUtils.ts",
-          "sha256": "e41e8a26517b04e4e334a1199b4ac86cd9fa7de4843587130c6f946dec2fe2cd"
+          "sha256": "8501bbeb37325bdffe7f1c4a831c31a9b5ad05649a3d6909bce27054ac777213"
         },
         {
-          "path": "runtime/src/utils/lazySchema.ts",
-          "sha256": "468c1bdeeb8ccd1a6da386d607f25599faf4529ff0650edd128d7205e4c9a7c4"
-        },
-        {
-          "path": "runtime/src/utils/model/aliases.ts",
-          "sha256": "d69bef8a27cd4b0d0bb088ca80e637769873992af23566f9034006bc31a2e174"
-        },
-        {
-          "path": "runtime/src/utils/model/configs.ts",
-          "sha256": "5d01828f213148c8e9cac5b95bfbcee6a03a35ffa34f32529fb5b1d270cb9a16"
+          "path": "runtime/src/utils/loadAjv.ts",
+          "sha256": "48f631137c1292a5d3b3c14bcb2a67f7bff665233eee7d67a4455644a94b7629"
         },
         {
           "path": "runtime/src/utils/monotonic.ts",
           "sha256": "b7c7b1dd8cfb2a72b4d8f9d1146675952312fd0ae11819096ab4b06d890b17ee"
         },
         {
-          "path": "runtime/src/utils/path-authority.ts",
-          "sha256": "fd85ea936eb4ae12a849925bc36152ed8dcff37299b92ae77da28fca850022fc"
+          "path": "runtime/src/utils/process-broker-protocol-v2.ts",
+          "sha256": "c10a92444995de8618ff3e9bf801507f70d9aa87e0d7f2c92589be6952506d93"
         },
         {
-          "path": "runtime/src/utils/plugins/schemas.ts",
-          "sha256": "442130aaf31bf0ee613a4d49aa682e0cbb61d1ba90bbc0ef957f5d56fae05b71"
+          "path": "runtime/src/utils/process-broker-protocol-v3.ts",
+          "sha256": "b5a6b3584c5de9ab2a56497ce16fd5e098923e8e49d130ef9c1e783e4e65c8a7"
         },
         {
           "path": "runtime/src/utils/process-broker-protocol.ts",
@@ -915,28 +835,20 @@
           "sha256": "f763b76544caf57a334400a0b45c9fd0eae4516dff8fcbf9987d79fa0bca3343"
         },
         {
-          "path": "runtime/src/utils/providerSecrets.ts",
-          "sha256": "b9a0a9722a5e587ef640956157e50b88fe3858179d7d7fc655ec80bec28b4999"
-        },
-        {
           "path": "runtime/src/utils/record.ts",
           "sha256": "a9f6ea0832d24620460adb6314ae99c779ee0e9d817082348e9f60c1ccd39dc8"
         },
         {
-          "path": "runtime/src/utils/secretEnv.ts",
-          "sha256": "e8439708e9db90f5d0df9ce90a9a68001b86a0d83671dc3a812c887eb22e9357"
+          "path": "runtime/src/utils/semver.ts",
+          "sha256": "39189667dd54d9f1fb8bd64e56d148d1aa95b9632e21b4ad48b19388dc1fb923"
         },
         {
-          "path": "runtime/src/utils/semver.ts",
-          "sha256": "4f9dcb09d74ef8b244dc3a94ff21c20b44e062a257eb1a706207ddc0f949e2ba"
+          "path": "runtime/src/utils/session-process-boundary.ts",
+          "sha256": "12c7ca00efc5fd12ece6ea7ea5d551089279ea9974e3f9753f6aadf1a8e67b8f"
         },
         {
           "path": "runtime/src/utils/settings/canonicalAuthority.ts",
           "sha256": "0137c797ca0bdfda76f48028c73273e42b31de5b978f0a6d72598f4916e4bc94"
-        },
-        {
-          "path": "runtime/src/utils/shell/posixShellPath.ts",
-          "sha256": "68164d0869b31dd370c79236308389e0d74a235d6f7f11c0ecc223bfd92c6575"
         },
         {
           "path": "runtime/src/utils/slow-store-op.ts",
@@ -947,16 +859,8 @@
           "sha256": "fc46fcecbe688e7eff1e2ecd2c329d388ff949798120bdaa3043dcf3db387424"
         },
         {
-          "path": "runtime/src/utils/subprocessEnv.ts",
-          "sha256": "da1105ef4f5dedd24f85f2790f1f106f9d3c5c06558662191e754d241a8f66e4"
-        },
-        {
           "path": "runtime/src/utils/supervisedProcess.ts",
-          "sha256": "aa657abc4da5f4e87b5210b55cd0c9da97f652c4a2b88f594110a795e5b55f0c"
-        },
-        {
-          "path": "runtime/src/utils/windows-path-conversion.ts",
-          "sha256": "7d3512b87f21c8de975c4ec802bfeed6dd8cb0e4bf38cecb58c14ad479340791"
+          "sha256": "f3317a1bedc372b21d0def277b244922e282eb52848ed8b7fc05f82c1cc5b40b"
         },
         {
           "path": "runtime/src/utils/windows-process-identity.ts",
@@ -992,12 +896,32 @@
           "sha256": "7113ade094763a0d2d51c7d953d271bda34cf4d7be8083f313b3479c198ff90e"
         },
         {
+          "path": "runtime/src/utils/child-signal.ts",
+          "sha256": "e64d807c3ec505b4b8d608c43835fefcaffe215c6a54f61d4dc873fec0f39ecc"
+        },
+        {
+          "path": "runtime/src/utils/direct-bwrap-handoff.ts",
+          "sha256": "b91a61f02b628a37f488ce51914fda87d0ed653c368a40d9955fcd6c8bdab358"
+        },
+        {
+          "path": "runtime/src/utils/process-broker-protocol-v2.ts",
+          "sha256": "c10a92444995de8618ff3e9bf801507f70d9aa87e0d7f2c92589be6952506d93"
+        },
+        {
+          "path": "runtime/src/utils/process-broker-protocol-v3.ts",
+          "sha256": "b5a6b3584c5de9ab2a56497ce16fd5e098923e8e49d130ef9c1e783e4e65c8a7"
+        },
+        {
           "path": "runtime/src/utils/process-broker-protocol.ts",
           "sha256": "c39a1b09128bac952130014c56b622c133154c20e4fe9f670d1b938fef96e6f6"
         },
         {
+          "path": "runtime/src/utils/session-process-boundary.ts",
+          "sha256": "12c7ca00efc5fd12ece6ea7ea5d551089279ea9974e3f9753f6aadf1a8e67b8f"
+        },
+        {
           "path": "runtime/src/utils/supervisedProcess.ts",
-          "sha256": "aa657abc4da5f4e87b5210b55cd0c9da97f652c4a2b88f594110a795e5b55f0c"
+          "sha256": "f3317a1bedc372b21d0def277b244922e282eb52848ed8b7fc05f82c1cc5b40b"
         },
         {
           "path": "runtime/src/utils/windows-system-path.ts",
@@ -1007,11 +931,11 @@
     }
   ],
   "productionTreeBinding": {
-    "gitObjectId": "583ed314d08557507a69bf4ca8c86c4b0dfb3f3b",
+    "gitObjectId": "cbc65d1692a84045c467d8e5e84770d6d7a2bf3b",
     "objectType": "tree",
     "path": "runtime/src"
   },
   "schemaVersion": 1,
-  "sourceRevision": "edb00cf5ef01b2b9ca9709affcdb798bf92a825f",
+  "sourceRevision": "f44e4a27c637e8a76f5d006a3ef17cbc312d218d",
   "suiteId": "agenc.fnd.algorithm-baseline.v1"
 }

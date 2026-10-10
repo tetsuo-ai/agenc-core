@@ -1,4 +1,6 @@
 import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
+import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
+import { tokenAccountingService } from "../../src/llm/token-accounting.js";
 import { describe, expect, test, vi } from "vitest";
 
 import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
@@ -108,6 +110,53 @@ function callOptions(
     invoke,
   });
 }
+
+test("uncached fast accounting preserves canonical counts, bounds and wire options", async () => {
+  const count = vi.spyOn(tokenAccountingService, "count");
+  const options: LLMChatOptions = { maxOutputTokens: 200, systemPrompt: "configuration λ",
+    tools: [{ type: "function", function: { name: "lookup", parameters: {
+      type: "object", properties: { z: { enum: [null, false, "e\u0301"] }, a: { type: "string" } },
+    } } }] };
+  try {
+    const normal = harness({}), fast = harness({});
+    const normalInvoke = vi.fn(async (_options: LLMChatOptions) => response());
+    const fastInvoke = vi.fn(async (_options: LLMChatOptions) => response());
+    await callOptions(normal, options, normalInvoke);
+    await withOneShotFastMode(() => callOptions(fast, options, fastInvoke));
+    expect(fast.acquire.mock.calls).toEqual(normal.acquire.mock.calls);
+    const withoutSignal = (value: LLMChatOptions) => { const { signal: _signal, ...rest } = value; return rest; };
+    expect(withoutSignal(fastInvoke.mock.calls[0]![0]!)).toEqual(withoutSignal(normalInvoke.mock.calls[0]![0]!));
+    const normalRequest = count.mock.calls[0]![0], fastRequest = count.mock.calls[1]![0];
+    expect(normalRequest.configurationRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(fastRequest.configurationRevision).toHaveLength(normalRequest.configurationRevision!.length);
+    expect(await tokenAccountingService.count(fastRequest)).toEqual(await tokenAccountingService.count(normalRequest));
+    const bad = harness({});
+    await expect(withOneShotFastMode(() => callOptions(bad, { ...options,
+      tools: [{ type: "function", function: { name: "invalid", parameters: { invalid: Infinity } } }],
+    }, async () => response()))).rejects.toThrow();
+    expect(bad.acquire.mock.calls[0]?.[0].denialReason).toBeDefined();
+  } finally { count.mockRestore(); }
+});
+
+test("fast native counters retain content-bound configuration revisions", async () => {
+  const seen: string[] = [];
+  for (const text of ["first config", "second config"]) {
+    const state = harness({});
+    const countTokens = vi.fn(async (request: TokenAccountingRequest) => {
+      seen.push(request.configurationRevision!);
+      return { inputTokens: 17, complete: true as const, confidence: "exact" as const,
+        countedComponents: ["system" as const, "messages" as const, "provider_framing" as const] };
+    });
+    Object.assign(state.provider, { tokenCountCapability: {
+      capabilityVersion: "fast-config-revision-control", adapterRevision: "test", configurationRevision: text, countTokens,
+    } });
+    await withOneShotFastMode(() => callOptions(state, { systemPrompt: text, maxOutputTokens: 200 }, async () => response()));
+    expect(countTokens).toHaveBeenCalledOnce();
+    expect(state.acquire.mock.calls[0]?.[0].maxInputTokens).toBe(17);
+  }
+  expect(seen).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/), expect.stringMatching(/^[0-9a-f]{64}$/)]);
+  expect(seen[0]).not.toBe(seen[1]);
+});
 
 describe("runAdmittedModelCall", () => {
   test("keeps the reservation unknown after interim Responses usage and a disconnect", async () => {

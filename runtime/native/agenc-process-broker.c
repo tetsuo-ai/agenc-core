@@ -16,6 +16,9 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -70,6 +73,11 @@ struct launch_payload {
 };
 
 int main(int argc, char **argv);
+static int server_exact(int fd, void *buffer, size_t length, bool writing);
+static int server_frame(char type, const void *data, uint32_t length);
+static char *server_receive(char *type, uint32_t *length);
+static void server_child_changed(int signal_number);
+static int server_command(char *data, uint32_t length);
 static int describe_v2_protocol(void);
 static int launch_v2_supervised_target(sigset_t *wait_mask);
 static int v2_pending_stop(void);
@@ -82,6 +90,17 @@ static int v2_seccomp_argv(const struct launch_payload *payload, bool has_fd);
 static int read_v2_payload(struct launch_payload *payload, int *snapshot_fd);
 static int read_owned_payload(struct launch_payload *payload, int *snapshot_fd,
                               const char *magic);
+static int v3_high_fd(int fd);
+static bool v3_path_contains(const char *parent, const char *path);
+static bool v3_paths_overlap(const char *left, const char *right);
+static bool v3_normal_path(const char *path);
+static int v3_artifact_path(char *target, char *parent);
+static char **v3_init_argv(const struct launch_payload *payload, char *target,
+                            const char *parent);
+static int v3_image_reference(void);
+static _Noreturn void run_v3_target_child(struct launch_payload *payload,
+    char **argv, int snapshot, int reference, int writer, pid_t broker);
+static bool v3_trusted_abort(void);
 static int describe_v3_protocol(void);
 static int launch_v3_supervised_target(sigset_t *wait_mask);
 static int complete_v3_cleanup(int root_status);
@@ -146,7 +165,11 @@ static bool v2_reporting = false;
 static bool v2_descendant_terminated = false;
 static bool v3_reporting = false;
 
+static int run_one_shot_server(void);
+
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--one-shot-server-v1") == 0)
+    return run_one_shot_server();
   sigset_t wait_mask;
   int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
 
@@ -1345,4 +1368,174 @@ static int complete_v3_cleanup(int root_status) {
   if (write_status((const char *)terminal, sizeof(terminal)) != 0 || close(3) != 0)
     return AGENC_BROKER_ERROR_EXIT;
   return valid ? normalized : AGENC_BROKER_ERROR_EXIT;
+}
+
+
+/* One-shot bypass executor. Its lifetime is itself held by the ordinary
+ * subreaper broker. Each command receives new stdio and a new session, and
+ * the existing owned-tree cleanup proves quiescence before its final frame.
+ * The control channel is never inherited by a command. */
+static int server_exact(int fd, void *buffer, size_t length, bool writing) {
+  char *cursor = buffer;
+  while (length > 0) {
+    ssize_t n = writing ? write(fd, cursor, length) : read(fd, cursor, length);
+    if (n < 0 && errno == EINTR && requested_signal == 0) continue;
+    if (n <= 0 || requested_signal != 0) return -1;
+    cursor += n; length -= (size_t)n;
+  }
+  return 0;
+}
+static int server_frame(char type, const void *data, uint32_t length) {
+  unsigned char header[5] = {(unsigned char)type,
+    (unsigned char)(length >> 24), (unsigned char)(length >> 16),
+    (unsigned char)(length >> 8), (unsigned char)length};
+  /* Publish the header and body together. Separate writes can wake the Node
+   * reader with only a header, requiring another I/O turn for the payload. */
+  struct iovec parts[2] = {{header, sizeof(header)}, {(void *)data, length}};
+  int current = 0, count = length > 0 ? 2 : 1;
+  while (current < count) {
+    ssize_t n = writev(1, parts + current, count - current);
+    if (n < 0 && errno == EINTR && requested_signal == 0) continue;
+    if (n <= 0 || requested_signal != 0) return -1;
+    size_t sent = (size_t)n;
+    while (current < count && sent >= parts[current].iov_len) {
+      sent -= parts[current].iov_len;
+      ++current;
+    }
+    if (current < count) {
+      parts[current].iov_base = (char *)parts[current].iov_base + sent;
+      parts[current].iov_len -= sent;
+    }
+  }
+  return 0;
+}
+static char *server_receive(char *type, uint32_t *length) {
+  unsigned char header[5];
+  if (server_exact(0, header, sizeof(header), false)) return NULL;
+  *type = (char)header[0]; *length = bootstrap_u32(header + 1);
+  if (*length > AGENC_BROKER_MAX_PAYLOAD_BYTES) return NULL;
+  char *data = calloc((size_t)*length + 1, 1);
+  if (data == NULL) return NULL;
+  if (server_exact(0, data, *length, false)) { free(data); return NULL; }
+  return data;
+}
+static void server_child_changed(int signal_number) { (void)signal_number; }
+static int server_command(char *data, uint32_t length) {
+  if (length < 8) return -1;
+  uint32_t argc = bootstrap_u32((unsigned char *)data);
+  uint32_t envc = bootstrap_u32((unsigned char *)data + 4);
+  if (!argc || argc >= AGENC_BROKER_MAX_STRINGS ||
+      envc >= AGENC_BROKER_MAX_STRINGS - argc) return -1;
+  char **args = calloc((size_t)argc + 1, sizeof(char *));
+  char **env = calloc((size_t)envc + 1, sizeof(char *));
+  int result = -1, in[2] = {-1, -1}, out[2] = {-1, -1}, err[2] = {-1, -1};
+  if (args == NULL || env == NULL) goto finish;
+  char *cursor = data + 8, *end = data + length;
+  char *cwd = take_bootstrap_string(&cursor, end);
+  char *program = take_bootstrap_string(&cursor, end);
+  if (cwd == NULL || cwd[0] != '/' || program == NULL || !program[0]) goto finish;
+  for (uint32_t i = 0; i < argc; ++i) {
+    args[i] = take_bootstrap_string(&cursor, end);
+    if (args[i] == NULL) goto finish;
+  }
+  for (uint32_t i = 0; i < envc; ++i) {
+    env[i] = take_bootstrap_string(&cursor, end);
+    if (env[i] == NULL) goto finish;
+    char *equals = strchr(env[i], '=');
+    if (equals == NULL || equals == env[i]) goto finish;
+  }
+  if (cursor != end ||
+      socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, in) ||
+      socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, out) ||
+      socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, err)) goto finish;
+  pid_t owner = getpid();
+  root_pid = fork();
+  if (root_pid < 0) goto finish;
+  if (root_pid == 0) {
+    reset_child_signals();
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) || getppid() != owner ||
+        setsid() < 0 || chdir(cwd) || dup2(in[0], 0) < 0 ||
+        dup2(out[1], 1) < 0 || dup2(err[1], 2) < 0 ||
+        syscall(SYS_close_range, 3U, ~0U, 0U)) _exit(125);
+    environ = env;
+    execvp(program, args);
+    report_errno("exec failed"); _exit(127);
+  }
+  close(in[0]); in[0] = -1;
+  if (shutdown(in[1], SHUT_WR)) goto finish;
+  close(out[1]); out[1] = -1; close(err[1]); err[1] = -1;
+  struct pollfd fds[3] = {{0, POLLIN, 0}, {out[0], POLLIN, 0}, {err[0], POLLIN, 0}};
+  bool done = false, residual = false;
+  int status = 0;
+  sigset_t empty; sigemptyset(&empty);
+  for (;;) {
+    if (requested_signal != 0) goto finish;
+    if (!done) {
+      int reaped = reap_until_blocked(&status, &done);
+      /* Once reaped, the old PID can be reused outside our owned tree. */
+      if (done) root_pid = AGENC_BROKER_INVALID_ROOT_PID;
+      if (reaped) goto finish;
+      if (done) {
+        if (observe_residual_descendants(&residual) || force_cleanup_descendants()) goto finish;
+        close(in[1]); in[1] = -1;
+      }
+    }
+    if (done && fds[1].fd < 0 && fds[2].fd < 0) break;
+    int ready = ppoll(fds, 3, NULL, &empty);
+    if (ready < 0) { if (errno == EINTR) continue; goto finish; }
+    if (fds[0].revents) {
+      char type; uint32_t size;
+      char *body = server_receive(&type, &size);
+      if (body == NULL) goto finish;
+      free(body);
+      if (size != 0 || (type != 'T' && type != 'K' && type != 'E')) goto finish;
+      if (!done && type != 'E' && signal_owned_tree(type == 'K' ? SIGKILL : SIGTERM)) goto finish;
+    }
+    for (int i = 1; i <= 2; ++i) if (fds[i].fd >= 0 && fds[i].revents) {
+      char bytes[16384];
+      ssize_t n = read(fds[i].fd, bytes, sizeof(bytes));
+      if (n < 0) { if (errno == EINTR) continue; goto finish; }
+      if (n == 0) {
+        close(fds[i].fd); fds[i].fd = -1;
+        if (i == 1) out[0] = -1; else err[0] = -1;
+      } else if (server_frame(i == 1 ? 'O' : 'X', bytes, (uint32_t)n)) goto finish;
+    }
+  }
+  unsigned char report[5] = {(unsigned char)((uint32_t)status >> 24),
+    (unsigned char)((uint32_t)status >> 16), (unsigned char)((uint32_t)status >> 8),
+    (unsigned char)status, residual ? 1 : 0};
+  result = server_frame('D', report, sizeof(report));
+finish:
+  for (int i = 0; i < 2; ++i) {
+    if (in[i] >= 0) close(in[i]);
+    if (out[i] >= 0) close(out[i]);
+    if (err[i] >= 0) close(err[i]);
+  }
+  free(args); free(env);
+  if (result != 0) (void)signal_owned_tree(SIGKILL);
+  if (force_cleanup_descendants()) result = -1;
+  root_pid = AGENC_BROKER_INVALID_ROOT_PID;
+  return result;
+}
+static int run_one_shot_server(void) {
+  sigset_t mask, empty;
+  if (prepare_broker(&mask) || install_handler(SIGCHLD, server_child_changed) ||
+      /* Decline unsupported kernels before accepting any command. */
+      syscall(SYS_close_range, ~0U, ~0U, 0U) ||
+      prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) || server_frame('P', NULL, 0)) return 125;
+  sigemptyset(&empty);
+  for (;;) {
+    struct pollfd input = {0, POLLIN, 0};
+    if (requested_signal != 0) return 125;
+    int ready = ppoll(&input, 1, NULL, &empty);
+    if (ready < 0) { if (errno == EINTR) continue; return 125; }
+    char type; uint32_t length;
+    char *body = server_receive(&type, &length);
+    if (body == NULL) return 125;
+    /* A cancellation can cross the previous command's final frame. */
+    if ((type == 'T' || type == 'K' || type == 'E') && length == 0) { free(body); continue; }
+    int result = type == 'R' ? server_command(body, length) : -1;
+    free(body);
+    if (result != 0) return 125;
+  }
 }

@@ -621,6 +621,9 @@ function tokenCountEventForSampling(
     ...(usage.cacheCreationInputTokens !== undefined
       ? { cacheCreationInputTokens: usage.cacheCreationInputTokens }
       : {}),
+    ...(usage.cacheCreation1hInputTokens !== undefined
+      ? { cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens }
+      : {}),
     ...(usage.reasoningOutputTokens !== undefined
       ? { reasoningOutputTokens: usage.reasoningOutputTokens }
       : {}),

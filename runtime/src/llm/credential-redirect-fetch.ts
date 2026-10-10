@@ -30,9 +30,18 @@ export async function fetchProviderRequest(
   if (allowedOrigins !== undefined && !allowedOrigins.has(url.origin)) {
     throw new Error("Provider request to another origin was refused");
   }
-  const headers = new Headers(input instanceof Request ? input.headers : undefined);
-  new Headers(init.headers).forEach((value, name) => headers.set(name, value));
-  if (allowedOrigins === undefined && !carriesCredential(url, headers)) return fetchImpl(input, init);
+  // ProviderHttpSession already supplies normalized Headers. A known auth
+  // header proves we need the guarded path without copying and scanning them
+  // twice. Call the native method so an overridden instance method cannot
+  // hide credentials. All other inputs retain the complete merged scan.
+  const knownCredential = init.headers instanceof Headers &&
+    (Headers.prototype.has.call(init.headers, "authorization") ||
+      Headers.prototype.has.call(init.headers, "x-api-key"));
+  if (!knownCredential) {
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+    if (allowedOrigins === undefined && !carriesCredential(url, headers)) return fetchImpl(input, init);
+  }
 
   let request: RequestInit = {
     ...(input instanceof Request ? {

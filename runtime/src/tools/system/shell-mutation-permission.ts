@@ -240,6 +240,22 @@ export function shellWorkspaceMutationPermission(
     protectedRoots: shellDeletionProtectedRoots(context),
     additionalRoots: shellAdditionalWriteRoots(context),
     bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
+    fileWriteTools: () => shellFileWriteTools(context),
+  };
+}
+
+/** Keep current home authority checks, but only when a command can use them. */
+export function deferredShellWorkspaceMutationPermission(
+  args: Record<string, unknown>,
+): Omit<ShellWorkspaceMutationPermission, "protectedRoots"> & {
+  readonly resolveProtectedRoots: () => readonly string[];
+} {
+  const context = readToolRuntimeContext(args);
+  return {
+    allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
+    resolveProtectedRoots: () => shellDeletionProtectedRoots(context),
+    additionalRoots: shellAdditionalWriteRoots(context),
+    bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
     // Lazy: an allowed command never lists the session's tools.
     fileWriteTools: () => shellFileWriteTools(context),
   };

@@ -1,3 +1,4 @@
+import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 /**
  * Phase 5 — Execute Tools.
  *
@@ -94,16 +95,17 @@ import {
   type UntrustedToolResultKind,
 } from "../tools/untrusted-tool-result-framing.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
-import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
+import { createToolResultIntegrity, createDeferredTextToolResultIntegrity } from "../session/tool-result-integrity.js";
 import { stampToolResultRemaining } from "../session/run-deadline.js";
 
-function toolResultMessage(
+export function toolResultMessage(
   runId: string,
   callId: string,
   toolName: string,
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,
   compactWorkspace = false,
+  deferTextIntegrity = false,
 ): LLMMessage {
   // Seal the exact model-facing body at the result boundary, before any
   // budgeting, microcompaction, in-memory bounding, or durable serialization.
@@ -114,7 +116,7 @@ function toolResultMessage(
     toolName,
     content,
     runtimeOnly: {
-      toolResultIntegrity: createToolResultIntegrity({
+      toolResultIntegrity: (deferTextIntegrity ? createDeferredTextToolResultIntegrity : createToolResultIntegrity)({
         runId,
         toolCallId: callId,
         content,
@@ -134,7 +136,7 @@ function toolResultMessage(
   return message;
 }
 
-function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
+export function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
   if (!result.contentItems || result.contentItems.length === 0) {
     return result.content;
   }
@@ -167,7 +169,7 @@ function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
   return parts.length > 0 ? parts : result.content;
 }
 
-function modelFacingToolResultContent(
+export function modelFacingToolResultContent(
   toolName: string,
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,
@@ -303,6 +305,21 @@ export function validateToolCallsForDispatch(
   return batch;
 }
 
+/** Empty configured hooks keep direct one-shot dispatch cheap. Hooked calls use
+ * the full canonical executor, including rewrite, failure and stop semantics. */
+export function hasConfiguredToolHooks(session: Session): boolean {
+  const hooks = session.services.hooks as {
+    readonly preToolUseHooks?: readonly PreToolUseHook[];
+    readonly postToolUseHooks?: readonly PostToolUseHook[];
+    readonly failureToolUseHooks?: readonly PostToolUseFailureHook[];
+    readonly permissionDecisionHooks?: readonly PermissionDecisionHook[];
+  } | undefined;
+  return Boolean(hooks?.preToolUseHooks?.length ||
+    hooks?.postToolUseHooks?.some(hook => !autoFixPostToolHookIsInactive(hook)) ||
+    hooks?.failureToolUseHooks?.length || hooks?.permissionDecisionHooks?.length);
+}
+
+
 /**
  * Pull pre/post tool-use hooks from the session services if they expose
  * them. Falls back to an empty registry so the pipeline always runs.
@@ -314,6 +331,7 @@ export function validateToolCallsForDispatch(
  * without forcing every call site to update its fixture. Missing
  * surfaces = empty registry = pre/post pass-through.
  */
+
 function resolveHookRegistry(session: Session): ToolHookRegistry {
   const registry = new ToolHookRegistry();
   const hooks = session.services.hooks as
@@ -610,7 +628,10 @@ function recordCompletedToolCall(
     result,
     session.services.registry.getDiscoveredToolNames?.(),
   );
-  const metadata = result.metadata;
+  const validationOnly = result.metadata?.kind === "input_validation";
+  const metadata = validationOnly && durationMs !== undefined
+    ? { ...result.metadata, validationDurationMs: result.metadata?.validationDurationMs ?? durationMs } : result.metadata;
+  if (validationOnly) durationMs = 0;
   const toolResultBytes = Buffer.byteLength(result.content, "utf8");
   session.emit(
     {

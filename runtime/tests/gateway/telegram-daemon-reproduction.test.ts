@@ -35,6 +35,16 @@ it("reproduces Telegram session creation through an isolated real daemon and fak
     spawnDetachedDaemon: () => { throw Error("No spawn"); }, terminatePid: () => {}, sleep: async () => {} };
   let logs = "";
   const sink = { write: (chunk: any) => { logs += String(chunk); writeFileSync(join(root, "daemon.log"), logs); return true; } };
+  // Bootstrap revalidates stale provider capabilities with GET /models.
+  // Keep that probe offline while exercising the real daemon and provider.
+  const providerFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    if (url !== "https://api.deepseek.com/v1/models" || method !== "GET") {
+      throw new Error("Unexpected provider request in Telegram fixture");
+    }
+    return Response.json({ data: [{ id: "deepseek-flash" }] });
+  });
   const signal = new EventEmitter(); let ready = false;
   const running = runAgenCDaemonCli({ kind: "command", action: "run" }, { host, io: { stdout: sink, stderr: sink } as any, signalProcess: signal as any, beforeDaemonReady: async () => { ready = true; } });
   let socket: ReturnType<typeof createConnection> | undefined;
@@ -55,6 +65,7 @@ it("reproduces Telegram session creation through an isolated real daemon and fak
     await expect.poll(() => fixture.replies.length).toBe(1);
     expect(fixture.replies[0]).toContain("No credential for deepseek");
     expect(logs).toContain(fixture.errors[0]);
+    expect(providerFetch).not.toHaveBeenCalled();
     // Change the daemon default to a different uncredentialed provider. The
     // explicit Telegram choice must still bootstrap DeepSeek successfully.
     writeFileSync(join(fixture.home, "config.toml"), 'config_version = 2\nmodel_provider = "openai"\nmodel = "gpt-5.4"\n');
@@ -69,7 +80,14 @@ it("reproduces Telegram session creation through an isolated real daemon and fak
     expect(fixture.responses[1].result.sessionId).toEqual(expect.any(String));
     await expect.poll(() => fixture.replies.length).toBe(2);
     expect(fixture.replies[1]).toContain("New workspace session ready");
-    // No provider inference request is made: /new only bootstraps a session.
+    // /new can probe provider health, but must not request inference. Check
+    // outside the mock because healthCheck deliberately catches fetch errors.
+    expect(providerFetch).toHaveBeenCalled();
+    for (const [input, init] of providerFetch.mock.calls) {
+      expect(input instanceof Request ? input.url : String(input)).toBe("https://api.deepseek.com/v1/models");
+      expect(init?.method ?? (input instanceof Request ? input.method : "GET")).toBe("GET");
+      expect(init?.body).toBeUndefined();
+    }
     const scan = (directory: string): void => {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);
@@ -84,5 +102,5 @@ it("reproduces Telegram session creation through an isolated real daemon and fak
     fixture.updates.push({ update_id: 3, message: { message_id: 3, date: Math.floor(Date.now() / 1000), chat: { id: 456, type: "private" }, from: { id: 456 }, text: "/new" } });
     await expect.poll(() => fixture.replies.length).toBe(3);
     expect(fixture.replies[2]).toContain("workspace folder is unavailable");
-  } catch (error) { console.log("DAEMON LOG", logs); throw error; } finally { socket?.destroy(); signal.emit("SIGTERM"); await running; rmSync(root, { recursive: true, force: true }); }
+  } catch (error) { console.log("DAEMON LOG", logs); throw error; } finally { socket?.destroy(); signal.emit("SIGTERM"); try { await running; } finally { providerFetch.mockRestore(); rmSync(root, { recursive: true, force: true }); } }
 }, 60000);

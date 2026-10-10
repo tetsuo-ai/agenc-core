@@ -6,7 +6,9 @@ import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult 
 import { safeStringify } from "../types.js";
 import { notifyExecSessionDiscovery } from "../exec-session-discovery.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 import {
+  deferredShellWorkspaceMutationPermission,
   shellAdditionalWriteRoots,
   shellBypassesApprovalsAndSandbox,
   shellWorkspaceMutationPermission,
@@ -21,7 +23,7 @@ import type {
   UnifiedExecProcessManagerLike,
   UnifiedExecRuntimeSandbox,
 } from "../../unified-exec/types.js";
-import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import type {
   NetworkSandboxPolicy,
   WindowsSandboxLevel,
@@ -477,6 +479,10 @@ function isPlainInteractiveShellCommand(command: string): boolean {
 }
 
 function isMcpShellPlaceholderCommand(command: string): boolean {
+  // Every refusal below contains either MCP or the MCP-free simulation
+  // phrase. Ordinary commands need only this scan; possible matches still
+  // receive the complete routing checks, including case and word boundaries.
+  if (!/mcp|\bdirect\s+call\s+simulation\b/iu.test(command)) return false;
   const trimmed = command.trim();
   if (DIRECT_MCP_TOOL_COMMAND_RE.test(trimmed)) return true;
   if (/\battempting\s+direct\s+mcp\s+call\b/iu.test(trimmed)) return true;
@@ -584,6 +590,7 @@ export function runtimeSandboxForExec(
         readonly windowsSandboxPrivateDesktop?: unknown;
       };
       readonly sandboxAllowGpu?: unknown;
+      readonly sandboxPersistentSession?: unknown;
     };
     readonly features?: unknown;
     readonly network?: unknown;
@@ -634,6 +641,7 @@ export function runtimeSandboxForExec(
     sandboxPolicyCwd,
     sessionTempRoot: childTempRoot,
     preference: "require",
+    ...(booleanValue(turn.config?.sandboxPersistentSession) === false ? { persistentSession: false } : {}),
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
       : {}),
@@ -1209,7 +1217,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ...(effectiveWorkdir !== undefined ? { cwd: effectiveWorkdir } : {}),
           },
           workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
-          ...shellWorkspaceMutationPermission(args),
+          ...(oneShotFastModeActive()
+            ? deferredShellWorkspaceMutationPermission(args)
+            : shellWorkspaceMutationPermission(args)),
         });
         if (workspaceWriteDecision.blocked) {
           const message =
@@ -1241,12 +1251,15 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
+        const ownerBinding = execOwnerBindingFromToolArgs(args as Record<string, unknown>);
         const shellRequest = {
           ...(workdir !== undefined ? { workdir } : {}),
           ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
           ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
         };
         const commonRequest = {
+          ...(ownerId !== undefined ? { ownerId } : {}),
+          ...(ownerBinding !== undefined ? { ownerBinding } : {}),
           cmd,
           callId: asString(args.__callId),
           ...(asNumber(args.yield_time_ms) !== undefined

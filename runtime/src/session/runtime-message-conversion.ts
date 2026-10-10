@@ -126,6 +126,19 @@ export function fromAgenCRuntimeMessages(
   return converted;
 }
 
+/** The same wire projection when a caller has proved compaction is a no-op. */
+export function projectUncompactedLlmMessages(messages: readonly LLMMessage[]): LLMMessage[] {
+  const converted = messages.map(message => ({
+    role: message.role,
+    content: typeof message.content === "string" ? message.content
+      : fromRuntimeMessageContent(toRuntimeMessageContent(message.content)),
+    // The runtime's system envelope does not carry tool calls.
+    ...projectRuntimeWireFields(message.role === "system" ? { ...message, toolCalls: undefined } : message),
+  }));
+  validateAgentInvocationMessageSequence(converted);
+  return converted;
+}
+
 /**
  * Project one runtime message back into an `LLMMessage`, or `null` when the
  * message carries no recognizable role. Messages written by
@@ -201,7 +214,8 @@ function toAgenCRuntimeWireRole(
  * same call on its next iteration.
  */
 function projectRuntimeWireFields(
-  message: AgenCRuntimeMessage,
+  message: Pick<AgenCRuntimeMessage, "providerReasoningContent" | "providerReasoningProvenance" |
+    "toolCalls" | "toolCallId" | "toolName" | "phase" | "runtimeOnly">,
 ): Omit<LLMMessage, "role" | "content"> {
   return {
     ...(message.providerReasoningContent !== undefined

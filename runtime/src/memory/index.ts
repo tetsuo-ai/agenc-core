@@ -103,6 +103,7 @@ export {
   MEMORY_ENTRYPOINT_NAME,
   PROJECT_INSTRUCTION_FILE,
   PROJECT_MEMORY_DIR,
+  getMemorySearchPathsForHome,
 } from './paths.js'
 
 export {

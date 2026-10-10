@@ -1,3 +1,4 @@
+import { readReasoningCapPolicy, type ReasoningCapPolicyState } from "../session/reasoning-cap-policy.js";
 import type { EventMsg } from "../session/event-log.js";
 import type { DisplayAttachment } from "../mcp-client/display-attachments.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
@@ -439,6 +440,10 @@ const isPendingAdmissionFallback: Validator<PendingAdmissionFallback> = (
     allowUnknownFields: true,
   }).ok;
 
+const isReasoningCapPolicy: Validator<ReasoningCapPolicyState> = (value): value is ReasoningCapPolicyState => {
+  try { return readReasoningCapPolicy(value) !== undefined; } catch { return false; }
+};
+
 const isCheckpointSlice = objectShape(
   {
     turnCount: isNonNegativeInteger,
@@ -452,6 +457,7 @@ const isCheckpointSlice = objectShape(
     completionGateRound: isNonNegativeInteger,
     editorToolCallsAdmitted: isNonNegativeInteger,
     pendingAdmissionFallback: isPendingAdmissionFallback,
+    reasoningCapPolicy: isReasoningCapPolicy,
     modelSampleOrdinal: isNonNegativeInteger,
     modelSampleResumePrompt: oneOf("continuation_nudge", "empty_response"),
     taskBudgetRemaining: isNumber,
@@ -805,6 +811,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       totalTokens: isNumber,
       cachedInputTokens: isNumber,
       cacheCreationInputTokens: isNumber,
+      cacheCreation1hInputTokens: isNumber,
       reasoningOutputTokens: isNumber,
       reasoningIncludedInCompletion: isTrue,
       webSearchRequests: isNumber,

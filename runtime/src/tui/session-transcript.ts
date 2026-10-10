@@ -1047,6 +1047,7 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
     outputTokens,
     cachedInputTokens,
     cacheCreationInputTokens,
+    cacheCreation1hInputTokens: nonNegativeInteger(payload.cacheCreation1hInputTokens),
     reasoningOutputTokens,
     webSearchRequests,
     totalTokens,

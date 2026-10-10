@@ -29,6 +29,8 @@ const HERMETIC_ENV_CONTRACT = JSON.parse(
 
 const LIVE_TEST_FILES = [
   "tests/browser/live-e2e.test.ts",
+  "tests/live/anthropic-haiku-5-5.live.test.ts",
+  "tests/live/anthropic-opus-5-5.live.test.ts",
   "tests/live/eval-executor-docker.live.test.ts",
   "tests/live/eval-executor-egress.live.test.ts",
   "tests/live/grok-full-surface-e2e.live.test.ts",
@@ -78,6 +80,7 @@ const HOSTED_FND_TEST_FILES = [
 
 const KERNEL_TEST_FILES = [
   "tests/sandbox/landlock-seccomp.kernel.test.ts",
+  "tests/sandbox/linux-launcher/direct-bwrap.kernel.test.ts",
   "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
   "tests/sandbox/readonly-delegation.kernel.test.ts",
 ] as const;

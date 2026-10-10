@@ -251,17 +251,17 @@ export function buildProjectMemoryDirectory(
  */
 const projectMemoryPathCache = new CanonicalAuthorityCache<string>()
 
-function resolveProjectMemoryPath(): string {
+function resolveProjectMemoryPath(memoryBase?: string): string {
   const override = getAutoMemPathOverride() ?? getAutoMemPathSetting()
   if (override) {
     return override
   }
-  return buildProjectMemoryDirectory(getMemoryBaseDir(), getAutoMemBase())
+  return buildProjectMemoryDirectory(memoryBase ?? getMemoryBaseDir(), getAutoMemBase())
 }
 
-function projectMemoryPathCacheKey(): string {
+function projectMemoryPathCacheKey(agencHome?: string): string {
   return [
-    getAgenCHomeDir(),
+    agencHome ?? getAgenCHomeDir(),
     getSessionRemoteMemoryRoot() ?? '',
     getAutoMemPathOverride() ?? '',
     getAutoMemPathSetting() ?? '',
@@ -293,6 +293,36 @@ export function getAutoMemPath(): string {
 
 export function getGlobalMemoryPath(): string {
   return (join(getMemoryBaseDir(), MEMORY_DIRNAME) + sep).normalize('NFC')
+}
+
+/** One synchronous authority snapshot; never retained across requests. */
+export function getMemorySearchPathsForHome(agencHome: string): string[] {
+  const normalizeDirectory = (path: string): string =>
+    `${normalize(path).replace(/[/\\]+$/u, '')}${sep}`.normalize('NFC')
+  let ambientHome: string | undefined
+  const base = getSessionRemoteMemoryRoot() ?? (ambientHome = getAgenCHomeDir())
+  if (normalizeDirectory(agencHome) !== normalizeDirectory(base)) {
+    return [...new Set([
+      normalizeDirectory(join(agencHome, MEMORY_DIRNAME)),
+      normalizeDirectory(buildProjectMemoryDirectory(agencHome, getMemoryProjectRoot())),
+    ])]
+  }
+  const authority = getCanonicalSettingsAuthority()
+  let project: string
+  if (authority === null) project = resolveProjectMemoryPath(base)
+  else {
+    const key = projectMemoryPathCacheKey(ambientHome)
+    const cached = projectMemoryPathCache.get(key, authority)
+    if (cached !== undefined) project = cached
+    else {
+      project = resolveProjectMemoryPath(base)
+      projectMemoryPathCache.set(key, project, authority)
+    }
+  }
+  return [...new Set([
+    normalizeDirectory(join(base, MEMORY_DIRNAME)),
+    normalizeDirectory(project),
+  ])]
 }
 
 export function getGlobalMemoryEntrypoint(): string {

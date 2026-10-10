@@ -18,6 +18,7 @@ export interface CostUsageLike {
   readonly output_tokens?: number;
   readonly cache_read_input_tokens?: number;
   readonly cache_creation_input_tokens?: number;
+  readonly cache_creation?: { readonly ephemeral_1h_input_tokens?: number } | null;
   readonly server_tool_use?: {
     readonly web_search_requests?: number;
   };
@@ -152,6 +153,9 @@ export function addToTotalSessionCost(
     completionTokens: outputTokens,
     cachedInputTokens: cacheReadInputTokens,
     cacheCreationInputTokens,
+    ...(usage.cache_creation?.ephemeral_1h_input_tokens !== undefined
+      ? { cacheCreation1hInputTokens: normalizeCounter(usage.cache_creation.ephemeral_1h_input_tokens) }
+      : {}),
     webSearchRequests,
     totalTokens,
     costUsd: normalizeCost(costUsd),

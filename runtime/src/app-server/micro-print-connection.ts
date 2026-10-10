@@ -11,8 +11,9 @@ import { isAgenCDaemonInstanceIdentity, sameAgenCDaemonInstanceIdentity, type Ag
 import { readDistVersion, resolveAgenCDaemonRuntimeInfoPath } from "./daemon-runtime-info.js";
 import { resolveAgenCDaemonRequestTimeoutMs } from "./daemon-request-policy.js";
 import { MicroPrintTransport, microTransportError } from "./micro-print-transport.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION } from "./protocol/index.js";
 
-export const MICRO_PRINT_PROTOCOL_VERSION = "1.30.0";
+export const MICRO_PRINT_PROTOCOL_VERSION = AGENC_DAEMON_PROTOCOL_VERSION;
 interface Endpoint {
   readonly socket: string; readonly cookie: string; readonly cookieContents: string;
   readonly socketDev: bigint; readonly socketIno: bigint;

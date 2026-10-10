@@ -259,6 +259,30 @@ describe("cost helpers", () => {
     }
   });
 
+  test("reuses slug normalization without retaining provider prices or live registry entries", () => {
+    const first = { inputUsdPer1K: 1, outputUsdPer1K: 2 };
+    const updated = { inputUsdPer1K: 3, outputUsdPer1K: 4 };
+    const registry: Record<string, typeof first> = {
+      "openai:gpt-5.6-sol": first,
+      "custom:gpt-5.6-sol": updated,
+    };
+    const resolve = (model: string, provider = "openai") =>
+      resolveModelCostEntry({ model, provider }, registry);
+    expect(resolve("gpt-5.6")?.entry).toBe(first);
+    expect(resolve("gpt-5.6")?.entry).toBe(first);
+    expect(resolve("gpt-5.6", "custom")?.entry).toBe(updated);
+    registry["openai:gpt-5.6-sol"] = updated;
+    expect(resolve("gpt-5.6")?.entry).toBe(updated);
+    delete registry["openai:gpt-5.6-sol"];
+    expect(resolve("gpt-5.6")).toBeNull();
+    registry["openai:gpt-5.6-sol"] = first;
+    for (const model of ["unpriced", "x".repeat(300), "gpt-5.6-sol-unverified"]) {
+      expect(resolve(model)).toBeNull();
+      expect(resolve(model)).toBeNull();
+      expect(resolve("gpt-5.6")?.entry).toBe(first);
+    }
+  });
+
   test("computeUsdCost reports unknown pricing without throwing", () => {
     const usage = {
       provider: "unknown-provider",
@@ -1003,4 +1027,19 @@ describe("CostSidecar", () => {
     dispose();
     expect(handlers).toHaveLength(0);
   });
+});
+
+test("Haiku 5.5 session cost keeps per-request tiers and one-hour writes across multiple turns", () => {
+  const sidecar = new CostSidecar({ defaultProvider: "anthropic", defaultModel: "claude-haiku-5-5" });
+  for (const [seq, promptTokens] of [60_000, 60_001, 60_000].entries()) {
+    sidecar.onEvent({ id: String(seq), seq, msg: { type: "token_count", payload: {
+      model: "claude-haiku-5-5", provider: "anthropic", promptTokens, completionTokens: 1000,
+      cachedInputTokens: 20_000, cacheCreationInputTokens: 20_000, cacheCreation1hInputTokens: 10_000,
+      totalTokens: promptTokens + 41_000,
+    } } });
+  }
+  const short = (60_000 * 0.1 + 1000 * 0.5 + 20_000 * 0.01 + 10_000 * 0.125 + 10_000 * 0.2) / 1e6;
+  const long = (60_001 * 0.5 + 1000 * 2.5 + 20_000 * 0.05 + 10_000 * 0.625 + 10_000 * 1) / 1e6;
+  expect(sidecar.getTotalCostUsd()).toBeCloseTo(2 * short + long, 10);
+  expect(sidecar.getPerModelUsage()[0]?.cacheCreation1hInputTokens).toBe(30_000);
 });

@@ -396,6 +396,7 @@ export interface TokenCountEvent {
   readonly totalTokens?: number;
   readonly cachedInputTokens?: number;
   readonly cacheCreationInputTokens?: number;
+  readonly cacheCreation1hInputTokens?: number;
   readonly reasoningOutputTokens?: number;
   /**
    * True when `reasoningOutputTokens` is already inside `completionTokens`.
@@ -1691,6 +1692,10 @@ export class EventLog {
   private readonly allocatedEventIds = new Set<string>();
   private readonly listeners = new Set<EventListener>();
   private readonly pendingPublications: PendingPublication[] = [];
+  private visibilityBarrier: (() => void) | undefined;
+
+  setVisibilityBarrier(barrier: () => void): void { this.visibilityBarrier = barrier; }
+
   private emitDelegate: ((event: Event) => Event) | undefined;
   private publishing = false;
   private closed = false;
@@ -1710,6 +1715,11 @@ export class EventLog {
    * any listener can observe it.
    */
   stamp(event: Event): Event {
+    return this.stampEnvelope(event);
+  }
+
+  /** Reserve ordered coordinates before a captured payload is materialized. */
+  stampEnvelope<T extends Omit<Event, "msg">>(event: T): T & Omit<Event, "msg"> {
     if (this.closed) return event;
     const seq = this.nextSeq + 1;
     const suppliedEventId: unknown = event.eventId;
@@ -1779,8 +1789,10 @@ export class EventLog {
    * registration order; the set preserves insertion order.
    */
   subscribe(listener: EventListener): () => void {
+    this.visibilityBarrier?.();
     this.listeners.add(listener);
     return () => {
+      this.visibilityBarrier?.();
       this.listeners.delete(listener);
     };
   }
@@ -1838,7 +1850,9 @@ export class EventLog {
   }
 
   close(): void {
+    this.visibilityBarrier?.();
     this.closed = true;
+    this.visibilityBarrier = undefined;
     this.emitDelegate = undefined;
     this.pendingPublications.length = 0;
     this.listeners.clear();
@@ -2000,6 +2014,8 @@ export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
       ...(usage.cachedInputTokens !== undefined
         ? { cachedInputTokens: usage.cachedInputTokens }
         : {}),
+      ...(usage.cacheCreation1hInputTokens !== undefined
+        ? { cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens } : {}),
       ...(usage.cacheCreationInputTokens !== undefined
         ? { cacheCreationInputTokens: usage.cacheCreationInputTokens }
         : {}),

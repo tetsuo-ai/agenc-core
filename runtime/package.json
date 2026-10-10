@@ -26,6 +26,7 @@
   "agencNamespaceInitEntry": "dist/agenc-namespace-init-entry",
   "agencExecutableFiles": [
     "dist/agenc-process-broker",
+    "dist/agenc-session-sandbox",
     "dist/agenc-process-job-broker.exe",
     "dist/agenc-landlock-run",
     "dist/agenc-secret-service-helper",

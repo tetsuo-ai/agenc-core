@@ -129,9 +129,13 @@ describe('useUnseenDivider coverage', () => {
       state.jumpToNew(handle)
       expect(handle.scrollToBottom).toHaveBeenCalledTimes(1)
 
-      state = await render(4)
-      expect(state.dividerIndex).toBeNull()
-      expect(state.dividerYRef.current).toBeNull()
+      await render(4)
+      // Clearing a stale divider runs in an effect and schedules another
+      // render. Observe that render, rather than a snapshot after a delay.
+      await vi.waitFor(() => {
+        expect(latest?.dividerIndex).toBeNull()
+        expect(latest?.dividerYRef.current).toBeNull()
+      })
     } finally {
       root.unmount()
       stdin.end()

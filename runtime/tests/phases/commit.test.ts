@@ -377,6 +377,7 @@ describe("commit", () => {
         totalTokens: 15,
         cachedInputTokens: 4,
         cacheCreationInputTokens: 5,
+        cacheCreation1hInputTokens: 3,
       },
     });
     (
@@ -432,6 +433,7 @@ describe("commit", () => {
       output_tokens: 3,
       cache_read_input_tokens: 4,
       cache_creation_input_tokens: 5,
+      cache_creation: { ephemeral_1h_input_tokens: 3, ephemeral_5m_input_tokens: 2 },
     });
     expect(context.toolUseContext.getAppState().promptSuggestionEnabled).toBe(
       true,

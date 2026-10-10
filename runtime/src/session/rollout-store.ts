@@ -3031,6 +3031,17 @@ export class RolloutStore {
     }
     const eventId = canonicalRolloutEventId(event);
     const message = event.msg;
+    if (
+      projection === undefined && this.store.writeBehind.deferring &&
+      message.type === "effect_result" && message.payload.outcome === "committed"
+    ) {
+      // The intent and pre-dispatch gate remain synchronous. The completed
+      // projection follows its canonical result in the same queue; any
+      // independent recovery/admission reader drains before using it.
+      const captured = structuredClone(event);
+      this.store.writeBehind.defer("effect-result-projection", () => this.recordEffectEvent(captured));
+      return;
+    }
     if (message.type === "effect_intent") {
       const payload = message.payload;
       const epoch =

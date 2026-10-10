@@ -306,6 +306,7 @@ otherwise.
 | `approval_policy` | `on-request` |
 | `sandbox_mode` | `workspace-write` |
 | `reasoning_effort` | `medium`; omitted for Gemini unless explicitly configured |
+| `reasoning_cap_policy` | `off`. Experimental `streak2` on native DeepSeek: two consecutive reasoning-only caps with productive native recoveries allow one additional normal sample with thinking disabled. Configured thinking returns on the following sample. Recovery budgets, output limits and tool validation are unchanged. No established token or quality benefit; unsupported routes are unaffected. |
 | `approvals_reviewer` | `user` |
 | `agent_max_depth` | `1` |
 | `auth.backend` | `remote` |
@@ -513,7 +514,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`. |
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
-| `model_verbosity` | `low`, `medium`, or `high`. |
+| `model_verbosity` | `low`, `medium`, or `high`. Sets response detail via the native verbosity parameter on supported direct OpenAI models; other routes (including DeepSeek, GLM, Anthropic and ChatGPT subscription models) use a Response Detail instruction. Applies at the top level or in a profile. A runtime response-detail override takes precedence; clearing it restores the configured value. Unset adds no response-detail instruction or native verbosity parameter. This controls user-facing prose, not the work, checks, or required error reporting. |
 | `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price), Anthropic fast mode on Claude Opus 5.5, Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic), and xAI priority processing on Grok 4.7 and Grok 4.6 (`service_tier: "priority"`, 2x price, API-key billing only; a session signed in with X does not send it). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
 | `personality` | `none`, `friendly`, or `pragmatic`. |
 | `agent_max_threads` | Positive concurrent-agent thread cap. |
@@ -568,6 +569,7 @@ from a late CLI layer is rejected.
 | `spinnerTipsEnabled` | Show prompt/chrome hints. |
 | `promptSuggestionEnabled` | Enable background next-prompt suggestions (default `false`). |
 | `swarmMode`, `fastMode` | Agent-swarm and fast-mode preferences. |
+| `bypassFastMode` | Set `false` to disable the one-shot fast loop for explicit dangerous bypass runs. Interactive, sandboxed, resumed and full-durability sessions use the normal loop. |
 | `plansDirectory` | Plan artifact directory. |
 | `prefersReducedMotion` | Reduced-motion preference. |
 | `autoMemoryEnabled`, `autoMemoryDirectory` | Automatic-memory enablement and directory. |
@@ -617,6 +619,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `sandbox` | Sandbox detail block. |
 | `sandbox.network_access` | Explicit network boolean. |
 | `sandbox.allow_gpu` | macOS Metal GPU opt-in. |
+| `sandbox.persistent_session` | On unless set to `false`. Reuse an eligible Linux command sandbox within its owning session. Set `false` to launch a fresh sandbox for each command. |
 | `sandbox.autoAllowBashIfSandboxed` | On unless set to `false`. Bash and `exec_command` calls that will run inside the OS sandbox proceed without a prompt in the `default`, `acceptEdits`, `auto` and `dontAsk` modes. Escalation requests, detached services, TTY sessions, flagged commands and deny or ask rules still ask. Set `false` to be asked for every command. |
 | `sandbox.allowUnsandboxedCommands` | Explicit unsandboxed-command escape policy. |
 | `sandbox.enableWeakerNestedSandbox` | Weaker nested-isolation opt-in. |
@@ -680,7 +683,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `profiles`, `profiles.<profile>` | Named selection bundles. |
 | `profiles.<profile>.model`, `profiles.<profile>.model_provider` | Model/provider override. Provider values follow the same strict canonical-selector rule as root `model_provider`. |
 | `profiles.<profile>.approval_policy`, `profiles.<profile>.sandbox_mode` | Approval/sandbox override. |
-| `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary` | Reasoning overrides. |
+| `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary`, `profiles.<profile>.reasoning_cap_policy` | Reasoning overrides. |
 | `profiles.<profile>.approvals_reviewer`, `profiles.<profile>.model_verbosity`, `profiles.<profile>.service_tier`, `profiles.<profile>.personality` | Reviewer/presentation overrides. |
 | `profiles.<profile>.tools_config` | Profile-local tool block with the same fields as `tools_config`. |
 | `profiles.<profile>.tools_config.web_search_endpoint`, `profiles.<profile>.tools_config.web_search_endpoint_kind` | Search URL and `duckduckgo`/`searxng`/`brave`/`json` decoder. |

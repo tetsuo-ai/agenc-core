@@ -32,6 +32,8 @@ import * as childRouting from "./child-routing.js";
 import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
+import type { UnifiedExecOwnerBinding, UnifiedExecOwnerLifetime } from "../../src/unified-exec/types.js";
+import * as childRunJournal from "../../src/session/child-run-journal.js";
 import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions, registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
 import { childTerminalOutcome } from "../../src/agents/child-terminal.js";
 import { validateCanonicalJournalText } from "../../src/state/recovery-journal-contract.js";
@@ -7052,6 +7054,100 @@ describe("runAgent", () => {
       rmSync(home, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it.each([
+    { proofFails: true, stopAlsoFires: false },
+    { proofFails: true, stopAlsoFires: true },
+    { proofFails: false, stopAlsoFires: false },
+  ])("requires construction cleanup proof before fallback terminal publication: %j", async ({ proofFails, stopAlsoFires }) => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-construction-proof-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-construction-proof-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const session = makeStubSession({
+      config: { ...mkConfig(), cwd },
+      sessionConfiguration: mkSessionConfiguration({ cwd }),
+    });
+    const store = new RolloutStore({
+      cwd, agencHome: home, sessionId: session.conversationId,
+      agencVersion: "0.2.0", sessionTempRoot: tmpdir(),
+    });
+    store.open({
+      cwd, sessionId: session.conversationId,
+      timestamp: new Date().toISOString(), originator: "construction-proof-test",
+      agencVersion: "0.2.0", model: session.modelInfo.slug,
+      modelProvider: session.services.provider.name,
+    });
+    session.mountRolloutStore(store);
+    const { live } = await spawnLive(session);
+    const cleanupFailure = new Error("injected scoped cleanup proof failure");
+    // No child process is launched. Inject only the proof result at the same
+    // binding boundary used by the concrete manager.
+    const close = vi.fn(async () => {
+      if (stopAlsoFires) live.abortController.abort("owner Stop");
+      if (proofFails) throw cleanupFailure;
+    });
+    const binding = {
+      ownerId: live.agentId, assertCurrent: () => {}, release: () => {},
+      prepareForDurableClose: close,
+    } as UnifiedExecOwnerBinding;
+    vi.spyOn(session, "createChildExecLifetime").mockReturnValue({
+      ownerId: live.agentId, closed: false, bind: () => binding,
+      prepareForDurableClose: close,
+    } as UnifiedExecOwnerLifetime);
+    // Fail the real constructor after the owner binding has been acquired.
+    (session.agentDefinitions as { agentRoleWorkspaceId: string })
+      .agentRoleWorkspaceId = "mismatched-workspace";
+    const fallback = vi.spyOn(childRunJournal, "recordUnconstructedChildRunTerminal");
+    const append = vi.spyOn(RolloutStore.prototype, "append");
+    const emitted = vi.spyOn(session, "emit");
+    const taskId = "construction-proof-task";
+    try {
+      const run = collectRun(runAgent({
+        live, parent: session, taskId, taskPrompt: "go",
+        initialMessages: [{ role: "user", content: "go" }],
+      }));
+      if (proofFails) {
+        const error = await run.catch((failure: unknown) => failure);
+        expect(error).toBeInstanceOf(AggregateError);
+        const lifecycleError = error as AggregateError;
+        expect(lifecycleError.message).toBe("subagent durable lifecycle failed");
+        expect(lifecycleError.errors[0]).toBeInstanceOf(AggregateError);
+        expect(lifecycleError.errors[0].errors).toContain(cleanupFailure);
+        expect(fallback).not.toHaveBeenCalled();
+        expect(live.rolloutPath).toBeUndefined();
+        expect(live.lastTaskReceipt).toBeUndefined();
+        expect(live.status.value.status).toBe("errored");
+        expect(append.mock.calls.filter(([event]) =>
+          event.msg.type === "run_terminal" || event.msg.type === "subagent_turn_outcome",
+        )).toEqual([]);
+        expect(emitted.mock.calls.filter(([event]) =>
+          event.msg.type === "subagent_turn_outcome",
+        )).toEqual([]);
+      } else {
+        const { result } = await run;
+        expect(result.outcome).toBe("errored");
+        expect(fallback).toHaveBeenCalledOnce();
+        expect(fallback).toHaveBeenCalledWith(expect.objectContaining({
+          childRunId: live.agentId, result: expect.objectContaining({ status: "failed" }),
+          taskOutcome: expect.objectContaining({ taskId, outcome: "errored" }),
+        }));
+        expect(live.rolloutPath).toBeDefined();
+        const journal = readFileSync(live.rolloutPath!, "utf8");
+        expect(journal).toContain('"type":"run_terminal"');
+        expect(journal).toContain('"type":"subagent_turn_outcome"');
+        expect(journal).toContain(taskId);
+        expect(close.mock.invocationCallOrder[0]).toBeLessThan(fallback.mock.invocationCallOrder[0]!);
+      }
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      fallback.mockRestore();
+      append.mockRestore();
+      emitted.mockRestore();
+      await session.shutdown();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
   it("records a failed child terminal when setup stops before Session construction", async () => {
     const previousAgencHome = process.env.AGENC_HOME;

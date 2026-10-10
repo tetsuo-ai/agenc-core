@@ -9,7 +9,7 @@ import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
 import {
   applyMigrations,
@@ -21,12 +21,151 @@ import {
   STATE_PRE_V12_BACKUP_FILENAME,
   STATE_PRE_V17_BACKUP_FILENAME,
   STATE_PRE_V19_BACKUP_FILENAME,
+  STATE_WAL_AUTOCHECKPOINT_PAGES,
 } from "./sqlite-driver.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 
 let home = "";
 let cwd = "";
 let originalAgencHome = "";
+
+describe("state transaction invocation isolation", () => {
+  it("preserves immediate callback receivers and retained callable families", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+    try {
+      let firstCalls = 0;
+      let firstReceiver: unknown;
+      expect(driver.transactionImmediate(function (this: unknown) {
+        firstCalls += 1;
+        if (firstCalls === 1) firstReceiver = this;
+        expect(driver.state.inTransaction).toBe(true);
+        return "first operation";
+      })).toBe("first operation");
+      const secondReceiver = driver.transactionImmediate(function (this: unknown) {
+        return this;
+      });
+      expect(typeof firstReceiver).toBe("function");
+      expect(firstReceiver).not.toBe(secondReceiver);
+      const first = firstReceiver as Database.Transaction<() => string>;
+      expect(first.database).toBe(driver.state);
+      expect(first.default).toBe(first);
+      expect(first.immediate.database).toBe(driver.state);
+      // A retained receiver must still invoke its original callback, including
+      // when nested in another operation after a later invocation completed.
+      driver.transaction(() => {
+        expect(first.immediate()).toBe("first operation");
+        expect(driver.state.inTransaction).toBe(true);
+      });
+      expect(firstCalls).toBe(2);
+      expect(driver.state.inTransaction).toBe(false);
+      expect(driver.transaction(function (this: unknown) { return this; })).toBeUndefined();
+      expect(driver.logsTransaction(function (this: unknown) { return this; })).toBeUndefined();
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("keeps recursive operations and caught inner rollbacks separate", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.state.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+      const insert = (value: string) => driver.prepareState(
+        "INSERT INTO transaction_probe (value) VALUES (?)",
+      ).run(value);
+      const result = driver.transactionImmediate(() => {
+        insert("outer-before");
+        expect(() => driver.transaction(() => {
+          insert("rolled-back-inner");
+          throw new Error("inner failure");
+        })).toThrow("inner failure");
+        expect(driver.transactionImmediate(() => {
+          insert("inner-kept");
+          return "inner result";
+        })).toBe("inner result");
+        insert("outer-after");
+        return "outer result";
+      });
+      expect(result).toBe("outer result");
+      expect(driver.transaction(() => "next operation")).toBe("next operation");
+      expect(driver.state.inTransaction).toBe(false);
+    } finally {
+      driver.close();
+    }
+    const reopened = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(reopened.prepareState<[], { value: string }>(
+        "SELECT value FROM transaction_probe ORDER BY value",
+      ).all().map(row => row.value)).toEqual([
+        "inner-kept", "outer-after", "outer-before",
+      ]);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("rolls back an outer failure and rejects a returned thenable", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.state.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+      const insert = (value: string) => driver.prepareState(
+        "INSERT INTO transaction_probe (value) VALUES (?)",
+      ).run(value);
+      expect(() => driver.transaction(() => {
+        insert("outer");
+        driver.transactionImmediate(() => insert("inner"));
+        throw new Error("outer failure");
+      })).toThrow("outer failure");
+      const then = vi.fn();
+      expect(() => driver.transactionImmediate(() => {
+        insert("thenable");
+        return { then };
+      })).toThrow("Transaction function cannot return a promise");
+      expect(then).not.toHaveBeenCalled();
+      expect(driver.prepareState<[], { count: number }>(
+        "SELECT COUNT(*) AS count FROM transaction_probe",
+      ).get()?.count).toBe(0);
+      driver.transaction(() => insert("next"));
+    } finally {
+      driver.close();
+    }
+    const reopened = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(reopened.prepareState<[], { value: string }>(
+        "SELECT value FROM transaction_probe",
+      ).all()).toEqual([{ value: "next" }]);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("keeps lazy logs independent of a failing state transaction and stays closed", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+    expect(existsSync(driver.logsDbPath)).toBe(false);
+    try {
+      driver.state.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+      expect(() => driver.transactionImmediate(() => {
+        driver.prepareState("INSERT INTO transaction_probe (value) VALUES ('state')").run();
+        expect(driver.logsTransaction(() => {
+          driver.logs.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+          driver.prepareLogs("INSERT INTO transaction_probe (value) VALUES ('logs')").run();
+          return "log result";
+        })).toBe("log result");
+        throw new Error("state rollback");
+      })).toThrow("state rollback");
+      expect(driver.prepareState("SELECT * FROM transaction_probe").all()).toEqual([]);
+      expect(driver.prepareLogs("SELECT * FROM transaction_probe").all()).toEqual([{ value: "logs" }]);
+    } finally {
+      driver.close();
+    }
+    expect(() => driver.transaction(() => "closed")).toThrow();
+    expect(() => driver.transactionImmediate(() => "closed")).toThrow();
+    expect(() => driver.logsTransaction(() => "closed")).toThrow();
+
+    const unopenedLogs = openStateDatabases({ cwd: join(cwd, "another"), agencHome: home, deferLogs: true });
+    unopenedLogs.close();
+    expect(() => unopenedLogs.logsTransaction(() => "closed")).toThrow("cannot open logs on a closed state driver");
+  });
+});
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "agenc-state-home-"));
@@ -645,6 +784,76 @@ function seedCurrentMainStateWithoutMigration19(): ReturnType<
   }
   return paths;
 }
+
+describe("WAL checkpoint policy", () => {
+  const PAGE = 4096;
+  const WAL_HEADER = 32;
+  const FRAME_HEADER = 24;
+  const walFrames = (dbPath: string): number => {
+    const wal = `${dbPath}-wal`;
+    if (!existsSync(wal)) return 0;
+    return Math.max(0, (statSync(wal).size - WAL_HEADER) / (PAGE + FRAME_HEADER));
+  };
+  const autoCheckpoint = (db: Database.Database): number =>
+    Number(db.pragma("wal_autocheckpoint", { simple: true }));
+
+  it("applies the raised threshold to state, eager logs and lazily opened logs", () => {
+    expect(STATE_WAL_AUTOCHECKPOINT_PAGES).toBe(10_000);
+    const eager = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(autoCheckpoint(eager.state)).toBe(STATE_WAL_AUTOCHECKPOINT_PAGES);
+      expect(autoCheckpoint(eager.logs)).toBe(STATE_WAL_AUTOCHECKPOINT_PAGES);
+      expect(eager.state.pragma("journal_mode", { simple: true })).toBe("wal");
+      expect(eager.state.pragma("synchronous", { simple: true })).toBe(2);
+    } finally {
+      eager.close();
+    }
+    const deferred = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+    try {
+      expect(autoCheckpoint(deferred.state)).toBe(STATE_WAL_AUTOCHECKPOINT_PAGES);
+      expect(autoCheckpoint(deferred.logs)).toBe(STATE_WAL_AUTOCHECKPOINT_PAGES);
+    } finally {
+      deferred.close();
+    }
+  });
+
+  it("keeps commits in the WAL past SQLite's default threshold and still seals them completely", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.state.exec("CREATE TABLE IF NOT EXISTS wal_policy (id INTEGER PRIMARY KEY, blob BLOB NOT NULL)");
+      const insert = driver.state.prepare("INSERT INTO wal_policy (blob) VALUES (?)");
+      const payload = Buffer.alloc(PAGE - 64, 7);
+      // Many small commits, like the per-event transactions of a one-shot run.
+      for (let commit = 0; commit < 60; commit += 1) {
+        driver.transaction(() => {
+          for (let row = 0; row < 25; row += 1) insert.run(payload);
+        });
+      }
+      // SQLite's default (1,000 frames) would have checkpointed and reused the
+      // WAL from its start by now; the raised threshold leaves the frames there.
+      expect(walFrames(driver.stateDbPath)).toBeGreaterThan(1_200);
+      expect(walFrames(driver.stateDbPath)).toBeLessThan(STATE_WAL_AUTOCHECKPOINT_PAGES);
+
+      // The one-shot seal still backfills every frame before it publishes.
+      driver.checkpointDurability();
+      const [result] = driver.state.pragma("wal_checkpoint(PASSIVE)") as {
+        busy: number; log: number; checkpointed: number;
+      }[];
+      expect(result).toBeDefined();
+      expect(result!.busy).toBe(0);
+      expect(result!.checkpointed).toBe(result!.log);
+      expect(driver.state.pragma("synchronous", { simple: true })).toBe(2);
+    } finally {
+      driver.close();
+    }
+    const reopened = new Database(resolveStateDatabasePaths({ cwd, agencHome: home }).stateDbPath, { readonly: true });
+    try {
+      expect(reopened.prepare("SELECT count(*) AS rows FROM wal_policy").get()).toEqual({ rows: 1_500 });
+    } finally {
+      reopened.close();
+    }
+  });
+});
 
 describe("free-page reclaim", () => {
   const PAGE = 4096;

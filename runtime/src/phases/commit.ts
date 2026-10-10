@@ -45,6 +45,7 @@ import {
   type AgenCToolUseContext,
 } from "../session/agenc-tool-use-context.js";
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
+import { legacyCacheCreationUsage } from "../llm/usage.js";
 import { cloneLlmMessageSnapshot as cloneMessage } from "../llm/content-conversion.js";
 import {
   ensureExtractMemoriesInitialized,
@@ -208,13 +209,14 @@ function buildToolResultErrorLookup(
 
 function legacyUsage(
   usage: LLMUsage | undefined,
-): Record<string, number> | undefined {
+): Record<string, unknown> | undefined {
   if (!usage) return undefined;
   return {
     input_tokens: usage.promptTokens,
     output_tokens: usage.completionTokens,
     cache_read_input_tokens: usage.cachedInputTokens ?? 0,
     cache_creation_input_tokens: usage.cacheCreationInputTokens ?? 0,
+    ...legacyCacheCreationUsage(usage),
   };
 }
 

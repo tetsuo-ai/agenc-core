@@ -325,7 +325,8 @@ export async function transitionSandboxExecutionBrokerAuthority(
         liveAuthority.mode === authority.mode &&
         liveAuthority.permissionProfile === authority.permissionProfile &&
         liveAuthority.windowsSandboxLevel === authority.windowsSandboxLevel &&
-        liveAuthority.allowGpu === authority.allowGpu
+        liveAuthority.allowGpu === authority.allowGpu &&
+        (liveAuthority.persistentSession !== false) === (authority.persistentSession !== false)
       ) {
         return;
       }

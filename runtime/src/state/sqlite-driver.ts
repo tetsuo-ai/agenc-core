@@ -1,3 +1,5 @@
+import { isAuditedAdmissionRead } from "./synchronous-admission-sql.js";
+import { projectWriteBehindBarrier } from "../session/write-behind.js";
 import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -44,6 +46,13 @@ export {
 export interface StateSqliteDriverOptions {
   /** State-only consumers open the independent logs database on first use. */
   readonly deferLogs?: boolean;
+  /**
+   * Admission's private writer keeps reservations, allocations and run gates
+   * synchronous. Reads of ONLY those tables cannot observe a stale rollout
+   * projection. Its SQLite journal is synchronous too; the canonical rollout
+   * copy is queued. Other SQL readers retain the queue barrier.
+   */
+  readonly eagerAdmissionState?: boolean;
 }
 
 export interface OpenStateDatabaseOptions extends StateSqliteDriverOptions {
@@ -61,6 +70,15 @@ export const STATE_PRE_V19_BACKUP_FILENAME = "agenc-state_1.pre-v19.sqlite";
 export const STATE_PRE_V21_BACKUP_FILENAME = "agenc-state_1.pre-v21.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
+
+type TransactionOperation = () => unknown;
+type TransactionRunner = BetterSqlite3.Transaction<
+  (operation: TransactionOperation) => unknown
+>;
+
+function runTransactionOperation(operation: TransactionOperation): unknown {
+  return operation();
+}
 
 /** One free-page reclaim pass over a state database. */
 export interface StateFreePageReclaim {
@@ -92,6 +110,34 @@ export type SqliteStatement<
   Row = unknown,
 > = BetterSqlite3.Statement<Params, Row>;
 
+function withWriteBehindReadBarrier<Params extends unknown[], Row>(
+  statement: SqliteStatement<Params, Row>,
+  beforeRead: () => void,
+): SqliteStatement<Params, Row> {
+  for (const method of ["get", "all", "iterate"] as const) {
+    const invoke = statement[method];
+    Object.defineProperty(statement, method, {
+      configurable: true,
+      value: function (this: SqliteStatement<Params, Row>, ...args: Params) {
+        beforeRead();
+        const result = Reflect.apply(invoke, this, args);
+        if (method === "iterate") {
+          // A caller can retain the cursor before a step queues work and
+          // advance it later. The actual read needs its own barrier too.
+          const iterator = result as IterableIterator<Row>;
+          const next = iterator.next;
+          iterator.next = function (...nextArgs) {
+            beforeRead();
+            return Reflect.apply(next, this, nextArgs);
+          };
+        }
+        return result;
+      },
+    });
+  }
+  return statement;
+}
+
 /** Distinct SQL texts kept compiled per connection (least recently used first out). */
 export const PREPARED_STATEMENT_CACHE_LIMIT = 512;
 
@@ -113,21 +159,26 @@ class PreparedStatementCache {
   readonly #database: SqliteDatabase;
   readonly #statements = new Map<string, SqliteStatement>();
 
-  constructor(database: SqliteDatabase) {
+  constructor(database: SqliteDatabase, private readonly beforeRead: () => void, private readonly eagerAdmissionState = false) {
     this.#database = database;
   }
 
   prepare<Params extends unknown[], Row>(
     sql: string,
   ): SqliteStatement<Params, Row> {
+    const prepare = () => {
+      const statement = this.#database.prepare<Params, Row>(sql);
+      return this.eagerAdmissionState && isAuditedAdmissionRead(sql)
+        ? statement : withWriteBehindReadBarrier(statement, this.beforeRead);
+    };
     const cached = this.#statements.get(sql);
     if (cached !== undefined) {
-      if (cached.busy) return this.#database.prepare<Params, Row>(sql);
+      if (cached.busy) return prepare();
       this.#statements.delete(sql);
       this.#statements.set(sql, cached);
       return cached as unknown as SqliteStatement<Params, Row>;
     }
-    const statement = this.#database.prepare<Params, Row>(sql);
+    const statement = prepare();
     this.#statements.set(sql, statement as unknown as SqliteStatement);
     if (this.#statements.size > PREPARED_STATEMENT_CACHE_LIMIT) {
       const leastRecent = this.#statements.keys().next().value;
@@ -142,20 +193,26 @@ class PreparedStatementCache {
 }
 
 export class StateSqliteDriver {
+  readonly #eagerAdmissionState: boolean;
   readonly projectDir: string;
+  readonly #writeBehindBarrier: () => void;
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
   #logs: SqliteDatabase | undefined;
   readonly #stateStatements: PreparedStatementCache;
   #logsStatements: PreparedStatementCache | undefined;
+  readonly #stateTransaction: TransactionRunner;
+  #logsTransaction: TransactionRunner | undefined;
 
   constructor(
     paths: StateDatabasePaths,
     private readonly durabilityRunId?: string,
     options: StateSqliteDriverOptions = {},
   ) {
+    this.#eagerAdmissionState = options.eagerAdmissionState === true;
     this.projectDir = paths.projectDir;
+    this.#writeBehindBarrier = projectWriteBehindBarrier(paths.projectDir);
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
     const state = new Database(paths.stateDbPath);
@@ -170,6 +227,10 @@ export class StateSqliteDriver {
       applyStateMigrations(state, paths);
       if (logs !== undefined) applyLogsMigrations(logs);
       replayAtomicSessionSnapshotWrites(state, this.projectDir);
+      this.#stateTransaction = state.transaction(runTransactionOperation);
+      if (logs !== undefined) {
+        this.#logsTransaction = logs.transaction(runTransactionOperation);
+      }
     } catch (error) {
       if (state.open) state.close();
       if (logs?.open) logs.close();
@@ -177,8 +238,8 @@ export class StateSqliteDriver {
     }
     this.state = state;
     this.#logs = logs;
-    this.#stateStatements = new PreparedStatementCache(state);
-    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs);
+    this.#stateStatements = new PreparedStatementCache(state, this.#writeBehindBarrier, this.#eagerAdmissionState);
+    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs, this.#writeBehindBarrier);
   }
 
   get logs(): SqliteDatabase {
@@ -188,11 +249,12 @@ export class StateSqliteDriver {
     try {
       configureDatabase(logs);
       applyLogsMigrations(logs);
+      this.#logsTransaction = logs.transaction(runTransactionOperation);
     } catch (error) {
       if (logs.open) logs.close();
       throw error;
     }
-    this.#logsStatements = new PreparedStatementCache(logs);
+    this.#logsStatements = new PreparedStatementCache(logs, this.#writeBehindBarrier);
     this.#logs = logs;
     return logs;
   }
@@ -209,7 +271,7 @@ export class StateSqliteDriver {
     sql: string,
   ): SqliteStatement<Params, Row> {
     const logs = this.logs;
-    return (this.#logsStatements ??= new PreparedStatementCache(logs))
+    return (this.#logsStatements ??= new PreparedStatementCache(logs, this.#writeBehindBarrier))
       .prepare<Params, Row>(sql);
   }
 
@@ -220,7 +282,8 @@ export class StateSqliteDriver {
   }
 
   transaction<T>(fn: () => T): T {
-    return this.withTransactionDurability(this.state, () => this.state.transaction(fn)());
+    if (!this.#eagerAdmissionState) this.#writeBehindBarrier();
+    return this.withTransactionDurability(this.state, () => this.#stateTransaction(fn) as T);
   }
 
   /**
@@ -231,11 +294,15 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
+    if (!this.#eagerAdmissionState) this.#writeBehindBarrier();
+    // The mode method supplies its fresh default wrapper as the callback's
+    // receiver. Retain that callable family and per-invocation identity.
     return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());
   }
 
   logsTransaction<T>(fn: () => T): T {
-    return this.withTransactionDurability(this.logs, () => this.logs.transaction(fn)());
+    const logs = this.logs;
+    return this.withTransactionDurability(logs, () => this.#logsTransaction!(fn) as T);
   }
 
   private withTransactionDurability<T>(db: SqliteDatabase, operation: () => T): T {
@@ -280,6 +347,7 @@ export class StateSqliteDriver {
 
 export class StateSqliteReader {
   readonly projectDir: string;
+  readonly #writeBehindBarrier: () => void;
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
@@ -287,6 +355,7 @@ export class StateSqliteReader {
 
   constructor(paths: StateDatabasePaths, options: StateSqliteDriverOptions = {}) {
     this.projectDir = paths.projectDir;
+    this.#writeBehindBarrier = projectWriteBehindBarrier(paths.projectDir);
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
     this.state = new Database(paths.stateDbPath, {
@@ -322,13 +391,13 @@ export class StateSqliteReader {
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.state.prepare<Params, Row>(sql);
+    return withWriteBehindReadBarrier(this.state.prepare<Params, Row>(sql), this.#writeBehindBarrier);
   }
 
   prepareLogs<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.logs.prepare<Params, Row>(sql);
+    return withWriteBehindReadBarrier(this.logs.prepare<Params, Row>(sql), this.#writeBehindBarrier);
   }
 
   close(): void {
@@ -382,12 +451,25 @@ export function openStateDatabasePathReader(
   return new StateSqliteReader(paths, options);
 }
 
+/**
+ * WAL frames a connection lets accumulate before its commit runs an automatic
+ * checkpoint. SQLite's default is 1,000 pages (4 MiB). A one-shot command
+ * writes several hundred pages, so the default put a checkpoint (a WAL fsync,
+ * a database fsync, then a WAL-header fsync on the next write) inside every
+ * third command on a real disk. A checkpoint is never a durability point:
+ * FULL commits are already fsynced in the WAL, and relaxed one-shot commits
+ * become durable only at the seal, which runs `checkpointDurability`. The
+ * threshold changes how often that internal work runs, not what it protects.
+ */
+export const STATE_WAL_AUTOCHECKPOINT_PAGES = 10_000;
+
 function configureDatabase(db: SqliteDatabase): void {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = FULL");
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   db.pragma("temp_store = MEMORY");
+  db.pragma(`wal_autocheckpoint = ${STATE_WAL_AUTOCHECKPOINT_PAGES}`);
 }
 
 function applyLogsMigrations(db: SqliteDatabase): void {

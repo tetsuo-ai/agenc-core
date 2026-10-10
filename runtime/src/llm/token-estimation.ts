@@ -70,6 +70,16 @@ const ANTHROPIC_MODEL_RE = /\bclaude[-_]/i;
 
 export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
   {
+    // The 4.7+ tokenizer counts about 30% more tokens for the same text.
+    // No provider fallback here: older Claude models retain their ratio.
+    modelFamily: "anthropic-new",
+    providerNames: [],
+    modelMatchers: [/\b(?:claude|agenc)-(?:haiku-5[.-]5|(?:opus|sonnet|fable|mythos)-5(?:[.-]\d+)?|opus-4[.-][78])(?:$|[-@\[])/i],
+    bytesPerToken: 3.5 / 1.3,
+    supportsJson: true,
+    supportsCode: true,
+  },
+  {
     modelFamily: "anthropic",
     providerNames: ["anthropic"],
     modelMatchers: [ANTHROPIC_MODEL_RE],

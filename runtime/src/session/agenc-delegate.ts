@@ -807,6 +807,7 @@ export async function spawnAgenCDelegateThread(
   let sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let providerLease: DelegateProviderLease | undefined;
   let childSession: Session | undefined;
+  let execOwnerBinding: import("../unified-exec/types.js").UnifiedExecOwnerBinding | undefined;
   let childSessionConfiguration: SessionConfiguration | undefined;
   let spawnDispatched = false;
   let spawnSettled = false;
@@ -914,8 +915,10 @@ export async function spawnAgenCDelegateThread(
       );
     }
 
+    execOwnerBinding = parent.createChildExecLifetime?.(childSessionId)?.bind();
     childSession = new Session({
       conversationId: childSessionId,
+      unifiedExecOwnership: { kind: "borrowed", binding: execOwnerBinding },
       fileReadScope: parent.fileReadScope,
       roleWorkspace: parent.roleWorkspace,
       agentDefinitions: parent.agentDefinitions,
@@ -972,12 +975,18 @@ export async function spawnAgenCDelegateThread(
       try {
         revokeChildApprovalSession(childSession);
         await childSession.shutdown();
-      } catch {
-        // Preserve the admission/setup failure.
+      } catch (cleanupError) {
+        terminalJournalError = cleanupError;
+      }
+    } else {
+      try {
+        await execOwnerBinding?.prepareForDurableClose();
+      } catch (cleanupError) {
+        terminalJournalError = cleanupError;
       }
     }
     if (
-      spawnDispatched &&
+      terminalJournalError === undefined && spawnDispatched &&
       (childSession === undefined || childSession.rolloutStore === null)
     ) {
       try {

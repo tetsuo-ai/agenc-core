@@ -1,3 +1,4 @@
+import { sessionDispatchAuthority } from "../../tools/session-dispatch-authority.js";
 /**
  * Lean tool-execution surfaces consumed by `phases/execute-tools.ts`.
  *
@@ -38,12 +39,10 @@ import {
   type FilesystemRootSessionLike,
 } from "../../tools/filesystem-dispatch-roots.js";
 import type { LLMToolCall } from "../../llm/types.js";
-import { signedSessionPlanFileArgs } from "../../agents/_deps/filesystem-args.js";
 import {
   EXIT_PLAN_APPROVED_PLAN_ARG,
   exitPlanApprovedPlan,
 } from "../../planning/exit-plan-approval.js";
-import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import {
   getPlan,
   getPlanFilePath,
@@ -89,11 +88,6 @@ import {
   type PermissionRequestHook,
   type SandboxMode,
 } from "../../tools/orchestrator.js";
-import {
-  SESSION_AGENC_HOME_ARG,
-  SESSION_ID_SIG_ARG,
-  signSessionId,
-} from "../../tools/system/filesystem.js";
 import {
   routerFromRegistry as realRouterFromRegistry,
   type ToolRouter as RealToolRouter,
@@ -944,18 +938,7 @@ export class StreamingToolExecutor {
               // outside the workspace root). Sub-agents already
               // receive this through `injectChildToolArgs` in
               // `agents/run-agent.ts`; the main-session dispatch
-              // uses the conversationId here. Cast mirrors the
-              // pattern at `planFileContextForApproval` above —
-              // SessionLike's interface intentionally doesn't
-              // enumerate `conversationId`.
-              const sessionWithId = session as
-                | { readonly conversationId?: unknown }
-                | undefined;
-              const sessionId =
-                typeof sessionWithId?.conversationId === "string" &&
-                sessionWithId.conversationId.length > 0
-                  ? sessionWithId.conversationId
-                  : null;
+              // uses the same trusted conversation authority here.
               const dispatchArgs = filesystemRootsForDispatch(
                 tool.toolCall.name,
                 effectiveArgs,
@@ -975,22 +958,13 @@ export class StreamingToolExecutor {
                 arguments: JSON.stringify(dispatchArgs),
               };
               return dispatchWithInjectedArgs(this.registry, dispatchCall, {
-                ...signedSessionPlanFileArgs(sessionPlanFileAuthority(session)),
+                ...sessionDispatchAuthority(session, this.liveOptions?.agencHome),
                 __onProgress: onProgress,
                 __abortSignal: this.abortSignal,
                 __callId: tool.toolCall.id,
                 // ExitPlanMode executes the plan its approval request showed.
                 ...(tool.toolCall.name === "ExitPlanMode"
                   ? { [EXIT_PLAN_APPROVED_PLAN_ARG]: exitPlanApprovedPlan(approvalArgs) }
-                  : {}),
-                ...(this.liveOptions?.agencHome !== undefined
-                  ? { [SESSION_AGENC_HOME_ARG]: this.liveOptions.agencHome }
-                  : {}),
-                ...(sessionId !== null
-                  ? {
-                      __agencSessionId: sessionId,
-                      [SESSION_ID_SIG_ARG]: signSessionId(sessionId),
-                    }
                   : {}),
               });
             },

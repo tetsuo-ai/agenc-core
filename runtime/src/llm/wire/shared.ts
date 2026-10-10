@@ -300,6 +300,7 @@ export function coerceUsage(usage: {
   readonly totalTokens?: unknown;
   readonly cachedInputTokens?: unknown;
   readonly cacheCreationInputTokens?: unknown;
+  readonly cacheCreation1hInputTokens?: unknown;
   readonly reasoningOutputTokens?: unknown;
   readonly webSearchRequests?: unknown;
   readonly speed?: LLMUsage["speed"];
@@ -338,6 +339,8 @@ export function coerceUsage(usage: {
     ...(cacheCreationInputTokens !== undefined
       ? { cacheCreationInputTokens }
       : {}),
+    ...(toOptionalNumber(usage.cacheCreation1hInputTokens) !== undefined
+      ? { cacheCreation1hInputTokens: toOptionalNumber(usage.cacheCreation1hInputTokens) } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(webSearchRequests !== undefined ? { webSearchRequests } : {}),
     ...(usage.speed !== undefined ? { speed: usage.speed } : {}),

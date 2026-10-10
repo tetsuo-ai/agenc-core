@@ -1,3 +1,4 @@
+import { qualifyReasoningCapRecovery } from "../session/reasoning-cap-policy.js";
 /**
  * Max-output-tokens recovery (escalate + continuation).
  *
@@ -457,6 +458,9 @@ export function runMaxOutputTokensRecovery(
 
   // Step 1: escalate path — first attempt, override unset.
   if (overrideUnset && escalateAllowed) {
+    qualifyReasoningCapRecovery(state, reasoningOnly && supportsThinkingOffRecovery(
+      session.services?.provider?.name ?? "", session.config?.model ?? "",
+    ));
     state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     state.maxOutputTokensOverride =
       opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
@@ -478,6 +482,9 @@ export function runMaxOutputTokensRecovery(
   );
   const spent = state.maxOutputTokensRecoveryCount + (state.reasoningOnlyRecoveryCount ?? 0);
   if (spent < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+    qualifyReasoningCapRecovery(state, reasoningOnly && supportsThinkingOffRecovery(
+      session.services?.provider?.name ?? "", session.config?.model ?? "",
+    ));
     state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     discardExecutorForMaxOutputTokens(session, state, {
       appendCompletedHistory: true,
@@ -500,6 +507,7 @@ export function runMaxOutputTokensRecovery(
   }
 
   // Step 3: cap exhausted. Surface the error.
+  state.reasoningCapPolicy = undefined;
   return {
     kind: "exhausted",
     reason: `max_output_tokens_recovery_limit (${MAX_OUTPUT_TOKENS_RECOVERY_LIMIT})`,

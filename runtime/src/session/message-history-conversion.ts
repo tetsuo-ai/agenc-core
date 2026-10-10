@@ -23,6 +23,7 @@ import {
 } from "./tool-result-integrity.js";
 
 import { isGrokEncryptedReplay, redactDurableSecrets } from "./provider-replay-redaction.js";
+import { withCheckpointProjectionCache } from "./checkpoint-projection-cache.js";
 
 type RolloutContentPart = Extract<
   ResponseItem["content"],
@@ -165,6 +166,28 @@ export function llmMessageToDurableResponseItem(
 }
 
 /**
+ * Capture a new message before its caller can mutate or bound it. Validation
+ * of the model-facing tool result stays eager; only its durable redaction and
+ * persisted-body seal are computed by the returned function.
+ */
+export function captureDurableResponseItem(message: LLMMessage): () => ResponseItem {
+  const item = structuredClone(llmMessageToResponseItem(message));
+  const integrity = currentIntegrity(message, false);
+  const capturedIntegrity = integrity === undefined ? undefined : structuredClone(integrity);
+  let durable: ResponseItem | undefined;
+  return () => durable ??= redactResponseItemForPersistence(item, capturedIntegrity, "authenticate");
+}
+
+/** Capture checkpoint inputs; only the preceding writer's private seal may settle later. */
+export function captureCheckpointMessage(message: LLMMessage, pendingIntegrity?: ToolResultIntegrity): LLMMessage {
+  const captured = structuredClone(message);
+  if (pendingIntegrity !== undefined) {
+    captured.runtimeOnly = { ...captured.runtimeOnly, toolResultIntegrity: pendingIntegrity };
+  }
+  return captured;
+}
+
+/**
  * Recreate the already-persisted projection used by checkpoint hashing.
  * Tool-result bodies may have since been bounded in memory, so their sealed
  * persisted identity is retained while all other fields are redacted exactly
@@ -176,10 +199,10 @@ export function llmMessageToCheckpointResponseItem(
   return projectCheckpointMessage(message, redactSecretsInValue);
 }
 
-/** A bounded pure-string redaction cache owned by one turn, not its messages. */
+/** Bounded turn-owned caches; every projection hit compares current input values. */
 export function createCheckpointResponseItemProjector(): typeof llmMessageToCheckpointResponseItem {
   const redact = createMemoizedSecretRedactor();
-  return (message) => projectCheckpointMessage(message, redact);
+  return withCheckpointProjectionCache((message) => projectCheckpointMessage(message, redact));
 }
 
 function projectCheckpointMessage(
@@ -187,7 +210,7 @@ function projectCheckpointMessage(
   redact: typeof redactSecretsInValue,
 ): ResponseItem {
   const item = llmMessageToResponseItem(message);
-  // Always validate the current seal and current fields, including cache hits.
+  // Full validation on every miss, including any changed or ineligible input.
   const integrity = currentIntegrity(message, true);
   return redactResponseItemForPersistence(item, integrity, "preserve", redact);
 }

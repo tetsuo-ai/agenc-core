@@ -180,3 +180,11 @@ describe("transcript cost for fast mode", () => {
     expect(adaptTranscriptEvents([tokenCount("fast")]).sessionCostUsd).toBeCloseTo(8, 6);
   });
 });
+
+it("prices Haiku 5.5 transcript cache writes at both TTLs and the total prompt tier", () => {
+  const transcript = adaptTranscriptEvents([{ type: "token_count", payload: {
+    provider: "anthropic", model: "claude-haiku-5-5", promptTokens: 60_001, completionTokens: 1000,
+    cachedInputTokens: 20_000, cacheCreationInputTokens: 20_000, cacheCreation1hInputTokens: 10_000,
+  } }]);
+  expect(transcript.sessionCostUsd).toBeCloseTo((60_001 * 0.5 + 1000 * 2.5 + 20_000 * 0.05 + 10_000 * 0.625 + 10_000) / 1e6, 10);
+});

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { prepareDirectBwrapPlan } from "../../../src/sandbox/linux-launcher/direct-bwrap.js";
+import { prepareLinuxSandboxProbeHint } from "../../../src/sandbox/linux-launcher/probe-cache.js";
 import { spawnContainedProcess, terminateProcessTreeAndReport, waitForContainedProcessSettlement } from "../../../src/utils/supervisedProcess.js";
 
 import { formatUnifiedExecToolContent, RESIDUAL_PROCESSES_NOTE } from "../../../src/tools/system/exec-result-format.js";
@@ -27,15 +28,21 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-async function run(command: string, direct: boolean, options: { network?: string; abort?: boolean; revokeAfterSpawn?: boolean } = {}) {
+async function run(command: string, direct: boolean, options: { network?: string; abort?: boolean; revokeAfterSpawn?: boolean; preparedProbe?: boolean } = {}) {
   const profile = { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
     { path: { kind: "special", value: { kind: "root" } }, access: "read" },
     { path: { kind: "path", path: cwd }, access: "write" },
   ] }, network: options.network ?? "disabled" };
-  const args = [path.join(runtime, "bin/agenc-linux-sandbox"), "--sandbox-policy-cwd", cwd,
+  const originalArgs = [path.join(runtime, "bin/agenc-linux-sandbox"), "--sandbox-policy-cwd", cwd,
     "--command-cwd", cwd, "--session-temp-root", temp, "--permission-profile", JSON.stringify(profile),
     "--", "/bin/bash", "-c", command];
   const env = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: cwd, NODE_ENV: "production" };
+  const prepared = direct && options.preparedProbe !== false
+    ? prepareLinuxSandboxProbeHint(originalArgs, cwd, env) : undefined;
+  if (direct && options.preparedProbe !== false) {
+    expect(prepared, "kernel fixture must mint this launch's proc evidence").toBeDefined();
+  }
+  const args = prepared?.args ?? originalArgs;
   const controller = new AbortController();
   let admissions = 0;
   const child = spawnContainedProcess(process.execPath, args, { cwd, env, linuxContainment: "subreaper",
@@ -95,6 +102,17 @@ print(json.dumps({'denied':len(denied),'fds':fds,'env':os.environ.get('NODE_ENV'
   expect(JSON.parse(result.stdout)).toEqual({ denied: 4, fds: [], env: "production" });
   expect(fs.readFileSync(outside, "utf8")).toBe("retained");
   expect(fs.readFileSync(path.join(cwd, "allowed"), "utf8")).toBe("once");
+});
+
+test("matches the direct route without prepared evidence", async () => {
+  const original = await run("printf ordinary", true, { preparedProbe: false });
+  const candidate = await run("printf ordinary", true);
+  for (const result of [original, candidate]) {
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.proof).toBe("SC");
+    expect(result.cleanupError).toBeUndefined();
+    expect(modelContent(result)).toBe("ordinary\n\n[exec exit_code=0]");
+  }
 });
 
 test.each(["disabled", "enabled"])("keeps socket policy equivalent to the launcher (%s)", async network => {

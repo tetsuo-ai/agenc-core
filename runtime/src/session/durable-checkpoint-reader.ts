@@ -1,3 +1,4 @@
+import { readReasoningCapPolicy, type ReasoningCapPolicyState } from "./reasoning-cap-policy.js";
 import {
   type LegacyTurnCheckpointSliceLine,
   type TurnCheckpointSliceLine,
@@ -1066,6 +1067,7 @@ function parseCheckpointAdmissionState(
 
 interface ParsedCheckpointModelSampleState {
   reasoningOnlyRecoveryPending?: true;
+  reasoningCapPolicy?: ReasoningCapPolicyState;
   reasoningOnlyRecoveryCount?: number;
   modelSampleOrdinal?: number;
   modelSampleResumePrompt?: "continuation_nudge" | "empty_response" | "text_tool_call_correction";
@@ -1077,6 +1079,10 @@ function parseCheckpointModelSampleState(
   value: Record<string, unknown>,
 ): ParsedCheckpointModelSampleState {
   const result: ParsedCheckpointModelSampleState = {};
+  if (value.reasoningCapPolicy !== undefined) {
+    try { result.reasoningCapPolicy = readReasoningCapPolicy(value.reasoningCapPolicy); }
+    catch { throw malformed("resumableState.reasoningCapPolicy is invalid"); }
+  }
   if (value.reasoningOnlyRecoveryCount !== undefined) {
     result.reasoningOnlyRecoveryCount = nonNegativeInteger(
       value.reasoningOnlyRecoveryCount, "resumableState.reasoningOnlyRecoveryCount",

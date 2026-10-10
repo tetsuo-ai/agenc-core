@@ -1,3 +1,4 @@
+import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
  * Phase 2 — Stream Model.
  *
@@ -93,6 +94,8 @@ import type {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
+  readonly reasoningCapSample?: ReasoningCapSample;
+  readonly reasoningCapTarget?: { readonly provider: string; readonly model: string };
   /** Snapshot of durable output-recovery intent, not a session config change. */
   readonly reasoningOnlyRecovery?: true;
   /** Internal managed transport UUID, stable for every retry of this snapshot. */
@@ -266,6 +269,9 @@ export function buildProviderOptions(
   ctx: TurnContext,
   signal: AbortSignal,
   session: Session,
+  // Only for an owned, single-attempt request that will not be reused. The
+  // ordinary retry path keeps an independent clone for every attempt.
+  transferToolOwnership = false,
 ): LLMChatOptions {
   const allowedToolNames = request.tools.map((spec) => spec.function.name);
   const planMode = isPlanMode(ctx);
@@ -277,7 +283,7 @@ export function buildProviderOptions(
     ...(request.managedRequestId !== undefined
       ? { managedRequestId: request.managedRequestId }
       : {}),
-    tools: cloneProviderTools(request.tools),
+    tools: transferToolOwnership ? request.tools : cloneProviderTools(request.tools),
     parallelToolCalls: request.parallelToolCalls,
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
     ...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
@@ -300,7 +306,10 @@ export function buildProviderOptions(
         : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
-    ...(request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+    ...((request.reasoningOnlyRecovery === true ||
+      (request.reasoningCapSample?.kind === "extra" && session.config?.reasoningCapPolicy === "streak2" &&
+        request.reasoningCapTarget?.provider === session.services.provider.name &&
+        request.reasoningCapTarget.model === (session.config?.model ?? ctx.modelInfo.slug))) && supportsThinkingOffRecovery(
       session.services.provider.name,
       session.config?.model ?? ctx.modelInfo.slug,
     ) ? { disableThinkingForRecovery: true as const } : {}),
@@ -617,7 +626,7 @@ function emitSanitizedAssistantDelta(
   return sanitized.text;
 }
 
-function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
+export function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
   if (toolCalls.length === 0) return [];
   return toolCalls.map((c) => {
     let input: unknown = undefined;
@@ -635,7 +644,7 @@ function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
   });
 }
 
-function assistantMessageFromResponse(
+export function assistantMessageFromResponse(
   response: LLMResponse,
   planMode: boolean,
   providerName: string,
@@ -1301,7 +1310,7 @@ export async function streamModel(
     resetCanonicalAssistantOutput();
     const messages = buildProviderMessages(request);
     const options = buildProviderOptions(request, ctx, scoped.signal, session);
-    if (options.disableThinkingForRecovery === true) {
+    if (options.disableThinkingForRecovery === true && request.reasoningOnlyRecovery === true) {
       session.emit({
         id: session.nextInternalSubId(),
         msg: { type: "warning", payload: {
@@ -1590,6 +1599,7 @@ export async function streamModel(
   if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
+    const cacheCreation1h = response.usage.cacheCreation1hInputTokens;
     const reasoning = response.usage.reasoningOutputTokens;
     const webSearch = response.usage.webSearchRequests;
     const availability = response.usage.availability;
@@ -1599,6 +1609,7 @@ export async function streamModel(
       completionTokens: response.usage.completionTokens,
       totalTokens: response.usage.totalTokens,
       ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+      ...(cacheCreation1h !== undefined ? { cacheCreation1hInputTokens: cacheCreation1h } : {}),
       ...(cacheCreation !== undefined
         ? { cacheCreationInputTokens: cacheCreation }
         : {}),
@@ -1690,6 +1701,7 @@ export async function streamModel(
   if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
+    const cacheCreation1h = response.usage.cacheCreation1hInputTokens;
     const reasoning = response.usage.reasoningOutputTokens;
     const webSearch = response.usage.webSearchRequests;
     session.emit({
@@ -1703,6 +1715,7 @@ export async function streamModel(
           model: response.model,
           provider: providerName,
           ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+          ...(cacheCreation1h !== undefined ? { cacheCreation1hInputTokens: cacheCreation1h } : {}),
           ...(cacheCreation !== undefined
             ? { cacheCreationInputTokens: cacheCreation }
             : {}),
@@ -1759,12 +1772,14 @@ export async function streamModel(
   // A completed thinking-off recovery that yields a validated tool call or
   // final answer is productive. Do not forgive visible/truncated retries,
   // empty replies, rejected calls, caps, or transport failures.
-  if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
-      providerName, session.config?.model ?? ctx.modelInfo.slug,
-    ) && state.pendingTextToolCallCorrection === undefined &&
+  const productiveRecoveryOutput = state.pendingTextToolCallCorrection === undefined &&
     (response.finishReason === "stop" || response.finishReason === "tool_calls") &&
     (assistant.toolCalls.length > 0 ||
-      (response.finishReason === "stop" && Boolean(assistant.text?.trim())))) {
+      (response.finishReason === "stop" && Boolean(assistant.text?.trim())));
+  completeReasoningCapSample(state, request.reasoningCapSample, productiveRecoveryOutput, maxOutputTruncated);
+  if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+      providerName, session.config?.model ?? ctx.modelInfo.slug,
+    ) && productiveRecoveryOutput) {
     state.reasoningOnlyRecoveryCount = 0;
   }
   return state;

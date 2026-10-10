@@ -1,3 +1,4 @@
+import { sessionProcessBoundaries } from "./session-process-boundary.js";
 import {
   execFileSync,
   spawn,
@@ -579,6 +580,8 @@ const linuxSubreaperBoundaries = new WeakMap<object, LinuxSubreaperBoundary>();
 
 /** Available only after transport EOF AND independently proven tree cleanup. */
 export function containedProcessCommandOutcome(child: ProcessTreeChild): ProcessBrokerV3Outcome | undefined {
+  const session = sessionProcessBoundaries.get(child);
+  if (session) return session.outcome();
   const boundary = linuxSubreaperBoundaries.get(child);
   return boundary?.closed && boundary.verified && boundary.protocolError === undefined
     ? boundary.commandOutcome : undefined;
@@ -594,6 +597,8 @@ export function containedProcessCommandOutcome(child: ProcessTreeChild): Process
 export function waitForContainedProcessSettlement(
   child: ChildProcessWithoutNullStreams,
 ): Promise<void> {
+  const session = sessionProcessBoundaries.get(child);
+  if (session) return session.settled;
   const boundary = linuxSubreaperBoundaries.get(child);
   return new Promise((resolve) => {
     const finish = (): void => {
@@ -1179,7 +1184,7 @@ function settleLinuxSubreaperStatus(boundary: LinuxSubreaperBoundary, eof = fals
   boundary.closed = boundary.processClosed;
 }
 
-function resolveLinuxSubreaperBroker(): string {
+export function resolveLinuxSubreaperBroker(): string {
   if (compiledLinuxSubreaperBroker !== undefined) {
     return compiledLinuxSubreaperBroker;
   }
@@ -2299,6 +2304,8 @@ function validateLimits(options: SupervisedProcessOptions): void {
 export function isProcessTreeAlive(
   child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
 ): boolean {
+  const session = sessionProcessBoundaries.get(child);
+  if (session) return session.alive();
   // PID 1 is never a valid child-process ownership root. On POSIX,
   // `kill(-1, signal)` broadcasts to every process the caller may signal, and
   // walking `/proc/1` adopts the whole container/host namespace. Apply the
@@ -2360,6 +2367,7 @@ export function isProcessTreeAlive(
 export function captureProcessTreeDescendants(
   child: Pick<ChildProcess, "pid">,
 ): void {
+  if (sessionProcessBoundaries.has(child)) return;
   const rootPid = child.pid;
   if (
     !isSignalablePid(rootPid) ||
@@ -2428,6 +2436,8 @@ export async function terminateProcessTreeAndReport(
   child: ProcessTreeChild,
   options: TerminateProcessTreeOptions = {},
 ): Promise<TerminateProcessTreeOutcome> {
+  const session = sessionProcessBoundaries.get(child);
+  if (session) return session.terminate();
   // Never pass an invalid synthetic root to taskkill, a Job Object, a cgroup,
   // process-table discovery, or POSIX negative-PID signalling. Such a root is
   // not signalled at all (see safeKill); it only settles if it exits.
@@ -3049,6 +3059,7 @@ export function signalProcessTree(
   child: Pick<ChildProcess, "pid" | "kill">,
   signal: "SIGTERM" | "SIGKILL",
 ): void {
+  if (sessionProcessBoundaries.has(child)) { child.kill(signal); return; }
   // No pid (a spawn that failed), 0, -1, 1 or a non-integer: there is no
   // process of ours to reach, and any signal could hit this process's
   // group, every process of the user, or init.

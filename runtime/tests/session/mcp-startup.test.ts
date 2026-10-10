@@ -1,3 +1,4 @@
+import { CostSidecar } from "../../src/session/cost.js";
 /**
  * T6 gap #119 seam: `attachMcpManagerToSession` must install the
  * session-bound `MCPCallObserver` on the manager BEFORE `manager.start()`
@@ -421,6 +422,33 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
       reasoningOutputTokens: 1,
       reasoningIncludedInCompletion: true,
     });
+  });
+
+  it("preserves one-hour cache writes through MCP sampling and session pricing", async () => {
+    const model = "claude-haiku-5-5";
+    const sidecar = new CostSidecar({ defaultProvider: "anthropic", defaultModel: model });
+    const providerChat = vi.fn(async () => ({
+      content: "ok", toolCalls: [], model, finishReason: "stop" as const,
+      usage: { promptTokens: 60_001, completionTokens: 1000, totalTokens: 61_001,
+        cachedInputTokens: 20_000, cacheCreationInputTokens: 20_000, cacheCreation1hInputTokens: 10_000 },
+    }));
+    const emit = vi.fn((event: Parameters<CostSidecar["onEvent"]>[0]) => sidecar.onEvent(event));
+    const session = {
+      provider: { chat: providerChat },
+      services: { provider: { chat: providerChat }, admissionRequired: false },
+      emit, nextInternalSubId: vi.fn(() => "sub-ttl"),
+      sessionConfiguration: { approvalPolicy: { value: "never" } },
+    } as unknown as Session;
+    await createSessionMcpSamplingHandlers(session).createMessage({
+      serverName: "srv", requestId: 9,
+      request: { id: 9, method: "sampling/createMessage", params: {
+        messages: [{ role: "user", content: { type: "text", text: "Sample" } }], maxTokens: 1024,
+      } } as never,
+    });
+    const tokenCount = emit.mock.calls.map(call => call[0].msg).find(msg => msg.type === "token_count");
+    expect(tokenCount?.payload).toMatchObject({ cacheCreationInputTokens: 20_000, cacheCreation1hInputTokens: 10_000 });
+    // 100,001 total prompt tokens selects the long tier, with mixed write TTLs.
+    expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.0497505, 10);
   });
 
   it("keeps an MCP sampling temperature off the OpenAI reasoning model's Responses request", async () => {

@@ -1,3 +1,6 @@
+import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-shot-process-server.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
@@ -27,6 +30,8 @@ import {
   type TerminateOwnedProcessesRequest,
   type TerminateProcessRequest,
   type UnifiedExecManagerOptions,
+  type UnifiedExecOwnerBinding,
+  type UnifiedExecOwnerLifetime,
   type UnifiedExecProcessManagerLike,
   type UnifiedExecBackgroundProcess,
   type UnifiedExecRuntimeSandbox,
@@ -312,6 +317,7 @@ interface ProcessEntry {
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   /** Conversation/agent that started this process (TOOL-01 isolation). */
   readonly ownerId?: string;
+  readonly ownerLifetime?: OwnerLifetimeState;
   readonly startedAt: number;
   readonly output: ProcessOutputBuffer;
   readonly stored: StoredProcess;
@@ -338,6 +344,21 @@ interface ProcessEntry {
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
+}
+
+interface OwnerLifetimeState {
+  readonly ownerId: string;
+  readonly children: Set<OwnerLifetimeState>;
+  activeBinding?: OwnerBindingState;
+  closing: boolean;
+  closed: boolean;
+  closeTask?: Promise<void>;
+}
+
+interface OwnerBindingState {
+  readonly lifetime: OwnerLifetimeState;
+  active: boolean;
+  closeTask?: Promise<void>;
 }
 
 declare const unifiedExecSandboxAuthorityQuiesceBrand: unique symbol;
@@ -531,6 +552,50 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
+  private readonly oneShotServers = new Map<string, OneShotProcessServer>();
+  private oneShotServerFor(ownerId?: string): OneShotProcessServer {
+    const key = ownerId ?? "";
+    let server = this.oneShotServers.get(key);
+    if (!server) { server = new OneShotProcessServer(); this.oneShotServers.set(key, server); }
+    return server;
+  }
+  /** Start only the empty containment boundary; command admission still happens in execCommand. */
+  async prepareOneShotCommandBoundary(ownerId: string | undefined, ownerBinding: UnifiedExecOwnerBinding | undefined, signal?: AbortSignal): Promise<void> {
+    if (!oneShotFastModeActive() || process.platform !== "linux") return;
+    const generation = this.sandboxAuthorityGeneration;
+    const validate = (): void => {
+      this.assertSandboxAuthorityAdmission(generation);
+      this.assertOwnerAdmission(ownerId, ownerBinding);
+      signal?.throwIfAborted();
+    };
+    validate();
+    await this.oneShotServerFor(ownerId).prepare(this.cwd, validate, signal);
+    validate();
+  }
+
+  private readonly sessionSandboxes = new Map<string, SessionSandbox>();
+  // Retain failed startup admission across policy drains, Stop and opt-out.
+  // Only closing the owner lifetime (or disposing this manager) resets it.
+  private readonly sessionSandboxAvailability = new Map<string, SessionSandboxAvailability>();
+  private sessionSandboxFor(ownerId?: string): SessionSandbox {
+    const key = ownerId ?? "";
+    let sandbox = this.sessionSandboxes.get(key);
+    if (!sandbox) {
+      let availability = this.sessionSandboxAvailability.get(key);
+      if (!availability) { availability = { startupFailed: false }; this.sessionSandboxAvailability.set(key, availability); }
+      sandbox = new SessionSandbox(availability); this.sessionSandboxes.set(key, sandbox);
+    }
+    return sandbox;
+  }
+  private async closeSessionSandboxes(): Promise<void> {
+    const outcomes = await Promise.allSettled([this.sessionSandboxes, this.oneShotServers].flatMap(map =>
+      [...map.entries()].map(async ([key, server]) => {
+        await server.close();
+        if (map.get(key) === server) map.delete(key);
+      })));
+    const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "session sandbox cleanup is unproven");
+  }
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
   private readonly completedBackgroundProcesses = new Map<string, UnifiedExecBackgroundProcess>();
@@ -539,6 +604,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private sandboxAuthorityCleanupFailure: Error | undefined;
   private durableCloseTask: Promise<void> | undefined;
   private durableCloseStarted = false;
+  private readonly ownerLifetimes = new Map<string, OwnerLifetimeState>();
+  private readonly ownerBindings = new WeakMap<UnifiedExecOwnerBinding, OwnerBindingState>();
   private activeSandboxAuthorityQuiesce:
     | UnifiedExecSandboxAuthorityQuiesceToken
     | undefined;
@@ -611,6 +678,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         errors.push(result.reason);
       }
     }
+    try { await this.closeSessionSandboxes(); } catch (error) { errors.push(error); }
     if (errors.length === 0) return;
     const primary = errors[0];
     const failure = new AggregateError(
@@ -643,6 +711,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     request: ExecCommandRequest,
   ): Promise<ExecCommandToolOutput> {
     const sandboxAuthorityGeneration = this.assertSandboxAuthorityAdmission();
+    this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (request.cmd.trim().length === 0) {
       throw new UnifiedExecError(
         "missing_command",
@@ -708,6 +777,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? { argv0: spawnCommand.argv0 }
         : {}),
       ...(ownerId !== undefined ? { ownerId } : {}),
+      ...(request.ownerBinding !== undefined ? { ownerBinding: request.ownerBinding } : {}),
       tty,
       allowDirectBwrap: direct === undefined && this.commandWrapperArgv.length === 0,
       startedAt,
@@ -791,6 +861,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     request: DetachedProcessRequest,
   ): Promise<ExecCommandToolOutput> {
     this.assertSandboxAuthorityAdmission();
+    this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (request.cmd.trim().length === 0) {
       throw new UnifiedExecError(
         "missing_command",
@@ -924,6 +995,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   async writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput> {
     this.assertSandboxAuthorityAdmission();
     const entry = this.processes.get(request.session_id);
+    const input = request.chars ?? "";
+    const bindingState = request.ownerBinding === undefined
+      ? undefined : this.ownerBindings.get(request.ownerBinding);
+    const collectingClosedOutput = input.length === 0 && entry?.exitState != null &&
+      bindingState?.closeTask !== undefined && bindingState.lifetime.closed &&
+      bindingState.lifetime === entry.ownerLifetime;
+    if (!collectingClosedOutput) this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (!entry) {
       throw new UnifiedExecError(
         "unknown_process",
@@ -931,7 +1009,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
     enforceOwnerAccess(entry, request.ownerId);
-    const input = request.chars ?? "";
+    if (entry.ownerLifetime !== undefined &&
+        bindingState?.lifetime !== entry.ownerLifetime &&
+        (entry.exitState === null || input.length > 0)) {
+      throw new UnifiedExecError("owner_denied", "process belongs to a different exec lifetime");
+    }
+    // A current same-owner binding may collect settled output from a prior
+    // generation. It cannot write stdin or control a prior live process.
     if (
       request.runtimeSandbox !== undefined &&
       !runtimeSandboxesCompatible(entry.runtimeSandbox, request.runtimeSandbox)
@@ -1149,18 +1233,130 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
+    this.sandboxAuthorityGeneration += 1;
+    const sandboxCleanup = this.closeSessionSandboxes();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
       this.forceTerminate(entry);
     }
-    await Promise.allSettled(
-      entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
-    );
+    const [sandboxOutcome] = await Promise.allSettled([
+      sandboxCleanup, ...entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
+    ]);
     // A best-effort timeout is not cleanup proof. Retain unsettled owners so
     // strict disposal and the durable-close boundary can still drain them.
     for (const entry of entries) {
       if (entry.exitState !== null) this.releaseProcessId(entry.processId);
     }
+    if (sandboxOutcome!.status === "rejected") {
+      this.poisonSandboxAuthority(sandboxOutcome.reason);
+      throw sandboxOutcome.reason;
+    }
+  }
+
+  /** Create authority once per durable child, or once per logical compat task. */
+  createOwnerLifetime(
+    ownerId: string,
+    parentBinding?: UnifiedExecOwnerBinding,
+  ): UnifiedExecOwnerLifetime {
+    this.assertSandboxAuthorityAdmission();
+    const normalized = normalizeOwnerId(ownerId);
+    if (normalized === undefined) throw new Error("exec owner id must be nonempty");
+    const parent = parentBinding === undefined ? undefined : this.ownerBindings.get(parentBinding);
+    if (parentBinding !== undefined) {
+      this.assertOwnerAdmission(parentBinding.ownerId, parentBinding);
+      if (parent!.lifetime.ownerId === normalized) throw new Error("exec child cannot alias its parent owner");
+    }
+    const previous = this.ownerLifetimes.get(normalized);
+    if (previous !== undefined && !previous.closed) {
+      throw new Error("exec owner lifetime is already open or cleanup is unproven");
+    }
+    const state: OwnerLifetimeState = {
+      ownerId: normalized, children: new Set(), closing: false, closed: false,
+    };
+    const lifetime = Object.freeze({
+      ownerId: normalized,
+      get closed() { return state.closed; },
+      bind: () => this.bindOwnerLifetime(state),
+      prepareForDurableClose: () => this.closeOwnerLifetime(state),
+    }) as UnifiedExecOwnerLifetime;
+    this.ownerLifetimes.set(normalized, state);
+    parent?.lifetime.children.add(state);
+    return lifetime;
+  }
+
+  private bindOwnerLifetime(lifetime: OwnerLifetimeState): UnifiedExecOwnerBinding {
+    this.assertSandboxAuthorityAdmission();
+    if (lifetime.closing || this.ownerLifetimes.get(lifetime.ownerId) !== lifetime) {
+      throw new Error("exec owner lifetime is closed");
+    }
+    if (lifetime.activeBinding !== undefined) {
+      throw new Error("exec owner already has an active projection");
+    }
+    const state: OwnerBindingState = { lifetime, active: true };
+    const binding = Object.freeze({
+      ownerId: lifetime.ownerId,
+      assertCurrent: () => {
+        if (state.closeTask === undefined &&
+            (!state.active || this.ownerLifetimes.get(lifetime.ownerId) !== lifetime)) {
+          throw new Error("exec owner projection was released");
+        }
+      },
+      release: () => {
+        state.active = false;
+        if (lifetime.activeBinding === state) lifetime.activeBinding = undefined;
+      },
+      prepareForDurableClose: () => {
+        if (state.closeTask !== undefined) return state.closeTask;
+        if (!state.active) return Promise.reject(new Error("exec owner projection was released"));
+        state.closeTask = this.closeOwnerLifetime(lifetime);
+        return state.closeTask;
+      },
+    }) as UnifiedExecOwnerBinding;
+    lifetime.activeBinding = state;
+    this.ownerBindings.set(binding, state);
+    return binding;
+  }
+
+  /** Validate the captured capability, never upgrade an old closure by id. */
+  assertOwnerAdmission(ownerId: string | undefined, binding?: UnifiedExecOwnerBinding): void {
+    this.assertSandboxAuthorityAdmission();
+    const normalized = normalizeOwnerId(ownerId);
+    const state = binding === undefined ? undefined : this.ownerBindings.get(binding);
+    if (binding === undefined && (normalized === undefined || !this.ownerLifetimes.has(normalized))) return;
+    if (state === undefined || !state.active || state.lifetime.closing ||
+        state.lifetime.ownerId !== normalized || this.ownerLifetimes.get(normalized!) !== state.lifetime) {
+      throw new UnifiedExecError("owner_denied", "exec owner lifetime is closed or its binding is invalid");
+    }
+  }
+
+  private closeOwnerLifetime(lifetime: OwnerLifetimeState): Promise<void> {
+    if (lifetime.closeTask !== undefined) return lifetime.closeTask;
+    // Invalidates pending PTY loads and native handoffs before taking a snapshot.
+    lifetime.closing = true;
+    const children = [...lifetime.children].map(child => this.closeOwnerLifetime(child));
+    lifetime.closeTask = Promise.resolve().then(async () => {
+      const entries = [...this.processes.values()].filter(entry => entry.ownerLifetime === lifetime);
+      const outcomes = await Promise.allSettled([
+        Promise.resolve().then(async () => {
+          await this.oneShotServers.get(lifetime.ownerId)?.close();
+          this.oneShotServers.delete(lifetime.ownerId);
+          await this.sessionSandboxes.get(lifetime.ownerId)?.close();
+          this.sessionSandboxes.delete(lifetime.ownerId);
+        }),
+        ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
+      ]);
+      const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+      if (this.sandboxAuthorityCleanupFailure !== undefined) failures.push(this.sandboxAuthorityCleanupFailure);
+      if (failures.length > 0) {
+        const error = new AggregateError(failures, "unified exec owner cleanup is unproven at durable close");
+        this.poisonSandboxAuthority(error);
+        throw error;
+      }
+      // Keep settled yielded entries for status/output collection and pruning.
+      lifetime.closed = true;
+      this.sessionSandboxAvailability.delete(lifetime.ownerId);
+    });
+    return lifetime.closeTask;
   }
 
   /** Freeze admission and prove containment before a durable terminal tail. */
@@ -1168,12 +1364,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     if (this.durableCloseTask !== undefined) return this.durableCloseTask;
     this.durableCloseStarted = true;
     const task = Promise.resolve().then(async () => {
-      if (this.sandboxAuthorityCleanupFailure !== undefined) {
-        throw this.sandboxAuthorityCleanupFailure;
-      }
       const entries = [...this.processes.values()];
-      const outcomes = await Promise.allSettled(entries.map(entry => this.closeProcessStrict(entry)));
+      const [sandboxOutcome, ...outcomes] = await Promise.allSettled([
+        this.closeSessionSandboxes(), ...entries.map(entry => this.closeProcessStrict(entry)),
+      ]);
       const failures: unknown[] = [];
+      if (sandboxOutcome!.status === "rejected") failures.push(sandboxOutcome.reason);
       for (const [index, outcome] of outcomes.entries()) {
         if (outcome.status === "rejected") failures.push(outcome.reason);
         else this.releaseProcessId(entries[index]!.processId);
@@ -1342,6 +1538,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly env: Record<string, string>;
     readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
     readonly ownerId?: string;
+    readonly ownerBinding?: UnifiedExecOwnerBinding;
     readonly argv0?: string;
     readonly tty: boolean;
     readonly allowDirectBwrap: boolean;
@@ -1350,6 +1547,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly sandboxAuthorityGeneration: number;
   }): Promise<ProcessEntry> {
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+    this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
     const output = new ProcessOutputBuffer();
     const abortController = new AbortController();
     const exit = makeDeferredExit();
@@ -1368,6 +1566,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? { runtimeSandbox: params.runtimeSandbox }
         : {}),
       ...(params.ownerId !== undefined ? { ownerId: params.ownerId } : {}),
+      ...(params.ownerBinding !== undefined
+        ? { ownerLifetime: this.ownerBindings.get(params.ownerBinding)!.lifetime }
+        : {}),
       startedAt: params.startedAt,
       output,
       callId: params.callId,
@@ -1407,6 +1608,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
+    if (this.sessionSandboxes.size > 0 &&
+        (params.runtimeSandbox === undefined || params.runtimeSandbox.persistentSession === false)) {
+      const previousSandbox = this.sessionSandboxes.get(params.ownerId ?? "");
+      if (previousSandbox) {
+        await previousSandbox.close();
+        this.sessionSandboxes.delete(params.ownerId ?? "");
+        this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+      }
+    }
+
     if (params.tty) {
       let processHandle: IPty;
       try {
@@ -1419,6 +1631,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         this.assertSandboxAuthorityAdmission(
           params.sandboxAuthorityGeneration,
         );
+        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
         processHandle = pty.spawn(ptyCommand.program, [...ptyCommand.args], {
           name: "xterm-256color",
           cols: 80,
@@ -1454,11 +1667,36 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
-    const probeHint = params.runtimeSandbox === undefined ? undefined
-      : prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
+    this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+    let probeHint: ReturnType<typeof prepareLinuxSandboxProbeHint>;
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
+      const validateAdmission = (): void => {
+        this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+        abortController.signal.throwIfAborted();
+      };
+      const oneShot = oneShotFastModeActive() && params.runtimeSandbox === undefined
+        ? await this.oneShotServerFor(params.ownerId).spawn({ program: params.program,
+            args: params.args, cwd: params.cwd, env: params.env,
+            argv0: params.argv0 ?? basename(params.program) }, validateAdmission, params.signal)
+        : undefined;
+      const persistent = oneShot ?? (params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
+        params.runtimeSandbox.persistentSession !== false
+        ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: params.args,
+            cwd: params.cwd, env: params.env }, () => {
+            this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+            this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+            abortController.signal.throwIfAborted();
+          }, params.signal) : undefined);
+      if (persistent === undefined && params.runtimeSandbox !== undefined)
+        probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
+      // A declined server startup may have awaited cleanup while authority changed.
+      if (persistent === undefined && oneShotFastModeActive()) validateAdmission();
+      child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
+        // The native subreaper remains a complete containment boundary. Avoid
+        // probing cgroup delegation for every command in this short run.
+        ...(oneShotFastModeActive() ? { linuxContainment: "subreaper" as const } : {}),
         cwd: params.cwd,
         env: params.env,
         argv0: params.argv0 ?? basename(params.program),
@@ -1467,12 +1705,16 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             protocol: "v3",
             prepare: () => prepareDirectBwrapV3Plan({ program: params.program,
               args: probeHint?.args ?? params.args, cwd: params.cwd, env: params.env }),
-            validateAdmission: () => this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration),
+            validateAdmission: () => {
+              this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+              this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+            },
             signal: abortController.signal,
           },
         } : {}),
       });
     } catch (error) {
+      if ((error instanceof SessionSandboxCleanupError || error instanceof OneShotProcessServerCleanupError)) this.poisonSandboxAuthority(error);
       probeHint?.invalidate();
       // spawnContainedProcess throws only before the command can run: the
       // working directory is gone (the session root was deleted, or a workdir

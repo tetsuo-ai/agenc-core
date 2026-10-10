@@ -654,17 +654,18 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   }),
   // Current lineup verified against the authenticated Models API and
   // platform.claude.com (2026-09-29), followed by older supported choices.
-  // Haiku 4.5 remains current; its catalog row exposes no effort dial.
+  // Haiku 5.5 joins on 2026-10-07; Haiku 4.5 stays selectable as legacy.
   anthropic: Object.freeze([
     "claude-opus-5-5",
     "claude-sonnet-5-5",
     "claude-fable-5-1",
-    "claude-haiku-4-5-20251001",
+    "claude-haiku-5-5",
     "claude-sonnet-5",
     "claude-fable-5",
     "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
+    "claude-haiku-4-5-20251001",
   ]),
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
