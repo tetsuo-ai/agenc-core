@@ -2,7 +2,12 @@ import { z } from "zod/v4";
 import { getProjectRoot } from "../../bootstrap/state.js";
 import { buildTool, type ToolDef } from "../Tool.js";
 import { cronToHuman } from "../../utils/cron.js";
-import { cronRestoreFailureNeedsWarning, listAllCronTasks, listSessionCronTasks } from "../../utils/cronTasks.js";
+import {
+  cronRestoreFailureNeedsWarning,
+  durableCronDispatchSupported,
+  listAllCronTasks,
+  listSessionCronTasks,
+} from "../../utils/cronTasks.js";
 import { truncate } from "../../utils/format.js";
 import { lazySchema } from "../../utils/lazySchema.js";
 import { getTeammateContext } from "../../utils/teammateContext.js";
@@ -28,6 +33,7 @@ const outputSchema = lazySchema(() =>
         prompt: z.string(),
         recurring: z.boolean().optional(),
         durable: z.boolean().optional(),
+        dormant: z.boolean().optional(),
       }),
     ),
     warning: z.string().optional(),
@@ -82,6 +88,9 @@ export const CronListTool = buildTool({
     const tasks = ctx
       ? allTasks.filter((t) => t.agentId === ctx.agentId)
       : allTasks;
+    // Off Linux a stored durable record is listed but never armed.
+    const dormant = (t: { durable?: boolean }): boolean =>
+      t.durable !== false && !durableCronDispatchSupported();
     const jobs = tasks.map((t) => ({
       id: t.id,
       cron: t.cron,
@@ -89,7 +98,11 @@ export const CronListTool = buildTool({
       prompt: t.prompt,
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.durable === false ? { durable: false } : {}),
+      ...(dormant(t) ? { dormant: true } : {}),
     }));
+    if (jobs.some((j) => j.dormant === true)) {
+      warning = "Dormant durable jobs are stored but not scheduled on this host; only Linux dispatches durable jobs.";
+    }
     return { data: { jobs, ...(warning ? { warning } : {}) } };
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
@@ -101,7 +114,7 @@ export const CronListTool = buildTool({
           ? output.jobs
               .map(
                 (j) =>
-                  `${j.id} — ${j.humanSchedule}${j.recurring ? " (recurring)" : " (one-shot)"}${j.durable === false ? " [session-only]" : ""}: ${truncate(j.prompt, 80, true)}`,
+                  `${j.id} — ${j.humanSchedule}${j.recurring ? " (recurring)" : " (one-shot)"}${j.durable === false ? " [session-only]" : ""}${j.dormant === true ? " [dormant: not scheduled on this host]" : ""}: ${truncate(j.prompt, 80, true)}`,
               )
               .join("\n")
           : "No scheduled jobs."),

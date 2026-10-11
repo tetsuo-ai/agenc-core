@@ -132,7 +132,12 @@ export const CronCreateTool = buildTool({
     }) !== undefined;
     let tasks;
     try {
-      tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+      // Off Linux a session-only create never reads stored durable records:
+      // they are dormant there, so they must not count toward MAX_JOBS and a
+      // record that fails to read must not refuse a session job.
+      tasks = needsDurableRead || durableCronDispatchSupported()
+        ? await listAllCronTasks(getProjectRoot(), conversationId)
+        : listSessionCronTasks(conversationId);
     } catch (error) {
       if (needsDurableRead || (error as NodeJS.ErrnoException | null)?.code !== "DESCRIPTOR_UNSUPPORTED") {
         if (error instanceof Error) markEffectBoundaryNotCrossed(error, {

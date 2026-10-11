@@ -10,10 +10,11 @@ import { EventLog } from "../../src/session/event-log.js";
 import { startSessionCronScheduler } from "../../src/session/session-cron-scheduler.js";
 import type { Session } from "../../src/session/session.js";
 import { CronCreateTool } from "../../src/tools/ScheduleCronTool/CronCreateTool.js";
+import { CronListTool } from "../../src/tools/ScheduleCronTool/CronListTool.js";
 import { readStartupCronTasks } from "../../src/utils/cron-startup.js";
 import { withCronStorage } from "../../src/utils/cron-storage.js";
 import { CronScheduler, cronEnqueueToCommandQueue, getCronScheduler, resetCronSchedulerForTests } from "../../src/utils/cronScheduler.js";
-import { appendCronTask, cronRestoreFailureNeedsWarning, readCronTasks } from "../../src/utils/cronTasks.js";
+import { appendCronTask, cronRestoreFailureNeedsWarning, markCronTasksFired, readCronTasks, removeCronTasks } from "../../src/utils/cronTasks.js";
 import { getCommandQueueSnapshot, resetCommandQueueForTesting } from "../../src/utils/messageQueueManager.js";
 
 const acl = vi.hoisted(() => ({
@@ -31,8 +32,26 @@ const fsHooks = vi.hoisted(() => ({
   identitySentinel: undefined as ((path: string) => FileIdMode | undefined) | undefined,
 }));
 const privatePaths = vi.hoisted(() => new Set<string>());
-type FileIdMode = "zero" | "all-ones" | "dev-zero" | "ino-all-ones";
+// Spoofing win32 on Linux sends the real SQLite lock to the Windows system
+// namespace, which throws before any cron write. Tests that must observe a
+// rewrite swap only the cross-process lock for an in-process stub.
+const lockHooks = vi.hoisted(() => ({ stub: false, acquired: 0 }));
+type FileIdMode = "zero" | "all-ones" | "dev-zero" | "ino-zero" | "dev-all-ones" | "ino-all-ones";
 
+vi.mock("../../src/utils/sqlite-lock.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../src/utils/sqlite-lock.js")>();
+  return {
+    ...original,
+    assertLocalPrivateDirectory: async (
+      ...args: Parameters<typeof original.assertLocalPrivateDirectory>
+    ) => (lockHooks.stub ? args[0] : original.assertLocalPrivateDirectory(...args)),
+    acquireLocalSqliteLock: async (...args: Parameters<typeof original.acquireLocalSqliteLock>) => {
+      if (!lockHooks.stub) return original.acquireLocalSqliteLock(...args);
+      lockHooks.acquired += 1;
+      return () => {};
+    },
+  };
+});
 vi.mock("../../src/agents/workflow-private-path.js", () => ({
   assertWindowsPrivatePathSecurity: acl.assertWindowsPrivatePathSecurity,
 }));
@@ -46,9 +65,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     if (mode === undefined) return info;
     const value = (id: "dev" | "ino"): number | bigint => {
       const missing = mode === "zero" || mode === "all-ones" ||
-        (mode === "dev-zero" && id === "dev") || (mode === "ino-all-ones" && id === "ino");
+        (mode === "dev-zero" && id === "dev") || (mode === "ino-zero" && id === "ino") ||
+        (mode === "dev-all-ones" && id === "dev") || (mode === "ino-all-ones" && id === "ino");
       if (!missing) return info[id];
-      const ones = mode === "all-ones" || mode === "ino-all-ones";
+      const ones = mode === "all-ones" || mode === "dev-all-ones" || mode === "ino-all-ones";
       if (typeof info.dev === "bigint") return ones ? 0xffff_ffff_ffff_ffffn : 0n;
       return ones ? Number.MAX_SAFE_INTEGER : 0;
     };
@@ -171,6 +191,8 @@ beforeEach(async () => {
   fsHooks.opens = [];
   fsHooks.openFlags = [];
   fsHooks.identitySentinel = undefined;
+  lockHooks.stub = false;
+  lockHooks.acquired = 0;
   root = await mkdtemp(join(tmpdir(), "agenc-cron-windows-"));
   workspace = join(root, "workspace");
   outside = join(root, "outside");
@@ -210,6 +232,20 @@ describe.skipIf(process.platform === "win32")("POSIX cron storage keeps descript
     expect((await readCronTasks(workspace)).map((entry) => entry.prompt))
       .toEqual([taskRecord.tasks[0]!.prompt, "linux durable work"]);
     expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
+  });
+
+  test.skipIf(process.platform !== "linux")("lists durable jobs on Linux without a dormant label", async () => {
+    await writeRecord();
+    const listed = await (await cronTool("CronList", { conversationId: "linux-list" })).execute({});
+    const output = JSON.parse(String(listed.content)) as { warning?: string; crons: Array<Record<string, unknown>> };
+    expect(output.warning).toBeUndefined();
+    expect(output.crons).toEqual([expect.not.objectContaining({ dormant: true })]);
+    expect(output.crons[0]).not.toHaveProperty("dormant");
+    setProjectRoot(workspace);
+    const legacy = await CronListTool.call({}, { sessionId: "linux-list" } as never);
+    expect(legacy.data.warning).toBeUndefined();
+    expect(legacy.data.jobs).toEqual([expect.not.objectContaining({ dormant: true })]);
+    expect(legacy.data.jobs[0]).not.toHaveProperty("dormant");
   });
 
   test("rejects an unavailable descriptor alias without applying the Windows fallback", async () => {
@@ -486,8 +522,77 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(await readdir(workspace)).toEqual([]);
   });
 
+  test("CronList labels stored durable jobs as dormant, not scheduled", async () => {
+    await writeRecord();
+    const session = { conversationId: "windows-list" };
+    addSessionCronTask({
+      id: "session-listed", cron: "* * * * *", prompt: "session work", createdAt: 2_000,
+      queueOwner: { kind: "session", conversationId: "windows-list" },
+    });
+    const listed = await (await cronTool("CronList", session)).execute({});
+    expect(listed.isError).toBeFalsy();
+    const output = JSON.parse(String(listed.content)) as {
+      warning?: string;
+      crons: Array<{ id: string; durable?: boolean; dormant?: boolean }>;
+    };
+    expect(output.warning).toContain("dormant");
+    expect(output.crons).toEqual([
+      expect.objectContaining({ id: "kept", durable: true, dormant: true }),
+      expect.not.objectContaining({ dormant: true }),
+    ]);
+    expect(output.crons[1]!.id).toBe("session-listed");
+
+    setProjectRoot(workspace);
+    const legacy = await CronListTool.call({}, { sessionId: "windows-list" } as never);
+    expect(legacy.data.warning).toContain("not scheduled on this host");
+    expect(legacy.data.jobs.map((job) => [job.id, job.dormant === true])).toEqual([
+      ["kept", true],
+      ["session-listed", false],
+    ]);
+    const rendered = CronListTool.mapToolResultToToolResultBlockParam(legacy.data, "list").content;
+    expect(rendered).toMatch(/^kept .*\[dormant: not scheduled on this host\]/mu);
+    expect(rendered).not.toMatch(/^session-listed .*dormant/mu);
+    expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(body);
+  });
+
+  const manyDurable = `${JSON.stringify({
+    tasks: Array.from({ length: 50 }, (_, index) => ({
+      id: `dormant-${index}`, cron: "* * * * *", prompt: "stored durable work", createdAt: 1_000,
+    })),
+  }, null, 2)}\n`;
+
+  test("dormant durable records do not count toward the session job limit", async () => {
+    await withCronStorage(workspace, true, async (storage) => {
+      await storage.write(manyDurable);
+    });
+    setProjectRoot(workspace);
+    const input = { cron: "* * * * *", prompt: "session work", durable: false };
+    expect(await CronCreateTool.validateInput(input, { sessionId: "windows-limit" } as never))
+      .toEqual({ result: true });
+    const created = await (await cronTool("CronCreate", { conversationId: "windows-limit" }))
+      .execute({ cron: "* * * * *", prompt: "session work" });
+    expect(created.isError).toBeFalsy();
+    expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(manyDurable);
+  });
+
+  test("an unreadable dormant record does not refuse a session-only create", async () => {
+    await writeRecord();
+    // The stored record no longer passes the private ACL check, so reading it
+    // fails with an error other than DESCRIPTOR_UNSUPPORTED.
+    privatePaths.clear();
+    setProjectRoot(workspace);
+    const input = { cron: "* * * * *", prompt: "session work", durable: false };
+    expect(await CronCreateTool.validateInput(input, { sessionId: "windows-unreadable" } as never))
+      .toEqual({ result: true });
+    const created = await CronCreateTool.call(input, { sessionId: "windows-unreadable" } as never);
+    expect(created.data.durable).toBe(false);
+    expect(getSessionCronTasks().map((task) => task.id)).toEqual([created.data.id]);
+    expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(body);
+  });
+
   test("fires a session-only job and leaves a stored durable record unarmed", async () => {
     await writeRecord();
+    lockHooks.stub = true;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
     const closes: Array<() => Promise<void>> = [];
@@ -514,6 +619,7 @@ describe("Windows cron storage uses private-path persistence", () => {
         onAccepted: expect.any(Function),
       }));
       expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(body);
+      expect(lockHooks.acquired).toBe(0);
     } finally {
       await Promise.all(closes.map((close) => close()));
       vi.useRealTimers();
@@ -539,7 +645,9 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(flags & constants.O_CREAT).toBe(constants.O_CREAT);
   });
 
-  const fileIdModes: FileIdMode[] = ["zero", "all-ones", "dev-zero", "ino-all-ones"];
+  // Each single-field mode leaves the other field valid, so every clause of
+  // hasCronFileIdentity is needed by at least one row.
+  const fileIdModes: FileIdMode[] = ["zero", "all-ones", "dev-zero", "ino-zero", "dev-all-ones", "ino-all-ones"];
 
   test.each(fileIdModes)("rejects a workspace that reports no file id (%s)", async (mode) => {
     fsHooks.identitySentinel = (path) => (path.endsWith(`${sep}workspace`) ? mode : undefined);
@@ -571,8 +679,26 @@ describe("Windows cron storage uses private-path persistence", () => {
     }],
   }, null, 2)}\n`;
 
+  test.each([true, false])("the stubbed lock lets the harness observe a stored record rewrite (recurring=%s)",
+    async (recurring) => {
+      const stored = storedRecord(recurring);
+      await withCronStorage(workspace, true, async (storage) => {
+        await storage.write(stored);
+      });
+      const record = join(workspace, ".agenc", "scheduled_tasks.json");
+      lockHooks.stub = true;
+      if (recurring) await markCronTasksFired(["stored-recurring"], Date.parse("2026-07-07T12:01:00Z"), workspace);
+      else await removeCronTasks(["stored-once"], workspace);
+      expect(lockHooks.acquired).toBe(1);
+      const rewritten = await readFile(record, "utf8");
+      expect(rewritten).not.toBe(stored);
+      expect(rewritten).toContain(recurring ? "lastFiredAt" : '"tasks": []');
+    });
+
   // Seeds a readable durable record, runs `activate` under fake timers, and
-  // proves no process scheduler queued or rewrote that record.
+  // proves no process scheduler queued or rewrote that record. The lock stub
+  // lets a rewrite reach storage, so the byte check is live, and a lock
+  // acquisition alone shows a durable transaction was attempted.
   async function expectStoredRecordUnarmed(
     recurring: boolean,
     activate: () => Promise<void>,
@@ -583,6 +709,7 @@ describe("Windows cron storage uses private-path persistence", () => {
     await withCronStorage(workspace, true, async (storage) => {
       await storage.write(stored);
     });
+    lockHooks.stub = true;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
     try {
@@ -590,6 +717,7 @@ describe("Windows cron storage uses private-path persistence", () => {
       await vi.advanceTimersByTimeAsync(10 * 60_000);
       await scheduler().drain();
       expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(stored);
+      expect(lockHooks.acquired).toBe(0);
       expect(getCommandQueueSnapshot().map((command) => command.value)).toEqual(expectedPrompts);
     } finally {
       vi.useRealTimers();
@@ -605,6 +733,9 @@ describe("Windows cron storage uses private-path persistence", () => {
           { sessionId: "windows-legacy" } as never,
         );
         expect(created.data.durable).toBe(false);
+        // call() arms with `void reschedule()`; a later awaited reschedule
+        // supersedes it, so the timer is armed before virtual time advances.
+        await getCronScheduler().reschedule();
       }, ["session work"]);
     });
 

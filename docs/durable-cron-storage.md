@@ -11,9 +11,11 @@ write. This is storage groundwork only: durable records are dispatched only on
 Linux. On Windows and macOS no scheduler in the process loads them, durable
 creation (including delivery-routed jobs) is refused before any write, startup
 reports an existing record as `cron_storage_unavailable`, and the gateway
-reports delivery state as unavailable. A stored record is left byte for byte
-unchanged. This is a compatibility change. Session-only in-memory jobs do not
-require durable storage. There is no pathname fallback on macOS or Linux:
+reports delivery state as unavailable. No scheduler, startup, or gateway path
+rewrites a stored record; CronDelete can still remove one by id (removing that
+path is deferred). This is a compatibility change. Session-only in-memory jobs
+do not require durable storage, and dormant durable records neither count
+toward the session job limit nor block a session-only create. There is no pathname fallback on macOS or Linux:
 checks before and after an ordinary pathname write cannot undo an overwrite
 redirected during the write.
 
@@ -39,9 +41,10 @@ dispatch durable jobs. Later rescheduling can retry after storage is repaired.
 Warnings from superseded scheduler scans are discarded. Session startup stays
 silent on macOS, and on Linux without descriptor confinement, when the
 workspace has no `.agenc/scheduled_tasks.json`. A record that exists there is
-still reported. On Windows the record can be read and listed, but startup
-reports it as `cron_storage_unavailable` and no scheduler arms it until durable
-dispatch is supported there.
+still reported. On Windows the record can be read, and CronList shows each
+durable job as dormant (stored but not scheduled), but startup reports it as
+`cron_storage_unavailable` and no scheduler arms it until durable dispatch is
+supported there.
 
 Stop **all older AgenC scheduler and gateway processes using a workspace before
 upgrading its writers**, and do the same before rolling back. Old versions use
