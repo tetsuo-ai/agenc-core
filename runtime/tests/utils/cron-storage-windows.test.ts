@@ -914,9 +914,11 @@ describe("Windows inherited .agenc without a cron record", () => {
     fsHooks.beforeLstat = async (path) => {
       if (path !== record) return;
       fsHooks.beforeLstat = undefined;
+      // The same .agenc inode moves into a new workspace directory, so only
+      // the workspace identity recheck can see the change.
       await rename(real, join(outside, "moved-workspace"));
       await mkdir(real);
-      await mkdir(join(real, ".agenc"));
+      await rename(join(outside, "moved-workspace", ".agenc"), join(real, ".agenc"));
     };
     await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
     expect(fsHooks.beforeLstat).toBeUndefined();
