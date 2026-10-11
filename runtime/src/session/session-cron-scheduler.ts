@@ -84,7 +84,7 @@ export async function startSessionCronScheduler(
           `Durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`);
       },
       loadTasks: async (directory, conversationId) => {
-        // Only Linux currently admits descriptor-confined durable writes.
+        // Only Linux currently dispatches durable records.
         // A read-only durable record must never reach onAccepted and stop
         // this session's independent in-memory scheduler.
         const tasks = durableCronDispatchSupported()

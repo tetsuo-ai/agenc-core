@@ -117,7 +117,8 @@ export function hasCronFileIdentity(info: BigIntStats): boolean {
 /**
  * Windows has no traversable directory descriptor. `.agenc` is the private
  * root. This operation initializes that ACL only when it created the
- * directory; an existing directory is validated and left unchanged. Reads
+ * directory; an existing directory is validated and left unchanged (a read
+ * first takes the absence probe below). Reads
  * and writes then stay inside `windows-private-path`. The project workspace
  * keeps its inherited DACL. Publication rechecks the workspace device and
  * inode, and both the lexical and canonical `.agenc` directories must stay
@@ -140,6 +141,9 @@ async function withWindowsCronStorageDirectory<Result>(
   if (opened === undefined) return undefined;
   const directoryInfo = opened.info;
   await assertRealDirectory(workspacePathResolved, workspaceInfo);
+  if (!create && await windowsCronRecordAbsent(workspacePathResolved, workspaceInfo, directory, directoryInfo)) {
+    return undefined;
+  }
   ensureWindowsPrivateDirectory(directory, opened.created);
   try {
     return await withConfinedDirectory(directory, WINDOWS_STORAGE_POLICY, async (bound) => {
@@ -165,6 +169,35 @@ async function withWindowsCronStorageDirectory<Result>(
     if (!create && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+}
+
+/**
+ * Negative-only read probe. A normal existing `.agenc` inherits its parent's
+ * ACL, which the private-ACL check rejects, yet a directory without a cron
+ * record has nothing to protect. Only a stable real workspace and `.agenc`
+ * (lexical and canonical, same inode before and after) with `ENOENT` for the
+ * record count as absence; nothing is read and no ACL is changed. A record
+ * that exists in any form, or any other probe error, returns false so the
+ * full ACL, identity and confinement checks still decide. An identity change
+ * throws.
+ */
+async function windowsCronRecordAbsent(
+  workspacePath: string,
+  workspaceInfo: BigIntStats,
+  directory: string,
+  directoryInfo: BigIntStats,
+): Promise<boolean> {
+  await assertRealDirectory(await realpath(directory), directoryInfo);
+  try {
+    await lstat(join(directory, CRON_STORAGE_NAME), { bigint: true });
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+  }
+  await assertRealDirectory(workspacePath, workspaceInfo);
+  await assertRealDirectory(directory, directoryInfo);
+  await assertRealDirectory(await realpath(directory), directoryInfo);
+  return true;
 }
 
 async function assertRealDirectory(path: string, expected?: BigIntStats): Promise<BigIntStats> {

@@ -1,6 +1,6 @@
 import "../helpers/cron-os-home.js";
 import { constants, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -10,11 +10,12 @@ import { EventLog } from "../../src/session/event-log.js";
 import { startSessionCronScheduler } from "../../src/session/session-cron-scheduler.js";
 import type { Session } from "../../src/session/session.js";
 import { CronCreateTool } from "../../src/tools/ScheduleCronTool/CronCreateTool.js";
+import { CronDeleteTool } from "../../src/tools/ScheduleCronTool/CronDeleteTool.js";
 import { CronListTool } from "../../src/tools/ScheduleCronTool/CronListTool.js";
 import { readStartupCronTasks } from "../../src/utils/cron-startup.js";
 import { withCronStorage } from "../../src/utils/cron-storage.js";
 import { CronScheduler, cronEnqueueToCommandQueue, getCronScheduler, resetCronSchedulerForTests } from "../../src/utils/cronScheduler.js";
-import { appendCronTask, cronRestoreFailureNeedsWarning, markCronTasksFired, readCronTasks, removeCronTasks } from "../../src/utils/cronTasks.js";
+import { appendCronTask, cronRestoreFailureNeedsWarning, listSessionCronTasks, markCronTasksFired, readCronTasks, removeCronTasks } from "../../src/utils/cronTasks.js";
 import { getCommandQueueSnapshot, resetCommandQueueForTesting } from "../../src/utils/messageQueueManager.js";
 
 const acl = vi.hoisted(() => ({
@@ -30,6 +31,7 @@ const fsHooks = vi.hoisted(() => ({
   opens: [] as string[],
   openFlags: [] as Array<readonly [string, unknown]>,
   identitySentinel: undefined as ((path: string) => FileIdMode | undefined) | undefined,
+  beforeLstat: undefined as ((path: string) => Promise<void> | void) | undefined,
 }));
 const privatePaths = vi.hoisted(() => new Set<string>());
 // Spoofing win32 on Linux sends the real SQLite lock to the Windows system
@@ -78,6 +80,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...original,
     lstat: async (...args: Parameters<typeof original.lstat>) => {
+      await fsHooks.beforeLstat?.(String(args[0]));
       const info = await original.lstat(...args);
       return withoutFileId(info, fsHooks.identitySentinel?.(String(args[0])));
     },
@@ -191,6 +194,7 @@ beforeEach(async () => {
   fsHooks.opens = [];
   fsHooks.openFlags = [];
   fsHooks.identitySentinel = undefined;
+  fsHooks.beforeLstat = undefined;
   lockHooks.stub = false;
   lockHooks.acquired = 0;
   root = await mkdtemp(join(tmpdir(), "agenc-cron-windows-"));
@@ -201,6 +205,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   fsHooks.beforeRename = undefined;
+  fsHooks.beforeLstat = undefined;
   fsHooks.identitySentinel = undefined;
   await resetCronSchedulerForTests();
   resetCommandQueueForTesting();
@@ -772,5 +777,178 @@ describe("Windows cron storage uses private-path persistence", () => {
       scheduler.start({ queueOwner: { kind: "session", conversationId: "windows-mount" }, workspaceRoot: workspace });
       await scheduler.reschedule();
     }, []);
+  });
+});
+
+// A normal existing Windows `.agenc` inherits its parent's ACL. The fake ACL
+// helper rejects any path it did not initialize, which models that inherited
+// directory. With no record there, reads must report absence (as before the
+// Windows storage path existed) without reading or changing anything.
+describe("Windows inherited .agenc without a cron record", () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const conversationId = "windows-inherited";
+  const context = { sessionId: conversationId } as never;
+  beforeEach(async () => {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    await mkdir(metadataDirectory());
+    setProjectRoot(workspace);
+    addSessionCronTask({
+      id: "session-job", cron: "* * * * *", prompt: "session work", createdAt: Date.now(),
+      queueOwner: { kind: "session", conversationId },
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, "platform", platform);
+  });
+
+  async function expectUntouched(): Promise<void> {
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readdir(metadataDirectory())).toEqual([]);
+  }
+
+  test("the fixture directory fails the private ACL check", () => {
+    expect(() => acl.assertWindowsPrivatePathSecurity(metadataDirectory(), "directory", false))
+      .toThrow("private ACL missing");
+  });
+
+  test("reads report absence and startup needs no warning", async () => {
+    expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBeUndefined();
+    expect(await readCronTasks(workspace)).toEqual([]);
+    let warning = false;
+    try { expect(await readStartupCronTasks(workspace, () => {})).toEqual([]); }
+    catch (error) { warning = await cronRestoreFailureNeedsWarning(error, workspace); }
+    expect(warning).toBe(false);
+    await expectUntouched();
+  });
+
+  test("legacy and model-facing CronList return the session job without a warning", async () => {
+    const legacy = await CronListTool.call({}, context);
+    expect(legacy.data.jobs.map((job) => job.id)).toEqual(["session-job"]);
+    expect(legacy.data.warning).toBeUndefined();
+    const listed = await (await cronTool("CronList", { conversationId })).execute({});
+    expect(listed.isError).toBeFalsy();
+    const output = JSON.parse(String(listed.content)) as { crons: Array<{ id: string }>; warning?: string };
+    expect(output.crons.map((job) => job.id)).toEqual(["session-job"]);
+    expect(output.warning).toBeUndefined();
+    await expectUntouched();
+  });
+
+  test("legacy CronDelete validates and deletes the session job", async () => {
+    const input = { id: "session-job" };
+    expect((await CronDeleteTool.validateInput(input, context)).result).toBe(true);
+    await CronDeleteTool.call(input, context);
+    expect(listSessionCronTasks(conversationId)).toHaveLength(0);
+    await expectUntouched();
+  });
+
+  test("model-facing CronDelete deletes the session job", async () => {
+    const deleted = await (await cronTool("CronDelete", { conversationId })).execute({ id: "session-job" });
+    expect(JSON.parse(String(deleted.content))).toMatchObject({ deleted: true, id: "session-job" });
+    expect(listSessionCronTasks(conversationId)).toHaveLength(0);
+    await expectUntouched();
+  });
+
+  test("control: an existing record in the inherited directory is still rejected", async () => {
+    const record = join(metadataDirectory(), "scheduled_tasks.json");
+    writeFileSync(record, body);
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    await expect(CronListTool.call({}, context)).rejects.toThrow(PERMISSIONS_ERROR);
+    const error: unknown = await readStartupCronTasks(workspace, () => {}).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ message: PERMISSIONS_ERROR });
+    expect(await cronRestoreFailureNeedsWarning(error, workspace)).toBe(true);
+    await expect(withCronStorage(workspace, true, async (storage) => {
+      await storage.write("{}\n");
+    })).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readFile(record, "utf8")).toBe(body);
+  });
+
+  test("control: a linked record counts as present and is rejected", async () => {
+    const planted = join(outside, "scheduled_tasks.json");
+    writeFileSync(planted, body);
+    symlinkSync(join(outside, "missing.json"), join(metadataDirectory(), "scheduled_tasks.json"));
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    unlinkSync(join(metadataDirectory(), "scheduled_tasks.json"));
+    symlinkSync(planted, join(metadataDirectory(), "scheduled_tasks.json"));
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readFile(planted, "utf8")).toBe(body);
+  });
+
+  test("control: a canonical .agenc with a different inode is rejected, not absent", async () => {
+    const decoy = join(outside, "decoy");
+    await mkdir(decoy);
+    fsHooks.agencCanonical = decoy;
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    await expect(CronListTool.call({}, context)).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(aclMutations()).toHaveLength(0);
+  });
+
+  test("control: a symlinked (junction-like) .agenc is rejected, not absent", async () => {
+    await rm(metadataDirectory(), { recursive: true });
+    symlinkSync(outside, metadataDirectory());
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
+  });
+
+  for (const replacement of ["directory", "link"] as const) {
+    test(`control: .agenc replaced by a ${replacement} during the probe is rejected, not absent`, async () => {
+      const directory = metadataDirectory();
+      const record = join(directory, "scheduled_tasks.json");
+      fsHooks.beforeLstat = async (path) => {
+        if (path !== record) return;
+        fsHooks.beforeLstat = undefined;
+        await rename(directory, join(outside, "moved"));
+        if (replacement === "directory") await mkdir(directory);
+        else symlinkSync(outside, directory);
+      };
+      await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+      expect(fsHooks.beforeLstat).toBeUndefined();
+      expect(aclMutations()).toHaveLength(0);
+    });
+  }
+
+  test("control: a workspace replaced during the probe is rejected, not absent", async () => {
+    const real = realpathSync(workspace);
+    const record = join(metadataDirectory(), "scheduled_tasks.json");
+    fsHooks.beforeLstat = async (path) => {
+      if (path !== record) return;
+      fsHooks.beforeLstat = undefined;
+      await rename(real, join(outside, "moved-workspace"));
+      await mkdir(real);
+      await mkdir(join(real, ".agenc"));
+    };
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(fsHooks.beforeLstat).toBeUndefined();
+  });
+
+  test("control: an uncertain probe error fails closed through the full checks", async () => {
+    const record = join(metadataDirectory(), "scheduled_tasks.json");
+    fsHooks.beforeLstat = (path) => {
+      if (path === record) throw Object.assign(new Error("access denied"), { code: "EACCES" });
+    };
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    await expect(CronListTool.call({}, context)).rejects.toThrow(PERMISSIONS_ERROR);
+    const error: unknown = await readStartupCronTasks(workspace, () => {}).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ message: PERMISSIONS_ERROR });
+    expect(await cronRestoreFailureNeedsWarning(error, workspace)).toBe(true);
+    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
+      expect.stringMatching(/\.agenc$/u), "directory", false,
+    );
+    await expectUntouched();
+  });
+
+  test("control: a valid private record still reads through the full checks", async () => {
+    privatePaths.add(`directory\0${metadataDirectory()}`);
+    await writeRecord();
+    acl.assertWindowsPrivatePathSecurity.mockClear();
+    expect((await readCronTasks(workspace)).map((entry) => entry.id)).toEqual(["kept"]);
+    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
+      expect.stringMatching(/\.agenc$/u), "directory", false,
+    );
+    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
+      expect.stringMatching(/scheduled_tasks\.json$/u), "file", false,
+    );
+    expect(aclMutations()).toHaveLength(0);
   });
 });

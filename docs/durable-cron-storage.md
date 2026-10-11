@@ -15,9 +15,10 @@ reports delivery state as unavailable. No scheduler, startup, or gateway path
 rewrites a stored record; CronDelete can still remove one by id (removing that
 path is deferred). This is a compatibility change. Session-only in-memory jobs
 do not require durable storage, and dormant durable records neither count
-toward the session job limit nor block a session-only create. There is no pathname fallback on macOS or Linux:
-checks before and after an ordinary pathname write cannot undo an overwrite
-redirected during the write.
+toward the session job limit nor block a session-only create.
+
+There is no pathname fallback on macOS or Linux: checks before and after an
+ordinary pathname write cannot undo an overwrite redirected during the write.
 
 The OS account home must already exist on a local filesystem accepted by the
 SQLite lock security checks, even when `AGENC_HOME` is elsewhere. Unavailable
@@ -32,7 +33,8 @@ lookup later recovers. `HOME` and `AGENC_HOME` never supply the missing authorit
 The separate existing POSIX credential-account check still requires OS identity
 when creating a new home context or broker; this change does not relax that check.
 
-Unsafe or unsupported storage is reported by CronList as an error, by session
+Unsafe or unsupported storage is reported by CronList as an error (a readable
+Windows record is listed as dormant instead, see below), by session
 startup and active schedulers as `cron_storage_unavailable` warnings, and by
 the gateway as a delivery-state diagnostic including the concrete cause.
 Only missing or malformed task records retain the empty-list behavior. Failed
@@ -44,7 +46,11 @@ workspace has no `.agenc/scheduled_tasks.json`. A record that exists there is
 still reported. On Windows the record can be read, and CronList shows each
 durable job as dormant (stored but not scheduled), but startup reports it as
 `cron_storage_unavailable` and no scheduler arms it until durable dispatch is
-supported there.
+supported there. A normal existing Windows `.agenc` inherits its parent's ACL
+and fails the private check; when it is a stable real directory with no
+`scheduled_tasks.json`, reads report absence without reading or changing
+anything. A record that exists, or any doubt about absence, still gets the
+full ACL, identity and confinement checks.
 
 Stop **all older AgenC scheduler and gateway processes using a workspace before
 upgrading its writers**, and do the same before rolling back. Old versions use
