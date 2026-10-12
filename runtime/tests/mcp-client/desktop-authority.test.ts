@@ -362,9 +362,12 @@ describe("operator-bootstrapped Desktop control authority", () => {
       const read = reads.includes(tool.mcpInfo!.toolName);
       expect(tool.isReadOnly === true).toBe(read);
       if (!read) expect(tool).toMatchObject({ requiresApproval: true, metadata: { mutating: true, virtualNoFsWrites: true } });
-      for (const mode of ["default", "plan"] as const) {
+      // By the owner's decision the actions are not bypass-immune: a bypass chat runs them without a
+      // prompt, bounded by the host's wallet limits and the person's opt-in switch in Desktop.
+      for (const mode of ["default", "plan", "bypassPermissions"] as const) {
         const context = { session: { services: {} } as never, getAppState: () => ({ toolPermissionContext: { ...createEmptyToolPermissionContext(), mode }, denialTracking: freshDenialTracking(), autoModeActive: false }) };
-        expect((await hasPermissionsToUseTool(tool, {}, context)).behavior).toBe(read ? "allow" : mode === "plan" ? "deny" : "ask");
+        const expected = read || mode === "bypassPermissions" ? "allow" : mode === "plan" ? "deny" : "ask";
+        expect((await hasPermissionsToUseTool(tool, {}, context)).behavior, `${tool.mcpInfo!.toolName} in ${mode}`).toBe(expected);
       }
     }
     await bridge.dispose();
