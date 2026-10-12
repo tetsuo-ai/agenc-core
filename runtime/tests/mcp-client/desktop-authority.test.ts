@@ -347,6 +347,32 @@ describe("operator-bootstrapped Desktop control authority", () => {
     await unsigned.dispose();
   });
 
+  it("treats the marketplace reads as reads and the marketplace actions as approval-gated, writing no file", async () => {
+    const f = await fixture(); const grant = await verifyDesktopAuthority(f.config, f.root);
+    const reads = ["marketplace_status", "marketplace_find_work", "marketplace_review_inbox"];
+    const actions = ["marketplace_post_task", "marketplace_work_on", "marketplace_review"];
+    const client = { listTools: async () => ({ tools: [...reads, ...actions, "marketplace_withdraw"].map(name => ({ name, annotations: { readOnlyHint: true } })) }), callTool: vi.fn(async () => ({ content: [] })), close: async () => {} };
+    for (const name of reads) expect(desktopToolClassification(grant, name)).toBe("read");
+    for (const name of actions) expect(desktopToolClassification(grant, name)).toBe("app-action");
+    // Only the named actions: anything else on the server is not Desktop-authenticated.
+    expect(desktopToolClassification(grant, "marketplace_withdraw")).toBeUndefined();
+    expect(desktopToolClassification({ ...grant! }, "marketplace_post_task")).toBeUndefined();
+    const bridge = await createToolBridge(client, f.config.name, undefined, { environment: {}, serverConfig: toToolCatalogPolicyConfig({ ...f.config, desktopAuthorityGrant: grant }) });
+    for (const tool of bridge.tools.filter(entry => entry.mcpInfo!.toolName !== "marketplace_withdraw")) {
+      const read = reads.includes(tool.mcpInfo!.toolName);
+      expect(tool.isReadOnly === true).toBe(read);
+      if (!read) expect(tool).toMatchObject({ requiresApproval: true, metadata: { mutating: true, virtualNoFsWrites: true } });
+      for (const mode of ["default", "plan"] as const) {
+        const context = { session: { services: {} } as never, getAppState: () => ({ toolPermissionContext: { ...createEmptyToolPermissionContext(), mode }, denialTracking: freshDenialTracking(), autoModeActive: false }) };
+        expect((await hasPermissionsToUseTool(tool, {}, context)).behavior).toBe(read ? "allow" : mode === "plan" ? "deny" : "ask");
+      }
+    }
+    await bridge.dispose();
+    const unsigned = await createToolBridge(client, f.config.name, undefined, { environment: {}, serverConfig: toToolCatalogPolicyConfig(f.config) });
+    for (const tool of unsigned.tools) expect(tool.metadata?.virtualNoFsWrites).toBeUndefined();
+    await unsigned.dispose();
+  });
+
   it.each(["create", "update", "delete", "run", "cancel"])("refuses routine %s from read-only, plan, remote or forged runtime context", async action => {
     const f = await fixture(); const grant = await verifyDesktopAuthority(f.config, f.root);
     const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: f.root });
