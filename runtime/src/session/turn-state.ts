@@ -1,4 +1,5 @@
 import { readReasoningCapPolicy, type ReasoningCapPolicyState } from "./reasoning-cap-policy.js";
+import type { ThinkingOffHoldState } from "./thinking-off-hold.js";
 /**
  * TurnState — mutable working set carried across phase-machine iterations.
  *
@@ -397,6 +398,12 @@ export interface TurnState {
   reasoningCapPolicy?: ReasoningCapPolicyState;
   /** Unproductive native reasoning-only retries since the last productive recovery. */
   reasoningOnlyRecoveryCount?: number;
+  /**
+   * Light thinking-off hold after a productive reasoning-only recovery
+   * (`AGENC_HL_THINKING_OFF_HOLD`, session/thinking-off-hold.ts). Turn-scoped
+   * and in-memory only: a resumed turn starts without a hold.
+   */
+  thinkingOffHold?: ThinkingOffHoldState;
 
   /** Count of recovery re-entries this turn. Enforces I-42 (recovery
    *  re-entry cap). Wired in T8 — incremented at each recovery
@@ -599,6 +606,7 @@ export function buildInitialTurnState(
     maxOutputTokensOverride: opts?.initialMaxOutputTokensOverride,
     skipCacheWrite: opts?.initialSkipCacheWrite,
     maxOutputTokensRecoveryCount: 0,
+    thinkingOffHold: undefined,
     recoveryReentryCount: 0,
     textToolCallCorrectionCount: 0,
     textToolCallCorrection: undefined,

@@ -361,6 +361,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_SKIP_OFFICIAL_MARKETPLACE` | `1` stops the first marketplace catalog on a profile with none configured from auto-registering the official `agenc-plugins` marketplace |
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace; captured once at runtime ingress; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
+| `AGENC_HL_THINKING_OFF_HOLD` | Harness-learning candidate for Light sessions, off by default. Set to `1` so a Light session on native DeepSeek keeps thinking disabled for the samples that follow a productive thinking-off recovery of a reasoning-only output cap, instead of restoring thinking on the very next request (which capped again in about half of the measured cases). The hold starts at two samples; the sample after it runs with the configured thinking as a probe. A probe that completes clears the hold; a probe that caps again doubles the next hold, up to sixteen samples. Turn-scoped and in-memory: a new turn, a resumed turn and every other mode start without a hold. Output limits, retry budgets and permissions are unchanged; sessions that are not Light ignore it. Captured with the session environment, so a client sets it per session |
 | `AGENC_DEFER_RARE_TOOLS` | Set to `1` so ten rarely used built-in tools (ImagineImage, ImagineVideo, XSearch, LSP, NotebookRead, the three Ledger tools, VerifyPlanExecution and SendUserMessage) load through tool search instead of being sent with every request, about 1.4k fewer tokens per request. The tool search description names them so the model knows they exist. Off by default; captured with the session environment, so a client sets it per session |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |
 | `AGENC_DISABLE_LANDLOCK_FALLBACK` | Do not use the Landlock helper when bubblewrap cannot run |
@@ -426,7 +427,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_H*
 
-`AGENC_HOST_PLATFORM`.
+`AGENC_HL_THINKING_OFF_HOLD`, `AGENC_HOST_PLATFORM`.
 
 ### AGENC_I*
 

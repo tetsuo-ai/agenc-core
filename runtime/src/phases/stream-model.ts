@@ -82,6 +82,11 @@ import {
 } from "../llm/provider-trace-sink.js";
 import { getAgencHomeDir } from "../session/session-store.js";
 import { resolveMainLoopReasoningEffort, supportsThinkingOffRecovery } from "../session/session-reasoning-effort.js";
+import {
+  completeThinkingOffHoldSample,
+  startThinkingOffHold,
+  thinkingOffHoldEnabled,
+} from "../session/thinking-off-hold.js";
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -98,6 +103,8 @@ export interface StreamModelRequestContract {
   readonly reasoningCapTarget?: { readonly provider: string; readonly model: string };
   /** Snapshot of durable output-recovery intent, not a session config change. */
   readonly reasoningOnlyRecovery?: true;
+  /** Snapshot of a Light thinking-off hold sample (session/thinking-off-hold.ts). */
+  readonly thinkingOffHold?: true;
   /** Internal managed transport UUID, stable for every retry of this snapshot. */
   readonly managedRequestId?: string;
   readonly input: ReadonlyArray<LLMMessage>;
@@ -307,6 +314,7 @@ export function buildProviderOptions(
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
     ...((request.reasoningOnlyRecovery === true ||
+      (request.thinkingOffHold === true && thinkingOffHoldEnabled(session)) ||
       (request.reasoningCapSample?.kind === "extra" && session.config?.reasoningCapPolicy === "streak2" &&
         request.reasoningCapTarget?.provider === session.services.provider.name &&
         request.reasoningCapTarget.model === (session.config?.model ?? ctx.modelInfo.slug))) && supportsThinkingOffRecovery(
@@ -1324,6 +1332,25 @@ export async function streamModel(
           }),
         } },
       });
+    } else if (options.disableThinkingForRecovery === true && request.thinkingOffHold === true) {
+      // Session log only (the TUI shows named causes); one line per hold sample
+      // so a measurement run can count how often the hold fired.
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "warning", payload: {
+          cause: "thinking_off_hold",
+          message: JSON.stringify({
+            configuredEffort: resolveMainLoopReasoningEffort(session, ctx),
+            effectiveThinking: "disabled",
+            maxOutputTokens: options.maxOutputTokens,
+            scope: "light_thinking_off_hold_sample",
+          }),
+          details: {
+            remaining: state.thinkingOffHold?.remaining ?? 0,
+            length: state.thinkingOffHold?.length ?? 0,
+          },
+        } },
+      });
     }
     const recoveryFallback = state.pendingAdmissionFallback;
     const clearRecoveryFallback = (): void => {
@@ -1782,6 +1809,10 @@ export async function streamModel(
       providerName, session.config?.model ?? ctx.modelInfo.slug,
     ) && productiveRecoveryOutput) {
     state.reasoningOnlyRecoveryCount = 0;
+    // Light hold (AGENC_HL_THINKING_OFF_HOLD): the samples after a productive
+    // thinking-off recovery keep thinking off instead of capping again.
+    if (thinkingOffHoldEnabled(session)) startThinkingOffHold(state);
   }
+  completeThinkingOffHoldSample(state, request, { capped: maxOutputTruncated });
   return state;
 }

@@ -29,6 +29,7 @@ import {
   appendVolatileInstructions,
   sessionTailCacheEnabled,
 } from "./session-tail-cache.js";
+import { thinkingOffHoldActive, thinkingOffHoldEnabled } from "./thinking-off-hold.js";
 
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
 
@@ -232,7 +233,9 @@ function buildSamplingRequestContract(
     ...request,
     ...(state.reasoningOnlyRecoveryPending === true
       ? { reasoningOnlyRecovery: true as const }
-      : {}),
+      : thinkingOffHoldActive(state) && thinkingOffHoldEnabled(session)
+        ? { thinkingOffHold: true as const }
+        : {}),
     ...(planModeHelpers.isPlanMode(samplingContext) && request.tools.length > 0
       ? { toolChoice: "required" as const }
       : {}),

@@ -1377,6 +1377,14 @@ Continuation text depends on what was truncated:
   `reasoningOnlyRecoveryCount` resets to 0, so only unproductive
   reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
   and sent back, so the next thinking-on call is accepted.
+
+  A Light session with `AGENC_HL_THINKING_OFF_HOLD` set (off by default)
+  also keeps thinking disabled for the samples after such a productive
+  recovery: two samples at first, then a thinking-on probe. A probe that
+  completes clears the hold; a probe that caps again doubles the next hold,
+  up to sixteen samples. The hold lives in the turn's in-memory state
+  (`thinkingOffHold`, `session/thinking-off-hold.ts`); recovery budgets
+  and the ceilings above are unchanged.
 - Otherwise: `Continue generating directly from where you left off…`
 
 There is no env or `config.toml` override for the 3-retry limit or the
