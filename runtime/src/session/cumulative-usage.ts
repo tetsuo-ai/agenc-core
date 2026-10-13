@@ -20,4 +20,3 @@ export function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMU
       (acc.webSearchRequests ?? 0) + (next.webSearchRequests ?? 0),
   };
 }
-

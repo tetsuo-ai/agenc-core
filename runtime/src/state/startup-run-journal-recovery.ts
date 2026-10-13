@@ -6,6 +6,7 @@ import {
   lstatSync,
   openSync,
   opendirSync,
+  readSync,
   realpathSync,
   statSync,
 } from "node:fs";
@@ -33,6 +34,7 @@ import {
 import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { asRecord } from "../utils/record.js";
+import { parseRolloutLine } from "../session/rollout-item.js";
 import {
   createResumeRolloutDescriptorLease,
   hasSupportedFileIdentity,
@@ -44,7 +46,10 @@ import {
   type BackfillPinnedRolloutSource,
   type PreparedPinnedRolloutRun,
 } from "./backfill.js";
-import { RecoveryOperationalError } from "./recovery-contract.js";
+import {
+  MAX_RECOVERY_CANONICAL_LINE_BYTES,
+  RecoveryOperationalError,
+} from "./recovery-contract.js";
 import { StateRecoveryIncidentRepository } from "./recovery-incidents.js";
 import { RecoveryDescriptorBudget } from "./recovery-file.js";
 import {
@@ -58,8 +63,11 @@ import {
   recoveryRunIsExecutableSql,
   type RecoveryRunExclusion,
 } from "./recovery-exclusions.js";
-import { StateRunDurabilityRepository } from "./run-durability.js";
-import type { RunJournalBinding } from "./run-durability.js";
+import {
+  StateRunDurabilityRepository,
+  type DurableRunTerminalRecord,
+  type RunJournalBinding,
+} from "./run-durability.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { sqlPlaceholders } from "./sql.js";
 import { StateThreadRepository } from "./threads.js";
@@ -255,6 +263,344 @@ export function recoverCanonicalRunJournalForRun(
   }
   const sources = selection.sources;
   return recoverStrictRun(driver, threads, run, sources, options.strict);
+}
+
+/**
+ * Project a terminal the live writer already fsynced.
+ *
+ * On-demand recovery refuses a rollout this process still has open, and it
+ * must not record a deferral for that. The refusal used to leave goal status
+ * `running` after the terminal line was durable and only its SQLite
+ * projection had failed. Read the committed tail (never the lock, never a
+ * partial last line) and insert that one result. When the insert still
+ * cannot be stored, return the journal fact so status can report it.
+ */
+export function projectLiveJournalTerminal(
+  driver: StateSqliteDriver,
+  runId: string,
+  sourcePath: string,
+): DurableRunTerminalRecord | undefined {
+  try {
+    if (!liveJournalPathIsInsideProject(driver.projectDir, sourcePath)) {
+      return undefined;
+    }
+    const repository = new StateRunDurabilityRepository(driver);
+    const epoch = repository.currentEpoch(runId)?.epoch;
+    if (
+      epoch === undefined ||
+      repository.getCurrentTerminalResult(runId) !== undefined
+    ) {
+      return undefined;
+    }
+    const lines = readCommittedJournalTail(sourcePath, runId, epoch);
+    if (lines === undefined) return undefined;
+    const terminal = terminalFromCommittedTail(lines, runId, epoch);
+    if (terminal === undefined) return undefined;
+    try {
+      repository.recordTerminalResult({
+        epoch: terminal.epoch,
+        eventId: terminal.eventId,
+        result: {
+          runId: terminal.runId,
+          status: terminal.status,
+          exitCode: terminal.exitCode,
+          stopReason: terminal.stopReason,
+          finalMessage: terminal.finalMessage,
+          usage: terminal.usage,
+          lastSequence: terminal.lastSequence,
+          finishedAt: terminal.finishedAt,
+        },
+      });
+      return undefined;
+    } catch {
+      return terminal;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function liveJournalPathIsInsideProject(
+  projectDir: string,
+  sourcePath: string,
+): boolean {
+  const root = resolve(projectDir);
+  const resolved = resolve(sourcePath);
+  return resolved === root || resolved.startsWith(`${root}${sep}`);
+}
+
+/**
+ * Newest same-epoch terminal in the suffix, unless a later-epoch reopen
+ * for this run clears it.
+ *
+ * A `run_terminal` from an epoch SQLite has not projected is ignored. One
+ * unparseable line rejects the whole suffix; bad JSON is not skipped.
+ */
+function terminalFromCommittedTail(
+  lines: readonly string[],
+  runId: string,
+  epoch: number,
+): DurableRunTerminalRecord | undefined {
+  let terminal: DurableRunTerminalRecord | undefined;
+  let superseded = false;
+  for (const line of lines) {
+    const fact = classifyJournalTailLine(line);
+    if (fact.kind === "invalid") return undefined;
+    if (
+      fact.kind === "reopened" &&
+      fact.runId === runId &&
+      fact.epoch > epoch
+    ) {
+      superseded = true;
+      terminal = undefined;
+      continue;
+    }
+    if (
+      !superseded &&
+      fact.kind === "terminal" &&
+      fact.runId === runId &&
+      fact.epoch === epoch
+    ) {
+      terminal = {
+        ...fact.result,
+        epoch,
+        eventId: fact.eventId,
+      };
+    }
+  }
+  return terminal;
+}
+
+type JournalTailFact =
+  | { readonly kind: "other" }
+  | { readonly kind: "invalid" }
+  | { readonly kind: "reopened"; readonly runId: string; readonly epoch: number }
+  | {
+      readonly kind: "terminal";
+      readonly runId: string;
+      readonly epoch: number;
+      readonly eventId: string;
+      readonly result: RunTerminalResult;
+    };
+
+function classifyJournalTailLine(line: string): JournalTailFact {
+  let parsed: ReturnType<typeof parseRolloutLine>;
+  try {
+    parsed = parseRolloutLine(line);
+  } catch {
+    return { kind: "invalid" };
+  }
+  if (parsed === null || parsed.type !== "event_msg") return { kind: "other" };
+  const event = parsed.payload;
+  if (event.msg.type === "run_reopened") {
+    const payload = asRecord(event.msg.payload);
+    const reopenedRunId = payload?.runId;
+    const reopenedEpoch = positiveTailInteger(payload?.epoch);
+    if (typeof reopenedRunId !== "string" || reopenedEpoch === undefined) {
+      return { kind: "invalid" };
+    }
+    return { kind: "reopened", runId: reopenedRunId, epoch: reopenedEpoch };
+  }
+  if (event.msg.type !== "run_terminal") return { kind: "other" };
+  try {
+    const payload = asRecord(event.msg.payload);
+    const terminalRunId = payload?.runId;
+    const terminalEpoch = positiveTailInteger(payload?.epoch);
+    const sequence = positiveTailInteger(event.seq);
+    if (
+      payload === null ||
+      typeof terminalRunId !== "string" ||
+      terminalEpoch === undefined ||
+      sequence === undefined
+    ) {
+      return { kind: "invalid" };
+    }
+    const eventId = canonicalTailEventId(event);
+    if (eventId === undefined) return { kind: "invalid" };
+    return {
+      kind: "terminal",
+      runId: terminalRunId,
+      epoch: terminalEpoch,
+      eventId,
+      result: {
+        runId: terminalRunId,
+        status: requireTerminalStatus(payload.status),
+        exitCode: nullableFiniteNumber(payload.exitCode, "exitCode"),
+        stopReason: nullableString(payload.stopReason, "stopReason"),
+        finalMessage: nullableString(payload.finalMessage, "finalMessage"),
+        usage: nullableUsage(payload.usage),
+        lastSequence: sequence,
+        finishedAt: requireString(payload.finishedAt, "finishedAt"),
+      },
+    };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+function positiveTailInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function canonicalTailEventId(event: {
+  readonly eventId?: string;
+  readonly id: string;
+  readonly seq?: number;
+}): string | undefined {
+  if (typeof event.eventId === "string" && event.eventId.length > 0) {
+    return event.eventId;
+  }
+  if (
+    typeof event.seq === "number" &&
+    Number.isSafeInteger(event.seq) &&
+    event.seq > 0
+  ) {
+    return `legacy-event:${event.seq}:${event.id}`;
+  }
+  return event.id.length > 0 ? event.id : undefined;
+}
+
+/** First suffix. Grows toward two maximum records while a fact is still missing. */
+const INITIAL_COMMITTED_JOURNAL_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Complete JSONL records from the end of a live rollout.
+ *
+ * The first read is 64 KiB. A trailing partial line is dropped. When the
+ * suffix starts after byte 0 and does not yet decide this run, the window
+ * doubles until it does, or until it reaches two maximum records (~8 MiB).
+ * A same-epoch terminal does not stop the look-back, and a superseding
+ * reopen does. A clearing reopen cannot sit in bytes older than that
+ * terminal: `SessionStore.append` accepts `run_reopened` when the terminal
+ * is already a complete line in this file, or earlier in the same unflushed
+ * `pending` batch. That batch is one ordered fsync, so a committed reopen
+ * still has its terminal at a lower byte offset. A terminal that is only in
+ * the degraded ring or the in-flight drain slice is not that order. The
+ * append also refuses a later terminal for the superseded epoch.
+ * `reopenTerminalEpoch` records the SQLite terminal, then appends the reopen.
+ * When that reopen exists, every suffix that contains the terminal contains
+ * the reopen too, so the capped suffix is still decisive. An empty
+ * complete-line list does not stop the scan. A last line longer than the
+ * window can end inside it and still be only a prefix.
+ *
+ * One unparseable line rejects the suffix that contains it; growth does not
+ * skip that line. A terminal from an epoch SQLite has not projected is not
+ * adopted. A record over the 4 MiB canonical line cap stays omitted.
+ */
+function readCommittedJournalTail(
+  sourcePath: string,
+  runId: string,
+  epoch: number,
+): readonly string[] | undefined {
+  const noFollow =
+    (fsConstants as { readonly O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+  let fd: number | undefined;
+  try {
+    const listed = lstatSync(sourcePath);
+    if (!listed.isFile() || listed.isSymbolicLink()) return undefined;
+    fd = openSync(sourcePath, fsConstants.O_RDONLY | noFollow);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) return undefined;
+    const size = stat.size;
+    if (!Number.isSafeInteger(size) || size < 0) return undefined;
+    if (size === 0) return [];
+    const limit = Math.min(size, MAX_RECOVERY_CANONICAL_LINE_BYTES * 2);
+    let window = Math.min(size, INITIAL_COMMITTED_JOURNAL_TAIL_BYTES);
+    for (;;) {
+      const lines = completeJournalLines(fd, size, window);
+      const start = size - window;
+      if (
+        lines !== undefined &&
+        (start === 0 ||
+          !committedTailNeedsEarlierBytes(lines, runId, epoch))
+      ) {
+        return lines;
+      }
+      // Omitted prefix bytes cannot hold a clearing reopen for an in-window
+      // same-epoch terminal. The writer appends that reopen after the
+      // terminal, in a later write or later in the same ordered fsync.
+      if (window >= limit) return lines;
+      const next = Math.min(limit, window * 2);
+      if (next <= window) return lines;
+      window = next;
+    }
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Whether bytes before this suffix can still change the live decision.
+ *
+ * Stop once a reopen for this run sits above the SQLite epoch, or once an
+ * unparseable line has already failed the suffix closed. A same-epoch
+ * terminal does not stop the look-back. A superseding reopen is appended
+ * after that terminal, so when one exists it is already in this suffix.
+ * Bytes before the terminal cannot clear it.
+ */
+function committedTailNeedsEarlierBytes(
+  lines: readonly string[],
+  runId: string,
+  epoch: number,
+): boolean {
+  for (const line of lines) {
+    const fact = classifyJournalTailLine(line);
+    if (fact.kind === "invalid") return false;
+    if (
+      fact.kind === "reopened" &&
+      fact.runId === runId &&
+      fact.epoch > epoch
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function completeJournalLines(
+  fd: number,
+  size: number,
+  window: number,
+): readonly string[] | undefined {
+  const start = size - window;
+  const buffer = Buffer.allocUnsafe(window);
+  const read = readSync(fd, buffer, 0, window, start);
+  if (read !== window) return [];
+  const chunk = buffer.subarray(0, read);
+  let from = 0;
+  if (start > 0) {
+    const boundary = chunk.indexOf(0x0a);
+    if (boundary < 0) return undefined;
+    from = boundary + 1;
+  }
+  let end = chunk.length;
+  if (end > from && chunk[end - 1] !== 0x0a) {
+    const boundary = chunk.lastIndexOf(0x0a);
+    if (boundary < from) return start === 0 ? [] : undefined;
+    end = boundary + 1;
+  }
+  const lines: string[] = [];
+  let lineStart = from;
+  for (let index = from; index < end; index += 1) {
+    if (chunk[index] !== 0x0a) continue;
+    const lineEnd =
+      index > lineStart && chunk[index - 1] === 0x0d ? index - 1 : index;
+    if (lineEnd - lineStart > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
+      // Over the canonical line cap: omit the record. Do not fail the suffix
+      // closed, and do not treat the skip as a terminal.
+      lineStart = index + 1;
+      continue;
+    }
+    if (lineEnd > lineStart) {
+      lines.push(chunk.subarray(lineStart, lineEnd).toString("utf8"));
+    }
+    lineStart = index + 1;
+  }
+  return lines;
 }
 
 /** The sha256 recorded for a source that no longer exists; an operator confirms it to abandon the incident. */

@@ -65,6 +65,7 @@ import { resolveRoutinePermissionGrant } from "../routines/permission-authority.
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { canonicalRunTerminalFromItems } from "../../src/session/canonical-run-terminal.js";
 import type {
   PermissionContextPreparedUpdate,
   PermissionContextPublication,
@@ -632,6 +633,15 @@ function makeTopLevelRunner(opts: {
   const rolloutStore = {
     rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
     readAll: () => [...rolloutItems],
+    // Match RolloutStore: committed = complete journaled terminal; this
+    // harness has no separate unflushed batch, so readAll is the committed
+    // view. queued stays empty unless a test injects an unflushed copy.
+    committedRunTerminal: (runId: string, epoch: number) =>
+      canonicalRunTerminalFromItems(rolloutItems, runId, epoch),
+    queuedRunTerminal: (
+      _runId: string,
+      _epoch: number,
+    ): ReturnType<typeof canonicalRunTerminalFromItems> => undefined,
     listThreadSpawnChildrenWithStatus: vi.fn(() => []),
     listThreadSpawnChildren: vi.fn(() => []),
     rootHasOnlyTerminalDescendants: vi.fn(() => true),
@@ -1342,6 +1352,42 @@ function recordRoutineToolStart(h: Awaited<ReturnType<typeof startRoutineToolRun
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("exposes committed and queued run-terminal lookups on the harness rolloutStore", () => {
+    const { rolloutStore, rolloutItems } = makeTopLevelRunner({
+      conversationId: "run-terminal-lookup-shape",
+    });
+    expect(typeof rolloutStore.committedRunTerminal).toBe("function");
+    expect(typeof rolloutStore.queuedRunTerminal).toBe("function");
+    expect(rolloutStore.committedRunTerminal("run-terminal-lookup-shape", 1)).toBeUndefined();
+    expect(rolloutStore.queuedRunTerminal("run-terminal-lookup-shape", 1)).toBeUndefined();
+    rolloutItems.push({
+      type: "event_msg",
+      payload: {
+        eventId: "run-terminal:run-terminal-lookup-shape:1",
+        id: "run-terminal:run-terminal-lookup-shape:1",
+        seq: 7,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-terminal-lookup-shape",
+            epoch: 1,
+            status: "completed",
+            exitCode: 0,
+            finishedAt: 1,
+          },
+        },
+      },
+    });
+    expect(rolloutStore.committedRunTerminal("run-terminal-lookup-shape", 1)).toMatchObject({
+      eventId: "run-terminal:run-terminal-lookup-shape:1",
+      sequence: 7,
+      result: expect.objectContaining({ status: "completed", exitCode: 0 }),
+    });
+    // Harness has no unflushed batch: queued must stay empty even after a
+    // committed line is present (RolloutStore separates those views).
+    expect(rolloutStore.queuedRunTerminal("run-terminal-lookup-shape", 1)).toBeUndefined();
+  });
+
   it("does not grant a queued call behind a running executor call", async () => {
     const agentId = "routine-executor-queue";
     const h = await startRoutineToolRunner(agentId);

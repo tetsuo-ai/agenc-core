@@ -61,12 +61,16 @@ export class DegradedStore<T> {
   private readonly flushFn: (events: ReadonlyArray<T>) => Promise<boolean>;
   private readonly onStatusChange?: (c: DegradedStatusChange) => void;
   private buffer: T[] = [];
+  /** Items taken from `buffer` by an unsettled `tryFlush()`. */
+  private inFlight: readonly T[] = [];
   private degraded = false;
   private enteredAtMs: number | null = null;
   private totalEvicted = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private flushing = false;
   private stopped = false;
+  /** The `tryFlush` body currently writing, including a failed requeue. */
+  private activeFlush: Promise<boolean> | null = null;
 
   constructor(opts: DegradedStoreOptions<T>) {
     this.capacity = opts.capacity ?? DEFAULT_DEGRADED_CAPACITY;
@@ -149,11 +153,41 @@ export class DegradedStore<T> {
     return [...this.buffer];
   }
 
+  /**
+   * Every item not yet settled by this store, oldest first: the slice an
+   * unsettled `tryFlush()` is writing, then the buffer. A failed flush puts
+   * that slice back at the front, so this order is the order they reach disk.
+   */
+  queued(): ReadonlyArray<T> {
+    return [...this.inFlight, ...this.buffer];
+  }
+
+  /**
+   * The slice an unsettled `tryFlush()` is writing. Empty when no flush is
+   * in flight. This is not the ring buffer: a refusal names it separately.
+   */
+  inFlightItems(): ReadonlyArray<T> {
+    return [...this.inFlight];
+  }
+
+  /** Ring buffer, not including the in-flight drain slice. */
+  bufferedItems(): ReadonlyArray<T> {
+    return [...this.buffer];
+  }
+
   /** Remove and return all buffered events. */
   drain(): T[] {
     const out = this.buffer;
     this.buffer = [];
     return out;
+  }
+
+  /**
+   * Promise for the unsettled `tryFlush`, if one is writing. Resolves
+   * only after a failed flush has put its slice back on the buffer.
+   */
+  inFlightFlush(): Promise<boolean> | undefined {
+    return this.activeFlush ?? undefined;
   }
 
   /**
@@ -167,6 +201,16 @@ export class DegradedStore<T> {
       this.exitDegraded(0);
       return true;
     }
+    const pending = this.flushTakenBuffer();
+    this.activeFlush = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.activeFlush === pending) this.activeFlush = null;
+    }
+  }
+
+  private async flushTakenBuffer(): Promise<boolean> {
     this.flushing = true;
     // #12: drain by IDENTITY, not by index. We remove the snapshot from
     // the buffer up front so a concurrent at-capacity append() during
@@ -177,6 +221,7 @@ export class DegradedStore<T> {
     // points at the flushed prefix.
     const toFlush = this.buffer;
     this.buffer = [];
+    this.inFlight = toFlush;
     try {
       const ok = await this.flushFn(toFlush);
       if (ok) {
@@ -196,6 +241,7 @@ export class DegradedStore<T> {
       this.requeueFront(toFlush);
       return false;
     } finally {
+      this.inFlight = [];
       this.flushing = false;
     }
   }

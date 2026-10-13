@@ -35,7 +35,6 @@ export function createWarmSessionSetupCeiling(agencHome: string, sessionId: stri
         : (firstRequest ?? setupTask).catch(() => {});
     },
     register(setup) {
-      
       assertOpen();
       if (firstRequest !== undefined) throw new Error("session setup registered after dispatch");
       callbacks.push(setup);

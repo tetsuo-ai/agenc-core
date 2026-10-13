@@ -2463,6 +2463,7 @@ describe("Session turn-driver hooks", () => {
         appended.push(event);
         return true;
       }),
+      assertLifecycleAppendBeforeStamp: vi.fn(),
       flushDurable: vi.fn(),
       close: vi.fn(),
     } as unknown as Session["rolloutStore"];
