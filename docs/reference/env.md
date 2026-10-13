@@ -361,6 +361,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_SKIP_OFFICIAL_MARKETPLACE` | `1` stops the first marketplace catalog on a profile with none configured from auto-registering the official `agenc-plugins` marketplace |
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace; captured once at runtime ingress; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
+| `AGENC_HL_INLINE_PROGRAM_HINT` | Harness-learning candidate for Light sessions, off by default. Set to `1` so a failed `exec_command` whose text carries an inline program of at least 1 KiB (a heredoc body, or the string after an interpreter's `-c`, `-e` or `-r` flag) gets one note appended to its result: save the program once as a file with the session's file-writing tool, run the file, and fix it with the editing tool, so a retry costs a small edit instead of a resend of the whole program. Passing commands, shorter programs, processes still running and sessions without file tools get no note; sessions that are not Light ignore it. The note changes no policy. Captured with the session environment, so a client sets it per session |
 | `AGENC_DEFER_RARE_TOOLS` | Set to `1` so ten rarely used built-in tools (ImagineImage, ImagineVideo, XSearch, LSP, NotebookRead, the three Ledger tools, VerifyPlanExecution and SendUserMessage) load through tool search instead of being sent with every request, about 1.4k fewer tokens per request. The tool search description names them so the model knows they exist. Off by default; captured with the session environment, so a client sets it per session |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |
 | `AGENC_DISABLE_LANDLOCK_FALLBACK` | Do not use the Landlock helper when bubblewrap cannot run |
@@ -426,7 +427,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_H*
 
-`AGENC_HOST_PLATFORM`.
+`AGENC_HL_INLINE_PROGRAM_HINT`, `AGENC_HOST_PLATFORM`.
 
 ### AGENC_I*
 

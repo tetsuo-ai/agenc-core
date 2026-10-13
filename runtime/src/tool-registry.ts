@@ -589,6 +589,12 @@ export interface BuildToolRegistryOptions {
   readonly requireAdmission?: boolean;
   /** Session-owned presentation profile; does not filter executable capabilities. */
   readonly lightMode?: boolean;
+  /**
+   * Light only: exec_command appends a file-tools note to a failed command
+   * that carried a long inline program. Off unless set; the bootstrap sets it
+   * from the session's `AGENC_HL_INLINE_PROGRAM_HINT`.
+   */
+  readonly inlineProgramHint?: boolean;
   readonly allowBashDelete?: boolean;
   /**
    * T6 gap #119: observer that receives `exec_command_begin` /
@@ -748,6 +754,9 @@ export function buildToolRegistry(
   const shellTools = [
     createExecCommandTool({
       lightMode: options.lightMode,
+      ...(options.inlineProgramHint !== undefined
+        ? { inlineProgramHint: options.inlineProgramHint }
+        : {}),
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
