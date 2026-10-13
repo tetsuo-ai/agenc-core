@@ -11,6 +11,7 @@ import { defaultConfig } from "../../src/config/schema.js";
 import { parseToml } from "../../src/config/loader.js";
 import { runAgenCAuthCli } from "../../src/bin/auth-cli.js";
 import { AGENC_DEEPSEEK_MODEL } from "../../src/llm/registry/agenc-deepseek.js";
+import { parseImageGenerationAccess } from "../../src/auth/image-generation.js";
 
 const model = "deepseek/synthetic-agent-model";
 const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
@@ -27,6 +28,38 @@ function backend(value: AuthLlmUsage = usage): AuthBackend {
 }
 
 describe("AgenC account model access", () => {
+  it("looks up chat access concurrently and aborts slow optional image discovery after its short deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let imageSignal: AbortSignal | undefined;
+      const auth: AuthBackend = { ...backend(), getImageGenerationAccess: vi.fn(async signal => {
+        imageSignal = signal;
+        return new Promise(() => {});
+      }) };
+      const pending = readAccountModelAccess(auth);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(auth.getLlmUsage).toHaveBeenCalledTimes(1);
+      expect(auth.listAgencModels).toHaveBeenCalledTimes(1);
+      expect(imageSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(await pending).toMatchObject({ authenticated: true, models: catalog });
+      expect((await pending).imageGeneration).toBeUndefined();
+      expect(imageSignal?.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each(["zero credits", "chat disabled", "usage unavailable"])("keeps free images independent of %s without vending a key", async scenario => {
+    const images = parseImageGenerationAccess({ enabled: true, available: true,
+      model: { id: "qwen-image-2.1", name: "Qwen Image 2.1" }, sizes: ["1024x1024"], maxImages: 1,
+      priceUsd: 0, quota: { dailyLimit: 10, remaining: 10 } });
+    const auth: AuthBackend = { ...backend({ ...usage, modelAllowance: { ...usage.modelAllowance, remainingUsd: 0 } }),
+      ...(scenario === "chat disabled" ? { managedKeysEnabled: false } : {}), getImageGenerationAccess: vi.fn(async () => images) };
+    if (scenario === "usage unavailable") vi.mocked(auth.getLlmUsage).mockRejectedValue(Error("private"));
+    expect(await readAccountModelAccess(auth)).toMatchObject({ authenticated: true, models: [], imageGeneration: images });
+    expect(auth.vendKey).not.toHaveBeenCalled();
+    expect(auth.inferAgencModel).not.toHaveBeenCalled();
+    if (scenario === "chat disabled") expect(auth.getLlmUsage).not.toHaveBeenCalled();
+  });
+
   it("loads only eligible models and real credits, without vending credentials", async () => {
     const auth = backend();
     vi.mocked(auth.listAgencModels!).mockReturnValue([...catalog, { id: "not-authorized", name: "Other" }]);

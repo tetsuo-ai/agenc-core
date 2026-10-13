@@ -38,6 +38,7 @@ import {
 import { getProxyFetchOptions } from "../../utils/proxy.js";
 import { normalizePilotAccess } from "../pilot-access.js";
 import { parseAgencModelCatalog } from "../account-access.js";
+import { createManagedImageClient, type AuthImageGenerationRequest } from "../image-generation.js";
 
 const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://id.agenc.ag/v1/auth/llm-credential" as const;
@@ -194,6 +195,7 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly #subscriptionTierResolver: RemoteAuthSubscriptionTierResolver;
   readonly #llmUsageResolver: RemoteAuthLlmUsageResolver;
   readonly #listAgencModels: () => Promise<readonly AuthAgencModel[]>;
+  readonly #images: () => ReturnType<typeof createManagedImageClient>;
   readonly #managedKeysEnabled: boolean;
   readonly #keyCacheTtlMs: number;
   readonly #now: () => Date;
@@ -230,6 +232,13 @@ export class RemoteAuthBackend implements AuthBackend {
       scopedOptions.llmUsageResolver ??
       createHttpRemoteAuthLlmUsageResolver(scopedOptions, this.#home);
     this.#listAgencModels = createHttpAgencModelCatalogResolver(scopedOptions, this.#home);
+    const imageEnvironment = scopedOptions.env ?? {};
+    this.#images = () => createManagedImageClient({
+      origin: trimNonEmpty(scopedOptions.usageEndpoint) ?? trimNonEmpty(imageEnvironment[REMOTE_AUTH_USAGE_URL_ENV]) ?? DEFAULT_REMOTE_AUTH_USAGE_URL,
+      getToken: () => resolveRemoteAuthToken(scopedOptions, this.#home),
+      fetchImpl: scopedOptions.fetchImpl ?? globalThis.fetch.bind(globalThis),
+      ...(scopedOptions.fetchImpl === undefined ? { transport: getProxyFetchOptions({ environment: imageEnvironment }) } : {}),
+    });
     this.#managedKeysEnabled = scopedOptions.managedKeysEnabled === true;
     this.#keyCacheTtlMs = positiveTtlMs(scopedOptions.keyCacheTtlMs);
     this.#now = scopedOptions.now ?? (() => new Date());
@@ -446,6 +455,10 @@ export class RemoteAuthBackend implements AuthBackend {
   async listAgencModels(): Promise<readonly AuthAgencModel[]> {
     return this.#listAgencModels();
   }
+
+  getImageGenerationAccess(signal?: AbortSignal) { return this.#images().access(signal); }
+
+  generateImage(request: AuthImageGenerationRequest) { return this.#images().generate(request); }
 
   async #requestVendedKey(
     provider: AuthProviderSlug | string,

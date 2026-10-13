@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AuthBackend } from "../auth/backend.js";
+import type { AuthImageGenerationRequest } from "../auth/image-generation.js";
+import { AgenCDaemonReloadableAuthBackend } from "./daemon-cli.js";
 import { createAgenCDaemonRuntimeAuthBackend } from "./provider-key-vending.js";
 
 function makeAuthBackend(vendKey: AuthBackend["vendKey"]): AuthBackend {
@@ -148,5 +150,43 @@ describe("AgenC daemon provider-key vending", () => {
       region: "us-west-2",
     });
     expect(backend.vendKey).toHaveBeenCalledTimes(1);
+  });
+
+  // Daemon sessions reach the auth backend only through these wrappers, so a
+  // dropped optional method hides managed images from every Desktop session.
+  it.each([
+    ["runtime", (initial: AuthBackend) => {
+      const wrapped = createAgenCDaemonRuntimeAuthBackend(initial);
+      return { wrapped, replace: (next: AuthBackend) => wrapped.replaceBackend(next) };
+    }],
+    ["reloadable", (initial: AuthBackend) => {
+      const wrapped = new AgenCDaemonReloadableAuthBackend(initial);
+      return { wrapped, replace: (next: AuthBackend) => wrapped.replace(next) };
+    }],
+  ] as const)("%s wrapper follows the current backend's managed image methods", async (_name, create) => {
+    const plain = makeAuthBackend(() => {
+      throw new Error("not expected");
+    });
+    const { wrapped, replace } = create(plain);
+    expect(wrapped.getImageGenerationAccess).toBeUndefined();
+    expect(wrapped.generateImage).toBeUndefined();
+
+    class ImageBackend {
+      readonly #tag = "bound";
+      async getImageGenerationAccess() {
+        return this.#tag as never;
+      }
+      async generateImage(request: AuthImageGenerationRequest) {
+        return `${this.#tag}:${request.requestId}` as never;
+      }
+    }
+    replace(Object.assign(new ImageBackend(), plain));
+    await expect(wrapped.getImageGenerationAccess?.()).resolves.toBe("bound");
+    await expect(
+      wrapped.generateImage?.({ prompt: "a cat", requestId: "request-1" }),
+    ).resolves.toBe("bound:request-1");
+
+    replace(plain);
+    expect(wrapped.getImageGenerationAccess).toBeUndefined();
   });
 });
