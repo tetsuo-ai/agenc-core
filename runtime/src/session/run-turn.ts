@@ -1,3 +1,4 @@
+import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import { assistantMessageFromResponse, parseToolUseBlocks, admittedModelStepId } from "../phases/stream-model.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
 import { runMinimalTurn } from "./minimal-turn.js";
@@ -2255,6 +2256,7 @@ async function assertSeedUserPromptFits(
   const seedMessages = invocation === undefined
     ? [user]
     : [...priorMessages.slice(Math.max(0, priorMessages.length - invocation.channelIndex)), user];
+  validateAgentInvocationMessageSequence(seedMessages);
   const state = buildInitialTurnState(ctx, user, {
     modelInstructions,
     priorMessages: seedMessages.slice(0, -1),
@@ -2272,10 +2274,19 @@ async function assertSeedUserPromptFits(
   const request = buildSamplingRequestContract(state, session, ctx);
   const model = session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug;
   let pressure: PreparedRequestContextPressure;
+  let baseline: PreparedRequestContextPressure;
   try {
     pressure = await preparedRequestContextPressure(request, session, ctx, signal, model, false);
+    if (pressure.fits || !Number.isFinite(pressure.inputTokens)) return;
+    baseline = await preparedRequestContextPressure(
+      { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, false,
+    );
   } catch (error) {
-    if (!(error instanceof TokenAccountingError) || error.code !== "request_too_large") throw error;
+    if (signal.aborted) throw signal.reason ?? error;
+    // This early size check is advisory. The normal dispatch boundary still
+    // owns admission when a counter or its provider projection is unavailable.
+    // A proven byte-cap violation remains an immediate input refusal.
+    if (!(error instanceof TokenAccountingError) || error.code !== "request_too_large") return;
     const bytes = Buffer.byteLength(JSON.stringify(invocation === undefined ? user.content : seedMessages), "utf8");
     throw new Error(
       `This prompt is too large to process: ${bytes.toLocaleString("en-US")} bytes; ` +
@@ -2283,10 +2294,6 @@ async function assertSeedUserPromptFits(
       "Trim the text or save it to a file and reference the file instead of pasting it.",
     );
   }
-  if (pressure.fits || !Number.isFinite(pressure.inputTokens)) return;
-  const baseline = await preparedRequestContextPressure(
-    { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, false,
-  );
   // An oversized fixed envelope is a configuration problem, not a user-prompt
   // size error. Let normal admission report it without mislabelling the input.
   if (!baseline.fits || !Number.isFinite(baseline.inputTokens)) return;

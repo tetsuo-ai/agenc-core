@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createCsvAgentInvocationEnvelope, materializeAgentInvocationMessages } from "../../src/contracts/agent-invocation-envelope.js";
+import { TokenAccountingError, tokenAccountingService } from "../../src/llm/token-accounting.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
 import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
@@ -130,5 +131,58 @@ test("rejects an incomplete invocation seed before provider dispatch", async () 
     history: messages.slice(1, -1), seedUserMessageRuntimeOnly: user.runtimeOnly,
   }))).rejects.toThrow(/channel sequence is incomplete/);
   expect(session.state.unsafePeek().history).toHaveLength(0);
+  expect(chat).not.toHaveBeenCalled();
+});
+
+
+test.each([
+  new TokenAccountingError("request_not_canonicalizable", "counter projection unavailable"),
+  new TokenAccountingError("uncertain_content", "counter cannot bound this input"),
+  new TokenAccountingError("invalid_provider_count", "provider count unavailable"),
+  new Error("token counter unavailable"),
+])("defers unavailable prompt accounting to dispatch admission: %s", async error => {
+  const { session, ctx, chat, events } = setup();
+  const count = vi.spyOn(tokenAccountingService, "count");
+  count.mockRejectedValueOnce(error);
+  await expect(session.assertUserPromptFits("hello")).resolves.toBeUndefined();
+  expect(events.some(e => e.msg.type === "user_message")).toBe(false);
+  // A transient preflight-only outage must not strand the next valid turn.
+  count.mockRejectedValueOnce(error);
+  await drain(runTurn(session, ctx, "hello"));
+  expect(chat).toHaveBeenCalledOnce();
+  expect(events.some(e => e.msg.type === "turn_complete")).toBe(true);
+});
+
+test("skips an unavailable baseline count after measuring input pressure", async () => {
+  const { session, chat } = setup();
+  const count = tokenAccountingService.count.bind(tokenAccountingService);
+  vi.spyOn(tokenAccountingService, "count")
+    .mockImplementationOnce(async (request, options) => ({
+      ...await count(request, options), inputTokens: 5000, totalTokens: 7048,
+    }))
+    .mockRejectedValueOnce(new TokenAccountingError("uncertain_content", "baseline unavailable"));
+  await expect(session.assertUserPromptFits("hello")).resolves.toBeUndefined();
+  expect(chat).not.toHaveBeenCalled();
+});
+
+test("keeps dispatch closed when accounting remains unavailable", async () => {
+  const { session, ctx, chat, events } = setup();
+  vi.spyOn(tokenAccountingService, "count")
+    .mockRejectedValue(new TokenAccountingError("uncertain_content", "counter unavailable"));
+  await expect(session.assertUserPromptFits("hello")).resolves.toBeUndefined();
+  await drain(runTurn(session, ctx, "hello"));
+  expect(chat).not.toHaveBeenCalled();
+  expect(events.some(e => e.msg.type === "turn_complete")).toBe(false);
+  expect(events.some(e => e.msg.type === "turn_failed")).toBe(true);
+});
+
+test("preserves cancellation when the prompt counter is interrupted", async () => {
+  const { session, chat } = setup();
+  const reason = new Error("cancel prompt preflight");
+  vi.spyOn(tokenAccountingService, "count").mockImplementationOnce(async () => {
+    session.abortController.abort(reason);
+    throw new TokenAccountingError("uncertain_content", "counter interrupted");
+  });
+  await expect(session.assertUserPromptFits("hello")).rejects.toThrow(reason);
   expect(chat).not.toHaveBeenCalled();
 });
