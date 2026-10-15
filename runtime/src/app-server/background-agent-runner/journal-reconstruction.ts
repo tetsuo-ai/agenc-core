@@ -187,6 +187,8 @@ interface MutableTranscriptV2Message extends JsonObject {
   commitEventId: string;
   role: "user" | "assistant";
   text: string;
+  partial?: "streaming" | "interrupted";
+  partialTruncated?: boolean;
   turnId?: string;
   clientMessageId?: string;
   committedSequence: number;
@@ -413,6 +415,42 @@ export function sessionTranscriptV2FromRollout(
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
   const attachmentEvents: SessionTranscriptV2Event[] = [];
+  // The journal already contains sanitized display deltas. Rebuild only the
+  // uncommitted segment, without creating a response_item or changing fsync
+  // guarantees. Bound retained UTF-8 bytes even if a provider never commits.
+  const partialByteCap = 64 * 1024;
+  let partialText = "";
+  let partialBytes = 0;
+  let partialTruncated = false;
+  let partialEvent: Event | undefined;
+  const clearPartial = (): void => {
+    partialText = "";
+    partialBytes = 0;
+    partialTruncated = false;
+    partialEvent = undefined;
+  };
+  const retainPartial = (status: "streaming" | "interrupted"): void => {
+    if (partialEvent === undefined || currentTurnId === undefined || partialText.length === 0) {
+      clearPartial();
+      return;
+    }
+    const ordinal = assistantOrdinals.get(currentTurnId) ?? 0;
+    messages.push({
+      messageId: status === "streaming" ? assistantMessageId(currentTurnId, ordinal)
+        : `partial:${currentTurnId}:${canonicalEventId(partialEvent)}`,
+      commitEventId: canonicalEventId(partialEvent),
+      role: "assistant",
+      text: partialText,
+      turnId: currentTurnId,
+      ...(currentClientMessageId !== undefined ? { clientMessageId: currentClientMessageId } : {}),
+      // For a partial this is the last included delta's replay watermark,
+      // rather than a claim that the assistant response was committed.
+      committedSequence: partialEvent.seq!,
+      partial: status,
+      ...(partialTruncated ? { partialTruncated: true } : {}),
+    });
+    clearPartial();
+  };
 
   if (boundary?.kind === "replaced") {
     const replacement = reconstructFromRollout(
@@ -531,6 +569,7 @@ export function sessionTranscriptV2FromRollout(
       continue;
     }
     if (event.msg.type === "turn_started") {
+      retainPartial("interrupted");
       currentTurnId = event.msg.payload.turnId;
       if (pendingUserIndex !== undefined) {
         messages[pendingUserIndex]!.turnId = currentTurnId;
@@ -571,7 +610,36 @@ export function sessionTranscriptV2FromRollout(
       }
       continue;
     }
+    if (event.msg.type === "agent_message_delta") {
+      if (currentTurnId === undefined) continue;
+      partialEvent = event;
+      const delta = event.msg.payload.delta;
+      const remaining = partialByteCap - partialBytes;
+      if (!partialTruncated) {
+        // Avoid splitting a multibyte character at the byte cap, and avoid
+        // allocating an unbounded Buffer for an oversized single delta.
+        const candidate = delta.slice(0, remaining);
+        let prefix = "";
+        let bytes = 0;
+        for (const character of candidate) {
+          const size = Buffer.byteLength(character, "utf8");
+          if (bytes + size > remaining) break;
+          prefix += character;
+          bytes += size;
+        }
+        // slice can split a surrogate pair at the UTF-16 limit.
+        if (/[\uD800-\uDBFF]$/u.test(prefix)) {
+          prefix = prefix.slice(0, -1);
+          bytes = Buffer.byteLength(prefix, "utf8");
+        }
+        partialText += prefix;
+        partialBytes += bytes;
+        partialTruncated = prefix.length < delta.length;
+      }
+      continue;
+    }
     if (event.msg.type === "agent_message") {
+      clearPartial();
       const commitEventId = canonicalEventId(event);
       const correlationId = currentTurnId ?? commitEventId;
       const ordinal = assistantOrdinals.get(correlationId) ?? 0;
@@ -605,6 +673,7 @@ export function sessionTranscriptV2FromRollout(
         continue;
       }
       if (currentTurnId !== undefined && openTurn !== undefined) {
+        retainPartial("interrupted");
         turnResults.push(
           closedTurnResult(currentTurnId, sequence, terminal, openTurn),
         );
@@ -614,6 +683,9 @@ export function sessionTranscriptV2FromRollout(
       openTurn = undefined;
     }
   }
+
+  retainPartial(currentTurnId !== undefined && currentTurnId === activeTurn?.turnId
+    ? "streaming" : "interrupted");
 
   const liveTurn =
     activeTurn === undefined ||

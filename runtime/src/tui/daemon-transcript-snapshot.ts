@@ -73,19 +73,29 @@ export function daemonTranscriptSnapshotEvents(
       typeof message.commitEventId !== "string" ||
       !Number.isSafeInteger(message.committedSequence) ||
       message.committedSequence < 0 ||
-      message.committedSequence > snapshot.asOfSequence
+      message.committedSequence > snapshot.asOfSequence ||
+      (message.partial !== undefined && (
+        message.role !== "assistant" ||
+        (message.partial !== "streaming" && message.partial !== "interrupted") ||
+        (message.partial === "streaming" && message.turnId !== snapshot.activeTurn?.turnId)
+      )) ||
+      (message.partialTruncated !== undefined && typeof message.partialTruncated !== "boolean")
     ) {
       throw new Error("Daemon returned an invalid transcript message");
     }
     if (message.textArtifact !== undefined) {
       throw new Error("Daemon returned an unresolved text artifact");
     }
+    const text = message.text + (message.partialTruncated === true
+      ? "\n\n[Partial answer truncated at 64 KiB.]" : "") + (message.partial === "interrupted"
+      ? "\n\n[Interrupted partial answer]" : "");
     return {
       sequence: message.committedSequence,
       event: {
         id: `snapshot:${snapshot.historyEpoch}:${message.messageId}`,
-        type: message.role === "user" ? "user_message" : "agent_message",
-        payload: { message: message.text,
+        type: message.partial === "streaming" ? "agent_message_delta"
+          : message.role === "user" ? "user_message" : "agent_message",
+        payload: { ...(message.partial === "streaming" ? { delta: text } : { message: text }),
           ...(message.role === "user"
             ? { canonicalUserMessageId: message.clientMessageId ?? message.messageId } : {}) },
       } satisfies JsonObject,

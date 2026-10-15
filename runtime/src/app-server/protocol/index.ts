@@ -3826,6 +3826,9 @@ export interface SessionTranscriptV2Message extends JsonObject {
   readonly commitEventId: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  /** Display-only delta prefix, never a committed response or model-history item. */
+  readonly partial?: "streaming" | "interrupted";
+  readonly partialTruncated?: boolean;
   /** Full UTF-8 text when the snapshot substitutes a bounded reference. */
   readonly textArtifact?: { readonly id: string; readonly digest: string; readonly size: number; readonly mimeType: "text/plain" };
   readonly turnId?: string;

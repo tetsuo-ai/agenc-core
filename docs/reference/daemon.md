@@ -29,6 +29,19 @@ The TUI defers pre-start cancellation until it correlates its own submitted
 message with a daemon turn. Closing an SDK client settles its local prompt
 waiters without issuing turn cancellation.
 
+Reopening with `-c` or `/resume` restores the visible assistant prefix of a
+streaming turn, followed by new deltas. An interrupted answer remains visible
+with an `Interrupted partial answer` label. These partials are display only:
+they are excluded from model history so an unfinished answer cannot be mistaken
+for a completed assistant response on the next turn.
+
+Transcript reconstruction retains at most 64 KiB of UTF-8 text per uncommitted
+segment and marks omitted text explicitly. A later canonical assistant commit
+replaces that prefix with the complete answer. Recovery uses the journal's
+existing sanitized display deltas; it adds no persistence or fsync guarantee
+for in-flight output. Committed-message durability and daemon lifetime rules
+are unchanged. A hard crash can still lose deltas that had not been flushed.
+
 Session termination revokes new attachments immediately and awaits resource
 cleanup. Concurrent terminators share cleanup; a later termination request can
 retry a failed finalizer. Agent stop likewise shares teardown, and daemon
