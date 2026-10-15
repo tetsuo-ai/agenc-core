@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createCsvAgentInvocationEnvelope, materializeAgentInvocationMessages } from "../../src/contracts/agent-invocation-envelope.js";
 import { TokenAccountingError, tokenAccountingService } from "../../src/llm/token-accounting.js";
-import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
+import { assertUserPromptFits, runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
 import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
@@ -20,6 +20,45 @@ function setup() {
   return { session, events, ctx, chat, compact };
 }
 afterEach(() => { setAutoCompactImplForTests(null); vi.restoreAllMocks(); });
+
+test("normal DeepSeek input bypasses token counting after bounding its complete envelope", async () => {
+  const { session, ctx } = setup();
+  Object.assign(session.services.provider, { name: "deepseek" });
+  const count = vi.spyOn(tokenAccountingService, "count");
+  await assertUserPromptFits(session, { ...ctx, modelInfo: { ...ctx.modelInfo, contextWindow: 100000 } }, "hello");
+  expect(count).not.toHaveBeenCalled();
+});
+
+test("DeepSeek inputs near the byte bound retain the controlled exact local check", async () => {
+  const { session, ctx } = setup();
+  Object.assign(session.services.provider, { name: "deepseek" });
+  const count = vi.spyOn(tokenAccountingService, "count");
+  await expect(assertUserPromptFits(session, ctx, "x".repeat(5000))).rejects.toThrow(/prompt.*5,000.*2,572/is);
+  expect(count).toHaveBeenCalled();
+});
+
+test("advisory preflight never invokes an unmarked provider counter", async () => {
+  const { session, ctx } = setup();
+  const remote = vi.fn(async () => { throw new Error("remote counter must not run before submit"); });
+  Object.assign(session.services.provider, { tokenCountCapability: {
+    capabilityVersion: "remote", adapterRevision: "1", configurationRevision: "1", countTokens: remote,
+  } });
+  await assertUserPromptFits(session, ctx, "hello");
+  await expect(assertUserPromptFits(session, ctx, "x".repeat(10000))).resolves.toBeUndefined();
+  expect(remote).not.toHaveBeenCalled();
+});
+
+test("final dispatch still uses a provider counter excluded from advisory preflight", async () => {
+  const { session, ctx, chat } = setup();
+  const capability = session.services.provider.tokenCountCapability!;
+  const count = vi.fn(capability.countTokens);
+  Object.assign(session.services.provider, { tokenCountCapability: { ...capability, runsLocally: undefined, countTokens: count } });
+  await assertUserPromptFits(session, ctx, "hello");
+  expect(count).not.toHaveBeenCalled();
+  await drain(runTurn(session, ctx, "hello"));
+  expect(count).toHaveBeenCalled();
+  expect(chat).toHaveBeenCalledOnce();
+});
 
 test("refuses an impossible prompt before persistence and accepts the next small prompt", async () => {
   const { session, events, ctx, chat, compact } = setup();

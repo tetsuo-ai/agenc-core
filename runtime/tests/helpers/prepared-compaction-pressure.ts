@@ -8,6 +8,7 @@ export function installPreparedCompactionPressure(
   count: (request: TokenAccountingRequest) => number,
 ): void {
   Object.assign(provider, { tokenCountCapability: {
+    runsLocally: true,
     capabilityVersion: "prepared-compaction-contract-v1",
     adapterRevision: "1",
     configurationRevision: Math.random().toString(36),

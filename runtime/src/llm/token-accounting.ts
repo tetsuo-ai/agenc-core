@@ -214,6 +214,8 @@ export interface ProviderNativeTokenCountResult {
 }
 
 export interface ProviderTokenCountCapability {
+  /** Pure in-process counters may opt into advisory prompt preflight. */
+  readonly runsLocally?: true;
   readonly capabilityVersion: string;
   readonly adapterRevision: string;
   /** A digest/revision only. It must not contain credentials or raw prompts. */

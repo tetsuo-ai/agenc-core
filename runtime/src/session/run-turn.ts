@@ -84,6 +84,7 @@ import {
   MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
 } from "../llm/token-accounting.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
+import { promptInputTokenByteBound } from "./prompt-input-byte-bound.js";
 import {
   runAdmittedModelCall,
   accountingOptionsForProvider,
@@ -1445,7 +1446,7 @@ async function preparedRequestContextPressure(
   ctx: TurnContext,
   signal: AbortSignal,
   requestedModel: string,
-  recordPressure = true,
+  purpose: "dispatch" | "prompt_preflight" | "prompt_baseline" = "dispatch",
 ): Promise<PreparedRequestContextPressure> {
   const configuredWindow = request.contextWindowTokens;
   if (configuredWindow === undefined || !Number.isFinite(configuredWindow) || configuredWindow <= 0) {
@@ -1477,6 +1478,27 @@ async function preparedRequestContextPressure(
     provider, providerName, model, factoryOptions.extra ?? {}, accountingOptions,
   );
   const accountingProjection = projectProviderAccountingRequest(provider, request.input, accountingOptions);
+  const inputTokenLimit = Math.max(0, window - Math.min(maxOutputTokens, MIN_ADMISSIBLE_OUTPUT_TOKENS) -
+    Math.max(0, Math.floor(profile?.contextSafetyBufferTokens ?? 0)));
+  if (purpose === "prompt_preflight") {
+    const bound = promptInputTokenByteBound(createTokenAccountingRequest({
+      provider: providerName, model,
+      messages: accountingProjection.messages,
+      options: accountingProjection.options,
+      providerNativeTools,
+      contextWindowTokens: window,
+      reservedOutputTokens: maxOutputTokens,
+    }));
+    if (bound !== undefined && bound <= inputTokenLimit) {
+      return { fits: true, inputTokens: bound, inputTokenLimit };
+    }
+  }
+  // Remote/native accounting is unavailable to an advisory ingress check.
+  // Defer it instead of replacing an exact counter with a speculative refusal.
+  if (purpose !== "dispatch" && provider.tokenCountCapability !== undefined &&
+    provider.tokenCountCapability.runsLocally !== true) {
+    return { fits: false, inputTokens: Number.POSITIVE_INFINITY, inputTokenLimit };
+  }
   const accounting = await tokenAccountingService.count(createTokenAccountingRequest({
     provider: providerName,
     model,
@@ -1497,7 +1519,8 @@ async function preparedRequestContextPressure(
     contextWindowTokens: window,
     reservedOutputTokens: maxOutputTokens,
   }), {
-    ...(provider.tokenCountCapability !== undefined
+    ...(provider.tokenCountCapability !== undefined &&
+      (purpose === "dispatch" || provider.tokenCountCapability.runsLocally === true)
       ? { capability: provider.tokenCountCapability }
       : {}),
     signal,
@@ -1505,7 +1528,7 @@ async function preparedRequestContextPressure(
   const compactionWindow = getEffectiveContextWindowSize({ options: {
     mainLoopModel: ctx.modelInfo.slug, contextWindowTokens: window,
   } });
-  if (recordPressure) recordPreparedContextPressure(session, {
+  if (purpose === "dispatch") recordPreparedContextPressure(session, {
     provider: providerName, model,
     inputTokens: accounting.inputTokens,
     effectiveWindowTokens: compactionWindow,
@@ -1523,8 +1546,7 @@ async function preparedRequestContextPressure(
       profile?.contextSafetyBufferTokens ?? 0,
     ) !== undefined,
     inputTokens: accounting.admissible ? accounting.inputTokens : Number.POSITIVE_INFINITY,
-    inputTokenLimit: Math.max(0, window - Math.min(maxOutputTokens, MIN_ADMISSIBLE_OUTPUT_TOKENS) -
-      Math.max(0, Math.floor(profile?.contextSafetyBufferTokens ?? 0))),
+    inputTokenLimit,
   };
 }
 
@@ -2276,10 +2298,10 @@ async function assertSeedUserPromptFits(
   let pressure: PreparedRequestContextPressure;
   let baseline: PreparedRequestContextPressure;
   try {
-    pressure = await preparedRequestContextPressure(request, session, ctx, signal, model, false);
+    pressure = await preparedRequestContextPressure(request, session, ctx, signal, model, "prompt_preflight");
     if (pressure.fits || !Number.isFinite(pressure.inputTokens)) return;
     baseline = await preparedRequestContextPressure(
-      { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, false,
+      { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, "prompt_baseline",
     );
   } catch (error) {
     if (signal.aborted) throw signal.reason ?? error;
@@ -2292,7 +2314,7 @@ async function assertSeedUserPromptFits(
     // Otherwise final admission must report the configuration failure.
     try {
       await preparedRequestContextPressure(
-        { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, false,
+        { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, "prompt_baseline",
       );
     } catch (baselineError) {
       if (signal.aborted) throw signal.reason ?? baselineError;
