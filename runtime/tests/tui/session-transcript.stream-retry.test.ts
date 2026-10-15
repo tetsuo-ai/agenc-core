@@ -31,3 +31,22 @@ test("a stream failure preserves its partial answer before the failure notice", 
     type: "assistant", message: { content: [{ type: "text", text: "Partial answer" }] },
   });
 });
+
+test("a fragment kept at a reconnect notice is removed when its attempt is discarded", () => {
+  const transcript = adaptTranscriptEvents([
+    event("start", "turn_started", { turnId: "turn" }),
+    event("partial", "agent_message_delta", { delta: "Abandoned fragment. " }),
+    event("retry", "stream_error", {
+      cause: "stream_disconnected", message: "provider error, retrying in up to 1 s (2/6)",
+    }),
+    event("discard", "stream_error", {
+      cause: "stream_attempt_discarded", message: "Discarded interrupted model output.",
+    }),
+    event("fresh", "agent_message_delta", { delta: "Recovered answer." }),
+  ]);
+  expect(transcript.streamingText).toBe("Recovered answer.");
+  expect(JSON.stringify(transcript.messages)).not.toContain("Abandoned fragment");
+  expect(transcript.messages).toMatchObject([
+    { type: "system", content: "provider error, retrying in up to 1 s (2/6)" },
+  ]);
+});
