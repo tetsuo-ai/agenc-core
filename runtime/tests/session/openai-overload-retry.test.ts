@@ -42,11 +42,14 @@ test.each(["success", "exhausted", "cancelled", "directive", "partial", "budget-
     config: { ...ctx.config, model: "gpt-6-luna", model_provider: "openai", max_output_tokens: 8192 },
   }, "Complete the task.", { signal: abort.signal }));
   expect(fetchImpl).toHaveBeenCalledTimes(mode === "success" ? 2 : mode === "exhausted" ? 6 : 1);
-  const retries = events.filter(event => event.msg.type === "stream_error" && event.msg.payload.cause === "stream_disconnected");
+  const disconnects = events.filter(event => event.msg.type === "stream_error" && event.msg.payload.cause === "stream_disconnected");
+  const stopped = disconnects.filter(event => event.msg.type === "stream_error" && event.msg.payload.message.includes("automatic retries stopped"));
+  expect(stopped).toHaveLength(mode === "exhausted" || mode === "budget-spent" ? 1 : 0);
+  const retries = disconnects.filter(event => !stopped.includes(event));
   expect(retries).toHaveLength(mode === "success" ? 1 : mode === "exhausted" ? 5 : 0);
   for (const event of retries) expect(event.msg).toMatchObject({ type: "stream_error", payload: { status: 503, provider: "openai" } });
   expect(events.some(event => event.msg.type === "turn_complete")).toBe(mode === "success");
-  if (mode === "exhausted" || mode === "directive") expect(events.some(event => event.msg.type === "turn_failed")).toBe(true);
+  if (mode === "exhausted" || mode === "directive" || mode === "budget-spent") expect(events.some(event => event.msg.type === "turn_failed")).toBe(true);
   // Reconnect replays the original request, retaining settings and the output ceiling.
   if (mode === "success" || mode === "exhausted") {
     const bodies = fetchImpl.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));

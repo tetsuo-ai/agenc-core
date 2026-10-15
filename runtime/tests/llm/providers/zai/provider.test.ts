@@ -931,10 +931,12 @@ describe("ZaiProvider", () => {
             fetchImpl,
           });
 
+      const chunks: Array<{ toolCalls?: readonly unknown[] }> = [];
       await expect(provider.chatStream(
         [{ role: "user", content: "go" }],
-        () => undefined,
-      )).rejects.toThrow(/without.*finish_reason/i);
+        (chunk) => chunks.push(chunk),
+      )).rejects.toBeInstanceOf(LLMStreamTruncatedError);
+      expect(chunks.every((chunk) => !chunk.toolCalls?.length)).toBe(true);
     },
   );
 
@@ -1294,24 +1296,22 @@ describe("ZaiProvider stream cut before any terminal signal", () => {
     expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
   });
 
-  test("a cut after a tool call started stays a non-retryable invalid response", async () => {
+  test("a cut after a tool call started is retryable before dispatch", async () => {
     const error = await failureOf([
       'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_cut","function":{"name":"system.echo","arguments":{"text":"must not run"}}}]}}]}\n\n',
       'data: {"choices":[{"index":0,"delta":{"tool_ca',
     ]);
-    expect(error).toBeInstanceOf(LLMInvalidResponseError);
-    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
-    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+    expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
   });
 
-  test("a cut inside the first tool call frame stays a non-retryable invalid response", async () => {
+  test("a cut inside the first tool call frame is retryable before dispatch", async () => {
     const error = await failureOf([
       reasoning,
       'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_cut","function":{"name":"system.ec',
     ]);
-    expect(error).toBeInstanceOf(LLMInvalidResponseError);
-    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
-    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+    expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
   });
 
   test("a complete malformed frame is still a malformed stream, not a cut", async () => {
