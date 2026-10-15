@@ -22,6 +22,7 @@ describe("independent provider reserve through real turn preflight", () => {
     Object.assign(provider, {
       getExecutionProfile: async () => ({ provider: provider.name, model: "test-model", usageReporting: "authoritative", supportsMaxOutputTokens: true, contextSafetyBufferTokens: 1024 }),
       tokenCountCapability: {
+        runsLocally: true as const,
         capabilityVersion: "independent-preflight-buffer", adapterRevision: "1", configurationRevision: String(input),
         countTokens: async (request: TokenAccountingRequest) => ({
           inputTokens: JSON.stringify(request.messages).includes("fresh-boundary") ? input

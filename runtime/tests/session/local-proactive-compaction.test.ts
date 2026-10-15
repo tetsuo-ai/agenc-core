@@ -78,6 +78,7 @@ describe("local proactive context pressure", () => {
     const h = setup();
     const sample = vi.spyOn(h.provider, "chatStream");
     Object.assign(h.provider, { tokenCountCapability: {
+      runsLocally: true as const,
       capabilityVersion: "local-proactive-boundary", adapterRevision: "1", configurationRevision: "overflow",
       countTokens: async () => ({ inputTokens: 32_769, complete: true, confidence: "exact", countedComponents: ["system", "messages", "tools", "provider_framing"] }),
     } });

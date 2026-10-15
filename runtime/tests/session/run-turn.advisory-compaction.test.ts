@@ -142,6 +142,7 @@ describe("advisory compaction refusal", () => {
     const exercise = createToolExercise(1, 1);
     Object.assign(exercise.session.services.provider, {
       tokenCountCapability: {
+        runsLocally: true as const,
         capabilityVersion: "mandatory-compaction-native-count",
         adapterRevision: "1",
         configurationRevision: name,
@@ -198,6 +199,7 @@ describe("advisory compaction refusal", () => {
   test.each(advisoryRefusals.flatMap((refusal) => [0, 1].map((overflow) => ({ ...refusal, overflow }))))("$name: uses native counts at a $overflow-token overflow past the minimum admitted output", async ({ name, refuse, overflow }) => {
     const exercise = createToolExercise(1, 1);
     const capability = {
+      runsLocally: true as const,
       capabilityVersion: "advisory-native-count",
       adapterRevision: "1",
       configurationRevision: `${name}-boundary-${overflow}`,
@@ -239,6 +241,7 @@ describe("advisory compaction refusal", () => {
     });
     Object.assign(exercise.session.services.provider, {
       tokenCountCapability: {
+        runsLocally: true as const,
         capabilityVersion: "ollama-reservation-growth",
         adapterRevision: "1",
         configurationRevision: name,

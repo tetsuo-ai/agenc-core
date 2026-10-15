@@ -28,6 +28,7 @@ for (const accounting of ["native", "calibrated fallback", "calibrated fallback 
         : "small-summary done";
       if (accounting === "native") {
         Object.assign(provider, { tokenCountCapability: {
+          runsLocally: true as const,
           capabilityVersion: "prepared-dispatch-fit-after-compaction",
           adapterRevision: "1", configurationRevision: String(fits),
           countTokens: async (request: TokenAccountingRequest) => ({
