@@ -9,6 +9,7 @@ import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
 import { isHiddenGoalContinuation } from "../../session/hidden-goal-history.js";
 import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
+import { isStreamAttemptDiscard } from "../../contracts/stream-attempt-boundary.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
 import { persistDisplayArtifactBytes } from "../../session/display-artifact-store.js";
 import { isAdmissionUsageSummary } from "../../session/usage-summary.js";
@@ -612,10 +613,7 @@ export function sessionTranscriptV2FromRollout(
       }
       continue;
     }
-    if (event.msg.type === "stream_error" && (
-      event.msg.payload.cause === "stream_attempt_discarded" ||
-      event.msg.payload.cause === "stream_disconnected"
-    )) {
+    if (isStreamAttemptDiscard(event.msg)) {
       // The explicit discard and the legacy reconnect notice both abandon
       // the provisional segment. Keep the boundary even before fresh deltas
       // arrive so replay cannot resurrect the discarded attempt.

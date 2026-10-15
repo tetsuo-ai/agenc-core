@@ -18,11 +18,12 @@ const prefix = () => [
 const snapshot = (items = prefix(), active = true) => sessionTranscriptV2FromRollout(
   items, "session", "run", active ? { turnId: "turn" } : undefined,
 );
+const retryMessage = "provider error, retrying in up to 1 s (2/6): provider stream cut";
 
 describe("partial assistant transcript recovery", () => {
   it.each(["stream_disconnected", "stream_attempt_discarded"])("discards the abandoned prefix at the %s retry boundary, including replay", (cause) => {
     const items = [...prefix(),
-      event(5, { type: "stream_error", payload: { cause, message: "Discarded attempt before retry." } }),
+      event(5, { type: "stream_error", payload: { cause, message: retryMessage } }),
       event(6, { type: "agent_message_delta", payload: { delta: "fresh answer" } }),
     ];
     const state = snapshot(items);
@@ -43,7 +44,7 @@ describe("partial assistant transcript recovery", () => {
   });
 
   it.each(["stream_disconnected", "stream_attempt_discarded"])("does not restore abandoned text while %s waits for fresh output", (cause) => {
-    const items = [...prefix(), event(5, { type: "stream_error", payload: { cause, message: "Retrying." } })];
+    const items = [...prefix(), event(5, { type: "stream_error", payload: { cause, message: retryMessage } })];
     const state = snapshot(items);
     expect(state.messages.filter(message => message.role === "assistant")).toEqual([]);
     for (const item of items.slice(2)) {
@@ -74,6 +75,25 @@ describe("partial assistant transcript recovery", () => {
       type: "stream_error", payload: { cause: "stream_idle", message: "Idle watchdog fired." },
     })]);
     expect(state.messages.at(-1)?.text).toBe("Opening text. More text.");
+  });
+
+  it.each([
+    "The model stream was interrupted and automatic retries stopped. Type continue and press Enter to resume.",
+    "The model stream disconnected; automatic retry stopped because streamed tool Write (call-1) reached running and may have executed. Type continue and press Enter to resume from the recorded tool results.",
+    "The model stream disconnected; automatic retry stopped because provider error, retrying in up to 1 s (2/6): untrusted detail",
+  ])("preserves the final visible prefix after terminal disconnection: %s", (message) => {
+    const items = [...prefix(),
+      event(5, { type: "stream_error", payload: { cause: "stream_disconnected", message } }),
+      event(6, { type: "turn_failed", payload: { turnId: "turn", code: "provider_error", message: "provider stream cut", completedAt: 1500 } }),
+    ];
+    const live = adaptTranscriptEvents(items.flatMap(item => item.type === "event_msg"
+      ? [{ ...item.payload.msg, id: item.payload.id }] : []));
+    expect(JSON.stringify(live.messages)).toContain("Opening text. More text.");
+    const reopened = snapshot(items, false);
+    expect(reopened.messages.at(-1)?.text).toBe("Opening text. More text.");
+    expect(reopened.messages.at(-1)?.partial).toBe("interrupted");
+    expect(JSON.stringify(adaptTranscriptEvents(daemonTranscriptSnapshotEvents(reopened, "session")).messages))
+      .toContain("Interrupted partial answer");
   });
 
   it("restores the live prefix, suppresses covered deltas, and appends the continuation exactly once", () => {

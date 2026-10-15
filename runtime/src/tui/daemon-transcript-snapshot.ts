@@ -7,6 +7,7 @@ import type {
 } from "../app-server/protocol/index.js";
 import { isRecord } from "../utils/record.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
+import { isStreamAttemptDiscard } from "../contracts/stream-attempt-boundary.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 
 /** Resolve text references before the adapter can mark a replay as covered. */
@@ -233,14 +234,11 @@ export function daemonTranscriptSnapshotCoversEvent(
     return true;
   }
   if (
-    (transcriptEvent.type === "agent_message_delta" || (
-      transcriptEvent.type === "stream_error" && isRecord(payload) &&
-      (payload.cause === "stream_attempt_discarded" || payload.cause === "stream_disconnected")
-    )) && snapshot.activeTurn.partialSequence !== undefined &&
+    (transcriptEvent.type === "agent_message_delta" || isStreamAttemptDiscard(transcriptEvent)) &&
+    snapshot.activeTurn.partialSequence !== undefined &&
     sequence <= snapshot.activeTurn.partialSequence
   ) return true;
-  if (transcriptEvent.type === "stream_error" && isRecord(payload) &&
-      (payload.cause === "stream_attempt_discarded" || payload.cause === "stream_disconnected")) {
+  if (isStreamAttemptDiscard(transcriptEvent)) {
     // A canonical commit can cover a discard even when the stream has not
     // produced a subsequent delta watermark in this turn.
     return snapshot.messages.some(message => message.turnId === turnId && message.committedSequence >= sequence);

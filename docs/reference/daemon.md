@@ -44,6 +44,8 @@ are unchanged. A hard crash can still lose deltas that had not been flushed.
 Retry boundaries discard the failed attempt's partial text. Active snapshots
 carry a display-stream replay watermark even while waiting for fresh output,
 so replay cannot restore the discarded attempt or clear the new prefix.
+Disconnections that exhaust or refuse retries retain the last partial answer;
+only explicit discards or recognized legacy reconnect notices clear it.
 
 Session termination revokes new attachments immediately and awaits resource
 cleanup. Concurrent terminators share cleanup; a later termination request can
