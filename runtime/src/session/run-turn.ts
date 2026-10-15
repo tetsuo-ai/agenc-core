@@ -2287,6 +2287,17 @@ async function assertSeedUserPromptFits(
     // owns admission when a counter or its provider projection is unavailable.
     // A proven byte-cap violation remains an immediate input refusal.
     if (!(error instanceof TokenAccountingError) || error.code !== "request_too_large") return;
+    // The cap includes fixed instructions and tools. Prove that envelope
+    // fits without the incoming unit before attributing the excess to it.
+    // Otherwise final admission must report the configuration failure.
+    try {
+      await preparedRequestContextPressure(
+        { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, false,
+      );
+    } catch (baselineError) {
+      if (signal.aborted) throw signal.reason ?? baselineError;
+      return;
+    }
     const bytes = Buffer.byteLength(JSON.stringify(invocation === undefined ? user.content : seedMessages), "utf8");
     throw new Error(
       `This prompt is too large to process: ${bytes.toLocaleString("en-US")} bytes; ` +

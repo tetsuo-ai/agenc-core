@@ -186,3 +186,24 @@ test("preserves cancellation when the prompt counter is interrupted", async () =
   await expect(session.assertUserPromptFits("hello")).rejects.toThrow(reason);
   expect(chat).not.toHaveBeenCalled();
 });
+
+
+test("does not blame a small prompt for oversized fixed instructions", async () => {
+  const { session, ctx, chat, events } = setup();
+  let failure: unknown;
+  try {
+    await drain(runTurn(session, { ...ctx, baseInstructions: "z".repeat(17 * 1024 * 1024) } as typeof ctx, "hello"));
+  } catch (error) { failure = error; }
+  expect(String(failure ?? "")).not.toMatch(/This prompt is too large/u);
+  expect(JSON.stringify(events.map(event => event.msg))).not.toContain("This prompt is too large");
+  expect(chat).not.toHaveBeenCalled();
+});
+
+test("refuses input that exceeds the byte room left by a bounded fixed envelope", async () => {
+  const { session, ctx, chat } = setup();
+  await expect(drain(runTurn(session, {
+    ...ctx, baseInstructions: "z".repeat(8 * 1024 * 1024),
+  } as typeof ctx, "x".repeat(9 * 1024 * 1024)))).rejects.toThrow(/9,437,186 bytes.*16,777,216 bytes.*file/);
+  expect(session.state.unsafePeek().history).toHaveLength(0);
+  expect(chat).not.toHaveBeenCalled();
+});
