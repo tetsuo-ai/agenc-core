@@ -1277,10 +1277,33 @@ describe("ZaiProvider stream cut before any terminal signal", () => {
     tools: [ECHO_TOOL],
     fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(sseResponse([...chunks])),
   });
-  const failureOf = (chunks: readonly string[]) => providerWith(chunks)
-    .chatStream([{ role: "user", content: "go" }], () => undefined)
-    .then(() => undefined, (error: unknown) => error);
+  const failureOf = async (chunks: readonly string[]) => {
+    const published: Array<{ toolCalls?: readonly unknown[] }> = [];
+    const error = await providerWith(chunks)
+      .chatStream([{ role: "user", content: "go" }], chunk => published.push(chunk))
+      .then(() => undefined, (error: unknown) => error);
+    // Buffered fragments cannot authorize a tool even when recovery can retry.
+    expect(published.every(chunk => !chunk.toolCalls?.length)).toBe(true);
+    return error;
+  };
   const reasoning = 'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"reasoning_content":"thinking about the task"}}]}\n\n';
+
+  // Z.AI documents a last-chunk finish_reason and data: [DONE], not EOF-only
+  // success: https://docs.z.ai/guides/capabilities/streaming
+  test.each([ZaiProvider, ZaiCodingPlanProvider])(
+    "%s accepts the documented terminal stream in one request",
+    async Provider => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+        'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"content":"done"}}]}\n\n',
+        'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]));
+      const provider = new Provider({ apiKey: "test", model: "glm-5.3", fetchImpl });
+      const result = await provider.chatStream([{ role: "user", content: "go" }], () => undefined);
+      expect(result).toMatchObject({ content: "done", finishReason: "stop", toolCalls: [] });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
 
   test("a cut mid-reasoning with an unterminated fragment is a retryable truncated stream", async () => {
     const error = await failureOf([reasoning, 'data: {"choices":[{"index":0,"delta":{"reasoning_con']);
