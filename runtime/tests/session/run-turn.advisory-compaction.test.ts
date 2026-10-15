@@ -222,7 +222,7 @@ describe("advisory compaction refusal", () => {
 
     await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
 
-    expect(capability.countTokens).toHaveBeenCalledTimes(2);
+    expect(capability.countTokens).toHaveBeenCalledTimes(3);
     expect(exercise.samples()).toBe(overflow === 0 ? 2 : 1);
     if (overflow === 0) expect(exercise.outputLimits.at(-1)).toBe(1_024);
     expect(attempts).toBe(overflow === 0 ? 1 : 2);
@@ -292,7 +292,10 @@ describe("advisory compaction refusal", () => {
       };
     });
 
-    await drain(runTurn(exercise.session, exercise.ctx, "parallel implementation ".repeat(1_000)));
+    await drain(runTurn(exercise.session, exercise.ctx, "continue implementation", { history: [
+      { role: "user", content: "parallel implementation ".repeat(1_000) },
+      { role: "assistant", content: "working" },
+    ] }));
 
     expect(attempts).toBe(2);
     expect(chatStream).toHaveBeenCalledTimes(1);

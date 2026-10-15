@@ -140,7 +140,7 @@ describe("degraded compaction ladder", () => {
       .toHaveLength(0);
   });
 
-  test("every tier declining ends the turn with compact_failed naming the exhausted ladder", async () => {
+  test("every tier declining ends the turn with compact_failed and plain recovery guidance", async () => {
     const exercise = createToolExercise({ nonInteractive: true });
     const compact = vi.fn(async (...args: unknown[]) =>
       args[4] === "before_last_user_message" ? noShrink() : { wasCompacted: false });
@@ -152,8 +152,9 @@ describe("degraded compaction ladder", () => {
     expect(mandatory.map(tierOf)).toEqual(["standard", "standard", "aggressive_summary", "emergency_local"]);
     expect(terminals(exercise.events)).toContainEqual(expect.objectContaining({ outcome: "errored", failureCode: "compact_failed" }));
     const failed = exercise.events.find((event) => event.msg.type === "turn_failed");
-    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]") } });
+    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("The conversation is too large") } });
     expect(JSON.stringify(failed?.msg)).not.toContain("/compact");
+    expect(JSON.stringify(failed?.msg)).not.toContain("tiers=");
     // Exactly one dispatcher decline warning for the whole ladder.
     expect(exercise.events.filter((event) => event.msg.type === "warning" && event.msg.payload.cause === "auto_compact_failed"))
       .toHaveLength(1);
@@ -170,8 +171,8 @@ describe("degraded compaction ladder", () => {
     const mandatory = compact.mock.calls.filter((call) => call[4] === "before_last_user_message");
     expect(mandatory.map(tierOf)).toEqual(["standard", "standard", "aggressive_summary"]);
     const failed = exercise.events.find((event) => event.msg.type === "turn_failed");
-    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("tiers=[aggressive_summary]") } });
-    expect(JSON.stringify(failed?.msg)).toContain("run /compact to retry manually");
+    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("The conversation is too large") } });
+    expect(JSON.stringify(failed?.msg)).toContain("Run /compact to retry");
   });
 
   test("a provider-side failure skips the second summarizer pass and goes straight to the emergency tier", async () => {

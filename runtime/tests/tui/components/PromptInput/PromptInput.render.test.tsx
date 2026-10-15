@@ -2095,6 +2095,26 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test("removes restored pasted text when its placeholder is deleted before the next submit", async () => {
+    const pastedContents = createPastedContentsState({ 1: { id: 1, type: "text", content: "x".repeat(5000) } });
+    const onSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({ input: "[Pasted text #1]", pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents, onSubmit });
+    try {
+      await sleep(25);
+      expect(pastedContents.current[1]?.content).toHaveLength(5000);
+      harness.baseProps = undefined;
+      rendered.root.render(<PromptInput {...(basePromptInputProps({ input: "hello", pastedContents: pastedContents.current,
+        setPastedContents: pastedContents.setPastedContents, onSubmit }) as never)} />);
+      const inputProps = await waitForPromptInputProps();
+      await sleep(25);
+      expect(pastedContents.current).toEqual({});
+      await (inputProps.onSubmit as (input: string) => Promise<void>)("hello");
+      expect(onSubmit).toHaveBeenCalledWith("hello", expect.anything(), undefined,
+        expect.objectContaining({ pastedContentsOverride: {} }));
+    } finally { await rendered.dispose(); }
+  });
+
   test("executes bash-mode input locally and emits transcript events", async () => {
     const emitted: unknown[] = [];
     const setToolJSX = vi.fn();

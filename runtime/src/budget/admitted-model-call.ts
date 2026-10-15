@@ -471,7 +471,7 @@ function isSameModelIdentity(reported: string, requested: string): boolean {
  * uselessness and the turn is better refused with a reason than answered with
  * a fragment. Compaction is the path back from here, not a smaller ceiling.
  */
-const MIN_ADMISSIBLE_OUTPUT_TOKENS = 1_024;
+export const MIN_ADMISSIBLE_OUTPUT_TOKENS = 1_024;
 
 /**
  * Shared context-fit authority for admission and advisory-compaction preflight.

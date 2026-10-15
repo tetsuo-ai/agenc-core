@@ -309,7 +309,6 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "mid_turn_compact_failed",
   "pre_sampling_compact_failed",
   "auto_compact_failed",
-  "auto_compact_degraded",
   "output_reservation_squeezed",
   "effect_review_required",
   "empty_response_retry",
@@ -2836,7 +2835,10 @@ export function adaptTranscriptEvents(
             ? ((payload as { cause: string }).cause)
             : undefined;
         if (!cause || !USER_VISIBLE_WARNING_CAUSES.has(cause)) break;
-        out.push(makeSystemMessage(stringResult(payload.message), "warning", nextUuid()));
+        const message = ["auto_compact_failed", "mid_turn_compact_failed", "pre_sampling_compact_failed"].includes(cause)
+          ? "The conversation could not be shortened enough for the next reply. Try /compact, or start a new conversation with /clear."
+          : stringResult(payload.message);
+        out.push(makeSystemMessage(message, "warning", nextUuid()));
         break;
       }
       case "background_agent_status":

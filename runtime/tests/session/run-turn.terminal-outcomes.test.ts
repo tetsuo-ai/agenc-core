@@ -110,7 +110,7 @@ describe("canonical turn outcomes", () => {
     expect(
       events.find((event) => event.msg.type === "turn_failed")?.msg,
     ).toMatchObject({
-      payload: { message: expect.stringContaining("Compaction could not shrink the context") },
+      payload: { message: expect.stringContaining("The conversation is too large") },
     });
   });
 

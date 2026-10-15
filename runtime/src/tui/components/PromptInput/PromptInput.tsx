@@ -2163,17 +2163,19 @@ function PromptInput({
     pendingSpaceAfterPillRef.current = true;
   }
 
-  // Prune images whose [Image #N] placeholder is no longer in the input text.
-  // Covers pill backspace, Ctrl+U, char-by-char deletion — any edit that drops
-  // the ref. onImagePaste batches setPastedContents + insertTextAtCursor in the
-  // same event, so this effect sees the placeholder already present.
+  // Removing a restored text placeholder must remove its payload too, so a
+  // refused paste cannot silently ride along with the next small prompt.
+  // Keep text supplied without a placeholder on its existing attachment path.
+  const previousPasteReferences = useRef<ReadonlySet<number>>(new Set());
   useEffect(() => {
     const referencedIds = new Set(
       parseReferences(lastInternalInputRef.current).map((r) => r.id),
     );
+    const previousReferencedIds = previousPasteReferences.current;
+    previousPasteReferences.current = referencedIds;
     updatePastedContentsAndRef((prev) => {
       const orphaned = Object.values(prev).filter(
-        (c) => c.type === "image" && !referencedIds.has(c.id),
+        (c) => (c.type === "image" || previousReferencedIds.has(c.id)) && !referencedIds.has(c.id),
       );
       if (orphaned.length === 0) return prev;
       const next = {

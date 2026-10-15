@@ -774,6 +774,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           );
         }
         preparedFirstInput = prepared.input;
+        // Turn one has its own publication path. Refuse before its initial
+        // user_message is written, just as message.stream does for turn two.
+        await bootstrap.session.assertUserPromptFits?.(preparedFirstInput);
       }
 
       requireCanonicalRuntimeSettingsSupport(active, managedThread.threadId);
@@ -2892,6 +2895,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       );
     }
     input = prepared.input;
+    // Check the transformed, model-facing content before publishing either
+    // user_message or the durable idempotency marker. A refusal leaves the
+    // client's existing draft/attachment rollback path intact.
+    await consumeDaemonPendingProviderSwitches(active.bootstrap.session, active.bootstrap.configStore);
+    await active.bootstrap.session.assertUserPromptFits?.(input);
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {

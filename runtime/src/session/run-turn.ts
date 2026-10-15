@@ -79,12 +79,15 @@ import {
   createTokenAccountingConfigurationRevision,
   createTokenAccountingRequest,
   tokenAccountingService,
+  TokenAccountingError,
+  MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
 } from "../llm/token-accounting.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import {
   runAdmittedModelCall,
   accountingOptionsForProvider,
   fitOutputReservationToContext,
+  MIN_ADMISSIBLE_OUTPUT_TOKENS,
   projectProviderAccountingRequest,
   providerLocalModelSlug,
   providerNativeToolsForAccounting,
@@ -182,6 +185,7 @@ import {
 } from "./message-history-conversion.js";
 import {
   toTurnContextItem,
+  modelContextWindow,
   type TurnContext,
   type TurnContextItem,
 } from "./turn-context.js";
@@ -1431,6 +1435,7 @@ class PreparedCompactionFailure extends DeferredCompactionError {
 interface PreparedRequestContextPressure {
   readonly fits: boolean;
   readonly inputTokens: number;
+  readonly inputTokenLimit: number;
 }
 
 async function preparedRequestContextPressure(
@@ -1439,10 +1444,11 @@ async function preparedRequestContextPressure(
   ctx: TurnContext,
   signal: AbortSignal,
   requestedModel: string,
+  recordPressure = true,
 ): Promise<PreparedRequestContextPressure> {
   const configuredWindow = request.contextWindowTokens;
   if (configuredWindow === undefined || !Number.isFinite(configuredWindow) || configuredWindow <= 0) {
-    return { fits: false, inputTokens: Number.POSITIVE_INFINITY };
+    return { fits: false, inputTokens: Number.POSITIVE_INFINITY, inputTokenLimit: 0 };
   }
   const window = Math.floor(configuredWindow);
   const provider = session.services.provider;
@@ -1498,7 +1504,7 @@ async function preparedRequestContextPressure(
   const compactionWindow = getEffectiveContextWindowSize({ options: {
     mainLoopModel: ctx.modelInfo.slug, contextWindowTokens: window,
   } });
-  recordPreparedContextPressure(session, {
+  if (recordPressure) recordPreparedContextPressure(session, {
     provider: providerName, model,
     inputTokens: accounting.inputTokens,
     effectiveWindowTokens: compactionWindow,
@@ -1516,6 +1522,8 @@ async function preparedRequestContextPressure(
       profile?.contextSafetyBufferTokens ?? 0,
     ) !== undefined,
     inputTokens: accounting.admissible ? accounting.inputTokens : Number.POSITIVE_INFINITY,
+    inputTokenLimit: Math.max(0, window - Math.min(maxOutputTokens, MIN_ADMISSIBLE_OUTPUT_TOKENS) -
+      Math.max(0, Math.floor(profile?.contextSafetyBufferTokens ?? 0))),
   };
 }
 
@@ -2162,29 +2170,12 @@ interface RunTurnKernelCommons {
   readonly signalCleanups: Array<() => void>;
 }
 
-async function* runTurnKernelInner(
+async function resolveInitialTurnInstructions(
   session: Session,
   ctx: TurnContext,
-  userContent: string | LLMContentPart[],
   opts: RunTurnOptions,
-  runningTask: RunningTask,
-  commons: RunTurnKernelCommons,
-): AsyncGenerator<PhaseEvent, Terminal> {
-  const {
-    emitTurnStarted,
-    emitTurnComplete,
-    emitTurnAborted,
-    emitTurnFailed,
-    referenceContextItem,
-    sessionOwner,
-    turnStartedAt,
-  } = commons;
-
-  // Seed the initial TurnState BEFORE pre-sampling compact so the
-  // dispatcher can splice post-compact messages back into state and the
-  // first `prepareContext` call reads the compacted view. The phase
-  // machine reads `state.messages`, so the compact result has to land
-  // there.
+  ledgerRootTurnGuidance?: string,
+) {
   const ctxBaseInstructions =
     typeof (ctx as TurnContext & { baseInstructions?: unknown })
       .baseInstructions === "string"
@@ -2211,23 +2202,23 @@ async function* runTurnKernelInner(
       : {}),
   });
   const resolvedReferenceContextItem: TurnContextItem = {
-    ...referenceContextItem,
+    ...toTurnContextItem(ctx),
     instructionEvidence: instructionEnvelope.evidence,
   };
   // With session-tail caching on, per-turn guidance rides after the volatile
   // marker so the session-fixed part of the prompt stays byte-identical
   // across turns and remains in the provider's cached prefix.
   const volatileTurnGuidance =
-    commons.ledgerRootTurnGuidance !== undefined &&
+    ledgerRootTurnGuidance !== undefined &&
     sessionTailCacheEnabled(
       session.services.userShell?.childEnvironment ??
         session.services.providerEnvironment,
       ctx.modelProviderId,
     );
   const systemPromptWithTrustedTurnGuidance =
-    commons.ledgerRootTurnGuidance === undefined || volatileTurnGuidance
+    ledgerRootTurnGuidance === undefined || volatileTurnGuidance
       ? instructionEnvelope.text
-      : [instructionEnvelope.text, commons.ledgerRootTurnGuidance]
+      : [instructionEnvelope.text, ledgerRootTurnGuidance]
           .filter(
             (value): value is string =>
               typeof value === "string" && value.length > 0,
@@ -2241,8 +2232,101 @@ async function* runTurnKernelInner(
         )
       : "";
   const effectiveSystemPrompt = volatileTurnGuidance
-    ? appendVolatileInstructions(resolvedSystemPrompt, [commons.ledgerRootTurnGuidance!])
+    ? appendVolatileInstructions(resolvedSystemPrompt, [ledgerRootTurnGuidance!])
     : resolvedSystemPrompt;
+  return { effectiveSystemPrompt, resolvedReferenceContextItem };
+}
+
+/** Refuse only an indivisible incoming unit, never compactable conversation history. */
+async function assertSeedUserPromptFits(
+  session: Session,
+  ctx: TurnContext,
+  user: LLMMessage,
+  modelInstructions: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const window = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
+  if (window === undefined || !Number.isFinite(window) || window <= 0) return;
+  const state = buildInitialTurnState(ctx, user, { modelInstructions });
+  // Mirror the final image projection without consuming attachments, pruning
+  // retained history, or emitting notices. Large images already replaced by
+  // placeholders must retain that path rather than causing a false refusal.
+  const imagePolicy = modelImagePolicy(session, ctx, state,
+    session.services.configStore?.current() ?? ctx.config as AgenCConfig);
+  const visible = withholdImagesForModel([user], imagePolicy, rejectedImagesFor(session, imagePolicy.route));
+  const bounded = boundContextImageBytes(visible.messages, resolveContextImageBudgetBytes(
+    session.services.userShell?.childEnvironment ?? process.env,
+  ));
+  state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
+  const request = buildSamplingRequestContract(state, session, ctx);
+  const model = session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug;
+  let pressure: PreparedRequestContextPressure;
+  try {
+    pressure = await preparedRequestContextPressure(request, session, ctx, signal, model, false);
+  } catch (error) {
+    if (!(error instanceof TokenAccountingError) || error.code !== "request_too_large") throw error;
+    const bytes = Buffer.byteLength(JSON.stringify(user.content), "utf8");
+    throw new Error(
+      `This prompt is too large to process: ${bytes.toLocaleString("en-US")} bytes; ` +
+      `the input-size limit is ${MAX_TOKEN_ACCOUNTING_REQUEST_BYTES.toLocaleString("en-US")} bytes. ` +
+      "Trim the text or save it to a file and reference the file instead of pasting it.",
+    );
+  }
+  if (pressure.fits || !Number.isFinite(pressure.inputTokens)) return;
+  const baseline = await preparedRequestContextPressure(
+    { ...request, input: [{ role: "user", content: "" }] }, session, ctx, signal, model, false,
+  );
+  // An oversized fixed envelope is a configuration problem, not a user-prompt
+  // size error. Let normal admission report it without mislabelling the input.
+  if (!baseline.fits || !Number.isFinite(baseline.inputTokens)) return;
+  const promptTokens = Math.max(0, pressure.inputTokens - baseline.inputTokens);
+  const promptLimit = Math.max(0, pressure.inputTokenLimit - baseline.inputTokens);
+  throw new Error(
+    `This prompt is too large: about ${promptTokens.toLocaleString("en-US")} tokens; ` +
+    `the limit is ${promptLimit.toLocaleString("en-US")} after instructions, tools and room for a reply. ` +
+    "Trim the text or save it to a file and reference the file instead of pasting it.",
+  );
+}
+
+/** Daemon ingress uses the same check before publishing the visible user message. */
+export async function assertUserPromptFits(
+  session: Session,
+  ctx: TurnContext,
+  input: string | readonly LLMContentPart[],
+): Promise<void> {
+  const displayText = userContentDisplayText(typeof input === "string" ? input : [...input]);
+  const guidance = hasExactLedgerMention(displayText) ? LEDGER_ROOT_TURN_ROUTING_GUIDANCE
+    : hasLedgerWalletCliMention(displayText) ? LEDGER_WALLET_CLI_ROUTING_GUIDANCE : undefined;
+  const { effectiveSystemPrompt } = await resolveInitialTurnInstructions(session, ctx, {}, guidance);
+  await assertSeedUserPromptFits(session, ctx, { role: "user", content: typeof input === "string" ? input : [...input] },
+    effectiveSystemPrompt, session.abortController.signal);
+}
+
+async function* runTurnKernelInner(
+  session: Session,
+  ctx: TurnContext,
+  userContent: string | LLMContentPart[],
+  opts: RunTurnOptions,
+  runningTask: RunningTask,
+  commons: RunTurnKernelCommons,
+): AsyncGenerator<PhaseEvent, Terminal> {
+  const {
+    emitTurnStarted,
+    emitTurnComplete,
+    emitTurnAborted,
+    emitTurnFailed,
+    sessionOwner,
+    turnStartedAt,
+  } = commons;
+
+  // Seed the initial TurnState BEFORE pre-sampling compact so the
+  // dispatcher can splice post-compact messages back into state and the
+  // first `prepareContext` call reads the compacted view. The phase
+  // machine reads `state.messages`, so the compact result has to land
+  // there.
+  const { effectiveSystemPrompt, resolvedReferenceContextItem } = await resolveInitialTurnInstructions(
+    session, ctx, opts, commons.ledgerRootTurnGuidance,
+  );
   const { system, prior, user } = buildSeedMessages(
     effectiveSystemPrompt.length > 0
       ? { ...opts, systemPrompt: effectiveSystemPrompt }
@@ -2257,6 +2341,10 @@ async function* runTurnKernelInner(
       (part, index, all) => part.length > 0 && all.indexOf(part) === index,
     )
     .join("\n\n");
+  if (opts.resume === undefined) {
+    await assertSeedUserPromptFits(session, ctx, user, modelInstructions,
+      opts.signal ?? runningTask.abortController.signal);
+  }
   const priorExisting = prior;
   const realtimeBaseline = readRealtimeUpdateBaseline(session);
   const realtimeInstructionUpdate = buildRealtimeInstructionUpdateMessage(
@@ -3351,11 +3439,9 @@ async function* runTurnKernelInner(
               // Only proven unchanged-history advisory refusals may defer.
               // A provider, persistence or projection failure is terminal even
               // when the unchanged request happens to fit this window.
-              const tiers = state.compactionLadder?.tiersAttempted ?? [];
               throw new DeferredCompactionError(
-                "Compaction could not shrink the context enough for the next request and reserved output." +
-                  (tiers.length > 0 ? ` (compact_ladder_exhausted: tiers=[${tiers.join(",")}])` : "") +
-                  (session.services?.runtimeOptions?.nonInteractive !== true ? "; run /compact to retry manually" : ""),
+                "The conversation is too large for the next reply. " +
+                  (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
               );
             }
           }
@@ -3377,11 +3463,9 @@ async function* runTurnKernelInner(
           persistNewResponseItems();
           const compacted = await compactPreparedRequest(true);
           if (!compacted) {
-            const tiers = state.compactionLadder?.tiersAttempted ?? [];
             throw new DeferredCompactionError(
-              "Compaction could not shrink the context enough for the next request and reserved output." +
-                (tiers.length > 0 ? ` (compact_ladder_exhausted: tiers=[${tiers.join(",")}])` : "") +
-                (session.services?.runtimeOptions?.nonInteractive !== true ? "; run /compact to retry manually" : ""),
+              "The conversation is too large for the next reply. " +
+                (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
             );
           }
           session.bindProviderConversation();

@@ -9673,6 +9673,18 @@ describe("AgenC delegate background-agent runner", () => {
     expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] refuses oversized initial input before publishing the first user message", async () => {
+    const { runner, session, stub } = makeTopLevelRunner({ conversationId: "session-initial-input-size" });
+    const validate = vi.fn().mockRejectedValue(new Error("This prompt is too large. Trim the text."));
+    Object.assign(session, { assertUserPromptFits: validate });
+    await expect(runner.startAgent({ objective: "oversized initial input", unattendedAllow: [], unattendedDeny: [] }))
+      .rejects.toThrow("too large");
+    expect(validate).toHaveBeenCalledWith("oversized initial input");
+    expect(vi.mocked(session.emit).mock.calls.some(([event]) =>
+      (event as { msg: { type: string } }).msg.type === "user_message")).toBe(false);
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] rejects blocked initial prompt ingress before durable turn activation", async () => {
     const blockHook = vi.fn(() => ({
       blockingError: { blockingError: "initial prompt denied" },
@@ -9978,6 +9990,24 @@ describe("AgenC delegate background-agent runner", () => {
     })).rejects.toThrow("input admission failed");
     expect(session.stoppedByUserSinceLastPrompt).toBe(true);
     expect(session.clearUserStop).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] refuses oversized model input before publishing it and accepts a following small prompt", async () => {
+    const { runner, session, control } = makeTopLevelRunner({ conversationId: "session-input-size-refusal" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    const validate = vi.fn().mockRejectedValueOnce(new Error("This prompt is too large. Trim the text."))
+      .mockResolvedValue(undefined);
+    Object.assign(session, { assertUserPromptFits: validate });
+    const before = vi.mocked(session.emit).mock.calls.length;
+    const params = { sessionId: "session_1", content: "oversized", originalContent: "oversized",
+      messageId: "too-large", streamId: "stream_1", acceptedAt: "2026-09-10T00:00:00.000Z" };
+    await expect(runner.submitAgentMessage("session-input-size-refusal", params)).rejects.toThrow("too large");
+    expect(validate).toHaveBeenCalledWith("oversized");
+    expect(control.sendInput).not.toHaveBeenCalled();
+    expect(vi.mocked(session.emit).mock.calls.slice(before).some(([event]) =>
+      ["user_message", "message_submission"].includes((event as { msg: { type: string } }).msg.type))).toBe(false);
+    await runner.submitAgentMessage("session-input-size-refusal", { ...params, content: "hello", originalContent: "hello", messageId: "small" });
+    expect(control.sendInput).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])("[managed-thread] passes the ingress stop generation to durable turn admission (newerStop=%s)", async (newerStop) => {

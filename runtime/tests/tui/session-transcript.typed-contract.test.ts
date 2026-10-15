@@ -55,3 +55,14 @@ describe("typed transcript inputs", () => {
     expect(makeToolResultMessage("tool-call", "plain").toolUseResult).toBe("plain");
   });
 });
+
+it("keeps compaction ladder diagnostics out of the visible transcript", () => {
+  const transcript = adaptTranscriptEvents([
+    { type: "warning", payload: { cause: "auto_compact_degraded", message: "context_limit/in_turn: tier=emergency_local after output_schema_invalid" } },
+    { type: "warning", payload: { cause: "auto_compact_failed", message: "context_limit/in_turn: accounted input exceeded context window", details: { reason: "internal" } } },
+  ]);
+  const text = transcript.messages.map(message => "content" in message ? message.content : "").join("\n");
+  expect(transcript.messages).toHaveLength(1);
+  expect(text).toContain("Try /compact");
+  expect(text).not.toMatch(/tier=|context_limit|accounted input|internal/);
+});

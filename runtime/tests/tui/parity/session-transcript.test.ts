@@ -2080,7 +2080,8 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.messages).toHaveLength(warnings.length);
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("MCP server X requires auth");
-      expect(allText).toContain("mid_turn_compact_skipped");
+      expect(allText).toContain("Try /compact");
+      expect(allText).not.toContain("mid_turn_compact_skipped");
       expect(allText).toContain("Dropped @file/path");
       expect(allText).toContain("returned no valid proposal");
       expect(allText).toContain("no output from the model for 10 minutes");
