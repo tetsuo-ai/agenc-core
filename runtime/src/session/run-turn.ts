@@ -77,6 +77,7 @@ import {
   createTurnFailedEvent,
 } from "../contracts/turn-terminal.js";
 import {
+  assertTokenAccountingRequestWithinByteLimit,
   createTokenAccountingConfigurationRevision,
   createTokenAccountingRequest,
   tokenAccountingService,
@@ -1495,13 +1496,7 @@ async function preparedRequestContextPressure(
       return { fits: true, inputTokens: bound, inputTokenLimit };
     }
   }
-  // Remote/native accounting is unavailable to an advisory ingress check.
-  // Defer it instead of replacing an exact counter with a speculative refusal.
-  if (purpose !== "dispatch" && provider.tokenCountCapability !== undefined &&
-    provider.tokenCountCapability.runsLocally !== true) {
-    return { fits: false, inputTokens: Number.POSITIVE_INFINITY, inputTokenLimit };
-  }
-  const accounting = await tokenAccountingService.count(createTokenAccountingRequest({
+  const accountingRequest = createTokenAccountingRequest({
     provider: providerName,
     model,
     // Same scope as admission, so the compaction preflight and the admitted request see one calibrated estimate.
@@ -1520,7 +1515,16 @@ async function preparedRequestContextPressure(
     }),
     contextWindowTokens: window,
     reservedOutputTokens: maxOutputTokens,
-  }), {
+  });
+  // Deferring a remote counter must retain the locally provable byte cap.
+  // Both the input and empty-input baseline use the same canonical envelope,
+  // so an oversized fixed envelope is still left to final admission.
+  if (purpose !== "dispatch" && provider.tokenCountCapability !== undefined &&
+    provider.tokenCountCapability.runsLocally !== true) {
+    assertTokenAccountingRequestWithinByteLimit(accountingRequest, provider.tokenCountCapability);
+    return { fits: false, inputTokens: Number.POSITIVE_INFINITY, inputTokenLimit };
+  }
+  const accounting = await tokenAccountingService.count(accountingRequest, {
     ...(provider.tokenCountCapability !== undefined &&
       (purpose === "dispatch" || provider.tokenCountCapability.runsLocally === true)
       ? { capability: provider.tokenCountCapability }

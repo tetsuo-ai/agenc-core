@@ -896,6 +896,14 @@ export function createTokenAccountingRequest(
   };
 }
 
+/** Validate the local wire-byte bound without invoking a provider counter. */
+export function assertTokenAccountingRequestWithinByteLimit(
+  request: TokenAccountingRequest,
+  capability?: ProviderTokenCountCapability,
+): void {
+  prepareAccountingRequest(request, capability, MAX_TOKEN_ACCOUNTING_REQUEST_BYTES);
+}
+
 export function estimateTokenAccountingRequest(
   request: TokenAccountingRequest,
 ): TokenAccountingResult {

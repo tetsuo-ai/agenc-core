@@ -5,7 +5,7 @@ import { assertUserPromptFits, runTurn, setAutoCompactImplForTests } from "../..
 import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
-function setup() {
+function setup(model = "test-model") {
   const provider = mkProvider({ content: "small prompt succeeded" });
   const chat = vi.spyOn(provider, "chatStream");
   installPreparedCompactionPressure(provider, request => 500 + request.messages.reduce((n, m) => {
@@ -13,8 +13,8 @@ function setup() {
     // Count the controlled fixture input, ignoring runtime reminder messages.
     return n + (text === "hello" || /^[xy]+$/.test(text) ? text.length : 0);
   }, 0));
-  const { session, events } = mkSession({ provider, modelInfo: { contextWindow: 4096, maxOutputTokens: 2048 } });
-  const ctx = mkCtx({ modelInfo: { ...mkCtx().modelInfo, contextWindow: 4096, maxOutputTokens: 2048 } });
+  const { session, events } = mkSession({ provider, model, modelInfo: { contextWindow: 4096, maxOutputTokens: 2048 } });
+  const ctx = mkCtx({ modelInfo: { ...mkCtx().modelInfo, slug: model, contextWindow: 4096, maxOutputTokens: 2048 } });
   const compact = vi.fn(async () => ({ wasCompacted: false, skippedCode: "no_shrink" as const }));
   setAutoCompactImplForTests(compact);
   return { session, events, ctx, chat, compact };
@@ -261,4 +261,58 @@ test("refuses input that exceeds the byte room left by a bounded fixed envelope"
   } as typeof ctx, "x".repeat(9 * 1024 * 1024)))).rejects.toThrow(/9,437,186 bytes.*16,777,216 bytes.*file/);
   expect(session.state.unsafePeek().history).toHaveLength(0);
   expect(chat).not.toHaveBeenCalled();
+});
+
+
+test.each(["anthropic", "gemini", "bedrock"])("preserves local byte-cap refusal before persistence with an unmarked %s counter", async provider => {
+  const { session, ctx, chat, events } = setup(provider === "gemini" ? "gemini-3.8-flash" : undefined);
+  const capability = session.services.provider.tokenCountCapability!;
+  const remote = vi.fn(capability.countTokens);
+  Object.assign(session.services.provider, {
+    name: provider,
+    tokenCountCapability: { ...capability, runsLocally: undefined, countTokens: remote },
+  });
+  await expect(drain(runTurn(session, ctx, "x".repeat(17 * 1024 * 1024))))
+    .rejects.toThrow(/This prompt is too large.*16,777,216 bytes/s);
+  expect(session.state.unsafePeek().history).toHaveLength(0);
+  expect(events.some(event => event.msg.type === "user_message")).toBe(false);
+  expect(chat).not.toHaveBeenCalled();
+  expect(remote).not.toHaveBeenCalled();
+  await expect(session.assertUserPromptFits("hello")).resolves.toBeUndefined();
+  expect(remote).not.toHaveBeenCalled();
+});
+
+test.each(["anthropic", "gemini", "bedrock"])("an unmarked %s counter preserves fixed-envelope byte-cap attribution", async provider => {
+  const { session, ctx, chat, events } = setup(provider === "gemini" ? "gemini-3.8-flash" : undefined);
+  const capability = session.services.provider.tokenCountCapability!;
+  const remote = vi.fn(capability.countTokens);
+  Object.assign(session.services.provider, {
+    name: provider,
+    tokenCountCapability: { ...capability, runsLocally: undefined, countTokens: remote },
+  });
+  await expect(assertUserPromptFits(session, {
+    ...ctx, baseInstructions: "z".repeat(17 * 1024 * 1024),
+  } as typeof ctx, "hello")).resolves.toBeUndefined();
+  expect(session.state.unsafePeek().history).toHaveLength(0);
+  expect(events.some(event => event.msg.type === "user_message")).toBe(false);
+  expect(chat).not.toHaveBeenCalled();
+  expect(remote).not.toHaveBeenCalled();
+});
+
+test.each(["anthropic", "gemini", "bedrock"])("an unmarked %s counter refuses input beyond the fixed envelope's remaining byte room", async provider => {
+  const { session, ctx, chat, events } = setup(provider === "gemini" ? "gemini-3.8-flash" : undefined);
+  const capability = session.services.provider.tokenCountCapability!;
+  const remote = vi.fn(capability.countTokens);
+  Object.assign(session.services.provider, {
+    name: provider,
+    tokenCountCapability: { ...capability, runsLocally: undefined, countTokens: remote },
+  });
+  await expect(drain(runTurn(session, {
+    ...ctx, baseInstructions: "z".repeat(8 * 1024 * 1024),
+  } as typeof ctx, "x".repeat(9 * 1024 * 1024))))
+    .rejects.toThrow(/9,437,186 bytes.*16,777,216 bytes.*file/s);
+  expect(session.state.unsafePeek().history).toHaveLength(0);
+  expect(events.some(event => event.msg.type === "user_message")).toBe(false);
+  expect(chat).not.toHaveBeenCalled();
+  expect(remote).not.toHaveBeenCalled();
 });
