@@ -659,7 +659,7 @@ describe("execAgentHook run-turn integration", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
     expect(result.outcome).toBe("non_blocking_error");
     expect(result.message?.attachment.stderr).toContain(
-      "Compaction could not shrink the context",
+      "The conversation is too large for the next reply. Run /compact to retry, or start a new conversation with /clear.",
     );
   });
 
@@ -1554,7 +1554,7 @@ describe("execAgentHook run-turn integration", () => {
             content: [
               expect.objectContaining({
                 type: "text",
-                text: expect.stringContaining("Compaction could not shrink the context"),
+                text: expect.stringContaining("The conversation is too large for the next reply. Run /compact to retry, or start a new conversation with /clear."),
               }),
             ],
           }),
