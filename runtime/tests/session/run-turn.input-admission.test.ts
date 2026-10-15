@@ -29,6 +29,22 @@ test("normal DeepSeek input bypasses token counting after bounding its complete 
   expect(count).not.toHaveBeenCalled();
 });
 
+test.each([true, false])("the byte-bound fast path preserves cancellation (already aborted=%s)", async alreadyAborted => {
+  const { session, ctx } = setup();
+  const reason = new Error("cancelled prompt admission");
+  const profile = vi.fn(async () => {
+    session.abortController.abort(reason);
+    return { provider: "deepseek", model: "test-model", usageReporting: "authoritative" as const, supportsMaxOutputTokens: true };
+  });
+  Object.assign(session.services.provider, { name: "deepseek", getExecutionProfile: profile });
+  if (alreadyAborted) session.abortController.abort(reason);
+  const count = vi.spyOn(tokenAccountingService, "count");
+  await expect(assertUserPromptFits(session, { ...ctx, modelInfo: { ...ctx.modelInfo, contextWindow: 100000 } }, "hello"))
+    .rejects.toBe(reason);
+  expect(profile).toHaveBeenCalledTimes(alreadyAborted ? 0 : 1);
+  expect(count).not.toHaveBeenCalled();
+});
+
 test("DeepSeek inputs near the byte bound retain the controlled exact local check", async () => {
   const { session, ctx } = setup();
   Object.assign(session.services.provider, { name: "deepseek" });

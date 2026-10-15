@@ -1448,6 +1448,7 @@ async function preparedRequestContextPressure(
   requestedModel: string,
   purpose: "dispatch" | "prompt_preflight" | "prompt_baseline" = "dispatch",
 ): Promise<PreparedRequestContextPressure> {
+  signal.throwIfAborted();
   const configuredWindow = request.contextWindowTokens;
   if (configuredWindow === undefined || !Number.isFinite(configuredWindow) || configuredWindow <= 0) {
     return { fits: false, inputTokens: Number.POSITIVE_INFINITY, inputTokenLimit: 0 };
@@ -1456,6 +1457,7 @@ async function preparedRequestContextPressure(
   const provider = session.services.provider;
   const options = buildProviderOptions(request, ctx, signal, session);
   const profile = await provider.getExecutionProfile?.(options);
+  signal.throwIfAborted();
   const providerName = profile?.provider?.trim() || provider.name;
   const model = providerName !== provider.name
     ? providerLocalModelSlug(profile?.model?.trim() || requestedModel, providerName)
