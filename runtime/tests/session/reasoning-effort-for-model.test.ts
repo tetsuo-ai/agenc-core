@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { AgenCConfig } from "../../src/config/schema.js";
+import { defaultConfig } from "../../src/config/schema.js";
+import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
 import {
   droppedReasoningEffortNotice,
   reasoningEffortForModel,
@@ -13,6 +15,24 @@ const dropped = (reasoningEffort: string) => ({
 });
 
 describe("reasoning effort across a model switch", () => {
+  test.each([
+    ["high", "high", "high"],
+    ["max", "xhigh", undefined],
+  ] as const)("no-effort startup retains saved %s until the next model validates it", (saved, seeded, expected) => {
+    const configuration = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), reasoning_effort: saved },
+      workspaceRoot: "/repo",
+      provider: "groq",
+      model: "minimaxai/minimax-m2.7",
+    });
+    expect(configuration.collaborationMode.reasoningEffort).toBe(seeded);
+    expect(reasoningEffortForModel({
+      provider: "deepseek",
+      model: "deepseek-flash",
+      reasoningEffort: configuration.collaborationMode.reasoningEffort,
+    })).toEqual(expected === undefined ? dropped(seeded) : kept(expected));
+  });
+
   test.each([
     // The two reported cases: /effort default used to pin these.
     ["gemini", "gemma-4-31b-it", "medium", false],

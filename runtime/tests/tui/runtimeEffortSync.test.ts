@@ -25,3 +25,17 @@ it("ignores unrelated or malformed effort events", () => {
   for (const event of [{ type: "warning", payload: { reasoningEffort: "high" } }, { type: "run_runtime_settings_changed", payload: {} }, { type: "run_runtime_settings_changed", payload: { reasoningEffort: "deep" } }]) syncRuntimeEffortEventToAppState(event, set);
   expect(set).not.toHaveBeenCalled();
 });
+
+it("hides runtime effort on a no-effort model and shows it after a supported model switch", () => {
+  let state = { effortValue: "max" } as AppState;
+  const set = (update: (value: AppState) => AppState) => { state = update(state); };
+  const label = (provider: string, model: string) => getSessionEffortLabelForContext(
+    model, state.effortValue, { ...TEST_REMOTE_AUTH_SESSION_CONTEXT, provider },
+  );
+  expect(label("groq", "minimaxai/minimax-m2.7")).toBeNull();
+  expect(label("deepseek", "deepseek-flash")).toBe("max effort");
+  syncRuntimeEffortEventToAppState({ type: "run_runtime_settings_changed", payload: { reasoningEffort: "none" } }, set);
+  expect(label("groq", "minimaxai/minimax-m2.7")).toBeNull();
+  syncRuntimeEffortEventToAppState({ type: "run_runtime_settings_changed", payload: { reasoningEffort: "high" } }, set);
+  expect(label("deepseek", "deepseek-flash")).toBe("high effort");
+});

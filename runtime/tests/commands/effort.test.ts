@@ -77,6 +77,28 @@ function commandContext(
   };
 }
 
+describe("/effort on models without an effort setting", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test.each([
+    ["venice", "llama-3.3-70b"],
+    ["groq", "minimaxai/minimax-m2.7"],
+    ["ollama-cloud", "minimax-m2.7"],
+    ["groq", "gpt-5.4-unregistered"],
+    ["ollama-cloud", "claude-opus-5-unregistered"],
+    ["venice", "claude-opus-5-unregistered"],
+  ])("%s/%s explains without changing the saved choice", async (provider, model) => {
+    for (const argsRaw of ["", "max", "default"]) {
+      const { context, getAppState } = commandContext(model!, argsRaw, { provider: provider!, effortValue: "max" });
+      expect(await effortCommand.execute(context)).toEqual(argsRaw === ""
+        ? { kind: "text", text: `${model} has no effort setting.` }
+        : { kind: "error", message: `${model} has no effort setting.` });
+      expect(getAppState().effortValue).toBe("max");
+      expect(settings.update).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe("/effort Gemini catalog levels", () => {
   beforeEach(() => settings.update.mockClear());
 
@@ -179,7 +201,7 @@ describe("/effort Grok catalog levels", () => {
 
     expect(result).toEqual({
       kind: "text",
-      text: "private-model does not support effort levels.",
+      text: "private-model has no effort setting.",
     });
   });
 

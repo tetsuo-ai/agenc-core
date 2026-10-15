@@ -223,8 +223,8 @@ export const effortCommand: SlashCommand = {
 
       if (!modelSupportsEffortForContext(model, providerAuthContext)) {
         return arg === ""
-          ? { kind: "text", text: `${model} does not support effort levels.` }
-          : { kind: "error", message: `${model} does not support effort levels.` };
+          ? { kind: "text", text: `${model} has no effort setting.` }
+          : { kind: "error", message: `${model} has no effort setting.` };
       }
 
       if (arg === "") {

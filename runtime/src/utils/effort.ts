@@ -73,7 +73,8 @@ function inferCatalogProvider(
  * Levels from Core's own effort resolver, the same source the wire layer
  * validates against and the Desktop catalog is generated from. Undefined
  * when Core knows nothing about the model, so the legacy heuristics below
- * still apply to unregistered identities.
+ * still apply to unregistered identities, except on hosted providers whose
+ * wire contract only accepts explicitly catalogued effort levels.
  */
 function getRegisteredEffortLevels(
   model: string,
@@ -82,7 +83,8 @@ function getRegisteredEffortLevels(
   const provider = inferCatalogProvider(model, context)
   if (provider === undefined) return undefined
   const resolved = resolveReasoningEffort({ provider, model })
-  if (!resolved.registered && resolved.levels.length === 0) return undefined
+  const catalogOnly = provider === 'venice' || provider === 'groq' || provider === 'ollama-cloud'
+  if (!resolved.registered && resolved.levels.length === 0 && !catalogOnly) return undefined
   return resolved.levels.filter(isAvailableEffortLevel)
 }
 
@@ -700,6 +702,7 @@ export function getSessionEffortLabelForContext(
   effortValue: EffortValue | 'none' | undefined,
   context: ProviderAuthReadContext,
 ): string | null {
+  if (!modelSupportsEffortForContext(model, context)) return null
   if (effortValue === 'none') return 'effort off'
   const effective = effortValue === undefined ? undefined : resolveAppliedEffortForContext(model, effortValue, context)
   if (effective !== undefined) {
