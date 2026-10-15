@@ -22,15 +22,14 @@ afterEach(() => vi.useRealTimers());
 describe("degenerate output recovery", () => {
   test.each(["queued", "executing", "completed"])("the retry policy blocks registered read-only work (%s)", status => {
     const ctx = mkCtx();
-    const { session } = mkSession({ registry: {
-      tools: [{ name: "read", isReadOnly: true }],
-    } as unknown as ToolRegistry });
     const state = buildInitialTurnState(ctx, { role: "user", content: "Create file" });
     state.toolUseBlocks = [{ type: "tool_use", id: "read-1", name: "read", input: {} }];
     state.streamingToolExecutor = { getToolStates: () => [{ id: "read-1", toolName: "read", status, hasDispatched: status !== "queued" }] } as unknown as typeof state.streamingToolExecutor;
-    // Existing interruption policy can replay a read-only tool. Degeneration cannot.
-    expect(interruptedStreamRetryBlockReason(state, session)).toBeNull();
-    expect(interruptedStreamRetryBlockReason(state, session,
+    // Ordinary cut streams may retry only undispatched work. Degeneration cannot.
+    const ordinary = interruptedStreamRetryBlockReason(state);
+    if (status === "queued") expect(ordinary).toBeNull();
+    else expect(ordinary).toMatch(/may have executed/);
+    expect(interruptedStreamRetryBlockReason(state,
       new StreamModelError(new StreamProgressError("test", "stream_degenerate")),
     )).toMatch(/not retrying degenerate output/);
   });
