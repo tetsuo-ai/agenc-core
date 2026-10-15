@@ -1303,6 +1303,25 @@ async function runSamplingRequest(
   try {
     for (;;) {
       let retryBlocked = false;
+      let retryBlockMessage: string | undefined;
+      const blockInterruptedRetry = (error: unknown): boolean => {
+        if (retryBlocked) return true;
+        // Freeze undispatched work before the safety snapshot and any await.
+        cancelQueuedInterruptedTools(state);
+        const blockedReason = interruptedStreamRetryBlockReason(state, error);
+        if (blockedReason === null) return false;
+        retryBlocked = true;
+        retryBlockMessage = `The model stream disconnected; automatic retry stopped because ${blockedReason}. Type continue and press Enter to resume from the recorded tool results.`;
+        suppressInterruptedStreamToolHistory(state);
+        emitError(session, session.nextInternalSubId(), {
+          cause: "stream_disconnected",
+          message: retryBlockMessage,
+          provider: session.services.provider.name,
+          status: streamRetryErrorStatus(error),
+          streamError: true,
+        });
+        return true;
+      };
       const outcome = await reconnectWithBackoff<SamplingRequestResult>({
         session,
         signal,
@@ -1330,20 +1349,7 @@ async function runSamplingRequest(
           // when that retry fails for a different transient reason.
           if (stallRetryStarted) return false;
           const progressStop = isStreamProgressStop(err);
-          const blockedReason = interruptedStreamRetryBlockReason(state, session, err);
-          if (blockedReason !== null) {
-            retryBlocked = true;
-            suppressInterruptedStreamToolHistory(state);
-            cancelQueuedInterruptedTools(state);
-            emitError(session, session.nextInternalSubId(), {
-              cause: "stream_disconnected",
-              message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
-              provider: session.services.provider.name,
-              status: streamRetryErrorStatus(err),
-              streamError: true,
-            });
-            return false;
-          }
+          if (blockInterruptedRetry(err)) return false;
           const reservation = await reserveRecoveryReentry(session, state, {
             triggerName: "reconnect",
           });
@@ -1386,6 +1392,9 @@ async function runSamplingRequest(
       // not the turn's fault (#2212): wait with a slow backoff and try again,
       // within the operator's patience, unless retrying is unsafe.
       const lastError = outcome.lastError;
+      // A bounded progress retry or routing supervisor may skip the retry
+      // hook. Apply the dispatch guard before a possible slow outage retry.
+      if (isTransientSamplingError(lastError)) blockInterruptedRetry(lastError);
       const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
       const canWait =
         !supervisorOwnsRetry(lastError) &&
@@ -1399,6 +1408,17 @@ async function runSamplingRequest(
         if (!retryBlocked) {
           suppressInterruptedStreamToolHistory(state);
           cancelQueuedInterruptedTools(state);
+          if (!supervisorOwnsRetry(lastError) && isRetryableStreamError(lastError)) {
+            emitError(session, session.nextInternalSubId(), {
+              cause: "stream_disconnected",
+              message: "The model stream was interrupted and automatic retries stopped. Type continue and press Enter to resume.",
+              provider: session.services.provider.name,
+              streamError: true,
+            });
+          }
+        }
+        if (retryBlockMessage !== undefined) {
+          throw new Error(retryBlockMessage, { cause: lastError });
         }
         if (lastError instanceof Error) throw lastError;
         throw new Error(`stream_retries_exhausted: ${String(lastError)}`);

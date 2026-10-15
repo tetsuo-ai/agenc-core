@@ -93,7 +93,8 @@ for (const name of ["zai", "kimi", "deepseek"] as const) {
     test("never publishes a fragmented tool call as executable after interruption", async () => {
       const probe = setup([toolFrame("{"), 'data: {"choices":']);
       const error = await probe.invoke().catch(error => error);
-      expect(error).toBeInstanceOf(Error);
+      expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+      expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
       expect(probe.chunks.some(chunk => (chunk.toolCalls?.length ?? 0) > 0)).toBe(false);
       expect(probe.chunks.some(chunk => chunk.done)).toBe(false);
       expect(probe.fetchImpl).toHaveBeenCalledOnce();
@@ -102,11 +103,11 @@ for (const name of ["zai", "kimi", "deepseek"] as const) {
     test.each([
       ["a parsed tool-call fragment", [toolFrame("{")]],
       ["a syntactically complete tool call that was never finalized", [toolFrame('{"cmd":"true"}')]],
-    ])("rejects %s at clean EOF without publishing it", async (_label, parts) => {
+    ])("classifies %s at clean EOF as retryable without publishing it", async (_label, parts) => {
       const probe = setup(parts as string[]);
       const error = await probe.invoke().catch(error => error);
-      expect(error).toBeInstanceOf(LLMInvalidResponseError);
-      expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+      expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+      expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
       expect(probe.chunks.some(chunk => (chunk.toolCalls?.length ?? 0) > 0 || chunk.done)).toBe(false);
       expect(probe.fetchImpl).toHaveBeenCalledOnce();
     });

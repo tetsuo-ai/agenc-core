@@ -66,6 +66,38 @@ describe("explicit failures end the streaming turn", () => {
     expect(rendered).toContain("partial answ");
   });
 
+  test("discarding text from a failed attempt prevents glued retry output", () => {
+    const transcript = adaptTranscriptEvents([
+      turnStart,
+      { type: "agent_message_delta", payload: { delta: "abandoned text" } },
+      { type: "stream_error", payload: { cause: "stream_attempt_discarded", message: "Discarded interrupted model output." } },
+      { type: "agent_message_delta", payload: { delta: "fresh answer" } },
+    ] as never);
+    expect(transcript.streamingText).toBe("fresh answer");
+    expect(JSON.stringify(transcript.messages)).not.toContain("abandoned");
+  });
+
+  test("discarding an interrupted attempt clears text and partial tool input before retry", () => {
+    const transcript = adaptTranscriptEvents([
+      turnStart,
+      { type: "agent_message", payload: { message: "earlier committed output" } },
+      { type: "agent_message_delta", payload: { delta: "abandoned text" } },
+      { type: "assistant_thinking_block_start", payload: { index: 0 } },
+      { type: "assistant_thinking_delta", payload: { delta: "abandoned thought", index: 0 } },
+      { type: "tool_input_block_start", payload: { callId: "partial", index: 0,
+        contentBlock: { type: "tool_use", id: "partial", name: "Write", input: {} } } },
+      { type: "tool_input_delta", payload: { callId: "partial", index: 0, partialJson: '{"path":' } },
+      { type: "stream_error", payload: { cause: "stream_attempt_discarded", message: "Discarded interrupted model output." } },
+      { type: "agent_message_delta", payload: { delta: "fresh answer" } },
+    ] as never);
+    expect(transcript.isStreaming).toBe(true);
+    expect(transcript.streamingText).toBe("fresh answer");
+    expect(transcript.streamingToolUses).toEqual([]);
+    expect(transcript.streamingThinking).toBeNull();
+    expect(JSON.stringify(transcript.messages)).not.toContain("abandoned");
+    expect(JSON.stringify(transcript.messages)).toContain("earlier committed output");
+  });
+
   test("`stream_error` keeps a retrying stream active", () => {
     const transcript = adaptTranscriptEvents([
       turnStart,

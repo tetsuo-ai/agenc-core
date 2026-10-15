@@ -1898,6 +1898,7 @@ export function adaptTranscriptEvents(
   const collabAgents = new Map<string, CollabAgentDisplay>();
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
+  const provisionalTextUuids = new Set<string>();
   let realtimeStreamingText = "";
   let turnStreamedChars = 0;
   let latestUsage: AdaptedTranscript["latestUsage"] = null;
@@ -1941,7 +1942,9 @@ export function adaptTranscriptEvents(
   };
 
   const flushStreamingText = (nextUuid: () => string): void => {
+    const previousLength = out.length;
     persistAssistantText(streamingText, nextUuid);
+    if (out.length > previousLength) provisionalTextUuids.add(out[out.length - 1].uuid);
     streamingText = "";
   };
 
@@ -1984,6 +1987,7 @@ export function adaptTranscriptEvents(
         sessionUsage = latestSessionUsage(sessionUsage, event);
         break;
       case "history_cleared":
+        provisionalTextUuids.clear();
         nextActiveUserOrdinal = undefined;
         pendingTaskBudgetNotice = null;
         out.length = 0;
@@ -2012,6 +2016,7 @@ export function adaptTranscriptEvents(
         isStreaming = false;
         break;
       case "history_replaced": {
+        provisionalTextUuids.clear();
         nextActiveUserOrdinal = undefined;
         pendingTaskBudgetNotice = null;
         out.length = 0;
@@ -2068,6 +2073,7 @@ export function adaptTranscriptEvents(
       }
       case "turn_start":
       case "turn_started":
+        provisionalTextUuids.clear();
         if (typeof payload.turnId !== "string" || payload.turnId !== currentTurnId) {
           flushPendingTaskBudgetNotice();
           lastAssistantText = "";
@@ -2417,6 +2423,7 @@ export function adaptTranscriptEvents(
         realtimeStreamingText = "";
         break;
       case "agent_message":
+        provisionalTextUuids.clear();
         if (typeof payload.message === "string" && payload.message.startsWith("Partial result: stopped at the task budget.")) pendingTaskBudgetNotice = null;
         if (typeof payload.message === "string" && payload.message !== lastAssistantText) {
           const subagent = parseSubagentNotification(payload.message);
@@ -2847,6 +2854,25 @@ export function adaptTranscriptEvents(
         break;
       case "error":
       case "stream_error": {
+        if (event.type === "stream_error" && payload.cause === "stream_attempt_discarded") {
+          // A tool input may have flushed provisional text into a row. Drop
+          // those rows too, while retaining earlier committed model output.
+          for (let index = out.length - 1; index >= 0; index -= 1) {
+            if (!provisionalTextUuids.has(out[index]?.uuid)) continue;
+            out.splice(index, 1);
+            currentTurnAssistantMessageIndexes = currentTurnAssistantMessageIndexes
+              .filter(value => value !== index).map(value => value > index ? value - 1 : value);
+          }
+          provisionalTextUuids.clear();
+          lastAssistantText = "";
+          lastAssistantTextForActiveTurn = "";
+          streamingText = "";
+          streamingThinking = null;
+          streamingToolUses.length = 0;
+          pendingToolInputDeltas.clear();
+          suppressedStreamingToolInputIndexes.clear();
+          break;
+        }
         // Keep a failed attempt's partial answer before its failure notice.
         // The next attempt must start with a fresh streaming accumulator.
         if (event.type === "stream_error") flushStreamingText(nextUuid);

@@ -1,7 +1,7 @@
 /**
  * Stream retry classification and interrupted-stream cleanup for the
- * sampling request reconnect ladder. Pure move out of run-turn.ts; the
- * declarations are the originals byte for byte.
+ * sampling request reconnect ladder. Retries discard unexecuted attempts;
+ * dispatched tool work is retained for explicit user continuation.
  *
  * @module
  */
@@ -29,6 +29,7 @@ import {
   serverDirectedRetryAfter,
 } from "../recovery/reconnection.js";
 import type { Session } from "./session.js";
+import { emitError } from "./event-log.js";
 import type { TurnState } from "./turn-state.js";
 
 function streamRetryErrorCause(error: unknown): unknown {
@@ -195,18 +196,13 @@ function cleanupInterruptedStreamAttempt(
   state.toolResults = [];
   state.needsFollowUp = false;
   state.streamingToolExecutor = null;
-}
-
-function isReplaySafeStreamTool(session: Session, toolName: string): boolean {
-  const tool = session.services.registry.tools.find(
-    (candidate) => candidate.name === toolName,
-  );
-  try {
-    if (tool?.requiresUserInteraction?.() === true) return false;
-  } catch {
-    return false;
-  }
-  return tool?.isReadOnly === true || tool?.metadata?.mutating === false;
+  // A durable boundary lets live and replayed transcripts drop unfinished
+  // text/input buffers instead of appending the next attempt to them.
+  emitError(session, session.nextInternalSubId(), {
+    cause: "stream_attempt_discarded",
+    message: "Discarded interrupted model output before retry.",
+    streamError: true,
+  });
 }
 
 type InterruptedStreamHistoryState = TurnState & {
@@ -235,7 +231,6 @@ function snapshotStartedInterruptedTools(state: TurnState): void {
 
 function interruptedStreamRetryBlockReason(
   state: TurnState,
-  session: Session,
   error?: unknown,
 ): string | null {
   const cause = streamRetryErrorCause(error);
@@ -249,21 +244,26 @@ function interruptedStreamRetryBlockReason(
       return "not retrying degenerate output after streamed tool work; retry manually";
     }
   }
-  if (state.toolUseBlocks.length === 0) return null;
   const executor = state.streamingToolExecutor as {
     getToolStates?: () => ReadonlyArray<{
       readonly id: string;
       readonly status: string;
       readonly toolName: string;
+      readonly hasDispatched?: boolean;
     }>;
   } | null;
   const toolStates = new Map(
     executor?.getToolStates?.().map((tool) => [tool.id, tool]) ?? [],
   );
+  // The caller cancels queued work before this snapshot and before awaiting
+  // admission. A read-only label is not permission to replay dispatched work.
+  for (const tool of toolStates.values()) {
+    if (tool.hasDispatched === false) continue;
+    return `streamed tool ${tool.toolName} (${tool.id}) reached ${tool.status} and may have executed`;
+  }
   for (const block of state.toolUseBlocks) {
-    if (isReplaySafeStreamTool(session, block.name)) continue;
-    const status = toolStates.get(block.id)?.status ?? "queued";
-    return `not retrying because streamed tool ${block.name} (${block.id}) reached ${status} without an explicit read-only replay contract`;
+    if (toolStates.get(block.id)?.hasDispatched === false) continue;
+    return `the dispatch state of streamed tool ${block.name} (${block.id}) is unknown`;
   }
   return null;
 }

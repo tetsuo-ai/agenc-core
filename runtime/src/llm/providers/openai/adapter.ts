@@ -2371,9 +2371,7 @@ export class OpenAIProvider implements LLMProvider {
       const missingStrictTerminal =
         requiresStrictChatCompletionsSse(this.name) &&
         !sawFinishReason &&
-        !sawDone &&
-        toolCallAccumulator.size === 0 &&
-        !unterminatedFragmentNamesToolCalls;
+        !sawDone;
       const missingCompatibleTerminal =
         !requiresStrictChatCompletionsSse(this.name) &&
         streamCapabilityHints.acceptsCleanEofAsTerminal !== true &&
@@ -2381,9 +2379,10 @@ export class OpenAIProvider implements LLMProvider {
         !sawDone &&
         !unterminatedFragmentNamesToolCalls;
       if (missingStrictTerminal || missingCompatibleTerminal) {
-        // Strict providers: the connection ended before either terminal
-        // signal and before any tool call fragment. Compatible providers:
-        // EOF without finish_reason or [DONE] is the same cut-stream case.
+        // EOF before either terminal signal is a cut stream, including
+        // buffered tool fragments. Chat-completions calls are not published
+        // until validation below, so incomplete arguments cannot execute.
+        // An explicit terminal with invalid contents still fails validation.
         throw new LLMStreamTruncatedError(
           this.name,
           missingCompatibleTerminalMessage(
