@@ -2244,16 +2244,27 @@ async function assertSeedUserPromptFits(
   user: LLMMessage,
   modelInstructions: string,
   signal: AbortSignal,
+  priorMessages: readonly LLMMessage[] = [],
 ): Promise<void> {
   const window = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
   if (window === undefined || !Number.isFinite(window) || window <= 0) return;
-  const state = buildInitialTurnState(ctx, user, { modelInstructions });
+  // Invocation channels are one authenticated input unit. The last user
+  // channel alone cannot be canonicalized or sized without its policy and
+  // task channels. Ordinary conversation history stays on the compaction path.
+  const invocation = user.runtimeOnly?.agentInvocation;
+  const seedMessages = invocation === undefined
+    ? [user]
+    : [...priorMessages.slice(Math.max(0, priorMessages.length - invocation.channelIndex)), user];
+  const state = buildInitialTurnState(ctx, user, {
+    modelInstructions,
+    priorMessages: seedMessages.slice(0, -1),
+  });
   // Mirror the final image projection without consuming attachments, pruning
   // retained history, or emitting notices. Large images already replaced by
   // placeholders must retain that path rather than causing a false refusal.
   const imagePolicy = modelImagePolicy(session, ctx, state,
     session.services.configStore?.current() ?? ctx.config as AgenCConfig);
-  const visible = withholdImagesForModel([user], imagePolicy, rejectedImagesFor(session, imagePolicy.route));
+  const visible = withholdImagesForModel(seedMessages, imagePolicy, rejectedImagesFor(session, imagePolicy.route));
   const bounded = boundContextImageBytes(visible.messages, resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
   ));
@@ -2265,7 +2276,7 @@ async function assertSeedUserPromptFits(
     pressure = await preparedRequestContextPressure(request, session, ctx, signal, model, false);
   } catch (error) {
     if (!(error instanceof TokenAccountingError) || error.code !== "request_too_large") throw error;
-    const bytes = Buffer.byteLength(JSON.stringify(user.content), "utf8");
+    const bytes = Buffer.byteLength(JSON.stringify(invocation === undefined ? user.content : seedMessages), "utf8");
     throw new Error(
       `This prompt is too large to process: ${bytes.toLocaleString("en-US")} bytes; ` +
       `the input-size limit is ${MAX_TOKEN_ACCOUNTING_REQUEST_BYTES.toLocaleString("en-US")} bytes. ` +
@@ -2343,7 +2354,7 @@ async function* runTurnKernelInner(
     .join("\n\n");
   if (opts.resume === undefined) {
     await assertSeedUserPromptFits(session, ctx, user, modelInstructions,
-      opts.signal ?? runningTask.abortController.signal);
+      opts.signal ?? runningTask.abortController.signal, prior);
   }
   const priorExisting = prior;
   const realtimeBaseline = readRealtimeUpdateBaseline(session);
