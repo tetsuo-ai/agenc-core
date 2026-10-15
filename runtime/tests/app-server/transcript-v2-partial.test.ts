@@ -20,6 +20,62 @@ const snapshot = (items = prefix(), active = true) => sessionTranscriptV2FromRol
 );
 
 describe("partial assistant transcript recovery", () => {
+  it.each(["stream_disconnected", "stream_attempt_discarded"])("discards the abandoned prefix at the %s retry boundary, including replay", (cause) => {
+    const items = [...prefix(),
+      event(5, { type: "stream_error", payload: { cause, message: "Discarded attempt before retry." } }),
+      event(6, { type: "agent_message_delta", payload: { delta: "fresh answer" } }),
+    ];
+    const state = snapshot(items);
+    expect(state.messages.at(-1)?.text).toBe("fresh answer");
+    const replay = items.flatMap(item => {
+      if (item.type !== "event_msg") return [];
+      const transcriptEvent = { id: item.payload.id, ...item.payload.msg };
+      return daemonTranscriptSnapshotCoversEvent(state, {
+        params: { runId: "run", turnId: "turn", sequence: item.payload.seq },
+      }, transcriptEvent) ? [] : [transcriptEvent];
+    });
+    const display = adaptTranscriptEvents([...daemonTranscriptSnapshotEvents(state, "session"), ...replay]);
+    expect(display.streamingText).toBe("fresh answer");
+    expect(JSON.stringify(display.messages)).not.toContain("Opening text");
+    expect(daemonTranscriptSnapshotCoversEvent(state, {
+      params: { runId: "run", turnId: "turn", sequence: 7 },
+    }, { type: "stream_error", payload: { cause, message: "Next attempt failed." } })).toBe(false);
+  });
+
+  it.each(["stream_disconnected", "stream_attempt_discarded"])("does not restore abandoned text while %s waits for fresh output", (cause) => {
+    const items = [...prefix(), event(5, { type: "stream_error", payload: { cause, message: "Retrying." } })];
+    const state = snapshot(items);
+    expect(state.messages.filter(message => message.role === "assistant")).toEqual([]);
+    for (const item of items.slice(2)) {
+      if (item.type !== "event_msg") continue;
+      expect(daemonTranscriptSnapshotCoversEvent(state, {
+        params: { runId: "run", turnId: "turn", sequence: item.payload.seq },
+      }, { ...item.payload.msg })).toBe(true);
+    }
+    const display = adaptTranscriptEvents(daemonTranscriptSnapshotEvents(state, "session"));
+    expect(display.streamingText).toBeNull();
+    expect(display.isStreaming).toBe(true);
+    expect(snapshot(items, false).messages.filter(message => message.role === "assistant")).toEqual([]);
+  });
+
+  it("resets the byte cap after discarding an oversized attempt and retains committed segments", () => {
+    const state = snapshot([...prefix(),
+      event(5, { type: "agent_message", payload: { message: "Committed segment" } }),
+      event(6, { type: "agent_message_delta", payload: { delta: "abandoned".repeat(20_000) } }),
+      event(7, { type: "stream_error", payload: { cause: "stream_attempt_discarded", message: "Retrying." } }),
+      event(8, { type: "agent_message_delta", payload: { delta: "fresh answer" } }),
+    ]);
+    expect(state.messages.map(message => message.text)).toEqual(["Tell me", "Committed segment", "fresh answer"]);
+    expect(state.messages.at(-1)?.partialTruncated).toBeUndefined();
+  });
+
+  it("keeps partials across stream errors that do not discard an attempt", () => {
+    const state = snapshot([...prefix(), event(5, {
+      type: "stream_error", payload: { cause: "stream_idle", message: "Idle watchdog fired." },
+    })]);
+    expect(state.messages.at(-1)?.text).toBe("Opening text. More text.");
+  });
+
   it("restores the live prefix, suppresses covered deltas, and appends the continuation exactly once", () => {
     const state = snapshot();
     const events = daemonTranscriptSnapshotEvents(state, "session");

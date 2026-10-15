@@ -423,6 +423,7 @@ export function sessionTranscriptV2FromRollout(
   let partialBytes = 0;
   let partialTruncated = false;
   let partialEvent: Event | undefined;
+  let partialSequence: number | undefined;
   const clearPartial = (): void => {
     partialText = "";
     partialBytes = 0;
@@ -570,6 +571,7 @@ export function sessionTranscriptV2FromRollout(
     }
     if (event.msg.type === "turn_started") {
       retainPartial("interrupted");
+      partialSequence = undefined;
       currentTurnId = event.msg.payload.turnId;
       if (pendingUserIndex !== undefined) {
         messages[pendingUserIndex]!.turnId = currentTurnId;
@@ -610,9 +612,21 @@ export function sessionTranscriptV2FromRollout(
       }
       continue;
     }
+    if (event.msg.type === "stream_error" && (
+      event.msg.payload.cause === "stream_attempt_discarded" ||
+      event.msg.payload.cause === "stream_disconnected"
+    )) {
+      // The explicit discard and the legacy reconnect notice both abandon
+      // the provisional segment. Keep the boundary even before fresh deltas
+      // arrive so replay cannot resurrect the discarded attempt.
+      clearPartial();
+      if (currentTurnId !== undefined) partialSequence = sequence;
+      continue;
+    }
     if (event.msg.type === "agent_message_delta") {
       if (currentTurnId === undefined) continue;
       partialEvent = event;
+      partialSequence = sequence;
       const delta = event.msg.payload.delta;
       const remaining = partialByteCap - partialBytes;
       if (!partialTruncated) {
@@ -681,6 +695,7 @@ export function sessionTranscriptV2FromRollout(
       currentTurnId = undefined;
       currentClientMessageId = undefined;
       openTurn = undefined;
+      partialSequence = undefined;
     }
   }
 
@@ -703,7 +718,11 @@ export function sessionTranscriptV2FromRollout(
     asOfSequence,
     messages,
     events: [...transcriptNoticesFromRollout(items, boundaryIndex, runId), ...attachmentEvents].sort((a, b) => a.committedSequence - b.committedSequence),
-    ...(liveTurn !== undefined ? { activeTurn: liveTurn } : {}),
+    ...(liveTurn !== undefined ? { activeTurn: {
+      ...liveTurn,
+      ...(currentTurnId === liveTurn.turnId && partialSequence !== undefined
+        ? { partialSequence } : {}),
+    } } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
     ...(planMode !== undefined
       ? {

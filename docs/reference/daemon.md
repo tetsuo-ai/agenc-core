@@ -41,6 +41,9 @@ replaces that prefix with the complete answer. Recovery uses the journal's
 existing sanitized display deltas; it adds no persistence or fsync guarantee
 for in-flight output. Committed-message durability and daemon lifetime rules
 are unchanged. A hard crash can still lose deltas that had not been flushed.
+Retry boundaries discard the failed attempt's partial text. Active snapshots
+carry a display-stream replay watermark even while waiting for fresh output,
+so replay cannot restore the discarded attempt or clear the new prefix.
 
 Session termination revokes new attachments immediately and awaits resource
 cleanup. Concurrent terminators share cleanup; a later termination request can

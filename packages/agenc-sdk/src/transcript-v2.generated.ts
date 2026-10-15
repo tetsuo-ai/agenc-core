@@ -38,6 +38,8 @@ export interface SessionTranscriptV2Message extends TranscriptV2JsonObject {
 export interface SessionTranscriptV2ActiveTurn extends TranscriptV2JsonObject {
   readonly turnId: string;
   readonly clientMessageId?: string;
+  /** Display-delta replay watermark, including discarded attempts with no fresh text. */
+  readonly partialSequence?: number;
 }
 
 export interface SessionTranscriptV2TurnResult extends TranscriptV2JsonObject {

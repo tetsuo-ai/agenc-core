@@ -65,6 +65,10 @@ export function daemonTranscriptSnapshotEvents(
   ) {
     throw new Error("Daemon returned an invalid transcript snapshot");
   }
+  const partialSequence = snapshot.activeTurn?.partialSequence;
+  if (partialSequence !== undefined && (
+    !Number.isSafeInteger(partialSequence) || partialSequence < 0 || partialSequence > snapshot.asOfSequence
+  )) throw new Error("Daemon returned an invalid partial transcript watermark");
   const events: { readonly sequence: number; readonly event: JsonObject }[] = snapshot.messages.map((message) => {
     if (
       (message.role !== "user" && message.role !== "assistant") ||
@@ -227,6 +231,19 @@ export function daemonTranscriptSnapshotCoversEvent(
   }
   if (transcriptEvent.type === "turn_started" || transcriptEvent.type === "turn_start") {
     return true;
+  }
+  if (
+    (transcriptEvent.type === "agent_message_delta" || (
+      transcriptEvent.type === "stream_error" && isRecord(payload) &&
+      (payload.cause === "stream_attempt_discarded" || payload.cause === "stream_disconnected")
+    )) && snapshot.activeTurn.partialSequence !== undefined &&
+    sequence <= snapshot.activeTurn.partialSequence
+  ) return true;
+  if (transcriptEvent.type === "stream_error" && isRecord(payload) &&
+      (payload.cause === "stream_attempt_discarded" || payload.cause === "stream_disconnected")) {
+    // A canonical commit can cover a discard even when the stream has not
+    // produced a subsequent delta watermark in this turn.
+    return snapshot.messages.some(message => message.turnId === turnId && message.committedSequence >= sequence);
   }
   if (
     transcriptEvent.type === "user_message" ||

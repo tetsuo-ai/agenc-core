@@ -3840,6 +3840,8 @@ export interface SessionTranscriptV2Message extends JsonObject {
 export interface SessionTranscriptV2ActiveTurn extends JsonObject {
   readonly turnId: string;
   readonly clientMessageId?: string;
+  /** Display-delta replay watermark, including discarded attempts with no fresh text. */
+  readonly partialSequence?: number;
 }
 
 /**
