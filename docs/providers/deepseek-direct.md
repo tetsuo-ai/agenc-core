@@ -1,7 +1,8 @@
 # Direct DeepSeek in AgenC
 
-The native `deepseek` provider supports `deepseek-v4-flash` and
-`deepseek-v4-pro`. Their registered reasoning levels are `low`, `high`, and
+The native `deepseek` provider supports `deepseek-flash` (DeepSeek V4.1 Flash,
+the default) and `deepseek-v4-pro`. The older IDs `deepseek-v4-flash` and
+`deepseek-v4-flash-vision-exp` still resolve to the Flash entry. Their registered reasoning levels are `low`, `high`, and
 `max`, with `high` as the default. `max` remains literal on the wire.
 Managed AgenC models and OpenRouter routes keep their separate contracts.
 
@@ -16,8 +17,8 @@ managed promotion's spending limits.
 Thinking is enabled explicitly. Native requests omit `tool_choice`,
 `parallel_tool_calls`, and temperature, and replay `reasoning_content` only
 for messages with matching provider and model provenance. Tool arguments
-must finish streaming before execution. Images remain unsupported on these
-two text model entries.
+must finish streaming before execution. `deepseek-flash` accepts image
+input; `deepseek-v4-pro` does not.
 
 `AGENC_DEEPSEEK_REASONING_ONLY_REPLAY=1` is an experimental, default-off
 switch for the native provider. With tools available and thinking enabled, it preserves

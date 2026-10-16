@@ -160,7 +160,7 @@ they run only through the Grok Build CLI ACP path. See
 | `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
 | `venice` | Venice AI | `zai-org-glm-5-2` (offline fallback) | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` | `VENICE_BASE_URL` | `api-key` |
 | `groq` | Groq | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
-| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
+| `deepseek` | DeepSeek | `deepseek-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
 | `meta` | Meta | `muse-wonder-1.0` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
 | `qwen` | QwenCloud Pay-As-You-Go | `qwen3.8-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` | `DASHSCOPE_BASE_URL`, `QWEN_BASE_URL` | `api-key` |
 | `qwen-token-plan` | QwenCloud Token Plan | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_TOKEN_PLAN_API_KEY` | `QWEN_TOKEN_PLAN_BASE_URL`, `DASHSCOPE_TOKEN_PLAN_BASE_URL` | `api-key` |

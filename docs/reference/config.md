@@ -512,7 +512,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `model_provider` | Configured startup canonical provider slug. Strict v2 rejects the retired `xai`, `custom`, and `openai_compatible` selector spellings. |
 | `approval_policy` | `untrusted`, `on-failure`, `on-request`, or `never`. |
 | `sandbox_mode` | `read-only`, `workspace-write`, or `danger-full-access`. `read-only` and `workspace-write` reserve `AGENC_HOME` when it sits under a writable ancestor. `danger-full-access` skips the reservation. See [tools-permissions-sandbox.md](tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots). |
-| `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`. |
+| `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
 | `model_verbosity` | `low`, `medium`, or `high`. Sets response detail via the native verbosity parameter on supported direct OpenAI models; other routes (including DeepSeek, GLM, Anthropic and ChatGPT subscription models) use a Response Detail instruction. Applies at the top level or in a profile. A runtime response-detail override takes precedence; clearing it restores the configured value. Without an explicit setting, `DEFAULT_MODEL_VERBOSITY` in `runtime/src/config/runtime-defaults.ts` supplies the release default. When that switch is undefined, no response-detail instruction or native verbosity parameter is added. This controls user-facing prose, not the work, checks, or required error reporting. |
