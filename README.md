@@ -1,17 +1,36 @@
 # AgenC Core
 
-> Daemon-backed coding agent: interactive TUI, headless print mode, background
-> agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
-
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
 ![version](https://img.shields.io/badge/version-0.19.6-blue)
 ![node](https://img.shields.io/badge/node-26.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
 An open source AI coding agent for your terminal. It works with any model
-provider. With DeepSeek V4.1 Flash it scored 76.2% on Terminal-Bench 2.1 for $34
-([results](https://get.agenc.ag/terminal-bench/)). Install it from
-[get.agenc.ag](https://get.agenc.ag).
+provider.
+
+<p align="center">
+  <img src="docs/media/agenc-demo.gif" width="880" alt="AgenC Core in a terminal with DeepSeek V4.1 Flash. It finds two regressions in a checkout service, fixes them, and runs the tests until all four pass, for less than a cent.">
+</p>
+
+```bash
+curl -fsSL https://get.agenc.ag/install.sh | sh
+```
+
+Then run `agenc onboard`. Windows and npm installs are on
+[get.agenc.ag](https://get.agenc.ag), and you can
+[verify the download](https://get.agenc.ag/verify/).
+
+- With DeepSeek V4.1 Flash it scored 76.2% on Terminal-Bench 2.1 for $34. Every
+  entry on the Harbor Hub leaderboard spent at least $134.
+  [Full results](https://get.agenc.ag/terminal-bench/).
+- Bring any model: OpenAI, Anthropic, Grok, Gemini, DeepSeek, OpenRouter and
+  more, or local models through Ollama and LM Studio.
+- Work in the terminal UI, run it headless with `agenc -p` in scripts and CI, or
+  start background agents and follow them from your phone.
+
+<p align="center">
+  <a href="https://get.agenc.ag/terminal-bench/"><img src="docs/media/terminal-bench-2-1-cost.png" width="720" alt="Chart of score against cost on Terminal-Bench 2.1. AgenC Core with DeepSeek V4.1 Flash sits at the top, 76.2% for $34. The leaderboard entries all cost $134 or more."></a>
+</p>
 
 **AgenC Core** is the implementation repository for the `agenc` CLI. A local
 daemon owns agent/session lifecycle, permissions, provider calls, and command
