@@ -217,6 +217,17 @@ describe("normalizeSessionToolPolicy and metadata", () => {
         [TOOL_POLICY_METADATA_KEY]: { enabledTools: ["FileRead"], frozenPermissionMode: true },
       }),
     ).toEqual({ enabledTools: ["FileRead"], frozenPermissionMode: true });
+    expect(
+      sessionToolPolicyFromMetadata({
+        [TOOL_POLICY_METADATA_KEY]: {
+          enabledTools: ["system.searchTools", "mcp.task.view_task"],
+          noFsWriteTools: ["mcp.task.view_task"],
+        },
+      }),
+    ).toEqual({
+      enabledTools: ["system.searchTools", "mcp.task.view_task"],
+      noFsWriteTools: ["mcp.task.view_task"],
+    });
     // Dropping a corrupt policy would silently widen a restored session.
     expect(() =>
       sessionToolPolicyFromMetadata({ [TOOL_POLICY_METADATA_KEY]: { enabledTools: [] } }),

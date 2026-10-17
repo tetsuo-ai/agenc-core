@@ -173,6 +173,39 @@ describe("a resume keeps the policy the session was created with", () => {
   });
 });
 
+describe("a resume keeps the noFsWriteTools grant the session was created with", () => {
+  const granted = normalizeSessionToolPolicy({
+    enabledTools: ["FileRead", "mcp.desktop.read_file"],
+    frozenPermissionMode: true,
+    deferMcpTools: false,
+    noFsWriteTools: ["mcp.desktop.read_file"],
+  });
+
+  it("persists the grant with the run so restore and resume see it", async () => {
+    const h = harness();
+    await create(h, granted);
+    expect(h.started[0]!.toolPolicy).toEqual(granted);
+    const stored = h.runs.at(-1)!.metadata as JsonObject;
+    expect(stored[TOOL_POLICY_METADATA_KEY]).toEqual({
+      enabledTools: ["FileRead", "mcp.desktop.read_file"],
+      frozenPermissionMode: true,
+      deferMcpTools: false,
+      noFsWriteTools: ["mcp.desktop.read_file"],
+    });
+    expect(resolveCreateToolPolicy(undefined, stored)).toEqual(granted);
+    expect(resolveCreateToolPolicy(granted, stored)).toEqual(granted);
+  });
+
+  it("refuses a resume that drops or changes the grant", async () => {
+    const h = harness();
+    await create(h, granted);
+    const stored = h.runs.at(-1)!.metadata as JsonObject;
+    expect(() => resolveCreateToolPolicy(POLICY, stored)).toThrow(
+      "differs from the policy this session was created with",
+    );
+  });
+});
+
 describe("a frozen permission mode", () => {
   async function frozen(): Promise<{ h: Harness; sessionId: string }> {
     const h = harness();
