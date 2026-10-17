@@ -32,3 +32,40 @@ it("advances through multiple refusal placeholders without clearing a keep-block
   state.apply({ type: "effect_review_acknowledged", payload: { callId: "call-1", disposition: "confirmed_no_effect", remaining: 1 } });
   expect(state.reviews.map(review => review.callId)).toEqual(["call-2"]);
 });
+
+it("describes a review from JSON tool arguments and later error text", () => {
+  const state = new PendingEffectReviews();
+  expect(state.apply({
+    type: "tool_call_started",
+    payload: { callId: "call-1", toolName: "Browser", args: '{"url":"http://127.0.0.1:4173","wait":true}' },
+  })).toBe(false);
+  expect(state.apply({
+    type: "effect_unknown_outcome",
+    payload: { callId: "call-1", recoveryCategory: "side-effecting", requiresReview: true, reason: "Unknown outcome" },
+  })).toBe(true);
+  expect(state.reviews).toMatchObject([{
+    callId: "call-1", toolName: "Browser", description: "http://127.0.0.1:4173", error: "Unknown outcome",
+  }]);
+  expect(state.apply({
+    type: "tool_call_completed",
+    payload: { callId: "call-1", isError: true, result: "Chrome crashed at launch" },
+  })).toBe(true);
+  expect(state.reviews).toMatchObject([{ callId: "call-1", error: "Chrome crashed at launch" }]);
+});
+
+it("replaces local placeholders with a snapshot and ignores incomplete rows", () => {
+  const state = new PendingEffectReviews();
+  state.recordRefusal("Run /resolve stale <disposition>.");
+  expect(state.apply({
+    type: "effect_reviews_snapshot",
+    payload: { reviews: [
+      { callId: "call-live", toolName: "Browser", description: "navigate", error: "Chrome crashed" },
+      { callId: "call-bad", toolName: "Bash" },
+    ] },
+  })).toBe(true);
+  expect(state.reviews).toEqual([
+    { callId: "call-live", toolName: "Browser", description: "navigate", error: "Chrome crashed" },
+  ]);
+  state.recordRefusal("Run /resolve extra <disposition>.");
+  expect(state.reviews.map(review => review.callId)).toEqual(["call-live"]);
+});

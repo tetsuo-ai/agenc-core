@@ -38,6 +38,16 @@ describe("startup workspace pinning", () => {
     await expect(openStartupResumeCwd(link)).rejects.toThrow("non-symlink directory");
   });
 
+  it("rejects relative and unnormalized paths before any workspace syscall", async () => {
+    const lstat = vi.spyOn(fsPromises, "lstat");
+    syncBuiltinESMExports();
+    await expect(openStartupResumeCwd("relative", { platformForTestingOnly: "linux" }))
+      .rejects.toThrow("absolute and normalized");
+    await expect(openStartupResumeCwd(`${root}/.`, { platformForTestingOnly: "linux" }))
+      .rejects.toThrow("absolute and normalized");
+    expect(lstat).not.toHaveBeenCalled();
+  });
+
   it("rejects replacement during pinning and closes the directory fd", async () => {
     const cwd = join(root, "workspace");
     mkdirSync(cwd);
