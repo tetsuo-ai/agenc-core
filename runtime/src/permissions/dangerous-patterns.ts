@@ -188,6 +188,7 @@ const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
   "env",
   "exec",
   "nice",
+  "ionice",
   "nohup",
   "stdbuf",
   "time",
@@ -208,6 +209,7 @@ const SUBSTITUTION_OUTPUT_WRAPPERS: ReadonlySet<string> = new Set([
   "env",
   "exec",
   "nice",
+  "ionice",
   "nohup",
   "stdbuf",
   "time",
@@ -324,6 +326,8 @@ function powerShellForcedDelete(command: string): boolean {
         (POWERSHELL_SCRIPT_SHELLS.has(name) && isPowerShellForcedDeleteScript(script)) ||
         powerShellForcedDelete(script));
     }
+    const watchMatch = watchFloorMatch(words, commandIndex, name, powerShellForcedDelete);
+    if (watchMatch !== null) return watchMatch;
     if (!RM_WRAPPER_COMMANDS.has(name)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, name);
   }
@@ -729,17 +733,33 @@ function findExecRemovesMatchedPath(execWords: readonly string[]): boolean {
 
 function downloadPipeToShell(command: string): boolean {
   const fragments = splitShellPipeSegments(command);
-  if (fragments.length < 2) return false;
+  if (fragments.length >= 2) {
+    let downloaderOutputInPipe = false;
+    for (const fragment of fragments) {
+      if (isDownloadProducerCommand(fragment)) {
+        downloaderOutputInPipe = true;
+        continue;
+      }
+      if (downloaderOutputInPipe && isShellSinkCommand(fragment)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
-  let downloaderOutputInPipe = false;
-  for (const fragment of fragments) {
-    if (isDownloadProducerCommand(fragment)) {
-      downloaderOutputInPipe = true;
-      continue;
-    }
-    if (downloaderOutputInPipe && isShellSinkCommand(fragment)) {
-      return true;
-    }
+  const words = splitSimpleShellWords(command);
+  let commandIndex = firstCommandIndex(words, 0);
+  while (commandIndex !== null) {
+    const commandName = normalizedCommandName(words[commandIndex] ?? "");
+    const watchMatch = watchFloorMatch(
+      words,
+      commandIndex,
+      commandName,
+      downloadPipeToShell,
+    );
+    if (watchMatch !== null) return watchMatch;
+    if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
+    commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
   return false;
 }
@@ -768,6 +788,13 @@ function shellExecutesDownloadedContent(command: string): boolean {
       }
       return shellInputContainsDownloadSubstitution(command);
     }
+    const watchMatch = watchFloorMatch(
+      words,
+      commandIndex,
+      commandName,
+      shellExecutesDownloadedContent,
+    );
+    if (watchMatch !== null) return watchMatch;
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
@@ -833,6 +860,13 @@ function chmodChownSystemPath(command: string): boolean {
       return chmodChownTargetArgs(words.slice(commandIndex + 1))
         .some((word) => isProtectedChmodChownTarget(stripShellQuotes(word)));
     }
+    const watchMatch = watchFloorMatch(
+      words,
+      commandIndex,
+      commandName,
+      chmodChownSystemPath,
+    );
+    if (watchMatch !== null) return watchMatch;
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
@@ -909,6 +943,13 @@ function isDownloadProducerCommand(command: string): boolean {
       const splitCommand = envSplitStringCommand(words, commandIndex + 1);
       if (splitCommand !== null) return isDownloadProducerCommand(splitCommand);
     }
+    const watchMatch = watchFloorMatch(
+      words,
+      commandIndex,
+      commandName,
+      isDownloadProducerCommand,
+    );
+    if (watchMatch !== null) return watchMatch;
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
@@ -925,6 +966,13 @@ function isShellSinkCommand(command: string): boolean {
       const splitCommand = envSplitStringCommand(words, commandIndex + 1);
       if (splitCommand !== null) return isShellSinkCommand(splitCommand);
     }
+    const watchMatch = watchFloorMatch(
+      words,
+      commandIndex,
+      commandName,
+      isShellSinkCommand,
+    );
+    if (watchMatch !== null) return watchMatch;
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
@@ -998,6 +1046,13 @@ function commandAtIndexContainsRecursiveForceRemove(
   ) {
     return true;
   }
+  const watchMatch = watchFloorMatch(
+    words,
+    commandIndex,
+    command,
+    isRecursiveForceRemove,
+  );
+  if (watchMatch !== null) return watchMatch;
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
 
   const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
@@ -1020,6 +1075,13 @@ function commandAtIndexContainsForceRemove(
   ) {
     return true;
   }
+  const watchMatch = watchFloorMatch(
+    words,
+    commandIndex,
+    command,
+    isForceRemove,
+  );
+  if (watchMatch !== null) return watchMatch;
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
 
   const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
@@ -1052,6 +1114,13 @@ function commandAtIndexRemovesPlaceholder(
   ) {
     return true;
   }
+  const watchMatch = watchFloorMatch(
+    words,
+    commandIndex,
+    command,
+    (script) => shellScriptRemovesPlaceholder(script, placeholders),
+  );
+  if (watchMatch !== null) return watchMatch;
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
 
   const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
@@ -1098,6 +1167,8 @@ function commandIndexAfterWrapper(
       return envCommandIndex(words, wrapperIndex + 1);
     case "nice":
       return niceCommandIndex(words, wrapperIndex + 1);
+    case "ionice":
+      return ioniceCommandIndex(words, wrapperIndex + 1);
     case "timeout":
       return timeoutCommandIndex(words, wrapperIndex + 1);
     case "stdbuf":
@@ -1210,6 +1281,48 @@ function joinedEnvSplitStringCommand(
   if (script.length === 0) return null;
   const trailing = words.slice(trailingStartIndex).map(stripShellQuotes);
   return [script, ...trailing].filter((word) => word.length > 0).join(" ");
+}
+
+function ioniceCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      return index + 1 < words.length ? index + 1 : null;
+    }
+    if (
+      word === "-c" ||
+      word === "--class" ||
+      word === "-n" ||
+      word === "--classdata" ||
+      word === "-p" ||
+      word === "--pid" ||
+      word === "-P" ||
+      word === "--pgid" ||
+      word === "-u" ||
+      word === "--uid"
+    ) {
+      index += 2;
+      continue;
+    }
+    if (
+      word.startsWith("--class=") ||
+      word.startsWith("--classdata=") ||
+      word.startsWith("--pid=") ||
+      word.startsWith("--pgid=") ||
+      word.startsWith("--uid=") ||
+      /^-[cnpPu].+/u.test(word)
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
 }
 
 function niceCommandIndex(words: readonly string[], startIndex: number): number | null {
@@ -1419,6 +1532,73 @@ function flagOnlyWrapperCommandIndex(
     if (!word.startsWith("-") || word === "-") return index;
   }
   return null;
+}
+
+/**
+ * watch's default mode runs the rest of the line through `sh -c`. `-x` /
+ * `--exec` runs those words as argv. Either way the floor must judge the
+ * operand as a command string: `watch -n1 'rm -rf /tmp'` is one token, not
+ * an `rm` argv, so peeling watch as a wrapper would miss it.
+ */
+function watchFloorMatch(
+  words: readonly string[],
+  commandIndex: number,
+  command: string,
+  matches: (script: string) => boolean,
+): boolean | null {
+  if (command !== "watch") return null;
+  const script = watchOperandScript(words, commandIndex);
+  return script !== null && matches(script);
+}
+
+function watchOperandScript(
+  words: readonly string[],
+  watchIndex: number,
+): string | null {
+  const operandIndex = watchOperandIndex(words, watchIndex + 1);
+  if (operandIndex === null) return null;
+  const script = words.slice(operandIndex).map(stripShellQuotes).join(" ");
+  return script.length > 0 ? script : null;
+}
+
+const WATCH_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "-n",
+  "--interval",
+  "-q",
+  "--equexit",
+]);
+
+function watchOperandIndex(
+  words: readonly string[],
+  startIndex: number,
+): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (WATCH_VALUE_OPTIONS.has(word)) {
+      index += 2;
+      continue;
+    }
+    if (
+      word.startsWith("--interval=") ||
+      word.startsWith("--equexit=") ||
+      word.startsWith("--differences=") ||
+      /^-(?:n|q).+/u.test(word)
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-") && word !== "-") {
+      index++;
+      continue;
+    }
+    break;
+  }
+  return index < words.length ? index : null;
 }
 
 function shellScriptContainsDanger(
@@ -1806,6 +1986,13 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
         shellCommandHasShellConstruct(script, depth + 1)) ||
         shellInputContainsShellConstruct(normalized);
     }
+    const watchMatch = watchFloorMatch(
+      words,
+      commandIndex,
+      commandName,
+      (script) => shellCommandHasShellConstruct(script, depth + 1),
+    );
+    if (watchMatch !== null) return watchMatch;
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
