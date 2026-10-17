@@ -8,7 +8,7 @@ export interface DesktopAuthorityGrant { readonly id: string; readonly expiresAt
 const grants = new WeakSet<object>();
 const publicKeys = new WeakMap<object, KeyObject>();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const READS = new Set(["desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs", "browser_snapshot", "browser_read_text", "browser_screenshot", "browser_wait_for", "browser_downloads", "browser_console", "terminal_list", "terminal_read"]);
+const READS = new Set(["desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs", "browser_snapshot", "browser_read_text", "browser_screenshot", "browser_wait_for", "browser_downloads", "browser_console", "terminal_list", "terminal_read", "marketplace_status", "marketplace_find_work", "marketplace_review_inbox"]);
 // Browser v1 contract: isolated no-Node contents, http(s)-only navigation,
 // owner-targeted tabs, automatic downloads blocked before any file creation.
 const UI_MUTATIONS = new Set(["desktop_settings_open", "desktop_settings_update", "desktop_window", "desktop_session_open", "desktop_session_update", "desktop_project_select", "desktop_routines_open", "browser_open_tab", "browser_select_tab", "browser_close_tab", "browser_navigate", "browser_click", "browser_type", "browser_press_key", "browser_scroll", "browser_back", "browser_forward", "browser_reload", "browser_evaluate"]);
@@ -16,6 +16,10 @@ const UI_MUTATIONS = new Set(["desktop_settings_open", "desktop_settings_update"
 // runs in a fresh canonical Core child, never an unsandboxed Desktop process.
 // Unlike UI navigation, they also require a non-read-only admitted parent.
 const ROUTINE_MUTATIONS = new Set(["desktop_routine_create", "desktop_routine_update", "desktop_routine_delete", "desktop_routine_run", "desktop_routine_cancel"]);
+// Desktop's marketplace actions. Each hands work to an agent Desktop runs with its own frozen tool
+// policy (the creator or the worker agent), which spends from the person's wallets within limits the
+// host enforces. Nothing here writes a file; like UI changes they are approval-gated and refused in plan.
+const APP_ACTIONS = new Set(["marketplace_post_task", "marketplace_work_on", "marketplace_review"]);
 const NATIVE_TERMINALS = new Set(["terminal_open", "terminal_run", "terminal_type", "terminal_close"]);
 
 /** Exact protocol keys, independent of insertion order or host locale. */
@@ -149,11 +153,12 @@ export function hasDesktopAuthority(grant: DesktopAuthorityGrant | undefined): b
 }
 
 /** Closed product-owned capability classification; server annotations cannot grant it. */
-export function desktopToolClassification(grant: DesktopAuthorityGrant | undefined, name: string): "read" | "ui-mutation" | "routine-mutation" | undefined {
+export function desktopToolClassification(grant: DesktopAuthorityGrant | undefined, name: string): "read" | "ui-mutation" | "routine-mutation" | "app-action" | undefined {
   if (!hasDesktopAuthority(grant)) return undefined;
   if (READS.has(name)) return "read";
   if (UI_MUTATIONS.has(name)) return "ui-mutation";
   if (ROUTINE_MUTATIONS.has(name)) return "routine-mutation";
+  if (APP_ACTIONS.has(name)) return "app-action";
   return undefined;
 }
 

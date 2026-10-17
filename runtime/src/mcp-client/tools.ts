@@ -1070,7 +1070,7 @@ export async function createToolBridge(
       // Routine writes are fixed runtime-derived storage, not caller-chosen
       // files; their child execution owns its own Core sandbox. The separate
       // guard below also refuses read-only/plan parents before any dispatch.
-      ...(virtualNoFsWrites || desktopClass === "ui-mutation" || desktopClass === "routine-mutation"
+      ...(virtualNoFsWrites || desktopClass === "ui-mutation" || desktopClass === "routine-mutation" || desktopClass === "app-action"
         ? { metadata: { mutating: true, virtualNoFsWrites: true } }
         : {}),
       // Only the signed product-owned inspection list is safe to repeat after
@@ -1079,7 +1079,7 @@ export async function createToolBridge(
       ...(desktopClass === "read" ? { isReadOnly: true, metadata: { mutating: false } } : {}),
       ...(desktopClass === "read" && DESKTOP_IDEMPOTENT_INSPECTIONS.has(mcpTool.name)
         ? { recoveryCategory: "idempotent" as const } : {}),
-      ...(desktopClass === "ui-mutation" || desktopClass === "routine-mutation" || (hasDesktopAuthority(options.serverConfig?.desktopAuthorityGrant) && DESKTOP_NATIVE_TERMINALS.has(mcpTool.name)) ? { requiresApproval: true } : {}),
+      ...(desktopClass === "ui-mutation" || desktopClass === "routine-mutation" || desktopClass === "app-action" || (hasDesktopAuthority(options.serverConfig?.desktopAuthorityGrant) && DESKTOP_NATIVE_TERMINALS.has(mcpTool.name)) ? { requiresApproval: true } : {}),
       ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}),
 
       async execute(args: Record<string, unknown>): Promise<ToolResult> {
