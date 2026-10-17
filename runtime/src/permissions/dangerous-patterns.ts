@@ -196,6 +196,8 @@ const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
   "busybox",
   "toybox",
   "setsid",
+  "chrt",
+  "taskset",
 ]);
 
 /**
@@ -1115,6 +1117,10 @@ function commandIndexAfterWrapper(
       return multiCallAppletIndex(words, wrapperIndex + 1);
     case "setsid":
       return flagOnlyWrapperCommandIndex(words, wrapperIndex + 1);
+    case "chrt":
+      return chrtCommandIndex(words, wrapperIndex + 1);
+    case "taskset":
+      return tasksetCommandIndex(words, wrapperIndex + 1);
     default:
       return null;
   }
@@ -1419,6 +1425,109 @@ function flagOnlyWrapperCommandIndex(
     if (!word.startsWith("-") || word === "-") return index;
   }
   return null;
+}
+
+/**
+ * chrt runs `priority command ...` after its policy flags. `-p` / `--pid`
+ * operates on an existing task and runs no command, so the floor stops.
+ */
+function chrtCommandIndex(
+  words: readonly string[],
+  startIndex: number,
+): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (word === "-p" || word === "--pid") return null;
+    if (
+      word === "-T" ||
+      word === "--sched-runtime" ||
+      word === "-P" ||
+      word === "--sched-period" ||
+      word === "-D" ||
+      word === "--sched-deadline"
+    ) {
+      index += 2;
+      continue;
+    }
+    if (
+      word.startsWith("--sched-runtime=") ||
+      word.startsWith("--sched-period=") ||
+      word.startsWith("--sched-deadline=") ||
+      /^-[TPD].+/u.test(word)
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-") && word !== "-") {
+      index++;
+      continue;
+    }
+    break;
+  }
+  return commandIndexAfterOperand(words, index);
+}
+
+/**
+ * taskset runs `mask command ...`, or `command ...` after `-c` / `--cpu-list`
+ * already named the CPUs. `-p` / `--pid` operates on an existing task.
+ */
+function tasksetCommandIndex(
+  words: readonly string[],
+  startIndex: number,
+): number | null {
+  let index = startIndex;
+  let cpuList = false;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (word === "-p" || word === "--pid") return null;
+    if (word === "-c" || word === "--cpu-list") {
+      cpuList = true;
+      index += 2;
+      continue;
+    }
+    if (word.startsWith("--cpu-list=") || /^-c.+/u.test(word)) {
+      cpuList = true;
+      index++;
+      continue;
+    }
+    if (word.startsWith("-") && word !== "-") {
+      index++;
+      continue;
+    }
+    break;
+  }
+  return cpuList
+    ? commandIndexAfterSeparator(words, index)
+    : commandIndexAfterOperand(words, index);
+}
+
+function commandIndexAfterSeparator(
+  words: readonly string[],
+  index: number,
+): number | null {
+  const commandIndex =
+    index < words.length && stripShellQuotes(words[index]!) === "--"
+      ? index + 1
+      : index;
+  return commandIndex < words.length ? commandIndex : null;
+}
+
+/** Skip a priority or mask, then an optional `--` before the program. */
+function commandIndexAfterOperand(
+  words: readonly string[],
+  operandIndex: number,
+): number | null {
+  if (operandIndex >= words.length) return null;
+  return commandIndexAfterSeparator(words, operandIndex + 1);
 }
 
 function shellScriptContainsDanger(

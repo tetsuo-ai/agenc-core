@@ -135,6 +135,14 @@ const wrapperCases: FloorCase[] = [
   ["toybox rm -rf /", "rm -rf"],
   [`toybox sh -c ${REMOVE_ROOT}`, "rm -rf"],
   [`${DOWNLOAD_PIPE} setsid sh`, "curl|sh"],
+  ["chrt 0 rm -rf /", "rm -rf"],
+  ["chrt --fifo 0 rm -rf /", "rm -rf"],
+  ["chrt -f 99 rm -rf /", "rm -rf"],
+  ["chrt -f 99 -- rm -rf /", "rm -rf"],
+  ["taskset 0x1 rm -rf /", "rm -rf"],
+  ["taskset -c 0 rm -rf /", "rm -rf"],
+  ["taskset --cpu-list 0,1 rm -rf /", "rm -rf"],
+  [`${DOWNLOAD_PIPE} chrt 0 sh`, "curl|sh"],
 ];
 
 function encodedPowerShell(script: string): string {
@@ -188,6 +196,11 @@ export const INERT_SHELL_SCRIPT_COMMANDS: readonly string[] = [
   `pwsh -enc ${encodedPowerShell("Get-Date")}`,
   "setsid ls",
   "toybox --long",
+  "chrt --max",
+  "chrt -p 1",
+  "taskset -p 1",
+  "chrt 0 echo rm -rf /",
+  "taskset 1 echo rm -rf /",
   "bash script.sh -c 'rm -rf /'",
   "bash -- -c 'rm -rf /'",
   "bash -c 'echo ok' 'rm -rf /'",

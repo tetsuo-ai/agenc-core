@@ -262,6 +262,8 @@ describe("dangerous shell command detection", () => {
     expect(isDangerousShellCommand("nice rm -rf /tmp")).toBe(true);
     expect(isDangerousShellCommand("timeout 10 rm -rf /")).toBe(true);
     expect(isDangerousShellCommand("env rm -rf /")).toBe(true);
+    expect(isDangerousShellCommand("chrt --fifo 0 rm -rf /")).toBe(true);
+    expect(isDangerousShellCommand("taskset -c 0 rm -rf /tmp")).toBe(true);
     expect(isDangerousShellCommand("bash -lc 'rm -rf /'")).toBe(true);
     expect(
       isDangerousShellCommand("bash -lc 'cd /tmp; rm -rf /'"),
@@ -353,6 +355,8 @@ describe("dangerous shell command detection", () => {
     "chown root /",
     "chmod -R 777 /tmp/../etc",
     "env chmod -R 777 /./etc",
+    "chrt --fifo 0 chmod -R 777 /etc",
+    "taskset -c 0 chown -R root /bin",
   ])("flags chmod/chown on system paths including bare dirs: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
@@ -384,6 +388,8 @@ describe("dangerous shell command detection", () => {
     expect(isDangerousShellCommand("timeout 10 echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("nice echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("env FOO=bar echo rm -rf /")).toBe(false);
+    expect(isDangerousShellCommand("chrt 0 echo rm -rf /")).toBe(false);
+    expect(isDangerousShellCommand("taskset -c 0 echo rm -rf /")).toBe(false);
   });
 
   test("returns the matched safety label", () => {

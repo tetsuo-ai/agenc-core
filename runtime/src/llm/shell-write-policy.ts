@@ -1129,6 +1129,37 @@ function collectTimeoutWriteTargets(
   return collectCommandWordWriteTargets(params, read.end + 1);
 }
 
+/** Skip a `--` that separates wrapper operands from the program. */
+function commandIndexAfterSeparator(args: readonly string[], index: number): number {
+  return args[index] === "--" ? index + 1 : index;
+}
+
+/** chrt's scheduling priority comes before its command. */
+function collectChrtWriteTargets(
+  params: CommandArguments,
+  read: WrapperOptions,
+): ShellWriteTargetCollection {
+  return collectCommandWordWriteTargets(
+    params,
+    commandIndexAfterSeparator(params.args, read.end + 1),
+  );
+}
+
+/**
+ * taskset's CPU mask comes before its command, unless `-c` already named
+ * the CPUs, in which case the next word is the command.
+ */
+function collectTasksetWriteTargets(
+  params: CommandArguments,
+  read: WrapperOptions,
+): ShellWriteTargetCollection {
+  const cpuList = read.options.some((option) => option.name === "c");
+  return collectCommandWordWriteTargets(
+    params,
+    commandIndexAfterSeparator(params.args, read.end + (cpuList ? 0 : 1)),
+  );
+}
+
 /** The time program writes its report to the file `-o` names, then runs the command. */
 function collectTimeWriteTargets(
   params: CommandArguments,
@@ -1217,6 +1248,38 @@ const WRAPPER_PROGRAMS: readonly (readonly [string, CommandWrapper])[] = [
     short: "n:",
     long: { adjustment: "n:", ...GNU_STANDARD_OPTIONS },
     numericAdjustment: true,
+  }],
+  ["chrt", {
+    short: "ofrbidT:P:D:Rap:mv",
+    long: {
+      other: "o",
+      fifo: "f",
+      rr: "r",
+      batch: "b",
+      idle: "i",
+      deadline: "d",
+      "sched-runtime": "T:",
+      "sched-period": "P:",
+      "sched-deadline": "D:",
+      "reset-on-fork": "R",
+      pid: "p:",
+      "all-tasks": "a",
+      max: "m",
+      verbose: "v",
+      ...GNU_STANDARD_OPTIONS,
+    },
+    inspects: "m",
+    collect: collectChrtWriteTargets,
+  }],
+  ["taskset", {
+    short: "ap:c:",
+    long: {
+      "all-tasks": "a",
+      pid: "p:",
+      "cpu-list": "c:",
+      ...GNU_STANDARD_OPTIONS,
+    },
+    collect: collectTasksetWriteTargets,
   }],
   ["nohup", { short: "", long: GNU_STANDARD_OPTIONS }],
   ["stdbuf", {

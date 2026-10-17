@@ -568,6 +568,13 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     "nice -n5 rm -rf .git",
     "nice -5 rm -rf .git",
     "nice --adjustment=5 rm -rf .git",
+    "chrt 0 rm -rf .git",
+    "chrt --fifo 0 rm -rf .git",
+    "chrt -f 99 -- rm -rf .git",
+    "taskset 0x1 rm -rf .git",
+    "taskset -c 0 rm -rf .git",
+    "taskset --cpu-list=0,1 rm -rf .git",
+    "taskset -c 0 -- rm -rf .git",
     "timeout 5 rm -rf .git",
     "timeout -k 5 -s KILL 10 rm -rf .git",
     "timeout -vk5 10 rm -rf .git",
@@ -589,6 +596,7 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     "xargs -0 -n 1 -P 4 rm -rf .git",
     // Nested and stacked.
     "exec nohup sudo -u root nice -n 5 rm -rf .git",
+    "exec chrt -f 0 taskset -c 0 rm -rf .git",
     "env nohup timeout 5 rm -rf .git",
     "echo x | xargs -I{} sh -c 'rm -rf .git {}'",
     // A function body's first command follows `{` in the segment that defines it.
@@ -617,6 +625,8 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
 
   it.each([
     ["nohup touch src/a.ts", ["/repo/src/a.ts"]],
+    ["chrt --fifo 0 tee src/a.ts", ["/repo/src/a.ts"]],
+    ["taskset -c 0 tee src/a.ts", ["/repo/src/a.ts"]],
     ["sudo -u www tee src/a.ts", ["/repo/src/a.ts"]],
     ["command cp /tmp/a.ts src/a.ts", ["/repo/src/a.ts"]],
     // GNU time writes its report to the -o file.
@@ -642,6 +652,9 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     ["timeout 30 npm test", []],
     ['timeout "$LIMIT" npm test', []],
     ["nice -n 10 make", []],
+    ["chrt 0 make", []],
+    ["taskset -c 0 node server.js", []],
+    ["chrt --max", []],
     ["stdbuf -oL tail -n 5 tmp/log", []],
     ["exec node server.js", []],
     ["sudo apt-get install -y jq", []],
@@ -667,6 +680,8 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
   it.each([
     "nohup -x rm -rf .git",
     "nice --frobnicate rm -rf .git",
+    "chrt -x 0 rm -rf .git",
+    "taskset -x 0 rm -rf .git",
     "timeout -Z 5 rm -rf .git",
     "stdbuf -$MODE rm -rf .git",
     "exec -x rm -rf .git",
@@ -1469,6 +1484,8 @@ describe("classifyShellWorkspaceWritePolicy for braces, emptied roots, globbed c
   it.each([
     ["echo x >> ~/.bashrc", join(homedir(), ".bashrc")],
     ["tee -a ~/.zshrc", join(homedir(), ".zshrc")],
+    ["chrt --fifo 0 tee ~/.bashrc", join(homedir(), ".bashrc")],
+    ["taskset -c 0 tee -a ~/.zshrc", join(homedir(), ".zshrc")],
     ["cp dotfiles/gitconfig ~/.gitconfig", join(homedir(), ".gitconfig")],
     ["mv profile ~/.profile", join(homedir(), ".profile")],
     ["install zprofile ~/.zprofile", join(homedir(), ".zprofile")],
