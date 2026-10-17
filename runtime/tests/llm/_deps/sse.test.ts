@@ -49,4 +49,29 @@ describe("parseSSEFrames", () => {
       expect(result.remaining).toBe("");
     }
   });
+
+  test("applies the remainder cap only to the unfinished tail after the last separator", () => {
+    // A completed frame larger than the cap must not trip it. The single-pass
+    // search advances lastIndex with the matched separator; if position stayed
+    // at 0, the whole chunk would be treated as remainder and abort.
+    const payload = "y".repeat(MAX_SSE_FRAME_BYTES + 1);
+    expect(parseSSEFrames(`data: ${payload}\n\ndata: tail`)).toEqual({
+      frames: [{ data: payload }],
+      remaining: "data: tail",
+    });
+    expect(parseSSEFrames(`data: ${payload}\r\n\r\ndata: tail`)).toEqual({
+      frames: [{ data: payload }],
+      remaining: "data: tail",
+    });
+
+    const prefix = "data: ok\n\n";
+    const exactTail = "z".repeat(MAX_SSE_FRAME_BYTES);
+    expect(parseSSEFrames(prefix + exactTail)).toEqual({
+      frames: [{ data: "ok" }],
+      remaining: exactTail,
+    });
+    expect(() => parseSSEFrames(prefix + exactTail + "z", "openai")).toThrow(
+      LLMInvalidResponseError,
+    );
+  });
 });
