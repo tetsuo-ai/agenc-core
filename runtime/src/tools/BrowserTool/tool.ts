@@ -34,6 +34,7 @@ import { resolveBrowserPolicy } from "../../browser/config.js";
 import { validateNavigableUrl } from "../../browser/ssrf.js";
 import type { BrowserConfig } from "../../config/schema.js";
 import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { revealUrlHosts } from "../../utils/urlDisplay.js";
 import {
   missingSandboxExecutionBoundary,
   readSandboxExecutionBroker,
@@ -141,9 +142,13 @@ function navigateSuggestions(ruleContent: string): readonly PermissionUpdate[] {
 
 function describeAction(input: BrowserToolInput): string {
   const action = str(input.action) ?? "act";
+  const url = str(input.url);
+  // Approval text names the real (ASCII) host so a lookalike URL such as
+  // `аmazon.com` cannot pass for the site it imitates.
+  const shownUrl = url === undefined ? undefined : revealUrlHosts(url);
   switch (action) {
     case "navigate":
-      return `open ${str(input.url) ?? "a page"}`;
+      return `open ${shownUrl ?? "a page"}`;
     case "click":
       return `click ${str(input.ref) ?? "an element"}`;
     case "type":
@@ -151,7 +156,7 @@ function describeAction(input: BrowserToolInput): string {
     case "press_key":
       return `press ${str(input.key) ?? "a key"}`;
     case "new_tab":
-      return `open a new tab${input.url !== undefined ? ` at ${str(input.url)}` : ""}`;
+      return `open a new tab${shownUrl !== undefined ? ` at ${shownUrl}` : ""}`;
     default:
       return `run browser action "${action}"`;
   }
