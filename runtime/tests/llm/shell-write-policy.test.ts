@@ -565,6 +565,13 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     "nohup -- rm -rf .git",
     "nice rm -rf .git",
     "nice -n 5 rm -rf .git",
+    "ionice rm -rf .git",
+    "ionice -c3 rm -rf .git",
+    "ionice -c idle -n 7 --ignore rm -rf .git",
+    "ionice --class=best-effort --classdata=3 rm -rf .git",
+    "setsid rm -rf .git",
+    "setsid -fw rm -rf .git",
+    "setsid --fork --wait -- rm -rf .git",
     "nice -n5 rm -rf .git",
     "nice -5 rm -rf .git",
     "nice --adjustment=5 rm -rf .git",
@@ -589,6 +596,7 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     "xargs -0 -n 1 -P 4 rm -rf .git",
     // Nested and stacked.
     "exec nohup sudo -u root nice -n 5 rm -rf .git",
+    "exec ionice -c3 setsid rm -rf .git",
     "env nohup timeout 5 rm -rf .git",
     "echo x | xargs -I{} sh -c 'rm -rf .git {}'",
     // A function body's first command follows `{` in the segment that defines it.
@@ -617,6 +625,8 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
 
   it.each([
     ["nohup touch src/a.ts", ["/repo/src/a.ts"]],
+    ["ionice -c3 tee src/a.ts", ["/repo/src/a.ts"]],
+    ["setsid -f tee src/a.ts", ["/repo/src/a.ts"]],
     ["sudo -u www tee src/a.ts", ["/repo/src/a.ts"]],
     ["command cp /tmp/a.ts src/a.ts", ["/repo/src/a.ts"]],
     // GNU time writes its report to the -o file.
@@ -642,6 +652,8 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     ["timeout 30 npm test", []],
     ['timeout "$LIMIT" npm test', []],
     ["nice -n 10 make", []],
+    ["ionice -c3 make", []],
+    ["setsid -w node server.js", []],
     ["stdbuf -oL tail -n 5 tmp/log", []],
     ["exec node server.js", []],
     ["sudo apt-get install -y jq", []],
@@ -667,6 +679,8 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
   it.each([
     "nohup -x rm -rf .git",
     "nice --frobnicate rm -rf .git",
+    "ionice -x rm -rf .git",
+    "setsid -x rm -rf .git",
     "timeout -Z 5 rm -rf .git",
     "stdbuf -$MODE rm -rf .git",
     "exec -x rm -rf .git",
@@ -1469,6 +1483,8 @@ describe("classifyShellWorkspaceWritePolicy for braces, emptied roots, globbed c
   it.each([
     ["echo x >> ~/.bashrc", join(homedir(), ".bashrc")],
     ["tee -a ~/.zshrc", join(homedir(), ".zshrc")],
+    ["ionice -c3 tee ~/.bashrc", join(homedir(), ".bashrc")],
+    ["setsid tee -a ~/.zshrc", join(homedir(), ".zshrc")],
     ["cp dotfiles/gitconfig ~/.gitconfig", join(homedir(), ".gitconfig")],
     ["mv profile ~/.profile", join(homedir(), ".profile")],
     ["install zprofile ~/.zprofile", join(homedir(), ".zprofile")],

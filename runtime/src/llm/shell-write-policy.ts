@@ -1218,7 +1218,23 @@ const WRAPPER_PROGRAMS: readonly (readonly [string, CommandWrapper])[] = [
     long: { adjustment: "n:", ...GNU_STANDARD_OPTIONS },
     numericAdjustment: true,
   }],
+  ["ionice", {
+    short: "c:n:p:P:tu",
+    long: {
+      class: "c:",
+      classdata: "n:",
+      pid: "p:",
+      pgid: "P:",
+      uid: "u:",
+      ignore: "t",
+      ...GNU_STANDARD_OPTIONS,
+    },
+  }],
   ["nohup", { short: "", long: GNU_STANDARD_OPTIONS }],
+  ["setsid", {
+    short: "cfw",
+    long: { ctty: "c", fork: "f", wait: "w", ...GNU_STANDARD_OPTIONS },
+  }],
   ["stdbuf", {
     short: "e:i:o:",
     long: { error: "e:", input: "i:", output: "o:", ...GNU_STANDARD_OPTIONS },
