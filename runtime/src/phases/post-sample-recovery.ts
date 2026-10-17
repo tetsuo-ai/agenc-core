@@ -66,7 +66,10 @@ import {
 } from "../recovery/api-errors.js";
 import { RecoveryLadder } from "../recovery/fallback-ladder.js";
 import { resetRecoveryReentries } from "../recovery/fallback-ladder.js";
-import { runMaxOutputTokensRecovery } from "../recovery/max-output-tokens.js";
+import {
+  resolveReasoningCapEscalation,
+  runMaxOutputTokensRecovery,
+} from "../recovery/max-output-tokens.js";
 import { runModelFallback } from "../recovery/model-fallback.js";
 import { escalatedMaxOutputTokensForModel } from "../llm/model-metadata.js";
 import {
@@ -638,6 +641,10 @@ export async function postSampleRecovery(
       },
 
       async onMaxOutputTokens(c) {
+        const reasoningCapEscalation = resolveReasoningCapEscalation(
+          c.session.config,
+          ctx.modelInfo,
+        );
         const outcome = runMaxOutputTokensRecovery({
           session: c.session,
           state: c.state,
@@ -647,6 +654,9 @@ export async function postSampleRecovery(
           escalatedMaxOutputTokens: escalatedMaxOutputTokensForModel(
             ctx.modelInfo,
           ),
+          ...(reasoningCapEscalation !== undefined
+            ? { reasoningCapEscalation }
+            : {}),
         });
         if (outcome.kind === "escalate" || outcome.kind === "continuation") {
           return { kind: "applied", reason: outcome.kind };

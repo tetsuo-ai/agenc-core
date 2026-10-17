@@ -1,139 +1,265 @@
-# PR #2811 final validation — 2026-09-29
+# Reasoning-only caps on native DeepSeek (AgenC Light) — 2026-10-10
 
-Completed the operator's final decisions on `fix/delegation-e2e`.
+Research branch `research/reasoning-caps-2026-10-10`, off main `fdd18bfc`
+(0.19.0 prep). No PR. Two default-off settings, unit tests, docs. Nothing in
+the default path changes bytes on the wire.
 
-## Changes
+Question: on the 30 hardest Terminal-Bench 2.0 tasks with DeepSeek V4.1 Flash
+(thinking on, `reasoning_effort: high`, `max_tokens: 8192`, streaming), Light
+ends 12.9% of calls (264/2045) with all 8,192 output tokens spent on
+`reasoning_content` and no text or tool call; Pi ends 2.5% (34/1339). Each costs
+37–43 s and Light's median agent time is 341 s against Pi's 137 s. Variants B
+(replay the capped reasoning tail on the recovery turn) and C (retry at low
+effort with thinking on) did not help.
 
-- Replaced `completedTaskResults` with a 1 MiB LRU cache per reusable worker. Accounting includes key and answer storage plus entry overhead; oversized answers remain journal-only. Eviction never deletes the durable receipt.
-- Evicted results use immutable turn references to read the journal. Live workers read through their existing journal owner with inode/snapshot checks; stopped workers retain the leased recovery path. Targeted reads collect only the requested turn, including beyond the bulk reader's 1,024-receipt limit. Existing journal validation, authorization, byte and time limits remain in place.
-- Removed the natural-language exact-output detector and its regexes. The completion checklist exemption now requires `exactOutput` on the turn/session, or the headless CLI's `json` / `stream-json` format. CLI continuation carries the setting per turn. Ordinary requests mentioning JSON retain main's completion-gate behavior.
-- Added `exact_output` to `spawn_agent` and `assign_task`, scoped to that child task, and prompt guidance telling parents to set it for verbatim JSON. Child results always reach the parent verbatim, including paged results. Other delegation, truncation-recovery and result-transport fixes remain intact.
+## 1. Diagnosis
 
-## Validation
+Read from main: `runtime/src/recovery/max-output-tokens.ts`,
+`phases/stream-model.ts`, `phases/post-sample-recovery.ts`,
+`llm/wire/chat-completions.ts`, `llm/wire/capability-gating.ts`,
+`llm/messages.ts`, `session/run-turn-query-messages.ts`,
+`session/runtime-message-conversion.ts`, `phases/completion-gate.ts`,
+`phases/continuation-nudge.ts`, `prompts/light-budget-prompt.ts`,
+`tools/light-profile.ts`, `tools/light-presentation.ts`, plus DeepSeek's
+thinking-mode guide (fetched 2026-10-10).
 
-**21 focused files, 1,569 tests passed.** Coverage includes 48 assignments on one reusable worker with eviction and retrieval from its still-live journal; LRU/empty/oversized result accounting; retrieval after 1,030 durable outcomes; source replacement and closed-journal refusal; explicit JSON preservation through child and parent; ordinary JSON requests retaining the checklist; and both headless JSON output formats.
+### 1.1 What the model is working with
 
-Standard Linux `npm --workspace=@tetsuo-ai/runtime run typecheck` passed, including test-support checks. The standard Linux runtime build, declaration emission, package entrypoints and regenerated SDK wire-type checks passed. Local runtime and test-support typechecks passed with `--preserveSymlinks` for the shared dependency layout. `git diff --check` passed. No full-suite result is claimed.
+DeepSeek's thinking mode with `tools` is one reasoning process across the
+whole tool loop. The guide: with tools present, "the `reasoning_content` of
+all previous turns should be passed back to the API and will be concatenated
+into the context"; "the `reasoning_content` must be fully passed back to the
+API in all subsequent requests"; the tool-call sample is described as
+"allowing the model to continue its previous reasoning". The replayed chain
+is the model's working memory. A turn without `reasoning_content` is a hole
+in that memory; the next thinking call has to rebuild state from the visible
+transcript.
 
-## Real Linux daemon check
+Pi sends reasoning on 96–98% of prior assistant turns and reasons ~279 tokens
+per useful call. Light sends it on 70–80% and reasons ~100 tokens on the
+median call, then 13% of calls run away. Light's chain has holes; Pi's does
+not.
 
-The same eight frozen router-bench tasks ran once each on the Linux PC: four calibration and four previously used held-out tasks. Parent: native DeepSeek `deepseek-flash`; child: unchanged fixed native Meta `muse-spark-1.2-contributor`. Tasks, graders and candidates were unchanged. Runs used the existing daemon harness with `--output-format stream-json`, a 4,096-token output cap, at most eight parent/four child calls, one child and depth one. No model-answer reruns or outcome-based task changes were made.
+### 1.2 Where Light's holes come from (all self-inflicted)
 
-**Strict E2E: 7/8. Child correctness: 7/8. Successful child completion, exact receipt delivery and byte-for-byte parent final preservation: 8/8 each.** All transport/constraint checks passed. No completion checklist was injected; all 26 parent requests left tool choice to the model.
+1. **Every cap recovery creates a hole and a user turn.** On a reasoning-only
+   cap with an explicit `max_output_tokens` (the benchmark's 8192),
+   `runMaxOutputTokensRecovery` cannot escalate (`escalateAllowed` requires a
+   capped default and no explicit budget), so it always takes the
+   continuation path: it appends `RETRY_REASONING_ONLY_CONTENT` as a plain
+   `role: "user"` message and sets `reasoningOnlyRecoveryPending`, which the
+   next sample turns into `thinking: {type: "disabled"}`. That sample returns
+   no `reasoning_content`; `isKnownEmptyProviderReasoning` stores and replays
+   `""` so the API accepts the history. The result in the model's context is
+   an assistant turn with an empty think block, preceded by a new "user"
+   request. With 264 caps over ~1,780 productive calls, thinking-off turns
+   alone are ~15% of the assistant turns Light replays, which with the
+   model's own empty-reasoning turns matches the measured 20–30% gap.
 
-| Task | Strict E2E | Child correct | Exact receipt and parent final |
-|---|---|---|---|
-| cal-simple-extraction | pass | pass | pass |
-| cal-code-stable-unique | pass | pass | pass |
-| cal-tool-invoice-join | pass | pass | pass |
-| cal-long-revision | pass | pass | pass |
-| hold-simple-extraction | pass | pass | pass |
-| hold-code-window-max | pass | pass | pass |
-| hold-tool-artifact-manifest | fail | fail | pass |
-| hold-long-precedence | pass | pass | pass |
+2. **The capped reasoning is thrown away.** The capped sample is pushed to
+   history as `{role: "assistant", content: "", providerReasoningContent}`
+   with no tool calls (`stream-model.ts`), and `normalizeMessagesForAPI` drops
+   every empty assistant message that is not last, so those 8,192 tokens
+   never reach the wire again; the escalate path drops them explicitly
+   (`removeTruncatedAssistantForRetry`). The model then re-derives the same
+   step on its next thinking call, against a transcript that now also has a
+   hole and a user interjection. That is the cascade: 52% of post-recovery
+   calls cap again against a 12.9% base rate. At 52% the expected number of
+   caps per initial cap event is 1/(1−0.52) ≈ 2.1, so roughly half of all
+   caps (~135 of 264) are cascade caps, worth ~90 min of model time across
+   the 30 tasks.
 
-The single failure, `hold-tool-artifact-manifest`, was an incorrect child answer (`answer-mismatch`). Both child and parent returned `{"count":12,"ids":["b","a","c"]}`; transport preserved it exactly. The two long-context tasks each recovered a truncated initial tool call via `message_ref`, then completed successfully. This small check measures the requested transport behavior and does not establish a broader model-quality rate.
+3. **Variant B and C results fit this.** B attached the *tail* of the capped
+   reasoning (the runaway part, mid-analysis) to a turn whose action was
+   chosen without it; the hole and the user turn stayed, and the model either
+   continued the runaway or ignored the tail. C replayed the same context at
+   low effort with thinking on and still capped 67% of the time: the step
+   needed more than 8k tokens at any effort, so the cap at that step is a
+   budget problem, not an effort problem. Both say the fix is on the first
+   retry: keep thinking on, give that one step the room it needs, keep the
+   chain intact, and add no user turn.
 
-| Provider | Calls | Known usage estimate (USD) | Conservative exposure (USD) |
-|---|---:|---:|---:|
-| deepseek | 26 | 0.02959828 | 0.08913210 |
-| meta | 11 | 0.00891736 | 0.01903600 |
+4. **Runtime context reaches native DeepSeek as new user requests.** Native
+   DeepSeek's wire hints replay reasoning fully but do not set
+   `runtimeContextInToolResults`; only the managed (OpenRouter) DeepSeek route
+   has it, after observing that "a standalone user-role reminder started a new
+   turn on the hosted route and the model repeatedly abandoned the actual
+   task" (`docs/providers/deepseek-direct.md`). On the native route every
+   per-turn reminder (`edited_text_file` after a build or formatter touches a
+   read file, skill and memory reminders, repeat-tool advisories, hook
+   context), the retry instruction, the continuation nudge, the empty-response
+   retry and the completion gate's checklist request arrive as user turns in
+   the middle of the tool loop. Side finding: the query projection
+   (`projectRuntimeOnly` in `session/runtime-message-conversion.ts`) keeps
+   only `toolResultIntegrity` and `agentInvocation`, so even on the managed
+   route the in-history `user_context` messages (advisories, hook context)
+   lose their boundary and are sent as plain user turns; only
+   attachment-rendered reminders fold today.
 
-Total known usage estimate: **$0.03851563**. Conservative exposure: **$0.10816810**, below the **$1 aggregate admission cap**. All 37 requests settled with reported usage; none remains in flight. These are usage-based estimates, not exact billed totals. The existing cumulative ledger and provider ceilings were preserved. Credentials were read in memory and supplied only through SSH stdin into process environments. Per-run scans and the final Linux artifact scan found zero key matches/redactions and zero unreadable files. All eight isolated daemons stopped successfully and their recorded PIDs no longer exist.
+5. **The completion gate is a reasoning burst by design.** Light's
+   non-interactive runs inject `<completion_gate>` when the model first
+   answers: write an acceptance checklist for every requirement of the quoted
+   task, run every check, answer again. Up to three rounds. That is a
+   re-verify-everything step on the hardest tasks, exactly where runaway
+   reasoning shows up. Pi has no such step. Expect a visible share of Light's
+   caps on the call right after a gate message; it is also plausibly part of
+   why Light solves 12 to Pi's 7.
 
-## Evidence and source identity
+6. **Not the cause, checked:** context size (Light 33k/call, Pi 47k: smaller
+   and still worse), the prompt (the Light head is ~2.6k chars with no
+   planning or step-by-step instruction; nothing in it asks for long
+   deliberation), tool count and descriptions (five lean tools; `exec_command`
+   shows three fields), tool-result framing (compact `AGENC_DATA` boundaries,
+   output first, one-line exit footer), request parameters (`thinking`
+   enabled, `reasoning_effort: high`, no `tool_choice`, no temperature, no
+   `parallel_tool_calls`, same `max_tokens`). Microcompaction clears tool
+   results only past 120k characters of live output, above Light's per-call
+   context, so it is not shortening what the model sees. One nit: the head
+   says "Batch independent calls" while native DeepSeek omits
+   `parallel_tool_calls`; harmless.
 
-The Linux build used base `118873e1502e81f051cbffdfcf2e7df0bdd1267f` plus the pre-commit source changes in this PR. The 36 changed/new source and test files and the detector deletion were verified against this worktree before paid calls. Source snapshot digest: `55d3ac2f155bf44d8ccff8cebf7436fe2685ed3203179f4b3796c17899f53be3`. The report itself was written after the run.
+### 1.3 The causal chain in one line
 
-Local evidence is under `/private/tmp/e2e-delegation/`: `final-round-results.json`, `final-round-final-tests.log`, `final-round-linux-build.log` (standard typecheck; initial build required SDK regeneration), `final-round-linux-build-final.log` (successful build), `final-round-source-verification.log`, `final-round-cleanup.json`, `final-round-key-scan-pc.json`, and `final-harness/manifest.json`. The manifest's copied prior-round labels were corrected without changing task/run IDs, source/task hashes or budget settings. Linux artifacts are under `/home/paul/claude-agenc-work/e2e-delegation/runs/r7-01` through `r7-08`; the isolated source checkout is `final-core`.
+Explicit 8192 → no escalation → cap recovery disables thinking and adds a
+user turn → hole + discarded analysis → next thinking call re-derives the
+step from a fragmented transcript → caps again (52%) → more holes and quick
+empty-reasoning turns → the next hard step has no incremental chain to
+continue and does all its thinking at once → another cap.
 
-## Paired Linux regression follow-up — 2026-09-29
+## 2. Ranked fixes
 
-Investigated both failures from `core-2811-focus.log` against main `3caa13df9d56d1623766096f013e8ffc7e54c043`. Neither requires a product-code change:
+| # | Fix | Mechanism | Expected effect | Risk | Cheap test |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `reasoning_cap_recovery = "escalate_thinking"` (implemented) | On a reasoning-only cap, resend the capped request unchanged with thinking on at 3× the limit (24,576), no instruction appended, not a counted retry. The step gets the room C showed it needs; its reasoning is stored and replayed; no hole, no user turn, no cascade. A second cap in that retry falls back to today's thinking-off sample at 8192. | Post-recovery re-cap 52% → ≤15–20% if most runaways finish under 24k; total caps −40…−55%; median agent time −20…−35%; solves flat to up (the model thinks on the hard step instead of acting blind). Tokens +5–10%. | True loops cost up to 24k tokens (~2 min) once per cap event; bounded by the fallback and the task budget. Overrides an explicit per-call budget, hence opt-in. | Offline replay R2 below, then panel arm B. |
+| 2 | `runtime_context_in_tool_results = true` (implemented) | Native DeepSeek gets the managed route's layout: runtime context after a tool result (reminders, advisories, hook context, the retry instruction) rides inside that tool result as `<runtime-context>`, so the template sees a tool continuation, not a new request. The retry instruction is marked runtime context and the projection keeps that marker. | Fewer re-plan bursts after reminders and after a recovery; the thinking-off turn reads as part of the same request. Smaller than #1; mostly reduces initial caps that follow a reminder. | Consecutive runtime context messages all fold into one tool result; human messages never fold. Durable history unchanged. | Log analysis L1 (cap rate on the call after a user-role runtime message vs after a tool result), then panel arm C. |
+| 3 | Completion gate arm: `completion_gate.mode = "never"` or `max_rounds = 1` for the benchmark | Removes the end-of-task re-verification burst. | Fewer caps in the last calls of a task; may cost solves (the gate is a verification driver). | Pi-parity measurement only, not a product change. | Count caps on gate-following calls in the raw runs; if ≥10% of caps, run panel arm D. |
+| 4 | Variant D (abort the stream past ~5k reasoning tokens) | Cost cutter per cap; does not remove holes. | −35% per-cap cost. Combine with #1 only if replay shows most runaways exceed 24k. | Aborting at 5k wastes 5k and forces the retry; the escalate retry then starts from zero. | Already running. |
+| 5 | Quick-turn check | If the model's empty-reasoning turns cluster right after thinking-off turns, they are an in-context imitation of the recovery and #1 removes the cause. | Explains the 17–23% vs 5.9% quick-turn gap. | None; measurement. | Log analysis L2. |
+| 6 | Longer term: raise the per-call limit for thinking models | DeepSeek's thinking default is far above 8k; `docs/providers/deepseek-direct.md` already warns the 8,192 pilot setting truncates reasoning. The benchmark pins it for fairness; the product should not. | Removes most initial caps outside the benchmark. | Fairness vs Pi in the comparison; cost per runaway. | Panel arm with 16,384 for both harnesses if Pi can be configured the same. |
 
-- **`assign_task returns correlation for an idle reusable worker`: stale argument assertion.** The branch deliberately passes `exactOutput: false` when `exact_output` is omitted. Each assignment has its own output contract; an ordinary follow-up must not retain a previous assignment's exact-output exemption. Updated the exact call assertion to include the explicit false value. Existing `send-message.test.ts` coverage verifies true, subsequent omission/reset, and invalid input; the focused assertion and contract tests both passed locally.
-- **`CronDelete cancels a queued turn without suppressing another scheduled tool turn`: pre-existing fake-clock/real-I/O race.** The test's `advance()` uses ten 5 ms real-I/O polling sleeps. A cancelled durable claim can settle later, retire the old tick, and re-arm the survivor on a due-now timer. `scheduler.drain()` waits for that tick but does not fire its newly created timer, so the assertion can observe zero tool calls. The scheduler and session scheduler are unchanged from main. A diagnostic 250 ms delay in cancelled-submit rejection reproduced the same failure on both refs: one model sample, one pending timer, and `nextWakeInMs: 0`. Waiting for cancellation/re-arm before advancing the clock passed the same delayed probe with three model samples, one survivor tool call, and no pending timers. The committed test now observes the cancelled submission entering the queue and drains its tick before advancing again. All cancellation, survivor-message, tool-count, and model-count assertions remain intact; the diagnostic delay/logging are not committed.
+Not recommended: prompt edits (no evidence of a prompt cause), further
+low-effort or thinking-off variants (C showed the step needs the budget),
+fabricating reasoning for the recovery turn (the template treats it as the
+model's own chain; B already showed replayed partial reasoning does not help).
 
-Ran the requested PC helper with `tests/bin/model-facing-tools.test.ts tests/session/run-turn.test.ts`:
+## 3. What was implemented
 
-| Ref / tested source | Result | PC log label |
-|---|---|---|
-| Main `3caa13df` | 2 files, 257 tests passed, zero failures | `core-2811-regressions-main` |
-| Branch `aa2fc3fb` plus this commit's two test edits | 2 files, 259 tests passed, zero failures | `core-2811-regressions-fixed-branch` |
+Both settings are top-level `config.toml` keys, strict-validated, mapped into
+the session `Config` by `bootstrap.ts`, and documented in
+`docs/reference/config.md`, `daemon.md`, `ARCHITECTURE.md`, `providers.md`.
+Unset means today's behaviour; the default wire bytes are unchanged (the
+existing recovery and policy suites pass unmodified).
 
-The final main helper invocation, `core-2811-regressions-fixed-main`, reused the fresh same-commit/same-scope baseline above according to the helper's shared-host guard. The branch has no failures absent from main. The PC test files matched this worktree byte-for-byte before validation (SHA-256: model-facing tools `920b9a0d429f2b8273cad397c6d594e296d9a62a7d2544d7ea19b7f602afe8d8`; run-turn `6fbbd478234df5e6a2505f34ab49b1fb92e8884832fb0999f4a9edd13b1ed524`).
+### `reasoning_cap_recovery` (`thinking_off` | `escalate_thinking`) and `reasoning_cap_escalate_max_output_tokens`
 
-Core typecheck, including `typecheck:test-support`, passed on the PC in `node:26.5.0-bookworm` using npm 11.17.0 (`core-2811-regressions-typecheck.log`). `git diff --check` passed.
+`runtime/src/recovery/max-output-tokens.ts`: `resolveReasoningCapEscalation`
+computes the retry ceiling (configured value, else 3× the per-call limit,
+bounded by the model upper limit and the 64k escalate ceiling; a ceiling at or
+below the limit disables the retry). `runMaxOutputTokensRecovery` gained a
+step before the existing escalate step: on a reasoning-only cap on native
+DeepSeek, with no override active and no counted thinking-off retry pending,
+it sets `maxOutputTokensOverride`, cuts history back to
+`messagesAtSampleStart` (the same cut the existing escalate path uses), keeps
+thinking on, appends nothing, emits warning `reasoning_cap_escalation`
+(`fromMaxOutputTokens`, `toMaxOutputTokens`, `reasoningOutputTokens`), and
+returns `escalate`. The override is cleared by commit after the iteration, so
+a later cap after a productive sample escalates again. A second cap in the
+retry sees the override and takes the thinking-off continuation at the
+configured limit. Exhaustion still happens through the three counted
+thinking-off retries. `post-sample-recovery.ts` passes the resolved
+escalation into the recovery.
 
-Evidence is in `/home/paul/claude-agenc-work/results/`: the paired logs above, `core-2811-regressions-fix.patch`, `core-2811-regressions-typecheck.log`, `core-2811-cron-delay-branch.log`, and `core-2811-cron-delay-fixed.log`. The intentionally failing main diagnostic and delayed-probe patch are in `core-2811-diagnostics/`, outside the helper's reusable main-baseline cache. Temporary diagnostic edits to main were restored.
+### `runtime_context_in_tool_results` (boolean)
 
-## Review fixes and paired PC validation — 2026-09-29
+`llm/types.ts` adds `LLMChatOptions.runtimeContextInToolResults`;
+`phases/stream-model.ts` sets it for native DeepSeek when the key is on;
+`llm/wire/chat-completions.ts` applies the existing
+`projectRuntimeContextIntoToolResults` projection when either the provider
+hint (managed route) or the option asks for it. The retry instruction is
+created as runtime context (`reasoningOnlyRetryMessage`) under the switch, and
+`session/run-turn-query-messages.ts` restores the `user_context` boundary on
+the query projection for in-history runtime context (the projection is one
+message to one message; a projection of a different shape is left alone).
+Human messages, agent-invocation channels and canonical history are untouched.
 
-Addressed both findings in `core-2811.REVIEW.md`:
+Telemetry to count in rollouts: `reasoning_cap_escalation` (new),
+`thinking_disabled_recovery` (existing), `token_count.reasoningOutputTokens`.
 
-- **Interrupted Responses handoffs:** the OpenAI adapter buffers `response.output_item.done` function calls until the terminal response status arrives. The wire parser gives incomplete/error status precedence over tool calls and returns only non-executable identities after an output-limit cutoff, including when the terminal payload omits the streamed items. Argument fragments never reach execution or strict JSON parsing. Existing bounded output recovery closes the interrupted attempt, requests complete arguments with `message_ref` guidance, and stops when its retry budget is exhausted. Completed calls retain strict validation and the existing partial-output error handling.
-- **Small inline Unicode results:** `formatSubagentNotification` now escapes the same characters as result paging: framing-sensitive ASCII and non-ASCII UTF-16 code units. Ordinary result sanitization remains active, while JSON decoding restores the original answer, including ZWJ emoji. The tests drive a real child result through its notification, ordinary `wait_agent`, tool-result sanitization/framing, and the next parent model request, then verify the exact parent final answer.
+### Harness switches
 
-Added ten regression cases: three incomplete wire statuses; three mocked SSE cases covering truncated and complete JSON plus terminal payload omission; successful and exhausted session recovery; and two small inline answers containing a ZWJ emoji or sanitizer-sensitive text. All ten failed against the pre-fix branch sources and passed with these fixes. Existing completed-call validation and paging coverage also pass.
+```
+agenc config set reasoning_cap_recovery escalate_thinking
+agenc config set reasoning_cap_escalate_max_output_tokens 24576   # optional
+agenc config set runtime_context_in_tool_results true
+```
 
-Ran `~/claude-agenc-work/bin/run-core-tests.sh <ref> <label> <files>` on the PC for the same eleven files on both refs:
+## 4. Validation
 
-- `tests/llm/wire/responses-openai.test.ts`
-- `tests/llm/providers/openai/adapter.test.ts`
-- `tests/llm/providers/openai/adapter.streaming-gaps.test.ts`
-- `tests/agents/status.test.ts`
-- `tests/agents/run-agent.test.ts`
-- `tests/agents/v2/wait.test.ts`
-- `tests/agents/recovered-child-results.test.ts`
-- `tests/session/subagent-receipt-recovery.test.ts`
-- `tests/session/rejected-text-tool-call-recovery.test.ts`
-- `tests/bin/model-facing-tools.test.ts`
-- `tests/session/run-turn.test.ts`
+Node 26.11.1 with npm 11.17.0 (the container ships Node 22; the repo pins
+`devEngines`), dependencies installed with `npm ci`.
 
-| Ref / tested source | Final result | PC log label |
-|---|---|---|
-| Main `3caa13df9d56d1623766096f013e8ffc7e54c043` | 11 files, 637 passed, zero failures | `core-2811-review-r9-final-main` |
-| Branch `6fe991488a096d0b1144c0ee9091b045cd367f2c` plus this commit's source/test changes | 11 files, 665 passed, zero failures | `core-2811-review-r9-final-branch` |
+- `npm --workspace=@tetsuo-ai/runtime run typecheck` (sources and
+  test-support projects): passed.
+- New tests, 2 files, 21 tests, all passing:
+  `runtime/tests/session/reasoning-cap-escalate-thinking.test.ts` (config
+  validation, ceiling resolution, escalate-then-productive, second cap falls
+  back to thinking-off at the configured limit, repeated events re-arm,
+  exhaustion still bounded, default and explicit `thinking_off` unchanged,
+  explicit ceiling and model upper limit, visible-output caps unaffected) and
+  `runtime/tests/session/runtime-context-in-tool-results.test.ts` (route
+  predicate, wire projection on and off, human messages never fold, option
+  gated to native DeepSeek, retry instruction folded into the last tool
+  result end to end, separate user message with the switch off, first-call
+  cap keeps its own user message).
+- Affected existing suites, 17 files, 489 tests, all passing:
+  reasoning-output-recovery, reasoning-cap-policy(-wire), recovery-thinking-off,
+  productive-recovery-state, recovery/max-output-tokens(+docs contract),
+  config-reference-coverage, strict-schema-validation, config,
+  wire/chat-completions, deepseek provider empty-reasoning, agenc deepseek
+  promotion, post-sample-recovery token-budget cap, durable-checkpoint-reader
+  upgrade, env-documentation-coverage, config-authority-residue.
+- Wider safety batch through the hermetic runner, 64 files, 1,281 tests,
+  all passing: `tests/recovery`, `tests/phases`, `tests/llm/wire`,
+  `tests/session/run-turn.test.ts`, `run-turn-query-messages`,
+  `attachment-retention`, `tests/bin/bootstrap.test.ts`.
+- `git diff --check` clean. No full-suite result is claimed.
 
-The branch has no failures absent from main. The initial nine-file run passed all 631 branch tests; main had only the previously documented CronDelete timing failure (603 passed, one failed). The final comparison above also covers recovered-notification consumers and passed on both refs. No full-suite result is claimed.
+No live model call was made; the effect sizes above are estimates from the
+measured rates, not results.
 
-Standard core typecheck (`npm --workspace=@tetsuo-ai/runtime run typecheck`, including test-support checks) passed on the PC in `node:26.5.0-bookworm`. `git diff --check` passed. All seven changed source/test files matched the PC checkout byte-for-byte; their manifest digest is `68edb0420f2803ac92725ae83569a8662ca68bb0f5ea30b3662659f03720c1c0`. The helper ran the branch's base checkout with the recorded patch applied before testing; the report was updated afterward.
+## 5. Experiment plan
 
-PC evidence is under `/home/paul/claude-agenc-work/results/`: the final paired logs and empty `.fails` files, `core-2811-review-r9-typecheck.log`, `core-2811-review-r9-fix.patch`, and `core-2811-review-r9-source-verification.json`. Local regression evidence is under `/private/tmp/e2e-delegation/`: `review-r9-red-final.log`, `review-r9-green3.log`, `review-r9-fix.patch`, and `review-r9-source-verification.json`. These checks used mocked providers and made no paid model calls.
+Offline first (no containers, one request per sample, from the raw runs):
 
-## Buffered tool progress follow-up — 2026-09-29
+- **R1 baseline.** Resend the 264 capped requests unchanged (thinking on,
+  high, 8192). Expect a re-cap rate near C's 67%.
+- **R2 escalation (decides fix #1).** Same requests at `max_tokens` 16,384,
+  24,576 and 32,768. Record finish reason, total reasoning tokens and wall
+  time. If ≥70% complete by 24,576 with a tool call or answer, the
+  `escalate_thinking` retry pays for itself; if most run past 32k, prefer D
+  plus a smaller escalation.
+- **R3 layout (decides fix #2).** For capped requests whose last messages
+  include a user-role runtime message after a tool result, resend with that
+  message folded into the tool result as `<runtime-context>` at 8192. Compare
+  cap rate with R1.
+- **R4 classify the capped reasoning** (text only): drafting code or file
+  contents, enumerating or verifying, repetition loops (n-gram repeats),
+  re-deriving earlier tool results. The drafting share says how much #6 would
+  give; the re-deriving share is the cascade.
+- **L1/L2 log analysis** (no model calls): per call, whether the previous
+  message was a user-role runtime message, turns since the last thinking-off
+  turn, count of empty-reasoning turns in the last five, whether a completion
+  gate message precedes it, size of the last tool result. Contingency tables
+  against cap and against empty reasoning.
 
-Addressed the latest review's idle-timeout regression. Responses function-call items now emit an empty, non-executable `bufferedContentProgress` chunk when new buffered output arrives. Identical item snapshots do not reset the watchdog. Tool names and arguments remain private to the adapter until the terminal status permits validation; output-limited calls retain non-executable recovery identities. All earlier handoff, Unicode, result-cache, output-contract, and test synchronization fixes remain intact.
+Then the 28-task panel, one run per task per arm: A main, B
+`escalate_thinking`, C B + `runtime_context_in_tool_results`, D C + completion
+gate limited. Report cap rate, post-recovery re-cap rate, reasoning pass-back
+rate (target ≥95%), quick-turn rate, median agent time, tokens, solves.
 
-Added five regression cases in `adapter.progress.test.ts`: completed and output-limited calls for both Responses and Chat Completions, plus repeated Responses items. The delayed-terminal cases run the real `streamModel` watchdog with a 60-second idle deadline, a tool item at 45 seconds, and the terminal event at 90 seconds. They assert successful completion, one provider request, no tool text or executable call before validation, and no executable calls after truncation. The replay case verifies that duplicate items cannot keep the stream alive. Before the fix, both delayed Responses cases reproduced `stream_idle: no progress for 60000ms`; the Chat Completions cases already passed. All 86 tests in the three focused adapter files pass locally after the fix.
+## 6. Not done
 
-Ran the PC helper on branch and main for the same 17 files:
-
-- `tests/llm/stream-watchdog.test.ts`
-- `tests/llm/stream-watchdog.silent-generation.test.ts`
-- `tests/llm/stream-parser.test.ts`
-- `tests/llm/providers/openai/adapter.test.ts`
-- `tests/llm/providers/openai/adapter.progress.test.ts`
-- `tests/llm/providers/openai/adapter.streaming-gaps.test.ts`
-- `tests/llm/providers/openai/adapter-reasoning-replay.test.ts`
-- `tests/llm/providers/openai/adapter-reasoning-resume.test.ts`
-- `tests/llm/wire/responses-openai.test.ts`
-- `tests/llm/wire/chat-completions.test.ts`
-- `tests/phases/stream-model.test.ts`
-- `tests/phases/stream-model.progress.test.ts`
-- `tests/session/run-turn.stream-progress.test.ts`
-- `tests/session/run-turn-stream-retry.rebuilt.test.ts`
-- `tests/session/rejected-text-tool-call-recovery.test.ts`
-- `tests/bin/model-facing-tools.test.ts`
-- `tests/session/run-turn.test.ts`
-
-| Ref / tested source | Final result | PC log label |
-|---|---|---|
-| Main `3caa13df9d56d1623766096f013e8ffc7e54c043` | 17 files, 499 passed, zero failures | `core-2811-review-r10-final-main` |
-| Branch `ecea71831a95a2f1c8fc1cc5cd2221422baba5f8` plus this commit's source/test changes | 17 files, 521 passed, zero failures | `core-2811-review-r10-final-branch` |
-
-The branch has no failures absent from main. The initial branch run passed 520 tests and exceeded the existing durable-restart test's 3-second wait for its second model sample. The same 17-file run on unchanged source then passed all 521 tests; that restart test completed in 759 ms. No assertions or timeouts were weakened. Main passed all 499 tests on its first run; the final helper invocation reused that fresh same-commit/same-scope baseline under its shared-host guard. No full-suite result is claimed.
-
-Standard core typecheck (`npm --workspace=@tetsuo-ai/runtime run typecheck`, including test-support checks) passed on the PC in `node:26.5.0-bookworm` with npm 11.17.0. `git diff --check` passed. All four changed source/test files matched the PC checkout byte-for-byte; their manifest digest is `857933fe45d7b408c51ef4616849ba9cee14d885852910f512bd7f400eda89ef`. The report was updated after validation.
-
-PC evidence is under `/home/paul/claude-agenc-work/results/`: `core-2811-review-r10-{main,branch,final-main,final-branch}.log`, their `.fails` files (both final files empty), `core-2811-review-r10-typecheck.log`, `core-2811-review-r10-fix.patch`, and `core-2811-review-r10-source-verification.json`. Local evidence is under `/private/tmp/e2e-delegation/`: `review-r10-red.log`, `review-r10-green.log`, `review-r10-fix.patch`, and `review-r10-source-verification.json`. These checks used mocked providers and made no paid model calls.
+No live calls, no benchmark runs, no change to defaults, no PR. The
+projection side finding in 1.2(4) (in-history `user_context` boundaries lost
+for every route) is left as is outside the switch; it deserves its own fix
+once the managed-route tests cover in-history advisories.
