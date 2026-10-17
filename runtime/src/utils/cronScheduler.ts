@@ -36,6 +36,7 @@
 
 import type { AgentId } from "../types/ids.js";
 import { getScheduledTasksEnabled, removeSessionCronTasks } from "../bootstrap/state.js";
+import { durableCronDispatchSupported } from "./cron-dispatch-platform.js";
 import { logForDebugging } from "./debug.js";
 import { enqueuePendingNotification } from "./messageQueueManager.js";
 import { monotonicMs } from "./monotonic.js";
@@ -100,12 +101,23 @@ export type CronSchedulerDeps = {
   enqueue: CronEnqueue;
 };
 
+/**
+ * Durable records are loaded only where they are dispatched (Linux). Elsewhere
+ * every process scheduler sees this conversation's session tasks only, so a
+ * readable stored record is never queued, marked fired, or removed.
+ */
+function loadDispatchableCronTasks(dir: string, conversationId: string): Promise<CronTask[]> {
+  return durableCronDispatchSupported()
+    ? listAllCronTasks(dir, conversationId)
+    : Promise.resolve(listSessionCronTasks(conversationId));
+}
+
 const defaultDeps: CronSchedulerDeps = {
   now: () => Date.now(),
   monotonicNow: () => monotonicMs(),
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: (handle) => clearTimeout(handle),
-  loadTasks: (dir, conversationId) => listAllCronTasks(dir, conversationId),
+  loadTasks: loadDispatchableCronTasks,
   onLoadError: (error) => logForDebugging(
     `[CronScheduler] durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`,
     { level: "warn" },
@@ -886,8 +898,7 @@ export function getCronScheduler(): CronScheduler {
     singleton = new CronScheduler(
       {
         // Bind to the default (non-daemon) project root + session merge.
-        loadTasks: (dir, conversationId) =>
-          listAllCronTasks(dir, conversationId),
+        loadTasks: loadDispatchableCronTasks,
         // Wire the real TUI command queue so a due task actually fires (the
         // default dep is a no-op stub that would silently drop every fire).
         enqueue: cronEnqueueToCommandQueue,

@@ -5,6 +5,7 @@ import {
   removeSessionCronTasks,
   removeSessionCronTasksForConversation,
 } from "../bootstrap/state.js";
+import { durableCronDispatchSupported } from "../utils/cron-dispatch-platform.js";
 import { CronScheduler } from "../utils/cronScheduler.js";
 import { listAllCronTasks, listSessionCronTasks, mutateCronFile, type CronTask } from "../utils/cronTasks.js";
 import { emitWarning } from "./event-log.js";
@@ -83,14 +84,14 @@ export async function startSessionCronScheduler(
           `Durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`);
       },
       loadTasks: async (directory, conversationId) => {
-        // Only Linux currently admits descriptor-confined durable writes.
+        // Only Linux currently dispatches durable records.
         // A read-only durable record must never reach onAccepted and stop
         // this session's independent in-memory scheduler.
-        const tasks = process.platform === "linux"
+        const tasks = durableCronDispatchSupported()
           ? await listAllCronTasks(directory, conversationId)
           : listSessionCronTasks(conversationId);
         if (currentOwner.closed) return [];
-        const ownsDurableTasks = process.platform === "linux" &&
+        const ownsDurableTasks = durableCronDispatchSupported() &&
           [...owners].find((candidate) => candidate.ready && !candidate.sessionOnly) === currentOwner;
         return tasks.filter((task) => task.durable === false || ownsDurableTasks);
       },

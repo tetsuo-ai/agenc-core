@@ -287,6 +287,7 @@ function unsupportedDurableCron(error: unknown): boolean {
 }
 
 const DURABLE_CRON_UNSUPPORTED = "Durable scheduled tasks need descriptor-relative reads and writes, which are unavailable on this host. Use durable:false for a session job, or run durable cron on Linux.";
+const DURABLE_CRON_DORMANT = "Durable jobs marked dormant are stored but not scheduled on this host; only Linux dispatches durable jobs. Session jobs still run.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -4874,7 +4875,7 @@ function createCronAndWorkflowTools(
         if (!validateCron(schedule)) {
           return cronRefusal("CronCreate", "cron expression must have five fields");
         }
-        const { addCronTask, nextCronRunMs, normalizeDelivery, readCronFile } =
+        const { addCronTask, durableCronDispatchSupported, nextCronRunMs, normalizeDelivery, readCronFile } =
           await import("../utils/cronTasks.js");
         if (nextCronRunMs(schedule, Date.now()) === null) {
           return cronRefusal("CronCreate", `invalid cron expression: ${schedule}`);
@@ -4901,6 +4902,9 @@ function createCronAndWorkflowTools(
         const sessionOnly = readToolRuntimeContext(args)?.sandboxMode === "workspace_write";
         if (sessionOnly && durable) {
           return refusal({ error: "Sandboxed CronCreate supports session-only jobs; durable and delivery jobs require filesystem authority" });
+        }
+        if (durable && !durableCronDispatchSupported()) {
+          return cronRefusal("CronCreate", DURABLE_CRON_UNSUPPORTED);
         }
         if (durable) {
           // A read failure precedes any schedule change. Once addCronTask
@@ -5039,7 +5043,7 @@ function createCronAndWorkflowTools(
         if (typeof conversationId !== "string" || conversationId.length === 0) {
           return refusal({ error: "CronList requires an active owning conversation" });
         }
-        const { listAllCronTasks, listSessionCronTasks, cronRestoreFailureNeedsWarning } =
+        const { durableCronDispatchSupported, listAllCronTasks, listSessionCronTasks, cronRestoreFailureNeedsWarning } =
           await import("../utils/cronTasks.js");
         let tasks;
         let durableUnavailable = false;
@@ -5054,8 +5058,13 @@ function createCronAndWorkflowTools(
             tasks = listSessionCronTasks(conversationId);
           }
         }
+        // Off Linux a stored durable record is listed but never armed.
+        const dormant = (task: { durable?: boolean }): boolean =>
+          task.durable !== false && !durableCronDispatchSupported();
+        const anyDormant = tasks.some(dormant);
         return json({
           ...(durableUnavailable ? { warning: DURABLE_CRON_UNSUPPORTED } : {}),
+          ...(anyDormant ? { warning: DURABLE_CRON_DORMANT } : {}),
           crons: tasks.map((task) => ({
             id: task.id,
             cron: task.cron,
@@ -5065,6 +5074,7 @@ function createCronAndWorkflowTools(
             ...(task.lastFiredAt !== undefined
               ? { lastFiredAt: new Date(task.lastFiredAt).toISOString() }
               : {}),
+            ...(dormant(task) ? { durable: true, dormant: true } : {}),
           })),
         });
       },
