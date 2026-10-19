@@ -4995,7 +4995,9 @@ export class Session {
     event: Event,
     appendOpts: AppendOptions = {},
   ): { readonly event: Event; publish(): Event } {
-    return toolStage("persistence", () => this.prepareEmitTimed(event, appendOpts));
+    // Through the class, not the receiver: prepareEmit may be borrowed by a
+    // facade (`Session.prototype.prepareEmit`) that has no private helpers.
+    return toolStage("persistence", () => Session.prototype.prepareEmitTimed.call(this, event, appendOpts));
   }
 
   private prepareEmitTimed(
@@ -5110,7 +5112,7 @@ export class Session {
 
   /** Publish an event already stamped and appended by {@link prepareEmit}. */
   publishPreparedEvent(event: Event): Event {
-    return toolStage("ui_fanout", () => this.publishPreparedEventTimed(event));
+    return toolStage("ui_fanout", () => Session.prototype.publishPreparedEventTimed.call(this, event));
   }
 
   private publishPreparedEventTimed(event: Event): Event {
