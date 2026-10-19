@@ -59,6 +59,7 @@
  * @module
  */
 
+import { MIN_TOOL_RESULT_BYTES, resolveOffloadThresholdBytes } from "./result-visibility.js";
 import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
 import { invocationForArgs, stringifyToolArgsWithBigInt } from "./execution-invocation.js";
 import { beginExecutingToolCall } from "../session/executing-tool-calls.js";
@@ -210,7 +211,7 @@ export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
  * window we never starve tools below ~16 KB (~4-8K tokens), so small
  * configs can still read meaningful output.
  */
-export const MIN_TOOL_RESULT_BYTES = 16_000;
+export { MIN_TOOL_RESULT_BYTES, resolveOffloadThresholdBytes } from "./result-visibility.js";
 
 /**
  * Fraction of the model's context window a single tool result may
@@ -247,22 +248,6 @@ export const LARGE_CONTEXT_WINDOW_TOKENS = 200_000;
  * while still carrying the path plus actionable head and tail slices.
  */
 const OFFLOAD_REFERENCE_MAX_BYTES = 4_000;
-
-/**
- * Optional inline-size threshold for the offload, in bytes
- * (`AGENC_TOOL_RESULT_OFFLOAD_BYTES`). When set and lower than the
- * model-aware cap, results above it are offloaded even though they would
- * have fit inline: the full output is persisted either way, so the only
- * effect is how much of the context window one tool result may occupy.
- * Unset or invalid keeps today's behavior (offload only above the cap).
- */
-export function resolveOffloadThresholdBytes(): number | undefined {
-  const raw = process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
-  return parsed;
-}
 
 function resolveSingleResultWindowFraction(): number {
   const raw = process.env.AGENC_MAX_TOOL_RESULT_WINDOW_FRACTION;

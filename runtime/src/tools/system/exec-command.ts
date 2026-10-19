@@ -14,7 +14,7 @@ import {
 } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { recordSessionRead, resolveSessionId } from "./filesystem.js";
-import { rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
+import { isCompletePrintedOutput, rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -92,13 +92,11 @@ export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 const PATH_ARG = /^[A-Za-z0-9_./@+-]+$/u;
 
 /**
- * One read step of a `;`/`&&` chain: cat of named files, an explicit line window of one file, or a
- * `grep -n` of one file, whose output numbers every line it shows.
+ * One read step of a `;`/`&&` chain: cat of named files or an explicit line window of one file.
  */
 type ShellReadStep =
   | { readonly kind: "full"; readonly paths: readonly string[] }
-  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number }
-  | { readonly kind: "numbered"; readonly path: string };
+  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number };
 
 /**
  * Simple commands of a command line as the shell would see them: `;`-separated lists of `&&`-joined
@@ -265,11 +263,6 @@ function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellRea
       steps.push({ kind: "lines", path: rest[2]!, start: Number(range[1]), end: Number(range[2]) });
       continue;
     }
-    const grepped = name === "grep" ? numberedGrepPath(rest) : undefined;
-    if (grepped !== undefined) {
-      steps.push({ kind: "numbered", path: grepped });
-      continue;
-    }
     if (name !== "head") continue;
     const count = rest.length === 3 && rest[0] === "-n" ? rest[1]!
       : rest.length === 2 && /^-n?\d+$/u.test(rest[0]!) ? rest[0]!.replace(/^-n?/u, "") : undefined;
@@ -282,66 +275,10 @@ function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellRea
 }
 
 /**
- * The one file of `grep -n [-A N] [-B N] [-C N] [-E|-F|-i|-w|-x] [-e PATTERN | PATTERN] FILE`. With a
- * single file operand grep prints no file name, so every shown line is `N:text` or `N-text`. Any other
- * option, or another operand count, gives undefined.
- */
-function numberedGrepPath(args: readonly string[]): string | undefined {
-  let numbered = false;
-  let patternGiven = false;
-  const operands: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (arg === "--") {
-      operands.push(...args.slice(i + 1));
-      break;
-    }
-    if (!arg.startsWith("-") || arg === "-") {
-      operands.push(arg);
-    } else if (arg === "-e") {
-      if (i + 1 >= args.length) return undefined;
-      patternGiven = true;
-      i += 1;
-    } else if (/^-[ABC]$/u.test(arg)) {
-      if (!/^\d+$/u.test(args[i + 1] ?? "")) return undefined;
-      i += 1;
-    } else if (/^-[nEFiwx]+$/u.test(arg)) {
-      numbered ||= arg.includes("n");
-    } else if (!/^-[ABC]\d+$/u.test(arg)) {
-      return undefined;
-    }
-  }
-  const files = patternGiven ? operands : operands.slice(1);
-  const file = files[0];
-  return numbered && files.length === 1 && PATH_ARG.test(file!) && !file!.startsWith("-") ? file : undefined;
-}
-
-/**
- * The longest run of consecutive `N:text` or `N-text` output lines whose text is exactly line N of the
- * file, as `grep -n` prints matches and their context.
- */
-function numberedRun(stdout: string, lines: readonly string[]): { readonly start: number; readonly end: number } | undefined {
-  let best: { start: number; end: number } | undefined;
-  let run: { start: number; end: number } | undefined;
-  for (const shown of stdout.split(/\r?\n/u)) {
-    const match = /^(\d+)[:-](.*)$/u.exec(shown);
-    const number = match === null ? 0 : Number(match[1]);
-    if (match === null || number < 1 || number > lines.length || lines[number - 1] !== match[2]) {
-      run = undefined;
-      continue;
-    }
-    run = run !== undefined && number === run.end + 1 ? { start: run.start, end: number } : { start: number, end: number };
-    if (best === undefined || run.end - run.start > best.end - best.start) best = run;
-  }
-  return best;
-}
-
-
-/**
  * Light records the reads a model makes through the shell for the read-before-write gate: a `cat`
  * step of a `;`/`&&` chain is a full read of each named file whose exact current content appears in
- * the output, and a `sed -n 'A,Bp' file` or `head -n N file` step is a partial read of those lines
- * when exactly those lines appear. The shell must have exited on its own, untruncated with no live
+ * the output. A `sed -n 'A,Bp' file` or `head -n N file` step counts only if it shows the whole file.
+ * Partial shell views do not authorize edits. The shell must have exited on its own, untruncated with no live
  * session; after a nonzero exit only the first step of each `;` list counts. The
  * model has then seen the current text, which is what the gate asks for (GPT models read this way:
  * 0.2 to 0.3 gate refusals per benchmark task, each costing a FileRead and a retry).
@@ -355,8 +292,8 @@ export async function recordShellReads(params: {
 }): Promise<void> {
   const { output } = params;
   // A null exit code means the shell did not exit on its own (a signal, or still running).
-  if (output.exitCode === null || output.truncated || output.timedOut || output.session_id !== undefined) return;
-  if (output.stdout.length === 0) return;
+  const visible = formatUnifiedExecToolContent(output, true);
+  if (!isCompletePrintedOutput(output, visible)) return;
   const sessionId = resolveSessionId(params.args);
   if (sessionId === undefined) return;
   const steps = shellReadSteps(params.cmd, params.cwd, output.exitCode === 0);
@@ -365,21 +302,8 @@ export async function recordShellReads(params: {
     for (const rawPath of step.kind === "full" ? step.paths : [step.path]) {
       const file = await stableWorkspaceText(resolve(params.cwd, rawPath), params.allowedPaths, params.args);
       if (file === undefined) continue;
-      if (step.kind === "numbered") {
-        const lines = file.text.split(/\r?\n/u);
-        const run = numberedRun(output.stdout, lines);
-        if (run === undefined) continue;
-        recordSessionRead(sessionId, file.canonical, {
-          content: lines.slice(run.start - 1, run.end).join("\n"),
-          timestamp: file.mtimeMs,
-          viewKind: "partial",
-          readOffset: run.start,
-          readLimit: run.end - run.start + 1,
-        });
-        continue;
-      }
       if (step.kind === "full") {
-        if (!output.stdout.includes(file.text)) continue;
+        if (!visible.includes(file.text)) continue;
         recordSessionRead(sessionId, file.canonical, {
           content: file.text.split(/\r?\n/u).join("\n"),
           timestamp: file.mtimeMs,
@@ -394,9 +318,10 @@ export async function recordShellReads(params: {
       const shown = window.join("\n");
       if (shown.length === 0 || !output.stdout.replace(/\r\n/gu, "\n").includes(shown)) continue;
       const whole = step.start === 1 && step.end >= lines.length;
-      recordSessionRead(sessionId, file.canonical, whole
-        ? { content: lines.join("\n"), timestamp: file.mtimeMs, viewKind: "full", rawContent: file.text }
-        : { content: shown, timestamp: file.mtimeMs, viewKind: "partial", readOffset: step.start, readLimit: step.end - step.start + 1 });
+      if (!whole) continue;
+      recordSessionRead(sessionId, file.canonical, {
+        content: lines.join("\n"), timestamp: file.mtimeMs, viewKind: "full", rawContent: file.text,
+      });
     }
   }
 }
@@ -1292,7 +1217,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           notifyExecSessionDiscovery(args, config?.onSessionYielded);
         }
         const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
-        if (config?.lightMode !== true && !detach && tty !== true) {
+        if (!detach && tty !== true) {
           rememberPrintedOutput({
             cmd,
             output,

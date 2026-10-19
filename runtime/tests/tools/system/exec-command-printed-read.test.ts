@@ -29,8 +29,8 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 // in 4 of 6 standard runs; every first Edit was then refused and the model
 // paid a FileRead round trip plus a resent edit. exec_command only keeps the
 // text it returned; the proof runs when an Edit or Write asks for a file that
-// was not read, so commands pay nothing for it. Light keeps its stricter
-// parser (exec-command-cat-read*.test.ts).
+// was not read, so commands pay nothing for it. Light shares the proof and
+// also keeps literal-read support for small files (exec-command-cat-read*.test.ts).
 
 let root: string;
 let session: string;

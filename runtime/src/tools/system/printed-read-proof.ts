@@ -2,6 +2,8 @@ import { constants as fsConstants } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
+import { MIN_TOOL_RESULT_BYTES, resolveOffloadThresholdBytes } from "../result-visibility.js";
+
 import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 import { recordSessionRead, resolveSessionId, safePathAllowingSessionPlanFile } from "./filesystem.js";
 
@@ -75,7 +77,7 @@ const PRINTED_READ_MAX_OUTPUT_CHARS = 4 * 1024 * 1024;
  * caps or offloads a result above its effective cap (tools/execution.ts computeEffectiveMaxResultBytes),
  * which never drops below MIN_TOOL_RESULT_BYTES; exec_command declares no lower per-tool cap.
  */
-export const PRINTED_READ_MAX_VISIBLE_BYTES = 16_000;
+export const PRINTED_READ_MAX_VISIBLE_BYTES = MIN_TOOL_RESULT_BYTES;
 /** C0 controls other than tab, newline and carriage return; a later display filter may drop them. */
 const PRINTED_READ_CONTROL = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const PRINTED_READ_GLOB = /[*?[]/u;
@@ -214,14 +216,25 @@ function namesFile(entry: PrintedOutput, file: string): boolean {
   return false;
 }
 
+/** Whether the entire result can reach the model without an exec cut or a later cap/offload. */
+export function isCompletePrintedOutput(output: ExecCommandToolOutput, visible: string): boolean {
+  return output.exitCode !== null && !output.truncated && !output.timedOut &&
+    output.session_id === undefined && output.process_id === undefined && output.detached !== true &&
+    output.command_outcome === undefined && output.stdout.length > 0 &&
+    visible.length <= PRINTED_READ_MAX_OUTPUT_CHARS &&
+    Buffer.byteLength(visible, "utf8") <= Math.min(
+      PRINTED_READ_MAX_VISIBLE_BYTES, resolveOffloadThresholdBytes() ?? PRINTED_READ_MAX_VISIBLE_BYTES,
+    );
+}
+
 /**
- * Standard sessions keep the text of recent exec_command results, so an Edit or Write of a file the
+ * Sessions keep the text of recent exec_command results, so an Edit or Write of a file the
  * model saw only through the shell (`cat`, a `for` loop over a glob or over `find`, a `cd` chain,
  * `cat -n`) can count that file as read; without this, the first edit was refused and the model paid
  * a FileRead round trip and a resent edit. Only a shell that exited on its own, untruncated, with no
  * live session and a model-visible result of at most {@link PRINTED_READ_MAX_VISIBLE_BYTES} bytes is
  * kept. Nothing is read here: the proof runs when an edit asks for it ({@link provePrintedRead}), so
- * commands pay only for keeping the text. Light keeps its stricter parser of executed read steps.
+ * commands pay only for keeping the text. Light also keeps literal-read support for short files.
  */
 export function rememberPrintedOutput(params: {
   readonly cmd: string;
@@ -234,9 +247,7 @@ export function rememberPrintedOutput(params: {
   const { output, visible } = params;
   // A head-and-tail cut (max_output_tokens, explicit or default) sets truncated; a later cap or offload
   // never touches a result this small. Either way the model would not see a whole file.
-  if (output.exitCode === null || output.truncated || output.timedOut || output.session_id !== undefined) return;
-  if (output.stdout.length === 0 || visible.length > PRINTED_READ_MAX_OUTPUT_CHARS) return;
-  if (Buffer.byteLength(visible, "utf8") > PRINTED_READ_MAX_VISIBLE_BYTES) return;
+  if (!isCompletePrintedOutput(output, visible)) return;
   const sessionId = resolveSessionId(params.args);
   if (sessionId === undefined) return;
   const words = unquotedWords(params.cmd)

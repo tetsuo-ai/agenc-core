@@ -85,7 +85,7 @@ test("an Edit after a matching cat passes the read-before-write gate", async () 
   expect(applied.isError).not.toBe(true);
 });
 
-test("cat steps of a chain and exact sed or head windows record reads of what was shown", async () => {
+test("cat steps and whole-file head views count, but partial sed windows do not", async () => {
   await writeFile(join(root, "a.go"), "package a\n\nfunc A() {}\n", "utf8");
   await writeFile(join(root, "go.mod"), "module m\n", "utf8");
   await writeFile(join(root, "big.ts"), Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n") + "\n", "utf8");
@@ -96,7 +96,7 @@ test("cat steps of a chain and exact sed or head windows record reads of what wa
   );
   expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "full" });
   expect(getSessionReadSnapshot(session, join(root, "go.mod"))).toMatchObject({ viewKind: "full" });
-  expect(getSessionReadSnapshot(session, join(root, "big.ts"))).toMatchObject({ viewKind: "partial", readOffset: 1, readLimit: 10 });
+  expect(getSessionReadSnapshot(session, join(root, "big.ts"))).toBeUndefined();
   expect(getSessionReadSnapshot(session, join(root, "small.ts"))).toMatchObject({ viewKind: "full" });
 });
 
@@ -231,7 +231,7 @@ test("empty commands bash rejects fail closed; a single trailing ; is fine", asy
 });
 
 
-test("a grep -n window of one file records a partial read of exactly the lines it numbered", async () => {
+test("a grep -n window remains a partial shell view and cannot authorize Edit", async () => {
   const text = ["package a", "", "// B doubles", "func B(x int) int {", "\treturn 2 * x", "}", ""].join("\n");
   await writeFile(join(root, "a.go"), text, "utf8");
   await writeFile(join(root, "a_test.go"), "package a\n\nfunc TestB() {}\n", "utf8");
@@ -239,11 +239,11 @@ test("a grep -n window of one file records a partial read of exactly the lines i
     "grep -n -A2 -B1 'func B' a.go; grep -n -e TestB -C1 a_test.go; git status --short",
     finished("3-// B doubles\n4:func B(x int) int {\n5-\treturn 2 * x\n6-}\n2-\n3:func TestB() {}\n M a.go\n"),
   );
-  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "partial", readOffset: 3, readLimit: 4, content: "// B doubles\nfunc B(x int) int {\n\treturn 2 * x\n}" });
-  expect(getSessionReadSnapshot(session, join(root, "a_test.go"))).toMatchObject({ viewKind: "partial", readOffset: 2, readLimit: 2 });
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toBeUndefined();
+  expect(getSessionReadSnapshot(session, join(root, "a_test.go"))).toBeUndefined();
   const edit = createFileEditTool({ allowedPaths: [root] });
   const applied = await edit.execute({ file_path: join(root, "a.go"), old_string: "2 * x", new_string: "x + x", cwd: root, [SESSION_ID_ARG]: session });
-  expect(applied.isError).not.toBe(true);
+  expect(applied.isError).toBe(true);
 });
 
 test("grep output that is not this file's numbered lines, or an unsupported grep form, records nothing", async () => {
