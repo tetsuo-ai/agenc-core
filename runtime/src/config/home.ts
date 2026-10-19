@@ -189,6 +189,15 @@ export function resolveProcessHomePathInput(env: HomeEnvironment): string | null
   return selectHomePathInput(env, nonEmpty(env.HOME))?.path ?? null;
 }
 
+/** Resolve host filesystem coordinates without constructing credential identity. */
+export function resolveHomePath(
+  env: HomeEnvironment = process.env,
+  options: Pick<ResolveHomeContextOptions, "platformHome"> = {},
+): string {
+  assertNoRetiredConfigDir(env);
+  return canonicalizeHomePath(selectHomePathInput(env, options.platformHome ?? homedir())!.path);
+}
+
 /** Resolve the sole normal-runtime home authority: AGENC_HOME. */
 export function resolveHomeContext(
   env: HomeEnvironment = process.env,

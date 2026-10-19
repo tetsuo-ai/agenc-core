@@ -1,6 +1,6 @@
 import { existsSync, readlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { resolveHomePath } from "../config/home.js";
 import { getCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { resolveManagedRootPath } from "../utils/settings/managedPath.js";
 import type { PermissionProfile } from "./engine/policy.js";
@@ -22,7 +22,7 @@ function coordinates(home?: string, managedRoot?: string, environment: NodeJS.Pr
   const authority = getCanonicalSettingsAuthority();
   // Paths need no native credential account. resolveHomeContext also calls
   // userInfo(), which must not make ordinary filesystem checks depend on NSS.
-  const root = resolve(home ?? authority?.homeContext.path ?? (environment.AGENC_HOME?.trim() || join(homedir(), ".agenc")));
+  const root = resolve(home ?? authority?.homeContext.path ?? resolveHomePath(environment));
   const boundHome = authority?.homeContext.path;
   const sameHome = boundHome !== undefined && resolve(boundHome) === root;
   const managed = resolve(managedRoot ?? (sameHome ? authority?.managedPaths.root : undefined) ?? resolveManagedRootPath(environment));
