@@ -1144,10 +1144,15 @@ async function runAutoClassifierPipeline(
     ? context.toolPermissionContext(appState)
     : appState.toolPermissionContext;
 
-  // 5.1 — non-classifier-approvable safetyCheck: immune to auto.
+  // Explicit content asks are user review boundaries, even for allowlisted
+  // reads and writes a classifier would approve. Modes cannot waive them.
+  // Non-classifier-approvable safety checks have the same requirement.
   if (
-    askResult.decisionReason?.type === "safetyCheck" &&
-    askResult.decisionReason.classifierApprovable === false
+    (askResult.decisionReason?.type === "rule" &&
+      askResult.decisionReason.rule.ruleBehavior === "ask" &&
+      askResult.decisionReason.rule.ruleValue.ruleContent !== undefined) ||
+    (askResult.decisionReason?.type === "safetyCheck" &&
+      askResult.decisionReason.classifierApprovable === false)
   ) {
     if (toolCtx.shouldAvoidPermissionPrompts === true) {
       return {
@@ -1156,7 +1161,7 @@ async function runAutoClassifierPipeline(
         decisionReason: {
           type: "asyncAgent" as const,
           reason:
-            "Safety check requires interactive approval and permission prompts are not available in this context",
+            "Permission check requires interactive approval and permission prompts are not available in this context",
         },
       };
     }

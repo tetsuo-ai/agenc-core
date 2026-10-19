@@ -391,6 +391,18 @@ export function getRuleByContentsForTool(
   behavior: PermissionBehavior,
 ): Map<string, PermissionRule> {
   const out = new Map<string, PermissionRule>();
+  for (const rule of getContentRulesForTool(ctx, toolName, behavior)) {
+    out.set(rule.ruleValue.ruleContent!, rule);
+  }
+  return out;
+}
+
+/** Keep source identity until consumers have resolved source-relative content. */
+export function getContentRulesForTool(
+  ctx: ToolPermissionContext,
+  toolName: string,
+  behavior: PermissionBehavior,
+): PermissionRule[] {
   let rules: PermissionRule[];
   switch (behavior) {
     case "allow":
@@ -403,18 +415,14 @@ export function getRuleByContentsForTool(
       rules = getAskRules(ctx);
       break;
   }
-  for (const rule of rules) {
-    if (
+  return rules.filter(
+    (rule) =>
       toolNamesInPermissionRiskFamily(toolName).includes(
         permissionRuleToolName(rule.ruleValue.toolName, rule.ruleBehavior),
       ) &&
       rule.ruleValue.ruleContent !== undefined &&
-      rule.ruleBehavior === behavior
-    ) {
-      out.set(rule.ruleValue.ruleContent, rule);
-    }
-  }
-  return out;
+      rule.ruleBehavior === behavior,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────

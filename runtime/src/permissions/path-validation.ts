@@ -23,7 +23,7 @@ import {
   sep,
 } from "node:path";
 
-import { getRuleByContentsForTool } from "./rules.js";
+import { getContentRulesForTool } from "./rules.js";
 import { unattendedWriteRoots } from "./unattended-policy.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
 import {
@@ -536,8 +536,12 @@ function matchingRuleForPath(
       : pathsToCheck.length > 0 && pathsToCheck.every(matches);
   };
   for (const toolName of toolNamesForOperation(operationType)) {
-    const rules = getRuleByContentsForTool(context, toolName, behavior);
-    for (const [content, rule] of rules) {
+    // Equal relative text from different sources can name different files.
+    // Resolve every source before matching, retaining later-source priority
+    // when several rules describe the same target.
+    const rules = getContentRulesForTool(context, toolName, behavior);
+    for (const rule of rules.reverse()) {
+      const content = rule.ruleValue.ruleContent!;
       const patterns = restrictive
         ? restrictiveRulePatterns(content, rule.source, cwd)
         : [resolvePathRulePattern(content, rule.source, cwd)];
@@ -847,7 +851,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason: "UNC network paths require manual approval",
       },
     };
@@ -858,7 +863,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason:
           "Tilde expansion variants (~user, ~+, ~-) in paths require manual approval",
       },
@@ -874,7 +880,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason: "Shell expansion syntax in paths requires manual approval",
       },
     };
@@ -885,7 +892,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason: "Path exceeds maximum length",
       },
     };
@@ -897,7 +905,8 @@ export function validatePath(
         allowed: false,
         resolvedPath: cleanPath,
         decisionReason: {
-          type: "other",
+          type: "safetyCheck",
+          classifierApprovable: false,
           reason:
             "Glob patterns are not allowed in write operations. Please specify an exact file path.",
         },
@@ -1140,31 +1149,11 @@ export function checkToolPathPermission(
     };
   }
 
-  // Mirror the bash short-circuit at permissions/bash.ts:431 ("hadDeny"
-  // guard): in --dangerously-bypass-approvals-and-sandbox / bypassPermissions mode the user has explicitly
-  // opted out of approval gating, so filesystem-touching tools (Read, Glob,
-  // FileRead, ...) must not surface the working-dir prompt. Without this,
-  // `agenc --dangerously-bypass-approvals-and-sandbox` was half-bypassing — Bash and Grep auto-approved while
-  // Read/Glob still prompted, breaking GAP-TEST-* scenarios 11/13/35.
-  //
-  // SECURITY: this bypass runs AFTER validatePath, so a path-specific
-  // Deny(...) rule (handled above), the safety gates surfaced as a
-  // "safetyCheck" decisionReason (the shared protected-path classifier and
-  // dangerous-removal checks in isPathAllowed/checkPathSafetyForAutoEdit),
-  // and a content-specific ask rule are still honored. These are exactly the
-  // bypass-immune categories the evaluator enforces at
-  // permissions/evaluator.ts (step 1d deny, step 1f content ask rule, step 1g
-  // safetyCheck); the evaluator only sees the rule when this wrapper reports
-  // it, so converting the ask into an allow here silenced a confirmation the
-  // settings promised (#2125). Everything else (workingDir) is auto-allowed
-  // under bypass.
+  // Bypass lifts only the ordinary workspace boundary. Deny, explicit ask,
+  // protected paths and malformed/ambiguous path safety remain mandatory.
   if (
     opts.context.mode === "bypassPermissions" &&
-    decisionReason?.type !== "safetyCheck" &&
-    !(
-      decisionReason?.type === "rule" &&
-      decisionReason.rule.ruleBehavior === "ask"
-    )
+    decisionReason?.type === "workingDir"
   ) {
     return {
       behavior: "allow",

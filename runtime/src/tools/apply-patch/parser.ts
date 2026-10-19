@@ -274,7 +274,9 @@ function parseHunk(
   endIndex: number,
   patchLineOffset: number,
 ): ParsedHunk {
-  const firstLine = (lines[startIndex] ?? "").trim();
+  // Keep the target's spelling for the permission layer and the filesystem.
+  // Trimming its suffix hid Windows trailing-space aliases from safety checks.
+  const firstLine = (lines[startIndex] ?? "").trimStart();
   const lineNumber = startIndex - patchLineOffset + 1;
   if (firstLine.startsWith(ADD_FILE_MARKER)) {
     const contentLines: string[] = [];

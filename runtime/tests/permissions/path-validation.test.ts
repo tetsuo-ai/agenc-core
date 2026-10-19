@@ -213,7 +213,8 @@ describe("path-validation", () => {
     expect(result.allowed).toBe(false);
     expect(result.resolvedPath).toBe("$HOME/.ssh/id_rsa");
     expect(result.decisionReason).toEqual({
-      type: "other",
+      type: "safetyCheck",
+      classifierApprovable: false,
       reason: "Shell expansion syntax in paths requires manual approval",
     });
   });
@@ -221,7 +222,7 @@ describe("path-validation", () => {
   test("blocks write globs but permits read glob base validation", () => {
     const writeResult = validatePath("src/*.ts", root, ctx(), "write");
     expect(writeResult.allowed).toBe(false);
-    expect(writeResult.decisionReason?.type).toBe("other");
+    expect(writeResult.decisionReason?.type).toBe("safetyCheck");
 
     const readResult = validatePath("src/*.ts", root, ctx(), "read");
     expect(readResult.allowed).toBe(true);

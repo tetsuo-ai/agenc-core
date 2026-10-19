@@ -1,7 +1,7 @@
 /**
- * Protected-path classifier for system file-tool permission checks.
+ * Shared protected-path classifier for file and shell mutation checks.
  *
- * Mirrors the Bash/PowerShell lists in `utils/permissions/filesystem.ts`
+ * Owns the lists also used by `utils/permissions/filesystem.ts`
  * (`.git` / `.vscode` / `.idea` / `.agenc`, shell rc files, Windows 8.3 /
  * trailing-dot / device-name / ADS spellings) so Write/Edit/notebook/
  * apply-patch cannot auto-allow paths the shell pipeline would ask about.
@@ -36,18 +36,6 @@ export const DANGEROUS_DIRECTORIES = [
   ".agenc",
   ".agents",
 ] as const;
-
-/**
- * The roots the reduced classifier already protected before this list was
- * applied to system writes. Broadening the list must not quietly lower the
- * authority these need: they stay explicit-user-only, while the directories
- * added alongside them follow the new classifier policy.
- */
-const EXPLICIT_APPROVAL_ONLY_DIRECTORIES = new Set([
-  ".git",
-  ".agenc",
-  ".agents",
-]);
 
 const AGENC_ORDINARY_CHILDREN = new Set(["commands", "worktrees"]);
 
@@ -95,11 +83,23 @@ export function hasSuspiciousWindowsPathPattern(path: string): boolean {
     return true;
   }
 
-  if (/[.\s]+$/.test(path)) {
+  // Windows strips dots/spaces from every component, not just the filename.
+  // Ordinary traversal components are handled by path resolution instead.
+  if (
+    pathSegments(path).some(
+      (part) => part !== "." && part !== ".." && /[.\s]+$/.test(part),
+    )
+  ) {
     return true;
   }
 
-  if (/\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(path)) {
+  if (
+    pathSegments(path).some(
+      (part) =>
+        /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part) ||
+        /\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(part),
+    )
+  ) {
     return true;
   }
 
@@ -173,24 +173,7 @@ export type ProtectedPathSafetyResult =
       readonly classifierApprovable: boolean;
     };
 
-/**
- * Shared write-safety classification: suspicious Windows spellings first
- * (bypass-immune), then the dangerous-file/directory list.
- *
- * Callers that need extra session-dependent checks (live AgenC config
- * paths) should run those between the two loops rather than forking this
- * list.
- */
-/**
- * True when the path sits under one of the originally protected roots, which
- * a classifier may not approve on the user's behalf.
- */
-function requiresExplicitApproval(path: string): boolean {
-  return pathSegments(path).some((segment) =>
-    EXPLICIT_APPROVAL_ONLY_DIRECTORIES.has(normalizeCaseForComparison(segment)),
-  );
-}
-
+/** Sensitive mutations require a person, including in auto and bypass modes. */
 export function checkProtectedPathSafety(
   path: string,
   pathsToCheck: readonly string[],
@@ -207,23 +190,11 @@ export function checkProtectedPathSafety(
     }
   }
 
-  // Every candidate, not the first match. pathsToCheck carries the path as
-  // written and its canonical target, so a `.vscode` symlink into `.git` would
-  // otherwise be judged by the weaker alias inspected first and never reach the
-  // root it actually points at. Take the strongest restriction any candidate
-  // implies.
-  let dangerous = false;
-  let explicitApprovalOnly = false;
-  for (const pathToCheck of pathsToCheck) {
-    if (!isDangerousFilePathToAutoEdit(pathToCheck)) continue;
-    dangerous = true;
-    if (requiresExplicitApproval(pathToCheck)) explicitApprovalOnly = true;
-  }
-  if (dangerous) {
+  if (pathsToCheck.some(isDangerousFilePathToAutoEdit)) {
     return {
       safe: false,
       message: `AgenC requested permissions to edit ${path} which is a sensitive file.`,
-      classifierApprovable: !explicitApprovalOnly,
+      classifierApprovable: false,
     };
   }
 

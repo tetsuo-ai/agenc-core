@@ -85,11 +85,11 @@ describe("checkProtectedPathSafety", () => {
     });
   });
 
-  test(".vscode stays classifier-approvable until a stronger root is also present", () => {
+  test("IDE control paths require explicit approval with or without other protected roots", () => {
     expect(checkProtectedPathSafety(
       "/tmp/project/.vscode/settings.json",
       ["/tmp/project/.vscode/settings.json"],
-    )).toMatchObject({ safe: false, classifierApprovable: true });
+    )).toMatchObject({ safe: false, classifierApprovable: false });
 
     expect(checkProtectedPathSafety(
       "/tmp/project/.vscode/settings.json",

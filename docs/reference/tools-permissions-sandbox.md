@@ -528,8 +528,11 @@ Legacy `Bash` deny and ask rules restrict the canonical shell tool family
 (`exec_command`, `system.bash`, and process continuation tools). Legacy `Bash`
 allow rules remain invalid; use canonical tool names for grants.
 
-`bypassPermissions` is restricted. It skips approval prompts down to the deny
-floor, but it does not disable the OS sandbox and it does not skip tools
+`bypassPermissions` is restricted. For file paths it skips ordinary workspace
+boundary prompts; explicit deny rules still deny, and content-specific ask
+rules, protected writes and malformed or ambiguous path safety checks still
+require a person. With no approval resolver those requests are refused.
+It does not disable the OS sandbox and it does not skip tools
 that set `requiresUserInteraction()` — see
 [Interactive tool prompts](#interactive-tool-prompts). `/permissions mode
 bypassPermissions` refuses the transition until the operator runs
@@ -629,14 +632,19 @@ prompt into an allow; it lifts only the working-directory prompt. This holds
 for rules from every source, so a managed `permissions.ask` entry still
 prompts when user settings allow the same path.
 
-`auto` mode is the exception: path validation reports the `ask`, but the
-auto-mode pipeline, not the user, then decides it. A tool on the auto-mode
-safe allowlist (`FileRead`, `Grep`, `Glob`) is approved by that allowlist, so
-an allowlisted read such as `FileRead(./.env)` runs without a prompt even
-though an `ask` rule matches it. A write `ask` in `auto` goes to the auto-mode
-classifier, which can approve it. In `auto` mode a content-specific `ask` rule
-does not force a confirmation; use a `deny` rule for a path that must never be
-read or written without the user.
+`auto` also preserves content-specific asks before its safe-tool allowlist,
+acceptEdits simulation and classifier. An explicit path ask therefore requires
+confirmation in every mode. Protected file writes (including IDE control
+directories and shell startup files) cannot be approved by the classifier.
+
+Relative path rules are anchored at their source: project and local settings
+use the project root; user settings use the active AgenC home (`AGENC_HOME`,
+or the platform default); flag and managed settings use the directory holding
+their configuration file; CLI, command and session rules use the current
+workspace. A leading `./` is normalized. Identical relative text in different
+sources keeps each source's root. Exact paths, `~/` paths, recursive `/**`
+and wildcard patterns retain their meaning; bare wildcards such as `**` and
+`*.ts` remain unanchored, while `./**` explicitly names the source root.
 
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).

@@ -24,6 +24,13 @@ import {
   type WriteCommandOperands,
 } from "../utils/shell/write-command-options.js";
 
+import {
+  checkProtectedPathSafety,
+  DANGEROUS_DIRECTORIES,
+  DANGEROUS_FILES,
+  hasSuspiciousWindowsPathPattern,
+} from "../permissions/protected-paths.js";
+
 const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
   "exec_command",
   "write_stdin",
@@ -61,18 +68,9 @@ const WORKSPACE_GENERATED_ROOTS = new Set([
  */
 const DELETE_COMMANDS = new Set(["rm", "rmdir", "unlink"]);
 /** Path segments that mark a path as protected from shell removal. */
-const PROTECTED_DELETION_SEGMENTS = new Set([".git", ".agenc", ".agents"]);
+const PROTECTED_DELETION_SEGMENTS = new Set<string>(DANGEROUS_DIRECTORIES);
 /** Shell and git configuration files a shell command may not remove. */
-const PROTECTED_DELETION_FILES = new Set([
-  ".gitconfig",
-  ".gitmodules",
-  ".bashrc",
-  ".bash_profile",
-  ".zshrc",
-  ".zprofile",
-  ".profile",
-  ".ripgreprc",
-]);
+const PROTECTED_DELETION_FILES = new Set<string>(DANGEROUS_FILES);
 /**
  * The file tools a refused shell write is pointed at, in the order a refusal
  * names them. Edit and Write come first; MultiEdit and apply_patch are named
@@ -2582,10 +2580,7 @@ function isProtectedWriteTarget(
 ): boolean {
   const relation = workspaceRelation(workspaceRoot, absolutePath);
   const named = relation === "outside" ? absolutePath : relative(workspaceRoot, absolutePath);
-  if (named.split(/[\\/]/).some((segment) => PROTECTED_DELETION_SEGMENTS.has(segment))) {
-    return true;
-  }
-  if (PROTECTED_DELETION_FILES.has(basename(absolutePath))) return true;
+  if (!checkProtectedPathSafety(absolutePath, [named]).safe) return true;
   return protectedRoots.some(
     (root) =>
       (absolutePath === root || isStrictlyUnder(root, absolutePath)) &&
@@ -2622,7 +2617,7 @@ function globMayMatchProtectedName(pattern: string): boolean {
     }
   }
   try {
-    const matcher = new RegExp(`^${source}$`, "u");
+    const matcher = new RegExp(`^${source}$`, "iu");
     return PROTECTED_NAMES.some((name) => matcher.test(name));
   } catch {
     return true;
@@ -2659,6 +2654,9 @@ function expandingTargetIsProtected(
   workspaceRoot: string,
   protectedRoots: readonly string[],
 ): boolean {
+  // A tilde in an 8.3 alias is not a safe dynamic target. Classify the
+  // original spelling before shell expansion handling can discard it.
+  if (hasSuspiciousWindowsPathPattern(path)) return true;
   const { directory, components } = splitExpandingTarget(path);
   if (directory !== undefined && isProtectedWriteTarget(directory, workspaceRoot, protectedRoots)) {
     return true;
@@ -2666,7 +2664,7 @@ function expandingTargetIsProtected(
   return components.some((component) =>
     DYNAMIC_SHELL_TARGET_RE.test(component)
       ? globMayMatchProtectedName(component)
-      : PROTECTED_NAMES.includes(component),
+      : PROTECTED_NAMES.includes(component.toLowerCase()),
   );
 }
 

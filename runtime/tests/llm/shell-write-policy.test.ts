@@ -36,6 +36,22 @@ const REFACTOR_CLEANUP =
   "rm arcade15/game.js && ls -la arcade15 && node --check arcade15/main.js";
 
 describe("classifyShellWorkspaceWritePolicy", () => {
+  it.each([
+    ".vscode/settings.json", ".idea/workspace.xml", ".VsCoDe/settings.json",
+    ".bashrc", ".ZsHrC", "settings.json.", "settings.json ", "GIT~1/config",
+    ".git./config", ".agenc /config.toml", "CON", "NUL.txt", "COM1/log",
+  ])("preserves the shared protected-path floor for %s in editing modes", (target) => {
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: `printf '{}' > '${target}'` },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceWrites: true,
+      bypassesApprovalsAndSandbox: true,
+    });
+    expect(decision.blockedTargets).toContain(`${WORKSPACE_ROOT}/${target}`);
+    expect(decision.blocked).toBe(true);
+  });
+
   it.each([">", ">>", ">|", "&>", "&>>", "<>", "2>", "3<>"])(
     "blocks workspace writes through %s",
     (operator) => {
