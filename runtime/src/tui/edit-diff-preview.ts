@@ -58,7 +58,7 @@ interface EditPair {
 
 /**
  * Extract the diffable old/new pairs from a tool-use input.
- *  - Edit:      one pair from `old_string`/`new_string`.
+ *  - Edit:      one pair from `old_string`/`new_string`, or each `oldText`/`newText` in `edits[]`.
  *  - MultiEdit: one pair per entry in `edits[]`.
  *  - Write:     one pair from `""` -> `content` (whole-file add).
  * Returns null when the input carries no usable change (so the caller can skip
@@ -78,14 +78,14 @@ export function editPairsFromInput(
     return { file, pairs: [{ oldString: "", newString: content }] };
   }
 
-  if (toolName === "MultiEdit") {
+  if (toolName === "MultiEdit" || (toolName === "Edit" && Array.isArray(input.edits))) {
     const rawEdits = Array.isArray(input.edits) ? input.edits : [];
     const pairs: EditPair[] = [];
     for (const edit of rawEdits) {
       if (!isRecord(edit)) continue;
       pairs.push({
-        oldString: asString(edit.old_string),
-        newString: asString(edit.new_string),
+        oldString: asString(toolName === "Edit" ? edit.oldText : edit.old_string),
+        newString: asString(toolName === "Edit" ? edit.newText : edit.new_string),
       });
     }
     if (pairs.length === 0) return null;
