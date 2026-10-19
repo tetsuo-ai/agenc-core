@@ -936,12 +936,23 @@ function WelcomeHintLine(): React.ReactNode {
   )
 }
 
+// Reserve ten rows outside the mark: name + gap (2), transcript top
+// padding (1), and prompt/footer chrome including a wrapped placeholder (7).
+// Hints cost another gap and row; drop them before shrinking the brand mark.
+export function welcomeColdPanelLayout(availableWidth: number, terminalRows: number): {
+  readonly compactLogo: boolean
+  readonly showHint: boolean
+} {
+  const fullWidth = Math.max(...AGENC_LOGO_MARK_LINES.map(line => stringWidth(line)))
+  const compactLogo = availableWidth < fullWidth || terminalRows < AGENC_LOGO_MARK_LINES.length + 10
+  const logoRows = compactLogo ? AGENC_LOGO_MARK_COMPACT_LINES.length : AGENC_LOGO_MARK_LINES.length
+  return { compactLogo, showHint: terminalRows >= logoRows + 12 }
+}
+
 export function WelcomeColdPanel(): React.ReactNode {
   const availableWidth = useWelcomeAvailableWidth()
   const { rows: terminalRows } = useTerminalSize()
-  // The full mark is 20x10 cells; short panes get the 12x6 mark.
-  const compactLogo = availableWidth < 96 || terminalRows < 24
-  const showHint = terminalRows >= 16
+  const { compactLogo, showHint } = welcomeColdPanelLayout(availableWidth, terminalRows)
 
   return (
     <Box

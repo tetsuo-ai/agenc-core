@@ -207,10 +207,10 @@ describe('v2 primitives', () => {
     expect(() => kittyLogoPlaceholderRows(0, 10)).toThrow(RangeError)
   })
 
-  it.each([23, 24])('chooses the correct logo size at terminal height %i', async rows => {
+  it.each([19, 20])('chooses the correct logo size at terminal height %i', async rows => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows })
-    const expected = rows < 24 ? AGENC_LOGO_MARK_COMPACT_LINES : AGENC_LOGO_MARK_LINES
-    const other = rows < 24 ? AGENC_LOGO_MARK_LINES : AGENC_LOGO_MARK_COMPACT_LINES
+    const expected = rows < 20 ? AGENC_LOGO_MARK_COMPACT_LINES : AGENC_LOGO_MARK_LINES
+    const other = rows < 20 ? AGENC_LOGO_MARK_LINES : AGENC_LOGO_MARK_COMPACT_LINES
     expect(output).toContain(expected[0])
     expect(output).not.toContain(other[0])
   })
@@ -242,8 +242,8 @@ describe('v2 primitives', () => {
   it('drops whole hint segments on a narrow pane instead of cutting mid-word', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 44, rows: 24 })
 
-    expect(output).toContain(AGENC_LOGO_MARK_COMPACT_LINES[0])
-    expect(output).not.toContain(AGENC_LOGO_MARK_LINES[0])
+    expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
+    expect(output).not.toContain(AGENC_LOGO_MARK_COMPACT_LINES[0])
     // The first segment always survives…
     expect(output).toContain('/ commands')
     // …and narrower panes lose trailing segments whole, with no mid-word
@@ -252,17 +252,17 @@ describe('v2 primitives', () => {
     expect(output).not.toContain('…')
   })
 
-  it('centers the compact mark above the name and the keys at 80 columns', async () => {
+  it('centers the full mark above the name and the keys at 80 columns', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 80, rows: 30 })
     const lines = output.split(/\r?\n/u)
     const brandRowIndex = lines.findIndex(line =>
-      line.includes(AGENC_LOGO_MARK_COMPACT_LINES[0]),
+      line.includes(AGENC_LOGO_MARK_LINES[0]),
     )
     const nameRowIndex = lines.findIndex(line => line.includes('agenc'))
     const keysRowIndex = lines.findIndex(line => line.includes('/ commands'))
 
     expect(brandRowIndex).toBeGreaterThanOrEqual(0)
-    expect(lines[brandRowIndex]!.indexOf(AGENC_LOGO_MARK_COMPACT_LINES[0])).toBeGreaterThan(20)
+    expect(lines[brandRowIndex]!.indexOf(AGENC_LOGO_MARK_LINES[0])).toBeGreaterThan(20)
     expect(nameRowIndex).toBeGreaterThan(brandRowIndex)
     expect(keysRowIndex).toBeGreaterThan(nameRowIndex)
   })

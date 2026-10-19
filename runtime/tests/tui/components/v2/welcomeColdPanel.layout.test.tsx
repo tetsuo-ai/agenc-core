@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { ContentWidthProvider } from '../../../../src/tui/context/contentWidthContext.js'
 import { renderToAnsiString, renderToString } from '../../../utils/staticRender.js'
-import { WelcomeColdPanel } from '../../../../src/tui/components/v2/primitives.js'
+import { WelcomeColdPanel, welcomeColdPanelLayout, AGENC_LOGO_MARK_LINES, AGENC_LOGO_MARK_COMPACT_LINES } from '../../../../src/tui/components/v2/primitives.js'
 import { VERSION } from '../../../../src/version.js'
 
 // The cold start is the mark, the name with its version, and one line of
@@ -70,5 +70,29 @@ describe('WelcomeColdPanel layout', () => {
     expect(sgrBefore(out, 'attach files')).toBe(SECONDARY_SGR)
     expect(sgrBefore(out, 'agenc')).toBe(INK_SGR)
     expect(sgrBefore(out, VERSION)).toBe(INACTIVE_SGR)
+  })
+})
+
+const widths = [24, 30, 40, 60, 80, 95, 96, 120]
+const heights = [16, 20, 24, 40]
+describe('welcome logo fit', () => {
+  it.each(widths.flatMap(columns => heights.map(rows => ({ columns, rows }))))(
+    'fits the logo and whole hints at $columns x $rows', async ({ columns, rows }) => {
+      const layout = welcomeColdPanelLayout(columns - 2, rows)
+      expect(layout).toEqual({ compactLogo: rows < 20, showHint: rows >= 22 })
+      const output = await renderToString(<WelcomeColdPanel />, { columns, rows })
+      const logo = layout.compactLogo ? AGENC_LOGO_MARK_COMPACT_LINES : AGENC_LOGO_MARK_LINES
+      for (const line of logo) expect(output).toContain(line)
+      for (const line of output.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(columns - 2)
+      expect(output.includes('/ commands')).toBe(layout.showHint)
+    },
+  )
+  it('uses the actual mark boundaries and drops hints before shrinking', () => {
+    expect(welcomeColdPanelLayout(19, 40).compactLogo).toBe(true)
+    expect(welcomeColdPanelLayout(20, 40).compactLogo).toBe(false)
+    expect(welcomeColdPanelLayout(20, 19).compactLogo).toBe(true)
+    expect(welcomeColdPanelLayout(20, 20)).toEqual({ compactLogo: false, showHint: false })
+    expect(welcomeColdPanelLayout(20, 21)).toEqual({ compactLogo: false, showHint: false })
+    expect(welcomeColdPanelLayout(20, 22)).toEqual({ compactLogo: false, showHint: true })
   })
 })
