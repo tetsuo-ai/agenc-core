@@ -3574,6 +3574,7 @@ describe("model-facing tools", () => {
 
     expect(result.isError).not.toBe(true);
     expect(JSON.parse(result.content)).toEqual({
+      collect: expect.stringContaining("Use wait_agent to collect this helper"),
       task_name: "/root/bug_review",
       nickname: "Bug Review",
     });
@@ -4225,6 +4226,7 @@ describe("model-facing tools", () => {
 
       expect(result.isError).not.toBe(true);
       expect(JSON.parse(result.content)).toEqual({
+        collect: expect.stringContaining("Use wait_agent to collect this helper"),
         task_name: "/root/child_1/grandchild",
         nickname: "Molly",
       });
@@ -4321,6 +4323,7 @@ describe("model-facing tools", () => {
 
     expect(spawned.isError).not.toBe(true);
     expect(JSON.parse(spawned.content)).toEqual({
+      collect: expect.stringContaining("Use wait_agent to collect this helper"),
       task_name: "/root/task_1",
       nickname: "Snowcrash",
     });
@@ -4729,7 +4732,7 @@ describe("model-facing tools", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.content)).toEqual({ task_name: "/root/task_1" });
+    expect(JSON.parse(result.content)).toEqual({ task_name: "/root/task_1", collect: expect.stringContaining("Use wait_agent to collect this helper") });
   });
 
   it("rejects empty v2 agent messages before dispatch", async () => {
