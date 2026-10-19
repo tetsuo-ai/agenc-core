@@ -308,6 +308,7 @@ describe("ImagineImage tool", () => {
     });
     const properties = tool.inputSchema.properties as Record<string, unknown>;
     expect(Object.keys(properties)).toEqual([
+      "provider",
       "prompt",
       "model",
       "n",
@@ -352,6 +353,7 @@ describe("ImagineImage tool", () => {
 
     expect(tool.description).toMatch(/exactly one image/u);
     expect(Object.keys(properties)).toEqual([
+      "provider",
       "prompt",
       "model",
       "aspect_ratio",
@@ -360,6 +362,7 @@ describe("ImagineImage tool", () => {
     expect(properties.model?.enum).toEqual([
       "glm-image",
       "cogview-4-250304",
+      "qwen-image-2.1",
     ]);
     expect(properties.n).toBeUndefined();
     expect(properties.resolution).toBeUndefined();
@@ -382,7 +385,7 @@ describe("ImagineImage tool", () => {
       string,
       Record<string, unknown>
     >;
-    expect(metaProperties.model?.enum).toEqual(["muse-image-1.0"]);
+    expect(metaProperties.model?.enum).toEqual(["muse-image-1.0", "qwen-image-2.1"]);
     expect(metaProperties.n).toMatchObject({
       type: "integer",
       minimum: 1,
@@ -1765,6 +1768,7 @@ describe("ImagineImage tool", () => {
       "model",
       "n",
       "prompt",
+      "provider",
       "quality",
     ]);
     expect(openaiSchema.properties.model?.enum).toEqual(
@@ -1798,6 +1802,7 @@ describe("ImagineImage tool", () => {
       "model",
       "n",
       "prompt",
+      "provider",
     ]);
     expect(minimaxSchema.properties.n?.maximum).toBe(9);
     // The advertised ratios are the ones MiniMax will accept, not the union.
