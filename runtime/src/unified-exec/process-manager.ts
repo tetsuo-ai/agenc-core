@@ -404,6 +404,16 @@ function normalizeOwnerId(ownerId: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * A verified read-only inspection keeps its own persistent namespace. Its
+ * no-write, no-network launch policy is part of the namespace key, so sharing
+ * the shell's slot would rebuild a namespace on every switch between the two.
+ */
+type SessionSandboxSlot = "shell" | "inspection";
+function sessionSandboxKey(ownerId: string | undefined, slot: SessionSandboxSlot): string {
+  return slot === "shell" ? ownerId ?? "" : `${ownerId ?? ""}\u0000inspection`;
+}
+
 function makeDeferredExit(): {
   readonly promise: Promise<ExitState>;
   readonly resolve: (state: ExitState) => void;
@@ -580,8 +590,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   // Retain failed startup admission across policy drains, Stop and opt-out.
   // Only closing the owner lifetime (or disposing this manager) resets it.
   private readonly sessionSandboxAvailability = new Map<string, SessionSandboxAvailability>();
-  private sessionSandboxFor(ownerId?: string): SessionSandbox {
-    const key = ownerId ?? "";
+  private sessionSandboxFor(ownerId: string | undefined, slot: SessionSandboxSlot): SessionSandbox {
+    const key = sessionSandboxKey(ownerId, slot);
     let sandbox = this.sessionSandboxes.get(key);
     if (!sandbox) {
       let availability = this.sessionSandboxAvailability.get(key);
@@ -783,7 +793,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(ownerId !== undefined ? { ownerId } : {}),
       ...(request.ownerBinding !== undefined ? { ownerBinding: request.ownerBinding } : {}),
       tty,
-      allowDirectBwrap: direct === undefined && this.commandWrapperArgv.length === 0,
+      // A verified native read-only invocation launches like a shell command:
+      // direct bubblewrap under native containment, or a warm namespace of
+      // its own. The planner still declines unsupported profiles and changed
+      // executable, mount or lifecycle identities; the namespace key carries
+      // the invocation's no-write, no-network policy.
+      allowDirectBwrap: this.commandWrapperArgv.length === 0,
+      sessionSlot: direct === undefined ? "shell" : "inspection",
       startedAt,
       signal: request.__abortSignal,
       sandboxAuthorityGeneration,
@@ -1351,8 +1367,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         Promise.resolve().then(async () => {
           await this.oneShotServers.get(lifetime.ownerId)?.close();
           this.oneShotServers.delete(lifetime.ownerId);
-          await this.sessionSandboxes.get(lifetime.ownerId)?.close();
-          this.sessionSandboxes.delete(lifetime.ownerId);
+          for (const slot of ["shell", "inspection"] as const) {
+            const key = sessionSandboxKey(lifetime.ownerId, slot);
+            await this.sessionSandboxes.get(key)?.close();
+            this.sessionSandboxes.delete(key);
+          }
         }),
         ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
@@ -1365,7 +1384,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
       // Keep settled yielded entries for status/output collection and pruning.
       lifetime.closed = true;
-      this.sessionSandboxAvailability.delete(lifetime.ownerId);
+      this.sessionSandboxAvailability.delete(sessionSandboxKey(lifetime.ownerId, "shell"));
+      this.sessionSandboxAvailability.delete(sessionSandboxKey(lifetime.ownerId, "inspection"));
     });
     return lifetime.closeTask;
   }
@@ -1553,6 +1573,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly argv0?: string;
     readonly tty: boolean;
     readonly allowDirectBwrap: boolean;
+    readonly sessionSlot: SessionSandboxSlot;
     readonly startedAt: number;
     readonly signal?: AbortSignal;
     readonly sandboxAuthorityGeneration: number;
@@ -1621,12 +1642,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
     if (this.sessionSandboxes.size > 0 &&
         (params.runtimeSandbox === undefined || params.runtimeSandbox.persistentSession === false)) {
-      const previousSandbox = this.sessionSandboxes.get(params.ownerId ?? "");
-      if (previousSandbox) {
-        await previousSandbox.close();
-        this.sessionSandboxes.delete(params.ownerId ?? "");
-        this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
-        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+      for (const slot of ["shell", "inspection"] as const) {
+        const key = sessionSandboxKey(params.ownerId, slot);
+        const previousSandbox = this.sessionSandboxes.get(key);
+        if (previousSandbox) {
+          await previousSandbox.close();
+          this.sessionSandboxes.delete(key);
+          this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+          this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+        }
       }
     }
 
@@ -1696,7 +1720,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : undefined;
       const persistent = oneShot ?? (params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
         params.runtimeSandbox.persistentSession !== false
-        ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: params.args,
+        ? await this.sessionSandboxFor(params.ownerId, params.sessionSlot).spawn({ program: params.program, args: params.args,
             cwd: params.cwd, env: params.env }, () => {
             this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
             this.assertOwnerAdmission(params.ownerId, params.ownerBinding);

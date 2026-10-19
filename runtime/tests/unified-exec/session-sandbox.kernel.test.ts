@@ -9,6 +9,7 @@ import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import * as supervised from "../../src/utils/supervisedProcess.js";
 import { permissionProfileFromRuntimePermissions, restrictedFileSystemPolicy } from "../../src/sandbox/engine/index.js";
 import type { UnifiedExecRuntimeSandbox } from "../../src/unified-exec/types.js";
+import { prepareReadOnlyInspectionInvocation } from "../../src/permissions/readonly-inspection.js";
 let root: string, manager: UnifiedExecProcessManager, policy: UnifiedExecRuntimeSandbox;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "manager-session-sandbox-"));
@@ -148,6 +149,33 @@ describe("persistent unified exec lifecycle", () => {
     await first.prepareForDurableClose();
     await expect(run("true", one)).rejects.toThrow(/owner/);
     expect((await run(namespace, two)).stdout).toBe(b.stdout);
+  });
+  it("keeps verified read-only inspections in their own warm no-write namespace", async () => {
+    const readOnly: UnifiedExecRuntimeSandbox = { ...policy, preference: "require", permissionProfile: permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy([{ path: { kind: "special", value: { kind: "root" } }, access: "read" }]), "disabled") };
+    const direct = (command: string, args: string[]) => {
+      const directInvocation = prepareReadOnlyInspectionInvocation({ command, args, cwd: root, readPaths: [root] }, readOnly);
+      return manager.execCommand({ cmd: [command, ...args].join(" "), runtimeSandbox: readOnly, directInvocation,
+        workdir: root, yield_time_ms: 1000 });
+    };
+    const close = vi.spyOn(SessionSandbox.prototype, "close");
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
+    const shell = await run(namespace);
+    const first = await direct("readlink", ["/proc/self/ns/pid"]);
+    const write = await run(`printf x > shell-wrote; ${namespace}`);
+    const second = await direct("readlink", ["/proc/self/ns/pid"]);
+    const refused = await direct("touch", ["inspection-wrote"]);
+    expect([shell, first, write, second].map(result => result.exitCode)).toEqual([0, 0, 0, 0]);
+    // Alternating shell and inspection commands reuse both namespaces.
+    expect(second.stdout).toBe(first.stdout);
+    expect(write.stdout).toBe(shell.stdout);
+    expect(first.stdout).not.toBe(shell.stdout);
+    expect(close).not.toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledTimes(2);
+    // The warm inspection namespace still has no write authority.
+    expect(refused.exitCode).not.toBe(0);
+    expect(fs.existsSync(path.join(root, "inspection-wrote"))).toBe(false);
+    expect(fs.readFileSync(path.join(root, "shell-wrote"), "utf8")).toBe("x");
   });
   it("closes cached namespaces across authority quiesce and durable shutdown", async () => {
     const launch = vi.spyOn(supervised, "spawnContainedProcess");

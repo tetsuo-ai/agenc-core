@@ -15,6 +15,7 @@ vi.mock("../../src/utils/supervisedProcess.js", async original => ({
 }));
 const { spawnContainedProcess } = await import("../../src/utils/supervisedProcess.js");
 const { UnifiedExecProcessManager } = await import("../../src/unified-exec/process-manager.js");
+const { SessionSandbox } = await import("../../src/sandbox/linux-launcher/session-sandbox.js");
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "direct-routing-")); });
 afterEach(() => { vi.restoreAllMocks(); vi.mocked(spawnContainedProcess).mockClear(); rmSync(root, { recursive: true, force: true }); });
@@ -43,8 +44,25 @@ describe.runIf(process.platform === "linux")("direct bwrap route exclusions", ()
       ...(directInvocation ? { directInvocation } : {}) })).rejects.toThrow("route captured");
     expect(spawnContainedProcess).toHaveBeenCalledTimes(1);
     const options = vi.mocked(spawnContainedProcess).mock.calls[0]![2];
-    if (route === "ordinary") expect(options.directBwrap).toMatchObject({ prepare: expect.any(Function), validateAdmission: expect.any(Function) });
+    // A verified read-only invocation launches like an ordinary command.
+    if (route === "ordinary" || route === "delegated") expect(options.directBwrap).toMatchObject({ prepare: expect.any(Function), validateAdmission: expect.any(Function) });
     else expect(options.directBwrap).toBeUndefined();
+  });
+
+  it("keeps read-only inspections in their own warm namespace slot", async () => {
+    const runtimeSandbox = sandbox();
+    const manager = new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: root, sandboxManager });
+    const spawn = vi.spyOn(SessionSandbox.prototype, "spawn").mockResolvedValue(undefined);
+    const directInvocation = prepareReadOnlyInspectionInvocation({ command: "pwd", args: [], cwd: root, readPaths: [] }, runtimeSandbox);
+    for (const delegated of [false, true, false, true]) {
+      await expect(manager.execCommand({ cmd: "pwd", runtimeSandbox, ownerId: "owner",
+        ...(delegated ? { directInvocation } : {}) })).rejects.toThrow("route captured");
+    }
+    const slots = spawn.mock.contexts;
+    expect(slots).toHaveLength(4);
+    expect(slots[0]).toBe(slots[2]);
+    expect(slots[1]).toBe(slots[3]);
+    expect(slots[0]).not.toBe(slots[1]);
   });
 
   it("keeps TTY dispatch on the PTY route", async () => {

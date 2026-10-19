@@ -86,6 +86,7 @@ describe("read-only shell inspection", () => {
     await expect(manager.execCommand({ cmd: "cat 'file with spaces.txt'", runtimeSandbox: sandbox, directInvocation: invocation, login: false })).rejects.toThrow("captured before physical execution");
     expect(build).toHaveBeenCalledWith(expect.objectContaining({ program: invocation.program, args: ["file with spaces.txt"], cwd: process.cwd(), env: invocation.env }));
     expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ allowDirectBwrap: true, sessionSlot: "inspection" }));
     build.mockRestore();
     spawn.mockRestore();
   });
