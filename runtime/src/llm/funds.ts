@@ -103,6 +103,9 @@ function isFundsFailureNode(provider: string, item: Record<string, unknown>): bo
   const status = item.status ?? item.statusCode;
   const code = nestedCode(item) ?? nestedCode(item.body);
   const message = `${nestedText(item)} ${nestedText(item.body)}`.toLowerCase();
+  // Qwen PAYG authenticates this account but refuses inference until paid
+  // access is enabled. Keep ordinary 403 permissions and 429 throttling out.
+  if (provider === "qwen" && status === 403 && code === "AllocationQuota.FreeTierOnly") return true;
   if ((status === 402 || status === 403) &&
     (EXHAUSTED_CREDITS_RE.test(message) ||
       ["insufficient_quota", "insufficient_credits", "credit_balance_exhausted"].includes(code ?? ""))) return true;
