@@ -44,7 +44,7 @@ describe("persistent unified exec lifecycle", () => {
   });
   it("drains a previous sandbox once when switching to bypass", async () => {
     const sandboxClose = vi.spyOn(SessionSandbox.prototype, "close");
-    await run("true");
+    await run("true", { ownerId: "parent" });
     for (let i = 0; i < 2; i++) {
       const result = await withOneShotFastMode(() => run("printf bypass", { runtimeSandbox: undefined, ownerId: "parent" }), "parent");
       expect(result.stdout).toBe("bypass");
