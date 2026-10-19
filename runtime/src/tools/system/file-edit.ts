@@ -1445,7 +1445,9 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
 
       if (!snapshot.exists) {
         return preMutationErrorResult(
-          `File does not exist: ${file_path}. To create a new file, pass a single edit with an empty old_string.`,
+          originalDisjoint
+            ? `File does not exist: ${file_path}. Use Write to create a new file.`
+            : `File does not exist: ${file_path}. To create a new file, pass a single edit with an empty old_string.`,
           toolName,
         );
       }

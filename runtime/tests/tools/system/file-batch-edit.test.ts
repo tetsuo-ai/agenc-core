@@ -106,3 +106,10 @@ test("batch path participates in permission rules before execution", async () =>
   expect(await tool.checkPermissions?.({ path, edits: [{ oldText: "alpha", newText: "one" }] }, context)).toMatchObject({ behavior: "deny" });
   expect(await readFile(path, "utf8")).toBe("alpha\nbeta\ngamma\n");
 });
+
+test("missing-file recovery points to the available creation tool", async () => {
+  const { path, run } = await fixture(); await rm(path);
+  const result = await run([{ oldText: "alpha", newText: "one" }]);
+  expect(result.isError).toBe(true);
+  expect(result.content).toContain("Use Write");
+});
