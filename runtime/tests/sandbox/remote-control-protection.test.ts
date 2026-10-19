@@ -48,3 +48,20 @@ it("does not let bypass shell consent or classifiers authorize owner configurati
     }
   });
 });
+
+it("protects the destination when the owner config itself is a dotfile symlink", () => {
+  const f = fixture();
+  const destination = join(f.root, "dotfiles", "owner.toml");
+  mkdirSync(join(f.root, "dotfiles"));
+  rmSync(join(f.home, "config.toml"));
+  symlinkSync(destination, join(f.home, "config.toml"));
+  // Cover both a dangling destination an agent might create and an existing
+  // destination it might edit, rather than just aliases into a regular file.
+  for (const exists of [false, true]) {
+    if (exists) writeFileSync(destination, "config_version = 2\n");
+    const paths = remoteControlAuthorityPaths(f.home, f.managed);
+    expect(paths).toContain(destination);
+    const profile = protectRemoteControlAuthority(permissionProfileForSandboxMode("workspace_write", { cwd: f.root }), paths);
+    expect(canWritePathWithCwd(profile.fileSystem, destination, f.root, f.temp)).toBe(false);
+  }
+});
