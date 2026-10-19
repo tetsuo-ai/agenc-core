@@ -1,3 +1,4 @@
+import { runtimeOptionsForChildSession } from "../one-shot-fast-mode.js";
 import { isEffectReviewRequired, waitForEffectReview } from "../session/effect-review-gate.js";
 /**
  * runAgent — drive one subagent's run-turn loop.
@@ -3647,6 +3648,7 @@ async function buildChildSession(
       mcpManagerOwnership: "borrowed",
       services: {
         ...params.parent.services,
+        runtimeOptions: runtimeOptionsForChildSession(params.parent.services.runtimeOptions),
         readOnlyDelegation: params.live.metadata.executionConstraint,
         provider,
         // A provider service is session-owned. Do not let the parent's service

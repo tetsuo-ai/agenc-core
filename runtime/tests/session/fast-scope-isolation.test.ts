@@ -1,7 +1,7 @@
 import { runTurn } from "../../src/session/run-turn.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import { describe, expect, it, vi } from "vitest";
-import { oneShotFastModeActive, withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
+import { bypassFastModeEnabled, oneShotFastModeActive, withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import { drain, mkCtx, mkSession, mkProvider } from "../fixtures.js";
 import type { Session } from "../../src/session/session.js";
 
@@ -33,4 +33,20 @@ describe("checkpoint scope isolation #3011", () => {
     else await turn();
     expect(events.filter(event => event.msg.type === "turn_checkpoint").length).toBeGreaterThan(0);
   });
+});
+
+
+it("cannot re-enter a parent's fast mode using inherited eligibility #3011", async () => {
+  const { session } = mkSession();
+  Object.assign(session.services, { runtimeOptions: { ...session.services.runtimeOptions,
+    dangerouslyBypassApprovalsAndSandbox: true, nonInteractive: true, relaxedOneShot: true,
+  } });
+  const ctx = mkCtx({ permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" } });
+  expect(bypassFastModeEnabled(session, ctx)).toBe(true);
+  await withOneShotFastMode(async () => {
+    expect(bypassFastModeEnabled(session, ctx)).toBe(false);
+  }, "different-parent");
+  await withOneShotFastMode(async () => {
+    expect(bypassFastModeEnabled(session, ctx)).toBe(true);
+  }, String(session.conversationId));
 });

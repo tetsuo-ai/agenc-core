@@ -1,3 +1,4 @@
+import { runtimeOptionsForChildSession } from "../one-shot-fast-mode.js";
 import { legacyCacheCreationUsage } from "../llm/usage.js";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
 import { attachExecOwnerBinding, execOwnerBindingFromToolArgs } from "../unified-exec/process-ownership.js";
@@ -328,6 +329,7 @@ export async function createTurnCompatSession(
       mcpManagerOwnership: "borrowed",
       services: {
         ...parent.services,
+        runtimeOptions: runtimeOptionsForChildSession(parent.services.runtimeOptions),
         // The compat child owns its selected model/provider revision. Sharing
         // the parent's provider service would silently retain the parent model.
         providerService: undefined,

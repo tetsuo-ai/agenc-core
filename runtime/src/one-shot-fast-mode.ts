@@ -13,6 +13,9 @@ export function oneShotFastModeSelected(
     options.nonInteractive === true && options.relaxedOneShot === true && config.bypassFastMode !== false;
 }
 export function bypassFastModeEnabled(session: Session, ctx: TurnContext): boolean {
+  const scope = active.getStore();
+  // A nested session cannot turn its inherited root options into a new grant.
+  if (scope !== undefined && scope.sessionId !== String(session.conversationId)) return false;
   return oneShotFastModeSelected(session.services.runtimeOptions, ctx.config) &&
     ctx.permissionMode === "bypassPermissions" && ctx.sandboxPolicy.value === "danger_full_access" &&
     session.services.configStore?.current().bypassFastMode !== false;
@@ -30,4 +33,10 @@ export function oneShotFastModeActive(sessionId?: string): boolean {
 }
 export function withOneShotFastMode<T>(run: () => T, sessionId?: string): T {
   return active.run({ sessionId }, run);
+}
+
+
+/** The print loss window belongs to the selected root, never to its children. */
+export function runtimeOptionsForChildSession(options: AgentRuntimeOptions): AgentRuntimeOptions {
+  return options.relaxedOneShot === true ? { ...options, relaxedOneShot: false } : options;
 }

@@ -740,6 +740,27 @@ describe("wrapProviderForAgentSummary", () => {
 });
 
 describe("runAgent", () => {
+  it("does not inherit a root print loss window into a child session #3011", async () => {
+    const session = makeStubSession({ services: {
+      provider: makeProvider([{ content: "child done" }]),
+      runtimeOptions: resolveAgentRuntimeOptions({}, {
+        dangerouslyBypassApprovalsAndSandbox: true, nonInteractive: true, relaxedOneShot: true,
+      }),
+    } });
+    const { live } = await spawnLive(session);
+    let child: Session | undefined;
+    await collectRun(runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "child task" }], taskPrompt: "child task",
+      onCacheSafeParams: captured => {
+        child = (captured as unknown as { toolUseContext: { admissionSession: Session } }).toolUseContext.admissionSession;
+      },
+    }));
+    expect(child).toBeDefined();
+    expect(child!.services.runtimeOptions.relaxedOneShot).toBe(false);
+    expect(session.services.runtimeOptions.relaxedOneShot).toBe(true);
+    expect(child!.services.runtimeOptions.dangerouslyBypassApprovalsAndSandbox).toBe(true);
+  });
+
   function crossProviderRuntime(target: LLMProvider, configStore: ConfigStore,
     selection = { provider: "deepseek", model: "deepseek-v4-pro" },
     authProfile?: "sign_in") {
