@@ -1,3 +1,4 @@
+import { toolStage } from "../tools/stage-timing.js";
 import type { BoundReadOnlyCwdCapability } from "./bound-readonly-cwd.js";
 /**
  * Final process-execution boundary for commands that do not naturally pass
@@ -1216,6 +1217,14 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     surface: SandboxExecutionSurface,
     requestedCommand: SandboxSpawnCommand,
     options: SandboxPrepareSpawnOptions = {},
+  ): SandboxPreparedSpawn {
+    return toolStage("sandbox_broker", () => this.prepareSpawnTimed(surface, requestedCommand, options));
+  }
+
+  private prepareSpawnTimed(
+    surface: SandboxExecutionSurface,
+    requestedCommand: SandboxSpawnCommand,
+    options: SandboxPrepareSpawnOptions,
   ): SandboxPreparedSpawn {
     // A routine run's commands get their scratch folder inside the workspace
     // as TMPDIR: the session temp root is not writable for them.

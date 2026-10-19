@@ -1,3 +1,4 @@
+import { toolStage } from "../tools/stage-timing.js";
 import { interruptedExecReport } from "../tools/interrupted-exec-report.js";
 import { oneShotFastModeActive, requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 /** Shared M3 boundary for approved tool effects. */
@@ -822,6 +823,14 @@ export function flushOneShotEffectJournal(session: Session): void {
  * failed/no-effect outcome and never releases the physical concurrency lease.
  */
 export async function runAdmittedToolCall(
+  params: AdmittedToolCallOptions,
+): Promise<ToolDispatchResult> {
+  return toolStage("admission", () => runAdmittedToolCallTimed({ ...params,
+    invoke: context => toolStage("permission_policy", () => params.invoke(context)),
+  }));
+}
+
+async function runAdmittedToolCallTimed(
   params: AdmittedToolCallOptions,
 ): Promise<ToolDispatchResult> {
   if (oneShotFastModeActive(String(params.session.conversationId)) && !requiresAtomicSpendAdmission(params.session)) {

@@ -1,3 +1,4 @@
+import { withCompletedToolTiming } from "../tools/stage-timing.js";
 import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 /**
  * Phase 5 — Execute Tools.
@@ -607,6 +608,18 @@ export function queueStreamingToolCall(
 }
 
 function recordCompletedToolCall(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  toolCall: LLMToolCall,
+  result: ToolDispatchResult,
+  durationMs?: number,
+): CompletedToolResultRecord {
+  return withCompletedToolTiming(session, toolCall.id, () =>
+    recordCompletedToolCallTimed(state, ctx, session, toolCall, result, durationMs));
+}
+
+function recordCompletedToolCallTimed(
   state: TurnState,
   ctx: TurnContext,
   session: Session,

@@ -1,3 +1,4 @@
+import { toolStage } from "../tools/stage-timing.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionWriteBehindQueue, withSessionWriteBehind } from "./write-behind.js";
 /**
@@ -4994,6 +4995,13 @@ export class Session {
     event: Event,
     appendOpts: AppendOptions = {},
   ): { readonly event: Event; publish(): Event } {
+    return toolStage("persistence", () => this.prepareEmitTimed(event, appendOpts));
+  }
+
+  private prepareEmitTimed(
+    event: Event,
+    appendOpts: AppendOptions,
+  ): { readonly event: Event; publish(): Event } {
     if (this.writeBehind.draining) this.writeBehind.drain();
     if (this.canonicalJournalSealed) {
       throw new Error(
@@ -5102,6 +5110,10 @@ export class Session {
 
   /** Publish an event already stamped and appended by {@link prepareEmit}. */
   publishPreparedEvent(event: Event): Event {
+    return toolStage("ui_fanout", () => this.publishPreparedEventTimed(event));
+  }
+
+  private publishPreparedEventTimed(event: Event): Event {
     if (this.writeBehind.deferring) {
       const captured = structuredClone(event);
       this.writeBehind.defer("event-publication", () => this.publishPreparedEvent(captured));

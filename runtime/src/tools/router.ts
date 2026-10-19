@@ -1,3 +1,4 @@
+import { toolStage, withToolTiming } from "./stage-timing.js";
 import { interruptedExecReport } from "./interrupted-exec-report.js";
 import { readPendingPhysicalSettlement } from "./physical-settlement.js";
 import { stripModelSuppliedAgenCInternalArgs } from "./internal-args.js";
@@ -99,7 +100,7 @@ import type {
   PostToolUseHook,
   PreToolUseHook,
 } from "./hooks.js";
-import { runPreToolUseHooks } from "./hooks.js";
+import { runPreToolUseHooks as untimedPreHooks } from "./hooks.js";
 import { isWorkflowApprovalSession } from "../permissions/approval-failure.js";
 import { clearApprovalResponseKey } from "../permissions/approval-response-key.js";
 import {
@@ -143,6 +144,8 @@ import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
 } from "../workspace/tool-operation-lifetime.js";
+
+const runPreToolUseHooks: typeof untimedPreHooks = (...args) => toolStage("hooks", () => untimedPreHooks(...args));
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -839,6 +842,14 @@ export class ToolRouter {
   }
 
   async dispatchModelToolCall(
+    toolCall: LLMToolCall,
+    opts: LiveToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    return withToolTiming(opts.session, toolCall.id, toolCall.name, () =>
+      this.dispatchModelToolCallTimed(toolCall, opts));
+  }
+
+  private async dispatchModelToolCallTimed(
     toolCall: LLMToolCall,
     opts: LiveToolDispatchOptions,
   ): Promise<ToolDispatchResult> {

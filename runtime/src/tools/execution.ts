@@ -1,3 +1,4 @@
+import { toolStage } from "./stage-timing.js";
 /**
  * Tool execution — the central gate between the model's tool_use
  * blocks and the actual `Tool.execute()` call.
@@ -105,9 +106,9 @@ import {
   signSessionId,
 } from "./system/filesystem.js";
 import {
-  runPostToolUseFailureHooks,
-  runPostToolUseHooks,
-  runPreToolUseHooks,
+  runPostToolUseFailureHooks as untimed_runPostToolUseFailureHooks,
+  runPostToolUseHooks as untimed_runPostToolUseHooks,
+  runPreToolUseHooks as untimed_runPreToolUseHooks,
   type HookAttachmentKind,
   type HookPermissionResult,
   type HookTimingRecord,
@@ -130,6 +131,10 @@ import { approvalResponseKey } from "../permissions/approval-response-key.js";
 // it bricks the whole tools/ test surface. The canonical strings are
 // authored once here and mirrored by the UI surface (T7 wires the
 // real messages.ts import when the runtime graph lands).
+const runPostToolUseFailureHooks: typeof untimed_runPostToolUseFailureHooks = (...args) => toolStage("hooks", () => untimed_runPostToolUseFailureHooks(...args));
+const runPostToolUseHooks: typeof untimed_runPostToolUseHooks = (...args) => toolStage("hooks", () => untimed_runPostToolUseHooks(...args));
+const runPreToolUseHooks: typeof untimed_runPreToolUseHooks = (...args) => toolStage("hooks", () => untimed_runPreToolUseHooks(...args));
+
 const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   "[Request interrupted by user for tool use]";
 const CANCEL_MESSAGE =
@@ -2271,7 +2276,7 @@ export async function runToolUse(
     const finishExecuting = beginExecutingToolCall(invocation.session, invocation.callId, effectiveSignal);
     let result: Awaited<ReturnType<typeof tool.execute>>;
     try {
-      result = await tool.execute(argsForTool);
+      result = await toolStage("execution", () => tool.execute(argsForTool));
     } finally {
       finishExecuting();
     }
@@ -2302,7 +2307,7 @@ export async function runToolUse(
         : {}),
     });
     rawExecutionSettled = true;
-    dispatch = await finishPhysicalSuccess(rawDispatch, effectiveSignal);
+    dispatch = await toolStage("result_sealing", () => finishPhysicalSuccess(rawDispatch, effectiveSignal));
     cleanupModeSub();
   } catch (err) {
     const pending = readPendingPhysicalSettlement<ToolDispatchResult>(err);
