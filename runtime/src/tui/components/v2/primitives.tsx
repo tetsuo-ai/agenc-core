@@ -708,9 +708,9 @@ export function ChatBody({
   )
 }
 
-// The transcript surface (ActiveWorkSurface) adds paddingX={1} around the
-// welcome panel, so reserve 2 columns from the reported content width to avoid
-// overflowing the pane.
+// Isolated welcome panels reserve a column on either side. In the app,
+// ContentWidthProvider already accounts for the transcript padding; do not
+// subtract a second inset from that width.
 const WELCOME_INSET = 2
 
 function useWelcomeAvailableWidth(): number {
@@ -719,10 +719,8 @@ function useWelcomeAvailableWidth(): number {
   const { columns: terminalColumns } = useTerminalSize()
   // `TerminalFrameColumnsContext` intentionally defaults to 120 for isolated
   // primitives, but a real 44/80-col Ink viewport can be narrower than that.
-  // Clamp the fallback to the physical terminal so the brand row switches to
-  // its stacked compact form before Yoga starts wrapping the logo itself.
-  const available = contentWidth ?? Math.min(frameColumns, terminalColumns)
-  return Math.max(1, available - WELCOME_INSET)
+  // Clamp the fallback to the physical terminal before fitting the mark.
+  return Math.max(1, contentWidth ?? (Math.min(frameColumns, terminalColumns) - WELCOME_INSET))
 }
 
 // Portable fallback for terminals without a graphics protocol. These Braille

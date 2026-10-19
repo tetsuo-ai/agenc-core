@@ -1,4 +1,5 @@
 import React from 'react'
+import { Box } from '../../ink.js'
 import stringWidth from 'string-width'
 import { describe, expect, it } from 'vitest'
 
@@ -78,12 +79,17 @@ const heights = [16, 20, 24, 40]
 describe('welcome logo fit', () => {
   it.each(widths.flatMap(columns => heights.map(rows => ({ columns, rows }))))(
     'fits the logo and whole hints at $columns x $rows', async ({ columns, rows }) => {
-      const layout = welcomeColdPanelLayout(columns - 2, rows)
+      const layout = welcomeColdPanelLayout(columns - 4, rows)
       expect(layout).toEqual({ compactLogo: rows < 20, showHint: rows >= 22 })
-      const output = await renderToString(<WelcomeColdPanel />, { columns, rows })
+      const output = await renderToString(
+        <Box paddingX={2}>
+          <ContentWidthProvider width={columns - 4}><WelcomeColdPanel /></ContentWidthProvider>
+        </Box>,
+        { columns, rows },
+      )
       const logo = layout.compactLogo ? AGENC_LOGO_MARK_COMPACT_LINES : AGENC_LOGO_MARK_LINES
       for (const line of logo) expect(output).toContain(line)
-      for (const line of output.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(columns - 2)
+      for (const line of output.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(columns)
       expect(output.includes('/ commands')).toBe(layout.showHint)
     },
   )
