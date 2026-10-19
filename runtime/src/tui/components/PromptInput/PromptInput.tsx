@@ -1753,7 +1753,10 @@ function PromptInput({
         submissionMode === "prompt" &&
         isAgentSwarmsEnabled()
       ) {
-        const directMessage = parseDirectMemberMessage(inputParam);
+        const rawDirectMessage = parseDirectMemberMessage(inputParam);
+        const directMessage = rawDirectMessage ?? parseDirectMemberMessage(
+          expandPastedTextRefs(inputParam, pastedContentsRef.current),
+        );
         const directMessageRefs = directMessage
           ? parseReferences(inputParam)
           : [];
@@ -1774,10 +1777,9 @@ function PromptInput({
           !directMessageHasUnsupportedAttachments
         ) {
           const directMessagePastedContents = pastedContentsRef.current;
-          const directMessageText = expandPastedTextRefs(
-            directMessage.message,
-            directMessagePastedContents,
-          );
+          const directMessageText = rawDirectMessage === null
+            ? directMessage.message
+            : expandPastedTextRefs(directMessage.message, directMessagePastedContents);
           // Consume the composer before mailbox I/O so a slow send cannot
           // erase a newer draft on completion.
           trackAndSetInput("");
@@ -1873,7 +1875,7 @@ function PromptInput({
         activeAgent.type !== "leader" &&
         onAgentSubmit
       ) {
-        await onAgentSubmit(submitInput, activeAgent.task, {
+        await onAgentSubmit(expandPastedTextRefs(submitInput, submissionPastedContents), activeAgent.task, {
           setCursorOffset: setCurrentCursorOffset,
           clearBuffer,
           resetHistory,

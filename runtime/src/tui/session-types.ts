@@ -220,6 +220,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     message: string,
     opts?: {
       readonly displayUserMessage?: string | null;
+      readonly userPromptText?: string;
     },
   ): Promise<void>;
   enqueueIdleInput?(input: LLMMessage, ownership?: IdleInputOwnership): number;

@@ -4073,7 +4073,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
-  test("routes realtime composer commands before ordinary session submit", async () => {
+  test.each([false, true])("routes realtime composer commands before ordinary session submit (pasted=%s)", async (pasted) => {
     const { AgenCTuiApp } = await import("./App.js");
     const realtime = createRealtimeControls();
     const submit = vi.fn(async () => {});
@@ -4095,7 +4095,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         const onSubmit = providerProbe.promptSubmits.at(-1);
         expect(onSubmit).toBeDefined();
 
-        await onSubmit!("/realtime webrtc", helpers);
+        if (pasted) {
+          (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)({ 1: { id: 1, type: "text", content: "/realtime webrtc" } });
+          await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toHaveProperty("1"));
+        }
+        await providerProbe.promptSubmits.at(-1)!(pasted ? "[Pasted text #1]" : "/realtime webrtc", helpers);
 
         expect(realtime.start).toHaveBeenCalledWith({ transport: "webrtc" });
         expect(submit).not.toHaveBeenCalled();
@@ -4621,6 +4625,103 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     } finally {
       resetCommandQueueForTesting();
     }
+  });
+
+  test.each([
+    { display: "[Pasted text #1 +3 lines]", expected: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation", mode: "parallel" },
+    { display: "Build these independent items:\n[Pasted text #2 +1 lines]\n[Pasted text #1]\nFinish with tests.", expected: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation\nFinish with tests.", mode: "parallel" },
+    { display: "[Pasted text #1] Do not delegate.", expected: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation Do not delegate.", mode: "sequential" },
+  ])("submits expanded paste text for routing while retaining compact history: $display", async ({ display, expected, mode }) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { routeSwarmTask } = await import("../../agents/swarm-routing.js");
+    const pastes = display.includes("#2") ? {
+      1: { id: 1, type: "text", content: "3. documentation" },
+      2: { id: 2, type: "text", content: "1. a /health route\n2. a /version route" },
+    } : {
+      1: { id: 1, type: "text", content: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation" },
+    };
+    const submit = vi.fn(async (_value: string, _options?: unknown) => {});
+    const enqueueIdleInput = vi.fn(() => 1);
+    const session = { ...createSession(), submit, enqueueIdleInput };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(pastes);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes));
+      await providerProbe.promptSubmits.at(-1)!(display, helpers);
+      expect(submit).toHaveBeenCalledWith(expected, expect.objectContaining({ displayUserMessage: display }));
+      expect(routeSwarmTask(submit.mock.calls[0]![0]).mode).toBe(mode);
+      expect(enqueueIdleInput).not.toHaveBeenCalled();
+      expect(providerProbe.historyEntries).toContainEqual({ display, pastedContents: pastes });
+    });
+  });
+
+  test("expands a pasted skill invocation and its arguments before command dispatch", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const getPromptForCommand = vi.fn(async () => [{ type: "text", text: "loaded skill" }]);
+    mockTuiCommandList.push({ name: "reviewer", type: "prompt", loadedFrom: "skills", progressMessage: "Loading reviewer", contentLength: 1, getPromptForCommand });
+    const session = { ...createSession(), submit: vi.fn(async () => {}), enqueueIdleInput: vi.fn(() => 1) };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const pastes = { 1: { id: 1, type: "text", content: "$reviewer audit this and its tests" } };
+      (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(pastes);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes));
+      await providerProbe.promptSubmits.at(-1)!("[Pasted text #1 +1 lines]", helpers);
+      expect(getPromptForCommand).toHaveBeenCalledWith("audit this and its tests", expect.anything());
+      expect(session.submit).toHaveBeenCalledWith("", expect.objectContaining({ displayUserMessage: "[Pasted text #1 +1 lines]" }));
+    });
+  });
+
+  test("retries the expanded paste exactly once with images and restores the compact draft", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const submit = vi.fn(async (_value: string, _options?: unknown) => {
+      if (submit.mock.calls.length === 1) throw new Error("response dropped");
+    });
+    const admission = vi.fn(() => ({ token: "paste-admission" }));
+    const rollback = vi.fn(() => true);
+    const session = { ...createSession(), submit, enqueueIdleInputBatchOwned: admission, rollbackIdleInputAdmission: rollback };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    const pastes = {
+      1: { id: 1, type: "text", content: "literal [Pasted text #2]\nsecond line" },
+      2: { id: 2, type: "text", content: "last" },
+      3: { id: 3, type: "image", content: "aW1hZ2U=", mediaType: "image/png" },
+    };
+    const display = "Start [Pasted text #1 +1 lines] then [Pasted text #2] [Image #3]";
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(pastes);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes));
+      await providerProbe.promptSubmits.at(-1)!(display, helpers);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.input).toBe(display));
+      expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes);
+      await providerProbe.promptSubmits.at(-1)!(display, helpers);
+      expect(submit).toHaveBeenCalledTimes(2);
+      expect(submit.mock.calls[0]).toEqual(submit.mock.calls[1]);
+      expect(submit.mock.calls[0]![0]).toBe("Start literal [Pasted text #2]\nsecond line then last [Image #3]");
+      expect(admission.mock.calls).toEqual([
+        [[{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,aW1hZ2U=" } }] }], { workspaceView: "agent" }],
+        [[{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,aW1hZ2U=" } }] }], { workspaceView: "agent" }],
+      ]);
+    });
+  });
+
+  test("expands only a queued item's captured pastes and preserves the current draft", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { enqueue, getSoleActiveCommandQueueOwnerForTesting, resetCommandQueueForTesting } = await import("../../utils/messageQueueManager.js");
+    const submit = vi.fn(async () => {});
+    const session = { ...createSession(), submit };
+    resetCommandQueueForTesting();
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+        const draft = "unsent [Pasted text #1]";
+        const draftPastes = { 1: { id: 1, type: "text", content: "private new draft" } };
+        (providerProbe.promptProps.at(-1)!.onInputChange as (value: string) => void)(draft);
+        (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(draftPastes);
+        await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.input).toBe(draft));
+        enqueue({ value: "queued [Pasted text #1]", preExpansionValue: "queued [Pasted text #1]", mode: "prompt", queueOwner: getSoleActiveCommandQueueOwnerForTesting(), pastedContents: { 1: { id: 1, type: "text", content: "first\nsecond" } } });
+        await vi.waitFor(() => expect(submit).toHaveBeenCalledWith("queued first\nsecond", expect.objectContaining({ displayUserMessage: "queued [Pasted text #1]" })));
+        expect(providerProbe.promptProps.at(-1)!.input).toBe(draft);
+        expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(draftPastes);
+      });
+    } finally { resetCommandQueueForTesting(); }
   });
 
   test("drops pasted attachments after a successful clear before the next model turn", async () => {

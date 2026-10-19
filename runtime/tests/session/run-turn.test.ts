@@ -2650,6 +2650,25 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     ]);
   });
 
+  test("expands multiple text pastes in drained queued prompts in composer order", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "Typed prefix [Pasted text #2 +1 lines] between [Pasted text #1] suffix",
+      mode: "prompt", priority: "next",
+      pastedContents: {
+        1: { id: 1, type: "text", content: "last paste" },
+        2: { id: 2, type: "text", content: "first paste\nwith [Pasted text #1] quoted" },
+      },
+    });
+    const { provider } = mkSingleToolFollowUpProvider({ seenMessages });
+    const { session } = mkSession({ provider, registry: mkStaticToolRegistry() });
+    await drain(session.runTurn("start", { ctx: mkCtx() }));
+    const text = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(text).toContain("Typed prefix first paste\nwith [Pasted text #1] quoted between last paste suffix");
+    expect(text).not.toContain("[Pasted text #2");
+  });
+
   test("preserves pasted images on drained queued prompts", async () => {
     const seenMessages: LLMMessage[][] = [];
     enqueue({

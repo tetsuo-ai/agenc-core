@@ -4957,10 +4957,12 @@ function displayUserMessageFromMetadata(
   metadata: JsonObject | undefined,
 ): {
   readonly displayUserMessage?: string | null;
+  readonly userPromptText?: string;
 } {
   if (metadata === undefined) return {};
   const result: {
     displayUserMessage?: string | null;
+    userPromptText?: string;
   } = {};
   if ("displayUserMessage" in metadata) {
     const value = metadata.displayUserMessage;
@@ -4970,6 +4972,12 @@ function displayUserMessageFromMetadata(
       );
     }
     result.displayUserMessage = value;
+  }
+  if ("userPromptText" in metadata) {
+    if (typeof metadata.userPromptText !== "string") {
+      throw invalidParams(`${methodName} metadata 'userPromptText' must be a string`);
+    }
+    result.userPromptText = metadata.userPromptText;
   }
   return result;
 }

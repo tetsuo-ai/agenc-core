@@ -4397,6 +4397,7 @@ export class AgenCDaemonAgentManager {
     readonly acceptedAt: string;
     readonly ifBusy?: "reject";
     readonly displayUserMessage?: string | null;
+    readonly userPromptText?: string;
     readonly methodName?: "message.send" | "message.stream";
     /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
     readonly localMcpAccess?: boolean;
@@ -4464,6 +4465,7 @@ export class AgenCDaemonAgentManager {
         originalContent: params.content,
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
+        ...(params.userPromptText !== undefined ? { userPromptText: params.userPromptText } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
           : {}),

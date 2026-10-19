@@ -3563,6 +3563,16 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("keeps expanded human prompt metadata separate from compact paste display", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+    const text = "Build independently:\n1. health\n2. version";
+    await session.submit(text, { displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: text });
+    expect(client.requests).toEqual([expect.objectContaining({ method: "message.stream", params: expect.objectContaining({
+      content: text, metadata: { displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: text },
+    }) })]);
+  });
+
   it("combines queued idle input with explicit attached submit text", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({

@@ -1320,6 +1320,7 @@ export function createDaemonTuiSession<
       } | undefined;
       try {
         const metadata: JsonObject = {
+          ...(opts?.userPromptText !== undefined ? { userPromptText: opts.userPromptText } : {}),
           ...(opts?.displayUserMessage !== undefined
             ? { displayUserMessage: opts.displayUserMessage }
             : {}),

@@ -21,6 +21,8 @@ export interface SessionSubmitOptions {
    * internal wakeups such as mailbox-triggered agent follow-ups.
    */
   readonly displayUserMessage?: string | null;
+  /** Expanded human input before skill/hook transforms, separate from display. */
+  readonly userPromptText?: string;
 }
 
 function readPermissionMode(

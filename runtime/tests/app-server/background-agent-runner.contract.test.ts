@@ -10044,6 +10044,44 @@ describe("AgenC delegate background-agent runner", () => {
     expect(session.clearUserStop).toHaveBeenCalledTimes(newerStop ? 0 : 1);
   });
 
+  it("[managed-thread] uses semantic input for root-turn decisions with a compact paste display", async () => {
+    const { runner, control, session, configStore } = makeTopLevelRunner({ conversationId: "session-paste-semantics" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    let submitDriver: (message: string, options?: unknown) => Promise<void> = async () => { throw new Error("driver missing"); };
+    const driverSession = {
+      ...session,
+      newDefaultTurn: () => ({}),
+      installTurnDriverHooks: (hooks: { submit: typeof submitDriver }) => { submitDriver = hooks.submit; },
+    };
+    const runTurnFn = vi.fn(async function* () {});
+    __installDaemonTurnDriverHooksForTest(driverSession as never, configStore as never, runTurnFn as never);
+    control.sendInput.mockImplementationOnce(async (...invocation: unknown[]) => {
+      await submitDriver(invocation[1] as string, invocation[2]);
+    });
+    const content = "Build these independent items:\n1. a /health route\n2. a /version route";
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    await sessions.restoreSession({ sessionId: "paste-client", agentId: "session-paste-semantics", status: "waiting", createdAt: "2026-09-10T00:00:00.000Z" });
+    await manager.restoreAgent({ agentId: "session-paste-semantics", objective: "passive", startedAt: "2026-09-10T00:00:00.000Z", lastActiveAt: "2026-09-10T00:00:00.000Z", sessionIds: ["paste-client"], runtimeAvailable: true });
+    try {
+      expect(await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" } } })).toHaveProperty("result");
+      const result = await connection.dispatch({ jsonrpc: "2.0", id: "paste-message", method: "message.stream", params: {
+        sessionId: "paste-client", content,
+        metadata: { displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: content },
+        clientMessageId: "paste-semantics", streamId: "stream_1",
+      } });
+      expect(result).not.toHaveProperty("error");
+    } finally {
+      await connection.close();
+      await dispatcher.close();
+      await runner.stopAgent("session-paste-semantics", "test_cleanup");
+    }
+    expect(runTurnFn).toHaveBeenCalledWith(expect.anything(), expect.anything(), content,
+      expect.objectContaining({ rootHumanTurnText: content, displayUserMessage: null }));
+  });
+
   it("[managed-thread] replays a legacy hook-block error as session-only after attach", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-hook-block-legacy-error",

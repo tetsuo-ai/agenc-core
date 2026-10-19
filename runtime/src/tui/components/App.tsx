@@ -83,6 +83,7 @@ import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
 import { useApiKeyVerification } from "../hooks/useApiKeyVerification.js";
 import type { ProviderAuthReadContext } from "../../utils/auth.js";
 import { addToHistory, flushPromptHistoryForExit } from "../history/history.js";
+import { expandPastedTextRefs, parseReferences } from "../../utils/pasteReferences.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import {
   type AppState,
@@ -3446,8 +3447,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const submit = useCallback(
     async (value: string, options?: LiveSubmitOptions) => {
-      const text_0 = value.trim();
-      const historyDisplay = (options?.displayUserMessage ?? text_0).trim();
+      const historyDisplay = (options?.displayUserMessage ?? value).trim();
       const draftRestoreValue = options?.draftRestoreValue ?? value;
       const candidateRetry = retrySubmissionRef.current;
       const retry =
@@ -3460,6 +3460,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       const activePastedContents =
         retry?.pastedContents ?? options?.pastedContentsOverride ??
         (options?.fromQueue ? {} : pastedContents);
+      // The composer and history keep compact refs. All prompt consumers,
+      // including command dispatch and the daemon's routing/skill/title paths,
+      // receive the same in-place expansion, in the user's original order.
+      const expandedValue = expandPastedTextRefs(value, activePastedContents);
+      const text_0 = expandedValue.trim();
       const hasAttachments = Object.keys(activePastedContents).length > 0;
       if (text_0.length === 0 && !hasAttachments) return;
       const rejectNonModelSubmission = (): void => {
@@ -3525,8 +3530,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           return;
         }
         enqueue({
-          value: text_0,
-          preExpansionValue: text_0,
+          value,
+          preExpansionValue: historyDisplay,
           mode: "prompt",
           queueOwner: commandQueueOwner,
           ...(hasAttachments
@@ -3602,19 +3607,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           // best-effort: history persistence must not block submit
         }
       }
-      const attachmentsMessage = hasAttachments
-        ? pastedContentsToLLMMessage(activePastedContents)
-        : null;
+      // Referenced text is now part of the prompt, not a second user message.
+      // Keep images and any unreferenced attachments on the multipart path.
+      const remainingPastedContents = { ...activePastedContents };
+      for (const ref of parseReferences(value)) {
+        if (activePastedContents[ref.id]?.type === "text") {
+          delete remainingPastedContents[ref.id];
+        }
+      }
+      const attachmentsMessage = pastedContentsToLLMMessage(remainingPastedContents);
       const submission: ComposerSubmission = retry ?? {
         conversationId: props.session.conversationId,
         clientMessageId,
         draftRestoreValue,
         pastedContents: activePastedContents,
-        value,
+        value: expandedValue,
         options: {
           ...(options?.automatic === true ? {} : { source: "user" as const }),
           clientMessageId,
           displayUserMessage: options?.displayUserMessage ?? value,
+          ...(expandedValue !== value ? { userPromptText: expandedValue } : {}),
         },
         inputs: attachmentsMessage === null ? [] : [attachmentsMessage],
         ready: false,
@@ -3685,6 +3697,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               ...(options?.automatic === true ? {} : { source: "user" as const }),
               clientMessageId,
               displayUserMessage: displayText,
+              ...(expandedValue !== value ? { userPromptText: expandedValue } : {}),
             };
             const admissionToken = admitPendingInputs(submission.inputs);
             admissionLease = {
@@ -3776,7 +3789,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               args: parsedSlashCommand.argsRaw,
             },
             slashPromptCommand,
-            text_0,
+            historyDisplay,
           );
           return;
         }
@@ -3937,7 +3950,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           invocationCommands as unknown as Command[],
         );
         if (isDollarSkillCommand(command)) {
-          await submitPromptCommand(parsedDollarSkill, command, text_0);
+          await submitPromptCommand(parsedDollarSkill, command, historyDisplay);
           return;
         }
         if (command?.type === "local") {
@@ -3972,8 +3985,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           attachmentAdmitted = true;
         }
         if (!options?.fromQueue) setComposerPastedContents({});
-        // Pass `value` as displayUserMessage so the daemon emits the
-        // user-message transcript event with the user's raw typed text,
+        // Keep the compact value as displayUserMessage so the daemon emits
+        // the user-message transcript event with the user's composer text,
         // not the model-facing expanded payload. Without this the
         // transcript can show the post-expansion envelope instead of
         // the original input. Pairs with the daemon-hook change in
@@ -5009,16 +5022,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         if (isLocalJSXCommandActive) {
           return;
         }
+        const expandedInput = expandPastedTextRefs(
+          value_1, submitOptions?.pastedContentsOverride ?? pastedContents,
+        );
         if (
-          await executeRealtimeComposerCommand(props.session.realtime, value_1)
+          await executeRealtimeComposerCommand(props.session.realtime, expandedInput)
         ) {
+          setComposerPastedContents({});
           helpers_0.clearBuffer();
           helpers_0.resetHistory();
           helpers_0.setCursorOffset(0);
           return;
         }
         await submitViaElicitationPrompt(
-          elicitation,
+          { submit: () => elicitation.submit(expandedInput) },
           submit,
           value_1,
           helpers_0,

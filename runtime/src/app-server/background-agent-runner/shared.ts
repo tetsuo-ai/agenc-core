@@ -303,6 +303,7 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly content: MessageContent;
   readonly originalContent: MessageContent;
   readonly displayUserMessage?: string | null;
+  readonly userPromptText?: string;
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
