@@ -111,3 +111,13 @@ describe('Messages welcome state', () => {
   expect(output).toContain('~/.agenc/memory/MEMORY.md');
   expect(output).not.toContain(homedir());
 });
+
+ it('withholds a trailing partial home path while assistant text streams', async () => {
+  const partial = homedir().slice(0, -2);
+  const output = await renderToString(
+    <Messages {...baseProps} hideLogo={true} streamingText={`Output:\n\n-rw-r--r-- 1 node node 88 Oct 19 ${partial}`} />,
+    { columns: 120, rows: 40 },
+  );
+  expect(output).toContain('Oct 19');
+  expect(output).not.toContain(partial);
+});

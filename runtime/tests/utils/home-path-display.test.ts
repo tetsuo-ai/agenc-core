@@ -1,7 +1,18 @@
 import { describe, expect, test } from "vitest";
-import { abbreviateHomePaths } from "../../src/utils/home-path-display.js";
+import { abbreviateHomePaths, abbreviateStreamingHomePaths } from "../../src/utils/home-path-display.js";
 
 describe("home paths in presentation text", () => {
+  test("withholds each incomplete home prefix across streaming chunks", () => {
+    const home = "/home/demo-user";
+    for (let length = 1; length < home.length; length++) {
+      expect(abbreviateStreamingHomePaths(`Read ${home.slice(0, length)}`, home)).toBe("Read ");
+    }
+    expect(abbreviateStreamingHomePaths(`Read ${home}`, home)).toBe("Read ~");
+    expect(abbreviateStreamingHomePaths(`Read ${home}/memory`, home)).toBe("Read ~/memory");
+    expect(abbreviateStreamingHomePaths("Read /home/different", home)).toBe("Read /home/different");
+    expect(abbreviateStreamingHomePaths("Read /backup/home/demo", home)).toBe("Read /backup/home/demo");
+    expect(abbreviateStreamingHomePaths("Read c:/users/de", "C:\\Users\\Demo")).toBe("Read ");
+  });
   test("abbreviates quoted commands, diagnostics and multiple paths", () => {
     const text = 'ls "/home/demo-user/.agenc/memory/MEMORY.md"; cat /home/demo-user/a.md\nMissing: /home/demo-user';
     expect(abbreviateHomePaths(text, "/home/demo-user/"))

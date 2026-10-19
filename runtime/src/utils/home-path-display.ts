@@ -16,3 +16,22 @@ export function abbreviateHomePaths(text: string, home = homedir()): string {
     "$1~",
   );
 }
+
+/** Hold a possible HOME prefix until a later chunk can disambiguate it. */
+export function abbreviateStreamingHomePaths(text: string, home = homedir()): string {
+  const root = home.replace(/[\\/]+$/u, "");
+  if (!root || /^[A-Za-z]:$/u.test(root)) return text;
+  const windows = /^[A-Za-z]:[\\/]/u.test(root) || root.startsWith("\\\\");
+  const normalize = (value: string) => windows
+    ? value.replace(/\\/g, "/").toLowerCase()
+    : value;
+  const normalizedRoot = normalize(root);
+  for (let length = Math.min(root.length - 1, text.length); length > 0; length--) {
+    const start = text.length - length;
+    if (start > 0 && !/[\s"'`=(:,\[{>]/u.test(text[start - 1]!)) continue;
+    if (normalize(text.slice(start)) === normalizedRoot.slice(0, length)) {
+      return abbreviateHomePaths(text.slice(0, start), home);
+    }
+  }
+  return abbreviateHomePaths(text, home);
+}
