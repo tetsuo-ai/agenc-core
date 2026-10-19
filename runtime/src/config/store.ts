@@ -9,6 +9,7 @@
 // No global state — each ConfigStore is instantiable. bin/agenc.ts
 // integration constructs one; SIGUSR1 → reload() wiring lives in T10-I.
 
+import { invalidateRemoteControlAuthorityPaths } from "../sandbox/remote-control-protection.js";
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -769,6 +770,7 @@ export class ConfigStore {
   }
 
   private async loadStateFromSources(): Promise<ConfigStoreState> {
+    invalidateRemoteControlAuthorityPaths(this.resolvedHomeContext.path, this.resolvedManagedPaths.root);
     const agentsReadStartedAt = nextConfigReadMark();
     const base = mergeProviderModelLayer(
       defaultConfig(),

@@ -1,4 +1,4 @@
-import { remoteControlAuthorityPaths, protectRemoteControlAuthority } from "../../sandbox/remote-control-protection.js";
+import { isRemoteControlAuthorityPath, protectRemoteControlAuthority } from "../../sandbox/remote-control-protection.js";
 import { realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -417,20 +417,8 @@ export function enforceRuntimeSandboxAttempt(
     cwd,
     sessionTempRoot,
   );
-  // This owner boundary also applies when approval and ordinary sandbox
-  // checks are bypassed. It precedes the mode's early return.
-  if (toolMayMutate(input.tool)) {
-    const writes = analyzeWrites(input.tool, input.args, cwd);
-    const session = input.context.invocation.session as { services?: { configStore?: { homeContext?: { path?: string }; managedPaths?: { root?: string } } } };
-    const store = session.services?.configStore;
-    const authorities = remoteControlAuthorityPaths(store?.homeContext?.path, store?.managedPaths?.root);
-    for (const target of writes.targets) {
-      if (authorities.some(root => overlapsDesktopAuthority(target, root))) {
-        throw new SandboxDeniedError("Remote control configuration is owner-only and reserved for the native host; edit it outside the agent.", { denial: "filesystem", target, policy });
-      }
-    }
-  }
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
+    if (toolMayMutate(input.tool)) enforceRemoteControlWritePaths(input.context, analyzeWrites(input.tool, input.args, cwd).targets, policy);
     return;
   }
   const shellAccess = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
@@ -500,6 +488,7 @@ export function enforceRuntimeSandboxAttempt(
         denial: "filesystem", target, policy,
       });
     }
+    enforceRemoteControlWritePaths(input.context, [target], policy);
     if (overlapsDesktopAuthority(target, authorityRoot)) {
       throw new SandboxDeniedError("Desktop authority records are reserved for the native host", {
         denial: "filesystem", target, policy,
@@ -571,6 +560,16 @@ export function enforceRuntimeSandboxAttempt(
           policy,
         },
       );
+    }
+  }
+}
+
+function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], policy: SandboxPolicy): void {
+  const session = context.invocation.session as { services?: { configStore?: { homeContext?: { path?: string }; managedPaths?: { root?: string } } } };
+  const store = session.services?.configStore;
+  for (const target of targets) {
+    if (isRemoteControlAuthorityPath(target, { home: store?.homeContext?.path, managedRoot: store?.managedPaths?.root, includeAncestors: true })) {
+      throw new SandboxDeniedError("Remote control configuration is owner-only and reserved for the native host; edit it outside the agent.", { denial: "filesystem", target, policy });
     }
   }
 }

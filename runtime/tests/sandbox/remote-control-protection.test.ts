@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { ConfigStore } from "../../src/config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import { effectivePermissionProfile } from "../../src/sandbox/engine/policy-transforms.js";
 import { enforceRuntimeSandboxAttempt, permissionProfileForSandboxMode } from "../../src/tools/runtimes/sandboxing.js";
+import { createBwrapCommandArgs } from "../../src/sandbox/linux-launcher/bwrap.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -64,4 +65,20 @@ it("protects the destination when the owner config itself is a dotfile symlink",
     const profile = protectRemoteControlAuthority(permissionProfileForSandboxMode("workspace_write", { cwd: f.root }), paths);
     expect(canWritePathWithCwd(profile.fileSystem, destination, f.root, f.temp)).toBe(false);
   }
+});
+
+it("never emits a mountpoint at a missing config or managed root", () => {
+  const f = fixture();
+  const config = join(f.home, "config.toml");
+  rmSync(config);
+  rmSync(f.managed, { recursive: true });
+  const paths = remoteControlAuthorityPaths(f.home, f.managed);
+  const profile = protectRemoteControlAuthority(permissionProfileForSandboxMode("workspace_write", { cwd: f.root }), paths);
+  const command = createBwrapCommandArgs(["/bin/true"], profile.fileSystem, f.root, f.root, { mountProc: false, networkMode: "isolated", sessionTempRoot: f.temp });
+  for (const target of [config, f.managed]) {
+    expect(command.args).not.toContain(target);
+    expect(existsSync(target)).toBe(false);
+  }
+  expect(command.args.join("\n")).toContain(`--ro-bind\n${f.home}\n${f.home}`);
+  expect(canWritePathWithCwd(profile.fileSystem, config, f.root, f.temp)).toBe(false);
 });
