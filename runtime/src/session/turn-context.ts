@@ -698,6 +698,7 @@ export interface TurnContext {
 
   /** Trusted opt-in for isolated local servers. */
   readonly sandboxAllowLocalBinding?: boolean;
+  readonly sandboxPersistentSession?: boolean;
 
   /** Optional managed-network proxy. */
   readonly network?: NetworkProxy;
@@ -1341,6 +1342,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     fileSystemSandboxPolicy: sc.fileSystemSandboxPolicy,
     networkSandboxPolicy: sc.networkSandboxPolicy,
     ...(sc.sandboxAllowLocalBinding === true ? { sandboxAllowLocalBinding: true } : {}),
+    ...(sc.sandboxPersistentSession === false ? { sandboxPersistentSession: false } : {}),
     network: opts.network,
     windowsSandboxLevel: sc.windowsSandboxLevel,
     shellEnvironmentPolicy: frozenConfig.permissions.shellEnvironmentPolicy,

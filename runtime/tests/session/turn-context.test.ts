@@ -915,3 +915,26 @@ test("projects the local binding authority onto the real turn consumed by comman
     expect(runtimeSandboxForExec(args, "/tmp")?.network?.allowLocalBinding).toBe(allowLocalBinding === true ? true : undefined);
   }
 });
+
+test("projects persistent sandbox opt-out onto the real turn consumed by command tools", () => {
+  const config = { ...mkConfig(), agencLinuxSandboxExe: "/bin/true" };
+  for (const persistentSession of [undefined, false, true]) {
+    const sessionConfiguration = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), sandbox: { persistent_session: persistentSession } },
+      workspaceRoot: "/tmp", model: "test-model",
+    });
+    const turn = buildTurnContext({
+      conversationId: "persistent-config", subId: "persistent-turn", config,
+      modelInfo: mkModelInfo(), provider: mkProvider(), sessionConfiguration,
+    });
+    expect(turn.sandboxPersistentSession).toBe(persistentSession === false ? false : undefined);
+    expect(turn.config).not.toHaveProperty("sandboxPersistentSession");
+    const args = {};
+    attachToolRuntimeContext(args, {
+      callId: "persistent-config", toolName: "exec_command",
+      sandboxMode: "workspace_write", requestedSandboxMode: "workspace_write", approvalPolicy: "on_request",
+      invocation: { turn, session: { services: { runtimeOptions: { sessionTempRoot: "/tmp" } } } },
+    } as never);
+    expect(runtimeSandboxForExec(args, "/tmp")?.persistentSession).toBe(persistentSession === false ? false : undefined);
+  }
+});
