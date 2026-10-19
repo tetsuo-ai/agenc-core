@@ -9,6 +9,12 @@ import type { CliHighlight } from './cliHighlight.js'
 import type { Theme as CliHighlightTheme } from 'cli-highlight'
 import { logForDebugging } from 'src/utils/debug.js'
 import { createHyperlink } from './hyperlink.js'
+import {
+  isInternationalizedHost,
+  revealUrlHosts,
+  textShowsHost,
+  webUrlHost,
+} from './urlDisplay.js'
 import { stripPromptXMLTags } from './messages.js'
 import type { ThemeName } from './theme.js'
 
@@ -223,14 +229,17 @@ export function formatToken(
         .map(_ => formatToken(_, theme, 0, null, token, highlight))
         .join('')
       const plainLinkText = stripAnsi(linkText)
+      // Lookalike hostnames (Cyrillic `а` in `аmazon.com`) are shown in the
+      // ASCII form the network uses, so they cannot pass for the real site.
+      const href = revealUrlHosts(token.href)
       // If the link has meaningful display text (different from the URL),
       // show it as a clickable hyperlink. In terminals that support OSC 8,
       // users see the text and can hover/click to see the URL.
-      if (plainLinkText && plainLinkText !== token.href) {
-        return createHyperlink(token.href, linkText)
+      if (plainLinkText && plainLinkText !== href) {
+        return createHyperlink(href, linkText) + linkSiteHint(href, plainLinkText, theme)
       }
       // When the display text matches the URL (or is empty), just show the URL
-      return createHyperlink(token.href)
+      return createHyperlink(href)
     }
     case 'list': {
       return token.items
@@ -269,12 +278,12 @@ export function formatToken(
         // in an OSC 8 hyperlink. Linkifying here would nest a second OSC 8
         // sequence, and terminals honor the innermost one, overriding the
         // link's actual href.
-        return normalizeSoftLineBreaks(token.text)
+        return revealUrlHosts(normalizeSoftLineBreaks(token.text))
       }
       if (parent?.type === 'list_item') {
-        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(normalizeSoftLineBreaks(token.text))}${EOL}`
+        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(revealUrlHosts(normalizeSoftLineBreaks(token.text)))}${EOL}`
       }
-      return linkifyIssueReferences(normalizeSoftLineBreaks(token.text))
+      return linkifyIssueReferences(revealUrlHosts(normalizeSoftLineBreaks(token.text)))
     case 'table': {
       const tableToken = token as Tokens.Table
 
@@ -361,6 +370,18 @@ export function formatToken(
 // YARR JIT in JSC.
 const ISSUE_REF_PATTERN =
   /(^|[^\w./-])([A-Za-z0-9][\w-]*\/[A-Za-z0-9][\w.-]*)#(\d+)\b/g
+
+/**
+ * With OSC 8 hyperlinks only the link text is visible, so `[amazon.com](...)`
+ * could point anywhere. Name the real site after the text unless the text
+ * already shows it. Without hyperlink support the URL itself is printed.
+ */
+function linkSiteHint(href: string, plainLinkText: string, theme: ThemeName): string {
+  if (!supportsHyperlinks()) return ''
+  const host = webUrlHost(href)
+  if (host === undefined || textShowsHost(plainLinkText, host)) return ''
+  return color(isInternationalizedHost(host) ? 'warning' : 'inactive', theme)(` (${host})`)
+}
 
 /**
  * Replaces owner/repo#123 references with clickable hyperlinks to GitHub.

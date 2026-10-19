@@ -1803,7 +1803,7 @@ export function ApprovalCard({
                 key={fact.label}
                 flexDirection="row"
                 gap={1}
-                width={fact.label === 'network' || fact.label === 'net' ? 30 : 22}
+                width={fact.label === 'network' || fact.label === 'net' || fact.label === 'site' ? 30 : 22}
               >
                 <Box flexShrink={0}>
                   <ThemedText color="inactive">{fact.label.toUpperCase()}</ThemedText>

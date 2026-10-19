@@ -21,6 +21,7 @@ import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
 import { approvalInputText } from "./approval-input-text.js";
+import { isInternationalizedHost, webUrlHost } from "../utils/urlDisplay.js";
 import { Box, useInput, type Key } from "./ink.js";
 import type { InputEvent } from "./ink/events/input-event.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
@@ -543,6 +544,15 @@ function approvalCommandIsShell(
   return false;
 }
 
+/** Real hostname of a tool input's top-level `url`, when it has one. */
+function approvalSite(input: unknown): string | undefined {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return undefined;
+  }
+  const url = (input as Record<string, unknown>).url;
+  return typeof url === "string" ? webUrlHost(url) : undefined;
+}
+
 function AgenCApprovalOverlay({
   request,
   toolUseConfirm,
@@ -555,6 +565,8 @@ function AgenCApprovalOverlay({
   readonly composerDraft?: ApprovalComposerDraft;
 }) {
   const command = approvalInputText(toolUseConfirm.input, { prettyJson: true });
+  const site = approvalSite(toolUseConfirm.input);
+  const lookalikeSite = site !== undefined && isInternationalizedHost(site);
   const fileWritePreview = request.ctx.fileWritePreview;
   const writePreviewUnavailable = toolUseConfirm.tool.name === "Write" &&
     (fileWritePreview === undefined || fileWritePreview.kind === "unavailable");
@@ -820,6 +832,13 @@ function AgenCApprovalOverlay({
         confirmLabel={draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter"}
         facts={[
           { label: "tool", value: name },
+          ...(site !== undefined
+            ? [{
+                label: "site",
+                value: site,
+                ...(lookalikeSite ? { color: "error" as const } : {}),
+              }]
+            : []),
           {
             label: "scope",
             value: risk === "low" ? "session" : risk,
@@ -837,7 +856,9 @@ function AgenCApprovalOverlay({
         ]}
         note={writePreviewUnavailable
           ? `Existing content unavailable; this write may overwrite a file. ${fileWritePreview?.kind === "unavailable" ? fileWritePreview.reason : ""}`.trim()
-          : toolUseConfirm.description}
+          : lookalikeSite
+            ? `Real site ${site} uses letters outside a-z and may imitate another site.`
+            : toolUseConfirm.description}
         {...(diffPreview !== undefined ? { diffPreview } : {})}
         requestId={request.id}
         requireTypedConfirmation={destructive}

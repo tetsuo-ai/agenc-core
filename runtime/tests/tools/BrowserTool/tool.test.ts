@@ -87,6 +87,19 @@ describe("Browser tool permissions", () => {
     }
   });
 
+  test("navigate approval names the real host of a lookalike URL", async () => {
+    // Cyrillic `а` makes `аmazon.com` a different site: `xn--mazon-3ve.com`.
+    const result = await check({ action: "navigate", url: "https://аmazon.com/login" });
+    expect(result.behavior).toBe("ask");
+    if (result.behavior === "ask") {
+      expect(result.message).toContain("https://xn--mazon-3ve.com/login");
+      expect(result.message).not.toContain("аmazon");
+      expect(result.suggestions?.[0]).toMatchObject({
+        rules: [{ toolName: BROWSER_TOOL_NAME, ruleContent: "domain:xn--mazon-3ve.com" }],
+      });
+    }
+  });
+
   test("navigate is auto-allowed when a matching domain allow rule exists", async () => {
     const tool = createBrowserTool();
     const permissionContext = createEmptyToolPermissionContext({

@@ -1,4 +1,5 @@
 import { nonEmptyString } from "../utils/stringUtils.js";
+import { revealUrlHosts } from "../utils/urlDisplay.js";
 
 const COMMAND_KEYS = ["command", "cmd"] as const;
 const TEXT_KEYS = ["input", "query", "path", "file_path"] as const;
@@ -7,9 +8,21 @@ export interface ApprovalInputTextOptions {
   readonly prettyJson?: boolean;
 }
 
+/**
+ * Text an approval card shows for a tool input. URLs always show their real
+ * (ASCII) hostname so a lookalike such as `аmazon.com` cannot pass for the
+ * site it imitates.
+ */
 export function approvalInputText(
   input: unknown,
   options: ApprovalInputTextOptions = {},
+): string {
+  return revealUrlHosts(rawApprovalInputText(input, options));
+}
+
+function rawApprovalInputText(
+  input: unknown,
+  options: ApprovalInputTextOptions,
 ): string {
   if (input === null || input === undefined) return "";
   if (typeof input === "string") return input;
