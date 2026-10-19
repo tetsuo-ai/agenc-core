@@ -89,8 +89,15 @@ export type SqliteDatabase = BetterSqlite3.Database;
  *   commit and stays self-consistent. The projection's receipt rolls back
  *   with its rows, so the next index of that journal re-reads the dropped
  *   tail. Outside WAL mode it stays FULL.
+ * - `"observational"`: the transaction writes only observer state about a
+ *   call that cannot change external state (an idempotent tool call's
+ *   in-flight row). No recovery, unknown-outcome gate, budget or effect
+ *   decision reads it: those use canonical events, effect projections and
+ *   side-effecting rows, which stay FULL. It commits like `"rebuildable"`:
+ *   a process death keeps it; a power loss before the next FULL commit can
+ *   drop it, leaving the index as it would be had the call not started.
  */
-export type StateCommitDurability = "full" | "rebuildable";
+export type StateCommitDurability = "full" | "rebuildable" | "observational";
 
 type TransactionOperation = () => unknown;
 type TransactionRunner = BetterSqlite3.Transaction<
@@ -323,7 +330,7 @@ export class StateSqliteDriver {
     return this.withTransactionDurability(
       this.state,
       () => this.state.transaction(fn).immediate(),
-      durability === "rebuildable" && this.#stateWal,
+      durability !== "full" && this.#stateWal,
     );
   }
 

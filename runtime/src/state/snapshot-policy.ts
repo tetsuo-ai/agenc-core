@@ -633,7 +633,7 @@ export class AgenCSessionSnapshotPolicy {
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
           unknownOutcomeGate: "flag",
-        }));
+        }), toolRecoveryCategoryField(params, "recoveryCategory"));
         if (startOutcome.gateViolation !== undefined) {
           state.toolState.inFlight[requestId] = {
             ...state.toolState.inFlight[requestId],
@@ -769,7 +769,7 @@ export class AgenCSessionSnapshotPolicy {
           ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
-        }));
+        }), toolRecoveryCategoryField(previous ?? {}, "recoveryCategory"));
         delete state.toolState.inFlight[callId];
         state.toolState.completed[callId] = {
           ...(previous ?? {}),
@@ -867,7 +867,7 @@ export class AgenCSessionSnapshotPolicy {
           ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
-        }));
+        }), toolRecoveryCategoryField(previous ?? {}, "recoveryCategory"));
         state.toolState.inFlight[callId] = {
           ...(previous ?? {}),
           requestId: callId,
@@ -979,14 +979,22 @@ export class AgenCSessionSnapshotPolicy {
    * this project WAL at close/promotion. Do not batch across tool events or
    * skip the unknown-outcome checks: live readers need these rows now.
    */
-  #writeToolIndex<T>(state: SessionSnapshotState, write: () => T): T {
+  #writeToolIndex<T>(
+    state: SessionSnapshotState,
+    write: () => T,
+    recoveryCategory?: string,
+  ): T {
     const runId = state.agentId;
     if (runId === undefined || this.#driver.state.inTransaction ||
         !this.#driver.isRelaxedOneShotRun(runId) ||
         this.#driver.prepareState<[string], { agent_id: string }>(
           "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
         ).get(state.sessionId)?.agent_id !== runId) {
-      return write();
+      // An idempotent call's row is observer state only: the unknown-outcome
+      // gate, recovery and effect reviews never depend on it. Skip its fsync.
+      return recoveryCategory === "idempotent" && !this.#driver.state.inTransaction
+        ? this.#driver.transactionImmediate(write, "observational")
+        : write();
     }
     return withOneShotWriteScope(this.#driver.projectDir, runId, () =>
       this.#driver.transaction(write),
