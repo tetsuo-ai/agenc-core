@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionSandbox } from "../../../src/sandbox/linux-launcher/session-sandbox.js";
 import { terminateProcessTreeAndReport } from "../../../src/utils/supervisedProcess.js";
 import * as supervised from "../../../src/utils/supervisedProcess.js";
+import * as launcher from "../../../src/sandbox/linux-launcher/launcher.js";
 const runtime = fileURLToPath(new URL("../../../", import.meta.url));
 let root: string, sandbox: SessionSandbox;
 beforeEach(() => {
@@ -166,11 +167,16 @@ describe("session sandbox", () => {
     expect(clean.out).toBe("clean:clean\n" + original.out);
   });
   it("closes an idle namespace on Stop and creates a fresh one for a later turn", async () => {
+    const probe = vi.spyOn(launcher, "probeBubblewrapCapabilities");
     const controller = new AbortController();
     const first = await runInput(input("true"), controller.signal);
+    expect(probe).toHaveBeenCalledTimes(1);
     controller.abort();
     await vi.waitFor(() => expect(() => process.kill(first.pid!, 0)).toThrow());
     const next = await run("echo next"); expect(next.pid).not.toBe(first.pid); expect(next.out).toBe("next\n");
+    // Stop still destroys the namespace, while unchanged positive capability
+    // evidence avoids re-running no-op probes when its replacement starts.
+    expect(probe).toHaveBeenCalledTimes(1);
   });
   it("waits for a SIGTERM handler before closing the namespace", async () => {
     const child = await sandbox.spawn(input("trap 'echo handled; exit 42' TERM; echo ready; while :; do sleep 1; done"), () => {});

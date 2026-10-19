@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { prepareSessionBwrapPlan } from "./direct-bwrap.js";
+import { prepareLinuxSandboxProbeHint } from "./probe-cache.js";
 import { consumeDirectBwrapPlan, registerDirectBwrapPlan } from "../../utils/direct-bwrap-handoff.js";
 import { spawnContainedProcess, terminateProcessTreeAndReport } from "../../utils/supervisedProcess.js";
 import { sessionProcessBoundaries } from "../../utils/session-process-boundary.js";
@@ -93,13 +94,17 @@ export class SessionSandbox {
     this.watchAbort(signal);
     if (!this.server) {
       this.starting = true;
+      // Namespace rebuilds use the same successful, identity-bound probes as
+      // ordinary pipe launches. Policy/mount planning and the real sandbox
+      // remain fresh; a miss keeps the ordinary planner and confinement.
+      const probe = prepareLinuxSandboxProbeHint(input.args, input.cwd, input.env);
       try {
-        const plan = prepareSessionBwrapPlan(input);
-        if (!plan) return undefined;
+        const plan = prepareSessionBwrapPlan(probe ? { ...input, args: probe.args } : input);
+        if (!plan) { probe?.invalidate(); return undefined; }
         const handoff = consumeDirectBwrapPlan(plan);
         try {
           const launch = handoff.sessionSandbox;
-          if (!launch || !handoff.isCurrent()) return undefined;
+          if (!launch || !handoff.isCurrent()) { probe?.invalidate(); return undefined; }
           const paths = new Set([input.program, input.args[0]!, launch.program, launch.executable, ...launch.policyPaths]);
           for (let i = 0; i < launch.args.indexOf("--"); i++) {
             if (["--bind", "--ro-bind", "--dev-bind"].includes(launch.args[i]!)) {
@@ -147,6 +152,7 @@ export class SessionSandbox {
           this.key = key;
         } finally { handoff.dispose(); }
       } catch {
+        probe?.invalidate();
         await this.close();
         if (!this.availability.startupFailed && !signal?.aborted) {
           this.availability.startupFailed = true;

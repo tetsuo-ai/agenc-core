@@ -1173,6 +1173,25 @@ describe("Linux sandbox launcher", () => {
     });
   });
 
+  it("reads both bubblewrap help capabilities in one process with the session environment", () => {
+    const root = withTempDir("agenc-linux-launcher-help-once-");
+    const cwd = path.join(root, "workspace");
+    fs.mkdirSync(cwd);
+    const trusted = path.join(root, "bin");
+    fs.mkdirSync(trusted);
+    const calls = path.join(root, "calls");
+    writeExecutable(path.join(trusted, "bwrap"), [
+      "#!/bin/sh",
+      'printf "help\\n" >> "$AGENC_HELP_CALLS"',
+      'printf "%s" "--argv0 --ro-bind-fd"',
+    ].join("\n") + "\n");
+    expect(preferredBubblewrapLauncher({
+      searchPath: trusted, cwd, trustedDirectories: [trusted],
+      env: { ...process.env, AGENC_HELP_CALLS: calls },
+    })).toMatchObject({ supportsArgv0: true, supportsBindFd: true });
+    expect(fs.readFileSync(calls, "utf8")).toBe("help\n");
+  });
+
   it("does not recover a missing session PATH from the launcher process", () => {
     const root = withTempDir("agenc-linux-launcher-path-authority-");
     const cwd = path.join(root, "workspace");

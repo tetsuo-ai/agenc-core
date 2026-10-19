@@ -1053,7 +1053,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           );
         }
         entry.stored.process.write(input);
-        await delay(100, undefined, { signal: request.__abortSignal });
       } catch (error) {
         if (isAbortError(error)) {
           this.forceTerminate(entry);
@@ -1966,9 +1965,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     },
   ): Promise<ExecCommandToolOutput> {
     let timedOut = true;
+    const deadline = new AbortController();
     try {
       const timeout = delay(options.yieldMs, "timeout" as const, {
-        signal: options.signal,
+        signal: options.signal === undefined
+          ? deadline.signal
+          : AbortSignal.any([options.signal, deadline.signal]),
       });
       const outcome = await Promise.race([
         timeout,
@@ -1994,6 +1996,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       } else {
         throw error;
       }
+    } finally {
+      // A quick exit must not retain a live 30-second Light yield timer.
+      // Promise.race already observes the losing timer's cancellation.
+      deadline.abort();
     }
 
     const chunks = entry.output.drain();
