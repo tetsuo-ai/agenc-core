@@ -224,7 +224,7 @@ it for every command.
 
 #### Recovering background work
 
-Linux sandbox commands have a private PID namespace. `ps`, `pgrep`, and `pidof`
+With bubblewrap, Linux sandbox commands have a private PID namespace. `ps`, `pgrep`, and `pidof`
 inside it cannot see a server launched outside it, even if its saved PID is
 still alive. The managed inventory also does not survive a daemon restart and
 excludes detached services. Before starting another server after reconnecting,

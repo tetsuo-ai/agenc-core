@@ -7,6 +7,6 @@ export const LOCAL_SERVER_GUIDANCE =
   "Check an escalated server's URL with the same sandbox_permissions, since sandbox loopback may be isolated.";
 
 export const PROCESS_DISCOVERY_GUIDANCE =
-  "Linux sandbox commands have their own PID namespace: ps/pgrep cannot see servers outside it. " +
+  "Linux sandbox commands can have a private PID namespace: ps/pgrep may not see servers outside it. " +
   "Use list_processes for this conversation's managed sessions; its inventory does not survive a daemon restart and excludes detached services. " +
   "Before starting another server, check its known URL with the same sandbox_permissions used to launch it; an empty process list does not prove it stopped.";
