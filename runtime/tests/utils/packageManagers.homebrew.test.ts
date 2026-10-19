@@ -1,4 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import {
   detectHomebrew,
@@ -13,6 +16,8 @@ describe("Homebrew AgenC formula detection", () => {
     "/opt/homebrew/opt/agenc/libexec/node_modules/.agenc-node/bin/node",
     "/opt/homebrew/Cellar/agenc/0.11.0/bin/agenc",
     "/opt/homebrew/opt/agenc/bin/agenc",
+    "/home/linuxbrew/.linuxbrew/Cellar/agenc/0.19.11/libexec/node_modules/@tetsuo-ai/runtime/dist/bin/agenc.js",
+    "/custom/brew/opt/agenc/libexec/node_modules/@tetsuo-ai/runtime/dist/bin/agenc.js",
   ])("recognizes the restored formula path %s", executablePath => {
     expect(
       detectHomebrew({
@@ -20,6 +25,30 @@ describe("Homebrew AgenC formula detection", () => {
         executablePaths: [executablePath],
       }),
     ).toBe(true);
+  });
+
+  test("resolves entry symlinks and does not trust a Homebrew-looking alias", () => {
+    const root = mkdtempSync(join(tmpdir(), "brew-detect-"));
+    try {
+      const entry = join(root, "Cellar/agenc/0.19.11/libexec/node_modules/@tetsuo-ai/runtime/bin/agenc");
+      mkdirSync(dirname(entry), { recursive: true });
+      writeFileSync(entry, "");
+      const alias = join(root, "agenc");
+      symlinkSync(entry, alias);
+      expect(detectHomebrew({ platform: "linux", executablePaths: [alias] })).toBe(true);
+      rmSync(alias);
+      rmSync(entry);
+      writeFileSync(alias, "");
+      symlinkSync(alias, entry);
+      expect(detectHomebrew({ platform: "linux", executablePaths: [entry] })).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("Homebrew environment variables alone do not identify an npm installation", () => {
+    vi.stubEnv("HOMEBREW_PREFIX", "/opt/homebrew");
+    try {
+      expect(detectHomebrew({ platform: "linux", executablePaths: ["/usr/bin/node", "/home/user/.agenc/runtime/0.19.11/node_modules/@tetsuo-ai/runtime/bin/agenc"] })).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   test.each([

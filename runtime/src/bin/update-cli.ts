@@ -25,6 +25,7 @@
  * installer generation signature are ever rewritten.
  */
 
+import { detectHomebrew, HOMEBREW_UPDATE_COMMAND } from "../utils/nativeInstaller/homebrew.js";
 import {
   spawn,
   spawnSync,
@@ -3571,6 +3572,14 @@ export async function runAgenCUpdateCli(
     return 1;
   }
 
+  // Package-manager ownership takes precedence over any standalone wrapper
+  // on PATH or supplied explicitly. Only Homebrew may replace this runtime.
+  const homebrew = detectHomebrew();
+  if (homebrew && !command.check) {
+    stderr(`agenc: Homebrew manages this installation. Run in your terminal: ${HOMEBREW_UPDATE_COMMAND}`);
+    return 1;
+  }
+
   const env = deps.env ?? process.env;
   const currentVersion = deps.currentVersion ?? VERSION;
   let checked: Awaited<ReturnType<typeof checkAgenCUpdate>>;
@@ -3610,7 +3619,7 @@ export async function runAgenCUpdateCli(
       stdout(JSON.stringify({ currentVersion, latestVersion, updateAvailable: true }));
     } else {
       stdout(
-        `Update available: ${currentVersion} -> ${latestVersion}. Run 'agenc update' to install.`,
+        `Update available: ${currentVersion} -> ${latestVersion}. Run '${homebrew ? HOMEBREW_UPDATE_COMMAND : "agenc update"}' to install.`,
       );
     }
     return 0;

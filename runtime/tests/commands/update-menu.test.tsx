@@ -1,11 +1,11 @@
 import React from "react";
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import stripAnsi from "strip-ansi";
 import { createRoot } from "../../src/tui/ink.js";
 import { getInkInstance } from "../../src/tui/ink/instances.js";
 import { AppStateProvider, getDefaultAppState } from "../../src/tui/state/AppState.js";
-async function renderToString(node: React.ReactNode, _columns = 180): Promise<string> {
+async function renderToString(node: React.ReactNode, _columns = 180, input?: string): Promise<string> {
   const stdin = Object.assign(new PassThrough(), { isTTY: true, ref() {}, unref() {}, setRawMode() {} });
   const stdout = Object.assign(new PassThrough(), { isTTY: true, columns: 180, rows: 50 });
   let output = ""; stdout.on("data", chunk => { output += chunk.toString(); });
@@ -13,6 +13,10 @@ async function renderToString(node: React.ReactNode, _columns = 180): Promise<st
   try {
     root.render(<AppStateProvider initialState={getDefaultAppState()}>{node}</AppStateProvider>);
     await new Promise(resolve => setTimeout(resolve, 80));
+    if (input) {
+      stdin.write(input);
+      await new Promise(resolve => setTimeout(resolve, 80));
+    }
     output = "";
     getInkInstance(stdout as unknown as NodeJS.WriteStream)!.forceRedraw();
     await new Promise(resolve => setTimeout(resolve, 40));
@@ -21,14 +25,50 @@ async function renderToString(node: React.ReactNode, _columns = 180): Promise<st
 }
 
 vi.mock("../../src/utils/doctorDiagnostic.js", () => ({ findActiveGeneratedWrapper: vi.fn(async () => null) }));
+vi.mock("../../src/utils/nativeInstaller/homebrew.js", () => ({ detectHomebrew: vi.fn(() => false), HOMEBREW_UPDATE_COMMAND: "brew upgrade tetsuo-ai/agenc/agenc" }));
 vi.mock("../../src/utils/config.js", () => ({ getRuntimeState: () => ({ skippedUpdateVersion: "0.19.1-test" }), updateRuntimeState: vi.fn() }));
 vi.mock("../../src/bin/update-cli.js", () => ({
   checkAgenCUpdate: vi.fn(async () => ({ currentVersion: "0.19.0", latestVersion: "0.19.0", updateAvailable: false })),
   runAgenCUpdateCli: vi.fn(), sanitizeTerminalText: (value: unknown) => String(value),
 }));
 import { UpdateMenu, hasSkippedUpdate, NPM_UPDATE_COMMAND } from "../../src/commands/update-menu.js";
+import { detectHomebrew } from "../../src/utils/nativeInstaller/homebrew.js";
+import { findActiveGeneratedWrapper } from "../../src/utils/doctorDiagnostic.js";
+import { runAgenCUpdateCli } from "../../src/bin/update-cli.js";
 
 describe("update menu", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(detectHomebrew).mockReturnValue(false);
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue(null);
+  });
+  const available = { currentVersion: "0.19.0", latestVersion: "0.19.1-test", updateAvailable: true } as any;
+  test.each([false, true])("Homebrew shows the tap command immediately (startup=%s) and never runs the installer", async startup => {
+    vi.mocked(detectHomebrew).mockReturnValue(true);
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue({ kind: "posix", path: "/bin/agenc" } as any);
+    const node = <UpdateMenu checked={available} startup={startup} close={() => {}} />;
+    const text = await renderToString(node);
+    expect(text).toContain("installtype:homebrew");
+    expect(text).toContain("brewupgradetetsuo-ai/agenc/agenc");
+    expect(text).not.toContain("1updatenow");
+    const chosen = await renderToString(node, 180, "1");
+    expect(chosen).toContain("brewupgradetetsuo-ai/agenc/agenc");
+    expect(chosen).not.toContain("npminstall");
+    expect(runAgenCUpdateCli).not.toHaveBeenCalled();
+    expect(findActiveGeneratedWrapper).not.toHaveBeenCalled();
+  });
+  test("npm retains terminal npm instructions", async () => {
+    const text = await renderToString(<UpdateMenu checked={available} close={() => {}} />, 180, "1");
+    expect(text).toContain("runinyourterminal:npminstall-g@tetsuo-ai/agenc@latest");
+    expect(runAgenCUpdateCli).not.toHaveBeenCalled();
+  });
+  test("curl installer still updates through its active generated wrapper", async () => {
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue({ kind: "posix", path: "/home/user/.local/bin/agenc" } as any);
+    vi.mocked(runAgenCUpdateCli).mockResolvedValue(0);
+    const text = await renderToString(<UpdateMenu checked={available} close={() => {}} />, 180, "1");
+    expect(text).toContain("installtype:install.sh");
+    expect(runAgenCUpdateCli).toHaveBeenCalledWith(expect.objectContaining({ wrapper: "/home/user/.local/bin/agenc" }), expect.anything());
+  });
   test("shows numbered choices and both versions without animations", async () => {
     const text = await renderToString(<UpdateMenu checked={{ currentVersion: "0.19.0", latestVersion: "0.19.1-test", updateAvailable: true } as any} close={() => {}} />, 80);
     expect(text).toContain("agenc0.19.1-testisavailable.youhave0.19.0.");

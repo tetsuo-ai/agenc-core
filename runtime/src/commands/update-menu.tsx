@@ -6,6 +6,7 @@ import { openLocalJsxCommand } from "./local-jsx-command.js";
 import type { SlashCommandContext } from "./types.js";
 import { checkAgenCUpdate, runAgenCUpdateCli, sanitizeTerminalText } from "../bin/update-cli.js";
 import { findActiveGeneratedWrapper } from "../utils/doctorDiagnostic.js";
+import { detectHomebrew, HOMEBREW_UPDATE_COMMAND } from "../utils/nativeInstaller/homebrew.js";
 import { getRuntimeState, updateRuntimeState } from "../utils/config.js";
 import type { RuntimeStateRepository } from "../config/runtime-state-repository.js";
 import { requireCommandConfigStore } from "./config-context.js";
@@ -29,7 +30,10 @@ export function UpdateMenu({ checked: initial, startup = false, close, stateRepo
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     let active = true;
-    void findActiveGeneratedWrapper().then(found => {
+    if (detectHomebrew()) {
+      wrapper.current = undefined;
+      setInstallType("Homebrew");
+    } else void findActiveGeneratedWrapper().then(found => {
       if (!active) return;
       wrapper.current = found?.path;
       // npm launchers also use private runtimes, but have no generated wrapper.
@@ -61,6 +65,11 @@ export function UpdateMenu({ checked: initial, startup = false, close, stateRepo
       return;
     }
     if (!checked?.updateAvailable || installType === "checking") return;
+    if (installType === "Homebrew") {
+      setFinished(true);
+      setMessage(`Run in your terminal: ${HOMEBREW_UPDATE_COMMAND}\nThen launch AgenC again. Its daemon will restart on the new version and restore saved sessions.`);
+      return;
+    }
     if (!wrapper.current) {
       setFinished(true);
       setMessage(`Run in your terminal: ${NPM_UPDATE_COMMAND}\nFor an unmanaged runtime, rerun the AgenC installer. Then launch AgenC again. Its daemon will restart on the new version and restore saved sessions.`);
@@ -84,7 +93,7 @@ export function UpdateMenu({ checked: initial, startup = false, close, stateRepo
       busyRef.current = false; setBusy(false); setFinished(true); setFailed(true); setMessage(sanitizeTerminalText(error));
     });
   };
-  const choices = finished || !checked?.updateAvailable ? ["Close"] : ["1 Update now", "2 Skip this version", "3 Not now"];
+  const choices = finished || !checked?.updateAvailable ? ["Close"] : [installType === "Homebrew" ? "1 Show brew command" : "1 Update now", "2 Skip this version", "3 Not now"];
   useInput((input, key) => {
     if (busyRef.current) return;
     if (key.escape || input === "q") { close(); return; }
@@ -104,6 +113,7 @@ export function UpdateMenu({ checked: initial, startup = false, close, stateRepo
     detail={<Box flexDirection="column" gap={1}>
       <ThemedText color="text" wrap="wrap">{releaseMessage}</ThemedText>
       <ThemedText color="text2">Installed: {checked?.currentVersion ?? VERSION} | Latest: {checked?.latestVersion ?? "checking"} | Install type: {installType}</ThemedText>
+      {!finished && installType === "Homebrew" && <ThemedText color="text2" wrap="wrap">{`Homebrew manages this installation. Run in your terminal: ${HOMEBREW_UPDATE_COMMAND}`}</ThemedText>}
       {!finished && checked?.updateAvailable && <ThemedText color="text2">{startup ? "Not now asks again on your next launch." : "Skip remembers this version. /update always checks again."}</ThemedText>}
       {message && <ThemedText color={failed ? "error" : "text2"} wrap="wrap">{message}</ThemedText>}
     </Box>}
