@@ -181,6 +181,10 @@ describe("runtime emergency summarizer", () => {
       expect(JSON.parse(String(history[1]?.content))).toEqual({
         facts: [],
         kind: "agenc_compaction_context_v2",
+        history_reference: {
+          description: expect.stringContaining("Exact tool results, including MCP results, remain in this JSONL session history."),
+          path: expect.stringMatching(/\.jsonl$/u),
+        },
         narrative: committed.payload.summary.body.narrative,
         open_actions: [],
         trust: "untrusted_historical_data",
