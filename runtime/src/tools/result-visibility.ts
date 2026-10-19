@@ -16,4 +16,3 @@ export function resolveOffloadThresholdBytes(): number | undefined {
   if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
   return parsed;
 }
-
