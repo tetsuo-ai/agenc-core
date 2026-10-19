@@ -126,10 +126,10 @@ function providerRegistry(provider: string | undefined) {
   });
 }
 
-test("GPT-family Light sessions start with apply_patch instead of Edit and Write", () => {
-  const names = providerRegistry("openai").toLLMTools().map(t => t.function.name).sort();
+test.each(["openai", "deepseek"])("%s Light sessions start with apply_patch instead of Edit and Write", (provider) => {
+  const names = providerRegistry(provider).toLLMTools().map(t => t.function.name).sort();
   expect(names).toEqual(["FileRead", "apply_patch", "exec_command", "system.searchTools"]);
-  const shell = providerRegistry("openai").toLLMTools().find(t => t.function.name === "exec_command")!;
+  const shell = providerRegistry(provider).toLLMTools().find(t => t.function.name === "exec_command")!;
   // Editing must refer to this session's available catalog, which starts with
   // apply_patch and has not discovered the Edit/Write aliases.
   expect(shell.function.description).toContain("use a listed editing tool for source changes");
@@ -139,7 +139,7 @@ test("GPT-family Light sessions start with apply_patch instead of Edit and Write
 });
 
 test("other providers keep Edit and Write, and Edit stays discoverable for GPT sessions", () => {
-  for (const provider of ["deepseek", "zai", "grok", undefined]) {
+  for (const provider of ["zai", "grok", undefined]) {
     const names = providerRegistry(provider).toLLMTools().map(t => t.function.name);
     expect(names, String(provider)).toEqual(expect.arrayContaining(["Edit", "Write"]));
     expect(names, String(provider)).not.toContain("apply_patch");

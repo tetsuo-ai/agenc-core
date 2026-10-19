@@ -93,7 +93,7 @@ test("current provider changes prompt and initial tools together; discovered edi
     provider = selected;
     const names = registry.toLLMTools().map(t => t.function.name);
     const prompt = await assembleSystemPromptSnapshot({ profile: "light", ctx: fakeCtx({ cwd: root }), session, provider });
-    const wantsPatch = selected === "openai";
+    const wantsPatch = selected === "openai" || selected === "deepseek";
     expect(names.includes("apply_patch")).toBe(wantsPatch);
     expect(names.includes("Edit")).toBe(!wantsPatch);
     expect(names.includes("Write")).toBe(!wantsPatch);
@@ -105,9 +105,9 @@ test("current provider changes prompt and initial tools together; discovered edi
   expect(registry.toLLMTools().map(t => t.function.name)).toEqual(expect.arrayContaining(["apply_patch", "Edit", "Write"]));
 });
 
-test("initial apply_patch preserves mutation authority metadata and every exec field", () => {
+test.each(["openai", "deepseek"])("%s initial apply_patch preserves mutation authority metadata and every exec field", (provider) => {
   const registry = buildToolRegistry({ workspaceRoot: root, lightMode: true,
-    getSession: () => ({ services: { provider: { name: "openai" }, runtimeOptions: { nonInteractive: true } } }) as never });
+    getSession: () => ({ services: { provider: { name: provider }, runtimeOptions: { nonInteractive: true } } }) as never });
   const tools = registry.toLLMTools();
   expect(tools.map(t => t.function.name)).toContain("apply_patch");
   const patchTool = registry.tools.find(t => t.name === "apply_patch")!;
