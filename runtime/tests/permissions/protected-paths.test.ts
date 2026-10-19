@@ -42,6 +42,32 @@ describe("isDangerousFilePathToAutoEdit", () => {
     expect(isDangerousFilePathToAutoEdit("/tmp/project/.agenc")).toBe(true);
   });
 
+  test("retired .agents commands stay ordinary without exempting live authority", () => {
+    for (const path of [
+      "/tmp/project/.agents/commands/review.md",
+      "/tmp/project/.AGENTS/Commands/review.md",
+      "C:\\project\\.agents\\commands\\review.md",
+    ]) {
+      expect(checkProtectedPathSafety(path, [path]), path).toEqual({ safe: true });
+    }
+    for (const path of [
+      "/tmp/project/.agents",
+      "/tmp/project/.agents/skills/review/SKILL.md",
+      "/tmp/project/.agents/worktrees/review/file.ts",
+      "/tmp/project/.agents/commands/.agents/skills/review/SKILL.md",
+      "/tmp/project/.agents/commands/.agenc/config.toml",
+      "/tmp/project/.agents/commands/.git/config",
+      "/tmp/project/.agents/commands/.bashrc",
+      "/tmp/project/.agents/commands/review.md.",
+      "/tmp/project/.agents/commands /review.md",
+    ]) {
+      expect(checkProtectedPathSafety(path, [path]), path).toMatchObject({
+        safe: false,
+        classifierApprovable: false,
+      });
+    }
+  });
+
   test("shell and git config filenames are dangerous even outside a protected directory", () => {
     expect(isDangerousFilePathToAutoEdit("/tmp/home/.bashrc")).toBe(true);
     expect(isDangerousFilePathToAutoEdit("/tmp/home/.gitconfig")).toBe(true);

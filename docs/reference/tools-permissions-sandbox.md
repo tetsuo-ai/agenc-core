@@ -637,6 +637,11 @@ acceptEdits simulation and classifier. An explicit path ask therefore requires
 confirmation in every mode. Protected file writes (including IDE control
 directories and shell startup files) cannot be approved by the classifier.
 
+Retired `.agenc/commands` and `.agents/commands` files, and structural
+`.agenc/worktrees` paths, are ordinary editable paths. These exceptions do not
+exempt protected descendants or symlink targets; live skill directories still
+require approval.
+
 Relative path rules are anchored at their source: project and local settings
 use the project root; user settings use the active AgenC home (`AGENC_HOME`,
 or the platform default); flag and managed settings use the directory holding

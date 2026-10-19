@@ -37,7 +37,14 @@ export const DANGEROUS_DIRECTORIES = [
   ".agents",
 ] as const;
 
-const AGENC_ORDINARY_CHILDREN = new Set(["commands", "worktrees"]);
+// Retired command files have no runtime authority. Worktrees under .agenc
+// are structural. These exceptions apply only to their immediate parent;
+// protected descendants and resolved symlink targets are checked separately.
+const ORDINARY_DIRECTORY_CHILDREN: ReadonlyMap<string, ReadonlySet<string>> =
+  new Map([
+    [".agenc", new Set(["commands", "worktrees"])],
+    [".agents", new Set(["commands"])],
+  ]);
 
 /**
  * Normalizes a path for case-insensitive comparison.
@@ -116,8 +123,8 @@ export function hasSuspiciousWindowsPathPattern(path: string): boolean {
 
 /**
  * Check if a file path is dangerous to auto-edit without explicit permission.
- * Covers `.git` / `.vscode` / `.idea` / `.agenc` (except retired
- * `commands`/`worktrees` children) and well-known shell/git config files.
+ * Covers `.git` / `.vscode` / `.idea` / `.agenc` / `.agents`, with narrow
+ * exceptions for retired commands and .agenc worktrees, plus shell/git files.
  * Case-insensitive so mixed-case segments cannot skip the list.
  */
 export function isDangerousFilePathToAutoEdit(path: string): boolean {
@@ -136,14 +143,14 @@ export function isDangerousFilePathToAutoEdit(path: string): boolean {
         continue;
       }
 
-      if (dir === ".agenc") {
-        const nextSegment = segments[i + 1];
-        if (
-          nextSegment &&
-          AGENC_ORDINARY_CHILDREN.has(normalizeCaseForComparison(nextSegment))
-        ) {
-          break;
-        }
+      const nextSegment = segments[i + 1];
+      if (
+        nextSegment &&
+        ORDINARY_DIRECTORY_CHILDREN.get(dir)?.has(
+          normalizeCaseForComparison(nextSegment),
+        )
+      ) {
+        break;
       }
 
       return true;

@@ -99,6 +99,33 @@ test.each(modes)("identical relative rule text retains each source root in %s", 
   });
 });
 
+test.each(modes)("retired commands keep narrow exceptions through file permissions in %s", async (mode) => {
+  const context = createEmptyToolPermissionContext({ mode });
+  const tool = createFileWriteTool({ allowedPaths: [root] });
+  for (const target of [".agenc/commands/review.md", ".agents/commands/review.md", ".AgEnTs/CoMmAnDs/review.md"]) {
+    const path = join(root, target);
+    expect(validatePath(path, root, context, "write").decisionReason?.type).not.toBe("safetyCheck");
+    const result = await hasPermissionsToUseTool(tool, { file_path: path, content: "ordinary", cwd: root }, evaluator(context));
+    expect(result.behavior, target).toBe(mode === "default" ? "ask" : "allow");
+  }
+
+  const skills = join(root, ".agents", "skills", "review");
+  const commands = join(root, ".agents", "commands");
+  await mkdir(skills, { recursive: true });
+  await mkdir(commands);
+  await symlink(skills, join(commands, "linked"), "junction");
+  for (const target of [
+    ".agents/skills/review/SKILL.md",
+    ".agenc/skills/review/SKILL.md",
+    ".agents/commands/.agents/skills/review/SKILL.md",
+    ".agents/commands/linked/SKILL.md",
+  ]) {
+    const result = await hasPermissionsToUseTool(tool, { file_path: join(root, target), content: "protected", cwd: root }, evaluator(context));
+    expect(result.behavior, target).toBe("ask");
+    expect(result.decisionReason, target).toMatchObject({ type: "safetyCheck", classifierApprovable: false });
+  }
+});
+
 test.each(modes)("ask and deny retain precedence at real read/write entry points in %s", async (mode) => {
   const path = join(root, "src", "app.ts");
   for (const source of ["userSettings", "policySettings"] as const satisfies readonly PermissionRuleSource[]) {
