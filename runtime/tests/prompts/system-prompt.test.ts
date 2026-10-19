@@ -659,6 +659,8 @@ describe("assembleSystemPrompt", () => {
     ["light", "deepseek"],
   ] as const)("%s/%s includes the built-in undo paths independent of Git", async (profile, provider) => {
     const prompt = await assembleSystemPromptSnapshot({ session: fakeSession, ctx: fakeCtx(), profile, provider });
+    expect(prompt.staticPrefix).toContain("capabilities");
+    expect(prompt.staticPrefix).toContain("without tools");
     expect(prompt.staticPrefix).toContain("/rewind");
     expect(prompt.staticPrefix).toContain("checkpoints");
     expect(prompt.staticPrefix).toContain("without Git");
