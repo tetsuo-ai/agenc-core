@@ -800,7 +800,7 @@ function isAnswerOnlyCompletion(
   // negatives retain the existing gate rather than waive verification.
   if (/\b(?:add|adjust|append|build|change|commit|complete|configure|correct|create|delete|deploy|disable|edit|enable|ensure|execute|export|extend|fix|generate|implement|install|make|modify|optimize|patch|persist|record|refactor|remove|rename|repair|replace|rewrite|run|save|set|store|support|test|tests|update|upgrade|verify|write)\b/i.test(task)) return false;
   if (/\b(?:return|output|produce|deliver|provide)\b[^\n!?]{0,160}\b(?:file|files|artifact|artifacts|document|report|script|program)\b/i.test(task)) return false;
-  if (/\b(?:in|to|as)\s+[`"']?(?:\/|\.{1,2}\/|[\w.-]+\.[a-z0-9]{1,8}\b)/i.test(task)) return false;
+  if (/\b(?:return|reply|respond|output|produce|deliver|provide)\b[^\n!?]{0,160}\b(?:in|to|as)\s+[`"']?(?:[a-z]:[\\/]|[\\/]|\.{1,2}[\\/]|[\w.\\/-]+\.[a-z0-9]{1,8}\b)/i.test(task)) return false;
   if ([...checklistItems(text)].length > 0) return false;
   const lastResult = results.at(-1);
   if (lastResult === undefined || !isSuccessfulResult(lastResult)) return false;

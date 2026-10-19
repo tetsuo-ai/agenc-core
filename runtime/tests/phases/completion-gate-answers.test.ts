@@ -41,6 +41,8 @@ describe("completion gate for answers without workspace deliverables", () => {
     "Explain the data flow and fix its bug.",
     "Return a CSV file with the inventory results.",
     "Return the results in /app/stock.json.",
+    "Return the results in reports/stock.json.",
+    String.raw`Return the results in C:\reports\stock.json.`,
     "Create the report. Reply with exactly READY.",
     "Make the endpoint return JSON only.",
     "Run the tests and report the results.",
