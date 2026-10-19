@@ -21,9 +21,12 @@ import {
   readTurnCheckpoint,
   validateCheckpointPrefix,
   validateCheckpointPrefixV4,
+  validateRecoveredCheckpointPrefix,
+  type CheckpointRecoveryWindow,
   type DurableCheckpointPrefixDeferral,
   type DurableCheckpointPrefixFailure,
 } from "./durable-checkpoint-reader.js";
+import { isRecoveryToolResult } from "./recovery-tool-result.js";
 import {
   ToolResultCanonicalizationError,
   constantTimeDigestEqual,
@@ -32,10 +35,11 @@ import {
   type ToolResultIntegrityDeferral,
   type ToolResultIntegrityFailure,
 } from "./tool-result-integrity.js";
-import type {
-  ToolPairIntegrityFailure,
-  ToolPairOperationalDeferral,
-  ToolPairProjection,
+import {
+  MAX_OPEN_TOOL_CALLS_PER_RUN,
+  type ToolPairIntegrityFailure,
+  type ToolPairOperationalDeferral,
+  type ToolPairProjection,
 } from "./tool-pair-validator.js";
 
 const UPGRADE_PROJECTION_ID_DOMAIN = "agenc.checkpoint-upgrade-projection.v1";
@@ -155,6 +159,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
   let checkpointsValidated = 0;
   let changed = false;
   let sawSessionMeta = false;
+  const resumeRecovery = new ResumeRecoveryWindows();
 
   for (let itemIndex = 0; itemIndex < params.items.length; itemIndex += 1) {
     const sourceItem = params.items[itemIndex];
@@ -278,6 +283,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       }
       historyDerivationWork = reservedWork;
 
+      let checkpointRecovered = false;
       if (readable.version === 1) {
         const legacyPrefixHash = computePrefixHash(
           history,
@@ -296,7 +302,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
           );
         }
       } else {
-        const sourceValidation = validateCheckpointPrefix({
+        let sourceValidation = validateCheckpointPrefix({
           checkpoint: readable.checkpoint,
           expectedRunId: params.runId,
           messages: history,
@@ -304,6 +310,50 @@ export function planLegacyDurableCheckpointUpgrade(params: {
           projectionId: checkpointProjectionId(params.projectionId),
           sourceKey: params.sourceKey,
         });
+        // A checkpoint written without the recovery results counts fewer
+        // messages than the persisted prefix it describes, so the persisted
+        // view fails its digest or ends inside a call's results. The
+        // recovered view runs every gate of that view over the longer
+        // persisted prefix, so it can only pass for the shifted writer.
+        const recoveryWindow = resumeRecovery.window;
+        if (
+          recoveryWindow !== undefined &&
+          readable.version === DURABLE_CHECKPOINT_READ_VERSION &&
+          sourceValidation.status === "invalid"
+        ) {
+          const recoveryWork = reserveHistoryDerivationWork(
+            historyDerivationWork,
+            persistedMessageCount + recoveryWindow.length,
+            CURRENT_CHECKPOINT_PREFIX_PASSES,
+            maxHistoryDerivationWork,
+          );
+          if (recoveryWork === undefined) {
+            return {
+              status: "deferred",
+              failure: {
+                kind: "operational_deferral",
+                code: "history_derivation_work_limit",
+                itemIndex,
+                reason: `checkpoint validation would exceed the aggregate history-derivation work limit of ${maxHistoryDerivationWork} message visits`,
+              },
+            };
+          }
+          historyDerivationWork = recoveryWork;
+          const recovered = validateRecoveredCheckpointPrefix({
+            checkpoint: readable.checkpoint,
+            expectedRunId: params.runId,
+            messages: history,
+            projection: params.projection,
+            projectionId: checkpointProjectionId(params.projectionId),
+            sourceKey: params.sourceKey,
+            recoveryWindow,
+          });
+          // Any other outcome keeps the original failure.
+          if (recovered.status === "valid") {
+            sourceValidation = recovered;
+            checkpointRecovered = true;
+          }
+        }
         const sourceFailure = checkpointValidationFailure(
           sourceValidation,
           itemIndex,
@@ -395,7 +445,44 @@ export function planLegacyDurableCheckpointUpgrade(params: {
         );
         if (targetFailure !== undefined) return targetFailure;
       }
+      if (readable.version === DURABLE_CHECKPOINT_READ_VERSION) {
+        resumeRecovery.checkpointValidated(
+          readable.checkpoint,
+          checkpointRecovered,
+        );
+      }
       checkpointsValidated += 1;
+    }
+
+    if (
+      item.type === "event_msg" &&
+      item.payload.msg.type === "turn_resumed"
+    ) {
+      const candidate = resumeRecovery.turnResumed(
+        item.payload.msg.payload,
+        history.length,
+      );
+      if (candidate !== undefined) {
+        const scanWork = reserveHistoryDerivationWork(
+          historyDerivationWork,
+          candidate.length,
+          1,
+          maxHistoryDerivationWork,
+        );
+        if (scanWork === undefined) {
+          return {
+            status: "deferred",
+            failure: {
+              kind: "operational_deferral",
+              code: "history_derivation_work_limit",
+              itemIndex,
+              reason: `resume recovery scan would exceed the aggregate history-derivation work limit of ${maxHistoryDerivationWork} message visits`,
+            },
+          };
+        }
+        historyDerivationWork = scanWork;
+        resumeRecovery.openIfRecoveryResults(candidate, history);
+      }
     }
 
     transformed.push(item);
@@ -408,6 +495,9 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       maxHistoryDerivationWork,
     });
     if (historyUpdate.status !== "updated") return historyUpdate;
+    if (historyUpdate.history !== history) {
+      resumeRecovery.historyReplaced();
+    }
     history = historyUpdate.history;
     historyDerivationWork = historyUpdate.historyDerivationWork;
   }
@@ -425,6 +515,104 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       upgradedItems: transformed,
     },
   };
+}
+
+interface ResumeSourceCheckpoint {
+  readonly checkpointSeq: number;
+  readonly persistedMessageCount: number;
+  readonly historyGeneration: number;
+  /** Verified through a recovery window rather than the persisted history. */
+  readonly recovered: boolean;
+}
+
+/**
+ * A turn continued after a restart from its last checkpoint, when recovery
+ * results for the calls that checkpoint left open were already persisted
+ * (bootstrap closed them, or an earlier continuation paired them), kept its
+ * own pairing out of durable history (#2603). Every checkpoint that daemon
+ * wrote afterwards hashed the persisted history without those results, so
+ * the session could not be opened again.
+ *
+ * Only that exact shape opens a recovery window:
+ *   - the turn_resumed names the latest checkpoint of its turn, which itself
+ *     verified against the persisted history,
+ *   - the history was not replaced since that checkpoint, and
+ *   - every response item persisted between that checkpoint's prefix and the
+ *     turn_resumed is a sealed recovery result the runtime writes itself.
+ * The next turn_resumed or history replacement closes the window.
+ */
+class ResumeRecoveryWindows {
+  private readonly latestCheckpointByTurn = new Map<string, ResumeSourceCheckpoint>();
+  private historyGeneration = 0;
+  private openWindow: CheckpointRecoveryWindow | undefined;
+
+  get window(): CheckpointRecoveryWindow | undefined {
+    return this.openWindow;
+  }
+
+  historyReplaced(): void {
+    this.historyGeneration += 1;
+    this.openWindow = undefined;
+  }
+
+  checkpointValidated(checkpoint: TurnCheckpointV4Event, recovered: boolean): void {
+    this.latestCheckpointByTurn.set(checkpoint.turnId, {
+      checkpointSeq: checkpoint.checkpointSeq,
+      persistedMessageCount: checkpoint.persistedMessageCount,
+      historyGeneration: this.historyGeneration,
+      recovered,
+    });
+  }
+
+  /**
+   * Close any open window and return the candidate window of this resume:
+   * the items persisted after its source checkpoint's prefix. The caller
+   * charges the scan before `openIfRecoveryResults` inspects them.
+   */
+  turnResumed(
+    payload: unknown,
+    historyLength: number,
+  ): CheckpointRecoveryWindow | undefined {
+    // A resumed turn rebuilt its history from this rollout, so a window an
+    // earlier daemon left open no longer describes the new writer.
+    this.openWindow = undefined;
+    if (payload === null || typeof payload !== "object") return undefined;
+    const { turnId, fromCheckpointSeq } = payload as {
+      readonly turnId?: unknown;
+      readonly fromCheckpointSeq?: unknown;
+    };
+    if (typeof turnId !== "string") return undefined;
+    const source = this.latestCheckpointByTurn.get(turnId);
+    if (
+      source === undefined ||
+      source.checkpointSeq !== fromCheckpointSeq ||
+      source.recovered ||
+      source.historyGeneration !== this.historyGeneration
+    ) {
+      return undefined;
+    }
+    const length = historyLength - source.persistedMessageCount;
+    // One assistant message can leave at most this many calls open.
+    if (length <= 0 || length > MAX_OPEN_TOOL_CALLS_PER_RUN) return undefined;
+    return { start: source.persistedMessageCount, length };
+  }
+
+  openIfRecoveryResults(
+    candidate: CheckpointRecoveryWindow,
+    history: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  ): void {
+    for (let index = candidate.start; index < candidate.start + candidate.length; index += 1) {
+      const message = history[index];
+      if (
+        message === undefined ||
+        message.toolResultIntegrity === undefined ||
+        !isRecoveryToolResult(message)
+      ) {
+        return;
+      }
+    }
+    this.openWindow = candidate;
+  }
 }
 
 type UpgradeHistoryOutcome =

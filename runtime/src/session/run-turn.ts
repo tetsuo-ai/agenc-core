@@ -229,6 +229,7 @@ import {
   resolveDurableTurnsConfig,
   sideEffectHaltMessage,
 } from "./durable-turns.js";
+import { resumedToolCallResultContent } from "./recovery-tool-result.js";
 import {
   DURABLE_CHECKPOINT_WRITE_VERSION,
   computeCheckpointPrefixHashV4,
@@ -2607,13 +2608,11 @@ async function* runTurnKernelInner(
     // results ARE new content → persisted on the next syncSessionState so
     // reconstruction sees a fully-paired thread.
     for (const pairing of opts.resume.danglingPairings ?? []) {
-      const content = pairing.halt
-        ? sideEffectHaltMessage(pairing.toolName)
-        : `result not persisted before crash; the read-only tool ${pairing.toolName} was not retried automatically — safe to re-invoke if its result is needed.`;
-      // The bootstrap replay may already have closed this call with its own
-      // persisted result (a restart between the model's calls and their
-      // results). The model's thread still needs the pairing; the rollout
-      // must not receive a second result for the id.
+      const content = resumedToolCallResultContent(pairing.toolName, pairing.halt);
+      // The rollout must not receive a second result for one id. A durable
+      // continuation never gets here with a closed call: resumeTurnFromCheckpoint
+      // refuses it, because a pairing kept out of durable history would make
+      // every later checkpoint hash a different history (#2603).
       const alreadyPersisted =
         session.rolloutStore?.liveToolCallResolved(pairing.callId) === true;
       state.messages.push({

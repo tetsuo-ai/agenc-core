@@ -38,6 +38,7 @@ import {
   validatePendingAdmissionFallbackSlice,
 } from "./turn-checkpoint-slice.js";
 import { readTextToolCallCorrection, type TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
+import { isRecoveryToolResult } from "./recovery-tool-result.js";
 
 export const LEGACY_DURABLE_CHECKPOINT_VERSION = 1 as const;
 export const DURABLE_CHECKPOINT_V2 = 2 as const;
@@ -576,6 +577,44 @@ function invalidPrefixHashVersion(): DurableCheckpointPrefixValidation {
   return { status: "invalid", failure: { kind: "integrity_failure", code: "checkpoint_response_shape_invalid", index: null, reason: "checkpoint prefix hash version does not match its selected algorithm" } };
 }
 
+/**
+ * Recovery results the runtime persisted right after a checkpoint's prefix,
+ * for the calls that checkpoint left open, before a turn resumed from it. A
+ * continued turn that found such a result kept its own pairing out of durable
+ * history (#2603), so the checkpoints written after that resume hashed the
+ * persisted history without the window.
+ */
+export interface CheckpointRecoveryWindow {
+  /** Persisted history index of the first recovery result. */
+  readonly start: number;
+  /** Number of consecutive recovery results. */
+  readonly length: number;
+}
+
+/**
+ * Validate a current-schema checkpoint whose digest skipped a recovery
+ * window. Every structural gate (item shape, invocation sequence, tool
+ * pairing and the seal of every result) still runs over the complete
+ * persisted prefix, recovery results included; only the digest input leaves
+ * the window out. Each skipped item must be the exact sealed recovery result
+ * for its own call, whose body is fixed by the call id and tool name the
+ * digest still covers.
+ */
+export function validateRecoveredCheckpointPrefix(
+  params: CheckpointPrefixValidationParams<TurnCheckpointV4Event> & {
+    readonly recoveryWindow: CheckpointRecoveryWindow;
+  },
+): DurableCheckpointPrefixValidation {
+  return validateCheckpointPrefixWithHasher(
+    params,
+    params.checkpoint.prefixHashVersion === 4
+      ? computeCheckpointPrefixHashV4
+      : computeCheckpointPrefixHashV3,
+    true,
+    params.recoveryWindow,
+  );
+}
+
 /** Strictly bind each checkpoint version to its one prefix-hash algorithm. */
 export function validateCheckpointPrefix(
   params: CheckpointPrefixValidationParams<IntegrityTurnCheckpoint>,
@@ -602,16 +641,20 @@ function validateCheckpointPrefixWithHasher(
     count: number,
   ) => string,
   authenticateCompactionHistory: boolean,
+  recoveryWindow?: CheckpointRecoveryWindow,
 ): DurableCheckpointPrefixValidation {
+  // The digest covers `count` messages. A recovery window lies inside the
+  // persisted prefix, so every structural gate covers it as well.
   const count = params.checkpoint.persistedMessageCount;
-  if (count > params.messages.length) {
+  const persistedCount = count + (recoveryWindow?.length ?? 0);
+  if (persistedCount > params.messages.length) {
     return {
       status: "invalid",
       failure: {
         kind: "integrity_failure",
         code: "checkpoint_prefix_missing",
         index: null,
-        reason: `checkpoint requires ${count} messages but only ${params.messages.length} are available`,
+        reason: `checkpoint requires ${persistedCount} messages but only ${params.messages.length} are available`,
       },
     };
   }
@@ -620,18 +663,26 @@ function validateCheckpointPrefixWithHasher(
   if (!Number.isSafeInteger(maxPrefixMessages) || maxPrefixMessages <= 0) {
     throw new Error("maxPrefixMessages must be a positive safe integer");
   }
-  if (count > maxPrefixMessages) {
+  if (persistedCount > maxPrefixMessages) {
     return {
       status: "deferred",
       failure: {
         kind: "operational_deferral",
         code: "checkpoint_prefix_message_limit",
         index: null,
-        reason: `checkpoint prefix has ${count} messages; limit is ${maxPrefixMessages}`,
+        reason: `checkpoint prefix has ${persistedCount} messages; limit is ${maxPrefixMessages}`,
       },
     };
   }
-  for (let index = 0; index < count; index += 1) {
+  if (recoveryWindow !== undefined) {
+    const windowFailure = recoveryWindowFailure(
+      params.messages,
+      recoveryWindow,
+      count,
+    );
+    if (windowFailure !== undefined) return windowFailure;
+  }
+  for (let index = 0; index < persistedCount; index += 1) {
     const message = params.messages[index];
     if (message !== undefined) {
       try {
@@ -675,7 +726,7 @@ function validateCheckpointPrefixWithHasher(
 
   try {
     validateAgentInvocationResponseSequence([
-      ...prefixMessages(params.messages, count),
+      ...prefixMessages(params.messages, persistedCount),
     ]);
   } catch (error) {
     if (error instanceof DurableCheckpointReadError) {
@@ -693,7 +744,7 @@ function validateCheckpointPrefixWithHasher(
   }
 
   const toolPairs = validateToolPairSequence(
-    prefixMessages(params.messages, count),
+    prefixMessages(params.messages, persistedCount),
     params.projection,
     {
       projectionId: params.projectionId,
@@ -709,7 +760,12 @@ function validateCheckpointPrefixWithHasher(
 
   let prefixHash: string;
   try {
-    prefixHash = computePrefixHash(params.messages, count);
+    prefixHash = computePrefixHash(
+      recoveryWindow === undefined
+        ? params.messages
+        : withoutRecoveryWindow(params.messages, recoveryWindow, persistedCount),
+      count,
+    );
   } catch (error) {
     if (error instanceof DurableCheckpointReadError) {
       return {
@@ -776,6 +832,60 @@ function validateCheckpointPrefixWithHasher(
     danglingToolUses:
       toolPairs.status === "dangling" ? toolPairs.danglingToolUses : [],
   };
+}
+
+/**
+ * A recovery window must sit inside the persisted prefix and hold only exact
+ * sealed recovery results. Their seals and their pairing with the open calls
+ * are checked with the rest of the prefix by the tool-pair gate.
+ */
+function recoveryWindowFailure(
+  messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  window: CheckpointRecoveryWindow,
+  count: number,
+): DurableCheckpointPrefixValidation | undefined {
+  const fail = (reason: string): DurableCheckpointPrefixValidation => ({
+    status: "invalid",
+    failure: {
+      kind: "integrity_failure",
+      code: "checkpoint_prefix_digest_mismatch",
+      index: null,
+      reason,
+    },
+  });
+  if (
+    !Number.isSafeInteger(window.start) ||
+    !Number.isSafeInteger(window.length) ||
+    window.start < 0 ||
+    window.length <= 0 ||
+    window.start > count
+  ) {
+    return fail("checkpoint recovery window is outside the checkpoint prefix");
+  }
+  for (let index = window.start; index < window.start + window.length; index += 1) {
+    const message = messages[index];
+    if (
+      message === undefined ||
+      message.toolResultIntegrity === undefined ||
+      !isRecoveryToolResult(message)
+    ) {
+      return fail(
+        `checkpoint recovery window item ${index} is not a sealed recovery result`,
+      );
+    }
+  }
+  return undefined;
+}
+
+function withoutRecoveryWindow(
+  messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  window: CheckpointRecoveryWindow,
+  persistedCount: number,
+): ToolResultIntegrityResponseItem[] {
+  return [
+    ...messages.slice(0, window.start),
+    ...messages.slice(window.start + window.length, persistedCount),
+  ];
 }
 
 function parseCheckpointBase(
