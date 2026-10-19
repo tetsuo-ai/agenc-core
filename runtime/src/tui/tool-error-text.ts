@@ -21,13 +21,13 @@ export function parseClampMarker(
   return { hidden: Number(match[1]), unit: match[2] as "lines" | "characters" };
 }
 
-/** Choose a diagnostic, keeping aggregate test verdicts ahead of stack details. */
+/** Keep actionable sandbox guidance and test verdicts ahead of stack details. */
 export function shellFailureReason(output: string): string | undefined {
   const lines = output.split("\n")
     .map(line => stripAnsi(line).trim())
     .filter(line => line.length > 0 && parseClampMarker(line) === null);
   const last = lines.at(-1);
-  if (last !== undefined && /^FAIL(?:ED)?\b/.test(last)) return last;
+  if (last !== undefined && /^(?:FAIL(?:ED)?\b|\[sandbox\])/.test(last)) return last;
   return lines.find(line =>
     /^(?:[\w.]*Error|[\w.]*Exception)(?:\s*\[[^\]]+\])?:\s*\S/i.test(line)
   ) ?? last;

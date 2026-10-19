@@ -80,6 +80,12 @@ describe("summarizeToolError", () => {
     expect(projected[0]!.text).toContain("Node.js v26.5.0");
   });
 
+  it("preserves actionable sandbox guidance after a Python traceback", () => {
+    const guidance = "[sandbox] The sandbox blocks local servers. Retry this command once with sandbox_permissions=\"require_escalated\" and a justification.";
+    expect(summarizeToolError(`Traceback (most recent call last):\nPermissionError: [Errno 1] Operation not permitted\n\n${guidance}\n\n[exec exit_code=1]`))
+      .toBe(`exit 1, ${guidance}`);
+  });
+
   it("drops protocol wrappers and machine prefixes", () => {
     expect(
       summarizeToolError(
