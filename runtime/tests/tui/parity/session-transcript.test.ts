@@ -12,6 +12,20 @@ import { createHistoryReplacedEvent } from "../../session/transcript-replacement
 
 describe("AgenC TUI session transcript", () => {
   test.each([
+    ["low", " (low effort)"],
+    ["xhigh", " (xhigh effort)"],
+    ["none", " (effort off)"],
+    [undefined, ""],
+    ["untrusted effort label", ""],
+  ])("uses captured warning metadata for effort %s", (effort, suffix) => {
+    const message = "no output from the model for 10 minutes";
+    const transcript = adaptTranscriptEvents([{ id: "quiet-effort", msg: {
+      type: "warning", payload: { cause: "stream_idle_warning", message,
+        details: { reasoningEffort: effort } },
+    } }]);
+    expect(transcript.streamQuietWarning).toBe(`${message}${suffix}`);
+  });
+  test.each([
     { type: "agent_message_delta", payload: { delta: "answer" } },
     { type: "assistant_thinking_delta", payload: { delta: "reasoning" } },
     { type: "tool_input_delta", payload: { index: 0, partialJson: "{}" } },

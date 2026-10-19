@@ -16,6 +16,7 @@ function fakeProvider(mode: "keepalive" | "reasoning" | "silent" | "partial", gr
   const durationMs = 25 * 60_000;
   let wireSignal: AbortSignal | null | undefined;
   let phaseSignal: AbortSignal | undefined;
+  let requestEffort: string | undefined;
   const trace = longReasoningTrace();
   const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
     wireSignal = init?.signal;
@@ -67,6 +68,7 @@ function fakeProvider(mode: "keepalive" | "reasoning" | "silent" | "partial", gr
   const chatStream = provider.chatStream.bind(provider);
   vi.spyOn(provider, "chatStream").mockImplementation((input, emit, options) => {
     phaseSignal = options?.signal;
+    requestEffort = options?.reasoningEffort;
     return chatStream(input, emit, options);
   });
   const { session, events } = mkSession({ provider, services: {
@@ -74,16 +76,19 @@ function fakeProvider(mode: "keepalive" | "reasoning" | "silent" | "partial", gr
   } });
   vi.spyOn(session.services.configStore!, "current").mockReturnValue({
     ...session.services.configStore!.current(),
+    reasoning_effort: "high",
     stream_watchdog_timeout_ms: 1_200_000, stream_quiet_warning_ms: warningMs,
   });
-  const ctx = mkCtx();
+  // The turn's admitted effort differs from settings; the warning must name
+  // this request, not a newer UI/config selection.
+  const ctx = mkCtx({ reasoningEffort: "low" });
   const state = buildInitialTurnState(ctx, { role: "user", content: "Reason carefully." });
   const pending = streamModel(state, ctx, session, {
     input: state.messages, tools: [], parallelToolCalls: false,
     baseInstructions: "", maxOutputTokens: 8192,
   }).then(() => undefined, error => error);
   const warnings = () => events.filter(e => e.msg.type === "warning" && e.msg.payload.cause === "stream_idle_warning");
-  return { pending, state, events, fetchImpl, warnings, signal: () => phaseSignal };
+  return { pending, state, events, fetchImpl, warnings, signal: () => phaseSignal, effort: () => requestEffort };
 }
 
 describe.each([false, true])("raw provider liveness (Grok SDK=%s)", grok => {
@@ -92,6 +97,8 @@ describe.each([false, true])("raw provider liveness (Grok SDK=%s)", grok => {
     const run = fakeProvider("keepalive", grok);
     await vi.advanceTimersByTimeAsync(600_001);
     expect(run.warnings()).toHaveLength(1);
+    expect(run.effort()).toBe("low");
+    expect(run.warnings()[0]!.msg.payload.details).toEqual({ reasoningEffort: "low" });
     expect(run.signal()?.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(900_000);
     expect(await run.pending).toBeUndefined();

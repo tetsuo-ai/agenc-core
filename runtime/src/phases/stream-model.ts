@@ -1085,6 +1085,7 @@ export async function streamModel(
 
   // This observer only warns and never cuts a turn.
   let quietWarningActive = false;
+  let activeReasoningEffort: LLMChatOptions["reasoningEffort"];
   const quietObserver = installStreamWatchdog({
     abortController: scoped,
     timeoutMs: 0,
@@ -1101,6 +1102,9 @@ export async function streamModel(
           payload: {
             cause: STREAM_IDLE_WARNING_REASON,
             message: formatStreamQuietWarning(info.elapsedMs),
+            ...(activeReasoningEffort !== undefined
+              ? { details: { reasoningEffort: activeReasoningEffort } }
+              : {}),
           },
         },
       });
@@ -1402,10 +1406,15 @@ export async function streamModel(
               },
             }
           : {}),
-      invoke: (admittedOptions) => withStreamTransportActivity(
-        () => watchdog.kick("bytes"),
-        () => provider.chatStream(messages, onChunk, admittedOptions),
-      ),
+      invoke: (admittedOptions) => {
+        // The active request owns this label. UI settings may belong to a
+        // different session or may change while this stream is still quiet.
+        activeReasoningEffort = admittedOptions.reasoningEffort;
+        return withStreamTransportActivity(
+          () => watchdog.kick("bytes"),
+          () => provider.chatStream(messages, onChunk, admittedOptions),
+        );
+      },
     });
     // Some providers return an empty/nonstreamed result without any chunks.
     flushStartupLogIndex();

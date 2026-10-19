@@ -2852,7 +2852,12 @@ export function adaptTranscriptEvents(
           break;
         }
         if (payload.cause === "stream_idle_warning") {
-          streamQuietWarning = stringResult(payload.message);
+          const effort = payloadRecord(payload.details).reasoningEffort;
+          const effortLabel = typeof effort === "string" &&
+            ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
+              ? ` (${effort === "none" ? "effort off" : `${effort} effort`})`
+              : "";
+          streamQuietWarning = `${stringResult(payload.message)}${effortLabel}`;
           break;
         }
         // Allow-list of warning causes that surface to the user's

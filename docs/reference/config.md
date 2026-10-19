@@ -457,8 +457,9 @@ visible in the transcript and the rollout before the provider refuses a
 request. The fit itself is unchanged.
 `stream_quiet_warning_ms` defaults to `600000` (ten minutes without a model
 delta). It emits a `warning` event with cause `stream_idle_warning`; the TUI
-status shows "no output from the model for N minutes", the configured
-reasoning effort, and the interrupt hint. This warning never ends a turn.
+status shows "no output from the model for N minutes", the
+reasoning effort captured from the active request, and the interrupt hint.
+This warning never ends a turn.
 Keepalives do not reset it; text, reasoning, and tool-input deltas do.
 Set it to `0` to disable the warning.
 

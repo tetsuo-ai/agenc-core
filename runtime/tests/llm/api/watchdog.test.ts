@@ -27,6 +27,9 @@ describe("llm api watchdog", () => {
     const handle = installStreamWatchdog({
       abortController,
       timeoutMs: 100,
+      // The no-delta warning is independently configured, not half the
+      // byte-idle deadline. Keep this small alias check deterministic.
+      warningMs: 50,
       onWarning: (info) => warnings.push(info),
       onFired: (info) => fired.push(info),
     });

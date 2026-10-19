@@ -239,7 +239,6 @@ export function SpinnerAnimationRow({
   teammateTokens,
   foregroundedTeammate,
   thinkingStatus,
-  effortSuffix,
   streamQuietWarning,
   showLeaderTokenStats = true,
 }: SpinnerAnimationRowProps): React.ReactNode {
@@ -351,7 +350,6 @@ export function SpinnerAnimationRow({
   const thinkingOnly = showThinking && thinkingStatus === 'thinking' && !spinnerSuffix && !showTimer && !showTokens && !quietWarningText;
 
   const parts = [
-    ...(quietWarningText && effortSuffix ? [<Text dimColor key="effort">{effortSuffix.trim()}</Text>] : []),
     ...(spinnerSuffix ? [<Text dimColor key="suffix">{spinnerSuffix}</Text>] : []),
     ...(showTimer ? [<Text dimColor key="elapsedTime">{timerText}</Text>] : []),
     ...(showTokens ? [

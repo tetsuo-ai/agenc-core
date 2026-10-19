@@ -186,8 +186,8 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
       columns,
       responseLengthRef: makeRef(0),
       thinkingStatus: "thinking",
-      streamQuietWarning: "no output from the model for 10 minutes",
-      effortSuffix: "high effort",
+      streamQuietWarning: "no output from the model for 10 minutes (high effort)",
+      effortSuffix: "",
     });
 
     expect(output).toContain("no output from the model for 10 minutes");
