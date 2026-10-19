@@ -138,6 +138,20 @@ test.each(["openai", "deepseek"])("%s Light sessions start with apply_patch inst
   expect(shell).toEqual(providerRegistry("deepseek").toLLMTools().find(t => t.function.name === "exec_command"));
 });
 
+test("DeepSeek patch wording retains read preconditions and syntax without changing the canonical tool", () => {
+  const registry = providerRegistry("deepseek");
+  const canonical = registry.tools.find(tool => tool.name === "apply_patch")!;
+  const patch = registry.toLLMTools().find(tool => tool.function.name === "apply_patch")!;
+  expect(patch.function.description).toContain("FileRead existing targets first");
+  expect(patch.function.description).toContain("@@ has no line ranges");
+  expect(patch.function.description).toContain("*** Move to: path follows Update File");
+  expect(patch.function.parameters).toEqual(canonical.inputSchema);
+  expect(canonical.description).not.toContain("FileRead existing targets first");
+  const openai = providerRegistry("openai");
+  expect(openai.toLLMTools().find(tool => tool.function.name === "apply_patch")!.function.description)
+    .toBe(openai.tools.find(tool => tool.name === "apply_patch")!.description);
+});
+
 test("other providers keep Edit and Write, and Edit stays discoverable for GPT sessions", () => {
   for (const provider of ["zai", "grok", undefined]) {
     const names = providerRegistry(provider).toLLMTools().map(t => t.function.name);

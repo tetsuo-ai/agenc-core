@@ -1446,7 +1446,9 @@ export function buildToolRegistry(
       const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
-        if (options.lightMode === true) return lightPresentation(tool, { leanExec });
+        if (options.lightMode === true) return lightPresentation(tool, {
+          leanExec, deepseekPatch: options.getSession?.()?.services?.provider?.name === "deepseek",
+        });
         // Standard sessions with the default deferral send compact wording for
         // the core tools (same fields, same schema) and the lean exec_command
         // and Grep until system.searchTools selects them.
