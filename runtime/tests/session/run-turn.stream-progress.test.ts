@@ -5,11 +5,12 @@ import { LLMServerError } from "../../src/llm/errors.js";
 import { FallbackTriggeredError } from "../../src/recovery/api-errors.js";
 import { childDispatchCertainty, childTerminalOutcome } from "../../src/agents/child-terminal.js";
 import { mkCtx, mkSession } from "../fixtures.js";
+import type { AgenCConfig } from "../../src/config/schema.js";
 import { goodSample, recordingAdmission, repeatingSample, scriptedProvider, type Sample } from "../helpers/stream-progress-fixture.js";
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-function turn(samples: Sample[], admitted = false, child = false) {
+function turn(samples: Sample[], admitted = false, child = false, config: Partial<AgenCConfig> = {}) {
   const scripted = scriptedProvider(samples);
   // Exercise the requested user-visible Grok wording through the shared path.
   Object.defineProperty(scripted.provider, "name", { value: "grok" });
@@ -18,6 +19,9 @@ function turn(samples: Sample[], admitted = false, child = false) {
     admissionRequired: true, executionAdmission: admission.client,
   } : undefined });
   const reset = vi.spyOn(session, "resetProviderIncrementalState");
+  vi.spyOn(session.services.configStore!, "current").mockReturnValue({
+    ...session.services.configStore!.current(), ...config,
+  });
   const ctx = mkCtx(child ? { depth: 1, sessionSource: "cli_subagent" } : {});
   const pending = (async () => {
     const phases = [];
@@ -74,21 +78,45 @@ describe("runTurn bounded stream recovery", () => {
     });
   });
 
-  test("stream_idle retries once and reconnect telemetry has a finite budget", async () => {
+  test("byte silence uses the finite network reconnect ladder", async () => {
     vi.useFakeTimers();
     const silent: Sample = (_emit, options) => new Promise((_resolve, reject) => {
       options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
     });
-    const run = turn([silent]);
+    const run = turn([silent], false, false, {
+      stream_watchdog_timeout_ms: 10_000, provider_outage_wait_ms: 0,
+    });
     await vi.waitFor(() => expect(run.calls()).toBeGreaterThan(0));
-    await vi.advanceTimersByTimeAsync(1_300_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     const result = await run.pending;
-    expect(run.calls()).toBe(2);
+    expect(run.calls()).toBe(6);
     expect(result.phases.at(-1)).toMatchObject({ stopReason: "error" });
     const telemetry = run.events.filter(e => e.msg.type === "warning" &&
       String(e.msg.payload.message).includes("remainingBudgetMs="));
     expect(telemetry.length).toBeGreaterThan(0);
     expect(JSON.stringify(telemetry)).not.toContain("unbounded");
+  });
+
+  test("after a dead socket reconnect, 25 minutes of keepalives is allowed to finish", async () => {
+    vi.useFakeTimers();
+    const silent: Sample = (_emit, options) => new Promise((_resolve, reject) => {
+      options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+    });
+    const alive: Sample = async (emit, options) => {
+      for (let minute = 0; minute < 25; minute++) {
+        await new Promise(resolve => setTimeout(resolve, 60_000));
+        expect(options.signal?.aborted).toBe(false);
+        emit({ content: "", done: false });
+      }
+      return goodSample(emit, options);
+    };
+    const run = turn([silent, alive], false, false, {
+      stream_watchdog_timeout_ms: 120_000, provider_outage_wait_ms: 0,
+    });
+    await vi.waitFor(() => expect(run.calls()).toBeGreaterThan(0));
+    await vi.advanceTimersByTimeAsync(28 * 60_000);
+    expect(run.calls()).toBe(2);
+    expect((await run.pending).phases.at(-1)).toMatchObject({ stopReason: "completed" });
   });
 
   test("two slow reasoning stalls end as no_progress, never a child timeout", async () => {

@@ -685,6 +685,7 @@ const ROOT_FIELD_VALIDATORS = {
   defer_rare_tools: fieldValidator("defer_rare_tools", optionalBoolean),
   lean_system_prompt: fieldValidator("lean_system_prompt", optionalBoolean),
   stream_watchdog_timeout_ms: fieldValidator("stream_watchdog_timeout_ms", optionalNonNegativeInteger),
+  stream_quiet_warning_ms: fieldValidator("stream_quiet_warning_ms", optionalNonNegativeInteger),
   provider_outage_wait_ms: fieldValidator("provider_outage_wait_ms", optionalNonNegativeInteger),
   provider_outage_retry_ms: fieldValidator("provider_outage_retry_ms", optionalPositiveInteger),
   max_output_tokens: fieldValidator("max_output_tokens", optionalPositiveInteger),

@@ -47,6 +47,8 @@ describe("strict schema-v2 validation coverage", () => {
     ["document bytes", { project_doc_max_bytes: 0 }, /project_doc_max_bytes/u],
     ["auto updates", { autoUpdates: "yes" }, /autoUpdates/u],
     ["watchdog", { stream_watchdog_timeout_ms: -1 }, /stream_watchdog_timeout_ms/u],
+    ["quiet warning", { stream_quiet_warning_ms: -1 }, /stream_quiet_warning_ms/u],
+    ["quiet warning fraction", { stream_quiet_warning_ms: 0.5 }, /stream_quiet_warning_ms/u],
     ["max output", { max_output_tokens: 0 }, /max_output_tokens/u],
     ["max turns", { max_turns: 0 }, /max_turns/u],
     ["budget cap", { max_budget_usd: Number.NaN }, /max_budget_usd/u],

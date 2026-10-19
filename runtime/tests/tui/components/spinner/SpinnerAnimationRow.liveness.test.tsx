@@ -178,16 +178,20 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     expect(output).toContain("thinking");
   });
 
-  test("shows a quiet-stream warning during long thinking", async () => {
+  test.each([80, 120])("shows a quiet-stream warning during long thinking at %s columns", async columns => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
       loadingStartTimeRef: makeRef(NOW - STREAM_QUIET_WARNING_MS),
+      columns,
       responseLengthRef: makeRef(0),
       thinkingStatus: "thinking",
+      streamQuietWarning: "no output from the model for 10 minutes",
+      effortSuffix: "high effort",
     });
 
-    expect(output).toContain("no output from the model for 5 minutes");
+    expect(output).toContain("no output from the model for 10 minutes");
+    expect(output).toContain("high effort");
     expect(output).toContain("thinking");
     expect(output).toContain("esc to interrupt");
   });

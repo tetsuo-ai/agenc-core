@@ -56,6 +56,7 @@ type Props = {
   leaderIsIdle?: boolean;
   /** Immutable provider/auth authority captured by the owning TUI session. */
   providerAuthContext: ProviderAuthReadContext;
+  streamQuietWarning?: string | null;
 };
 
 // Thin wrapper: branches on isBriefOnly so the two variants have independent
@@ -96,6 +97,7 @@ function SpinnerWithVerbInner({
   hasActiveTools = false,
   showLeaderTokenStats = true,
   leaderIsIdle = false,
+  streamQuietWarning,
 }: Props): React.ReactNode {
   const settings = useSettings();
   const reducedMotion = settings?.prefersReducedMotion ?? false;
@@ -284,7 +286,7 @@ function SpinnerWithVerbInner({
     }
   }
   return <Box flexDirection="column" width="100%" alignItems="flex-start">
-      <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix="" showLeaderTokenStats={showLeaderTokenStats} />
+      <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix={settings.reasoning_effort ? `${settings.reasoning_effort} effort` : ""} streamQuietWarning={streamQuietWarning} showLeaderTokenStats={showLeaderTokenStats} />
       {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
       {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} spinnerVerbs={spinnerVerbs} /> : (showExpandedTodos || hasOpenTodoTasks) && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>

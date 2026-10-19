@@ -999,6 +999,8 @@ export interface AgenCConfig {
    */
   readonly lean_system_prompt?: boolean;
   readonly stream_watchdog_timeout_ms?: number;
+  /** Warn after this long without a model delta; zero disables the warning. */
+  readonly stream_quiet_warning_ms?: number;
   readonly provider_outage_wait_ms?: number;
   readonly provider_outage_retry_ms?: number;
   readonly max_output_tokens?: number;
@@ -1151,6 +1153,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "defer_rare_tools",
   "lean_system_prompt",
   "stream_watchdog_timeout_ms",
+  "stream_quiet_warning_ms",
   "provider_outage_wait_ms",
   "provider_outage_retry_ms",
   "max_output_tokens",
@@ -1175,14 +1178,12 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Default session stream-idle deadline. xAI streams reasoning deltas
- * continuously (11,478 thinking deltas in one reviewed session), so ten
- * minutes of complete provider silence is a dead socket or a stalled stream,
- * not thinking. The watchdog warns at half this value and the resulting
- * `stream_idle` abort is retryable through the reconnect ladder. Operators
- * set `stream_watchdog_timeout_ms = 0` to disable it.
+ * Default byte-idle deadline. Allow twenty minutes without any network bytes;
+ * keepalives and reasoning frames reset it regardless of visible output.
+ * The resulting `stream_idle` abort uses the reconnect ladder. Zero disables
+ * it. The independent soft warning defaults to ten minutes without a delta.
  */
-export const DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS = 600_000;
+export const DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS = 1_200_000;
 /** Total time a turn keeps waiting for a provider outage to end (30 min). */
 export const DEFAULT_PROVIDER_OUTAGE_WAIT_MS = 1_800_000;
 /** First slow-retry delay after the reconnect ladder is spent (30 s). */
@@ -1244,6 +1245,7 @@ export function defaultConfig(): AgenCConfig {
     // provider stream otherwise hangs the turn until the user cancels;
     // `0` disables the deadline for operators who need unbounded silence.
     stream_watchdog_timeout_ms: DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS,
+    stream_quiet_warning_ms: 600_000,
     // A provider that is down for minutes is not the turn's fault (#2212).
     // Once the fast reconnect ladder is spent, the turn waits with a slow
     // backoff (30 s doubling to 5 min) and tries again for up to this long;

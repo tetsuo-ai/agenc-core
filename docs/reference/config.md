@@ -455,12 +455,23 @@ each time the remaining reservation halves and re-arms once a request fits
 again, so a long tool loop that is walking toward the context window is
 visible in the transcript and the rollout before the provider refuses a
 request. The fit itself is unchanged.
-`stream_watchdog_timeout_ms` defaults to `600000` (ten
-minutes of provider silence): the runtime warns at half that time and aborts
-the stream with a retryable `stream_idle` error at the deadline. Set it to
-`0` to permit provider silence indefinitely. The *default* applies to session
+`stream_quiet_warning_ms` defaults to `600000` (ten minutes without a model
+delta). It emits a `warning` event with cause `stream_idle_warning`; the TUI
+status shows "no output from the model for N minutes", the configured
+reasoning effort, and the interrupt hint. This warning never ends a turn.
+Keepalives do not reset it; text, reasoning, and tool-input deltas do.
+Set it to `0` to disable the warning.
+
+`stream_watchdog_timeout_ms` defaults to `1200000` (twenty minutes without
+any HTTP stream bytes). The runtime observes bytes before parsing SSE, so
+comments, keepalives, partial frames, and reasoning frames all refresh
+liveness even when there is no visible output. A completely silent connection
+is aborted with a retryable `stream_idle` error and uses the existing finite
+reconnect ladder. This is an idle interval, with no total turn deadline.
+Set it to `0` to permit byte silence indefinitely; the soft warning still works.
+The *default* applies to session
 turns only: a one-shot review delegate (`/review`, guardian approval review)
-carries its own deadline, so the ten-minute default is not layered on top of
+carries its own deadline, so the twenty-minute default is not layered on top of
 it. A value you configure yourself is still honoured inside a review delegate.
 
 `provider_outage_wait_ms` and `provider_outage_retry_ms` govern what happens
@@ -533,7 +544,8 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `defer_rare_tools` | Load rarely needed built-in tools (delegation, process, web, rare tools) through `system.searchTools` instead of sending them with every request. Unset: on for standard sessions, off for Light. `AGENC_DEFER_RARE_TOOLS` in the session environment overrides it. |
 | `lean_system_prompt` | Use the lean static head of the system prompt. Unset: on for OpenAI and Grok sessions. `AGENC_LEAN_SYSTEM_PROMPT` in the session environment overrides it. |
 | `stream_degenerate_guard` | Stop disordered short-vocabulary model output; default `true`. Set `false` for intentional random text. A stopped partial is marked unreliable; one automatic retry is allowed only before streamed tool work. |
-| `stream_watchdog_timeout_ms` | Non-negative inter-chunk idle timeout; default `600000`, `0` disables. |
+| `stream_watchdog_timeout_ms` | Non-negative byte-idle timeout; default `1200000`, `0` disables. Keepalives refresh it. |
+| `stream_quiet_warning_ms` | Non-negative no-delta soft warning interval; default `600000`, `0` disables. Never ends a turn. |
 | `provider_outage_wait_ms` | Non-negative total time a turn keeps waiting for a provider outage to end once the reconnect ladder is spent; default `1800000` (30 minutes), `0` ends the turn as soon as the ladder is exhausted. |
 | `provider_outage_retry_ms` | Positive first slow-retry delay during a provider outage, doubling up to ten times this value; default `30000`. |
 

@@ -1,4 +1,5 @@
 /** Keep provider credentials on the origin to which the request was addressed. */
+import { observeStreamTransportActivity } from "./stream-transport-activity.js";
 
 const CREDENTIAL_NAME = /(?:authorization|api[-_]?key|access[-_]?key|(?:access|auth|session|security)[-_]?token|(?:^|[-_])auth(?:$|[-_])|password|secret|signature|credential)/iu;
 const MAX_SAME_ORIGIN_REDIRECTS = 10;
@@ -40,7 +41,9 @@ export async function fetchProviderRequest(
   if (!knownCredential) {
     const headers = new Headers(input instanceof Request ? input.headers : undefined);
     new Headers(init.headers).forEach((value, name) => headers.set(name, value));
-    if (allowedOrigins === undefined && !carriesCredential(url, headers)) return fetchImpl(input, init);
+    if (allowedOrigins === undefined && !carriesCredential(url, headers)) {
+      return observeStreamTransportActivity(await fetchImpl(input, init));
+    }
   }
 
   let request: RequestInit = {
@@ -61,7 +64,7 @@ export async function fetchProviderRequest(
   };
   for (let redirects = 0; ; redirects += 1) {
     const response = await fetchImpl(url, request);
-    if (response.status < 300 || response.status >= 400) return response;
+    if (response.status < 300 || response.status >= 400) return observeStreamTransportActivity(response);
     const location = response.headers.get("location");
     if (location === null) return response;
     let next: URL;

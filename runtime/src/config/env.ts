@@ -372,6 +372,14 @@ export function applyEnvOverrides(
       );
     }
   }
+  if (e.AGENC_STREAM_QUIET_WARNING_MS !== undefined) {
+    const warningMs = readNonNegativeInteger(e.AGENC_STREAM_QUIET_WARNING_MS);
+    if (warningMs !== undefined) {
+      override.stream_quiet_warning_ms = warningMs;
+    } else if (e.AGENC_STREAM_QUIET_WARNING_MS.trim().length > 0) {
+      onWarn?.("[agenc:config] invalid AGENC_STREAM_QUIET_WARNING_MS; expected a non-negative integer");
+    }
+  }
   if (e.AGENC_PROVIDER_OUTAGE_WAIT_MS !== undefined) {
     const waitMs = readNonNegativeInteger(e.AGENC_PROVIDER_OUTAGE_WAIT_MS);
     if (waitMs !== undefined) {

@@ -8,6 +8,7 @@
  */
 
 import { observeInitialHttpResponse, withInitialHttpRejection } from "../../initial-http-rejection.js";
+import { observeStreamTransportActivity } from "../../stream-transport-activity.js";
 import { normalizePromptCacheKey } from "../../prompt-cache-key.js";
 import type {
   LLMChatOptions,
@@ -2321,7 +2322,8 @@ export class GrokProvider implements LLMProvider {
         timeout: this.config.timeoutMs,
         maxRetries: this.config.maxRetries ?? 2,
         fetch: ((...args: Parameters<typeof fetch>) =>
-          (this.config.fetchImpl ?? fetch)(...args).then(observeInitialHttpResponse)) as typeof fetch,
+          (this.config.fetchImpl ?? fetch)(...args)
+            .then(observeInitialHttpResponse).then(observeStreamTransportActivity)) as typeof fetch,
       });
       installAgenCManagedSdkFetch(client);
       return client;

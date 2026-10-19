@@ -752,10 +752,15 @@ provider-neutral HTTP client:
 
 - request max retries: **4**
 - stream max retries: **5**
-- stream idle timeout: **unset** (0) at the transport level. The session
-  watchdog owns the idle deadline: `stream_watchdog_timeout_ms` defaults to
-  `600000` (warning at half, retryable `stream_idle` abort at the deadline);
-  set it or `AGENC_STREAM_IDLE_TIMEOUT_MS` to `0` to allow unbounded silence
+- standalone HTTP-client stream idle timeout: **unset** (0). During a session
+  sampling attempt, the watchdog observes raw HTTP bytes before SSE parsing,
+  including keepalive comments and partial frames. `stream_watchdog_timeout_ms`
+  defaults to `1200000` (twenty minutes without bytes, then retryable
+  `stream_idle` through the reconnect ladder). Set it or
+  `AGENC_STREAM_IDLE_TIMEOUT_MS` to `0` to allow unbounded byte silence.
+  Independently, `stream_quiet_warning_ms` / `AGENC_STREAM_QUIET_WARNING_MS`
+  defaults to `600000`: ten minutes without a model delta emits a soft warning
+  on the TUI status, without aborting. Zero disables that warning.
 
 Model-provider streaming uses HTTP/SSE. The daemon, realtime connector, MCP,
 and gateway have separate WebSocket transports; they are not provider

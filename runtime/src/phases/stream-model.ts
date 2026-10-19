@@ -13,12 +13,12 @@ import { completeReasoningCapSample, type ReasoningCapSample } from "../session/
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog) — installStreamWatchdog wraps the stream;
- *        `kick()` fires only on meaningful progress. The canonical config carries a
- *        ten-minute default idle expiry (`stream_watchdog_timeout_ms`,
+ *        raw bytes (including keepalives) refresh the twenty-minute byte-idle
+ *        expiry (`stream_watchdog_timeout_ms`,
  *        `0` disables) that aborts the underlying fetch via the scoped
  *        AbortController. Reasoning progress is guarded even without a config store.
  *        A separate non-aborting observer warns on quiet model output, including
- *        when the configured progress deadline is disabled.
+ *        when the byte-idle deadline is disabled.
  *   I-22 (token budget mid-stream) — per-chunk
  *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
  *        keeps a coarse estimate during streaming, but the actual
@@ -54,8 +54,11 @@ import {
   STREAM_IDLE_ABORT_REASON,
   STREAM_IDLE_WARNING_REASON,
   streamChunkHasDelta,
+  StreamByteIdleError,
 } from "../llm/stream-watchdog.js";
 import { DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS } from "../config/schema.js";
+import { withStreamTransportActivity } from "../llm/stream-transport-activity.js";
+import { monotonicMs } from "../llm/_deps/monotonic.js";
 import {
   REASONING_NO_PROGRESS_MS,
   StreamProgressError,
@@ -952,7 +955,7 @@ const STREAM_WATCHDOG_CONFIG_KEY = "stream_watchdog_timeout_ms";
  * ConfigStore surface that names the layer a key came from.
  */
 type StreamWatchdogConfigStore = {
-  current?: () => { stream_watchdog_timeout_ms?: number };
+  current?: () => { stream_watchdog_timeout_ms?: number; stream_quiet_warning_ms?: number };
   provenance?: (key: string) => { scope?: string } | undefined;
 };
 
@@ -1009,7 +1012,7 @@ export async function streamModel(
   const planMode = isPlanMode(ctx);
 
   // Scoped AbortController: always follows the external signal. The stream
-  // watchdog (canonical config default of ten minutes, `0` disables) may also
+  // byte-idle watchdog (canonical config default of twenty minutes, `0` disables) may also
   // abort it.
   const scoped = new AbortController();
   const onExternalAbort = () => {
@@ -1021,12 +1024,8 @@ export async function streamModel(
     signal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  // I-11 watchdog wiring is installed before the stream begins and takes its
-  // idle timeout from the canonical config snapshot (default ten minutes,
-  // `0` disables). Provider suggestions may raise a configured value; they
-  // never invent one. xAI streams reasoning deltas continuously, so ten
-  // minutes without meaningful progress trigger the configured deadline.
-  // A separate observer warns at half time; the abort is retryable (`stream_idle`).
+  // Byte liveness and model output are independent. Keepalives protect a quiet
+  // reasoning phase; only a model delta resets the soft warning window.
   const configuredWatchdogMs = (() => {
     const services = session.services as {
       configStore?: StreamWatchdogConfigStore;
@@ -1084,13 +1083,17 @@ export async function streamModel(
     },
   });
 
-  // Transport/model-delta observations must never reset the phase deadline.
-  // This observer only warns; meaningful progress alone kicks the watchdog.
+  // This observer only warns and never cuts a turn.
+  let quietWarningActive = false;
   const quietObserver = installStreamWatchdog({
     abortController: scoped,
     timeoutMs: 0,
-    warningMs: resolveStreamIdleWarningMs({ timeoutMs: watchdog.timeoutMs }),
+    warningMs: resolveStreamIdleWarningMs({
+      timeoutMs: 0,
+      warningMs: session.services.configStore?.current?.()?.stream_quiet_warning_ms,
+    }),
     onWarning: (info) => {
+      quietWarningActive = true;
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
@@ -1119,6 +1122,7 @@ export async function streamModel(
   const summaryDegeneration = degenerateGuardEnabled ? new DegenerateTextDetector() : undefined;
   let progressError: StreamProgressError | undefined;
   let reasoningTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastProgressAtMs = monotonicMs();
   const stopForProgress = (reason: "stream_loop" | "stream_no_progress" | "stream_degenerate"): void => {
     if (scoped.signal.aborted) return;
     progressError = new StreamProgressError(providerName, reason);
@@ -1174,7 +1178,19 @@ export async function streamModel(
     // Includes tool-only chunks, before the early streaming executor can run.
     flushStartupLogIndex();
     receivedProviderChunk = true;
-    quietObserver.kick(streamChunkHasDelta(chunk) ? "delta" : "bytes");
+    // Also covers embedded providers that emit chunks without an HTTP body.
+    watchdog.kick("bytes");
+    const hasDelta = streamChunkHasDelta(chunk);
+    quietObserver.kick(hasDelta ? "delta" : "bytes");
+    if (hasDelta && quietWarningActive) {
+      quietWarningActive = false;
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "warning", payload: {
+          cause: "stream_idle_resumed", message: "Model output resumed.",
+        } },
+      });
+    }
     const previousVisibleText = display.visibleText;
     const previousPlanText = display.parser.planText;
     let newVisibleText = false;
@@ -1241,15 +1257,18 @@ export async function streamModel(
       return;
     }
     if (progress.progress) {
-      watchdog.kick();
+      lastProgressAtMs = monotonicMs();
       clearTimeout(reasoningTimer);
       reasoningTimer = undefined;
     }
     // Unlike the optional socket-idle timer, observed reasoning must make
     // progress even when the operator permits long silent model requests.
     // Novel reasoning re-arms this timer indefinitely; bytes alone cannot.
-    if (progress.reasoning && reasoningTimer === undefined) {
-      reasoningTimer = setTimeout(() => stopForProgress("stream_no_progress"), REASONING_NO_PROGRESS_MS);
+    // A quiet phase after novel reasoning is not evidence of a loop. Start
+    // this separate guard only when reasoning actually repeats or is empty.
+    if (progress.reasoning && !progress.progress && reasoningTimer === undefined) {
+      reasoningTimer = setTimeout(() => stopForProgress("stream_no_progress"),
+        Math.max(0, REASONING_NO_PROGRESS_MS - (monotonicMs() - lastProgressAtMs)));
       reasoningTimer.unref?.();
     }
 
@@ -1383,8 +1402,10 @@ export async function streamModel(
               },
             }
           : {}),
-      invoke: (admittedOptions) =>
-        provider.chatStream(messages, onChunk, admittedOptions),
+      invoke: (admittedOptions) => withStreamTransportActivity(
+        () => watchdog.kick("bytes"),
+        () => provider.chatStream(messages, onChunk, admittedOptions),
+      ),
     });
     // Some providers return an empty/nonstreamed result without any chunks.
     flushStartupLogIndex();
@@ -1410,7 +1431,7 @@ export async function streamModel(
       return new StreamModelError(scoped.signal.reason);
     }
     if (scoped.signal.aborted && watchdog.firedAt !== null) {
-      return new StreamModelError(new Error(`stream_idle: no progress for ${watchdog.timeoutMs}ms`));
+      return new StreamModelError(new StreamByteIdleError(watchdog.timeoutMs));
     }
     return new StreamModelError(error);
   };

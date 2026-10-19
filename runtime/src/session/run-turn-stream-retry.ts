@@ -21,6 +21,7 @@ import {
 } from "../llm/errors.js";
 import type { LLMToolCall } from "../llm/types.js";
 import { StreamProgressError } from "../llm/stream-progress.js";
+import { StreamByteIdleError } from "../llm/stream-watchdog.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import { isPartialProviderResponseError } from "../recovery/api-errors.js";
 import {
@@ -39,6 +40,9 @@ function streamRetryErrorCause(error: unknown): unknown {
 /** Controlled runtime stops, never provider prose containing these words. */
 export function isStreamProgressStop(error: unknown): boolean {
   const cause = streamRetryErrorCause(error);
+  // A recovered socket may spend a long time reasoning with keepalives. The
+  // semantic-loop retry's total-time cap must not cut that healthy stream.
+  if (cause instanceof StreamByteIdleError) return false;
   return cause instanceof StreamProgressError ||
     (cause instanceof Error && cause.message.startsWith("stream_idle:"));
 }

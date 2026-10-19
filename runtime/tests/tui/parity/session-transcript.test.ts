@@ -11,6 +11,22 @@ import { pickToolResultDispatch } from "../tool-result-routing.js";
 import { createHistoryReplacedEvent } from "../../session/transcript-replacement.js";
 
 describe("AgenC TUI session transcript", () => {
+  test.each([
+    { type: "agent_message_delta", payload: { delta: "answer" } },
+    { type: "assistant_thinking_delta", payload: { delta: "reasoning" } },
+    { type: "tool_input_delta", payload: { index: 0, partialJson: "{}" } },
+    { type: "warning", payload: { cause: "stream_idle_resumed", message: "Model output resumed." } },
+    { type: "turn_complete", payload: {} },
+    { type: "stream_error", payload: { cause: "stream_idle", message: "no bytes" } },
+  ])("clears the status warning on $type", event => {
+    const warning = { id: "quiet", msg: { type: "warning", payload: {
+      cause: "stream_idle_warning", message: "no output from the model for 10 minutes",
+    } } };
+    expect(adaptTranscriptEvents([warning]).streamQuietWarning).toBe(warning.msg.payload.message);
+    const transcript = adaptTranscriptEvents([warning, { id: "resumed", msg: event }]);
+    expect(transcript.streamQuietWarning).toBeNull();
+    expect(JSON.stringify(transcript.messages)).not.toContain("no output from the model");
+  });
   test("maps AgenC user and streaming assistant events into renderable messages", () => {
     const transcript = adaptTranscriptEvents([
       {
@@ -2077,14 +2093,14 @@ describe("AgenC TUI session transcript", () => {
           msg: { type: "warning" as const, payload: { cause, message } },
         })),
       );
-      expect(transcript.messages).toHaveLength(warnings.length);
+      expect(transcript.messages).toHaveLength(warnings.length - 1);
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("MCP server X requires auth");
       expect(allText).toContain("Try /compact");
       expect(allText).not.toContain("mid_turn_compact_skipped");
       expect(allText).toContain("Dropped @file/path");
       expect(allText).toContain("returned no valid proposal");
-      expect(allText).toContain("no output from the model for 10 minutes");
+      expect(transcript.streamQuietWarning).toBe("no output from the model for 10 minutes");
     });
   });
 });

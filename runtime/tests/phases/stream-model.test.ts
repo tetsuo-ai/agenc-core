@@ -601,7 +601,7 @@ describe("streamModel — live assistant text sanitization", () => {
       .toEqual(["child-luna-session", "child-luna-session"]);
   });
 
-  test("the default ten-minute stream watchdog aborts a stalled provider with a retryable stream_idle", async () => {
+  test("the default twenty-minute stream watchdog aborts a stalled provider with a retryable stream_idle", async () => {
     vi.useFakeTimers();
     try {
       const ctx = mkCtx("chat");
@@ -634,7 +634,7 @@ describe("streamModel — live assistant text sanitization", () => {
         (error: unknown) => error,
       );
 
-      await vi.advanceTimersByTimeAsync(600_000 - 1);
+      await vi.advanceTimersByTimeAsync(1_200_000 - 1);
       expect(events.some((event) => event.msg.type === "stream_error")).toBe(
         false,
       );
@@ -650,14 +650,14 @@ describe("streamModel — live assistant text sanitization", () => {
         }),
       );
       expect(error).toBeInstanceOf(StreamModelError);
-      expect((error as Error).message).toMatch(/^stream_idle: no progress for 600000ms/);
+      expect((error as Error).message).toMatch(/^stream_idle: no bytes for 1200000ms/);
       expect(isRetryableStreamError(error)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("a stream warns despite byte heartbeats and aborts from its last meaningful progress", async () => {
+  test("a stream warns despite byte heartbeats and remains alive until cancellation", async () => {
     vi.useFakeTimers();
     const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     const external = new AbortController();
@@ -682,7 +682,7 @@ describe("streamModel — live assistant text sanitization", () => {
       );
       const { session, events } = mkSession(provider);
       (session.services as { configStore?: unknown }).configStore = {
-        current: () => ({ stream_watchdog_timeout_ms: 100 }),
+        current: () => ({ stream_watchdog_timeout_ms: 100, stream_quiet_warning_ms: 50 }),
       };
 
       const outcome = streamModel(
@@ -708,14 +708,11 @@ describe("streamModel — live assistant text sanitization", () => {
       expect(providerSignal?.aborted).toBe(false);
 
       await vi.advanceTimersByTimeAsync(200);
-      expect(providerSignal?.aborted).toBe(true);
-      expect(providerSignal?.reason).toBe(STREAM_IDLE_ABORT_REASON);
-      expect(
-        events.some((event) => event.msg.type === "stream_error"),
-      ).toBe(true);
-
-      const error = await outcome;
-      expect((error as Error).message).toMatch(/^stream_idle: no progress for 100ms/);
+      expect(providerSignal?.aborted).toBe(false);
+      expect(events.some(event => event.msg.type === "stream_error")).toBe(false);
+      external.abort("user stop");
+      await outcome;
+      expect(providerSignal?.reason).toBe("user stop");
     } finally {
       monotonicClock.mockRestore();
       vi.useRealTimers();
@@ -903,7 +900,7 @@ describe("streamModel — live assistant text sanitization", () => {
   });
 
   test("a configured watchdog that matches the default value is honoured by provenance", async () => {
-    // The value alone cannot separate "operator wrote 600000" from "nobody
+    // The value alone cannot separate "operator wrote 1200000" from "nobody
     // wrote anything"; the config store's provenance can, and names the layer.
     // A key attributed to a real layer is an operator choice and applies even
     // inside a session that owns its own deadline.

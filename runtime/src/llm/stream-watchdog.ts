@@ -70,8 +70,8 @@ export function resolveSessionStreamIdleTimeoutMs(input: {
   return resolveStreamIdleTimeoutMs(preferred);
 }
 
-/** Soft "no model delta" warning. Shared with the TUI spinner; half of the default 10-minute abort. */
-export const STREAM_QUIET_WARNING_MS = 300_000;
+/** Soft no-delta warning, independent of the byte-idle deadline. */
+export const STREAM_QUIET_WARNING_MS = 600_000;
 
 export type StreamWatchdogKickSource = "bytes" | "delta";
 export type StreamLiveness = "live" | "quiet" | "dead";
@@ -102,17 +102,18 @@ export function resolveStreamIdleWarningMs(input: {
   if (
     input.warningMs !== undefined &&
     Number.isFinite(input.warningMs) &&
-    input.warningMs > 0
+    input.warningMs >= 0
   ) {
     return Math.trunc(input.warningMs);
-  }
-  if (input.timeoutMs > 0) {
-    return Math.trunc(input.timeoutMs / 2);
   }
   return STREAM_QUIET_WARNING_MS;
 }
 
 export function formatStreamQuietWarning(elapsedMs: number): string {
+  if (elapsedMs < 60_000) {
+    const seconds = Math.max(1, Math.round(elapsedMs / 1_000));
+    return `no output from the model for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+  }
   const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
   const unit = minutes === 1 ? "minute" : "minutes";
   return `no output from the model for ${minutes} ${unit}`;
@@ -126,6 +127,7 @@ export function streamChunkHasDelta(chunk: {
   readonly thinkingBlockStart?: unknown;
   readonly toolInputBlockStart?: unknown;
   readonly toolCalls?: readonly unknown[];
+  readonly bufferedContentProgress?: boolean;
 }): boolean {
   return (
     (chunk.content?.length ?? 0) > 0 ||
@@ -134,7 +136,8 @@ export function streamChunkHasDelta(chunk: {
     chunk.toolInputDelta !== undefined ||
     chunk.thinkingBlockStart !== undefined ||
     chunk.toolInputBlockStart !== undefined ||
-    (chunk.toolCalls !== undefined && chunk.toolCalls.length > 0)
+    (chunk.toolCalls !== undefined && chunk.toolCalls.length > 0) ||
+    chunk.bufferedContentProgress === true
   );
 }
 
@@ -144,6 +147,14 @@ export function streamChunkHasDelta(chunk: {
  */
 export const STREAM_IDLE_ABORT_REASON = "stream_idle";
 export const STREAM_IDLE_WARNING_REASON = "stream_idle_warning";
+
+/** Transport silence is retryable; it is not evidence of repetitive reasoning. */
+export class StreamByteIdleError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`stream_idle: no bytes for ${timeoutMs}ms`);
+    this.name = "StreamByteIdleError";
+  }
+}
 
 export interface StreamWatchdogHandle {
   /** Any kick refreshes the byte-idle abort clock. A model `delta` also
@@ -165,8 +176,8 @@ export interface InstallStreamWatchdogOptions {
   /** Override for the idle timeout. Defaults to disabled. Pass 0 to
    *  disable the dead-socket abort. */
   readonly timeoutMs?: number;
-  /** Override for the no-delta warning. Defaults to half of `timeoutMs`,
-   *  or {@link STREAM_QUIET_WARNING_MS} when abort is disabled. */
+  /** Override for the no-delta warning, independent of `timeoutMs`.
+   *  Defaults to {@link STREAM_QUIET_WARNING_MS}; zero disables warnings. */
   readonly warningMs?: number;
   /** Callback fired exactly once when the timer expires, before the
    *  `abortController.abort(...)` call. Emit I-8 `stream_error` here. */
