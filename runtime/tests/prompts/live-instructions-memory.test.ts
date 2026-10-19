@@ -205,3 +205,24 @@ describe("live instructions memory indexes", () => {
     expect(envelope.text).toBe("BASE INSTRUCTIONS");
   });
 });
+
+ it("loads the owning session's project index despite stale daemon project state", async () => {
+  installAuthority();
+  await writeEntrypoints(null, "- [Launch reviews](launch.md): Thursdays after Wednesday fieldwork\n");
+  // A daemon may serve another project, or start without a session project root.
+  setProjectRoot(join(root, "other-project"));
+  const envelope = await resolveEnvelope();
+  expect(envelope.memoryText).toContain("Thursdays after Wednesday fieldwork");
+  expect(envelope.memoryText).toContain("project auto memory index");
+});
+
+ it.each([{ simpleMode: true }, { remoteMode: true }])(
+  "does not inject indexes when the owning session disables memory: %j",
+  async (runtimeOptions) => {
+    installAuthority();
+    await writeEntrypoints("- [User](user.md): private user fact", "- [Project](project.md): private project fact");
+    const session = { ...makeSession(), services: { configStore: store, runtimeOptions } } as unknown as Session;
+    const envelope = await resolveEnvelope(session);
+    expect(envelope.memoryText).toBe("");
+  },
+);

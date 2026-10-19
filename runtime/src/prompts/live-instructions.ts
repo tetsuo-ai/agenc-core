@@ -1,18 +1,19 @@
 /** Canonical live-request project instruction resolver. */
 import { lstat, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { Session } from "../session/session.js";
 import { getAttachmentTrackingState } from "../session/attachment-state.js";
 import { stabilizeInstructionHead } from "./instruction-head.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
-  getGlobalMemoryEntrypoint,
-  getProjectMemoryEntrypoint,
-  isAutoMemoryEnabled,
   redactSecrets,
 } from "../memory/index.js";
-import { truncateEntrypointContent } from "../memory/memdir.js";
+import { ENTRYPOINT_NAME, truncateEntrypointContent } from "../memory/memdir.js";
+import {
+  resolveAutoMemoryDirectory,
+  resolveGlobalMemoryDirectory,
+} from "../services/extractMemories/memory-paths.js";
 import {
   formatPersonaGuidance,
   getPersonaMemoryFiles,
@@ -160,11 +161,23 @@ async function readMemoryEntrypoint(path: string): Promise<string | null> {
  * production path that makes that true. Content is untrusted persisted state
  * and is framed like recalled memories, never like instructions.
  */
-async function loadMemoryEntrypointsText(): Promise<string> {
-  if (!isAutoMemoryEnabled()) return "";
+async function loadMemoryEntrypointsText(session: Session, cwd: string): Promise<string> {
+  // Use the same explicit owner as resolveMemoryPromptInputs. Daemon-global
+  // project state can name a different directory, silently omitting the index
+  // the agent was told it already has in context.
+  const owner = {
+    cwd,
+    configStore: session.services.configStore,
+    env: session.services.userShell?.childEnvironment ?? session.services.providerEnvironment ?? {},
+    runtimeOptions: { remoteMode: false, ...session.services.runtimeOptions },
+  };
+  const project = await resolveAutoMemoryDirectory(owner);
+  if (!project.enabled || project.path === undefined) return "";
+  const global = await resolveGlobalMemoryDirectory(owner);
+  if (global === undefined) return "";
   const entrypoints: ReadonlyArray<readonly [string, string]> = [
-    [getGlobalMemoryEntrypoint(), "global auto memory index"],
-    [getProjectMemoryEntrypoint(), "project auto memory index"],
+    [join(global, ENTRYPOINT_NAME), "global auto memory index"],
+    [join(project.path, ENTRYPOINT_NAME), "project auto memory index"],
   ];
   const seen = new Set<string>();
   const blocks: string[] = [];
@@ -499,7 +512,7 @@ export async function resolveLiveInstructionEnvelope(input: {
         ]
       : []),
   ];
-  const freshMemoryText = await loadMemoryEntrypointsText();
+  const freshMemoryText = await loadMemoryEntrypointsText(input.session, input.ctx.cwd);
   input.session.setProjectMemoryWarnings(warnings);
   const sources = [
     ...sourcesFromTiers({ tiers }),
