@@ -1,3 +1,4 @@
+import { sideEffectFreeTool } from "../side-effect-free.js";
 /**
  * `FileRead` — first-class file reading tool for AgenC.
  *
@@ -1504,7 +1505,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
     config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
   const sparseLineNumbers = config.lightMode === true || config.sparseLineNumbers === true;
 
-  return {
+  return sideEffectFreeTool({
     name: FILE_READ_TOOL_NAME,
     description: fileReadDescription(sparseLineNumbers),
     metadata: {
@@ -1744,7 +1745,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         await boundRead?.dispose();
       }
     },
-  };
+  });
 }
 
 /**

@@ -1,3 +1,4 @@
+import { sideEffectFreeTool } from "../side-effect-free.js";
 /**
  * `Grep` — AgenC-owned ripgrep wrapper.
  *
@@ -2969,7 +2970,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
   const operationBudgetLimits = config?.__testOperationBudgetLimits;
   const afterRootIgnoreSnapshot = config?.__testAfterRootIgnoreSnapshot;
 
-  return {
+  return sideEffectFreeTool({
     name: GREP_TOOL_NAME,
     description: GREP_DESCRIPTION,
     metadata: {
@@ -3275,7 +3276,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         }
       }
     },
-  };
+  });
 }
 
 // Re-export internal symbols used solely by the test file. Kept at the

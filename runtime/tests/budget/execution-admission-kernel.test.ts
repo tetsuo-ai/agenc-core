@@ -1776,3 +1776,49 @@ it("exposes durable admission dimensions for Goal without relabeling other calle
     event: "denied", details: { budgetDimension: "tokens" },
   });
 });
+
+describe("observation capacity without durable admission", () => {
+  const observationInput = { stepId: "read-1", kind: "tool_exec" as const,
+    maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 };
+  it("uses shared capacity and cancellation without creating jobs, usage or journal records", async () => {
+    const value = kernel("observations");
+    const client = bind(value, "reader");
+    const before = value.listJournal({ cwd, runId: "reader" });
+    const lease = client.tryAcquireObservation!(observationInput)!;
+    expect(lease).toBeDefined();
+    expect(value.activeCount).toBe(1);
+    expect(client.tryAcquireObservation!({ ...observationInput, stepId: "read-2" })).toBeUndefined();
+    expect(value.listJournal({ cwd, runId: "reader" })).toEqual(before);
+    const queued = acquire(bind(value, "writer"));
+    await flushScheduler();
+    expect(value.queuedCount).toBe(1);
+    client.cancelAdmissions!("cancel-reader");
+    expect(lease.signal.aborted).toBe(true);
+    expect(value.activeCount).toBe(1);
+    lease.release();
+    const writer = await queued;
+    expect(value.activeCount).toBe(1);
+    const writerClient = bind(value, "writer");
+    writerClient.void(writer.reservation.reservationId, "test-finished");
+    writerClient.acknowledgeCompletion(writer.reservation.reservationId);
+    expect(() => client.tryAcquireObservation!(observationInput)).toThrow(/cancel/);
+    expect(value.listJournal({ cwd, runId: "reader" }).some(event => event.stepId === "read-1")).toBe(false);
+  });
+  it("holds abort-ignoring observations until released and preserves deadline and close signals", async () => {
+    const value = kernel("observation-abort");
+    const client = bind(value, "reader");
+    const abort = new AbortController();
+    const lease = client.tryAcquireObservation!(observationInput, abort.signal)!;
+    abort.abort(new Error("stop"));
+    expect(lease.signal.aborted).toBe(true);
+    expect(value.activeCount).toBe(1);
+    lease.release(); lease.release();
+    expect(value.activeCount).toBe(0);
+    expect(() => client.tryAcquireObservation!(observationInput, abort.signal)).toThrow("stop");
+    const closed = client.tryAcquireObservation!(observationInput)!;
+    value.close();
+    expect(closed.signal.aborted).toBe(true);
+    closed.release();
+    expect(() => client.tryAcquireObservation!(observationInput)).toThrow();
+  });
+});

@@ -65,6 +65,12 @@ export interface AdmissionRunCancellationSummary {
 
 export interface ExecutionAdmissionClient {
   readonly scope: AdmissionClientScope;
+  /** Zero-charge observation: live capacity/cancellation, no durable work item.
+   * Undefined falls back to ordinary admission when capacity is unavailable. */
+  tryAcquireObservation?(input: AdmissionAcquireInput, signal?: AbortSignal): {
+    readonly signal: AbortSignal;
+    release(): void;
+  } | undefined;
   /** Release this session's daemon-owned workspace lease after its last child drains. */
   release?(): void;
   /**

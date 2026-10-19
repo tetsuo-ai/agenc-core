@@ -1,3 +1,5 @@
+import { toolIsSideEffectFree } from "../tools/side-effect-free.js";
+import { markReadOnlyToolTiming } from "../tools/stage-timing.js";
 import { toolStage } from "../tools/stage-timing.js";
 import { interruptedExecReport } from "../tools/interrupted-exec-report.js";
 import { oneShotFastModeActive, requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
@@ -55,6 +57,8 @@ export interface AdmittedToolCallOptions {
   readonly tool: Tool;
   readonly args: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
+  /** Effect-capable post/failure hooks retain the durable boundary. */
+  readonly requireDurable?: boolean;
   /**
    * Suffix appended to the persisted admission stepId for PHYSICAL
    * re-dispatches of the same logical tool call (transient retry, sandbox
@@ -833,6 +837,39 @@ export async function runAdmittedToolCall(
 async function runAdmittedToolCallTimed(
   params: AdmittedToolCallOptions,
 ): Promise<ToolDispatchResult> {
+  // Permission, sandbox, protected paths, read proofs, hooks and result
+  // sealing remain in invoke. The completion is still appended canonically.
+  if (params.requireDurable !== true && toolIsSideEffectFree(params.tool)) {
+    assertNoLiveUnknownEffect(params.session, "idempotent");
+    params.session.rolloutStore?.assertToolAdmissionAllowed("idempotent");
+    if (params.session.rolloutStore == null && params.session.services?.admissionRequired !== false) {
+      throw new AdmissionDeniedError("read_transcript_unavailable");
+    }
+    const observation = params.session.services?.executionAdmission?.tryAcquireObservation?.({
+      stepId: `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`,
+      kind: "tool_exec", sessionId: params.session.conversationId, parentScopeId: params.turnId,
+      maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0,
+    }, params.signal);
+    if (observation !== undefined || params.session.services?.admissionRequired === false) {
+      markReadOnlyToolTiming();
+      const dispatch = createDispatchContext(observation?.signal ?? params.signal);
+      try {
+        dispatch.context.signal.throwIfAborted();
+        const result = await params.invoke(dispatch.context);
+        dispatch.context.signal.throwIfAborted();
+        observation?.release();
+        return result;
+      } catch (error) {
+        // Even an abort-ignoring read keeps live capacity until physically
+        // settled. It needs no durable unknown-effect poison or usage hold.
+        const pending = readPendingPhysicalSettlement(error);
+        if (pending && observation) {
+          void pending.settlement.then(() => observation.release(), () => observation.release());
+        } else observation?.release();
+        throw error;
+      } finally { dispatch.cleanup(); }
+    }
+  }
   if (oneShotFastModeActive(String(params.session.conversationId)) && !requiresAtomicSpendAdmission(params.session)) {
     const category = recoveryCategory(params.tool);
     assertNoLiveUnknownEffect(params.session, category);

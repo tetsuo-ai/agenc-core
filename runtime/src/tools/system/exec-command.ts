@@ -1,3 +1,4 @@
+import { observationCapableShell } from "../side-effect-free-shell.js";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
@@ -915,7 +916,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       env: config?.env,
       maxTimeoutMs: config?.maxTimeoutMs,
     });
-  return {
+  return observationCapableShell({
     name: "exec_command",
     description:
       "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, and kill_process stops it. A trailing '&' loses the output, and every process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
@@ -1308,5 +1309,5 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         return errorResult(error);
       }
     },
-  };
+  });
 }

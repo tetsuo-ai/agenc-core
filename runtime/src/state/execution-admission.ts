@@ -612,6 +612,13 @@ export class ExecutionAdmissionRepository {
     );
   }
 
+  /** Read-only eligibility probe; observations have no usage or durable job. */
+  observationDenial(request: RuntimeAdmissionRequest): string | undefined {
+    return this.#ancestorDenial(request)?.reason ??
+      (request.deadlineAt !== undefined && request.deadlineAt <= this.#timestamp()
+        ? "deadline_expired" : undefined);
+  }
+
   isRunCancellationLocked(runId: string): boolean {
     requireNonEmpty(runId, "isRunCancellationLocked.runId");
     return (

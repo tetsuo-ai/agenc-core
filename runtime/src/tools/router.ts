@@ -1,3 +1,5 @@
+import { prepareShellObservation } from "./side-effect-free-shell.js";
+import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 import { toolStage, withToolTiming } from "./stage-timing.js";
 import { interruptedExecReport } from "./interrupted-exec-report.js";
 import { readPendingPhysicalSettlement } from "./physical-settlement.js";
@@ -1334,11 +1336,15 @@ export class ToolRouter {
               invocation: dispatchInvocation,
             },
           );
+          const observationTool = await toolStage("sandbox_broker", () => prepareShellObservation(
+            spec.tool, dispatchArgs, opts.turn.cwd, opts.session.services.sandboxExecutionBroker));
+          const executionTool = observationTool ?? spec.tool;
           return runAdmittedToolCall({
             session: opts.session,
             turnId: opts.turn.subId,
             callId: toolCall.id,
-            tool: spec.tool,
+            tool: executionTool,
+            requireDurable: Boolean(opts.postHooks?.some(hook => !autoFixPostToolHookIsInactive(hook)) || opts.failureHooks?.length),
             args: dispatchArgs,
             signal: toolAbortController.signal,
             ...(orchestrateDispatchAttempt > 1
@@ -1348,7 +1354,7 @@ export class ToolRouter {
               executeToolDispatch(
                 rawDispatchOptions(dispatchRawArgs, {
                   ...withoutPermissionEvaluator(opts),
-                  tool: spec.tool,
+                  tool: executionTool,
                   parsedArgs: dispatchArgs,
                   invocation: dispatchInvocation,
                   preHooks: [],

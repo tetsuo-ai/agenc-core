@@ -83,6 +83,7 @@ interface UsageSubscription {
 }
 
 interface ActiveCapacity {
+  readonly observation?: true;
   readonly reservationId: string;
   readonly key: string;
   readonly binding: WorkspaceBinding;
@@ -592,6 +593,42 @@ export class ExecutionAdmissionKernel {
     );
     this.#pending.set(pending.key, pending);
     return this.#attachPending(pending, signal);
+  }
+
+  tryAcquireObservation(binding: ClientBinding, input: AdmissionAcquireInput, signal?: AbortSignal):
+    { readonly signal: AbortSignal; release(): void } | undefined {
+    this.#assertOpen();
+    if (input.kind !== "tool_exec" || input.maxInputTokens !== 0 || input.maxOutputTokens !== 0 || input.maxCostUsd !== 0) {
+      throw new TypeError("observations must be uncharged local tool calls");
+    }
+    signal?.throwIfAborted();
+    const request = requestFor(binding, input, this.#now());
+    const denial = binding.workspace.repository.observationDenial(request);
+    if (denial !== undefined) throw new AdmissionDeniedError(denial, "cancelled");
+    // Saturated calls use the existing durable fair queue rather than growing
+    // an unbounded second queue. Observations count against the same limits.
+    if (!this.#hasCapacity(request) || this.#pending.size > 0) return undefined;
+    const reservationId = `observation:${this.#id()}`;
+    const controller = new AbortController();
+    const active: ActiveCapacity = {
+      observation: true, reservationId, key: admissionRecordKey(request.step),
+      binding: binding.workspace, runId: request.step.runId,
+      ...(request.step.parentRunId !== undefined ? { parentRunId: request.step.parentRunId } : {}),
+      workspaceId: request.workspaceId, sessionId: request.sessionId,
+      parentScopeId: request.parentScopeId ?? request.sessionId, controller,
+      ...(signal !== undefined ? { sourceSignal: signal } : {}),
+    };
+    this.#active.set(reservationId, active);
+    active.onSourceAbort = () => this.#abortActive(active, signal?.reason);
+    signal?.addEventListener("abort", active.onSourceAbort, { once: true });
+    if (request.deadlineAt !== undefined) active.deadlineTimer = scheduleAt(
+      Date.parse(request.deadlineAt), this.#now,
+      () => this.#abortActive(active, new AdmissionDeniedError("deadline_expired", "cancelled")),
+    );
+    return { signal: controller.signal, release: () => {
+      this.#finishCapacity(reservationId);
+      this.#scheduleDrain();
+    } };
   }
 
   markDispatched(
@@ -1176,10 +1213,12 @@ export class ExecutionAdmissionKernel {
       );
     }
     for (const active of this.#active.values()) {
-      active.binding.repository.cancelStep(active.key, {
-        reason: "admission_kernel_closed",
-      });
-      this.#publishNewJournal(active.binding);
+      if (!active.observation) {
+        active.binding.repository.cancelStep(active.key, {
+          reason: "admission_kernel_closed",
+        });
+        this.#publishNewJournal(active.binding);
+      }
       this.#abortAndReleaseActive(
         active,
         new AdmissionDeniedError("admission_kernel_closed", "cancelled"),
@@ -1869,6 +1908,11 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   get scope(): AdmissionClientScope {
     return this.binding.scope;
+  }
+
+  tryAcquireObservation(input: AdmissionAcquireInput, signal?: AbortSignal):
+    { readonly signal: AbortSignal; release(): void } | undefined {
+    return this.kernel.tryAcquireObservation(this.binding, input, signal);
   }
 
   acquire(

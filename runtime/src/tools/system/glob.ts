@@ -1,3 +1,4 @@
+import { sideEffectFreeTool } from "../side-effect-free.js";
 /**
  * `Glob` — AgenC-owned file-pattern search tool.
  *
@@ -1315,7 +1316,7 @@ export function createGlobTool(
       ? config.__testAfterRootIgnoreSnapshot
       : undefined;
 
-  return {
+  return sideEffectFreeTool({
     name: GLOB_TOOL_NAME,
     description: GLOB_DESCRIPTION,
     metadata: {
@@ -1607,7 +1608,7 @@ export function createGlobTool(
         }
       }
     },
-  };
+  });
 }
 
 export const __INTERNAL = {
