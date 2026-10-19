@@ -97,6 +97,32 @@ describe("memory extraction triggers", () => {
     ).toBe(false);
   });
 
+  it("detects a successful batch Edit memory write by its path", () => {
+    const messages: LLMMessage[] = [{
+      role: "assistant",
+      content: "",
+      toolCalls: [{
+        id: "batch-edit",
+        name: "Edit",
+        arguments: JSON.stringify({ path: "/memory/saved.md", edits: [{ oldText: "a", newText: "b" }] }),
+      }],
+    }];
+    const completedToolResults: CompletedToolResultRecord[] = [{
+      callId: "batch-edit",
+      toolName: "Edit",
+      arguments: "{}",
+      content: "ok",
+      isError: false,
+    }];
+    expect(hasSuccessfulMemoryWrite({
+      messages,
+      completedToolResults,
+      writeToolNames: new Set(["Edit"]),
+      resolveMemoryPath: (value: unknown) =>
+        typeof value === "string" && value.startsWith("/memory/") ? value : null,
+    })).toBe(true);
+  });
+
   it("classifies main-agent and disabled contexts", () => {
     expect(
       isMainMemoryExtractionContext({

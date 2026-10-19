@@ -35,6 +35,7 @@ import {
 import type { Session, SessionServices } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import { resolveHomeContext } from "../../config/home.js";
+import { fileEditTargetKey, fileEditTargetPath } from "../../tools/system/file-edit-target.js";
 import {
   isSkillCandidatesDisabledByEnv,
   parseSkillCandidateProposals,
@@ -452,9 +453,9 @@ export function createAutoMemoryToolPolicy(
     }
 
     if (WRITE_TOOL_NAMES.has(tool.name)) {
-      const filePath = resolveMemoryPath(input.file_path, writeRoot);
+      const filePath = resolveMemoryPath(fileEditTargetPath(input), writeRoot);
       if (!filePath) {
-        const readable = resolveMemoryPathInRoots(input.file_path, readRoots);
+        const readable = resolveMemoryPathInRoots(fileEditTargetPath(input), readRoots);
         return deny(
           readable
             ? `${tool.name} may only write to this session's project memory directory: ${writeRoot}. The other memory roots are readable but not writable from memory extraction.`
@@ -471,7 +472,7 @@ export function createAutoMemoryToolPolicy(
           "secret_in_memory_write",
         );
       }
-      return allowWithMemoryRoots({ ...input, file_path: filePath }, [writeRoot]);
+      return allowWithMemoryRoots({ ...input, [fileEditTargetKey(input)]: filePath }, [writeRoot]);
     }
 
     return deny(
@@ -489,8 +490,10 @@ function writtenContent(input: Record<string, unknown>): string {
   if (typeof input.new_string === "string") parts.push(input.new_string);
   if (Array.isArray(input.edits)) {
     for (const edit of input.edits) {
-      const candidate = (edit as { new_string?: unknown } | null)?.new_string;
-      if (typeof candidate === "string") parts.push(candidate);
+      const record = edit as { new_string?: unknown; newText?: unknown } | null;
+      for (const candidate of [record?.new_string, record?.newText]) {
+        if (typeof candidate === "string") parts.push(candidate);
+      }
     }
   }
   return parts.join("\n");
@@ -507,7 +510,7 @@ function createChildWriteTracker(memoryDir: string): ChildWriteTracker {
     onProgress(event) {
       if (event.kind === "tool_call" && WRITE_TOOL_NAMES.has(event.toolName)) {
         const args = parseMemoryToolArguments(event.arguments);
-        const filePath = resolveMemoryPath(args.file_path, memoryDir);
+        const filePath = resolveMemoryPath(fileEditTargetPath(args), memoryDir);
         if (filePath) {
           pathsByCallId.set(event.callId, filePath);
         }

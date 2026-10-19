@@ -39,7 +39,8 @@ import {
  */
 const PATH_WRITE_TOOLS: Readonly<Record<string, readonly string[]>> = {
   Write: ["file_path"],
-  Edit: ["file_path"],
+  // DeepSeek Light's batch Edit names its target `path`.
+  Edit: ["file_path", "path"],
   MultiEdit: ["file_path"],
   NotebookEdit: ["notebook_path"],
   "system.mkdir": ["path"],

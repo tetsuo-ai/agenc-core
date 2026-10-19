@@ -21,6 +21,7 @@ import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
 import { approvalInputText } from "./approval-input-text.js";
+import { fileEditTargetPath } from "../tools/system/file-edit-target.js";
 import { Box, useInput, type Key } from "./ink.js";
 import type { InputEvent } from "./ink/events/input-event.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
@@ -849,7 +850,7 @@ function AgenCApprovalOverlay({
         draftText={composerDraft?.text}
         draftFocused={draftFocused}
         sessionScope={(toolUseConfirm.tool.name === "Write" || toolUseConfirm.tool.name === "Edit") &&
-          typeof request.input.file_path === "string"
+          fileEditTargetPath(request.input) !== undefined
           ? `${name} this file only`
           : "this exact action only"}
       />

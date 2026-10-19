@@ -14,6 +14,7 @@ import type { LLMMessage } from "../llm/types.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { CompletedToolResultRecord } from "../session/turn-state.js";
 import { isEnvTruthy } from "../utils/envUtils.js";
+import { fileEditTargetPath } from "../tools/system/file-edit-target.js";
 
 export type MemoryExtractionEnv = Readonly<Record<string, string | undefined>>;
 
@@ -98,7 +99,7 @@ export function hasSuccessfulMemoryWrite(params: {
       if (!record) continue;
       if (record.toolName !== toolCall.name) continue;
       const args = parseMemoryToolArguments(toolCall.arguments);
-      if (params.resolveMemoryPath(args.file_path) !== null) return true;
+      if (params.resolveMemoryPath(fileEditTargetPath(args)) !== null) return true;
     }
   }
   return false;

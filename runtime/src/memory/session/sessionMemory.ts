@@ -26,6 +26,7 @@ import { cloneLlmMessageSnapshot as cloneMessage } from "../../llm/content-conve
 import { roughTokenCountEstimationForMessages } from "../../llm/token-estimation.js";
 import type { Session } from "../../session/session.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
+import { fileEditTargetPath } from "../../tools/system/file-edit-target.js";
 import { createFileReadTool } from "../../tools/system/file-read.js";
 import {
   recordSessionRead,
@@ -326,8 +327,7 @@ export function createSessionMemoryEditPolicy(
   return (tool: Pick<Tool, "name">, input: Record<string, unknown>) => {
     if (
       tool.name === FILE_EDIT_TOOL_NAME &&
-      typeof input.file_path === "string" &&
-      input.file_path === memoryPath
+      fileEditTargetPath(input) === memoryPath
     ) {
       return {
         behavior: "allow",

@@ -11,6 +11,7 @@ import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import type { Session } from "../../session/session.js";
 import type { Tool } from "../../tools/types.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
+import { fileEditTargetPath } from "../../tools/system/file-edit-target.js";
 import { registerFileReadListener } from "../../tools/system/file-read.js";
 import {
   forEachSessionRead,
@@ -275,8 +276,7 @@ export function createMagicDocsEditPolicy(docPath: string): ChildToolPolicy {
   return (tool: Pick<Tool, "name">, input: Record<string, unknown>) => {
     if (
       tool.name === FILE_EDIT_TOOL_NAME &&
-      typeof input.file_path === "string" &&
-      input.file_path === docPath
+      fileEditTargetPath(input) === docPath
     ) {
       return { behavior: "allow" as const, updatedInput: input };
     }

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,10 @@ import { buildFilteredRegistry } from "../../src/agents/run-agent.js";
 import { worktreeWriteRefusal } from "../../src/agents/worktree-write-confinement.js";
 import type { Session } from "../../src/session/session.js";
 import type { Tool, ToolRegistry } from "../../src/tools/types.js";
+import { buildToolRegistry } from "../../src/tool-registry.js";
+import { bindAdmittedToolHarness } from "../helpers/admitted-tool-harness.js";
+import { clearSessionReadState, recordSessionRead } from "../../src/tools/system/filesystem.js";
+import { statSync } from "node:fs";
 
 // Goal E2E 2026-09-25, run wf-97c581d7 (DeepSeek, "Ask for every tool"): the
 // Goal's implement step ran in its worktree <checkout>/.agenc-worktrees/m5-wf97c581d76f,
@@ -39,6 +43,14 @@ describe("worktreeWriteRefusal", () => {
     expect(worktreeWriteRefusal("Write", { file_path: "src/slug.js", content: "x" }, worktree)).toBeUndefined();
     expect(worktreeWriteRefusal("Edit", { file_path: join(worktree, "src/slug.js") }, worktree)).toBeUndefined();
     expect(worktreeWriteRefusal("MultiEdit", { file_path: "src/new/deep/file.js", cwd: worktree }, worktree)).toBeUndefined();
+  });
+
+  it("confines the batch Edit path the same way as file_path", () => {
+    const edits = [{ oldText: "a", newText: "b" }];
+    expect(worktreeWriteRefusal("Edit", { path: join(checkout, "src/slug.js"), edits }, worktree))
+      .toContain(`${join(checkout, "src/slug.js")} is outside it`);
+    expect(worktreeWriteRefusal("Edit", { path: "../../src/slug.js", edits }, worktree)).toBeDefined();
+    expect(worktreeWriteRefusal("Edit", { path: "src/slug.js", edits }, worktree)).toBeUndefined();
   });
 
   it("refuses relative paths and working directories that lead out", () => {
@@ -149,6 +161,38 @@ describe("a worktree child's Write through the child registry", () => {
     expect(decision.behavior).not.toBe("deny");
     await write.execute({ file_path: "src/slug.js", content: "x" });
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe("a DeepSeek Light worktree child's batch Edit through the real registry", () => {
+  it("cannot edit the checkout it isolates", async () => {
+    const { session: owner } = bindAdmittedToolHarness({ workspaceRoot: checkout, label: "worktree-batch-edit" });
+    Object.assign(owner.services, { provider: { name: "deepseek" } });
+    const base = buildToolRegistry({ workspaceRoot: checkout, lightMode: true, getSession: () => owner });
+    const child = {
+      conversationId: "child-1",
+      sessionConfiguration: { cwd: worktree, sandboxPolicy: { value: "workspace_write" } },
+      permissionModeRegistry: { current: () => ({ mode: "acceptEdits", additionalWorkingDirectories: new Map() }) },
+      services: {},
+    } as unknown as Session;
+    const edit = buildFilteredRegistry(base, {
+      childConversationId: "child-1",
+      worktree: { path: worktree, branch: "worktree-m5-wf97c581d76f", gitRoot: checkout } as never,
+      getSession: () => child,
+    }).tools.find((tool) => tool.name === "Edit")!;
+    expect(edit.inputSchema.required).toEqual(["path", "edits"]);
+    const target = join(checkout, "src/slug.js");
+    writeFileSync(target, "alpha\n");
+    // The child has read the checkout file, so only the confinement can stop the write.
+    recordSessionRead("child-1", target, { content: "alpha\n", timestamp: statSync(target).mtimeMs, viewKind: "full" });
+    try {
+      const result = await edit.execute({ path: target, edits: [{ oldText: "alpha", newText: "beta" }] });
+      expect(readFileSync(target, "utf8")).toBe("alpha\n");
+      expect(result.isError).toBe(true);
+      expect(String(result.content)).toContain("is outside it");
+    } finally {
+      clearSessionReadState("child-1", tmpdir());
+    }
   });
 });
 

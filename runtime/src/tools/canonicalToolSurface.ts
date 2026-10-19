@@ -20,6 +20,7 @@ import { getCwd } from "../utils/cwd.js";
 import { isRecord } from "../utils/record.js";
 import { createBashTool } from "./system/bash.js";
 import { createFileEditTool } from "./system/file-edit.js";
+import { fileEditTargetPath } from "./system/file-edit-target.js";
 import { createFileReadTool } from "./system/file-read.js";
 import {
   attachFileWriteTouchedPathCallback,
@@ -661,16 +662,16 @@ export const CanonicalFileEditTool = createCanonicalTool({
   createInputSchema: createFileEditInputSchema,
   createRuntimeTool: (root) => createFileEditTool({ allowedPaths: [root] }),
   recoveryCategory: "side-effecting",
-  getPath: (input) =>
-    typeof input.file_path === "string" ? input.file_path : undefined,
+  getPath: (input) => fileEditTargetPath(input),
   userFacingName: () => "Edit",
-  summary: (input) =>
-    typeof input.file_path === "string" ? input.file_path : "Edit file",
-  classifierInput: (input) => ({
-    file_path: input.file_path,
-    old_string: input.old_string,
-    new_string: input.new_string,
-  }),
+  summary: (input) => fileEditTargetPath(input) ?? "Edit file",
+  classifierInput: (input) => Array.isArray(input.edits)
+    ? { file_path: fileEditTargetPath(input), edits: input.edits }
+    : {
+      file_path: input.file_path,
+      old_string: input.old_string,
+      new_string: input.new_string,
+    },
 });
 
 export const CanonicalFileWriteTool = createCanonicalTool({
