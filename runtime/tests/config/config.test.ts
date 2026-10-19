@@ -1811,6 +1811,28 @@ describe("env: resolvers", () => {
     ).toThrow(/allowed only under providers.grok/u);
   });
 
+  test("providers.deepseek takes web_search and no other Grok capability field", () => {
+    expect(
+      normalizeRawConfig({
+        providers: { deepseek: { web_search: false } },
+      }).providers?.deepseek,
+    ).toEqual({ web_search: false });
+    expect(
+      validateProviderConfig({ deepseek: { web_search: true, base_url: "https://api.deepseek.com/v1" } }),
+    ).toEqual({ deepseek: { web_search: true, base_url: "https://api.deepseek.com/v1" } });
+    expect(() =>
+      validateProviderConfig({ deepseek: { web_search: "auto" } }),
+    ).toThrow(InvalidProviderConfigError);
+    expect(() =>
+      validateProviderConfig({ deepseek: { x_search: true } }),
+    ).toThrow(/providers.deepseek accepts only web_search/u);
+    expect(() =>
+      validateProviderConfig({ openai: { web_search: true } }),
+    ).toThrow(/allowed only under providers.grok/u);
+    // Unset means auto; nothing is written by default.
+    expect(defaultConfig().providers?.deepseek).toBeUndefined();
+  });
+
   test("applyEnvOverrides diagnoses invalid loop, coordinator, and watchdog values", () => {
     const warnings: string[] = [];
     const out = applyEnvOverrides(

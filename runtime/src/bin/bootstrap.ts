@@ -1370,6 +1370,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     ...(startup.config.defer_rare_tools !== undefined
       ? { configuredDeferRareTools: startup.config.defer_rare_tools }
       : {}),
+    ...(startup.config.providers?.deepseek?.web_search !== undefined
+      ? { configuredDeepSeekWebSearch: startup.config.providers.deepseek.web_search }
+      : {}),
     mcpManager,
     getSession: () => sessionRef,
     roleCatalog,

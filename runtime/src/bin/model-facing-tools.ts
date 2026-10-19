@@ -61,6 +61,15 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../llm/registry/provider-info.js";
 import {
+  buildDeepSeekSearchQuery,
+  DEEPSEEK_SEARCH_USD_PER_REQUEST,
+  DEEPSEEK_WEB_SEARCH_ENV,
+  deepSeekSearchEndpoint,
+  isOfficialDeepSeekApiHost,
+  resolveDeepSeekWebSearchSetting,
+  runDeepSeekSearch,
+} from "../llm/providers/deepseek/web-search.js";
+import {
   resolveProviderBaseURLEnvironment,
 } from "../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../tools/types.js";
@@ -218,6 +227,13 @@ export interface ModelFacingToolOptions {
   };
   /** `[providers.grok]` capability profile for the independent xAI tool backend. */
   readonly grokCapabilities?: GrokCapabilityConfig;
+  /**
+   * `[providers.deepseek] web_search`. Unset means auto: a deepseek session on
+   * DeepSeek's own API host searches through DeepSeek's Search API unless a
+   * search endpoint is configured. `AGENC_DEEPSEEK_WEB_SEARCH` in the session
+   * environment wins.
+   */
+  readonly deepseekWebSearch?: boolean;
   /**
    * Session provider slug retained for embedding compatibility. Tool
    * availability must not be gated by the provider that performs reasoning.
@@ -859,10 +875,10 @@ function isUsableWebSearchUrl(rawUrl: string): boolean {
   }
 }
 
-function filterWebSearchResults(
-  results: readonly WebSearchResultEntry[],
+function filterWebSearchResults<T extends WebSearchResultEntry>(
+  results: readonly T[],
   filters: WebSearchFilters,
-): readonly WebSearchResultEntry[] {
+): readonly T[] {
   return results.filter((entry) => {
     if (
       filters.allowedDomains.length > 0 &&
@@ -1194,6 +1210,66 @@ async function runGrokNativeWebSearch(
     if (error instanceof AdmissionDeniedError || error instanceof TaskBudgetReachedError) throw error;
     return undefined;
   }
+}
+
+function configuredWebSearchEndpoint(
+  opts: ModelFacingToolOptions,
+): string | undefined {
+  return (
+    stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT) ??
+    stringValue(opts.toolsConfig?.web_search_endpoint)
+  );
+}
+
+interface DeepSeekWebSearchBackend {
+  readonly endpoint: string;
+  readonly apiKey: string;
+}
+
+/**
+ * DeepSeek's Search API for a deepseek session (llm/providers/deepseek/
+ * web-search.ts). It reuses the session's own key and host, so the key never
+ * reaches a host the session does not already call. Auto mode needs DeepSeek's
+ * own API host and leaves a configured search endpoint in charge.
+ */
+function resolveDeepSeekWebSearchBackend(
+  opts: ModelFacingToolOptions,
+): DeepSeekWebSearchBackend | undefined {
+  const setting = resolveDeepSeekWebSearchSetting(
+    opts.env?.[DEEPSEEK_WEB_SEARCH_ENV],
+    opts.deepseekWebSearch,
+  );
+  if (setting === "off") return undefined;
+  const provider = currentSessionProvider(opts);
+  if (provider === undefined || readProviderIdentity(provider) !== "deepseek") {
+    return undefined;
+  }
+  const factoryOptions = readProviderFactoryOptions(provider);
+  const apiKey = stringValue(factoryOptions.apiKey);
+  if (apiKey === undefined) return undefined;
+  const baseURL =
+    stringValue(factoryOptions.baseURL) ?? BUILT_IN_PROVIDER_BASE_URLS.deepseek;
+  if (
+    setting === "auto" &&
+    (!isOfficialDeepSeekApiHost(baseURL) ||
+      configuredWebSearchEndpoint(opts) !== undefined)
+  ) {
+    return undefined;
+  }
+  const endpoint = deepSeekSearchEndpoint(baseURL);
+  return endpoint === undefined ? undefined : { endpoint, apiKey };
+}
+
+/**
+ * WebSearch's charge bound. A configured endpoint is unpriced; DeepSeek's
+ * search is $0.00075 per successful request; the keyless chain is free. The
+ * Grok native path reserves its own model call.
+ */
+function webSearchMaxCostUsd(opts: ModelFacingToolOptions): number | null {
+  if (configuredWebSearchEndpoint(opts) !== undefined) return null;
+  return resolveDeepSeekWebSearchBackend(opts) !== undefined
+    ? DEEPSEEK_SEARCH_USD_PER_REQUEST
+    : 0;
 }
 
 function xSearchOptionsFromArgs(
@@ -3883,6 +3959,8 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   // Bootstrap keeps this registry across provider switches. Resolve optional
   // xAI credentials only when its deferred tool is actually requested.
   const deferXSearch = opts.getSession() === null;
+  // One warning per registry: later failures still note it in the result.
+  let deepseekSearchWarned = false;
   const tools: Tool[] = [
     createWebFetchTool(opts),
     {
@@ -3898,11 +3976,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       admissionEstimate: () => ({
         maxInputTokens: 0,
         maxOutputTokens: 0,
-        maxCostUsd:
-          stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT) !== undefined ||
-          stringValue(opts.toolsConfig?.web_search_endpoint) !== undefined
-            ? null
-            : 0,
+        maxCostUsd: webSearchMaxCostUsd(opts),
       }),
       inputSchema: {
         type: "object",
@@ -3921,9 +3995,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const query = stringValue(args.query);
         if (!query) return json({ error: "query is required" }, true);
         const filters = webSearchFilters(args);
-        const endpoint =
-          stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT) ??
-          stringValue(opts.toolsConfig?.web_search_endpoint);
+        const endpoint = configuredWebSearchEndpoint(opts);
         const maxResults = Math.max(
           1,
           Math.min(
@@ -3941,6 +4013,68 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         if (nativeResult !== undefined) {
           return nativeResult;
         }
+        // DeepSeek's Search API for a deepseek session. A failure or an empty
+        // answer falls through to the chain below, which says why.
+        const deepseek = resolveDeepSeekWebSearchBackend(opts);
+        // The estimate priced the search exactly when no endpoint is set.
+        const reportsDeepSeekCharge = deepseek !== undefined && endpoint === undefined;
+        let deepseekBilled = false;
+        let deepseekFallback: string | undefined;
+        const withDeepSeekCharge = (result: ToolResult): ToolResult =>
+          reportsDeepSeekCharge
+            ? {
+                ...result,
+                admissionUsage: {
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  costUsd: deepseekBilled ? DEEPSEEK_SEARCH_USD_PER_REQUEST : 0,
+                },
+              }
+            : result;
+        if (deepseek !== undefined) {
+          const shaped = buildDeepSeekSearchQuery(query, filters);
+          const filtered =
+            filters.allowedDomains.length > 0 || filters.blockedDomains.length > 0;
+          const outcome = await runDeepSeekSearch({
+            endpoint: deepseek.endpoint,
+            apiKey: deepseek.apiKey,
+            query: shaped.query,
+            count: filtered ? 10 : maxResults,
+            ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
+            fetchOptions: getProxyFetchOptions({ environment: requestEnvironment }),
+          });
+          deepseekBilled = outcome.billed;
+          const results = outcome.kind === "results"
+            ? filterWebSearchResults(outcome.hits, filters).slice(0, maxResults)
+            : [];
+          if (results.length > 0) {
+            return withDeepSeekCharge(json({
+              query,
+              ...(shaped.shortened ? { query_sent: shaped.query } : {}),
+              source: "deepseek_search",
+              provider: "deepseek",
+              results,
+            }));
+          }
+          deepseekFallback = outcome.kind === "failed"
+            ? outcome.reason
+            : outcome.kind === "empty"
+              ? "no results"
+              : "no results matched the domain filters";
+          if (outcome.kind === "failed" && !deepseekSearchWarned) {
+            deepseekSearchWarned = true;
+            opts.emitWarning?.({
+              cause: "deepseek_web_search_failed",
+              message: `DeepSeek web search failed (${outcome.reason}); WebSearch used its fallback search instead.`,
+            });
+          }
+        }
+        const finish = (payload: Record<string, unknown>): ToolResult =>
+          withDeepSeekCharge(json(
+            deepseekFallback === undefined
+              ? payload
+              : { ...payload, deepseek_search_fallback: deepseekFallback },
+          ));
         // 1. Explicitly configured endpoint (env or config-bridged).
         if (endpoint !== undefined) {
           const kind = webSearchEndpointKind(opts);
@@ -3955,7 +4089,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
             configured.results,
             filters,
           ).slice(0, maxResults);
-          return json({
+          return finish({
             query,
             source: endpoint,
             kind,
@@ -3978,7 +4112,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           filters,
         ).slice(0, maxResults);
         if (htmlResults.length > 0) {
-          return json({
+          return finish({
             query,
             source: "duckduckgo_html",
             results: htmlResults,
@@ -4000,7 +4134,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           parseDuckDuckGoInstantAnswer(raw),
           filters,
         ).slice(0, maxResults);
-        return json({
+        return finish({
           query,
           source: "duckduckgo_instant_answer",
           results,

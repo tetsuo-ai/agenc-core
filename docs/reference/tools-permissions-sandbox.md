@@ -286,7 +286,7 @@ deliberately never suppressed or reported as a successful cleanup.
 | `system.symbolDefinition` | Deferred |
 | `system.symbolReferences` | Deferred |
 | `LSP` | Language-server diagnostics / definition / references / symbols |
-| `WebSearch` | Web search (provider-native Grok path when available, else configured endpoint / DuckDuckGo) |
+| `WebSearch` | Web search (provider-native Grok path when available; in a DeepSeek session DeepSeek's Search API, see [deepseek-direct.md](../providers/deepseek-direct.md#web-search); else configured endpoint / DuckDuckGo) |
 | `XSearch` | Live X/Twitter search through an independent direct-xAI backend. Any tool-capable reasoning provider may invoke it when xAI credentials exist and `[providers.grok] x_search = true` |
 | `web_fetch` | Fetch URL → text/markdown |
 

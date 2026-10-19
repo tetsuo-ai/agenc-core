@@ -90,3 +90,47 @@ Provider references checked on 2026-09-10:
 - https://api-docs.deepseek.com/guides/thinking_mode/
 - https://api-docs.deepseek.com/quick_start/pricing/
 - https://api-docs.deepseek.com/quick_start/agent_integrations/oh_my_pi/
+
+## Web search
+
+In a `deepseek` session the WebSearch tool searches through DeepSeek's Search
+API (`POST /v1/tools/search`, DeepSeek's own engine) with the session's key.
+The API takes no model, so it serves `deepseek-flash` and `deepseek-v4-pro`
+alike. DeepSeek's other search route, the Responses API `web_search` tool, is
+ignored on `deepseek-flash`, and Chat Completions has no search tool, so AgenC
+does not use them.
+
+A search runs only when the model calls WebSearch. The request carries the
+model's query and a result count, nothing else from the conversation. The
+query is cut at a word boundary to DeepSeek's 128-character limit (the result
+then shows the text sent as `query_sent`), and `allowed_domains` and
+`blocked_domains` are sent as `site:` and `-site:` operators when they fit and
+are also applied to the results. The model receives each result's title, URL,
+snippet, publication date, site name and DeepSeek's summary, capped at 600
+characters, under `source: "deepseek_search"`, so its answer can cite them.
+
+Each successful search costs $0.75 per 1,000; a search with no results is free.
+The charge is counted in the session cost as the WebSearch call's own price,
+and the results count as ordinary input on the next model call.
+
+`[providers.deepseek] web_search` sets it in `config.toml`, and
+`AGENC_DEEPSEEK_WEB_SEARCH` in the session environment wins over it:
+
+| Value | Behavior |
+| --- | --- |
+| unset (default) | On when the session uses DeepSeek's own API host (`https://api.deepseek.com`) and no `tools_config.web_search_endpoint` or `AGENC_WEB_SEARCH_ENDPOINT` is set |
+| `true` / `1` | On for any DeepSeek base URL (its `/v1/tools/search` path), ahead of a configured search endpoint |
+| `false` / `0` | Off; WebSearch uses the configured endpoint or DuckDuckGo |
+
+If a search fails (an HTTP error such as 402 for insufficient balance, a
+timeout or a network error) or finds nothing, WebSearch continues with its
+usual chain, the configured endpoint and then DuckDuckGo, and the result
+carries `deepseek_search_fallback` with the reason. The first failure in a
+session also shows a warning. Other providers' sessions are unchanged.
+
+Provider references checked on 2026-10-19:
+
+- https://api-docs.deepseek.com/guides/search
+- https://api-docs.deepseek.com/api/search
+- https://api-docs.deepseek.com/guides/responses_api
+- https://api-docs.deepseek.com/quick_start/pricing/

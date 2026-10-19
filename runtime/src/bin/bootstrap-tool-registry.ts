@@ -32,6 +32,11 @@ export interface BootstrapToolRegistryOptions {
   >;
   /** config.toml `defer_rare_tools`; the session environment overrides it. */
   readonly configuredDeferRareTools?: boolean;
+  /**
+   * config.toml `[providers.deepseek] web_search`; the session's
+   * `AGENC_DEEPSEEK_WEB_SEARCH` overrides it.
+   */
+  readonly configuredDeepSeekWebSearch?: boolean;
 }
 
 export function buildBootstrapToolRegistry(
@@ -57,6 +62,9 @@ export function buildBootstrapToolRegistry(
       : {}),
     ...(options.toolRegistryOptions?.grokCapabilities !== undefined
       ? { grokCapabilities: options.toolRegistryOptions.grokCapabilities }
+      : {}),
+    ...(options.configuredDeepSeekWebSearch !== undefined
+      ? { deepseekWebSearch: options.configuredDeepSeekWebSearch }
       : {}),
     ...(options.toolRegistryOptions?.sessionProvider !== undefined
       ? { sessionProvider: options.toolRegistryOptions.sessionProvider }

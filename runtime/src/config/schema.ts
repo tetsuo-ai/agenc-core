@@ -675,8 +675,13 @@ export interface ProviderConfig {
   readonly timeout_ms?: number;
   readonly capability_overrides?: ProviderCapabilityOverrides;
   readonly fallback?: ProviderFallbackConfig;
-  /** Grok-only native capabilities. Rejected on every other provider table. */
+  /**
+   * Native web search. Grok: the server-side web_search tool. DeepSeek: the
+   * Search API behind WebSearch (unset is auto, see
+   * llm/providers/deepseek/web-search.ts). Rejected on every other table.
+   */
   readonly web_search?: boolean;
+  /** Grok-only native capabilities. Rejected on every other provider table. */
   readonly x_search?: boolean;
   readonly code_execution?: boolean;
   readonly enable_image_search?: boolean;
@@ -1706,6 +1711,9 @@ const REQUEST_LEVEL_ZERO_DATA_RETENTION_PROVIDERS: ReadonlySet<string> = new Set
   "openrouter",
 ]);
 
+/** The one provider besides Grok whose table takes `web_search`. */
+const DEEPSEEK_WEB_SEARCH_PROVIDER = "deepseek";
+
 const GROK_CAPABILITY_BOOLEAN_KEYS = Object.freeze([
   "web_search",
   "x_search",
@@ -1725,6 +1733,24 @@ function validateGrokCapabilities(
     "remote_mcp",
     "incremental_continuation",
   ] as const;
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidProviderConfigError(field, detail);
+  // DeepSeek's Search API backs WebSearch for deepseek sessions, so
+  // providers.deepseek takes web_search; the other fields stay Grok-only.
+  if (providerId === DEEPSEEK_WEB_SEARCH_PROVIDER) {
+    if (capabilityKeys.some(key => key !== "web_search" && record[key] !== undefined)) {
+      throw new InvalidProviderConfigError(
+        providerId,
+        "Grok capability fields are allowed only under providers.grok; providers.deepseek accepts only web_search",
+      );
+    }
+    const webSearch = optionalBoolean(
+      record.web_search,
+      fieldPath(providerId, "web_search"),
+      makeError,
+    );
+    return webSearch === undefined ? {} : { web_search: webSearch };
+  }
   if (
     providerId !== "grok" &&
     capabilityKeys.some(key => record[key] !== undefined)
@@ -1736,8 +1762,6 @@ function validateGrokCapabilities(
   }
   if (providerId !== "grok") return {};
 
-  const makeError: InvalidConfigFactory = (field, detail) =>
-    new InvalidProviderConfigError(field, detail);
   const out: Record<string, unknown> = {};
   for (const key of GROK_CAPABILITY_BOOLEAN_KEYS) {
     const value = optionalBoolean(

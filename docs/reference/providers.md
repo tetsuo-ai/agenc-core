@@ -1002,8 +1002,15 @@ weekdays, so real bills can be lower than the estimate.
 On OpenRouter the new model has its own id, `deepseek/deepseek-v4.1-flash-1017`;
 `deepseek/deepseek-v4.1-flash` stays on the September build.
 
-Sources: https://api-docs.deepseek.com/quick_start/pricing/ and
-https://api-docs.deepseek.com/news/news261017
+In a `deepseek` session on DeepSeek's own API host, the WebSearch tool searches
+through DeepSeek's Search API with the session's key, for both models, at
+$0.75 per 1,000 successful searches; see
+[Direct DeepSeek](../providers/deepseek-direct.md#web-search) for the setting
+and the fallback.
+
+Sources: https://api-docs.deepseek.com/quick_start/pricing/,
+https://api-docs.deepseek.com/news/news261017 and
+https://api-docs.deepseek.com/guides/search
 
 ## Ollama Cloud
 

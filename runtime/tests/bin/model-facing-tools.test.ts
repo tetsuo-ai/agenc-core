@@ -6544,6 +6544,394 @@ describe("WebSearch real backends (task 4)", () => {
   });
 });
 
+describe("WebSearch through DeepSeek's Search API", () => {
+  const OFFICIAL_SEARCH_URL = "https://api.deepseek.com/v1/tools/search";
+  const DDG_HTML = [
+    '<div class="result">',
+    '<a rel="nofollow" class="result__a" href="https://fallback.example/page">Fallback Page</a>',
+    '<a class="result__snippet" href="https://fallback.example/page">A fallback snippet.</a>',
+    "</div>",
+  ].join("\n");
+  const searchBody = {
+    results: [
+      {
+        title: "DeepSeek V4.1 Flash 1017 now available",
+        url: "https://vercel.com/changelog/deepseek-v4-1-flash-1017",
+        snippet: "DeepSeek V4.1 Flash 1017 is a minor update.",
+        summary: "## Changelog\n\nDeepSeek V4.1 Flash 1017 is a minor update to DeepSeek V4.1 Flash.",
+        content: "",
+        site_name: "Vercel",
+        site_icon: "https://cdn.deepseek.com/site-icons/vercel.com",
+        date: "2026-10-16T16:00:00+00:00",
+        authority: 3,
+        rerank_score: 2.41,
+      },
+      {
+        title: "DeepSeek API Docs",
+        url: "https://api-docs.deepseek.com/news/news261017/",
+        snippet: "Search & Fetch APIs are now open to everyone.",
+        summary: "",
+        content: "",
+        site_name: "DeepSeek",
+        site_icon: null,
+        date: null,
+        authority: 3,
+        rerank_score: 2.85,
+      },
+    ],
+  };
+
+  function deepseekSession(config: Record<string, unknown> = {}): Session {
+    return withProvider(fakeSession(), {
+      name: "deepseek",
+      config: {
+        apiKey: "sk-session-deepseek",
+        baseURL: "https://api.deepseek.com/v1",
+        model: "deepseek-flash",
+        ...config,
+      },
+      chat: vi.fn(),
+      chatStream: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as LLMProvider);
+  }
+
+  function routedFetch(
+    routes: ReadonlyArray<readonly [prefix: string, respond: () => Response]>,
+  ) {
+    return vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      const route = routes.find(([prefix]) => url.startsWith(prefix));
+      if (!route) throw new Error(`unexpected fetch ${url}`);
+      return route[1]();
+    });
+  }
+
+  const json200 = (body: unknown) => () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const ddgHtml = () =>
+    new Response(DDG_HTML, {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+
+  async function withFetch<T>(
+    fetchMock: ReturnType<typeof vi.fn>,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      return await run();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  }
+
+  function webSearch(options: {
+    readonly session: Session | null;
+    readonly env?: NodeJS.ProcessEnv;
+    readonly deepseekWebSearch?: boolean;
+    readonly emitWarning?: (warning: { cause: string; message: string }) => void;
+  }) {
+    return createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => options.session,
+      env: options.env ?? {},
+      ...(options.deepseekWebSearch !== undefined
+        ? { deepseekWebSearch: options.deepseekWebSearch }
+        : {}),
+      ...(options.emitWarning !== undefined
+        ? { emitWarning: options.emitWarning }
+        : {}),
+    }).find((tool) => tool.name === "WebSearch")!;
+  }
+
+  it.each(["deepseek-flash", "deepseek-v4-pro"])(
+    "a %s session on DeepSeek's API host searches through the Search API by default",
+    async (model) => {
+      const fetchMock = routedFetch([[OFFICIAL_SEARCH_URL, json200(searchBody)]]);
+      const tool = webSearch({ session: deepseekSession({ model }) });
+      expect(tool.admissionEstimate?.({ query: "x" })).toEqual({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0.00075,
+      });
+      const result = await withFetch(fetchMock, () =>
+        tool.execute({ query: "DeepSeek V4.1 Flash 1017", max_results: 2 }),
+      );
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe(OFFICIAL_SEARCH_URL);
+      expect(init.method).toBe("POST");
+      expect((init.headers as Record<string, string>).authorization).toBe(
+        "Bearer sk-session-deepseek",
+      );
+      expect(JSON.parse(String(init.body))).toEqual({
+        query: "DeepSeek V4.1 Flash 1017",
+        count: 2,
+      });
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({
+        query: "DeepSeek V4.1 Flash 1017",
+        source: "deepseek_search",
+        provider: "deepseek",
+        results: [
+          {
+            title: "DeepSeek V4.1 Flash 1017 now available",
+            url: "https://vercel.com/changelog/deepseek-v4-1-flash-1017",
+            snippet: "DeepSeek V4.1 Flash 1017 is a minor update.",
+            summary: "Changelog DeepSeek V4.1 Flash 1017 is a minor update to DeepSeek V4.1 Flash.",
+            date: "2026-10-16T16:00:00+00:00",
+            site: "Vercel",
+          },
+          {
+            title: "DeepSeek API Docs",
+            url: "https://api-docs.deepseek.com/news/news261017/",
+            snippet: "Search & Fetch APIs are now open to everyone.",
+            site: "DeepSeek",
+          },
+        ],
+      });
+      // One successful search, priced at DeepSeek's $0.75 per 1,000.
+      expect(result.admissionUsage).toEqual({
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0.00075,
+      });
+    },
+  );
+
+  it("falls back to the keyless search with the reason, unbilled, and warns once", async () => {
+    const fetchMock = routedFetch([
+      [
+        OFFICIAL_SEARCH_URL,
+        () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                message: "Insufficient Balance (request_id: 1f2e)",
+                type: "unknown_error",
+                param: null,
+                code: "invalid_request_error",
+              },
+            }),
+            { status: 402, headers: { "content-type": "application/json" } },
+          ),
+      ],
+      ["https://html.duckduckgo.com/html/", ddgHtml],
+    ]);
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const tool = webSearch({
+      session: deepseekSession(),
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    const first = await withFetch(fetchMock, () => tool.execute({ query: "fresh news" }));
+    const second = await withFetch(fetchMock, () => tool.execute({ query: "more news" }));
+
+    expect(JSON.parse(first.content)).toEqual({
+      query: "fresh news",
+      source: "duckduckgo_html",
+      results: [
+        {
+          title: "Fallback Page",
+          url: "https://fallback.example/page",
+          snippet: "A fallback snippet.",
+        },
+      ],
+      deepseek_search_fallback: "HTTP 402: Insufficient Balance",
+    });
+    expect(first.admissionUsage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    expect(JSON.parse(second.content).deepseek_search_fallback).toBe(
+      "HTTP 402: Insufficient Balance",
+    );
+    expect(warnings).toEqual([
+      {
+        cause: "deepseek_web_search_failed",
+        message:
+          "DeepSeek web search failed (HTTP 402: Insufficient Balance); WebSearch used its fallback search instead.",
+      },
+    ]);
+  });
+
+  it("falls back unbilled when DeepSeek finds nothing", async () => {
+    const fetchMock = routedFetch([
+      [OFFICIAL_SEARCH_URL, json200({ results: [] })],
+      ["https://html.duckduckgo.com/html/", ddgHtml],
+    ]);
+    const result = await withFetch(fetchMock, () =>
+      webSearch({ session: deepseekSession() }).execute({ query: "obscure" }),
+    );
+    expect(JSON.parse(result.content)).toMatchObject({
+      source: "duckduckgo_html",
+      deepseek_search_fallback: "no results",
+    });
+    expect(result.admissionUsage?.costUsd).toBe(0);
+  });
+
+  it("sends domain filters as site operators and keeps the charge when filtering empties a billed answer", async () => {
+    const fetchMock = routedFetch([
+      [OFFICIAL_SEARCH_URL, json200(searchBody)],
+      ["https://html.duckduckgo.com/html/", ddgHtml],
+      ["https://api.duckduckgo.com/", json200({})],
+    ]);
+    const result = await withFetch(fetchMock, () =>
+      webSearch({ session: deepseekSession() }).execute({
+        query: "release notes",
+        allowed_domains: ["github.com"],
+      }),
+    );
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      query: "release notes site:github.com",
+      count: 10,
+    });
+    // The keyless fallback is filtered the same way, down to its last step.
+    expect(JSON.parse(result.content)).toMatchObject({
+      source: "duckduckgo_instant_answer",
+      results: [],
+      deepseek_search_fallback: "no results matched the domain filters",
+    });
+    expect(result.admissionUsage?.costUsd).toBe(0.00075);
+  });
+
+  it("tells the model when its query was shortened to DeepSeek's 128-character limit", async () => {
+    const fetchMock = routedFetch([[OFFICIAL_SEARCH_URL, json200(searchBody)]]);
+    const query = Array.from({ length: 30 }, (_, index) => `term${index}`).join(" ");
+    const result = await withFetch(fetchMock, () =>
+      webSearch({ session: deepseekSession() }).execute({ query }),
+    );
+    const sent = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)).query;
+    expect(Array.from(sent).length).toBeLessThanOrEqual(128);
+    const parsed = JSON.parse(result.content);
+    expect(parsed.query).toBe(query);
+    expect(parsed.query_sent).toBe(sent);
+  });
+
+  it("stays off outside a deepseek session on DeepSeek's API host, when switched off, and behind a configured endpoint", async () => {
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly session: Session | null;
+      readonly env?: NodeJS.ProcessEnv;
+      readonly deepseekWebSearch?: boolean;
+      readonly maxCostUsd: number | null;
+    }> = [
+      { name: "no session", session: null, maxCostUsd: 0 },
+      {
+        name: "grok session",
+        session: withProvider(fakeSession(), fakeProvider({ apiKey: "xai-test", model: "grok-code-fast-1" })),
+        maxCostUsd: 0,
+      },
+      {
+        name: "custom DeepSeek host in auto mode",
+        session: deepseekSession({ baseURL: "http://127.0.0.1:9/v1" }),
+        maxCostUsd: 0,
+      },
+      {
+        name: "session environment off",
+        session: deepseekSession(),
+        env: { AGENC_DEEPSEEK_WEB_SEARCH: "0" },
+        maxCostUsd: 0,
+      },
+      {
+        name: "config off",
+        session: deepseekSession(),
+        deepseekWebSearch: false,
+        maxCostUsd: 0,
+      },
+      {
+        name: "configured endpoint in auto mode",
+        session: deepseekSession(),
+        env: { AGENC_WEB_SEARCH_ENDPOINT: "https://search.example/query", AGENC_WEB_SEARCH_KIND: "json" },
+        maxCostUsd: null,
+      },
+    ];
+    for (const entry of cases) {
+      const fetchMock = routedFetch([
+        ["https://html.duckduckgo.com/html/", ddgHtml],
+        ["https://search.example/query", json200({ results: [{ title: "Cfg", url: "https://cfg.example", snippet: "s" }] })],
+      ]);
+      const tool = webSearch(entry);
+      expect(tool.admissionEstimate?.({ query: "x" }).maxCostUsd, entry.name).toBe(entry.maxCostUsd);
+      const result = await withFetch(fetchMock, () => tool.execute({ query: "anything" }));
+      const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(urls.some((url) => url.includes("/tools/search")), entry.name).toBe(false);
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source, entry.name).not.toBe("deepseek_search");
+      expect(parsed.deepseek_search_fallback, entry.name).toBeUndefined();
+      expect(result.admissionUsage, entry.name).toBeUndefined();
+    }
+  });
+
+  it("AGENC_DEEPSEEK_WEB_SEARCH=1 or web_search = true uses a custom DeepSeek host and goes before a configured endpoint", async () => {
+    const proxySearchUrl = "http://127.0.0.1:9/fault404/v1/tools/search";
+    for (const enable of [
+      { env: { AGENC_DEEPSEEK_WEB_SEARCH: "1" } as NodeJS.ProcessEnv },
+      { env: {} as NodeJS.ProcessEnv, deepseekWebSearch: true },
+    ]) {
+      const fetchMock = routedFetch([[proxySearchUrl, json200(searchBody)]]);
+      const tool = webSearch({
+        session: deepseekSession({ baseURL: "http://127.0.0.1:9/fault404/v1" }),
+        ...enable,
+      });
+      expect(tool.admissionEstimate?.({ query: "x" }).maxCostUsd).toBe(0.00075);
+      const result = await withFetch(fetchMock, () => tool.execute({ query: "news" }));
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe(proxySearchUrl);
+      expect(JSON.parse(result.content).source).toBe("deepseek_search");
+    }
+
+    // With an endpoint configured too, DeepSeek goes first; the endpoint makes
+    // the call unpriced, so no exact charge is reported.
+    const fetchMock = routedFetch([
+      [OFFICIAL_SEARCH_URL, json200(searchBody)],
+      ["https://search.example/query", json200({ results: [] })],
+    ]);
+    const tool = webSearch({
+      session: deepseekSession(),
+      env: {
+        AGENC_DEEPSEEK_WEB_SEARCH: "1",
+        AGENC_WEB_SEARCH_ENDPOINT: "https://search.example/query",
+        AGENC_WEB_SEARCH_KIND: "json",
+      },
+    });
+    expect(tool.admissionEstimate?.({ query: "x" }).maxCostUsd).toBeNull();
+    const result = await withFetch(fetchMock, () => tool.execute({ query: "news" }));
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(result.content).source).toBe("deepseek_search");
+    expect(result.admissionUsage).toBeUndefined();
+  });
+
+  it("cancels the DeepSeek request on the admitted abort instead of falling back", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          requestSignal = init?.signal ?? undefined;
+          requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+        }),
+    );
+    const admittedAbort = new AbortController();
+    const reason = new Error("kernel cancelled web search");
+    await withFetch(fetchMock, async () => {
+      const running = webSearch({ session: deepseekSession() }).execute({
+        query: "slow",
+        __abortSignal: admittedAbort.signal,
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      admittedAbort.abort(reason);
+      await expect(running).rejects.toBe(reason);
+    });
+    expect(requestSignal?.aborted).toBe(true);
+    // Only the DeepSeek request ran: the abort did not fall through.
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(OFFICIAL_SEARCH_URL);
+  });
+});
+
 describe("WebFetch prompt extraction (task 4)", () => {
   beforeEach(() => {
     installDeterministicPublicWebFetchDns();
