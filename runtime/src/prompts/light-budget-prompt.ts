@@ -14,7 +14,7 @@ export const LIGHT_FINISH =
  * plus explicit limits on what to add, what to rerun and how long to report.
  */
 export const LIGHT_LIMITED_FINISH =
-  "Do what was asked and no more: no extra features, refactors, configurability or comments, and no error handling for cases that cannot happen. Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, fixing the first failure's cause, and do not re-verify what already passed. Report unavailable checks instead of rebuilding their tools. When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.";
+  "Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, fixing the first failure's cause, and do not re-verify what already passed. Report unavailable checks instead of rebuilding their tools. When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.";
 
 /** Light's bounded head. Executable policy and the dynamic authority tail remain canonical. */
 export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false): string {

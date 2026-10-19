@@ -1535,7 +1535,8 @@ describe("Light finish rules per provider", () => {
     expect(deepseek).not.toContain(LIGHT_FINISH);
     for (const rule of [
       "Do what was asked and no more",
-      "no error handling for cases that cannot happen",
+      "every requested file, export and stated error case",
+      "no handling for cases that cannot happen",
       "do not re-verify what already passed",
       "Report unavailable checks instead of rebuilding their tools",
       "report the outcome and the check that passed in one or two sentences",
