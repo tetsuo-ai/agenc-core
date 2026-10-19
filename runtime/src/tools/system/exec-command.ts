@@ -316,7 +316,7 @@ export async function recordShellReads(params: {
       if (step.start < 1 || step.end < step.start || step.start > lines.length) continue;
       const window = lines.slice(step.start - 1, Math.min(step.end, lines.length));
       const shown = window.join("\n");
-      if (shown.length === 0 || !output.stdout.replace(/\r\n/gu, "\n").includes(shown)) continue;
+      if (shown.length === 0 || !visible.replace(/\r\n/gu, "\n").includes(shown)) continue;
       const whole = step.start === 1 && step.end >= lines.length;
       if (!whole) continue;
       recordSessionRead(sessionId, file.canonical, {

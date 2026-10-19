@@ -148,8 +148,14 @@ test.each(["cat src/money.js", 'for f in src/*.js; do cat "$f"; done'])("Light r
   expect((await edit()).isError).toBe(true);
 });
 
-test("Light does not count terminal sequences stripped from the displayed file", async () => {
+test.each(["cat src/money.js", "head -n 10 src/money.js", "sed -n '1,10p' src/money.js"])("Light does not count terminal sequences stripped from the displayed file: %s", async cmd => {
   await writeFile(join(root, "src/money.js"), `\u001b[31m${SOURCE}\u001b[0m`);
+  await exec(cmd);
+  expect((await edit()).isError).toBe(true);
+});
+
+test("Light refuses raw controls replaced by downstream display sanitization", async () => {
+  await writeFile(join(root, "src/money.js"), `\u0001${SOURCE}`);
   await exec("cat src/money.js");
   expect((await edit()).isError).toBe(true);
 });

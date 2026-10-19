@@ -221,7 +221,7 @@ export function isCompletePrintedOutput(output: ExecCommandToolOutput, visible: 
   return output.exitCode !== null && !output.truncated && !output.timedOut &&
     output.session_id === undefined && output.process_id === undefined && output.detached !== true &&
     output.command_outcome === undefined && output.stdout.length > 0 &&
-    visible.length <= PRINTED_READ_MAX_OUTPUT_CHARS &&
+    visible.length <= PRINTED_READ_MAX_OUTPUT_CHARS && !PRINTED_READ_CONTROL.test(visible) &&
     Buffer.byteLength(visible, "utf8") <= Math.min(
       PRINTED_READ_MAX_VISIBLE_BYTES, resolveOffloadThresholdBytes() ?? PRINTED_READ_MAX_VISIBLE_BYTES,
     );
