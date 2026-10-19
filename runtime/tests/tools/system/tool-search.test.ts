@@ -70,7 +70,9 @@ describe("system.searchTools", () => {
     expect(payload.results[0].name).toBe("lookup");
     const full = JSON.parse((await tool.execute({ query: "inventory warehouse" })).content);
     expect(full.results[0].name).toBe("lookup_stock");
-    expect(JSON.parse((await tool.execute({ query: "lookup", maxResults: 12 })).content).results).toHaveLength(12);
+    expect(JSON.parse((await tool.execute({ query: "lookup", maxResults: 12 })).content).results).toHaveLength(5);
+    expect(JSON.parse((await tool.execute({ query: "lookup", maxResults: 2 })).content).results).toHaveLength(2);
+    expect(JSON.parse((await tool.execute({ maxResults: 12 })).content).results).toHaveLength(12);
     expect(JSON.parse((await tool.execute({})).content).results).toHaveLength(22);
     expect(JSON.parse((await tool.execute({ query: "unmatchablezzzz" })).content).results).toEqual([]);
   });

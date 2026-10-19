@@ -296,7 +296,9 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
             right.score[1] - left.score[1] || right.score[2] - left.score[2] ||
             right.score[3] - left.score[3] || left.entry.name.localeCompare(right.entry.name);
         })
-        .slice(0, normalizePositiveInteger(args.maxResults, query ? 5 : 50, MAX_RESULTS))
+        // Query results are a shortlist, even when a model asks for a large
+        // maxResults. Filter-only and empty queries still browse the catalog.
+        .slice(0, normalizePositiveInteger(args.maxResults, query ? 5 : 50, query ? 5 : MAX_RESULTS))
         .map(({ entry }) => entry);
       const results = [
         ...selectedEntries,
