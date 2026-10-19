@@ -1,3 +1,4 @@
+import stripAnsi from "strip-ansi";
 import { readableToolError } from "../utils/readable-tool-error.js";
 export { readableToolError } from "../utils/readable-tool-error.js";
 /**
@@ -18,6 +19,18 @@ export function parseClampMarker(
   const match = CLAMP_MARKER_RE.exec(line.trim());
   if (match === null) return null;
   return { hidden: Number(match[1]), unit: match[2] as "lines" | "characters" };
+}
+
+/** Choose a diagnostic, keeping aggregate test verdicts ahead of stack details. */
+export function shellFailureReason(output: string): string | undefined {
+  const lines = output.split("\n")
+    .map(line => stripAnsi(line).trim())
+    .filter(line => line.length > 0 && parseClampMarker(line) === null);
+  const last = lines.at(-1);
+  if (last !== undefined && /^FAIL(?:ED)?\b/.test(last)) return last;
+  return lines.find(line =>
+    /^(?:[\w.]*Error|[\w.]*Exception)(?:\s*\[[^\]]+\])?:\s*\S/i.test(line)
+  ) ?? last;
 }
 
 /** Decode protocol envelopes for display only. The model and journal keep them. */
@@ -49,10 +62,11 @@ export function summarizeToolError(raw: string): string {
         !line.startsWith("Received raw arguments:") &&
         parseClampMarker(line) === null,
     );
-  // A shell failure ends with its reason; any other error reads as one
+  // Shell failures may put runtime/version footers after their diagnostic;
+  // any other error reads as one
   // sentence ("spawn_agent failed … `description` was provided").
   if (exit !== null) {
-    const reason = lines.at(-1) ?? "";
+    const reason = shellFailureReason(lines.join("\n")) ?? "";
     return reason.length > 0 ? `exit ${exit[1]}, ${reason}` : `exit ${exit[1]}`;
   }
   const message = lines.join(" ").replace(/\s+/g, " ");

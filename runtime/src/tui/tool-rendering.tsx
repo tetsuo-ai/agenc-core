@@ -8,7 +8,7 @@ import { stringWidth } from "./ink/stringWidth.js";
 import { stripUnderlineAnsi } from "./components/shell/OutputLine.js";
 import { selectAgenCTuiGlyphs } from "./glyphs.js";
 import { ResultLine } from "./components/v2/primitives.js";
-import { parseClampMarker, readableToolError, summarizeToolError } from "./tool-error-text.js";
+import { parseClampMarker, readableToolError, shellFailureReason, summarizeToolError } from "./tool-error-text.js";
 import { modelToolAliasTarget } from "../tools/model-tool-aliases.js";
 import { summarizeToolInput } from "./message-renderers/toolRowPreview.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
@@ -551,19 +551,7 @@ export function BashOutputView({
     if (isFailure) {
       // Prefer a diagnostic over runtime/version footers after a stack trace.
       // Keep stderr authoritative; plain daemon exec results combine both streams.
-      const failureReason = (text: string) => {
-        const lines = text
-          .split("\n")
-          .map((line) => stripAnsi(line).trim())
-          .filter((line) => line.length > 0 && parseClampMarker(line) === null);
-        const last = lines.at(-1);
-        // Test runners can end with a useful aggregate verdict after exceptions.
-        if (last !== undefined && /^FAIL(?:ED)?\b/.test(last)) return last;
-        return lines.find((line) =>
-          /^(?:[\w.]*Error|[\w.]*Exception)(?:\s*\[[^\]]+\])?:\s*\S/i.test(line)
-        ) ?? last;
-      };
-      const tail = failureReason(stderrTrimmed) ?? failureReason(stdoutTrimmed);
+      const tail = shellFailureReason(stderrTrimmed) ?? shellFailureReason(stdoutTrimmed);
       return (
         <ResultLine failed>
           {`exit ${exitCode}${tail !== undefined ? `, ${tail}` : ""}`}
