@@ -1113,6 +1113,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
         "unavailable_checks",
         "rounds_exhausted",
         "no_tool_use",
+        "answer_only",
         "deadline_reserve",
       ),
       toolCallsSinceInjection: isNonNegativeInteger,

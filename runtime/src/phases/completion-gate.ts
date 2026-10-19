@@ -42,7 +42,10 @@
  * root human turn at depth 0, not an editor interaction, not plan mode, not
  * autonomous keepalive, and not a subagent session. A turn that never
  * called a tool before its first final answer (a plain question) is not
- * gated: there is nothing to verify.
+ * gated: there is nothing to verify. Clear information requests also finish
+ * without a workspace checklist when tools supplied an answer without
+ * workspace activity. This is an applicability decision, not verification
+ * of the answer's correctness.
  *
  * The injected message is durable on purpose: it is persisted with the
  * next iteration checkpoint like a stop-hook message, so a resumed turn
@@ -102,6 +105,7 @@ export type CompletionGateReason =
   | "unavailable_checks"
   | "rounds_exhausted"
   | "no_tool_use"
+  | "answer_only"
   | "deadline_reserve";
 
 export type CompletionGateInjectReason =
@@ -767,6 +771,46 @@ function repeatsRequest(
   );
 }
 
+/**
+ * The workspace gate does not apply to clear information requests answered
+ * from tool results. Recognize a deliberately narrow subset: ambiguous tasks
+ * and any mention of implementation, execution or an output artifact keep
+ * the gate. Inspect only the user's task, never instructions in tool output
+ * or the assistant's claim that its work is finished.
+ *
+ * This does not infer exactOutput, grant tool authority, or certify an MCP
+ * result as read-only. It only avoids demanding workspace acceptance checks
+ * for an answer. Commands and recorded writes still require verification,
+ * even when they were not requested. Explicit checklists keep their existing
+ * evidence rules, and a resumed verification round must finish those rules.
+ */
+function isAnswerOnlyCompletion(
+  task: string,
+  text: string,
+  results: readonly CompletedToolResultRecord[],
+): boolean {
+  if (task.endsWith("[task text truncated]")) return false;
+  const asksForAnswer =
+    /^\s*(?:please\s+)?(?:explain|describe|summari[sz]e|compare|calculate|compute|find|look up|tell me|return|reply|respond|answer)\b/i.test(task) ||
+    /^\s*use\b[^\n.!?]*\bmcp\b[^\n.!?]*\b(?:get|look up|query|read|fetch|retrieve)\b/i.test(task) ||
+    /^\s*(?:what|why|how|who|when|where|which)\b/i.test(task);
+  if (!asksForAnswer) return false;
+  // Conservative vetoes also cover mixed requests such as "fix it and return
+  // JSON", and references to artifacts inside quoted examples. False
+  // negatives retain the existing gate rather than waive verification.
+  if (/\b(?:add|adjust|append|build|change|commit|complete|configure|correct|create|delete|deploy|disable|edit|enable|ensure|execute|export|extend|fix|generate|implement|install|make|modify|optimize|patch|persist|record|refactor|remove|rename|repair|replace|rewrite|run|save|set|store|support|test|tests|update|upgrade|verify|write)\b/i.test(task)) return false;
+  if (/\b(?:return|output|produce|deliver|provide)\b[^\n!?]{0,160}\b(?:file|files|artifact|artifacts|document|report|script|program)\b/i.test(task)) return false;
+  if (/\b(?:in|to|as)\s+[`"']?(?:\/|\.{1,2}\/|[\w.-]+\.[a-z0-9]{1,8}\b)/i.test(task)) return false;
+  if ([...checklistItems(text)].length > 0) return false;
+  const lastResult = results.at(-1);
+  if (lastResult === undefined || !isSuccessfulResult(lastResult)) return false;
+  return results.every((result) =>
+    !hasFileMutationMetadata(result.metadata) &&
+    !isProcessResult(result) &&
+    !/(?:^|[._])(?:bash|exec_command|write_stdin|edit|multiedit|write|filewrite|notebookedit|apply_patch|write_file|edit_file|move_file|create_directory|delete_file)(?:$|[._])/i.test(result.toolName),
+  );
+}
+
 export async function completionGate(
   state: TurnState,
   ctx: TurnContext,
@@ -828,6 +872,12 @@ export async function completionGate(
   if (round === 0 && state.completedToolResults.length === 0) {
     // A turn that never touched a tool has nothing to verify.
     return settle("skipped", "no_tool_use", 0);
+  }
+  if (
+    round === 0 &&
+    isAnswerOnlyCompletion(plan.taskText, text, state.completedToolResults)
+  ) {
+    return settle("skipped", "answer_only", 0);
   }
   const toolCallsSinceInjection =
     round === 0

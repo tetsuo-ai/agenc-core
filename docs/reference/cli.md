@@ -123,6 +123,7 @@ From `formatCliHelpText()`:
   structured output includes the event. `completion_gate.mode = "never"`
   in the config turns that off; see
   [config.md](config.md#built-in-defaults).
+  Clear information requests (such as MCP data queries or explanations) can finish without a workspace checklist when the turn has successful tool results and no commands or recorded workspace writes. Requests mentioning implementation, execution or output artifacts retain verification, as do ambiguous tasks, explicit checklists and verification rounds already in progress. The gate records this applicability decision as `skipped` with reason `answer_only`; it does not certify answer correctness or change tool permissions.
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
   (`promptViaSubprocess` in `@tetsuo-ai/agenc-sdk`).

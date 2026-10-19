@@ -204,7 +204,9 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   never end the turn waiting for input, report what was verified.
   `--ak env=AGENC_COMPLETION_CONTRACT=0` runs the same build without it, which
   is how its effect is measured. The same rule is enforced structurally by
-  the completion gate (`phases/completion-gate.ts`, config `completion_gate`):
+  the completion gate (`phases/completion-gate.ts`, config `completion_gate`).
+  Clear information requests without commands or recorded workspace writes
+  are exempt from workspace checklists; coding and artifact tasks retain it:
   a tool-free final answer of a tool-using non-interactive turn is accepted
   once each checked item has associated tool evidence from after the last
   workspace change, and the first answer also cites a command that ran

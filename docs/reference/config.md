@@ -376,6 +376,8 @@ nonzero exit status but does not wait indefinitely for storage repair. Memory
 cannot survive process exit; if storage failed before a recovery file became
 durable, shutdown or a forced kill can still lose that unpersisted state.
 
+Clear information requests (such as MCP data queries or explanations) can finish without a workspace checklist when the turn has successful tool results and no commands or recorded workspace writes. Requests mentioning implementation, execution or output artifacts retain verification, as do ambiguous tasks, explicit checklists and verification rounds already in progress. The gate records this applicability decision as `skipped` with reason `answer_only`; it does not certify answer correctness or change tool permissions.
+
 `max_turns` is unset by default; an unset turn cap does not impose a
 synthetic stop. `completion_gate` defaults to `mode = "auto"` with
 `max_rounds = 3`: in a non-interactive session (`agenc -p`, a routine, an

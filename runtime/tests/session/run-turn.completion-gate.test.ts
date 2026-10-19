@@ -188,6 +188,24 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test("finishes a tool-backed data answer without a new model request", async () => {
+    const task = "Look up current stock using the inventory service. Return JSON with available.";
+    const final = '{"available":137}';
+    const { provider, requests } = scriptedProvider([toolStep("lookup"), textStep(final)]);
+    const { registry, execute } = queuedToolRegistry([{ content: final, isError: false }]);
+    const { session, events } = headlessSession(provider, true, registry);
+    await drain(runTurn(session, mkCtx(), task));
+    expect(requests).toHaveLength(2);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "skipped", reason: "answer_only", round: 0 }),
+    ]);
+    expectCompletedTurn(events);
+    expect(isCanonicalEventPayload("completion_gate", gatePayloads(events)[0])).toBe(true);
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(final);
+  });
+
   test.each(["turn", "session"] as const)("preserves explicit %s exact output after tool work", async (scope) => {
     const task = "Read the file and report its values.";
     const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
