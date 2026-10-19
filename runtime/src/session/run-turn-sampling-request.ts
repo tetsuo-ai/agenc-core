@@ -24,6 +24,8 @@ import { modelContextWindow, type TurnContext } from "./turn-context.js";
 import type { TurnState } from "./turn-state.js";
 import { messageText } from "./run-turn-messages.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
+import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/thresholds.js";
+import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import { getSessionPermissionInstructions } from "./permission-instructions.js";
 import {
   appendVolatileInstructions,
@@ -234,6 +236,10 @@ function buildSamplingRequestContract(
   );
   return {
     ...request,
+    contextWindowTokens: getEffectiveContextWindowSizeForEnvironment({ options: {
+      mainLoopModel: samplingContext.modelInfo.slug,
+      contextWindowTokens: request.contextWindowTokens,
+    } }, getSelectedProviderEnvironment()),
     ...(state.reasoningOnlyRecoveryPending === true
       ? { reasoningOnlyRecovery: true as const }
       : {}),

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 import { AdmissionDeniedError } from "../../budget/admission-client.js";
-import { runAdmittedModelCall } from "../../budget/admitted-model-call.js";
+import { fitOutputReservationToContext, runAdmittedModelCall } from "../../budget/admitted-model-call.js";
 import {
   createTokenAccountingRequest,
   requireAdmissibleTokenAccounting,
@@ -1621,7 +1621,19 @@ async function validateShrink(params: {
     count(params.sourceMessages),
     count(params.candidateMessages),
   ]);
-  assertTokenAccountingWithinContext(candidate, contextWindow);
+  // This is the next agent request, not a summary-provider call. Admission
+  // retains its complete input and lowers the output ceiling when necessary.
+  // Requiring the nominal ceiling here rejected useful committed reductions
+  // (41,450 input + 8,192 output in a 45,600 window) before admission could
+  // fit the reply, exhausting every compaction tier on the same false limit.
+  const profile = await params.context.provider?.getExecutionProfile?.(baseOptions);
+  const fittedOutputReserve = fitOutputReservationToContext(
+    candidate, contextWindow, outputReserve, profile?.contextSafetyBufferTokens ?? 0,
+  );
+  if (fittedOutputReserve === undefined) {
+    throw new CompactionCannotReduceError("context_limit",
+      "compaction candidate cannot fit the next reply's minimum output reserve within the context window");
+  }
   const savings = source.inputTokens - candidate.inputTokens;
   const relativeSavings = source.inputTokens === 0 ? 0 : savings / source.inputTokens;
   // An explicit manual request can use a substantial proportional saving
@@ -1647,7 +1659,7 @@ async function validateShrink(params: {
       source_tokens: source.inputTokens,
       candidate_tokens: candidate.inputTokens,
       context_window_tokens: contextWindow,
-      reserved_output_tokens: outputReserve,
+      reserved_output_tokens: fittedOutputReserve,
       source: candidate.source,
       confidence: candidate.confidence,
     },

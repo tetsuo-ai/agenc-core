@@ -132,6 +132,7 @@ async function runAgenCAutoCompact(params: {
       liveUserMessageId: state.liveUserMessageId,
       options: {
         ...toolUseContext.options,
+        contextWindowTokens: request.contextWindowTokens,
         tools: request.tools,
         systemPrompt: request.baseInstructions,
         ...(request.maxOutputTokens !== undefined

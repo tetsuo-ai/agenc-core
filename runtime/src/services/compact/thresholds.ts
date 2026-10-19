@@ -57,7 +57,11 @@ export function getEffectiveContextWindowSizeForEnvironment(
       : context?.options?.mainLoopModel,
   );
   const envWindow = positiveInteger(environment.AGENC_AUTO_COMPACT_WINDOW);
-  return envWindow ?? context?.options?.contextWindowTokens ?? modelFallback;
+  const configuredWindow = context?.options?.contextWindowTokens;
+  // A client can cap live capacity, but cannot enlarge the provider's known
+  // window and move the proactive gate behind hard admission.
+  return envWindow === undefined ? configuredWindow ?? modelFallback
+    : configuredWindow === undefined ? envWindow : Math.min(envWindow, configuredWindow);
 }
 
 export function getAutoCompactThreshold(
