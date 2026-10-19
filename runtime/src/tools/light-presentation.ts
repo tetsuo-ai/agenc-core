@@ -51,23 +51,11 @@ function presentProperty(schema: unknown, hint: string | null | undefined): unkn
   return rest;
 }
 
-const DEEPSEEK_PATCH_DESCRIPTION = `FileRead existing targets first; omit display line numbers. Apply multiple files and hunks in one patch:
-*** Begin Patch
-*** Update File: existing.txt
-@@
--old
-+new
-*** Add File: new.txt
-+content
-*** End Patch
-Context lines start with a space; @@ has no line ranges. Use *** Delete File: path to delete. For moves, *** Move to: path follows Update File. Paths are workspace-relative.`;
-
 /** Adapt the earlier Light summaries without hiding accepted arguments. */
-export function lightPresentation(tool: LLMTool, options: { readonly leanExec?: boolean; readonly deepseekPatch?: boolean } = {}): LLMTool {
-  const canonical = lightPresentationCanonical(tool);
-  const presented = options.deepseekPatch === true && tool.function.name === "apply_patch"
-    ? { ...canonical, function: { ...canonical.function, description: DEEPSEEK_PATCH_DESCRIPTION } }
-    : canonical;
+export function lightPresentation(tool: LLMTool, options: { readonly leanExec?: boolean } = {}): LLMTool {
+  const presented = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
+    ? tool
+    : lightPresentationCanonical(tool);
   if (options.leanExec !== true || tool.function.name !== "exec_command") return presented;
   return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
 }

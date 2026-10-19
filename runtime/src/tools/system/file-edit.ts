@@ -28,6 +28,10 @@
  *     of previous operations, then writes once so failed batches leave
  *     the file untouched.
  *
+ *   - DeepSeek Light uses the Edit batch shape {path, edits:[{oldText,newText}]}.
+ *     Each exact, unique, nonempty match refers to the original file; overlapping
+ *     ranges reject the whole batch. The same guards and write transaction apply.
+ *
  * Errors are returned as plain text in `ToolResult.content` with
  * `isError: true` — no JSON envelope, matching the AgenC-style envelope
  * used elsewhere in AgenC's tool surface.
@@ -416,6 +420,42 @@ function validateMultiEditInputs(
   }
 
   return { file_path: filePath, edits };
+}
+
+/** Parse the model's compact shape without copying or changing runtime-owned args. */
+function validateBatchEditInputs(args: MultiEditArgs & { readonly path?: unknown }): ResolvedMultiEditInputs | { error: string } {
+  const path = asNonEmptyString(args.path);
+  if (!path) return { error: "path must be a non-empty string" };
+  if (!Array.isArray(args.edits) || args.edits.length === 0) return { error: "edits must be a non-empty array" };
+  const edits: ResolvedMultiEdit[] = [];
+  for (const [i, edit] of args.edits.entries()) {
+    if (edit === null || typeof edit !== "object" || Array.isArray(edit)) return { error: `edits[${i}] must be an object` };
+    if (typeof edit.oldText !== "string" || edit.oldText.length === 0) return { error: `edits[${i}].oldText must be a non-empty string` };
+    if (typeof edit.newText !== "string") return { error: `edits[${i}].newText must be a string` };
+    edits.push({ old_string: edit.oldText, new_string: edit.newText, replace_all: false });
+  }
+  return { file_path: path, edits };
+}
+
+/** Locate every exact range before constructing the result; inserted text is never searched. */
+function applyOriginalDisjointEdits(original: string, edits: readonly ResolvedMultiEdit[]): { updated: string } | { error: string } {
+  const ranges: { start: number; end: number; replacement: string; index: number }[] = [];
+  for (const [index, edit] of edits.entries()) {
+    const start = original.indexOf(edit.old_string);
+    if (start < 0) return { error: `Edit ${index + 1}: oldText not found in the original file. Nothing was written.` };
+    if (original.indexOf(edit.old_string, start + 1) >= 0) return { error: `Edit ${index + 1}: oldText is not unique in the original file; include more context. Nothing was written.` };
+    ranges.push({ start, end: start + edit.old_string.length, replacement: edit.new_string, index });
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  for (let i = 1; i < ranges.length; i += 1) {
+    const previous = ranges[i - 1]!;
+    const current = ranges[i]!;
+    if (current.start < previous.end) return { error: `Edits ${previous.index + 1} and ${current.index + 1} overlap or nest. Merge them into one edit. Nothing was written.` };
+  }
+  let updated = original;
+  for (const range of ranges.reverse()) updated = updated.slice(0, range.start) + range.replacement + updated.slice(range.end);
+  if (updated === original) return { error: "No changes to make: the batch produces the original contents. Nothing was written." };
+  return { updated };
 }
 
 interface FileSnapshot {
@@ -1172,10 +1212,23 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
   };
 }
 
+/** Light's one-file batch form. The legacy MultiEdit remains sequential. */
+export function createFileBatchEditTool(config: FileEditToolConfig): Tool {
+  return createMultiEditTool(config, true);
+}
+
 export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
+  return createMultiEditTool(config, false);
+}
+
+function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boolean): Tool {
+  const toolName = originalDisjoint ? FILE_EDIT_TOOL_NAME : FILE_MULTI_EDIT_TOOL_NAME;
+  const validate = originalDisjoint ? validateBatchEditInputs : validateMultiEditInputs;
   return {
-    name: FILE_MULTI_EDIT_TOOL_NAME,
-    description: FILE_MULTI_EDIT_DESCRIPTION,
+    name: toolName,
+    description: originalDisjoint
+      ? "FileRead first. Batch disjoint replacements in one edits array; merge nearby changes. Keep oldText short and unique in the original file. All match the original; overlaps/nesting fail. Omit display numbers. Write creates files."
+      : FILE_MULTI_EDIT_DESCRIPTION,
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -1187,7 +1240,17 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
     },
     requiresApproval: true,
     recoveryCategory: "side-effecting",
-    inputSchema: {
+    inputSchema: originalDisjoint ? {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace/absolute path; not an agent-tree ID." },
+        edits: { type: "array", minItems: 1, items: {
+          type: "object", properties: { oldText: { type: "string", minLength: 1 }, newText: { type: "string" } },
+          required: ["oldText", "newText"], additionalProperties: false,
+        } },
+      },
+      required: ["path", "edits"], additionalProperties: false,
+    } : {
       type: "object",
       properties: {
         file_path: {
@@ -1223,19 +1286,20 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       required: ["file_path", "edits"],
       additionalProperties: false,
     },
-    reshapeModelArgs: foldEditShapedMultiEditArgs,
+    ...(originalDisjoint ? {} : { reshapeModelArgs: foldEditShapedMultiEditArgs }),
     preflight(args) {
-      const validated = validateMultiEditInputs(args);
+      const validated = validate(args);
       if ("error" in validated) return { code: "invalid_edit", message: validated.error };
       return unreadFilePreflight(args, [validated.file_path], config.allowedPaths[0] ?? process.cwd(), config.allowedPaths);
     },
     checkPermissions(input, context) {
       const args = input as MultiEditArgs;
-      const filePath = asNonEmptyString(args.file_path);
+      const validated = validate(args);
+      const filePath = "error" in validated ? undefined : validated.file_path;
       if (!filePath) {
         return {
           behavior: "ask",
-          message: "file_path must be a non-empty string",
+          message: "error" in validated ? validated.error : "Invalid edit path",
         };
       }
       const cwd =
@@ -1248,23 +1312,23 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           ? asString((firstEdit as Record<string, unknown>).old_string)
           : undefined;
       return checkToolPathPermission({
-        toolName: FILE_MULTI_EDIT_TOOL_NAME,
+        toolName,
         input: input as Record<string, unknown>,
         path: filePath,
         cwd,
         context: context.getAppState().toolPermissionContext,
-        operationType: firstOldString === "" ? "create" : "write",
+        operationType: !originalDisjoint && firstOldString === "" ? "create" : "write",
         extraWorkingDirectories: config.allowedPaths,
         planFileAuthority: sessionPlanFileAuthority(context.session),
       });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as MultiEditArgs;
-      const validated = validateMultiEditInputs(args);
+      const validated = validate(args);
       if ("error" in validated) {
         return preMutationErrorResult(
           validated.error,
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
       const { file_path, edits } = validated;
@@ -1274,15 +1338,17 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       if (firstEdit === undefined) {
         return preMutationErrorResult(
           "edits must be a non-empty array",
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
 
       for (const [i, edit] of edits.entries()) {
         if (edit.old_string === edit.new_string) {
           return preMutationErrorResult(
-            `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.`,
-            FILE_MULTI_EDIT_TOOL_NAME,
+            originalDisjoint
+              ? `No changes to make: edits[${i}].oldText and edits[${i}].newText are exactly the same.`
+              : `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.`,
+            toolName,
           );
         }
       }
@@ -1302,7 +1368,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       if (!safe.safe) {
         return preMutationErrorResult(
           `Access denied: ${safe.reason}`,
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
       const absoluteFilePath = safe.resolved;
@@ -1311,13 +1377,13 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         edits.map((edit) => edit.new_string).join("\n"),
       );
       if (secretError !== null) {
-        return preMutationErrorResult(secretError, FILE_MULTI_EDIT_TOOL_NAME);
+        return preMutationErrorResult(secretError, toolName);
       }
 
       if (absoluteFilePath.endsWith(".ipynb")) {
         return preMutationErrorResult(
           "File is a Jupyter Notebook. Use a notebook-specific tool to edit Jupyter notebooks.",
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
 
@@ -1328,14 +1394,14 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         const message = err instanceof Error ? err.message : String(err);
         return preMutationErrorResult(
           `Failed to read file: ${message}`,
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
 
       if (snapshot.exists && snapshot.size > MAX_EDIT_FILE_SIZE) {
         return preMutationErrorResult(
           `File is too large to edit (${snapshot.size} bytes). Maximum editable file size is ${MAX_EDIT_FILE_SIZE} bytes.`,
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
 
@@ -1358,7 +1424,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return mutationErrorResult(err, formatCreateFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
+          return mutationErrorResult(err, formatCreateFileError(err), toolName);
         }
         await snapshotPostWrite(
           resolveSessionId(rawArgs),
@@ -1380,7 +1446,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       if (!snapshot.exists) {
         return preMutationErrorResult(
           `File does not exist: ${file_path}. To create a new file, pass a single edit with an empty old_string.`,
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
 
@@ -1391,7 +1457,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         if (edits.length > 1) {
           return preMutationErrorResult(
             `edits[${emptyOldStringIndex}].old_string cannot be empty in a multi-edit batch.`,
-            FILE_MULTI_EDIT_TOOL_NAME,
+            toolName,
           );
         }
       }
@@ -1417,13 +1483,13 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         if (!isAuthorizingSessionRead(recordedSnapshot)) {
           return preMutationErrorResult(
             readBeforeWriteMessage([absoluteFilePath]),
-            FILE_MULTI_EDIT_TOOL_NAME,
+            toolName,
           );
         }
       } else if (!bypassSessionGuard) {
         return preMutationErrorResult(
           SESSION_ID_MISSING_ERROR,
-          FILE_MULTI_EDIT_TOOL_NAME,
+          toolName,
         );
       }
 
@@ -1441,7 +1507,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           if (!isFullContentMatch) {
             return preMutationErrorResult(
               FILE_UNEXPECTEDLY_MODIFIED_ERROR,
-              FILE_MULTI_EDIT_TOOL_NAME,
+              toolName,
             );
           }
         }
@@ -1451,7 +1517,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         if (snapshot.content.trim() !== "") {
           return preMutationErrorResult(
             "Cannot create new file - file already exists.",
-            FILE_MULTI_EDIT_TOOL_NAME,
+            toolName,
           );
         }
         try {
@@ -1473,7 +1539,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return mutationErrorResult(err, formatWriteFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
+          return mutationErrorResult(err, formatWriteFileError(err), toolName);
         }
         await snapshotPostWrite(
           sessionId,
@@ -1495,47 +1561,54 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
 
       let updated = snapshot.content;
       let replacements = 0;
-      for (const [i, edit] of edits.entries()) {
-        const applied = applyValidatedEdit(
-          updated,
-          edit.old_string,
-          edit.new_string,
-          edit.replace_all,
-        );
-        if ("error" in applied) {
-          // MultiEdit is all-or-nothing — when one edit fails the
-          // file is left untouched. Tell the model exactly which
-          // edits would have applied AND that nothing was written.
-          // The previous message ("Edit N failed: <reason>") didn't
-          // surface the all-or-nothing semantic, so weak local
-          // models (qwen, llama) loop: they re-emit the same broken
-          // edit while assuming earlier edits already landed.
-          const total = edits.length;
-          const failedIndex = i + 1;
-          const validatedBefore = i; // edits 1..i were applied to the in-memory buffer
-          const parts: string[] = [
-            `Edit ${failedIndex} of ${total} failed: ${applied.error}.`,
-          ];
-          if (validatedBefore > 0) {
+      if (originalDisjoint) {
+        const applied = applyOriginalDisjointEdits(snapshot.content, edits);
+        if ("error" in applied) return preMutationErrorResult(applied.error, toolName);
+        updated = applied.updated;
+        replacements = edits.length;
+      } else {
+        for (const [i, edit] of edits.entries()) {
+          const applied = applyValidatedEdit(
+            updated,
+            edit.old_string,
+            edit.new_string,
+            edit.replace_all,
+          );
+          if ("error" in applied) {
+            // MultiEdit is all-or-nothing — when one edit fails the
+            // file is left untouched. Tell the model exactly which
+            // edits would have applied AND that nothing was written.
+            // The previous message ("Edit N failed: <reason>") didn't
+            // surface the all-or-nothing semantic, so weak local
+            // models (qwen, llama) loop: they re-emit the same broken
+            // edit while assuming earlier edits already landed.
+            const total = edits.length;
+            const failedIndex = i + 1;
+            const validatedBefore = i; // edits 1..i were applied to the in-memory buffer
+            const parts: string[] = [
+              `Edit ${failedIndex} of ${total} failed: ${applied.error}.`,
+            ];
+            if (validatedBefore > 0) {
+              parts.push(
+                `Edits 1..${validatedBefore} validated before edit ${failedIndex} failed.`,
+              );
+            }
             parts.push(
-              `Edits 1..${validatedBefore} validated before edit ${failedIndex} failed.`,
+              "MultiEdit is all-or-nothing: the file was NOT written. Re-emit the full edit list with edit",
+              String(failedIndex),
+              "corrected.",
+            );
+            // The file is untouched (nothing is written before
+            // coordinateFileWrite), so settle as a determinate no-effect
+            // failure instead of an unknown outcome that blocks the session.
+            return preMutationErrorResult(
+              parts.join(" "),
+              toolName,
             );
           }
-          parts.push(
-            "MultiEdit is all-or-nothing: the file was NOT written. Re-emit the full edit list with edit",
-            String(failedIndex),
-            "corrected.",
-          );
-          // The file is untouched (nothing is written before
-          // coordinateFileWrite), so settle as a determinate no-effect
-          // failure instead of an unknown outcome that blocks the session.
-          return preMutationErrorResult(
-            parts.join(" "),
-            FILE_MULTI_EDIT_TOOL_NAME,
-          );
+          updated = applied.updated;
+          replacements += applied.replacements;
         }
-        updated = applied.updated;
-        replacements += applied.replacements;
       }
 
       try {
@@ -1553,7 +1626,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         if (rejected !== null) return rejected;
       } catch (err) {
-        return mutationErrorResult(err, formatWriteFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
+        return mutationErrorResult(err, formatWriteFileError(err), toolName);
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);

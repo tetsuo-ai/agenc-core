@@ -29,7 +29,6 @@ import { prepareModelToolArgs, validateToolPreflight } from "./tools/execution.j
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation } from "./tools/light-presentation.js";
-import { hasFileMutationMetadata } from "./tools/result-metadata.js";
 import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
@@ -75,6 +74,7 @@ import {
 } from "./tools/system/file-read.js";
 import {
   createFileEditTool,
+  createFileBatchEditTool,
   createFileMultiEditTool,
   FILE_EDIT_TOOL_NAME,
   FILE_MULTI_EDIT_TOOL_NAME,
@@ -1105,6 +1105,14 @@ export function buildToolRegistry(
       ),
     ),
   );
+  const legacyBuiltinEdit = defaultBuiltinTools.find(tool => tool.name === FILE_EDIT_TOOL_NAME);
+  const batchBuiltinEdit = configuredTools([tagTool(createFileBatchEditTool({
+    lightMode: options.lightMode,
+    allowedPaths: [options.workspaceRoot],
+  }))])[0];
+  function usesBatchEdit(): boolean {
+    return options.lightMode === true && options.getSession?.()?.services?.provider?.name === "deepseek";
+  }
   // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
   // names even when the canonical tool is disabled or unavailable so an
   // extension cannot become the physical execution target by collision.
@@ -1219,6 +1227,7 @@ export function buildToolRegistry(
       // The supplied TOML policy is live, including nested per-tool defaults.
       // Snapshot its value rather than its object identity or array references.
       [JSON.stringify(options.toolsConfig)],
+      [usesBatchEdit()],
     ];
   }
 
@@ -1267,7 +1276,9 @@ export function buildToolRegistry(
     );
     const withoutManagedMcpCollisions = (tools: readonly Tool[]): Tool[] =>
       preserveTrustedRuntimeOwnedTools(tools).filter(tool => !managedMcpNames.has(tool.name));
-    const baseSpecs = withoutManagedMcpCollisions(staticTools).map(specForTool);
+    const baseSpecs = withoutManagedMcpCollisions(staticTools.map(tool =>
+      usesBatchEdit() && tool === legacyBuiltinEdit && batchBuiltinEdit !== undefined ? batchBuiltinEdit : tool,
+    )).map(specForTool);
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );
@@ -1325,17 +1336,6 @@ export function buildToolRegistry(
     return available;
   }
 
-  // Keep cold DeepSeek requests identical to the familiar Edit/Write profile.
-  // A successful native file mutation makes multi-file patches available for
-  // the remaining work, scoped to that same session rather than a UI selection.
-  const editedSessions = new WeakSet<Session>();
-  function editsWithPatch(): boolean {
-    const session = options.getSession?.();
-    const provider = session?.services?.provider?.name;
-    return lightEditsWithApplyPatch(provider) ||
-      (provider === "deepseek" && session != null && editedSessions.has(session));
-  }
-
   function visibleSpecs(router?: ToolRouter): readonly ConfiguredToolSpec[] {
     const specs = (router?.getSpecs() ?? allSpecs()).filter((spec) => spec.unavailable !== true);
     // A restrictive policy may remove discovery itself. Keep its remaining
@@ -1346,7 +1346,7 @@ export function buildToolRegistry(
     return specs.filter(
       (spec) =>
         (options.lightMode === true
-          ? (editsWithPatch()
+          ? (lightEditsWithApplyPatch(options.getSession?.()?.services?.provider?.name)
             ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined) ||
             // A policy that opts out of MCP deferral wants its allowlisted MCP
@@ -1419,7 +1419,7 @@ export function buildToolRegistry(
       }
       return invoke(opts.abortSignal);
     }
-    const result = await runAdmittedToolCall({
+    return runAdmittedToolCall({
       session,
       turnId: `registry:${session.conversationId}`,
       callId,
@@ -1431,14 +1431,6 @@ export function buildToolRegistry(
         return invoke(signal);
       },
     });
-    if (options.lightMode === true && session.services?.provider?.name === "deepseek" &&
-        result.isError !== true && spec.tool.metadata?.source === "builtin" &&
-        ["Edit", "Write", "MultiEdit", "apply_patch"].includes(spec.tool.name) &&
-        hasFileMutationMetadata(result.metadata) && !editedSessions.has(session)) {
-      editedSessions.add(session);
-      presentationMemo = undefined;
-    }
-    return result;
   }
 
   /**
@@ -1457,7 +1449,7 @@ export function buildToolRegistry(
   }
 
   let presentationMemo: { router: ToolRouter; discovered: readonly string[];
-    provider: string | undefined; patch: boolean; tools: LLMTool[] } | undefined;
+    provider: string | undefined; tools: LLMTool[] } | undefined;
   function buildPresentedTools(router: ToolRouter): LLMTool[] {
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
@@ -1466,9 +1458,7 @@ export function buildToolRegistry(
       const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
-        if (options.lightMode === true) return lightPresentation(tool, {
-          leanExec, deepseekPatch: options.getSession?.()?.services?.provider?.name === "deepseek",
-        });
+        if (options.lightMode === true) return lightPresentation(tool, { leanExec });
         // Standard sessions with the default deferral send compact wording for
         // the core tools (same fields, same schema) and the lean exec_command
         // and Grep until system.searchTools selects them.
@@ -1497,14 +1487,13 @@ export function buildToolRegistry(
       const router = buildRouter();
       if (!oneShotFastModeActive()) return buildPresentedTools(router);
       const provider = options.getSession?.()?.services?.provider?.name;
-      const patch = editsWithPatch();
       const discovered = [...discoveredToolNames];
       const memo = presentationMemo;
-      if (memo?.router === router && memo.provider === provider && memo.patch === patch &&
+      if (memo?.router === router && memo.provider === provider &&
           memo.discovered.length === discovered.length &&
           memo.discovered.every((name, i) => name === discovered[i])) return memo.tools;
       const tools = buildPresentedTools(router);
-      presentationMemo = { router, provider, patch, discovered, tools };
+      presentationMemo = { router, provider, discovered, tools };
       return tools;
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
