@@ -257,6 +257,31 @@ describe("exec_command tool", () => {
       1,
     );
 
+    test.each(["exec_command", "write_stdin"])("%s preserves the git error and offers one explicit approval", async toolName => {
+      const stderr = "fatal: cannot lock ref 'refs/heads/chore/comet-docs': unable to create directory for .git/refs/heads/chore/comet-docs";
+      const output = failedExecOutput(stderr, 128);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = toolName === "exec_command"
+        ? createExecCommandTool({ cwd: root, unifiedExecManager: manager })
+        : createWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+      const raw = toolName === "exec_command" ? { cmd: "git switch -c chore/comet-docs" } : { session_id: 11, chars: "" };
+      const result = await tool.execute(contextArgs(raw, {
+        approvalPolicy: "on_request", sandboxMode: "workspace_write", platformSandbox: true, toolName,
+      }));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(stderr);
+      expect(String(result.content).match(/\[sandbox\]/gu)).toHaveLength(1);
+      expect(result.content).toContain('sandbox_permissions="require_escalated"');
+      expect(result.codeModeResult).toMatchObject({ exit_code: 128, sandbox_notice: expect.stringContaining("only this command") });
+      const outside = await tool.execute(contextArgs(raw, { toolName }));
+      expect(outside.content).not.toContain("[sandbox]");
+    });
+
     test("explains Python http.server socket creation refused before bind", async () => {
       const { tool } = toolWith(failedExecOutput(PYTHON_SERVER_SOCKET_DENIED, 1));
       const result = await tool.execute(sandboxedArgs({ cmd: "python3 -m http.server 8123", workdir: root }));

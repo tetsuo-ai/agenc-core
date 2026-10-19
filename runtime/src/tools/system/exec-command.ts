@@ -1308,6 +1308,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           output: execContent,
           exitCode: output.exitCode,
           sandboxApplied: runtimeSandbox !== undefined,
+          session: runtimeContext?.invocation.session,
           escalationAvailable:
             runtimeContext === undefined ||
             sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {

@@ -250,6 +250,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           output: execContent,
           exitCode: output.exitCode,
           sandboxApplied: runtimeSandbox !== undefined,
+          session: runtimeContext?.invocation.session,
           escalationAvailable: runtimeContext === undefined ||
             sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {
               sandboxMode: runtimeContext.requestedSandboxMode,

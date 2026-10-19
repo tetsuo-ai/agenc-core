@@ -11,8 +11,8 @@
  * the timeout and rewording a justification nobody could answer, because
  * nothing in the transcript told it the retry could not work.
  *
- * This module classifies that one case — a listening socket the sandbox
- * refused — and returns a frozen sentence to append to the tool result. The
+ * This module classifies listening socket and Git transaction refusals and
+ * returns a frozen sentence to append to the tool result. The
  * text is deliberately constant: the repeated-failure guard compares failure
  * signatures, so a notice that embedded a timing or a port would defeat the
  * very guard that catches a model which keeps going anyway.
@@ -26,7 +26,26 @@ import { routineRunOptions } from "../../session/runtime-options.js";
 import { asRecord } from "../../utils/record.js";
 
 /** The denial classes this module recognizes. */
-export type ExecSandboxDenialKind = "network_bind";
+export type ExecSandboxDenialKind = "network_bind" | "git_write";
+
+/**
+ * Git's ref-directory failure omits errno entirely. Other transaction errors
+ * name both a metadata path and the refusal. Keep existing locks, invalid
+ * refs, hooks and config edits out of this diagnostic: those do not establish
+ * a refused branch/stage/commit operation.
+ */
+const GIT_WRITE_DENIED_SIGNATURES: readonly RegExp[] = [
+  /^fatal: cannot lock ref '[^'\n]+': unable to create directory for [^\n]*\.git[\\/]refs[\\/]/imu,
+  /^(?:fatal|error): (?=[^\n]*\.git[\\/](?:index(?:\.lock)?|HEAD(?:\.lock)?|COMMIT_EDITMSG|refs[\\/]|logs[\\/]|objects(?:[\\/\s]|$)))[^\n]*(?:read-only file system|permission denied|operation not permitted)/imu,
+  /^error: insufficient permission for adding an object to repository database [^\n]*\.git[\\/]objects\b/imu,
+];
+
+export const SANDBOX_GIT_WRITE_DENIED_ESCALATION_AVAILABLE =
+  '[sandbox] Git could not write protected .git metadata. Retry the requested git operation once with sandbox_permissions="require_escalated" and a justification asking approval for only this command. ' +
+  "Omit prefix_rule and choose approve once; keep the default sandbox protection. Do not write .git files directly or change hooks/config to work around the refusal.";
+
+export const SANDBOX_GIT_WRITE_DENIED_NO_ESCALATION =
+  "[sandbox] Git could not write protected .git metadata. Escalation is unavailable in this session; ask the user to run the requested git operation in their terminal. Do not retry unchanged, write .git files directly, or change sandbox protection.";
 
 /**
  * Signatures of "the OS refused to bind or listen", across the runtimes a
@@ -77,8 +96,17 @@ export function execSandboxDenialNotice(params: {
   readonly exitCode: number | null;
   readonly sandboxApplied: boolean;
   readonly escalationAvailable: boolean;
+  readonly session?: unknown;
 }): { readonly kind: ExecSandboxDenialKind; readonly notice: string } | null {
   if (!params.sandboxApplied) return null;
+  if (params.exitCode !== 0 && GIT_WRITE_DENIED_SIGNATURES.some((pattern) => pattern.test(params.output))) {
+    return {
+      kind: "git_write",
+      notice: params.escalationAvailable && !escalationStaysConfined(params.session)
+        ? SANDBOX_GIT_WRITE_DENIED_ESCALATION_AVAILABLE
+        : SANDBOX_GIT_WRITE_DENIED_NO_ESCALATION,
+    };
+  }
   // A background server can fail even when its shell exits zero after curl,
   // cleanup or an echo. Diagnose the explicit refusal without rewriting the
   // shell's exit status. Polling a live shell (exitCode null) needs it too.

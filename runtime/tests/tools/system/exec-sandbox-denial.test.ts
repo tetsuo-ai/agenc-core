@@ -29,6 +29,49 @@ const denial = (overrides: Partial<Parameters<typeof execSandboxDenialNotice>[0]
   });
 
 describe("execSandboxDenialNotice", () => {
+  test.each([
+    "fatal: cannot lock ref 'refs/heads/chore/comet-docs': unable to create directory for .git/refs/heads/chore/comet-docs",
+    "fatal: Unable to create '/workspace/.git/index.lock': Read-only file system",
+    "error: insufficient permission for adding an object to repository database .git/objects",
+    "fatal: cannot update the ref 'HEAD': unable to append to '.git/logs/HEAD': Permission denied",
+  ])("explains a protected git transaction and requests one command approval: %s", output => {
+    const result = denial({ output, exitCode: 128, escalationAvailable: true });
+    expect(result?.kind).toBe("git_write");
+    expect(result?.notice).toContain('sandbox_permissions="require_escalated"');
+    expect(result?.notice).toContain("justification");
+    expect(result?.notice).toContain("once");
+    expect(result?.notice).toContain("only this command");
+    expect(result?.notice).toContain("Do not write .git files directly");
+    expect(result?.notice.split("\n")).toHaveLength(1);
+    expect(denial({ output, sandboxApplied: false })).toBeNull();
+    const unavailable = denial({ output, exitCode: 128 });
+    expect(unavailable?.notice).toContain("Escalation is unavailable");
+    expect(unavailable?.notice).not.toContain("require_escalated");
+  });
+
+  test("does not recommend git escalation for hooks, config, existing locks or invalid refs", () => {
+    for (const output of [
+      "bash: .git/hooks/pre-commit: Read-only file system",
+      "error: could not lock config file .git/config: Permission denied",
+      "fatal: Unable to create '/workspace/.git/index.lock': File exists.",
+      "fatal: cannot lock ref 'refs/heads/chore': 'refs/heads/chore/docs' exists; cannot create 'refs/heads/chore'",
+      "fatal: invalid reference: chore/comet-docs",
+      "fatal: Unable to create '/workspace/index.lock': Permission denied",
+    ]) expect(denial({ output, exitCode: 128, escalationAvailable: true })).toBeNull();
+  });
+
+  test("keeps delegated agents confined even when their session can approve commands", () => {
+    const output = "fatal: Unable to create '/workspace/.git/index.lock': Read-only file system";
+    for (const services of [
+      { sandboxExecutionBroker: { worktreeConfinement: { worktree: "/workspace" } } },
+      { readOnlyDelegation: {} },
+    ]) {
+      const result = denial({ output, exitCode: 128, escalationAvailable: true, session: { services } });
+      expect(result?.notice).toContain("Escalation is unavailable");
+      expect(result?.notice).not.toContain("require_escalated");
+    }
+    expect(denial({ output, exitCode: 0, escalationAvailable: true })).toBeNull();
+  });
   test("offers the setting in one short line, including a running test with failed listen", () => {
     for (const escalationAvailable of [false, true]) {
       const notice = denial({ exitCode: null, escalationAvailable })?.notice;
