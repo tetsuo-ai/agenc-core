@@ -312,6 +312,22 @@ therefore does not bypass this fallback limitation. Details:
 npm install -g @tetsuo-ai/agenc
 ```
 
+The launcher tries to prefetch its runtime during postinstall. Offline or
+failed prefetches leave npm installation successful; if npm's script policy
+skips postinstall, the first `agenc` command downloads the runtime instead.
+Use `npm install -g @tetsuo-ai/agenc --foreground-scripts` to see download
+progress during installation. Progress includes the percentage, MiB, and
+average transfer rate every five seconds.
+
+Runtime downloads abort after 30 seconds without delivered bytes. Their
+size-aware overall budget is `max(10 minutes, 120 seconds + ceil(bytes / 32 KiB)
+seconds)`, about 66 minutes for a 126 MB artifact. A timeout removes the partial
+download; retry the command to restart. A verified cached runtime skips the
+network. Downloads use Node's built-in HTTPS stream to avoid small HTTP/2
+receive windows limiting throughput on high-latency connections. The manifest,
+HTTPS redirect, exact byte-count, checksum, and archive checks still apply.
+
+
 The launcher's postinstall resolves the same runtime contract via
 `packages/agenc/lib/runtime-manager.mjs`. Prefer a version that resolves
 runtime 0.19.11 when you need parity with this doc set. npm itself still

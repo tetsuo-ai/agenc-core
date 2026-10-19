@@ -34,6 +34,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
+import https from "node:https";
 import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Readable } from "node:stream";
@@ -75,7 +76,13 @@ const MANIFEST_PATH = resolve(
   "generated",
   "agenc-runtime-manifest-v2.json",
 );
-const DEFAULT_RUNTIME_FETCH_TIMEOUT_MS = 120_000;
+const DEFAULT_RUNTIME_FETCH_STALL_TIMEOUT_MS = 30_000;
+const MIN_RUNTIME_FETCH_TIMEOUT_MS = 10 * 60_000;
+// Allow a healthy, slow connection to finish. Signed sizes are capped at
+// 256 MiB; even at 32 KiB/s the overall budget remains finite (under 2.4 h).
+const MIN_RUNTIME_FETCH_BYTES_PER_SECOND = 32 * 1024;
+const RUNTIME_FETCH_SETUP_ALLOWANCE_MS = 120_000;
+const DEFAULT_RUNTIME_FETCH_PROGRESS_INTERVAL_MS = 5_000;
 const DEFAULT_RUNTIME_EXTRACTION_TIMEOUT_MS = 120_000;
 const WINDOWS_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
 const WINDOWS_INVALID_FILE_ID = 0xffff_ffff_ffff_ffffn;
@@ -834,50 +841,79 @@ function sha256File(file, expectedIdentity) {
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-function createFetchDeadline(timeoutMs) {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 600_000) {
-    throw new TypeError("agenc: runtime fetch timeout must be an integer from 1 to 600000 ms");
+function createFetchDeadline(timeoutMs, stallTimeoutMs, expectedBytes) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 24 * 60 * 60_000) {
+    throw new TypeError("agenc: runtime fetch timeout must be an integer from 1 to 86400000 ms");
   }
+  if (!Number.isSafeInteger(stallTimeoutMs) || stallTimeoutMs <= 0 || stallTimeoutMs > 600_000) {
+    throw new TypeError("agenc: runtime fetch stall timeout must be an integer from 1 to 600000 ms");
+  }
+  const started = performance.now();
   return {
     controller: new AbortController(),
-    deadline: performance.now() + timeoutMs,
+    deadline: started + timeoutMs,
+    lastProgress: started,
+    started,
     timeoutMs,
+    stallTimeoutMs,
+    received: 0,
+    expectedBytes,
   };
 }
 
 function fetchTimeoutError(context, label) {
-  const error = new Error(
-    `agenc: ${label} timed out after ${context.timeoutMs} ms total`,
-  );
+  const stalled = context.lastProgress + context.stallTimeoutMs < context.deadline;
+  const error = new Error(stalled
+    ? `agenc: ${label} stalled for ${context.stallTimeoutMs} ms ` +
+      `(received ${context.received}/${context.expectedBytes} bytes); retry to restart the download`
+    : `agenc: ${label} timed out after ${context.timeoutMs} ms total; retry to restart the download`);
   error.code = "AGENC_RUNTIME_FETCH_TIMEOUT";
   return error;
 }
 
 async function awaitWithinFetchDeadline(value, context, label) {
-  const remaining = context.deadline - performance.now();
-  if (remaining <= 0) {
+  // The operation may already have started (notably pipeline()). Observe its
+  // rejection even if our deadline has expired before entering this function.
+  // Otherwise postinstall catches the policy error and then crashes on the
+  // abandoned pipeline's AbortError.
+  const pending = Promise.resolve(value);
+  void pending.catch(() => {});
+  if (Math.min(context.deadline, context.lastProgress + context.stallTimeoutMs) <= performance.now()) {
     const error = fetchTimeoutError(context, label);
     context.controller.abort(error);
     throw error;
   }
   let timer;
   const expired = new Promise((_, reject) => {
-    timer = setTimeout(() => {
+    const check = () => {
+      const remaining = Math.min(
+        context.deadline,
+        context.lastProgress + context.stallTimeoutMs,
+      ) - performance.now();
+      if (remaining > 0) {
+        timer = setTimeout(check, Math.max(1, Math.ceil(remaining)));
+        return;
+      }
       const error = fetchTimeoutError(context, label);
-      // Settle the deadline promise with the policy error before aborting the
-      // transport/pipeline, whose AbortError would otherwise obscure it.
+      // Settle with the policy error before aborting the transport/pipeline,
+      // whose AbortError would otherwise obscure it.
       reject(error);
       context.controller.abort(error);
-    }, Math.max(1, Math.ceil(remaining)));
+    };
+    check();
   });
   try {
-    return await Promise.race([Promise.resolve(value), expired]);
+    return await Promise.race([pending, expired]);
   } finally {
     clearTimeout(timer);
   }
 }
 
 async function cancelResponseBody(response, context, label) {
+  if (typeof response?.body?.destroy === "function") {
+    response.body.destroy();
+    return;
+  }
   if (typeof response?.body?.cancel !== "function") return;
   try {
     const cancellation = response.body.cancel();
@@ -891,6 +927,28 @@ async function cancelResponseBody(response, context, label) {
     // Cancellation is best-effort after a stronger policy error. Aborting the
     // shared controller below still tears down the transport.
   }
+}
+
+// The bundled fetch in Node 26 negotiates HTTP/2 with small receive windows.
+// On high-latency routes that throttles large artifacts even while curl and
+// HTTPS/1.1 saturate the link. Use the built-in HTTPS stream without adding an
+// installer dependency; the same redirect/encoding/size policy below applies.
+function fetchRuntimeHttps(url, { headers, signal }) {
+  return new Promise((resolveResponse, reject) => {
+    const request = https.get(url, { headers, signal }, (response) => {
+      const status = response.statusCode ?? 0;
+      resolveResponse({
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: response.statusMessage ?? "",
+        url: String(url),
+        redirected: false,
+        headers: { get: (name) => response.headers[name.toLowerCase()] ?? null },
+        body: response,
+      });
+    });
+    request.on("error", reject);
+  });
 }
 
 async function fetchHttps(url, fetchImpl, label, context) {
@@ -913,6 +971,9 @@ async function fetchHttps(url, fetchImpl, label, context) {
       context,
       `${label} response headers`,
     );
+    // Receiving headers is activity too: a slow TLS/header phase must not
+    // consume the following body's entire inactivity window.
+    context.lastProgress = performance.now();
     if (!REDIRECT_STATUSES.has(response.status)) {
       let finalProtocolIsHttps = true;
       try {
@@ -948,7 +1009,7 @@ async function fetchHttps(url, fetchImpl, label, context) {
   throw new Error(`agenc: too many redirects while fetching ${label}`);
 }
 
-async function* requireExactByteCount(source, expectedBytes, context) {
+async function* requireExactByteCount(source, expectedBytes, context, reportProgress) {
   let received = 0;
   const iterator = source[Symbol.asyncIterator]();
   let complete = false;
@@ -972,6 +1033,11 @@ async function* requireExactByteCount(source, expectedBytes, context) {
           `agenc: runtime byte count exceeds signed size ` +
             `(expected ${expectedBytes}, received at least ${received})`,
         );
+      }
+      if (context !== undefined && chunk.length > 0) {
+        context.received = received;
+        context.lastProgress = performance.now();
+        reportProgress?.(received);
       }
       yield chunk;
     }
@@ -1098,9 +1164,16 @@ async function download(
   dest,
   expectedBytes,
   trustMode,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = fetchRuntimeHttps,
   {
-    fetchTimeoutMs = DEFAULT_RUNTIME_FETCH_TIMEOUT_MS,
+    fetchTimeoutMs = Math.max(
+      MIN_RUNTIME_FETCH_TIMEOUT_MS,
+      RUNTIME_FETCH_SETUP_ALLOWANCE_MS +
+        Math.ceil(expectedBytes / MIN_RUNTIME_FETCH_BYTES_PER_SECOND) * 1000,
+    ),
+    fetchStallTimeoutMs = DEFAULT_RUNTIME_FETCH_STALL_TIMEOUT_MS,
+    progressIntervalMs = DEFAULT_RUNTIME_FETCH_PROGRESS_INTERVAL_MS,
+    log,
     localArtifactHook,
     durabilityHook,
   } = {},
@@ -1123,7 +1196,21 @@ async function download(
   if (parsed.protocol === "file:") {
     throw new Error("agenc: remote runtime manifests must not access local files");
   }
-  const context = createFetchDeadline(fetchTimeoutMs);
+  if (!Number.isSafeInteger(progressIntervalMs) || progressIntervalMs <= 0) {
+    throw new TypeError("agenc: runtime fetch progress interval must be a positive integer");
+  }
+  const context = createFetchDeadline(fetchTimeoutMs, fetchStallTimeoutMs, expectedBytes);
+  let lastReport = context.started;
+  const reportProgress = (received) => {
+    const now = performance.now();
+    if (received !== expectedBytes && now - lastReport < progressIntervalMs) return;
+    lastReport = now;
+    const mib = 1024 * 1024;
+    const seconds = Math.max((now - context.started) / 1000, 0.001);
+    log?.(`agenc: runtime download ${Math.floor(received * 100 / expectedBytes)}% ` +
+      `(${(received / mib).toFixed(1)}/${(expectedBytes / mib).toFixed(1)} MiB, ` +
+      `${(received / mib / seconds).toFixed(2)} MiB/s)`);
+  };
   let res;
   try {
     res = await fetchHttps(url, fetchImpl, "runtime artifact", context);
@@ -1160,7 +1247,7 @@ async function download(
     await awaitWithinFetchDeadline(
       pipeline(
         readable,
-        (source) => requireExactByteCount(source, expectedBytes, context),
+        (source) => requireExactByteCount(source, expectedBytes, context, reportProgress),
         createWriteStream(dest, { flags: "wx", mode: 0o600 }),
         { signal: context.controller.signal },
       ),
@@ -1337,8 +1424,10 @@ export async function ensureRuntimeLaunch({
   userHome = homedir(),
   manifest = readManifest(),
   slug = platformSlug(),
-  fetchImpl = globalThis.fetch,
-  runtimeFetchTimeoutMs = DEFAULT_RUNTIME_FETCH_TIMEOUT_MS,
+  fetchImpl = fetchRuntimeHttps,
+  runtimeFetchTimeoutMs,
+  runtimeFetchStallTimeoutMs = DEFAULT_RUNTIME_FETCH_STALL_TIMEOUT_MS,
+  runtimeFetchProgressIntervalMs = DEFAULT_RUNTIME_FETCH_PROGRESS_INTERVAL_MS,
   manifestTrust = "official",
   runtimeCompatibility,
   localArtifactHook,
@@ -1441,6 +1530,9 @@ export async function ensureRuntimeLaunch({
     const tmp = join(downloadDir, "runtime.tar.gz");
     await download(artifact.url, tmp, artifact.bytes, manifestTrust, fetchImpl, {
       fetchTimeoutMs: runtimeFetchTimeoutMs,
+      fetchStallTimeoutMs: runtimeFetchStallTimeoutMs,
+      progressIntervalMs: runtimeFetchProgressIntervalMs,
+      log,
       localArtifactHook,
       durabilityHook,
     });

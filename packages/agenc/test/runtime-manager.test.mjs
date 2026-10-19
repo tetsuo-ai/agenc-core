@@ -1,6 +1,9 @@
 import { strict as assert } from "node:assert";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer, get as httpGet } from "node:http";
+import https from "node:https";
+import { once } from "node:events";
 import {
   appendFileSync,
   chmodSync,
@@ -21,7 +24,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { after, before, test } from "node:test";
+import { after, before, mock, test } from "node:test";
 import { gzipSync } from "node:zlib";
 
 import {
@@ -2244,5 +2247,278 @@ test("Windows system tools prove GLOBALROOT identity before using DOS process pa
       new RegExp(`${inheritedKey}: ""`, "u"),
       `${inheritedKey} must not be backfilled from the caller environment`,
     );
+  }
+});
+
+// A real loopback transport keeps deadline regressions independent of GitHub,
+// VPNs, and the speed of the machine running the tests. Only the injected
+// fetch seam translates the already-validated HTTPS URL to loopback HTTP.
+function loopbackFetch(url) {
+  return async (requested, options) => {
+    const response = await fetch(url, options);
+    Object.defineProperty(response, "url", { value: String(requested) });
+    return response;
+  };
+}
+
+async function withThrottledArtifact(bytes, run, { chunkBytes = 64, intervalMs = 5, stall = false } = {}) {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-length": bytes.length });
+    response.flushHeaders();
+    let offset = 0;
+    const timer = setInterval(() => {
+      if (stall) return;
+      response.write(bytes.subarray(offset, offset + chunkBytes));
+      offset += chunkBytes;
+      if (offset >= bytes.length) {
+        clearInterval(timer);
+        response.end();
+      }
+    }, intervalMs);
+    response.on("close", () => clearInterval(timer));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${server.address().port}/runtime.tar.gz`;
+  try {
+    await run(url, () => requests);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolveClose) => server.close(resolveClose));
+  }
+}
+
+test("a progressing loopback download survives multiple stall windows and reports progress", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-slow-loopback-"));
+  try {
+    const version = "7.6.4";
+    const artifact = makeSyntheticArtifact(work, version);
+    const bytes = readFileSync(artifact.artifact);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    const logs = [];
+    await withThrottledArtifact(bytes, async (url) => {
+      const started = performance.now();
+      const bin = await ensureRuntime({
+        env: { AGENC_HOME: join(work, "home") },
+        manifest,
+        manifestTrust: "explicitHttps",
+        runtimeCompatibility: HOST_RUNTIME,
+        runtimeFetchStallTimeoutMs: 80,
+        runtimeFetchProgressIntervalMs: 20,
+        fetchImpl: loopbackFetch(url),
+        log: (message) => logs.push(message),
+      });
+      assert.ok(performance.now() - started > 160, "fixture must cross two stall windows");
+      assert.ok(existsSync(bin));
+      assert.ok(logs.some((message) => /runtime download .*%.*MiB\/s/.test(message)), logs.join("\n"));
+      assert.ok(logs.some((message) => /runtime download 100%/.test(message)));
+    }, { chunkBytes: 32, intervalMs: 10 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("a loopback body stall cleans partial state and a subsequent invocation restarts successfully", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-stall-restart-"));
+  try {
+    const version = "7.6.5";
+    const artifact = makeSyntheticArtifact(work, version);
+    const bytes = readFileSync(artifact.artifact);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    const options = {
+      env: { AGENC_HOME: join(work, "home") }, manifest,
+      manifestTrust: "explicitHttps", runtimeCompatibility: HOST_RUNTIME,
+      runtimeFetchStallTimeoutMs: 60, runtimeFetchTimeoutMs: 250, log: () => {},
+    };
+    await withThrottledArtifact(bytes, async (url) => {
+      await assert.rejects(ensureRuntime({ ...options,
+        fetchImpl: loopbackFetch(url),
+      }), /stalled for 60 ms/);
+    }, { stall: true });
+    const versionDir = dirname(runtimeInstallDir(options.env.AGENC_HOME, version, manifest.artifacts[0]));
+    assert.equal(readdirSync(versionDir).some((entry) => entry.startsWith(".agenc-runtime-")), false);
+    await withThrottledArtifact(bytes, async (url, requests) => {
+      const bin = await ensureRuntime({ ...options,
+        fetchImpl: loopbackFetch(url),
+      });
+      assert.ok(existsSync(bin));
+      assert.equal(requests(), 1);
+    });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("postinstall survives an expired loopback body pipeline without an unhandled rejection", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-postinstall-timeout-"));
+  try {
+    await withThrottledArtifact(Buffer.from("x"), async (url) => {
+      mkdirSync(join(work, "scripts"));
+      mkdirSync(join(work, "lib"));
+      writeFileSync(join(work, "package.json"), '{"type":"module"}');
+      writeFileSync(join(work, "scripts/postinstall.mjs"), readFileSync(join(__dirname, "../scripts/postinstall.mjs")));
+      const manifest = httpsManifest(LAUNCHER_VERSION, "a".repeat(64), 1);
+      writeFileSync(join(work, "lib/runtime-manager.mjs"), `
+        import { ensureRuntimeLaunch as ensure } from ${JSON.stringify(pathToFileURL(join(__dirname, "../lib/runtime-manager.mjs")).href)};
+        export function ensureRuntimeLaunch() {
+          return ensure({ manifest: ${JSON.stringify(manifest)},
+            manifestTrust: "explicitHttps", runtimeCompatibility: ${JSON.stringify(HOST_RUNTIME)},
+            runtimeFetchTimeoutMs: 40, log: () => {},
+            fetchImpl: async (requested, init) => {
+              const response = await fetch(${JSON.stringify(url)}, init);
+              Object.defineProperty(response, "url", { value: String(requested) });
+              const get = response.headers.get.bind(response.headers);
+              response.headers.get = (name) => {
+                if (name === "content-length") {
+                  // Reproduce an already-expired deadline at pipeline startup.
+                  const until = performance.now() + 50;
+                  while (performance.now() < until) {}
+                }
+                return get(name);
+              };
+              return response;
+            },
+          });
+        }
+      `);
+      const child = spawn(process.execPath, [join(work, "scripts/postinstall.mjs")], {
+        env: { ...process.env, AGENC_HOME: join(work, "home"), CI: "false", AGENC_SKIP_POSTINSTALL: "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+      const [code, signal] = await once(child, "exit");
+      assert.equal(signal, null, stderr);
+      assert.equal(code, 0, stderr);
+      assert.match(stderr, /runtime pre-fetch skipped.*fetched on first run/);
+      assert.doesNotMatch(stderr, /AbortError|triggerUncaughtException/);
+    }, { stall: true });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("the overall runtime budget still stops a loopback body that keeps progressing", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-progress-total-bound-"));
+  try {
+    const bytes = Buffer.alloc(1024);
+    const manifest = httpsManifest("7.6.6", sha256(bytes), bytes.length);
+    const home = join(work, "home");
+    await withThrottledArtifact(bytes, async (url) => {
+      await assert.rejects(ensureRuntime({
+        env: { AGENC_HOME: home }, manifest, manifestTrust: "explicitHttps",
+        runtimeCompatibility: HOST_RUNTIME, runtimeFetchTimeoutMs: 100,
+        runtimeFetchStallTimeoutMs: 80, fetchImpl: loopbackFetch(url), log: () => {},
+      }), /timed out after 100 ms total/);
+    }, { chunkBytes: 16, intervalMs: 10 });
+    const versionDir = dirname(runtimeInstallDir(home, manifest.runtimeVersion, manifest.artifacts[0]));
+    assert.equal(readdirSync(versionDir).some((entry) => entry.startsWith(".agenc-runtime-")), false);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("the default runtime transport streams through built-in HTTPS instead of fetch", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-https-transport-"));
+  try {
+    const version = "7.6.7";
+    const artifact = makeSyntheticArtifact(work, version);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    await withThrottledArtifact(readFileSync(artifact.artifact), async (url) => {
+      const fetchMock = mock.method(globalThis, "fetch", () => {
+        throw new Error("the runtime must not use fetch's small HTTP/2 receive windows");
+      });
+      const getMock = mock.method(https, "get", (requested, options, receive) => {
+        assert.equal(String(requested), manifest.artifacts[0].url);
+        assert.equal(options.headers["accept-encoding"], "identity");
+        assert.ok(options.signal instanceof AbortSignal);
+        return httpGet(url, options, receive);
+      });
+      try {
+        const bin = await ensureRuntime({
+          env: { AGENC_HOME: join(work, "home") }, manifest,
+          manifestTrust: "explicitHttps", runtimeCompatibility: HOST_RUNTIME,
+          log: () => {},
+        });
+        assert.ok(existsSync(bin));
+        assert.equal(getMock.mock.callCount(), 1);
+        assert.equal(fetchMock.mock.callCount(), 0);
+      } finally {
+        getMock.mock.restore();
+        fetchMock.mock.restore();
+      }
+    });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("the default HTTPS transport aborts a stalled stream and can restart", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-https-stall-"));
+  try {
+    const version = "7.6.8";
+    const artifact = makeSyntheticArtifact(work, version);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    const options = {
+      env: { AGENC_HOME: join(work, "home") }, manifest, manifestTrust: "explicitHttps",
+      runtimeCompatibility: HOST_RUNTIME, runtimeFetchStallTimeoutMs: 80,
+      runtimeFetchTimeoutMs: 250, log: () => {},
+    };
+    for (const stall of [true, false]) {
+      await withThrottledArtifact(readFileSync(artifact.artifact), async (url) => {
+        let signal;
+        const fetchMock = mock.method(globalThis, "fetch", () => {
+          throw new Error("unexpected fetch transport; this test only allows loopback HTTPS streams");
+        });
+        const getMock = mock.method(https, "get", (_requested, init, receive) => {
+          signal = init.signal;
+          return httpGet(url, init, receive);
+        });
+        try {
+          if (stall) {
+            await assert.rejects(ensureRuntime(options), /stalled for 80 ms/);
+            assert.equal(signal.aborted, true);
+            const versionDir = dirname(runtimeInstallDir(options.env.AGENC_HOME, version, manifest.artifacts[0]));
+            assert.equal(readdirSync(versionDir).some((entry) => entry.startsWith(".agenc-runtime-")), false);
+          } else {
+            assert.ok(existsSync(await ensureRuntime(options)));
+          }
+        } finally {
+          getMock.mock.restore();
+          fetchMock.mock.restore();
+        }
+      }, { stall });
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("receiving headers refreshes the inactivity window before a delayed first byte", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-header-body-activity-"));
+  try {
+    const version = "7.6.9";
+    const artifact = makeSyntheticArtifact(work, version);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    await withThrottledArtifact(readFileSync(artifact.artifact), async (url) => {
+      const bin = await ensureRuntime({
+        env: { AGENC_HOME: join(work, "home") }, manifest, manifestTrust: "explicitHttps",
+        runtimeCompatibility: HOST_RUNTIME, runtimeFetchStallTimeoutMs: 100,
+        fetchImpl: async (requested, init) => {
+          await delay(65);
+          return loopbackFetch(url)(requested, init);
+        },
+        log: () => {},
+      });
+      assert.ok(existsSync(bin));
+    }, { chunkBytes: artifact.bytes, intervalMs: 65 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
   }
 });
