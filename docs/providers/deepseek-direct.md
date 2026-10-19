@@ -125,8 +125,12 @@ and the results count as ordinary input on the next model call.
 If a search fails (an HTTP error such as 402 for insufficient balance, a
 timeout or a network error) or finds nothing, WebSearch continues with its
 usual chain, the configured endpoint and then DuckDuckGo, and the result
-carries `deepseek_search_fallback` with the reason. The first failure in a
-session also shows a warning. Other providers' sessions are unchanged.
+carries `deepseek_search_fallback` with the reason. The TUI shows it on the
+WebSearch row, for example `8 results via DuckDuckGo (DeepSeek search: HTTP
+404: Not Found)`; a row from DeepSeek reads `8 results via DeepSeek search`,
+and ctrl+o lists each source's title and URL. The first failure in a session
+is also recorded as a `deepseek_web_search_failed` warning event for the
+daemon log and SDK clients. Other providers' sessions are unchanged.
 
 Provider references checked on 2026-10-19:
 
