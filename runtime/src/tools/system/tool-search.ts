@@ -17,12 +17,27 @@ import {
 } from "./coding-common.js";
 
 function splitSearchTokens(query: string): readonly string[] {
-  return query
+  return [...new Set(query
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLowerCase()
-    .split(/[^a-z0-9_.-]+/)
+    .split(/[^a-z0-9]+/)
     .map((token) => token.trim())
-    .filter((token) => token.length > 0);
+    .filter((token) => token.length > 0))];
 }
+
+// Small vocabulary bridges, applied to both names and catalog descriptions.
+// Keep explicit identities and filters literal; these only rank search results.
+const RELATED_SEARCH_TERMS: readonly (readonly string[])[] = [
+  ["web", "internet", "online"],
+  ["search", "find", "lookup"],
+  ["fetch", "retrieve", "download"],
+  ["page", "webpage"],
+  ["file", "files", "filesystem"],
+  ["directory", "directories", "folder", "folders"],
+  ["skill", "skills"],
+];
+const SEARCH_STOP_WORDS = new Set(["a", "an", "and", "or", "the", "to", "for", "of", "with", "using"]);
+type CatalogSearchScore = readonly [priority: number, matches: number, direct: number, name: number];
 
 function parseToolSearchQuery(rawQuery?: string): {
   readonly query?: string;
@@ -49,8 +64,12 @@ function parseToolSearchQuery(rawQuery?: string): {
   };
 }
 
-function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
-  if (!query) return 10;
+function scoreCatalogEntry(
+  entry: ToolCatalogEntry,
+  query: string | undefined,
+  tokens: readonly string[],
+): CatalogSearchScore | undefined {
+  if (!query) return [10, 0, 0, 0];
   const lowered = query.toLowerCase();
   const entryName = entry.name.toLowerCase();
   const family = entry.metadata.family.toLowerCase();
@@ -58,28 +77,34 @@ function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
   const keywords = entry.metadata.keywords?.map((keyword) => keyword.toLowerCase()) ?? [];
   const haystack = [
     entryName,
+    splitSearchTokens(entry.name).join(" "),
     entry.description.toLowerCase(),
     family,
     source,
     ...keywords,
     ...(entry.metadata.preferredProfiles?.map((profile) => profile.toLowerCase()) ?? []),
   ];
-  if (entryName === lowered) return 0;
-  if (entryName.startsWith(lowered)) return 1;
-  if (keywords.some((keyword) => keyword === lowered)) return 2;
-  if (family === lowered || source === lowered) return 3;
-  const tokens = splitSearchTokens(query);
-  if (tokens.length > 0 && tokens.every((token) => haystack.some((part) => part.includes(token)))) {
-    return 4;
+  if (entryName === lowered) return [0, 0, 0, 0];
+  if (entryName.startsWith(lowered)) return [1, 0, 0, 0];
+  if (keywords.some((keyword) => keyword === lowered)) return [2, 0, 0, 0];
+  if (family === lowered || source === lowered) return [3, 0, 0, 0];
+  const words = new Set(haystack.flatMap(splitSearchTokens));
+  let matches = 0;
+  let direct = 0;
+  let name = 0;
+  for (const token of tokens) {
+    if (haystack.some((part) => part.includes(token))) {
+      matches++;
+      direct++;
+      if (entryName.includes(token)) name++;
+    } else {
+      const related = RELATED_SEARCH_TERMS.find((terms) => terms.includes(token));
+      if (related?.some((term) => words.has(term))) matches++;
+    }
   }
-  if (entry.description.toLowerCase().includes(lowered)) return 5;
-  if (keywords.some((keyword) => keyword.includes(lowered))) return 6;
-  return 99;
-}
-
-function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string): boolean {
-  if (!query) return true;
-  return scoreCatalogEntry(entry, query) < 99;
+  // Coverage wins, then literal matches, then matches in the tool's identity.
+  // A mixed-intent query can find several useful tools without matching every word.
+  return matches > 0 ? [4, matches, direct, name] : undefined;
 }
 
 function mcpUseHint(toolName: string, available: boolean): string | undefined {
@@ -217,6 +242,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
         .filter((entry) => scope === undefined || scope.has(entry.name));
       const parsedQuery = parseToolSearchQuery(toOptionalString(args.query));
       const query = parsedQuery.query;
+      const searchTokens = splitSearchTokens(query ?? "").filter((token) => !SEARCH_STOP_WORDS.has(token));
       const explicitSelections = normalizeSelections(args);
       const selectedEntries = explicitSelections
         .map((name) => resolveSelection(name, catalog))
@@ -261,15 +287,17 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           ) {
             return false;
           }
-          return matchesCatalogQuery(entry, query);
+          return true;
         })
+        .map((entry) => ({ entry, score: scoreCatalogEntry(entry, query, searchTokens) }))
+        .filter((match): match is { entry: ToolCatalogEntry; score: CatalogSearchScore } => match.score !== undefined)
         .sort((left, right) => {
-          const leftScore = scoreCatalogEntry(left, query);
-          const rightScore = scoreCatalogEntry(right, query);
-          if (leftScore !== rightScore) return leftScore - rightScore;
-          return left.name.localeCompare(right.name);
+          return left.score[0] - right.score[0] ||
+            right.score[1] - left.score[1] || right.score[2] - left.score[2] ||
+            right.score[3] - left.score[3] || left.entry.name.localeCompare(right.entry.name);
         })
-        .slice(0, normalizePositiveInteger(args.maxResults, 50, MAX_RESULTS));
+        .slice(0, normalizePositiveInteger(args.maxResults, query ? 5 : 50, MAX_RESULTS))
+        .map(({ entry }) => entry);
       const results = [
         ...selectedEntries,
         ...matchedResults,

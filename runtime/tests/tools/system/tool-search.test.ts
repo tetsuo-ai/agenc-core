@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ToolCatalogEntry } from "../types.js";
 import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
 import { createToolSearchTool } from "./tool-search.js";
-import { SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./coding-common.js";
+import { SESSION_ADVERTISED_TOOL_NAMES_ARG, SESSION_TOOL_CATALOG_SCOPE_ARG } from "./coding-common.js";
 
 function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
   return {
@@ -26,6 +26,72 @@ function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
 }
 
 describe("system.searchTools", () => {
+  const searchEntry = (name: string, description: string): ToolCatalogEntry => ({
+    ...deferredCatalogEntry(name), description,
+    metadata: { ...deferredCatalogEntry(name).metadata, keywords: [] },
+  });
+  const searchCatalog = [
+    searchEntry("WebSearch", "Search the web for current information and sources."),
+    searchEntry("web_fetch", "Fetch a web page from a URL."),
+    searchEntry("ReadFile", "Read a file from disk."),
+    searchEntry("Skill", "Load a skill and its instructions."),
+    searchEntry("mcp.inventory.lookup_stock", "Retrieve inventory count and warehouse for a part."),
+  ];
+  function searchFixture(catalog = searchCatalog) {
+    return createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => catalog, onDiscoverTools: () => {} });
+  }
+
+  test("ranks partial matches for a combined web search and fetch query", async () => {
+    const payload = JSON.parse((await searchFixture().execute({ query: "web search fetch url" })).content);
+    expect(payload.results.slice(0, 2).map((entry: { name: string }) => entry.name)).toEqual(["web_fetch", "WebSearch"]);
+    expect(payload.loaded).toEqual([]);
+    expect(payload.results.every((entry: { selected: boolean }) => !entry.selected)).toBe(true);
+  });
+
+  test.each([
+    ["internet lookup", "WebSearch"],
+    ["download webpage", "web_fetch"],
+    ["read_file", "ReadFile"],
+    ["skills instructions", "Skill"],
+    ["inventory stock warehouse unavailableword", "mcp.inventory.lookup_stock"],
+  ])("finds %s using names, descriptions and related terms", async (query, name) => {
+    const payload = JSON.parse((await searchFixture().execute({ query })).content);
+    expect(payload.results[0]?.name).toBe(name);
+  });
+
+  test("prefers exact identities and full coverage, then limits searches to the best five", async () => {
+    const catalog = [searchEntry("lookup", "Inspect something"),
+      searchEntry("lookup_stock", "Inventory warehouse"),
+      ...Array.from({ length: 20 }, (_, i) => searchEntry(`misc.${i}`, "lookup unrelated"))];
+    const tool = searchFixture(catalog);
+    const payload = JSON.parse((await tool.execute({ query: "lookup" })).content);
+    expect(payload.results).toHaveLength(5);
+    expect(payload.results[0].name).toBe("lookup");
+    const full = JSON.parse((await tool.execute({ query: "inventory warehouse" })).content);
+    expect(full.results[0].name).toBe("lookup_stock");
+    expect(JSON.parse((await tool.execute({ query: "lookup", maxResults: 12 })).content).results).toHaveLength(12);
+    expect(JSON.parse((await tool.execute({})).content).results).toHaveLength(22);
+    expect(JSON.parse((await tool.execute({ query: "unmatchablezzzz" })).content).results).toEqual([]);
+  });
+
+  test("partial matching respects catalog scope, hidden and exact family/source/profile filters", async () => {
+    const hidden = { ...searchCatalog[0]!, metadata: { ...searchCatalog[0]!.metadata, hiddenByDefault: true } };
+    const tool = searchFixture([hidden, ...searchCatalog.slice(1)]);
+    for (const filter of [
+      { [SESSION_TOOL_CATALOG_SCOPE_ARG]: ["Skill"] }, { family: "absent" },
+      { source: "absent" }, { profile: "absent" },
+      { advertisedOnly: true, [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["Skill"] },
+    ]) {
+      const payload = JSON.parse((await tool.execute({ query: "web search missing", ...filter })).content);
+      expect(payload.results).toEqual([]);
+    }
+    expect(JSON.parse((await tool.execute({ query: "web search missing" })).content).results
+      .some((entry: { name: string }) => entry.name === "WebSearch")).toBe(false);
+    expect(JSON.parse((await tool.execute({ query: "web search missing", includeHidden: true })).content).results
+      .some((entry: { name: string }) => entry.name === "WebSearch")).toBe(true);
+  });
+
   test("is side-effecting because selected tools update advertised session state", () => {
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],
