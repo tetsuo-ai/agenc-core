@@ -278,7 +278,8 @@ export function buildProviderOptions(
   transferToolOwnership = false,
 ): LLMChatOptions {
   const allowedToolNames = request.tools.map((spec) => spec.function.name);
-  const planMode = isPlanMode(ctx);
+  // Plan mode restricts tool execution; it does not require a tool for answers.
+  // Text cannot exit plan mode or grant approval to mutate the workspace.
   const systemPrompt = request.baseInstructions.trim();
   const promptCacheKey = resolveSessionPromptCacheKey(session);
   const traceSink = resolveProviderTraceSink(session);
@@ -305,9 +306,7 @@ export function buildProviderOptions(
       : {}),
     ...(request.toolChoice !== undefined
       ? { toolChoice: request.toolChoice }
-      : planMode && request.tools.length > 0
-        ? { toolChoice: "required" as const }
-        : {}),
+      : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
     ...((request.reasoningOnlyRecovery === true ||

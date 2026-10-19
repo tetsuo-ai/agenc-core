@@ -734,12 +734,14 @@ function planModeBody(
   planExists: boolean,
 ): string {
   if (variant === "sparse") {
-    return `Plan mode is active. Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${planFilePath}). Follow the planning workflow: explore codebase, ask the user clarifying questions when needed, and write to the plan incrementally. End turns with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). Never ask about plan approval via text or AskUserQuestion.`;
+    return `Plan mode is active. Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${planFilePath}). Follow the planning workflow: explore codebase, ask the user clarifying questions when needed, and write to the plan incrementally. For implementation planning, end with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). If the request only needs an answer or no changes are needed, answer directly and remain in plan mode; do not create a plan or request approval just to finish. Never ask about plan approval via text or AskUserQuestion.`;
   }
   const planLine = planExists
     ? `A plan file already exists at ${planFilePath}. You can read it and make incremental edits using the Edit tool.`
     : `No plan file exists yet. You should create your plan at ${planFilePath} using the Write tool.`;
   return `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+
+For a request that only needs an answer, explanation, acknowledgement, or a conclusion that no changes are needed, answer directly and remain in plan mode. Skip the planning workflow below and do not call ExitPlanMode merely to finish. A direct answer grants no execution authority.
 
 ## Plan File Info:
 ${planLine}
@@ -781,7 +783,7 @@ Goal: Write your final plan to the plan file (the only file you can edit).
 
 ### Phase 5: Call ExitPlanMode
 At the very end of your turn, once you have asked the user questions and are happy with your final plan file, you should call ExitPlanMode to indicate to the user that you are done planning.
-This is critical - your turn should only end with either using AskUserQuestion OR calling ExitPlanMode. Do not stop unless it's for these 2 reasons.
+For implementation planning, finish with AskUserQuestion for unresolved requirements or ExitPlanMode for plan approval. Direct answers and no-change conclusions may end without a tool call; remain in plan mode.
 
 **Important:** Use AskUserQuestion ONLY to clarify requirements or choose between approaches. Use ExitPlanMode to request plan approval. Do NOT ask about plan approval in any other way - no text questions, no AskUserQuestion. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar MUST use ExitPlanMode.
 
@@ -797,7 +799,7 @@ function planModeReentryBody(
     : `No plan file exists yet. Create your plan at ${planFilePath}.`;
   return `## Re-entering plan mode
 
-You are returning to plan mode after having previously exited it. ${planLine}
+You are returning to plan mode after having previously exited it. If the request only needs a direct answer or no changes are needed, answer and remain in plan mode without revising a plan or calling ExitPlanMode. For implementation planning: ${planLine}
 
 **Before proceeding with any new planning, you should:**
 1. Read the existing plan file to understand what was previously planned.

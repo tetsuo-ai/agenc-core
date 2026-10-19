@@ -4398,93 +4398,17 @@ describe("runTurn — live sampling request contract", () => {
     }
   });
 
-  test("plan mode retries when provider returns assistant text without a tool call", async () => {
-    const ctx = { ...mkCtx(), permissionMode: "plan" } as TurnContext;
-
-    const exitPlanTool: LLMTool = {
-      type: "function",
-      function: {
-        name: "ExitPlanMode",
-        description: "exit plan mode",
-        parameters: { type: "object" },
-      },
-    };
-    const seenMessages: LLMMessage[][] = [];
-    let calls = 0;
-    const provider: LLMProvider = {
-      name: "stub-provider",
-      chat: async () => ({
-        content: "",
-        toolCalls: [],
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        model: "test-model",
-        finishReason: "stop",
-      }),
-      chatStream: async (messages) => {
-        seenMessages.push(messages.map((message) => ({ ...message })));
-        calls += 1;
-        if (calls === 1) {
-          return {
-            content:
-              "Questions for you:\n1. Which path should I take?\n\nReply with preferences.",
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "test-model",
-            finishReason: "stop",
-          };
-        }
-        if (calls === 2) {
-          return {
-            content: "",
-            toolCalls: [
-              {
-                id: "exit-plan",
-                name: "ExitPlanMode",
-                arguments: JSON.stringify({ plan: "## Plan\n\nUse tools." }),
-              },
-            ],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "test-model",
-            finishReason: "tool_calls",
-          };
-        }
-        return {
-          content: "Plan mode exited.",
-          toolCalls: [],
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          model: "test-model",
-          finishReason: "stop",
-        };
-      },
-      healthCheck: async () => true,
-    };
-    const registry = {
-      tools: [],
-      toLLMTools: () => [exitPlanTool],
-      dispatch: async (toolCall: LLMToolCall) => {
-        (ctx as { permissionMode: PermissionMode }).permissionMode =
-          "bypassPermissions";
-        return { content: "exited", isError: false };
-      },
-    } as ToolRegistry;
-    const { session } = mkSession({ provider, registry, permissionModeRegistry: new PermissionModeRegistry({
-      ...createEmptyToolPermissionContext(), mode: "plan",
-    }) });
-
-    await drain(session.runTurn("plan this", { ctx }));
-
-    // The stub registry returns a plain tool result instead of running the
-    // real ExitPlanMode side effects, so plan mode remains active and the
-    // retry guard exhausts its bounded retry budget.
-    expect(calls).toBe(5);
-    const secondRequestText = seenMessages[1]
-      ?.map((message) => String(message.content))
-      .join("\n");
-    expect(secondRequestText).toContain(
-      "Plan mode requires this step to end with a tool call.",
-    );
-    expect(secondRequestText).not.toContain("Reply with preferences");
+  test("plan mode accepts a text-only answer without retrying or approving execution", async () => {
+    const provider = mkProvider({ content: "No changes needed." });
+    const chat = vi.spyOn(provider, "chatStream");
+    const registry = { tools: [], toLLMTools: () => [{ type: "function", function: { name: "ExitPlanMode", description: "Present a plan", parameters: { type: "object" } } }], dispatch: vi.fn() } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry, permissionModeRegistry: new PermissionModeRegistry({ ...createEmptyToolPermissionContext(), mode: "plan" }) });
+    await drain(session.runTurn("Just explain; do not change anything.", { ctx: mkCtx({ permissionMode: "plan" }) }));
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(registry.dispatch).not.toHaveBeenCalled();
+    expect(session.permissionModeRegistry.current().mode).toBe("plan");
   });
+
 });
 
 describe("runTurn — model request context ordering", () => {

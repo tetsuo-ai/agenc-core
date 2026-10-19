@@ -131,6 +131,26 @@ describe("deferred rare tools", () => {
   });
 });
 
+describe("delegation discovery in Light", () => {
+  test.each([undefined, false, true])("loading spawn also exposes its wait and collection tools (deferral %s)", async (defer) => {
+    const tools = registry(defer, true);
+    expect(advertised(tools)).not.toContain("wait_agent");
+    await tools.dispatch({ id: "load-light-spawn", name: SYSTEM_SEARCH_TOOLS_NAME, arguments: '{"select":"spawn_agent"}' });
+    expect(advertised(tools)).toEqual(expect.arrayContaining(["spawn_agent", ...DELEGATION_COMPANION_TOOLS]));
+  });
+
+  test("companion loading respects disabled tools", async () => {
+    const tools = buildToolRegistry({ workspaceRoot: "/tmp", requireAdmission: false,
+      sandboxExecutionBroker: explicitDangerBroker, lightMode: true,
+      extraTools: [fakeTool("spawn_agent"), ...DELEGATION_COMPANION_TOOLS.map(fakeTool)],
+      toolsConfig: { disabled_tools: ["wait_agent"] },
+    });
+    await tools.dispatch({ id: "load-light-spawn", name: SYSTEM_SEARCH_TOOLS_NAME, arguments: '{"select":"spawn_agent"}' });
+    expect(advertised(tools)).toContain("list_agents");
+    expect(advertised(tools)).not.toContain("wait_agent");
+  });
+});
+
 describe("standard deferral", () => {
   test("select:spawn_agent loads the delegation tools, appended after the initial tools in load order", async () => {
     const tools = registry(true);

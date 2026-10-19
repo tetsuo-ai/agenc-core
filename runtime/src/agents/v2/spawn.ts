@@ -1497,6 +1497,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     return json({
       task_name: live.agentPath,
+      collect: "Use wait_agent to collect this helper: queued results return immediately, otherwise it wakes when a message or completion arrives. Do useful independent work first; do not wait with shell sleep or file polling.",
       ...(routingReason !== undefined ? { routing_reason: routingReason } : {}),
       ...(routingCandidates !== undefined ? { automatic_fallback: verifiedRouting === undefined
         ? "If this child fails on a provider error before it runs a tool, up to two retry workers may start on other providers while this turn lasts. A routing message names each one. Without such a message, this child's own result is final."

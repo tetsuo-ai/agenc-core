@@ -741,7 +741,7 @@ export function buildToolRegistry(
   const deferRareTools = options.deferRareTools === true;
   const standardDeferral = deferRareTools && options.lightMode !== true;
   const markDiscovered = (toolNames: readonly string[]): void => {
-    for (const name of standardDeferral ? withDeferredCompanions(toolNames) : toolNames) {
+    for (const name of withDeferredCompanions(toolNames)) {
       if (typeof name === "string" && name.trim().length > 0) {
         discoveredToolNames.add(name);
       }

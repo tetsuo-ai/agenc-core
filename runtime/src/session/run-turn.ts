@@ -290,7 +290,6 @@ import {
   buildSamplingRequestContract,
   builtTools,
   discoverDirectMcpToolMentions,
-  enforcePlanModeToolBoundary,
   snapshotSamplingRequestContract,
 } from "./run-turn-sampling-request.js";
 import {
@@ -1065,7 +1064,6 @@ async function tryRunSamplingRequest(
       signal,
       assistantOutputSink,
     );
-    enforcePlanModeToolBoundary(state, ctx, request, session.permissionModeRegistry.current().mode);
   } catch (error) {
     if (error instanceof StreamModelError) {
       streamModelError = error;

@@ -1175,7 +1175,7 @@ describe("streamModel — live assistant text sanitization", () => {
     }
   });
 
-  test("requires a tool choice in plan mode when tools are available", async () => {
+  test("allows a direct answer in plan mode when tools are available", async () => {
     const ctx = mkCtx("plan");
     const state = mkState(ctx);
     const registry = mkRegistry([
@@ -1215,7 +1215,7 @@ describe("streamModel — live assistant text sanitization", () => {
       },
     );
 
-    expect(seenOptions[0]?.toolChoice).toBe("required");
+    expect(seenOptions[0]?.toolChoice).toBeUndefined();
   });
 
   test("does not require tool choice outside plan mode", async () => {

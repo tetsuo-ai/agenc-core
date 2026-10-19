@@ -9,7 +9,7 @@ import type { ToolRegistry } from "../../src/tool-registry.js";
 import { mkCtx, mkSession } from "../fixtures.js";
 
 describe("Ollama plan mode", () => {
-  test("fails with plan_mode_tool_required after sending the catalog without tool_choice", async () => {
+  test("allows an answer with the catalog without forcing tool_choice", async () => {
     const requests: Record<string, unknown>[] = [];
     const traces: LLMProviderTraceEvent[] = [];
     const registry = {
@@ -29,7 +29,7 @@ describe("Ollama plan mode", () => {
       requests.push(request);
       yield {
         model: "test-model",
-        message: { role: "assistant", content: "Need a file first." },
+        message: { role: "assistant", content: "No changes are needed." },
         done: true,
         done_reason: "stop",
         prompt_eval_count: 8,
@@ -70,8 +70,7 @@ describe("Ollama plan mode", () => {
         function: expect.objectContaining({ name: "FileRead" }),
       }),
     ];
-    // Initial sample plus the two plan-mode retries, then the boundary fails.
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(1);
     for (const request of requests) {
       expect(request.tools).toEqual(catalog);
       expect(request).not.toHaveProperty("tool_choice");
@@ -80,24 +79,14 @@ describe("Ollama plan mode", () => {
     expect(requestTraces).toHaveLength(requests.length);
     for (const event of requestTraces) {
       expect(event.context).toMatchObject({
-        requestedToolChoice: "required",
+        requestedToolChoice: "auto",
         effectiveToolChoice: "auto",
       });
     }
-    expect(terminal).toMatchObject({
-      reason: "completed",
-      error: expect.objectContaining({
-        message: "plan_mode_tool_required: provider returned assistant text without a tool call",
-      }),
-    });
+    expect(terminal).toMatchObject({ reason: "completed" });
+    expect(terminal.error).toBeUndefined();
     expect(yielded.filter((event) => event.type === "turn_complete")).toEqual([
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "error",
-        error: expect.objectContaining({
-          message: "plan_mode_tool_required: provider returned assistant text without a tool call",
-        }),
-      }),
+      expect.objectContaining({ type: "turn_complete", stopReason: "completed", content: "No changes are needed." }),
     ]);
   });
 });
