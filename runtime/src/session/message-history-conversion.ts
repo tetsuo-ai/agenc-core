@@ -208,6 +208,15 @@ export function createCheckpointResponseItemProjector(): typeof llmMessageToChec
   return withCheckpointProjectionCache((message) => projectCheckpointMessage(message, redact));
 }
 
+/**
+ * The full checkpoint projection with a bounded exact-string redaction memo
+ * and no projection reuse, for a caller that projects each message once.
+ */
+export function createCheckpointMessageProjector(): typeof llmMessageToCheckpointResponseItem {
+  const redact = createMemoizedSecretRedactor();
+  return (message) => projectCheckpointMessage(message, redact);
+}
+
 function projectCheckpointMessage(
   message: LLMMessage,
   redact: typeof redactSecretsInValue,

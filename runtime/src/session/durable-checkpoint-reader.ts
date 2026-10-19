@@ -15,11 +15,14 @@ import {
 } from "../contracts/agent-invocation-envelope.js";
 import { assertCompactionHistoryMarkerV1 } from "./compaction-history-marker.js";
 import {
+  CanonicalFieldRecorder,
   CanonicalSha256Writer,
   TOOL_RESULT_DIGEST_PREFIX,
   ToolResultCanonicalizationError,
   constantTimeDigestEqual,
   digestToolResultBody,
+  type CanonicalFieldRecord,
+  type CanonicalFieldWriter,
   type ToolResultIntegrityDeferral,
   type ToolResultIntegrityFailure,
 } from "./tool-result-integrity.js";
@@ -369,156 +372,260 @@ function computeCheckpointPrefixHash(
     }
     assertResponseItemShape(message, index, authenticateCompactionHistory);
     writer.writeCount("message-index", index);
-    writer.writeString("role", message.role);
-    const integrity = message.toolResultIntegrity;
-    const bodyIdentity =
-      message.role === "tool" && integrity !== undefined
-        ? integrity.persisted
-        : digestToolResultBody(message.content);
-    writer.writeString("content-digest", bodyIdentity.digest);
-    writer.writeCount("content-byte-length", bodyIdentity.byteLength);
-
-    const calls = message.toolCalls ?? [];
-    writer.writeCount("tool-call-count", calls.length);
-    for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
-      const call = calls[callIndex];
-      if (call === undefined) continue;
-      writer.writeCount("tool-call-index", callIndex);
-      writer.writeString("tool-call-id", call.id);
-      writer.writeString("tool-call-name", call.name);
-      writeOptionalString(writer, "tool-call-arguments", call.arguments);
-    }
-    writeOptionalString(writer, "tool-result-call-id", message.toolCallId);
-    writeOptionalString(writer, "tool-result-name", message.toolName);
-    writeOptionalString(writer, "response-id", message.id);
-    // Failure status was absent from historical digest versions. Only the
-    // explicit new algorithm authenticates it; there is no fallback.
-    if (authenticateToolResultStatus && message.toolResultIsError === true) {
-      writer.writeString("tool-result-is-error", "true");
-    }
-    writeOptionalString(writer, "phase", message.phase);
-    writer.writeString(
-      "end-turn-present",
-      String(message.endTurn !== undefined),
+    writeCheckpointPrefixMessage(
+      writer,
+      message,
+      authenticateCompactionHistory,
+      authenticateToolResultStatus,
     );
-    if (message.endTurn !== undefined) {
-      writer.writeString("end-turn", String(message.endTurn));
-    }
-
-    // Conditional encoding preserves existing checkpoint hashes when the
-    // optional field is absent, while authenticating every new replay value.
-    if (message.providerReasoning !== undefined) {
-      writer.writeCount(
-        "provider-reasoning-version",
-        message.providerReasoning.version,
-      );
-      writer.writeString(
-        "provider-reasoning-content",
-        message.providerReasoning.content,
-      );
-      if (message.providerReasoning.version === 2) {
-        writer.writeString(
-          "provider-reasoning-provider",
-          message.providerReasoning.provider,
-        );
-        writer.writeString(
-          "provider-reasoning-model",
-          message.providerReasoning.model,
-        );
-      }
-    }
-
-    writer.writeString(
-      "tool-result-integrity-present",
-      String(integrity !== undefined),
-    );
-    if (integrity !== undefined) {
-      writer.writeCount("tool-result-integrity-version", integrity.version);
-      writer.writeString("tool-result-algorithm", integrity.algorithm);
-      writer.writeString("tool-result-run-id", integrity.runId);
-      writer.writeString("tool-result-call-id", integrity.toolCallId);
-      writer.writeString("tool-result-id", integrity.resultId);
-      writer.writeString(
-        "tool-result-original-digest",
-        integrity.original.digest,
-      );
-      writer.writeCount(
-        "tool-result-original-byte-length",
-        integrity.original.byteLength,
-      );
-      writer.writeString(
-        "tool-result-persisted-representation",
-        integrity.persisted.representation,
-      );
-      writer.writeString(
-        "tool-result-persisted-digest",
-        integrity.persisted.digest,
-      );
-      writer.writeCount(
-        "tool-result-persisted-byte-length",
-        integrity.persisted.byteLength,
-      );
-    }
-
-    const agentInvocation = message.agentInvocation;
-    if (agentInvocation !== undefined) {
-      writer.writeCount("agent-invocation-version", agentInvocation.version);
-      writer.writeString("agent-invocation-kind", agentInvocation.kind);
-      writer.writeString("agent-invocation-id", agentInvocation.invocationId);
-      writer.writeCount(
-        "agent-invocation-minimum-reader-version",
-        agentInvocation.minimumReaderVersion,
-      );
-      writer.writeString(
-        "agent-invocation-envelope-digest",
-        agentInvocation.envelopeDigest,
-      );
-      writer.writeString(
-        "agent-invocation-authority",
-        agentInvocation.authority,
-      );
-      writer.writeCount(
-        "agent-invocation-channel-index",
-        agentInvocation.channelIndex,
-      );
-      writer.writeCount(
-        "agent-invocation-channel-count",
-        agentInvocation.channelCount,
-      );
-      writer.writeString(
-        "agent-invocation-content-digest",
-        agentInvocation.contentSha256,
-      );
-      writer.writeCount(
-        "agent-invocation-content-byte-length",
-        agentInvocation.contentByteLength,
-      );
-    }
-
-    if (authenticateCompactionHistory) {
-      const compactionHistory = message.compactionHistory;
-      writer.writeString(
-        "compaction-history-present",
-        String(compactionHistory !== undefined),
-      );
-      if (compactionHistory !== undefined) {
-        writer.writeCount(
-          "compaction-history-version",
-          compactionHistory.version,
-        );
-        writer.writeString("compaction-history-kind", compactionHistory.kind);
-        writer.writeString(
-          "compaction-history-attempt-id",
-          compactionHistory.attempt_id,
-        );
-        writer.writeString(
-          "compaction-history-summary-sha256",
-          compactionHistory.summary_sha256,
-        );
-      }
-    }
   }
   return writer.digest().slice(TOOL_RESULT_DIGEST_PREFIX.length);
+}
+
+/**
+ * One v4 prefix message, recorded once so a writer can digest a growing
+ * history without re-encoding it. It holds the message's canonical fields as
+ * {@link computeCheckpointPrefixHashV4} writes them after `message-index`.
+ */
+export interface CheckpointPrefixRecordV4 {
+  readonly fields: CanonicalFieldRecord;
+}
+
+/** A recorded v4 prefix message bound to its position in the prefix. */
+export interface PositionedCheckpointPrefixRecordV4 {
+  readonly index: number;
+  readonly record: CheckpointPrefixRecordV4;
+  readonly position: CanonicalFieldRecord;
+}
+
+const checkpointPrefixRecordsV4 = new WeakSet<CheckpointPrefixRecordV4>();
+const positionedCheckpointPrefixRecordsV4 =
+  new WeakSet<PositionedCheckpointPrefixRecordV4>();
+
+/**
+ * Apply the v4 per-message gate (the same shape assertion as the full digest)
+ * and record the fields the digest writes for this message. `index` only
+ * labels errors; the record itself is position independent.
+ */
+export function recordCheckpointPrefixMessageV4(
+  message: ToolResultIntegrityResponseItem,
+  index: number,
+): CheckpointPrefixRecordV4 {
+  assertResponseItemShape(message, index, true);
+  const recorder = new CanonicalFieldRecorder();
+  writeCheckpointPrefixMessage(recorder, message, true, true);
+  const record = Object.freeze({ fields: recorder.finish() });
+  checkpointPrefixRecordsV4.add(record);
+  return record;
+}
+
+/** Bind a recorded message to `index`, framing `message-index` exactly. */
+export function positionCheckpointPrefixRecordV4(
+  record: CheckpointPrefixRecordV4,
+  index: number,
+): PositionedCheckpointPrefixRecordV4 {
+  if (!checkpointPrefixRecordsV4.has(record)) {
+    throw new TypeError("checkpoint prefix record was not produced by recordCheckpointPrefixMessageV4");
+  }
+  const recorder = new CanonicalFieldRecorder();
+  recorder.writeCount("message-index", index);
+  const positioned = Object.freeze({ index, record, position: recorder.finish() });
+  positionedCheckpointPrefixRecordsV4.add(positioned);
+  return positioned;
+}
+
+/**
+ * The v4 prefix digest of a history whose messages were recorded one by one.
+ * Equal to {@link computeCheckpointPrefixHashV4} over those messages once the
+ * caller has also validated their agent-invocation sequence
+ * ({@link validateCheckpointPrefixInvocationSequenceV4}); it replays the
+ * recorded bytes instead of encoding every message again.
+ */
+export function computeCheckpointPrefixHashV4FromRecords(
+  records: ReadonlyArray<PositionedCheckpointPrefixRecordV4>,
+): string {
+  const writer = new CanonicalSha256Writer(CHECKPOINT_PREFIX_V4_DIGEST_DOMAIN);
+  writer.writeCount("message-count", records.length);
+  for (let index = 0; index < records.length; index += 1) {
+    const positioned = records[index];
+    if (
+      positioned === undefined ||
+      !positionedCheckpointPrefixRecordsV4.has(positioned) ||
+      positioned.index !== index
+    ) {
+      throw new Error(`checkpoint prefix record ${index} is missing or misplaced`);
+    }
+    writer.writeRecord(positioned.position);
+    writer.writeRecord(positioned.record.fields);
+  }
+  return writer.digest().slice(TOOL_RESULT_DIGEST_PREFIX.length);
+}
+
+/**
+ * The agent-invocation sequence gate of the v4 digest. A message without
+ * invocation metadata only contributes its content check, so callers that
+ * validated that check once may pass `content: ""` for it here.
+ */
+export function validateCheckpointPrefixInvocationSequenceV4(
+  items: ReadonlyArray<Pick<ToolResultIntegrityResponseItem, "role" | "content" | "agentInvocation">>,
+): void {
+  validateAgentInvocationResponseSequence(items as readonly ToolResultIntegrityResponseItem[]);
+}
+
+function writeCheckpointPrefixMessage(
+  writer: CanonicalFieldWriter,
+  message: ToolResultIntegrityResponseItem,
+  authenticateCompactionHistory: boolean,
+  authenticateToolResultStatus: boolean,
+): void {
+  writer.writeString("role", message.role);
+  const integrity = message.toolResultIntegrity;
+  const bodyIdentity =
+    message.role === "tool" && integrity !== undefined
+      ? integrity.persisted
+      : digestToolResultBody(message.content);
+  writer.writeString("content-digest", bodyIdentity.digest);
+  writer.writeCount("content-byte-length", bodyIdentity.byteLength);
+
+  const calls = message.toolCalls ?? [];
+  writer.writeCount("tool-call-count", calls.length);
+  for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+    const call = calls[callIndex];
+    if (call === undefined) continue;
+    writer.writeCount("tool-call-index", callIndex);
+    writer.writeString("tool-call-id", call.id);
+    writer.writeString("tool-call-name", call.name);
+    writeOptionalString(writer, "tool-call-arguments", call.arguments);
+  }
+  writeOptionalString(writer, "tool-result-call-id", message.toolCallId);
+  writeOptionalString(writer, "tool-result-name", message.toolName);
+  writeOptionalString(writer, "response-id", message.id);
+  // Failure status was absent from historical digest versions. Only the
+  // explicit new algorithm authenticates it; there is no fallback.
+  if (authenticateToolResultStatus && message.toolResultIsError === true) {
+    writer.writeString("tool-result-is-error", "true");
+  }
+  writeOptionalString(writer, "phase", message.phase);
+  writer.writeString(
+    "end-turn-present",
+    String(message.endTurn !== undefined),
+  );
+  if (message.endTurn !== undefined) {
+    writer.writeString("end-turn", String(message.endTurn));
+  }
+
+  // Conditional encoding preserves existing checkpoint hashes when the
+  // optional field is absent, while authenticating every new replay value.
+  if (message.providerReasoning !== undefined) {
+    writer.writeCount(
+      "provider-reasoning-version",
+      message.providerReasoning.version,
+    );
+    writer.writeString(
+      "provider-reasoning-content",
+      message.providerReasoning.content,
+    );
+    if (message.providerReasoning.version === 2) {
+      writer.writeString(
+        "provider-reasoning-provider",
+        message.providerReasoning.provider,
+      );
+      writer.writeString(
+        "provider-reasoning-model",
+        message.providerReasoning.model,
+      );
+    }
+  }
+
+  writer.writeString(
+    "tool-result-integrity-present",
+    String(integrity !== undefined),
+  );
+  if (integrity !== undefined) {
+    writer.writeCount("tool-result-integrity-version", integrity.version);
+    writer.writeString("tool-result-algorithm", integrity.algorithm);
+    writer.writeString("tool-result-run-id", integrity.runId);
+    writer.writeString("tool-result-call-id", integrity.toolCallId);
+    writer.writeString("tool-result-id", integrity.resultId);
+    writer.writeString(
+      "tool-result-original-digest",
+      integrity.original.digest,
+    );
+    writer.writeCount(
+      "tool-result-original-byte-length",
+      integrity.original.byteLength,
+    );
+    writer.writeString(
+      "tool-result-persisted-representation",
+      integrity.persisted.representation,
+    );
+    writer.writeString(
+      "tool-result-persisted-digest",
+      integrity.persisted.digest,
+    );
+    writer.writeCount(
+      "tool-result-persisted-byte-length",
+      integrity.persisted.byteLength,
+    );
+  }
+
+  const agentInvocation = message.agentInvocation;
+  if (agentInvocation !== undefined) {
+    writer.writeCount("agent-invocation-version", agentInvocation.version);
+    writer.writeString("agent-invocation-kind", agentInvocation.kind);
+    writer.writeString("agent-invocation-id", agentInvocation.invocationId);
+    writer.writeCount(
+      "agent-invocation-minimum-reader-version",
+      agentInvocation.minimumReaderVersion,
+    );
+    writer.writeString(
+      "agent-invocation-envelope-digest",
+      agentInvocation.envelopeDigest,
+    );
+    writer.writeString(
+      "agent-invocation-authority",
+      agentInvocation.authority,
+    );
+    writer.writeCount(
+      "agent-invocation-channel-index",
+      agentInvocation.channelIndex,
+    );
+    writer.writeCount(
+      "agent-invocation-channel-count",
+      agentInvocation.channelCount,
+    );
+    writer.writeString(
+      "agent-invocation-content-digest",
+      agentInvocation.contentSha256,
+    );
+    writer.writeCount(
+      "agent-invocation-content-byte-length",
+      agentInvocation.contentByteLength,
+    );
+  }
+
+  if (authenticateCompactionHistory) {
+    const compactionHistory = message.compactionHistory;
+    writer.writeString(
+      "compaction-history-present",
+      String(compactionHistory !== undefined),
+    );
+    if (compactionHistory !== undefined) {
+      writer.writeCount(
+        "compaction-history-version",
+        compactionHistory.version,
+      );
+      writer.writeString("compaction-history-kind", compactionHistory.kind);
+      writer.writeString(
+        "compaction-history-attempt-id",
+        compactionHistory.attempt_id,
+      );
+      writer.writeString(
+        "compaction-history-summary-sha256",
+        compactionHistory.summary_sha256,
+      );
+    }
+  }
 }
 
 /**
@@ -1428,7 +1535,7 @@ function* prefixMessages(
 }
 
 function writeOptionalString(
-  writer: CanonicalSha256Writer,
+  writer: CanonicalFieldWriter,
   label: string,
   value: string | undefined,
 ): void {

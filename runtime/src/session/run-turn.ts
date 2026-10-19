@@ -179,14 +179,12 @@ import {
   resetRecoveryReentriesAfterProgress,
 } from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
-import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
   captureDurableResponseItem,
-  captureCheckpointMessage,
-  createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
+import { checkpointPrefixTrackerFor } from "./checkpoint-prefix-tracker.js";
 import {
   toTurnContextItem,
   modelContextWindow,
@@ -231,10 +229,7 @@ import {
   sideEffectHaltMessage,
 } from "./durable-turns.js";
 import { resumedToolCallResultContent } from "./recovery-tool-result.js";
-import {
-  DURABLE_CHECKPOINT_WRITE_VERSION,
-  computeCheckpointPrefixHashV4,
-} from "./durable-checkpoint-reader.js";
+import { DURABLE_CHECKPOINT_WRITE_VERSION } from "./durable-checkpoint-reader.js";
 import {
   createToolResultIntegrity,
   verifyToolResultIntegrity,
@@ -547,12 +542,6 @@ function sealToolResultMessage(message: LLMMessage, runId: string): LLMMessage {
       }),
     },
   };
-}
-
-function requireSealedToolResult(message: ResponseItem): void {
-  if (message.role === "tool" && message.toolResultIntegrity === undefined) {
-    throw new Error("checkpoint v2 requires every tool result to be sealed");
-  }
 }
 
 function terminalToStopReason(
@@ -2803,7 +2792,9 @@ async function* runTurnKernelInner(
   // rollout) — only the cursor + content hash + the resumable TurnState
   // slice (incl. the DERIVED taskBudgetRemaining, never a raw clock).
   const durableTurnsCfg = resolveDurableTurnsConfig(ctx.config);
-  const projectCheckpointMessage = createCheckpointResponseItemProjector();
+  // Session-scoped: each message is projected and encoded once, and every
+  // later checkpoint (in this turn or a later one) replays its record.
+  const checkpointPrefix = checkpointPrefixTrackerFor(session);
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
@@ -2837,27 +2828,23 @@ async function* runTurnKernelInner(
     // index. Tool-result entries contribute their authenticated persisted-body
     // identity, so the hash still represents the exact durable body even after
     // the corresponding in-memory content has been bounded.
-    // Capture live content before future compaction/retention can change it.
-    // The private integrity identity is shared with the earlier response-item
-    // job, which fills its persisted seal before this FIFO checkpoint job.
+    // A deferred build captures live content before future compaction or
+    // retention can change it. The private integrity identity is shared with
+    // the earlier response-item job, which fills its persisted seal before
+    // this FIFO checkpoint job.
     const deferring = session.writeBehind?.deferring === true && session.emitDeferred !== undefined;
-    const messages = state.messages
-      .slice(durableHistoryStartIndex(state.messages))
-      .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => {
-        if (!deferring) return message;
-        const integrity = message.runtimeOnly?.toolResultIntegrity;
-        return captureCheckpointMessage(message,
-          integrity !== undefined && pendingPersistedIdentities.has(integrity) ? integrity : undefined);
-      });
+    const prefix = checkpointPrefix.capture(
+      state.messages
+        .slice(durableHistoryStartIndex(state.messages))
+        .filter((message) => !excludeFromDurableHistory(message)),
+      { deferring, pendingIntegrity: (integrity) => pendingPersistedIdentities.has(integrity) },
+    );
     const capturedIteration = iterationIndex;
     const capturedCheckpoint = checkpointSeq;
     const slice = toCheckpointSlice(state);
     const resumableState = deferring ? structuredClone(slice) : slice;
     const buildMsg = (): Extract<EventMsg, { type: "turn_checkpoint" }> => {
-      const durablePrefix = messages.map((message) => projectCheckpointMessage(message));
-      for (const message of durablePrefix) requireSealedToolResult(message);
-      const prefixHash = computeCheckpointPrefixHashV4(durablePrefix, durablePrefix.length);
+      const { prefixHash, persistedMessageCount } = prefix.build();
       return {
         type: "turn_checkpoint",
         payload: {
@@ -2865,7 +2852,7 @@ async function* runTurnKernelInner(
           iterationIndex: capturedIteration,
           boundary,
           checkpointSeq: capturedCheckpoint,
-          persistedMessageCount: durablePrefix.length,
+          persistedMessageCount,
           prefixHash,
           checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
           toolResultIntegrityVersion: 1,
