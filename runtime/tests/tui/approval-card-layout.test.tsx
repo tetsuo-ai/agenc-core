@@ -254,14 +254,36 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
   })
 })
 
- test("abbreviates home paths in commands and permission notes", async () => {
-  const path = `${homedir()}/.agenc/memory/MEMORY.md`;
-  const output = await renderToString(
-    <ApprovalCard risk="low" title="tool · read · needs approval"
-      command={path} commandIsShell={false} facts={[]}
-      note={`Read ${path}`} confirmLabel="enter approve" />,
-    { columns: 120, rows: 40 },
-  );
-  expect(output).toContain("~/.agenc/memory/MEMORY.md");
-  expect(output).not.toContain(homedir());
+describe('literal approval inputs', () => {
+  test('preserves quoted absolute home paths in the shell command byte for byte', async () => {
+    const command = `rm -rf '${homedir()}/'`;
+    const output = await renderToString(
+      <ApprovalCard risk="high" title="tool · shell · needs approval"
+        command={command} facts={[]} confirmLabel="enter approve" />,
+      { columns: 400, rows: 40 },
+    );
+    expect(output).toContain(`$ ${command}`);
+    expect(output).not.toContain("'~/'");
+  });
+
+  test('preserves bare paths, permission notes, fact values and diff filenames', async () => {
+    const path = `${homedir()}/.agenc/memory/MEMORY.md`;
+    const output = await renderToString(
+      <ApprovalCard risk="low" title="tool · read · needs approval"
+        command={path} commandIsShell={false} facts={[{ label: 'path', value: path }]}
+        note={`Read ${path}`} confirmLabel="enter approve" />,
+      { columns: 400, rows: 40 },
+    );
+    expect(output).toContain(path);
+    expect(output).toContain(`note · Read ${path}`);
+    expect(output).not.toContain('~');
+    const diff = await renderToString(
+      <ApprovalCard risk="low" title="tool · write · needs approval"
+        command={path} commandIsShell={false} facts={[]} confirmLabel="enter approve"
+        diffPreview={{ file: path, stats: '(+1)', lines: [{ kind: 'add', code: 'hello' }], remaining: 0 }} />,
+      { columns: 400, rows: 40 },
+    );
+    expect(diff).toContain(path);
+    expect(diff).not.toContain('~');
+  });
 });
