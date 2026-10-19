@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { PYTHON_SERVER_BIND_DENIED, PYTHON_SERVER_SOCKET_DENIED } from "../../helpers/python-server-denial.js";
 
 import {
   bypassGrantsSandboxEscalation,
@@ -65,17 +66,40 @@ describe("execSandboxDenialNotice", () => {
     }
   });
 
+  test.each([PYTHON_SERVER_SOCKET_DENIED, PYTHON_SERVER_BIND_DENIED])(
+    "explains Python server tracebacks even when the errno is on another line",
+    (output) => {
+      expect(denial({ output })?.notice).toBe(SANDBOX_BIND_DENIED_NO_ESCALATION);
+      expect(denial({ output, exitCode: null })?.kind).toBe("network_bind");
+      expect(denial({ output, sandboxApplied: false })).toBeNull();
+    },
+  );
+
+  test("does not classify Python file errors or client socket creation as a server denial", () => {
+    for (const output of [
+      '  File "/usr/lib/python3.11/socket.py", line 232, in __init__\n    _socket.socket.__init__(self, family, type, proto, fileno)\nPermissionError: [Errno 1] Operation not permitted',
+      '  File "/usr/lib/python3.11/http/server.py", line 730, in send_head\n    f = open(path, "rb")\nPermissionError: [Errno 13] Permission denied',
+      PYTHON_SERVER_SOCKET_DENIED.replace("PermissionError: [Errno 1] Operation not permitted", "OSError: [Errno 24] Too many open files"),
+      PYTHON_SERVER_BIND_DENIED.replace("PermissionError: [Errno 13] Permission denied", "OSError: [Errno 98] Address already in use"),
+    ]) expect(denial({ output })).toBeNull();
+  });
+
   test("stays silent when the sandbox did not cause it", () => {
     // Nothing was sandboxed: the same errno then means the OS refused for its
     // own reasons (a privileged port, an address in use), and blaming the
     // sandbox would send the model down the wrong path.
     expect(denial({ sandboxApplied: false })).toBeNull();
-    // The command succeeded.
-    expect(denial({ exitCode: 0 })).toBeNull();
+    // A successful command without a server refusal needs no diagnostic.
+    expect(denial({ exitCode: 0, output: "server-local-ok" })).toBeNull();
     // A permission error that has nothing to do with a socket.
     expect(denial({ output: "chmod: /etc/hosts: EPERM: operation not permitted" })).toBeNull();
     // A port conflict is the user's to fix, not the sandbox's.
     expect(denial({ output: "Error: listen EADDRINUSE: address already in use 0.0.0.0:8080" })).toBeNull();
+  });
+
+  test("explains a failed background server even when shell cleanup exits zero", () => {
+    expect(denial({ exitCode: 0 })?.notice).toBe(SANDBOX_BIND_DENIED_NO_ESCALATION);
+    expect(denial({ exitCode: 0, output: PYTHON_SERVER_SOCKET_DENIED })?.notice).toBe(SANDBOX_BIND_DENIED_NO_ESCALATION);
   });
 
   test("the notice is constant, so a repeated denial keeps one failure signature", () => {

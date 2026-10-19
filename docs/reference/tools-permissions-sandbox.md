@@ -804,6 +804,21 @@ hosted native lanes in
 warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
 `[sandbox].allow_gpu` is the macOS Metal opt-in ([config.md](config.md)).
 
+For a local dev server, set this in your AgenC home `config.toml` and start a
+new session:
+
+```toml
+[sandbox.network]
+allowLocalBinding = true
+```
+
+On Linux this requires bubblewrap. Start the server and run curl in the same
+shell command: the listener is inside that command's private loopback network
+namespace. A separate `exec_command` cannot reach it; `write_stdin` can send a
+curl command to an existing interactive shell in that namespace. Host services
+and external networking remain blocked. With the default setting, a refused
+Python or Node server includes one line explaining this opt-in.
+
 ### Home workspace vs helper containment
 
 A userland install places `agenc-linux-sandbox` under

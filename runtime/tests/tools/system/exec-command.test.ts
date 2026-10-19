@@ -1,4 +1,5 @@
 import { createWriteStdinTool } from "../../../src/tools/system/write-stdin.js";
+import { PYTHON_SERVER_SOCKET_DENIED } from "../../helpers/python-server-denial.js";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -255,6 +256,22 @@ describe("exec_command tool", () => {
       "Error: listen EPERM: operation not permitted 0.0.0.0:8080",
       1,
     );
+
+    test("explains Python http.server socket creation refused before bind", async () => {
+      const { tool } = toolWith(failedExecOutput(PYTHON_SERVER_SOCKET_DENIED, 1));
+      const result = await tool.execute(sandboxedArgs({ cmd: "python3 -m http.server 8123", workdir: root }));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
+      expect(result.content).toContain("same command");
+    });
+
+    test("keeps the server diagnostic when background cleanup makes the shell succeed", async () => {
+      const { tool } = toolWith(completedExecOutput(PYTHON_SERVER_SOCKET_DENIED));
+      const result = await tool.execute(sandboxedArgs({ cmd: "python3 -m http.server 8123 & wait; true", workdir: root }));
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
+      expect(result.codeModeResult).toMatchObject({ exit_code: 0, sandbox_notice: expect.stringContaining("sandbox.network.allowLocalBinding = true") });
+    });
 
     test("a removed alias names the field that replaced it, so the model can correct the call", async () => {
       const { tool } = toolWith(completedExecOutput(""));

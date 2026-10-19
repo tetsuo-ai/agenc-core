@@ -1340,7 +1340,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           content:
             notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,
-          codeModeResult: unifiedExecCodeModeResult(output),
+          codeModeResult: unifiedExecCodeModeResult(output, notice),
           effectDisposition: processObservationDisposition(
             cmd,
             effectiveWorkdir ?? config?.cwd ?? process.cwd(),

@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -6,8 +6,43 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { createLinuxSandboxCommandArgsForPermissionProfile } from "../../../src/sandbox/engine/landlock.js";
+import { execSandboxDenialNotice } from "../../../src/tools/system/exec-sandbox-denial.js";
 
 const runtime = fileURLToPath(new URL("../../../", import.meta.url));
+
+test("Python http.server gets an actionable default denial and works with local binding", { timeout: 15_000 }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenc-python-binding-"));
+  fs.writeFileSync(path.join(root, "index.html"), "python-local-ok");
+  const profile = { fileSystem: { kind: "restricted" as const, includePlatformDefaults: true, entries: [
+    { path: { kind: "special" as const, value: { kind: "root" as const } }, access: "read" as const },
+    { path: { kind: "path" as const, path: root }, access: "write" as const },
+  ] }, network: "disabled" as const };
+  const run = (command: string[], allow = false) => spawnSync(process.execPath, [
+    path.join(runtime, "bin/agenc-linux-sandbox"),
+    ...createLinuxSandboxCommandArgsForPermissionProfile(command, root, profile, root, false, root, false, undefined, allow),
+  ], { cwd: root, encoding: "utf8", timeout: 6000, env: { PATH: process.env.PATH, HOME: root, AGENC_HOME: root } });
+  try {
+    const denied = run(["/usr/bin/python3", "-m", "http.server", "8123", "--bind", "127.0.0.1"]);
+    expect(denied.status, denied.stderr).toBe(1);
+    expect(execSandboxDenialNotice({
+      output: denied.stderr, exitCode: denied.status, sandboxApplied: true, escalationAvailable: false,
+    })?.notice).toContain("sandbox.network.allowLocalBinding = true");
+    const allowed = run(["/bin/bash", "-c", `
+      python3 -m http.server 8123 --bind 127.0.0.1 >server.log 2>&1 & pid=$!
+      trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null' EXIT
+      for i in {1..40}; do
+        curl --noproxy '*' -fs --max-time 1 http://127.0.0.1:8123/ && exit 0
+        kill -0 "$pid" 2>/dev/null || { cat server.log >&2; exit 1; }
+        sleep 0.05
+      done
+      exit 1
+    `], true);
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(allowed.stdout).toBe("python-local-ok");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test.each(["127.0.0.1", "::1"])("local binding on %s stays inside the sandbox network namespace", { timeout: 20_000 }, async (host) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenc-local-binding-"));
@@ -69,6 +104,14 @@ test.each(["127.0.0.1", "::1"])("local binding on %s stays inside the sandbox ne
       outside.on("connect", () => { outside.destroy(); resolve("outside reached listener"); });
       outside.on("error", reject);
     })).rejects.toMatchObject({ code: "ECONNREFUSED" });
+    const url = `http://${host.includes(":") ? `[${host}]` : host}:${report.port}`;
+    const separateArgs = createLinuxSandboxCommandArgsForPermissionProfile(
+      ["curl", "--noproxy", "*", "--silent", "--max-time", "2", url], root, profile, root, false, root, false, undefined, true,
+    );
+    const separate = spawnSync(process.execPath, [path.join(runtime, "bin/agenc-linux-sandbox"), ...separateArgs], {
+      cwd: root, encoding: "utf8", timeout: 5000,
+    });
+    expect(separate.status, separate.stderr).toBe(7);
     child.stdin.end("done\n");
     expect(await exited, stderr).toBe(0);
     // Check the socketpair reconnect escape at the syscall layer too.

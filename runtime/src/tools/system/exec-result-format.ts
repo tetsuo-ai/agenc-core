@@ -97,12 +97,14 @@ export function formatUnifiedExecToolContent(
 
 export function unifiedExecCodeModeResult(
   output: ExecCommandToolOutput,
+  sandboxNotice?: string | null,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {
     wall_time_seconds: output.wall_time_seconds,
     original_token_count: output.original_token_count,
     output: output.output,
   };
+  if (sandboxNotice != null) result.sandbox_notice = sandboxNotice;
 
   if (output.command_outcome !== undefined) {
     result.command_outcome = output.command_outcome;

@@ -270,7 +270,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         return {
           content: notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,
-          codeModeResult: unifiedExecCodeModeResult(output),
+          codeModeResult: unifiedExecCodeModeResult(output, notice),
           // Ordinary terminal receipts settle this call without claiming
           // command success. Missing authenticated outcomes remain unknown
           // even when descendant cleanup has independently completed.

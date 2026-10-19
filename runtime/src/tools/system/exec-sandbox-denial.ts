@@ -30,10 +30,10 @@ export type ExecSandboxDenialKind = "network_bind";
 
 /**
  * Signatures of "the OS refused to bind or listen", across the runtimes a
- * coding agent actually starts a server with. Each requires BOTH a bind or
- * listen verb and a permission errno on the same line: a bare EPERM (a
- * chmod, a kill, a write) is a different failure and must not be labelled a
- * network denial.
+ * coding agent actually starts a server with. Require a bind/listen operation
+ * and a permission errno, or Python's server socket construction followed by
+ * its permission traceback. A bare EPERM (chmod, kill, write, client socket
+ * creation) is a different failure and must not be labelled a server denial.
  */
 const BIND_DENIED_SIGNATURES: readonly RegExp[] = [
   // Node: "Error: listen EPERM: operation not permitted 0.0.0.0:8080"
@@ -43,6 +43,11 @@ const BIND_DENIED_SIGNATURES: readonly RegExp[] = [
   /\b(?:bind|binding|listen|listening)\b[^\n]{0,80}?(?:operation not permitted|permission denied)/iu,
   // Reversed order: "... PermissionDenied ... binding 0.0.0.0:3000"
   /(?:operation not permitted|permission denied)[^\n]{0,80}?\b(?:bind|binding|listen|listening)\b/iu,
+  // Python http.server can fail at socket creation, before server_bind.
+  // Its errno lives below the source/caret lines and the socket.py frame.
+  /\bself\.socket = socket\.socket\([^\n]*\n(?:[^\n]*\n){0,5}PermissionError: \[Errno (?:1|13)\] (?:operation not permitted|permission denied)\b/iu,
+  // Python's bind traceback also puts the errno on a separate line.
+  /\bself\.socket\.bind\([^\n]*\n(?:[ \t]+[~^]+\n)?PermissionError: \[Errno (?:1|13)\] (?:operation not permitted|permission denied)\b/iu,
 ];
 
 /**
@@ -74,7 +79,9 @@ export function execSandboxDenialNotice(params: {
   readonly escalationAvailable: boolean;
 }): { readonly kind: ExecSandboxDenialKind; readonly notice: string } | null {
   if (!params.sandboxApplied) return null;
-  if (params.exitCode === 0) return null;
+  // A background server can fail even when its shell exits zero after curl,
+  // cleanup or an echo. Diagnose the explicit refusal without rewriting the
+  // shell's exit status. Polling a live shell (exitCode null) needs it too.
   if (!BIND_DENIED_SIGNATURES.some((pattern) => pattern.test(params.output))) {
     return null;
   }
