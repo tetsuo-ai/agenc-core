@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type {
   LocalRuntimeBootstrap,
   PreparedConfiguredExecutionAuthority,
@@ -70,6 +71,7 @@ import {
   applySessionExecutionAuthority,
   executionAuthorityForPermissionContext,
   sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionExecutionAuthorityFromConfiguration,
 } from "../../session/configuration.js";
 import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
 import {
@@ -238,6 +240,20 @@ function installDaemonPermissionAuthorityCoordinator(
       let preparedMcpAuthorityRefreshStarted = false;
       let authorityTransitionCompleted = false;
       try {
+        if (
+          stagedConfiguredAuthority === undefined &&
+          preparedConfigReload === undefined &&
+          preparedMcpAuthorityRefresh === undefined &&
+          runtimeSettingsCommitMetadata(metadata)?.reason === "permission_mode_changed" &&
+          isDeepStrictEqual(authority, sessionExecutionAuthorityFromConfiguration(session.sessionConfiguration))
+        ) {
+          // Ordinary permission choices govern future tool admission. When
+          // execution authority is unchanged, publishing that choice must not
+          // drain the broker and terminate already-approved running commands.
+          await publication.commit();
+          authorityTransitionCompleted = true;
+          return;
+        }
         await transitionSandboxExecutionBrokerAuthority(
           broker,
           sandboxExecutionBrokerAuthorityFromSessionAuthority(

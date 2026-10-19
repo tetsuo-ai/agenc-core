@@ -2696,6 +2696,103 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(authority.currentMode()).toBe("plan");
   });
 
+  it("reconciles an idempotent permission-mode retry after a response timeout without fencing later input", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const request = client.request.bind(client);
+    let attempts = 0;
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") return request(method, params, options);
+      attempts += 1;
+      if (attempts === 1) throw new Error("Timed out waiting for daemon response to session.setPermissionMode");
+      client.emit("session_1", runtimeSettingsEvent("E1", "E0", "plan", "default"));
+      return { sessionId: "session_1", applied: false, previousMode: "plan", mode: "plan" } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession, client, sessionId: "session_1", clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    await session.setDaemonPermissionMode?.("plan");
+    await session.submit("continue after acknowledged mode change");
+    expect(attempts).toBe(2);
+    expect(authority.currentMode()).toBe("plan");
+    expect(authority.abortTerminal).not.toHaveBeenCalled();
+  });
+
+  it("explains a queued live mode change, retains canonical mode and allows Escape while it waits", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const original = client.request.bind(client);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") return original(method, params, options);
+      client.requests.push({ method, params });
+      entered.resolve();
+      await release.promise;
+      client.emit("session_1", runtimeSettingsEvent("E1", "E0", "plan", "default"));
+      return { sessionId: "session_1", applied: true, previousMode: "default", mode: "plan" } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession, client, sessionId: "session_1", clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    const events: unknown[] = [];
+    const unsubscribe = session.subscribeToEvents(event => events.push(event));
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION, method: "event.session_event",
+      params: { sessionId: "session_1", agentId: "agent_1", eventId: "P1",
+        event: { id: "start", type: "turn_started", payload: { turnId: "turn-live" } } },
+    });
+    await vi.waitFor(() => expect(session.activeTurn?.unsafePeek?.()?.turnId).toBe("turn-live"));
+    const change = session.setDaemonPermissionMode?.("plan");
+    try {
+      await entered.promise;
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "warning", payload: expect.objectContaining({ cause: "permission_mode_queued",
+          message: expect.stringContaining("after the current turn") }),
+      }));
+      expect(authority.currentMode()).toBe("default");
+      await session.cancelActiveTurn?.("interrupted");
+      expect(client.requests).toContainEqual(expect.objectContaining({ method: "session.cancelTurn",
+        params: expect.objectContaining({ expectedTurnId: "turn-live" }) }));
+      expect(authority.abortTerminal).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await change;
+      unsubscribe();
+    }
+    expect(authority.currentMode()).toBe("plan");
+  });
+
+  it("keeps repeated transport timeouts recoverable and checks canonical settings before later input", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const request = client.request.bind(client);
+    let attempts = 0;
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") return request(method, params, options);
+      attempts += 1;
+      if (attempts <= 4) throw new Error("Timed out waiting for daemon response to session.setPermissionMode");
+      client.emit("session_1", runtimeSettingsEvent("E1", "E0", "plan", "default"));
+      return { sessionId: "session_1", applied: false, previousMode: "plan", mode: "plan" } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession, client, sessionId: "session_1", clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    await expect(session.setDaemonPermissionMode?.("plan")).rejects.toThrow("Timed out");
+    await expect(session.submit("retry while the daemon is unavailable")).rejects.toThrow("Timed out");
+    expect(authority.abortTerminal).not.toHaveBeenCalled();
+    expect(authority.currentMode()).toBe("default");
+    expect(client.requests.some(entry => entry.method === "message.stream")).toBe(false);
+    await session.submit("continue once the daemon confirms the mode");
+    expect(attempts).toBe(5);
+    expect(authority.currentMode()).toBe("plan");
+    expect(authority.abortTerminal).not.toHaveBeenCalled();
+    expect(client.requests.some(entry => entry.method === "message.stream")).toBe(true);
+  });
+
   it.each([false, true])("holds immediate input until an in-flight permission-mode change settles (cancelled: %s)", async (cancelled) => {
     const authority = runtimeAuthorityBase();
     const client = createClient();

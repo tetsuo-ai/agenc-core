@@ -1916,6 +1916,7 @@ autostart = false
 
   it.each([
     "agent.create",
+    "session.setPermissionMode",
     "session.partialCompactFromMessage",
     "session.rewindConversationToMessage",
   ] as const)(

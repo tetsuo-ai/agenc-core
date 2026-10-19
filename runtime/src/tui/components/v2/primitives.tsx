@@ -1559,6 +1559,10 @@ export function ApprovalCard({
   typedConfirmationTarget = 'yes',
   selectedIndex,
   typingWaiting = false,
+  draftText,
+  draftFocused = false,
+  sessionScope = 'allow in this session',
+  cancelLabel = 'cancel',
 }: {
   readonly risk: 'low' | 'high'
   readonly title: string
@@ -1586,6 +1590,10 @@ export function ApprovalCard({
   /** Selected row of the action picker (0 approve-once, 1 session, 2 deny). */
   readonly selectedIndex?: number
   readonly typingWaiting?: boolean
+  readonly draftText?: string
+  readonly draftFocused?: boolean
+  readonly sessionScope?: string
+  readonly cancelLabel?: string
 }): React.ReactNode {
   const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
   const primaryFact = facts[0]?.value ?? title
@@ -1623,7 +1631,7 @@ export function ApprovalCard({
   // lines it may show) so the same decision is unit-testable without the
   // renderer; see `approvalDiffPreviewBudget`.
   const budget = approvalDiffPreviewBudget(
-    popupBodyRows,
+    popupBodyRows - (draftText !== undefined && (draftText.length > 0 || draftFocused) ? 2 : 0),
     diffPreview?.lines.length ?? 0,
   )
   const showPreview = diffPreview !== undefined && budget.showPreview
@@ -1650,9 +1658,11 @@ export function ApprovalCard({
     <Popup
       title={title}
       headerRight={
-        requireTypedConfirmation
-          ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
-          : 'esc to close'
+        draftFocused
+          ? 'tab review approval'
+          : requireTypedConfirmation
+            ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
+            : `esc ${cancelLabel}`
       }
       status={requestId === undefined ? undefined : `req ${requestId}`}
       accentColor={variantColor[variant]}
@@ -1663,13 +1673,23 @@ export function ApprovalCard({
       footer={
         // Only real affordances go here — there is no `e` handler, so the old
         // `e edit command` hint sent users to a dead key.
-        requireTypedConfirmation
-          ? [{ keyName: 'type', label: 'confirmation required' }]
-          : []
+        draftFocused
+          ? [{ keyName: 'tab', label: 'review approval' }]
+          : requireTypedConfirmation
+            ? [{ keyName: 'type', label: 'confirmation required' }]
+            : []
       }
     >
       <Box flexDirection="column" paddingX={1} flexShrink={0}>
-        {typingWaiting && !compactActions ? (
+        {draftText !== undefined && (draftText.length > 0 || draftFocused) ? (
+          <>
+            <ThemedText color="text2" wrap="truncate-end">{`Draft saved: ${draftText || '(empty)'}`}</ThemedText>
+            <ThemedText color="inactive" wrap="truncate-end">
+              {draftFocused ? 'Typing stays in your draft. Enter keeps it. Tab reviews approval. Esc stops the turn.' : 'Your draft will return to the input after approval.'}
+            </ThemedText>
+          </>
+        ) : null}
+        {typingWaiting && !draftFocused && !compactActions ? (
           <ThemedText color="text2" wrap="truncate-end">
             {requireTypedConfirmation
               ? `Card is waiting. Type ${typedConfirmationTarget}, then press Enter after a pause.`
@@ -1684,7 +1704,9 @@ export function ApprovalCard({
         {requireTypedConfirmation ? (
           <Box flexDirection="column" flexShrink={0}>
             <ThemedText color="inactive" wrap="truncate-end">
-              type '{typedConfirmationTarget}' to approve · esc cancel
+              {draftFocused
+                ? `Press Tab to review this approval · esc ${cancelLabel}`
+                : `type '${typedConfirmationTarget}' to approve · pause, then Enter · esc ${cancelLabel}`}
             </ThemedText>
             <Box flexDirection="row" gap={1}>
               <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
@@ -1715,8 +1737,8 @@ export function ApprovalCard({
               const marker = selected ? '❯ ' : '  '
               const rowText = `${marker}${index + 1}  ${action.label}`
               const detailText = compactActions
-                ? (index === 2 ? ' · esc cancel' : '')
-                : `  ${action.suffix}`
+                ? (index === 2 ? ` · esc ${cancelLabel}` : '')
+                : `  ${index === 1 ? sessionScope : action.suffix}`
               return (
                 <Box key={action.label}>
                   {selected ? (
@@ -1737,7 +1759,7 @@ export function ApprovalCard({
         {!requireTypedConfirmation && !compactActions ? (
           <Box marginTop={1} marginBottom={1} flexShrink={0}>
             <ThemedText color="inactive" wrap="truncate-end">
-              1·2·3 choose   ↑↓ move   ⏎ confirm   esc cancel{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
+              1·2·3 choose   ↑↓ move   ⏎ confirm   esc {cancelLabel}{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
             </ThemedText>
           </Box>
         ) : null}

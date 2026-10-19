@@ -7675,6 +7675,24 @@ describe("AgenC delegate background-agent runner", () => {
     expect(permissionUpdates[0]).toMatchObject({ mode: "plan" });
   });
 
+  it("keeps running commands alive when a permission-mode change leaves execution authority unchanged", async () => {
+    const { runner, sandboxExecutionBroker, permissionModeRegistry } = makeTopLevelRunner({
+      conversationId: "permission-mode-keeps-command", canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const quiesce = vi.fn(async () => {});
+    const resume = vi.fn(async () => {});
+    const unregister = registerSandboxExecutionLifecycleParticipant(sandboxExecutionBroker, {
+      name: "running-command", quiesce, resume,
+    });
+    try {
+      await runner.setAgentPermissionMode("permission-mode-keeps-command", { sessionId: "session_1", mode: "acceptEdits" });
+      expect(permissionModeRegistry.current().mode).toBe("acceptEdits");
+      expect(quiesce).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+    } finally { unregister(); }
+  });
+
   it("rejects the 4097th session rule before the production registry publishes", async () => {
     const agentId = "permission-rule-runner-bound";
     const {

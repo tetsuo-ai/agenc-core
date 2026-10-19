@@ -34,7 +34,7 @@ import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
 import { AskUserQuestionOverlay } from "./components/AskUserQuestionOverlay.js";
 import { setPlanApprovalChoice } from "./plan-approval-choice.js";
-import { useApprovalTypingGuard } from "./hooks/useApprovalTypingGuard.js";
+import { useApprovalTypingGuard, type ApprovalComposerDraft } from "./hooks/useApprovalTypingGuard.js";
 import {
   classifyApprovalRisk,
   typedConfirmationWordForRisk,
@@ -252,10 +252,12 @@ export function usePermissionRequests(
   useEffect(() => {
     const previousResolver = session.services.approvalResolver;
     const previousBridge = session.appStateBridge;
+    const pending = new Set<PendingRequest>();
+    const interruptedTurns = new Set<string>();
     session.services.approvalResolver = {
       request(ctx) {
         return new Promise<ReviewDecision>((resolve) => {
-          if (ctx.signal?.aborted === true) {
+          if (ctx.signal?.aborted === true || interruptedTurns.has(ctx.turnId)) {
             resolve(ABORT);
             return;
           }
@@ -268,6 +270,7 @@ export function usePermissionRequests(
             resolve,
           };
           const settle = (decision: ReviewDecision): void => {
+            if (!pending.delete(queuedRequest)) return;
             setRequests((queue) =>
               queue.filter((item) => item.id !== request.id),
             );
@@ -275,16 +278,25 @@ export function usePermissionRequests(
           };
           const onAbort = (): void => settle(ABORT);
           ctx.signal?.addEventListener("abort", onAbort, { once: true });
-          setRequests((queue) => [
-            ...queue,
-            {
-              ...request,
-              resolve(decision) {
-                ctx.signal?.removeEventListener("abort", onAbort);
-                settle(decision);
-              },
+          const queuedRequest: PendingRequest = {
+            ...request,
+            resolve(decision) {
+              if (!pending.has(queuedRequest)) return;
+              ctx.signal?.removeEventListener("abort", onAbort);
+              if (decision.kind === "abort" && !interruptedTurns.has(ctx.turnId)) {
+                interruptedTurns.add(ctx.turnId);
+                // Stop every sibling immediately, including requests which
+                // arrive while the daemon is acknowledging cancellation.
+                for (const sibling of [...pending]) {
+                  if (sibling !== queuedRequest && sibling.ctx.turnId === ctx.turnId) sibling.resolve(ABORT);
+                }
+                void session.cancelActiveTurn?.("interrupted").catch(() => {});
+              }
+              settle(decision);
             },
-          ]);
+          };
+          pending.add(queuedRequest);
+          setRequests((queue) => [...queue, queuedRequest]);
         });
       },
     };
@@ -307,6 +319,7 @@ export function AgenCPermissionOverlay({
   request,
   tools,
   onDismiss,
+  composerDraft,
 }: {
   readonly request: PendingRequest | undefined;
   readonly tools: readonly any[];
@@ -314,6 +327,7 @@ export function AgenCPermissionOverlay({
   readonly isNonInteractiveSession?: boolean;
   readonly debug?: boolean;
   readonly onDismiss?: () => void;
+  readonly composerDraft?: ApprovalComposerDraft;
 }) {
   // Register the whole approval family as a modal overlay: without this the
   // GLOBAL turn-cancel (useCancelRequest) treats esc as "cancel the turn"
@@ -393,6 +407,7 @@ export function AgenCPermissionOverlay({
       request={request}
       toolUseConfirm={toolUseConfirm}
       onDismiss={onDismiss}
+      composerDraft={composerDraft}
     />
   );
 }
@@ -532,10 +547,12 @@ function AgenCApprovalOverlay({
   request,
   toolUseConfirm,
   onDismiss,
+  composerDraft,
 }: {
   readonly request: PendingRequest;
   readonly toolUseConfirm: ProjectedToolUseConfirm;
   readonly onDismiss?: () => void;
+  readonly composerDraft?: ApprovalComposerDraft;
 }) {
   const command = approvalInputText(toolUseConfirm.input, { prettyJson: true });
   const fileWritePreview = request.ctx.fileWritePreview;
@@ -621,7 +638,7 @@ function AgenCApprovalOverlay({
     toolInput: toolUseConfirm.input,
   });
   const destructive = risk === "destructive";
-  const { waiting: typingWaiting, blockTyping } = useApprovalTypingGuard(destructive);
+  const { waiting: typingWaiting, blockTyping, draftFocused } = useApprovalTypingGuard(destructive, composerDraft);
   const requiredWord = typedConfirmationWordForRisk({
     risk,
     command,
@@ -674,6 +691,13 @@ function AgenCApprovalOverlay({
 
   const handleSelectionInput = useCallback(
     (input: string, key: Key, event: InputEvent): boolean => {
+      if (key.escape) {
+        event.stopImmediatePropagation();
+        if (fullDiffVisibleRef.current) return handleDiffInput(input, key, event);
+        abort();
+        return true;
+      }
+      if (draftFocused && blockTyping(input, key, event)) return true;
       if (handleDiffInput(input, key, event)) return true;
       if (blockTyping(input, key, event)) return true;
       if (input === "1") {
@@ -716,9 +740,17 @@ function AgenCApprovalOverlay({
       }
       return false;
     },
-    [approve, approveForSession, confirmSelection, reject, handleDiffInput, blockTyping],
+    [approve, approveForSession, confirmSelection, reject, abort, handleDiffInput, blockTyping, draftFocused],
   );
-  useInputCapture((input, key, event) => handleDiffInput(input, key, event) || blockTyping(input, key, event), { context: "Modal", isActive: destructive });
+  useInputCapture((input, key, event) => {
+    if (key.escape && !fullDiffVisibleRef.current) {
+      event.stopImmediatePropagation();
+      abort();
+      return true;
+    }
+    if (draftFocused && blockTyping(input, key, event)) return true;
+    return handleDiffInput(input, key, event) || blockTyping(input, key, event);
+  }, { context: "Modal", isActive: destructive });
   useInputCapture(handleSelectionInput, { context: "Modal", isActive: !destructive });
   useInput(handleSelectionInput, { isActive: !destructive });
 
@@ -750,8 +782,7 @@ function AgenCApprovalOverlay({
         return;
       }
       if (key.escape) {
-        if (onDismiss !== undefined) abort();
-        else reject();
+        abort();
         return;
       }
       if (key.backspace || key.delete) {
@@ -786,7 +817,7 @@ function AgenCApprovalOverlay({
         title={`tool · ${name} · ${title}`}
         command={command.length > 0 ? command : toolUseConfirm.description}
         commandIsShell={approvalCommandIsShell(toolUseConfirm)}
-        confirmLabel={destructive ? `type ${requiredWord}` : "enter"}
+        confirmLabel={draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter"}
         facts={[
           { label: "tool", value: name },
           {
@@ -801,7 +832,7 @@ function AgenCApprovalOverlay({
           { label: "request", value: request.id },
           {
             label: "confirmation",
-            value: destructive ? `type ${requiredWord}` : "enter",
+            value: draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter",
           },
         ]}
         note={writePreviewUnavailable
@@ -814,6 +845,13 @@ function AgenCApprovalOverlay({
         typedConfirmationTarget={requiredWord}
         selectedIndex={selectedIndex}
         typingWaiting={typingWaiting}
+        cancelLabel="stop turn"
+        draftText={composerDraft?.text}
+        draftFocused={draftFocused}
+        sessionScope={(toolUseConfirm.tool.name === "Write" || toolUseConfirm.tool.name === "Edit") &&
+          typeof request.input.file_path === "string"
+          ? `${name} this file only`
+          : "this exact action only"}
       />
     </Box>
   );

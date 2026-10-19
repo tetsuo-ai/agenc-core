@@ -41,6 +41,7 @@ import {
   type PermissionDecisionHookInput,
 } from "../../tools/hooks.js";
 import { buildShellApprovalKey, canonicalJsonKey } from "../approval-cache.js";
+import { resolve as resolvePath } from "node:path";
 import {
   defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
   type ApprovalPolicy as PermissionsApprovalPolicy,
@@ -585,6 +586,7 @@ async function resolveApproval(
         : [];
     let fetchedResult: RequestApprovalResult | undefined;
     const fetchApprovalResult = async (): Promise<RequestApprovalResult> => {
+      if (alreadyAborted(signal)) return { decision: { kind: "abort" }, source: "aborted" };
       if (!activeApprovalTurnStillMatches(opts.ctx, opts.getActiveTurnId)) {
         throw new ModalApprovalError("stale_modal_decision");
       }
@@ -1091,8 +1093,9 @@ export async function requestToolUserApproval(
       ? buildApprovalCacheKeys(opts.tool, opts.invocation, opts.args)
       : [];
 
-  const fetchModalDecision = async (): Promise<ModalDecision> =>
-    await new Promise<ModalDecision>((resolve) => {
+  const fetchModalDecision = async (): Promise<ModalDecision> => {
+    if (opts.signal.aborted) return { behavior: "abort", decisionAtTurnId: opts.currentTurnId };
+    return await new Promise<ModalDecision>((resolve) => {
       let settled = false;
       const onAbort = () => {
         if (settled) return;
@@ -1135,6 +1138,7 @@ export async function requestToolUserApproval(
         },
       );
     });
+  };
 
   let fetchedReviewDecision: ReviewDecision | undefined;
   const resolveModalReviewDecision = async (): Promise<ReviewDecision> => {
@@ -1407,13 +1411,27 @@ function buildApprovalCacheKeys(
       ];
     }
   }
+  let scopedArgs = args;
+  if ((tool.name === "Write" || tool.name === "Edit") &&
+      typeof args.file_path === "string" && args.file_path.length > 0) {
+    // The card promises this tool on this file for the session. Replacement
+    // text is the operation, not its permission scope. Retain other options,
+    // cwd and execution policies so a grant cannot authorize another action.
+    scopedArgs = { ...args, file_path: resolvePath(cwd, args.file_path) };
+    if (tool.name === "Write") delete scopedArgs.content;
+    else {
+      delete scopedArgs.old_string;
+      delete scopedArgs.new_string;
+      delete scopedArgs.replace_all;
+    }
+  }
   return [
     {
       toolName: tool.name,
       cwd,
       sandboxMode: invocation.turn.sandboxPolicy.value,
       approvalPolicy: invocation.turn.approvalPolicy.value,
-      args,
+      args: scopedArgs,
     },
   ];
 }

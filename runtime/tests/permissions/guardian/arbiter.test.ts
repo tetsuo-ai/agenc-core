@@ -95,6 +95,43 @@ describe("guardian arbiter", () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 
+  test("session file approval covers later edits to that file, preserving tool and policy scope", async () => {
+    const store = new ApprovalStore<unknown>();
+    const inv = invocation({ services: { toolApprovals: store } });
+    const request = vi.fn(async () => APPROVED_FOR_SESSION);
+    const ask = (name: string, file_path: string, old_string: string, policy = "on_request") =>
+      requestApproval({
+        ctx: { ...approvalCtx(inv), toolName: name, invocation: {
+          ...inv, toolName: { name }, turn: { ...inv.turn, approvalPolicy: { value: policy } } as never,
+        } },
+        args: { file_path, old_string, new_string: `${old_string}!` },
+        resolver: { request },
+      });
+    await ask("Edit", "README.md", "one");
+    await ask("Edit", "/repo/README.md", "two");
+    expect(request).toHaveBeenCalledTimes(1);
+    await ask("Edit", "other.md", "one");
+    await ask("Write", "README.md", "one");
+    await ask("Edit", "README.md", "three", "unless_trusted");
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  test("simultaneous edits recheck a matching session grant before opening another prompt", async () => {
+    const store = new ApprovalStore<unknown>();
+    const inv = invocation({ services: { toolApprovals: store } });
+    const answer = Promise.withResolvers<typeof APPROVED_FOR_SESSION>();
+    const request = vi.fn(() => answer.promise);
+    const pending = ["one", "two"].map(old_string => requestApproval({
+      ctx: { ...approvalCtx(inv), toolName: "Edit" },
+      args: { file_path: "/repo/README.md", old_string, new_string: `${old_string}!` },
+      resolver: { request },
+    }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    answer.resolve(APPROVED_FOR_SESSION);
+    await Promise.all(pending);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   test("defers new maintenance approval without invoking the foreground resolver", async () => {
     const defer = vi.fn();
     const request = vi.fn(async () => APPROVED);

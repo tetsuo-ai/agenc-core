@@ -113,6 +113,7 @@ import {
   useApp,
   useTerminalFocus,
   useTerminalTitle,
+  type Key,
 } from "../ink.js";
 import {
   clearPendingResumeSessionId,
@@ -2373,6 +2374,36 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     liveComposerDraftRef.current = { ...liveComposerDraftRef.current, input: nextInput };
     setInput(nextInput);
   }, []);
+  const preserveApprovalDraftInput = useCallback((value: string, key: Key) => {
+    const current = liveComposerDraftRef.current.input;
+    const cursor = composerCursorRef.current;
+    let offset = cursor?.input === current ? cursor.offset : current.length;
+    let next = current;
+    if (key.return || key.escape) return;
+    if (key.home || (key.ctrl && value === "a")) offset = 0;
+    else if (key.end || (key.ctrl && value === "e")) offset = current.length;
+    else if (key.leftArrow) offset = Math.max(0, offset - 1);
+    else if (key.rightArrow) offset = Math.min(current.length, offset + 1);
+    else if (key.ctrl && value === "u") { next = current.slice(offset); offset = 0; }
+    else if (key.ctrl && value === "k") next = current.slice(0, offset);
+    else if (key.ctrl && value === "w") {
+      const start = current.slice(0, offset).replace(/\S+\s*$/u, "").length;
+      next = current.slice(0, start) + current.slice(offset);
+      offset = start;
+    } else if (key.backspace) {
+      const previous = Array.from(current.slice(0, offset)).at(-1)?.length ?? 0;
+      next = current.slice(0, offset - previous) + current.slice(offset);
+      offset -= previous;
+    } else if (key.delete) {
+      const following = Array.from(current.slice(offset))[0]?.length ?? 0;
+      next = current.slice(0, offset) + current.slice(offset + following);
+    } else if (value.length > 0 && !key.ctrl && !key.meta && !key.super) {
+      next = current.slice(0, offset) + value + current.slice(offset);
+      offset += value.length;
+    }
+    composerCursorRef.current = { input: next, offset };
+    changeComposerInput(next);
+  }, [changeComposerInput]);
   const changeComposerPastedContents = useCallback<
     React.Dispatch<React.SetStateAction<Record<number, any>>>
   >((nextContents) => {
@@ -4951,6 +4982,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           request={permissionRequests[0]}
           tools={permissionToolDescriptors}
           mcpClients={mcpClients as any}
+          composerDraft={{ text: input, onInput: preserveApprovalDraftInput }}
         />
       </>
     ) : elicitation.prompt !== null ? (

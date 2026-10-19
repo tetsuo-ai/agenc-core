@@ -83,6 +83,8 @@ import {
 } from "../permissions/permission-updates.js";
 import { validateCanonicalSessionPermissionRuleBuckets } from "../permissions/session-rule-buckets.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { permissionModePlainLabel } from "../permissions/mode-display.js";
+import { isPermissionMode } from "../permissions/types.js";
 import { parseRuleString, serializeRuleValue } from "../permissions/rules.js";
 import type {
   PermissionBehavior,
@@ -1141,10 +1143,72 @@ export function createDaemonTuiSession<
       mcpProjection.noteConnectionState(currentConnectionState);
     }
   };
+  let unconfirmedPermissionMode: SessionSetPermissionModeParams["mode"] | undefined;
+  let permissionModeRecovery: Promise<unknown> | undefined;
+  const permissionModeResponseTimedOut = (error: unknown): boolean =>
+    error instanceof Error &&
+    error.message === "Timed out waiting for daemon response to session.setPermissionMode";
+  const reconcilePermissionMode = async (mode: SessionSetPermissionModeParams["mode"]) => {
+    try {
+      if (activeTurnSnapshot !== null || pendingSubmissions.size > 0 ||
+          baseSession.activeTurn?.unsafePeek?.() != null) {
+        const label = isPermissionMode(mode) ? permissionModePlainLabel(mode) : mode;
+        // Send the RPC now to reserve its FIFO position, but keep displaying
+        // canonical permissions until the preceding turn and writes settle.
+        broadcastDaemonEvent({
+          type: "warning",
+          payload: { cause: "permission_mode_queued", message: `Permission change to ${label} queued after the current turn. Esc can still stop the turn.` },
+        });
+      }
+      const requestMode = () => client.request("session.setPermissionMode", {
+        sessionId, mode,
+      } satisfies SessionSetPermissionModeParams);
+      let result: Awaited<ReturnType<typeof requestMode>>;
+      try {
+        result = await requestMode();
+      } catch (error) {
+        if (!permissionModeResponseTimedOut(error)) throw error;
+        // Retrying the same choice is idempotent, including when the first
+        // request committed but its response was lost.
+        result = await requestMode();
+      }
+      await runtimeSettingsReconciler.barrier();
+      assertRuntimeSettingsAuthority();
+      const registry = eventBridgeSession.services.permissionModeRegistry as {
+        current?(): { readonly mode?: unknown };
+      } | undefined;
+      if (typeof registry?.current !== "function" || registry.current().mode !== result.mode) {
+        throw new Error("daemon permission-mode response was not followed by matching canonical runtime settings");
+      }
+      unconfirmedPermissionMode = undefined;
+      return result;
+    } catch (error) {
+      if (permissionModeResponseTimedOut(error)) {
+        // A transport timeout does not prove an authority gap or end the turn.
+        // Preserve the choice and reconcile it before admitting later input.
+        unconfirmedPermissionMode = mode;
+        broadcastDaemonEvent({
+          type: "warning",
+          payload: { cause: "permission_mode_unconfirmed", message: "Permission change is unconfirmed. AgenC will check the daemon before sending your next input. Esc can still stop the turn." },
+        });
+        throw error;
+      }
+      if (isProvenPrecommitAuthorityRejection(error)) {
+        unconfirmedPermissionMode = undefined;
+        throw error;
+      }
+      return failRuntimeSettingsAuthority(error, "permission_rule_authority_reconciliation_failed");
+    }
+  };
   const awaitRuntimeSettingsAuthority = async (): Promise<void> => {
     ensureDaemonEventsSubscribed();
     await runtimeSettingsReconciler?.barrier();
     assertRuntimeSettingsAuthority();
+    if (unconfirmedPermissionMode !== undefined) {
+      permissionModeRecovery ??= reconcilePermissionMode(unconfirmedPermissionMode)
+        .finally(() => { permissionModeRecovery = undefined; });
+      await permissionModeRecovery;
+    }
   };
   const maybeStopDaemonEvents = (): void => {
     if (
@@ -1738,36 +1802,7 @@ export function createDaemonTuiSession<
     setDaemonPermissionMode: (mode) =>
       runRuntimeSettingsAuthorityMutation(async () => {
         await awaitRuntimeSettingsAuthority();
-        try {
-          const result = await client.request("session.setPermissionMode", {
-            sessionId,
-            mode,
-          } satisfies SessionSetPermissionModeParams);
-          await awaitRuntimeSettingsAuthority();
-          const registry = (
-            eventBridgeSession.services as typeof eventBridgeSession.services & {
-              readonly permissionModeRegistry?: {
-                current(): { readonly mode?: unknown };
-              };
-            }
-          ).permissionModeRegistry;
-          if (
-            registry === undefined ||
-            typeof registry.current !== "function" ||
-            registry.current().mode !== result.mode
-          ) {
-            throw new Error(
-              "daemon permission-mode response was not followed by matching canonical runtime settings",
-            );
-          }
-          return result;
-        } catch (error) {
-          if (isProvenPrecommitAuthorityRejection(error)) throw error;
-          return failRuntimeSettingsAuthority(
-            error,
-            "permission_rule_authority_reconciliation_failed",
-          );
-        }
+        return reconcilePermissionMode(mode);
       }),
     mutateDaemonPermissionRule: (params) =>
       runRuntimeSettingsAuthorityMutation(async () => {

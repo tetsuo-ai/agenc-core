@@ -19,13 +19,14 @@ function decision(kind: DecisionKind): ReviewDecision {
   return kind === "denied" ? { kind, decidedBy: "user" } : { kind };
 }
 
-async function fixture(mode: typeof MODES[number], destructive = false) {
+async function fixture(mode: typeof MODES[number], destructive = false, initialDraft?: string) {
   const stdin = Object.assign(new PassThrough(), { isTTY: true, ref() {}, unref() {}, setRawMode() {} });
   const stdout = Object.assign(new PassThrough(), { columns: 120, rows: 40, isTTY: true });
   let output = "";
   stdout.on("data", chunk => { output += chunk.toString(); });
   const root = await createRoot({ stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream, patchConsole: false, exitOnCtrlC: false });
   const decisions: ReviewDecision[] = [];
+  let draft = initialDraft ?? "";
   const signal = new AbortController();
   const request: PendingRequest = {
     id: "approval-first",
@@ -40,7 +41,15 @@ async function fixture(mode: typeof MODES[number], destructive = false) {
   const render = (id: string) => root.render(
     <AppStateProvider initialState={initialState}>
       <KeybindingSetup configStore={configStore}>
-        <AgenCPermissionOverlay request={{ ...request, id }} tools={[{ name: request.ctx.toolName }]} />
+        <AgenCPermissionOverlay request={{ ...request, id }} tools={[{ name: request.ctx.toolName }]}
+          {...(initialDraft === undefined ? {} : { composerDraft: {
+            text: draft,
+            onInput: (input: string, key: { return: boolean; backspace: boolean }) => {
+              if (key.backspace) draft = draft.slice(0, -1);
+              else if (!key.return) draft += input;
+            },
+          } })}
+        />
       </KeybindingSetup>
     </AppStateProvider>,
   );
@@ -49,6 +58,7 @@ async function fixture(mode: typeof MODES[number], destructive = false) {
   return {
     stdin, decisions, signal, render,
     output: () => stripAnsi(output),
+    draft: () => draft,
     dispose: () => { root.unmount(); stdin.end(); stdout.end(); },
   };
 }
@@ -78,6 +88,48 @@ async function assertSettlesOnce(f: Awaited<ReturnType<typeof fixture>>, first: 
 }
 
 describe("ordinary approval keyboard ownership", () => {
+  it.each([false, true])("retains the composer draft across approval focus, including digits and Enter (destructive: %s)", async (destructive) => {
+    const f = await fixture("default", destructive, "act");
+    try {
+      for (const input of ["ually make it for groceries, not work stuff. and use blue please", " 123", "\x7f", "\r"]) {
+        f.stdin.write(input);
+        await tick();
+      }
+      await tick(650);
+      f.stdin.write("2\r");
+      await tick();
+      expect(f.draft()).toBe("actually make it for groceries, not work stuff. and use blue please 122");
+      expect(f.decisions).toEqual([]);
+      f.stdin.write("\x1b");
+      await tick(100);
+      expect(f.decisions).toEqual([{ kind: "abort" }]);
+    } finally { f.dispose(); }
+  });
+
+  it("requires an explicit focus change before a preserved draft can become an approval", async () => {
+    const f = await fixture("default", false, "act");
+    try {
+      f.stdin.write("ually blue");
+      await tick();
+      f.stdin.write("\t");
+      await tick(650);
+      f.stdin.write("2");
+      await tick();
+      expect(f.draft()).toBe("actually blue");
+      expect(f.decisions).toEqual([{ kind: "approved_for_session" }]);
+    } finally { f.dispose(); }
+  });
+
+  it("Escape interrupts instead of denying only the visible request", async () => {
+    const f = await fixture("default");
+    try {
+      f.stdin.write("\x1b");
+      await tick(100);
+      expect(f.decisions).toEqual([{ kind: "abort" }]);
+      expect(f.output().replace(/\s/gu, "")).toContain("escstopturn");
+    } finally { f.dispose(); }
+  });
+
   it("requires the exact destructive word and a separate Enter, settling once", async () => {
     const f = await fixture("default", true);
     try {
@@ -96,6 +148,38 @@ describe("ordinary approval keyboard ownership", () => {
       f.stdin.write("\r");
       await tick();
       expect(f.decisions).toEqual([{ kind: "approved" }]);
+    } finally { f.dispose(); }
+  });
+
+  it("accepts the displayed high-risk confirmation when the composer is empty", async () => {
+    const f = await fixture("default", true, "");
+    try {
+      expect(f.output().replace(/\s/gu, "")).toContain("type'transfer'toapprove");
+      expect(f.output().replace(/\s/gu, "")).toContain("pause,thenEnter");
+      f.stdin.write("transfer");
+      await tick(650);
+      f.stdin.write("\r");
+      await tick();
+      expect(f.decisions).toEqual([{ kind: "approved" }]);
+      expect(f.draft()).toBe("");
+    } finally { f.dispose(); }
+  });
+
+  it("shows the focus step before high-risk confirmation and accepts it after Tab", async () => {
+    const f = await fixture("default", true, "act");
+    try {
+      expect(f.output().replace(/\s/gu, "")).toContain("Tabreviewsapproval");
+      expect(f.output().replace(/\s/gu, "")).not.toContain("type'transfer'toapprove");
+      f.stdin.write("ually blue");
+      await tick();
+      f.stdin.write("\t");
+      await tick();
+      f.stdin.write("transfer");
+      await tick(650);
+      f.stdin.write("\r");
+      await tick();
+      expect(f.decisions).toEqual([{ kind: "approved" }]);
+      expect(f.draft()).toBe("actually blue");
     } finally { f.dispose(); }
   });
 

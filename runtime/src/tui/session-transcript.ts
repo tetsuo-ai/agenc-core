@@ -336,6 +336,9 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "provider_switched",
   "provider_switch_rejected",
   "mode_changed",
+  "permission_mode_queued",
+  "permission_mode_unconfirmed",
+  "permission_mode_sync_failed",
   "resumed_with_different_model",
   // Input mutation
   "file_mention_attachment_dropped",

@@ -311,10 +311,11 @@ describe("permission request swarm coverage", () => {
 
       confirms.get("missing-payload")!.onAllow({}, []);
       confirms.get("array-json")!.onReject("No thanks");
-      confirms.get("blank-mcp")!.onAbort();
       confirms
         .get("custom-text")!
         .onAllow(confirms.get("custom-text")!.input, []);
+      // Interrupt last: it now cancels every remaining sibling in the turn.
+      confirms.get("blank-mcp")!.onAbort();
 
       await expect(missingPayloadDecision).resolves.toEqual(APPROVED);
       await expect(arrayPayloadDecision).resolves.toEqual({ ...DENIED, decidedBy: "user" });

@@ -2116,5 +2116,17 @@ describe("AgenC TUI session transcript", () => {
       expect(allText).toContain("returned no valid proposal");
       expect(transcript.streamQuietWarning).toBe("no output from the model for 10 minutes");
     });
+
+    test.each(["permission_mode_queued", "permission_mode_unconfirmed", "permission_mode_sync_failed"])(
+      "shows the operator's permission change status: %s", (cause) => {
+        const message = "Permission change queued after the current turn. Esc can still stop the turn.";
+        const transcript = adaptTranscriptEvents([
+          { id: "start", msg: { type: "turn_started", payload: { turnId: "live" } } },
+          { id: "mode", msg: { type: "warning", payload: { cause, message } } },
+        ]);
+        expect(JSON.stringify(transcript.messages)).toContain(message);
+        expect(transcript.isStreaming).toBe(true);
+      },
+    );
   });
 });

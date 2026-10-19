@@ -208,6 +208,10 @@ const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> = new Set([
   // Both message methods await the full daemon turn before responding.
   "message.send",
   "message.stream",
+  // Mode changes retain FIFO order with turns and ordinary writes. Their
+  // response can legitimately wait for the entire preceding turn, while
+  // cancellation stays available on the connection's control lane.
+  "session.setPermissionMode",
   // Compact and rewind can run model summarization over large transcripts.
   "session.partialCompactFromMessage",
   "session.rollbackCompaction",
