@@ -386,6 +386,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_DISABLE_EXTRACT_MEMORIES` | Skip turn-end memory extraction |
 | `AGENC_SKILL_CANDIDATES` | `0` stops the memory-extraction child from proposing draft skills under `$AGENC_HOME/skill-candidates/`. Drafts are never active until `agenc skills candidates accept <name>`; see [skills-plugins.md](skills-plugins.md#skill-candidates) |
 | `AGENC_POLICY_LIMITS_URL` | Override hosted policy-limits URL (default `https://id.agenc.ag/v1/policy-limits`) |
+| `AGENC_TOOL_TIMINGS_FILE` | Diagnostics only. Path of a JSONL file that receives one record per completed tool call: per-stage milliseconds (permission and policy, hooks, admission, sandbox and broker, execution, result sealing, persistence, UI fan-out) and whether the call took the read-only path. Records hold the call id and tool name, never arguments, paths, output or credentials. Unset (the default) records nothing |
 
 Every CLI runtime ingress captures `AGENC_ALLOW_UNTRUSTED_HOOKS` once as
 `runtimeOptions.allowUntrustedHooks`. It is not mutable daemon environment
@@ -480,7 +481,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_T*
 
-`AGENC_TASK_LIST_ID`, `AGENC_TEAMMATE_COMMAND`, `AGENC_TELEGRAM_ADMIN_PEER_IDS`, `AGENC_TELEGRAM_BOT_USERNAME`, `AGENC_TELEGRAM_DEBUG_UPDATES`, `AGENC_TELEGRAM_GROUP_ADDRESSING`, `AGENC_TELEGRAM_OWNER_CLAIM_CODE`, `AGENC_TELEGRAM_RICH_MESSAGES`, `AGENC_TEST_DURABILITY_FAILPOINT`, `AGENC_TEST_DURABILITY_FAILPOINT_ACTION`, `AGENC_TEST_DURABILITY_FAILPOINT_MARKER`, `AGENC_TEST_DURABILITY_FAILPOINT_TOKEN`, `AGENC_TMUX_TRUECOLOR`, `AGENC_TOKEN_BUDGET_CHECK_INTERVAL`, `AGENC_TOOL_RESULT_BUDGET_CHARS`, `AGENC_TOOL_RESULT_OFFLOAD_BYTES`, `AGENC_TRANSPORT`, `AGENC_TUI_COMPLETION_PIPELINE_LOG`, `AGENC_TUI_GLYPHS`, `AGENC_TWO_STAGE_CLASSIFIER`.
+`AGENC_TASK_LIST_ID`, `AGENC_TEAMMATE_COMMAND`, `AGENC_TELEGRAM_ADMIN_PEER_IDS`, `AGENC_TELEGRAM_BOT_USERNAME`, `AGENC_TELEGRAM_DEBUG_UPDATES`, `AGENC_TELEGRAM_GROUP_ADDRESSING`, `AGENC_TELEGRAM_OWNER_CLAIM_CODE`, `AGENC_TELEGRAM_RICH_MESSAGES`, `AGENC_TEST_DURABILITY_FAILPOINT`, `AGENC_TEST_DURABILITY_FAILPOINT_ACTION`, `AGENC_TEST_DURABILITY_FAILPOINT_MARKER`, `AGENC_TEST_DURABILITY_FAILPOINT_TOKEN`, `AGENC_TMUX_TRUECOLOR`, `AGENC_TOKEN_BUDGET_CHECK_INTERVAL`, `AGENC_TOOL_RESULT_BUDGET_CHARS`, `AGENC_TOOL_RESULT_OFFLOAD_BYTES`, `AGENC_TOOL_TIMINGS_FILE`, `AGENC_TRANSPORT`, `AGENC_TUI_COMPLETION_PIPELINE_LOG`, `AGENC_TUI_GLYPHS`, `AGENC_TWO_STAGE_CLASSIFIER`.
 
 ### AGENC_U*
 

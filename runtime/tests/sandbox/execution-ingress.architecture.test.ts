@@ -61,6 +61,15 @@ describe("sandbox execution ingress architecture", () => {
       "services/xai/acp.ts:prepareSpawn",
       "session/agenc-delegate.ts:forkForCwd",
       "session/turn-compat.ts:forkForCwd",
+      // The read-only fast path narrows the session broker to an inspection
+      // fork (every write grant lowered to read, read denials kept, network
+      // disabled) and launches only a verified literal inspection there:
+      // prepareReadOnlyInspectionInvocation refuses any sandbox that is not
+      // mandatory, no-write and no-network, and pins a root-owned native
+      // executable. Neither call can widen authority; a command that tries to
+      // write fails with a read-only file system and cannot open a socket.
+      "tools/side-effect-free-shell.ts:forkForReadOnlyInspection",
+      "tools/side-effect-free-shell.ts:runtimeSandbox",
       "tools/system/apply-runtime-sandbox.ts:prepareSpawn",
       "tools/system/bash.ts:prepareSpawn",
       "tools/system/coding-common.ts:prepareSpawn",
