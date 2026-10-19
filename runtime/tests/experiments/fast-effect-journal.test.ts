@@ -22,7 +22,7 @@ test("journals actual tool intervals only at final flush without executing a sec
   const invoke = vi.fn(async (context) => { context.crossEffectBoundary(); vi.advanceTimersByTime(37); return { content: "done" }; });
   const result = await withOneShotFastMode(() => runAdmittedToolCall({ session, turnId: "turn", callId: "call",
     tool: { name: "read", description: "", inputSchema: { type: "object" }, recoveryCategory: "read-only", execute: vi.fn() },
-    args: {}, invoke }));
+    args: {}, invoke }), String(session.conversationId));
   expect(result.content).toBe("done"); expect(events).toHaveLength(0);
   vi.advanceTimersByTime(5000);
   flushOneShotEffectJournal(session); flushOneShotEffectJournal(session);
@@ -37,9 +37,9 @@ test("final effect journal preserves authoritative no-effect proof and marks uno
   const tool = { name: "write", description: "", inputSchema: { type: "object" }, recoveryCategory: "side-effecting" as const, execute: vi.fn() };
   await withOneShotFastMode(() => runAdmittedToolCall({ session, turnId: "turn", callId: "refused", tool, args: {},
     invoke: async context => { context.crossEffectBoundary(); return { content: "invalid", isError: true,
-      effectDisposition: confirmedNoEffectDisposition("fixture:refused", "input refused") }; } }));
+      effectDisposition: confirmedNoEffectDisposition("fixture:refused", "input refused") }; } }), String(session.conversationId));
   await expect(withOneShotFastMode(() => runAdmittedToolCall({ session, turnId: "turn", callId: "unknown", tool, args: {},
-    invoke: async context => { context.crossEffectBoundary(); throw new Error("unknown"); } }))).rejects.toThrow("unknown");
+    invoke: async context => { context.crossEffectBoundary(); throw new Error("unknown"); } }), String(session.conversationId))).rejects.toThrow("unknown");
   flushOneShotEffectJournal(session);
   expect(events[1]?.msg).toMatchObject({ type: "effect_result", payload: { outcome: "failed", effectBoundary: "crossed",
     noEffectEvidence: { evidenceRef: "fixture:refused" } } });

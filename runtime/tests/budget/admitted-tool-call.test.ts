@@ -1576,12 +1576,12 @@ it("does not lend a parent's fast scope to a child mutation #3011", async () => 
 });
 
 
-it("enforces a child's durable unknown-outcome gate inside its parent's fast scope #3011", async () => {
+it.each([undefined, "parent-session"])("enforces the durable unknown-outcome gate without this session's fast authority (%s) #3011", async scopeOwner => {
   const state = toolHarness();
   const invoke = vi.fn(async () => ({ content: "must not execute" }));
   vi.mocked(state.session.rolloutStore!.assertToolAdmissionAllowed).mockImplementation(() => { throw new Error("durable_unknown_outcome"); });
   const tool = { name: "child_write", description: "mutation", inputSchema: { type: "object" }, recoveryCategory: "side-effecting", admissionEstimate: zeroAdmissionEstimate } as Tool;
-  await expect(withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "child-turn", callId: "child-call", tool, args: {}, invoke }), "parent-session")).rejects.toThrow("durable_unknown_outcome");
+  await expect(withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "child-turn", callId: "child-call", tool, args: {}, invoke }), scopeOwner)).rejects.toThrow("durable_unknown_outcome");
   expect(invoke).not.toHaveBeenCalled();
   expect(state.acquire).not.toHaveBeenCalled();
 });
