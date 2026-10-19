@@ -15,7 +15,7 @@ test("DeepSeek Light advertises native batch Edit without another initial tool",
   expect(tools.map(t => t.function.name).sort()).toEqual(["Edit", "FileRead", "Write", "exec_command", "system.searchTools"]);
   const edit = tools.find(t => t.function.name === "Edit")!;
   expect(edit.function.parameters.required).toEqual(["path", "edits"]);
-  expect(edit.function.description).toContain("several disjoint edits[] in one call, each matched against the original file");
+  expect(edit.function.description).toContain("All match the original");
   expect(registry.tools.find(t => t.name === "Edit")?.inputSchema).toEqual(edit.function.parameters);
 });
 test.each(["openai", "zai", "anthropic", "qwen"])("other providers retain their canonical editor: %s", provider => {

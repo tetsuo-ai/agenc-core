@@ -5,12 +5,10 @@ import {
 } from "../tools/untrusted-tool-result-framing.js";
 
 /** Light's bounded head. Executable policy and the dynamic authority tail remain canonical. */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, batchEdits = false): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false): string {
   const editing = editsWithApplyPatch
     ? "Edit and create files with apply_patch; put all hunks of one change in one patch."
-    : batchEdits
-      ? "For several changes in one file, use one Edit call with several edits[]; merge nearby changes; keep each oldText short and unique. Write complete files."
-      : "Edit the shortest unique text; Write complete files.";
+    : "Edit the shortest unique text; Write complete files.";
   return [
     "You are AgenC. Follow user scope; answer directly when no workspace facts are needed. Use workspace-relative paths and listed tools; system.searchTools loads missing capabilities. Batch independent calls; omit default arguments. Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change. " + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
     ...(customStyle ? [] : [

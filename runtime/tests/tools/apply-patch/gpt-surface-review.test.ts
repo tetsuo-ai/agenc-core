@@ -98,12 +98,7 @@ test("current provider changes prompt and initial tools together; discovered edi
     expect(names.includes("Edit")).toBe(!wantsPatch);
     expect(names.includes("Write")).toBe(!wantsPatch);
     expect(prompt.staticPrefix.includes("Edit and create files with apply_patch;")).toBe(wantsPatch);
-    expect(prompt.staticPrefix.includes("Edit the shortest unique text; Write complete files.")).toBe(selected === "zai");
-    expect(prompt.staticPrefix.includes("use one Edit call with several edits[]")).toBe(selected === "deepseek");
-    const edit = registry.toLLMTools().find(t => t.function.name === "Edit");
-    expect(edit?.function.parameters.required).toEqual(
-      selected === "deepseek" ? ["path", "edits"] : wantsPatch ? undefined : ["file_path", "old_string", "new_string"],
-    );
+    expect(prompt.staticPrefix.includes("Edit the shortest unique text; Write complete files.")).toBe(!wantsPatch);
   }
   provider = "openai";
   registry.discoverToolNames?.(["Edit", "Write"]);

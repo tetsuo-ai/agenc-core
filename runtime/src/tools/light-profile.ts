@@ -23,8 +23,3 @@ export const LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set
 export function lightEditsWithApplyPatch(providerName: string | undefined): boolean {
   return providerName === "openai";
 }
-
-/** Providers whose Light sessions edit with the batch Edit form {path, edits:[{oldText, newText}]}. */
-export function lightEditsWithBatch(providerName: string | undefined): boolean {
-  return providerName === "deepseek";
-}
