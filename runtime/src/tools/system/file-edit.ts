@@ -1227,7 +1227,7 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
   return {
     name: toolName,
     description: originalDisjoint
-      ? "FileRead first. Batch disjoint replacements in one edits array; merge nearby changes. Keep oldText short and unique in the original file. All match the original; overlaps/nesting fail. Omit display numbers. Write creates files."
+      ? "Exact text replacement, including several disjoint edits[] in one call, each matched against the original file; overlaps fail. FileRead first; omit display numbers. Write creates files."
       : FILE_MULTI_EDIT_DESCRIPTION,
     metadata: {
       family: "filesystem",

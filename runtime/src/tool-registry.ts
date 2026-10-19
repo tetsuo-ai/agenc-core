@@ -29,7 +29,7 @@ import { prepareModelToolArgs, validateToolPreflight } from "./tools/execution.j
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation } from "./tools/light-presentation.js";
-import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch } from "./tools/light-profile.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightEditsWithBatch } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -1111,7 +1111,7 @@ export function buildToolRegistry(
     allowedPaths: [options.workspaceRoot],
   }))])[0];
   function usesBatchEdit(): boolean {
-    return options.lightMode === true && options.getSession?.()?.services?.provider?.name === "deepseek";
+    return options.lightMode === true && lightEditsWithBatch(options.getSession?.()?.services?.provider?.name);
   }
   // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
   // names even when the canonical tool is disabled or unavailable so an
