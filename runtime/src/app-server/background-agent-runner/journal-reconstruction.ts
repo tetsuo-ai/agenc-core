@@ -188,6 +188,7 @@ interface MutableTranscriptV2Message extends JsonObject {
   commitEventId: string;
   role: "user" | "assistant";
   text: string;
+  acceptedAt?: string;
   partial?: "streaming" | "interrupted";
   partialTruncated?: boolean;
   turnId?: string;
@@ -558,11 +559,13 @@ export function sessionTranscriptV2FromRollout(
       if (text.length === 0) continue;
       const commitEventId = canonicalEventId(event);
       const clientMessageId = event.msg.payload.messageId;
+      const acceptedAt = event.msg.payload.acceptedAt;
       messages.push({
         messageId: clientMessageId ?? `message:${commitEventId}`,
         commitEventId,
         role: "user",
         text,
+        ...(typeof acceptedAt === "string" && Number.isFinite(Date.parse(acceptedAt)) ? { acceptedAt } : {}),
         ...(clientMessageId !== undefined ? { clientMessageId } : {}),
         committedSequence: sequence,
       });
@@ -575,7 +578,15 @@ export function sessionTranscriptV2FromRollout(
       partialSequence = undefined;
       currentTurnId = event.msg.payload.turnId;
       if (pendingUserIndex !== undefined) {
-        messages[pendingUserIndex]!.turnId = currentTurnId;
+        const user = messages[pendingUserIndex]!;
+        user.turnId = currentTurnId;
+        // Older/initial submissions predate acceptedAt. Their first durable
+        // turn start is the closest retained timestamp, never the attach time.
+        const startedAt = event.msg.payload.startedAt;
+        if (user.acceptedAt === undefined && typeof startedAt === "number" &&
+            Number.isFinite(new Date(startedAt).getTime())) {
+          user.acceptedAt = new Date(startedAt).toISOString();
+        }
         pendingUserIndex = undefined;
       }
       currentClientMessageId = pendingClientMessageId;

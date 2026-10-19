@@ -15,6 +15,7 @@ export type StatusDashboardRow = {
 
 export type StatusDashboardSnapshot = {
   readonly rows: readonly StatusDashboardRow[];
+  readonly sessionCost: string | null;
   readonly activeIndex: number;
   readonly summary: string;
 };
@@ -101,7 +102,7 @@ function appStateRows(appState: unknown): StatusDashboardRow[] {
       "tasks",
       "background tasks",
       tasks.length,
-      running > 0 ? "warn" : "ok",
+      running > 0 ? "info" : "ok",
       `${running} running or pending; ${tasks.length - running} completed, failed, or killed`,
     ),
   );
@@ -143,6 +144,7 @@ export function createStatusDashboardSnapshot(params: {
   const warnCount = rows.filter(item => item.state === "warn" || item.state === "error").length;
   return {
     rows,
+    sessionCost: rows.find(item => item.key === "Cost (USD)")?.value ?? null,
     activeIndex,
     summary: warnCount > 0 ? `${warnCount} attention` : "all nominal",
   };

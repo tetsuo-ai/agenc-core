@@ -507,7 +507,7 @@ function plainGlobProjection(result: string): {
  * virtual list's height cache (M-TUI-1). The optional `uuid` param keeps
  * external callers unchanged.
  */
-export function makeUserMessage(content: unknown, uuid: string = randomUUID()): any {
+export function makeUserMessage(content: unknown, uuid: string = randomUUID(), messageTimestamp: string = timestamp()): any {
   return {
     type: "user",
     message: {
@@ -515,7 +515,7 @@ export function makeUserMessage(content: unknown, uuid: string = randomUUID()): 
       content: textFromContent(content) || "(empty)",
     },
     uuid,
-    timestamp: timestamp(),
+    timestamp: messageTimestamp,
   };
 }
 
@@ -1971,6 +1971,7 @@ export function adaptTranscriptEvents(
     }
   };
 
+  let pendingUserTimestampIndex: number | undefined;
   for (const raw of orderedEvents) {
     const event = unwrap(raw);
     if (seen.has(event.key)) continue;
@@ -1992,6 +1993,7 @@ export function adaptTranscriptEvents(
         sessionUsage = latestSessionUsage(sessionUsage, event);
         break;
       case "history_cleared":
+        pendingUserTimestampIndex = undefined;
         provisionalTextUuids.clear();
         nextActiveUserOrdinal = undefined;
         pendingTaskBudgetNotice = null;
@@ -2021,6 +2023,7 @@ export function adaptTranscriptEvents(
         isStreaming = false;
         break;
       case "history_replaced": {
+        pendingUserTimestampIndex = undefined;
         provisionalTextUuids.clear();
         nextActiveUserOrdinal = undefined;
         pendingTaskBudgetNotice = null;
@@ -2092,6 +2095,10 @@ export function adaptTranscriptEvents(
         currentTurnId =
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
         currentTurnTimestamp = timestampFromUnixMillis(payload.startedAt);
+        if (pendingUserTimestampIndex !== undefined) {
+          out[pendingUserTimestampIndex].timestamp = currentTurnTimestamp ?? "";
+          pendingUserTimestampIndex = undefined;
+        }
         currentTurnAssistantMessageIndexes = [];
         currentTurnModelCalls = 0;
         // Clear streaming tool state when a new turn boundary arrives. Any
@@ -2291,12 +2298,15 @@ export function adaptTranscriptEvents(
               typeof text === "string" && text.startsWith("<bash-stdout>")) break;
         }
         const userMessage = {
-          ...makeUserMessage(payload.displayText ?? payload.message, nextUuid()),
+          ...makeUserMessage(payload.displayText ?? payload.message, nextUuid(),
+            typeof payload.acceptedAt === "string" && Number.isFinite(Date.parse(payload.acceptedAt))
+              ? payload.acceptedAt : ""),
           canonicalUserMessageId: payload.canonicalUserMessageId ?? payload.messageId ?? payload.queuedCommandUuid ?? (raw as { id?: string }).id,
         };
         if (nextActiveUserOrdinal !== undefined && selectableUserMessagesFilter(userMessage)) {
           userMessage.activeConversationOrdinal = nextActiveUserOrdinal++;
         }
+        pendingUserTimestampIndex = userMessage.timestamp === "" ? out.length : undefined;
         out.push(userMessage);
         break;
       }

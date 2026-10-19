@@ -177,12 +177,14 @@ describe("TUI main coverage", () => {
 
   test("captures resume input before draining teardown and keeps raw mode until the next TUI", async () => {
     const stdin = new TestReadStream();
+    const stdout = new TestWriteStream();
     harness.renderInk.mockResolvedValue({ unmount: vi.fn(), waitUntilExit: vi.fn(async () => undefined) });
     const handle = await bootTUI({ session: {} as never, stdin: stdin as never,
-      stdout: new TestWriteStream() as never, stderr: new TestWriteStream() as never });
+      stdout: stdout as never, stderr: new TestWriteStream() as never });
     const [element] = harness.renderInk.mock.calls[0] as [RenderedTuiElement];
     const teardown = vi.fn(async () => {
       expect(harness.startCapturingEarlyInput).toHaveBeenCalledOnce();
+      expect(stdout.write).toHaveBeenCalledWith("Resuming selected session...\n");
     });
     element.props.registerTuiTeardown(teardown);
     setPendingResumeSessionId("conv-loading");

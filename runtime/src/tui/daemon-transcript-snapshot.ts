@@ -102,7 +102,8 @@ export function daemonTranscriptSnapshotEvents(
           : message.role === "user" ? "user_message" : "agent_message",
         payload: { ...(message.partial === "streaming" ? { delta: text } : { message: text }),
           ...(message.role === "user"
-            ? { canonicalUserMessageId: message.clientMessageId ?? message.messageId } : {}) },
+            ? { canonicalUserMessageId: message.clientMessageId ?? message.messageId,
+              ...(message.acceptedAt !== undefined ? { acceptedAt: message.acceptedAt } : {}) } : {}) },
       } satisfies JsonObject,
     };
   });

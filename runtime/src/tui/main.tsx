@@ -297,6 +297,9 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
             // the next session's attach, instead of handing it to an empty UI.
             if (!firedStdinLoss && hasPendingResumeSession()) {
               startCapturingEarlyInput();
+              // Ink is unmounted, so write outside its frame before awaiting
+              // editor teardown, session detach, or the replacement attach.
+              stdout.write("Resuming selected session...\n");
             }
             await teardownBarrier.drain();
           } finally {

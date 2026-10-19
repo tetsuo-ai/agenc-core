@@ -3,11 +3,13 @@ import React from "react";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { useTerminalSize } from "../tui/hooks/useTerminalSize.js";
+import { useModalOrTerminalSize } from "../tui/context/modalContext.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
-import type { StatusRowState, StatusDashboardRow, StatusDashboardSnapshot } from "./status-menu-snapshot.js";
+import type { StatusRowState, StatusDashboardSnapshot } from "./status-menu-snapshot.js";
 export { createStatusDashboardSnapshot, type StatusDashboardSnapshot } from "./status-menu-snapshot.js";
 
 function stateColor(state: StatusRowState): "success" | "agenc" | "worker" | "error" {
@@ -44,20 +46,13 @@ function parseStatusNumber(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function progressBar(ratio: number | null, width = 24): string {
-  if (ratio === null) return "░".repeat(width);
-  const clamped = Math.max(0, Math.min(1, ratio));
-  const filled = Math.round(clamped * width);
-  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
-}
-
-function costBlock(rows: readonly StatusDashboardRow[]): {
+function costBlock(snapshot: StatusDashboardSnapshot): {
   readonly cost: string;
   readonly tokens: string;
-  readonly bar: string;
   readonly percent: string;
 } {
-  const cost = rows.find(row => row.key.toLowerCase() === "cost")?.value ?? "$0.00";
+  const { rows } = snapshot;
+  const cost = snapshot.sessionCost ?? "unavailable";
   const emitted = parseStatusNumber(rows.find(row => row.key.toLowerCase() === "tokens emitted")?.value);
   const remaining = parseStatusNumber(rows.find(row => row.key.toLowerCase() === "tokens remaining")?.value);
   const ratio = emitted !== null && remaining !== null && emitted + remaining > 0
@@ -66,7 +61,6 @@ function costBlock(rows: readonly StatusDashboardRow[]): {
   return {
     cost,
     tokens: emitted === null ? "tokens n/a" : `${emitted.toLocaleString()} emitted`,
-    bar: progressBar(ratio),
     percent: ratio === null ? "budget open" : `${Math.round(ratio * 100)}% used`,
   };
 }
@@ -79,6 +73,7 @@ function StatusDashboardView({
   readonly onDone: () => void;
 }): React.ReactNode {
   const rows = snapshot.rows;
+  const viewport = useModalOrTerminalSize(useTerminalSize());
   const [activeIndex, setActiveIndex] = React.useState(snapshot.activeIndex);
 
   useInput((input, key) => {
@@ -96,15 +91,19 @@ function StatusDashboardView({
   });
 
   const selected = rows[Math.max(0, Math.min(activeIndex, rows.length - 1))] ?? rows[0];
-  const costs = costBlock(rows);
+  const costs = costBlock(snapshot);
+  // Keep basic labels whole. Details belong below the list, where they can
+  // wrap without squeezing every table cell to make room for a second pane.
+  const labelWidth = Math.max(16, ...rows.map(row => row.key.length));
+  const valueWidth = Math.max(8, viewport.columns - labelWidth - 24);
 
   return (
     <MenuModal
       title="status dashboard"
       summary={snapshot.summary}
       headerRight="runtime · session"
-      columns={[3, 12, 22, 28, 46]}
-      headers={["", "section", "label", "value", "detail"]}
+      columns={[1, 7, labelWidth, valueWidth]}
+      headers={["", "section", "label", "value"]}
       items={rows}
       activeIndex={activeIndex}
       renderRow={(item, _index, active) => {
@@ -122,32 +121,19 @@ function StatusDashboardView({
           <ThemedText key="value" color={active ? "agenc" : "text2"} wrap="truncate-middle">
             {item.value}
           </ThemedText>,
-          <ThemedText key="detail" color="muted3" wrap="truncate-end">
-            {item.detail}
-          </ThemedText>,
         ];
       }}
-      preview={
-        <Box flexDirection="column" gap={1}>
-          <ThemedText color="agenc">Runtime / Session</ThemedText>
+      detail={
+        <Box flexDirection="column">
           <ThemedText color="text2" wrap="wrap">
-            {rows.filter(row => row.group === "runtime").length} runtime rows · {rows.filter(row => row.group === "session").length} session rows
+            {selected?.key ?? "Status"}: {selected?.value ?? "unavailable"}
           </ThemedText>
           <ThemedText color="muted3" wrap="wrap">
-            Selected: {selected?.group ?? "status"} / {selected?.key ?? "none"}
-          </ThemedText>
-          <ThemedText color="text2" wrap="wrap">
             {selected?.detail ?? "No status detail available."}
           </ThemedText>
-          <Box flexDirection="column">
-            <ThemedText color="muted3">COST</ThemedText>
-            <ThemedText color="text2" wrap="truncate-end">
-              {costs.cost} · {costs.tokens}
-            </ThemedText>
-            <ThemedText color="agenc" wrap="truncate-end">
-              {costs.bar} {costs.percent}
-            </ThemedText>
-          </Box>
+          <ThemedText color="text2" wrap="wrap">
+            Cost {costs.cost} · {costs.tokens} · {costs.percent}
+          </ThemedText>
         </Box>
       }
       footer={[

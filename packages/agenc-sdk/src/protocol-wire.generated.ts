@@ -2464,6 +2464,8 @@ export interface SessionTranscriptV2Message extends JsonObject {
     readonly commitEventId: string;
     readonly role: "user" | "assistant";
     readonly text: string;
+    /** Original user submission time, when retained by the durable journal. */
+    readonly acceptedAt?: string;
     /** Display-only delta prefix, never a committed response or model-history item. */
     readonly partial?: "streaming" | "interrupted";
     readonly partialTruncated?: boolean;

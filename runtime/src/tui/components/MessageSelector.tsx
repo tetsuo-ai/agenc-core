@@ -398,7 +398,9 @@ export function MessageSelector({
             <Box flexDirection="column" paddingLeft={1} borderStyle="single" borderRight={false} borderTop={false} borderBottom={false} borderLeft={true} borderLeftDimColor>
               <UserMessageOption userMessage={messageToRestore} color="text" isCurrent={false} />
               <Text dimColor>
-                ({formatRelativeTimeAgo(new Date(messageToRestore.timestamp))})
+                ({Number.isFinite(Date.parse(messageToRestore.timestamp))
+                  ? formatRelativeTimeAgo(new Date(messageToRestore.timestamp))
+                  : "time unavailable"})
               </Text>
             </Box>
             <RestoreOptionDescription selectedRestoreOption={selectedRestoreOption} canRestoreCode={!!canRestoreCode_0} diffStatsForRestore={diffStatsForRestore} />
