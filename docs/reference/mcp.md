@@ -178,6 +178,47 @@ refusal text.
 
 ### Tool bridge
 
+#### Approving tools with unknown filesystem writes
+
+Many data-query MCP tools accept only IDs or other scalar arguments. Core cannot
+infer their filesystem write targets from those arguments. Server annotations
+such as `readOnlyHint` are descriptive and never grant filesystem authority.
+
+In an interactive session, Core asks you to approve a tool with unknown write
+targets. Approve only after checking that the tool performs no filesystem
+writes. You can allow the current call, allow that tool for the session, or
+deny. A session grant covers the same installed tool with different scalar
+arguments; replacing the tool requires new consent. Explicit path arguments
+still undergo filesystem checks. The filesystem and network sandbox stays in
+place, including the sandbox around local stdio server processes.
+
+Print mode (`-p`), scheduled runs, and sessions without an approver stop on the
+first such refusal and show the trusted configuration needed. Approval bypass
+alone does not attest that a tool has no filesystem writes. To use audited
+query tools unattended, edit your **user** config at `$AGENC_HOME/config.toml`
+(normally `~/.agenc/config.toml`):
+
+```toml
+[mcp_servers.inventory]
+transport = "stdio"
+command = "inventory-mcp"
+virtual_no_fs_write_tools = ["lookup_product", "get_stock"]
+```
+
+Use the server's raw tool names, merge with any existing list, and retain its
+existing command, arguments, transport, and credentials. Restart the session
+after editing. Managed configuration may also provide this declaration.
+Project, local, plugin, and server-provided settings cannot grant it.
+
+This declaration exempts the named tools from filesystem target inference,
+including path arguments. Never declare shell/code tools or tools with
+caller-selected output files. It does not grant network access, authorize
+other side effects, disable process isolation, or make unknown outcomes safe
+to retry. A whole server can be audited by listing all its query tools;
+there is deliberately no wildcard that would silently trust tools added later.
+
+#### Execution and catalog policy
+
 - Namespaced tool names: `mcp.<serverName>.<toolName>`
 - Permission integration via the same arbiter as built-ins
 - Result size cap: `MAX_MCP_CALL_RESULT_BYTES` (5 MiB)

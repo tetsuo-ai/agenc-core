@@ -1,4 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   externalFileSystemPolicy,
@@ -42,6 +43,7 @@ import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority
 import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
 import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
+import { McpFilesystemApprovalRequiredError, type McpFilesystemApprovalScope } from "./mcp-filesystem-approval.js";
 
 export interface RuntimeSandboxProfileOptions {
   readonly cwd: string;
@@ -491,6 +493,13 @@ export function enforceRuntimeSandboxAttempt(
     }
   }
   if (writes.indeterminate) {
+    const mcpScope = indeterminateMcpWriteScope(input.tool, input.args, cwd);
+    if (mcpScope !== undefined) {
+      // This is an attestation for one MCP tool, never an unsandboxed retry
+      // or a grant to explicit paths. Model arguments cannot set this context.
+      if (input.context.mcpNoFsWritesApproved === true && input.context.approvalResolved) return;
+      throw new McpFilesystemApprovalRequiredError(mcpScope);
+    }
     if (
       policy.kind === "workspace_write" &&
       canDeferIndeterminateWritesToPlatformSandbox(input, cwd)
@@ -677,6 +686,25 @@ function analyzeWrites(
     knownSafeWhenTargetless: false,
     declared,
   };
+}
+
+const mcpFilesystemApprovalIdentities = new WeakMap<Tool, string>();
+
+export function indeterminateMcpWriteScope(
+  tool: Tool,
+  args: Record<string, unknown>,
+  cwd: string,
+): McpFilesystemApprovalScope | undefined {
+  const info = tool.mcpInfo;
+  if (info === undefined || typeof info.serverName !== "string" || typeof info.toolName !== "string" ||
+      tool.serverId !== info.serverName || tool.name !== `mcp.${info.serverName}.${info.toolName}` ||
+      !toolMayMutate(tool) || !analyzeWrites(tool, args, cwd).indeterminate) return undefined;
+  let toolIdentity = mcpFilesystemApprovalIdentities.get(tool);
+  if (toolIdentity === undefined) {
+    toolIdentity = randomUUID();
+    mcpFilesystemApprovalIdentities.set(tool, toolIdentity);
+  }
+  return { serverName: info.serverName, toolName: info.toolName, toolIdentity };
 }
 
 function runtimeCwd(context: ToolRuntimeAttemptContext): string {

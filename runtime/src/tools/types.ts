@@ -226,6 +226,8 @@ export interface Tool {
   readonly maxResultBytes?: number;
   /** MCP-style server id when the tool's class is `shared_server`. */
   readonly serverId?: string;
+  /** Runtime-owned MCP bridge identity, independent of server annotations. */
+  readonly mcpInfo?: { readonly serverName: string; readonly toolName: string };
   /** Router flag: whether this tool supports the model's
    *  `parallel_tool_calls` request knob. Used by `router.ts`. */
   readonly supportsParallelToolCalls?: boolean;

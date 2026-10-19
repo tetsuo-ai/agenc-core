@@ -81,6 +81,7 @@ import {
   approvalDenialEndsTurn,
 } from "./orchestrator.js";
 import { LiveEffectMutationBlockedError } from "../budget/effect-settlement-supervisor.js";
+import { McpFilesystemApprovalRequiredError } from "./runtimes/mcp-filesystem-approval.js";
 import {
   executeToolDispatch,
   type ApprovalRequestFn,
@@ -666,6 +667,7 @@ export class ToolRouter {
         },
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         approvalPolicy: effectiveApprovalPolicy,
+        requestedApprovalPolicy: opts.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
         sandboxMode: requestedSandboxMode,
         payload: executionPayload,
         ...(activeExecPolicy !== undefined
@@ -731,6 +733,7 @@ export class ToolRouter {
               requestedSandboxMode,
               sandboxMode: sandbox,
               approvalResolved: dispatchContext.approvalResolved,
+              ...(dispatchContext.mcpNoFsWritesApproved === true ? { mcpNoFsWritesApproved: true } : {}),
               ...(dispatchContext.additionalPermissions !== undefined
                 ? {
                     additionalPermissions:
@@ -1234,6 +1237,7 @@ export class ToolRouter {
           : {}),
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         approvalPolicy: effectiveApprovalPolicy,
+        requestedApprovalPolicy: opts.approvalPolicy,
         sandboxMode: opts.sandboxMode,
         payload: executionPayload,
         ...(activeExecPolicy !== undefined
@@ -1308,6 +1312,7 @@ export class ToolRouter {
               requestedSandboxMode: opts.sandboxMode,
               sandboxMode: sandbox,
               approvalResolved: dispatchContext.approvalResolved,
+              ...(dispatchContext.mcpNoFsWritesApproved === true ? { mcpNoFsWritesApproved: true } : {}),
               ...(dispatchContext.additionalPermissions !== undefined
                 ? {
                     additionalPermissions:
@@ -1852,6 +1857,14 @@ function workflowPolicyDenial(session: Session, source: string): Partial<ToolDis
 }
 
 async function toolDispatchErrorResult(err: unknown, session?: Session, toolName?: string): Promise<ToolDispatchResult> {
+  if (err instanceof McpFilesystemApprovalRequiredError) {
+    return {
+      content: JSON.stringify({ error: err.message, retryable: false, executed: false }),
+      isError: true,
+      preventContinuation: true,
+      metadata: { retryable: false, executed: false, mcpFilesystemApprovalRequired: err.message },
+    };
+  }
   const pending = toolName === "exec_command" ? readPendingPhysicalSettlement<ToolDispatchResult>(err) : undefined;
   if (pending?.callerStop === "abort") {
     // The admission boundary has already installed its unknown-effect poison

@@ -44,6 +44,8 @@ export interface ToolRuntimeAttemptContext extends ToolRuntimeCallContext {
   readonly requestedSandboxMode: SandboxMode;
   readonly sandboxMode: SandboxMode;
   readonly approvalResolved: boolean;
+  /** Human attestation for this MCP tool's indeterminate filesystem writes. */
+  readonly mcpNoFsWritesApproved?: boolean;
   readonly additionalPermissions?: AdditionalPermissionProfile;
   readonly rawArgs: string;
   readonly invocation: ToolInvocation;
@@ -92,6 +94,7 @@ export function buildToolRuntimeAttemptContext(
     readonly requestedSandboxMode: SandboxMode;
     readonly sandboxMode: SandboxMode;
     readonly approvalResolved: boolean;
+    readonly mcpNoFsWritesApproved?: boolean;
     readonly additionalPermissions?: AdditionalPermissionProfile;
     readonly rawArgs: string;
     readonly invocation: ToolInvocation;
@@ -106,6 +109,7 @@ export function buildToolRuntimeAttemptContext(
     requestedSandboxMode: params.requestedSandboxMode,
     sandboxMode: params.sandboxMode,
     approvalResolved: params.approvalResolved,
+    ...(params.mcpNoFsWritesApproved === true ? { mcpNoFsWritesApproved: true } : {}),
     ...(params.additionalPermissions !== undefined
       ? { additionalPermissions: params.additionalPermissions }
       : {}),

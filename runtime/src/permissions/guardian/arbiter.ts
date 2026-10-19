@@ -241,6 +241,8 @@ export function defaultExecApprovalRequirement(
 }
 
 export interface ApprovalCtx {
+  /** A human-only filesystem attestation; cached separately from tool-use approvals. */
+  readonly mcpFilesystemApproval?: import("../../tools/runtimes/mcp-filesystem-approval.js").McpFilesystemApprovalScope;
   readonly invocation: ToolInvocation;
   readonly callId: string;
   /** Canonical identity of this permission occurrence, not the tool invocation. */
@@ -484,7 +486,8 @@ async function resolveApproval(
   opts: RequestApprovalOpts,
 ): Promise<RequestApprovalResult> {
   const signal = opts.signal ?? opts.ctx.signal;
-  const requiresUserInteraction = opts.ctx.requiresUserInteraction === true;
+  const mcpFilesystemApproval = opts.ctx.mcpFilesystemApproval;
+  const requiresUserInteraction = opts.ctx.requiresUserInteraction === true || mcpFilesystemApproval !== undefined;
   if (alreadyAborted(signal)) {
     return { decision: { kind: "abort" }, source: "aborted" };
   }
@@ -567,11 +570,13 @@ async function resolveApproval(
     // Automatic reviewers may only grant the current call. Session grants and
     // policy amendments require an authoritative human resolver, and a prior
     // automatic decision must never be replayed for a later call.
-    const approvalCache = shouldUseGuardian || requiresUserInteraction
+    const approvalCache = shouldUseGuardian || (requiresUserInteraction && mcpFilesystemApproval === undefined)
       ? null
       : resolveApprovalCache(opts.ctx.invocation);
     const approvalKeys =
-      approvalCache !== null
+      mcpFilesystemApproval !== undefined
+        ? [{ kind: "mcp_no_fs_writes", ...mcpFilesystemApproval }]
+        : approvalCache !== null
         ? buildApprovalCacheKeys(
             toolFromApprovalCtx(opts.ctx),
             opts.ctx.invocation,

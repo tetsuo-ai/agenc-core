@@ -97,6 +97,8 @@ import {
 import { asRecord } from "../utils/record.js";
 import { routineRunOptions } from "../session/runtime-options.js";
 import { readPendingPhysicalSettlement } from "./physical-settlement.js";
+import { indeterminateMcpWriteScope } from "./runtimes/sandboxing.js";
+import { McpFilesystemApprovalRequiredError, mcpFilesystemApprovalReason } from "./runtimes/mcp-filesystem-approval.js";
 
 export { requestApproval };
 export type {
@@ -353,6 +355,7 @@ export interface OrchestrateToolCallOpts<T> {
   readonly approvalCtx: ApprovalCtx;
   readonly signal?: AbortSignal;
   readonly approvalPolicy: ApprovalPolicy;
+  readonly requestedApprovalPolicy?: ApprovalPolicy;
   readonly sandboxMode: SandboxMode;
   readonly sandboxPermissions?: SandboxPermissionsInput;
   readonly execPolicy?: Policy;
@@ -378,6 +381,7 @@ export interface OrchestrateToolCallOpts<T> {
     sandbox: SandboxMode,
     context: {
       readonly approvalResolved: boolean;
+      readonly mcpNoFsWritesApproved?: boolean;
       readonly additionalPermissions?: AdditionalPermissionProfile;
     },
   ) => Promise<T>;
@@ -854,6 +858,26 @@ export async function orchestrateToolCall<T>(
     );
     throw new ApprovalRejectedError(ROUTINE_SANDBOX_ONLY_MESSAGE, { kind: "denied" });
   }
+  const firstSandbox = selectFirstAttemptSandbox(opts.sandboxMode, sandboxOverride) as SandboxMode;
+  const mcpFilesystemApproval =
+    (firstSandbox === "workspace_write" || firstSandbox === "read_only") &&
+      opts.tool.mcpInfo !== undefined && opts.approvalArgs !== undefined
+      ? indeterminateMcpWriteScope(
+          opts.tool, opts.approvalArgs, opts.approvalCtx.invocation.turn?.cwd ?? process.cwd(),
+        )
+      : undefined;
+  if (mcpFilesystemApproval !== undefined) {
+    const services = opts.approvalCtx.invocation.session.services;
+    const runtimeOptions = services.runtimeOptions;
+    if (routineRun || runtimeOptions?.nonInteractive === true ||
+        services.deferInteractiveApprovals !== undefined ||
+        (opts.requestedApprovalPolicy ?? opts.approvalPolicy) === "never" ||
+        opts.approvalResolver === undefined ||
+        (opts.approvalPolicy === "granular" && opts.granular?.sandbox_approval === false)) {
+      throw new McpFilesystemApprovalRequiredError(mcpFilesystemApproval);
+    }
+    requirement = { kind: "needs_approval", reason: mcpFilesystemApprovalReason(mcpFilesystemApproval) };
+  }
   if (routineWithoutApprover && requirement.kind === "needs_approval") {
     // Nobody can answer: refuse now instead of waiting for a person.
     await recordApprovalRequirementOutcome(
@@ -877,6 +901,7 @@ export async function orchestrateToolCall<T>(
       : requirement.reason;
     const approvalCtx: ApprovalCtx = {
       ...opts.approvalCtx,
+      ...(mcpFilesystemApproval !== undefined ? { mcpFilesystemApproval } : {}),
       ...(opts.tool.requiresUserInteraction?.() === true
         ? { requiresUserInteraction: true }
         : {}),
@@ -921,16 +946,12 @@ export async function orchestrateToolCall<T>(
       : undefined;
 
   // Step 2 — first attempt with bounded transient retry.
-  const firstSandbox = selectFirstAttemptSandbox(
-    opts.sandboxMode,
-    sandboxOverride,
-  ) as SandboxMode;
-
   try {
     return await attemptWithRetry({
       dispatch: () =>
         opts.dispatch(firstSandbox, {
           approvalResolved: alreadyApproved,
+          ...(mcpFilesystemApproval !== undefined && alreadyApproved ? { mcpNoFsWritesApproved: true } : {}),
           ...(additionalPermissions !== undefined
             ? { additionalPermissions }
             : {}),

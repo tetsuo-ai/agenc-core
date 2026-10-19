@@ -3873,6 +3873,20 @@ async function* runTurnKernelInner(
         };
       }
     }
+    const mcpFilesystemApprovalFailure = state.completedToolResults.find(
+      (result) => result.isError === true && typeof result.metadata?.mcpFilesystemApprovalRequired === "string",
+    );
+    if (mcpFilesystemApprovalFailure !== undefined) {
+      // This is missing trusted configuration, not a model-repairable tool
+      // error. Stop before completion gates or equivalent calls can retry it.
+      lastContent = mcpFilesystemApprovalFailure.metadata!.mcpFilesystemApprovalRequired as string;
+      const error = new Error(lastContent);
+      state.messages.push({ role: "assistant", content: lastContent });
+      await syncSessionState();
+      emitTurnComplete(lastContent, "error", error);
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "error", error };
+      return { reason: "aborted_tools", error };
+    }
     const workflowApprovalFailure = isWorkflowApprovalSession(session)
       ? state.completedToolResults
           // A person's denial ends the turn as their stop, below, in a
