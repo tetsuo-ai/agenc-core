@@ -162,12 +162,9 @@ const NANO_USD_PER_USD = 1_000_000_000;
 const MAX_RUN_TREE_IDS = 1_000;
 
 /**
- * Read-only implementation of the first public run introspection slice.
- *
- * Deliberately narrow: the existing `agent_runs` row is the terminal-run
- * authority and the existing execution-admission journal is the replay and
- * evidence source. This service does not synthesize an M4 workflow journal or
- * a terminal assistant payload that was never persisted.
+ * Inspect persisted runs, repairing their rebuildable SQLite projections from
+ * the canonical journal before serving status, output, replay or evidence.
+ * Reads never resume execution or synthesize an unpersisted terminal payload.
  */
 export class AgenCDaemonRunInspectionService {
   readonly #providerWait: AgenCDaemonRunInspectionOptions["providerWait"];
@@ -1520,9 +1517,17 @@ function refreshRunJournalProjection(
     // the projection as it stands and persist no deferral, since an active
     // run_recovery_deferred row would exclude the run from recovery at the
     // next daemon start ("pending operator recovery action").
-    recoverCanonicalRunJournalForRun(driver, runId, {
-      strict: { liveSourceDeferral: "skip" },
+    const recovered = recoverCanonicalRunJournalForRun(driver, runId, {
+      strict: { liveSourceDeferral: "skip", projectionFailure: "throw" },
     });
+    if (recovered.exclusion !== undefined && recovered.exclusion.reasonCode !== "source_not_quiescent") {
+      throw new Error(`Cannot inspect run ${runId}: ${recovered.exclusion.safeDetail}`);
+    }
+  } catch (error) {
+    // A detached failure can already be durable when a failed journal append
+    // later drains during shutdown. Keep that honest terminal visible even if
+    // its journal cannot be reconciled; never fall back to a nonterminal row.
+    if (!withReadonlyStateDatabase(paths, db => readCurrentTerminalResult(db, runId) !== undefined)) throw error;
   } finally {
     driver.close();
   }

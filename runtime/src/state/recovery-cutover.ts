@@ -38,6 +38,8 @@ export interface RecoveryCutoverOptions {
    * daemon start.
    */
   readonly liveSourceDeferral?: "record" | "skip";
+  /** Inspection must fail visibly and retry after storage recovers, never serve stale running state. */
+  readonly projectionFailure?: "record" | "throw";
 }
 
 /** One aggregate E1a byte/time ceiling shared by every startup entrypoint. */
@@ -95,6 +97,11 @@ export function persistRecoveryFailure(
   options: RecoveryCutoverOptions,
   error: unknown,
 ): RecoveryRunExclusion {
+  if (options.projectionFailure === "throw" &&
+      !(error instanceof CanonicalJournalIntegrityError) &&
+      (!(error instanceof RecoveryOperationalError) || error.reasonCode !== "source_not_quiescent")) {
+    throw error;
+  }
   const failedPath = recoveryFailureSourcePath(error);
   const source =
     sources.find(({ rolloutPath }) => rolloutPath === failedPath) ??

@@ -223,7 +223,14 @@ export function recoverCanonicalRunJournalForRun(
   } = {},
 ): CanonicalRunJournalProjectionResult {
   const durableExclusion = getRecoveryRunExclusion(driver, runId);
-  if (durableExclusion !== undefined) {
+  // A failed SQLite projection says nothing about the canonical evidence.
+  // On-demand inspection retries it under the same strict file proof, keeping
+  // the old execution exclusion until the entire projection succeeds.
+  const retryProjection = options.strict?.projectionFailure === "throw" &&
+    durableExclusion?.kind === "deferred" &&
+    ["projection_failure", "recovery_storage_unavailable", "database_io", "database_busy", "database_unavailable"]
+      .includes(durableExclusion.reasonCode ?? "");
+  if (durableExclusion !== undefined && !retryProjection) {
     return emptyProjectionResult(durableExclusion);
   }
   const agentRun = driver
@@ -231,7 +238,6 @@ export function recoverCanonicalRunJournalForRun(
       `SELECT id, status, started_at, current_session_id
        FROM agent_runs AS runs
        WHERE id = ?
-         AND ${recoveryRunIsExecutableSql("runs.id")}
        LIMIT 1`,
     )
     .get(runId);
@@ -255,7 +261,14 @@ export function recoverCanonicalRunJournalForRun(
     return emptyProjectionResult(selection.exclusion);
   }
   const sources = selection.sources;
-  return recoverStrictRun(driver, threads, run, sources, options.strict);
+  const result = recoverStrictRun(driver, threads, run, sources, options.strict);
+  if (retryProjection && result.exclusion === undefined && result.filesScanned > 0) {
+    new StateRecoveryIncidentRepository(driver).retryDeferred({
+      blockId: durableExclusion.evidenceId!, actor: "run_inspection",
+      note: "canonical journal projection repaired after storage failure", resolvedAtMs: Date.now(),
+    }, () => {});
+  }
+  return result;
 }
 
 /** The sha256 recorded for a source that no longer exists; an operator confirms it to abandon the incident. */
@@ -394,7 +407,6 @@ function recoverableBoundRun(
               ) AS session_id
        FROM run_lifecycle_epochs AS epoch
        WHERE epoch.run_id = ?
-         AND ${recoveryRunIsExecutableSql("epoch.run_id")}
          AND EXISTS (
            SELECT 1 FROM run_journal_bindings AS binding
            WHERE binding.run_id = epoch.run_id

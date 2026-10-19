@@ -1,6 +1,6 @@
 import { createOperatorEffectReviewResolution } from "../../src/state/effect-review.js";
 import { seedPendingEffectReview } from "../state/helpers/effect-review-fixture.js";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { fsyncSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,7 @@ import { LiveApprovalBroker } from "../../src/app-server/live-approval-broker.js
 import { registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
 import { requestApproval } from "../../src/permissions/guardian/arbiter.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { SessionStore } from "../../src/session/session-store.js";
 import { EventLog } from "../../src/session/event-log.js";
 import type { Session } from "../../src/session/session.js";
 import type { ApprovalCtx } from "../../src/tools/orchestrator.js";
@@ -26,6 +27,9 @@ import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import { StateRecoveryIncidentRepository } from "../../src/state/recovery-incidents.js";
+import { StateThreadRepository } from "../../src/state/threads.js";
+import * as agentRuns from "../../src/state/agent-runs.js";
 import * as journalRecovery from "../../src/state/startup-run-journal-recovery.js";
 import {
   openStateDatabases,
@@ -109,7 +113,7 @@ function admissionRequest(
  * rollout under sessions/run-complete that carries its run_terminal event.
  * Returns the rollout path.
  */
-function seedCanonicalTerminalRollout(fileName: string, eventId: string): string {
+function seedCanonicalTerminalRollout(fileName: string, eventId: string, status: "completed" | "failed" = "completed"): string {
   seedDurableRuns();
   new StateRunDurabilityRepository(driver).ensureInitialEpoch({
     runId: "run-complete",
@@ -131,8 +135,8 @@ function seedCanonicalTerminalRollout(fileName: string, eventId: string): string
           payload: {
             runId: "run-complete",
             epoch: 1,
-            status: "completed",
-            exitCode: 0,
+            status,
+            exitCode: status === "completed" ? 0 : 1,
             stopReason: "turn_completed",
             finalMessage: "Recovered from the journal",
             usage: {
@@ -699,6 +703,101 @@ describe("durable run inspection", () => {
         "run-complete",
       ),
     ).toMatchObject({ eventId: "terminal-from-jsonl", lastSequence: 1 });
+  });
+
+  it.each(["rollout_projection", "terminal_result", "agent_run_status"] as const)(
+    "never serves running after ENOSPC at %s during terminal repair, then repairs on the next read",
+    (point) => {
+      seedCanonicalTerminalRollout("rollout-enospc.jsonl", "terminal-before-enospc", "failed");
+      driver.state.prepare("UPDATE agent_runs SET status = 'running' WHERE id = ?").run("run-complete");
+      const full = Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      const fail = () => { throw full; };
+      const fault = point === "rollout_projection"
+        ? vi.spyOn(StateThreadRepository.prototype, "replaceRolloutItemsFromProducer").mockImplementation(fail)
+        : point === "terminal_result"
+          ? vi.spyOn(StateRunDurabilityRepository.prototype, "recordTerminalResult").mockImplementation(fail)
+          : vi.spyOn(agentRuns, "updateAgentRunStatus").mockImplementation(fail);
+      try {
+        expect(() => service.status({ runId: "run-complete" })).toThrow(/ENOSPC|storage is unavailable/);
+        expect(fault).toHaveBeenCalled();
+        expect(new StateRunDurabilityRepository(driver).getCurrentTerminalResult("run-complete")).toBeUndefined();
+      } finally { fault.mockRestore(); }
+      for (let attempt = 0; attempt < 3; attempt++) {
+        expect(service.status({ runId: "run-complete" })).toMatchObject({
+          status: "failed", terminal: true, statusSource: "run_terminal_result",
+          durableRun: { status: "failed" },
+        });
+      }
+      expect(service.result({ runId: "run-complete" }).output).toMatchObject({
+        available: true, finalMessage: "Recovered from the journal", lastSequence: 1,
+      });
+      expect(driver.state.prepare("SELECT COUNT(*) AS count FROM run_recovery_deferred WHERE state = 'active'").get())
+        .toEqual({ count: 0 });
+    },
+  );
+
+  it.each(["ENOSPC", "SQLITE_FULL"])("strictly repairs an existing %s deferral instead of leaving a journaled failure running", code => {
+    seedCanonicalTerminalRollout("rollout-old-enospc.jsonl", "terminal-with-old-deferral", "failed");
+    driver.state.prepare("UPDATE agent_runs SET status = 'running' WHERE id = ?").run("run-complete");
+    const fault = vi.spyOn(StateRunDurabilityRepository.prototype, "recordTerminalResult")
+      .mockImplementation(() => { throw Object.assign(new Error(code), { code }); });
+    try {
+      expect(journalRecovery.recoverCanonicalRunJournalForRun(driver, "run-complete").exclusion?.kind).toBe("deferred");
+    } finally { fault.mockRestore(); }
+    expect(service.status({ runId: "run-complete" })).toMatchObject({ status: "failed", terminal: true });
+    expect(driver.state.prepare("SELECT state FROM run_recovery_deferred").get()).toEqual({ state: "resolved" });
+    expect(service.result({ runId: "run-complete" }).output).toMatchObject({ available: true, lastSequence: 1 });
+  });
+
+  it("keeps an existing durable terminal visible when journal repair cannot write", () => {
+    seedCanonicalTerminalRollout("rollout-terminal-full.jsonl", "already-terminal", "failed");
+    expect(service.status({ runId: "run-complete" }).terminal).toBe(true);
+    const recovery = vi.spyOn(journalRecovery, "recoverCanonicalRunJournalForRun")
+      .mockImplementation(() => { throw Object.assign(new Error("SQLITE_FULL"), { code: "SQLITE_FULL" }); });
+    try {
+      expect(service.status({ runId: "run-complete" })).toMatchObject({ status: "failed", terminal: true });
+      expect(service.result({ runId: "run-complete" })).toMatchObject({ status: "failed", terminal: true,
+        output: { available: true, lastSequence: 1 } });
+    } finally { recovery.mockRestore(); }
+  });
+
+  it("keeps the execution deferral when strict retry finds damaged terminal evidence", () => {
+    const path = seedCanonicalTerminalRollout("rollout-damaged.jsonl", "terminal-damaged", "failed");
+    new StateRecoveryIncidentRepository(driver).recordDeferred({
+      runId: "run-complete", sourceKind: "run_journal", sourcePath: path,
+      reasonCode: "database_io", errorClass: "SQLITE_FULL", safeDetail: { message: "disk full" },
+      failedAtMs: 1, nextRetryMs: 2,
+    });
+    writeFileSync(path, '{"damaged":');
+    expect(() => service.status({ runId: "run-complete" })).toThrow();
+    expect(new StateRunDurabilityRepository(driver).getCurrentTerminalResult("run-complete")).toBeUndefined();
+    expect(driver.state.prepare("SELECT state FROM run_recovery_deferred").get()).toEqual({ state: "active" });
+  });
+
+  it.each(["append_write", "append_fsync"] as const)("recovers the failed terminal after ENOSPC at the real journal %s seam", async point => {
+    seedDurableRuns();
+    new StateRunDurabilityRepository(driver).ensureInitialEpoch({ runId: "run-live", openedAt: NOW });
+    const store = new SessionStore({ cwd, agencHome: home, sessionId: "run-live", agencVersion: "0.19.11" });
+    store.open({ sessionId: "run-live", cwd, timestamp: NOW, originator: "agenc-cli", agencVersion: "0.19.11" });
+    const fail = () => { throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" }); };
+    if (point === "append_write") store.setWriteImplForTest(fail);
+    else store.setFsyncImplForTest(fail);
+    try {
+      expect(store.append({ id: "terminal-real-enospc", eventId: "terminal-real-enospc", seq: 1,
+        msg: { type: "run_terminal", payload: { runId: "run-live", epoch: 1, status: "failed", exitCode: 1,
+          stopReason: null, finalMessage: "Terminal failure survived storage recovery", usage: null,
+          lastSequenceBeforeTerminal: null, finishedAt: NOW } },
+      }, { durable: true })).toBe(false);
+      expect(readFileSync(store.rolloutPath, "utf8").includes('"run_terminal"')).toBe(point === "append_fsync");
+    } finally {
+      store.setWriteImplForTest((fd, buffer, offset, length) => writeSync(fd, buffer, offset, length));
+      store.setFsyncImplForTest(fsyncSync);
+      await store.awaitPendingFsyncRetries();
+      store.close();
+    }
+    expect(service.status({ runId: "run-live" })).toMatchObject({ status: "failed", terminal: true });
+    expect(service.result({ runId: "run-live" }).output).toMatchObject({ available: true,
+      finalMessage: "Terminal failure survived storage recovery" });
   });
 
   // Review P1-7: an ordinary desktop refresh of a running session turned it
