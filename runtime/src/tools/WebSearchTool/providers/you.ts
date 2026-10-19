@@ -4,7 +4,7 @@
  * Auth: X-API-Key: <key>
  */
 
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
@@ -19,28 +19,29 @@ import {
 export const youProvider: SearchProvider = {
   name: 'you',
 
-  isConfigured() {
-    return Boolean(getSelectedProviderEnvironment().YOU_API_KEY)
+  isConfigured(environment = getSelectedProviderEnvironment()) {
+    return Boolean(environment.YOU_API_KEY)
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
 
-    const url = new URL('https://api.ydc-index.io/v1/search')
+    const url = new URL(context?.endpoint ?? 'https://api.ydc-index.io/v1/search')
     url.searchParams.set('query', input.query)
-    url.searchParams.set('num_web_results', '10')
+    url.searchParams.set('num_web_results', String(input.max_results ?? 10))
 
     const res = await fetch(url.toString(), {
       headers: {
         'X-API-Key': environment.YOU_API_KEY!,
       },
       signal,
+      redirect: 'error',
       ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {
-      throw new Error(`You.com search error ${res.status}: ${await res.text().catch(() => '')}`)
+      throw new Error(`You.com search error ${res.status}`)
     }
 
     const data = await readSearchProviderJson(res, 'You.com search API')

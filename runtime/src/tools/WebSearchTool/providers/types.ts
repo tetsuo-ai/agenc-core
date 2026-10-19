@@ -1,3 +1,5 @@
+import type { ProviderEnvironment } from '../../../llm/provider-options.js'
+
 /**
  * Search provider adapter types.
  *
@@ -19,6 +21,7 @@ export interface SearchHit {
 
 export interface SearchInput {
   query: string
+  max_results?: number
   allowed_domains?: string[]
   blocked_domains?: string[]
 }
@@ -31,13 +34,19 @@ export interface ProviderOutput {
   durationSeconds: number
 }
 
+/** Explicit session inputs for the live daemon tool; legacy callers may omit this. */
+export interface SearchProviderContext {
+  readonly environment: ProviderEnvironment
+  readonly endpoint?: string
+}
+
 export interface SearchProvider {
   /** Human-readable label (used in tool_use_id, logs) */
   readonly name: string
   /** Returns true when the env vars / config needed for this provider are present */
-  isConfigured(): boolean
+  isConfigured(environment?: ProviderEnvironment): boolean
   /** Perform the search. Throw on unrecoverable errors. */
-  search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput>
+  search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput>
 }
 
 export class SearchProviderMalformedJsonError extends Error {

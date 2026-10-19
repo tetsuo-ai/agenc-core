@@ -27,6 +27,7 @@ import type { SearchInput, SearchProvider } from './types.js'
 import type { ProviderOutput } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 
+import { KEYED_SEARCH_PROVIDERS } from './keyed.js'
 import { customProvider } from './custom.js'
 import { duckduckgoProvider } from './duckduckgo.js'
 import { firecrawlProvider } from './firecrawl.js'
@@ -50,14 +51,7 @@ export { type SearchInput, type SearchProvider, type ProviderOutput, type Search
 //       This prevents the generic outbound provider from silently becoming the default backend.
 
 const ALL_PROVIDERS: SearchProvider[] = [
-  firecrawlProvider,
-  tavilyProvider,
-  exaProvider,
-  youProvider,
-  jinaProvider,
-  bingProvider,
-  mojeekProvider,
-  linkupProvider,
+  ...KEYED_SEARCH_PROVIDERS,
   duckduckgoProvider,
 ]
 

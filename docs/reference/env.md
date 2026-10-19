@@ -310,7 +310,7 @@ These have their own pages. Short map:
 | Admission concurrency | `AGENC_ADMISSION_GLOBAL_CONCURRENCY` (64), `AGENC_ADMISSION_WORKSPACE_CONCURRENCY` (32), `AGENC_ADMISSION_SESSION_CONCURRENCY` (8), `AGENC_ADMISSION_PARENT_CONCURRENCY` (4), `AGENC_ADMISSION_PROVIDER_CONCURRENCY` (16) | [autonomy.md](autonomy.md) |
 | Heartbeat | `AGENC_HEARTBEAT`, `AGENC_HEARTBEAT_INTERVAL`, `AGENC_HEARTBEAT_ACTIVE_HOURS`, `AGENC_HEARTBEAT_TARGET`. `skip_when_busy` has no env (TOML only, default true) | [autonomy.md](autonomy.md) |
 | Transaction guard | `AGENC_TRANSACTION_GUARD`, `AGENC_TRANSACTION_GUARD_MODEL`, `AGENC_TRANSACTION_GUARD_OLLAMA_URL`, `AGENC_TRANSACTION_GUARD_FAIL_MODE`, `AGENC_TRANSACTION_GUARD_TIMEOUT_MS`, `AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES` | [slm-transaction-guard.md](../security/slm-transaction-guard.md) |
-| Web search | `AGENC_WEB_SEARCH_ENDPOINT`, `AGENC_WEB_SEARCH_KIND`, `AGENC_WEB_SEARCH_API_KEY`; DeepSeek sessions: `AGENC_DEEPSEEK_WEB_SEARCH` | [config.md](config.md), [deepseek-direct.md](../providers/deepseek-direct.md#web-search) |
+| Web search | `WEB_SEARCH_PROVIDER`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, `YOU_API_KEY`, `JINA_API_KEY`, `BING_API_KEY`, `MOJEEK_API_KEY`, `LINKUP_API_KEY`, `AGENC_WEB_SEARCH_ENDPOINT`, `AGENC_WEB_SEARCH_KIND`, `AGENC_WEB_SEARCH_API_KEY`; DeepSeek sessions: `AGENC_DEEPSEEK_WEB_SEARCH` | [config.md](config.md), [deepseek-direct.md](../providers/deepseek-direct.md#web-search) |
 | xAI incremental continuation | `AGENC_XAI_INCREMENTAL` (boolean-like; projects to `providers.grok.incremental_continuation`, on by default). Streaming Grok turns send `previous_response_id` plus the items added since the last completed response instead of the full history, and resend the trailing permission section only when it changes. Side calls on the session provider (memory selection, compaction, MCP sampling, summaries) are sent in full and leave that chain intact; `0` sends the full history every turn | [providers.md](providers.md) |
 | Provider trace | `AGENC_PROVIDER_TRACE` (truthy). Writes one JSON line per model request and per response or error, without message bodies (model, `prompt_cache_key`, `previous_response_id`, `reasoning`, `parallel_tool_calls`, `max_output_tokens`, response id, usage, stream event count, elapsed ms), to `<AGENC_HOME>/agent-logs/<conversation>/llm-<seq>.jsonl` | [providers.md](providers.md) |
 | Provider trace bodies | `AGENC_PROVIDER_TRACE_BODIES` (truthy, only with `AGENC_PROVIDER_TRACE`). Also writes each full request as `agent-logs/<conversationId>/llm-<seq>.request.json` (secrets redacted, mode 0600). The whole prompt lands on disk, so use it in an isolated home for cache-prefix diagnosis and delete the files afterwards. `node scripts/eval/prefix-diff.mjs <that directory>` reports where consecutive full requests first diverge and, following `previous_response_id` to the response ids in the `.jsonl` lines, which system and user items a continuation chain holds more than once. |
@@ -621,3 +621,15 @@ in the native credential store through `/providers`. The daemon forwards it
 as session credential ingress. Tool subprocesses do not inherit it. Venice
 never uses `OPENAI_COMPATIBLE_API_KEY` or `OPENAI_API_KEY` as a fallback.
 `VENICE_BASE_URL` overrides the built-in `https://api.venice.ai/api/v1` endpoint.
+
+### Live WebSearch provider settings
+
+The named search keys above reach the daemon's model-facing `WebSearch` through
+the session environment. After session-native search (including DeepSeek when
+enabled), `auto` tries the explicit `AGENC_WEB_SEARCH_ENDPOINT` if set, otherwise
+Firecrawl, Tavily, Exa, You, Jina, Bing, Mojeek and Linkup in order, then DuckDuckGo.
+`WEB_SEARCH_PROVIDER` overrides `tools_config.web_search_provider`; explicit names
+select one adapter and fail on errors. `custom` enables the `WEB_*` endpoint and
+preset settings; those presets never join the auto chain. API keys stay in env.
+See [Web Search Providers](../../runtime/src/tools/WebSearchTool/README_SEARCH_PROVIDERS.md#live-agent-websearch)
+for endpoint overrides, legacy differences, billing limitations and examples.

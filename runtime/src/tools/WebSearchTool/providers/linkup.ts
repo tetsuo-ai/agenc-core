@@ -4,7 +4,7 @@
  * Auth: Authorization: Bearer <key>
  */
 
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
@@ -19,15 +19,15 @@ import {
 export const linkupProvider: SearchProvider = {
   name: 'linkup',
 
-  isConfigured() {
-    return Boolean(getSelectedProviderEnvironment().LINKUP_API_KEY)
+  isConfigured(environment = getSelectedProviderEnvironment()) {
+    return Boolean(environment.LINKUP_API_KEY)
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
 
-    const res = await fetch('https://api.linkup.so/v1/search', {
+    const res = await fetch(context?.endpoint ?? 'https://api.linkup.so/v1/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -39,11 +39,12 @@ export const linkupProvider: SearchProvider = {
         depth: 'standard',
       }),
       signal,
+      redirect: 'error',
       ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {
-      throw new Error(`Linkup search error ${res.status}: ${await res.text().catch(() => '')}`)
+      throw new Error(`Linkup search error ${res.status}`)
     }
 
     const data = await readSearchProviderJson(res, 'Linkup search API')

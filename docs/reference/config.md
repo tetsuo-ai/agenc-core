@@ -701,6 +701,7 @@ discovered metadata.
 | `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary`, `profiles.<profile>.reasoning_cap_policy` | Reasoning overrides. |
 | `profiles.<profile>.approvals_reviewer`, `profiles.<profile>.model_verbosity`, `profiles.<profile>.service_tier`, `profiles.<profile>.personality` | Reviewer/presentation overrides. |
 | `profiles.<profile>.tools_config` | Profile-local tool block with the same fields as `tools_config`. |
+| `profiles.<profile>.tools_config.web_search_provider` | Live search adapter selection, with the same values and environment precedence as `tools_config.web_search_provider`. |
 | `profiles.<profile>.tools_config.web_search_endpoint`, `profiles.<profile>.tools_config.web_search_endpoint_kind` | Search URL and `duckduckgo`/`searxng`/`brave`/`json` decoder. |
 | `profiles.<profile>.tools_config.enabled_tools`, `profiles.<profile>.tools_config.disabled_tools` | Exact tool-name allow/disable arrays. |
 | `profiles.<profile>.tools_config.<tool>.default_permission_mode` | Exact-name per-tool approval default. |
@@ -710,7 +711,8 @@ discovered metadata.
 | Paths | Type / meaning |
 | --- | --- |
 | `tools_config` | Tool policy block. There is no `[tools]` alias in v2. |
-| `tools_config.web_search_endpoint` | Search backend URL. |
+| `tools_config.web_search_provider` | Live WebSearch backend after session-native search: `auto` (default), `firecrawl`, `tavily`, `exa`, `you`, `jina`, `bing`, `mojeek`, `linkup`, `custom`, `ddg`, or `native`. `WEB_SEARCH_PROVIDER` wins; keys come from session env. Auto tries configured keys before DuckDuckGo; explicit names fail without switching backend. |
+| `tools_config.web_search_endpoint` | Search backend URL. With an explicitly named provider, overrides its HTTP endpoint using that provider's auth and decoder. In `auto`, uses the generic decoder below and precedes keyed adapters. `AGENC_WEB_SEARCH_ENDPOINT` wins. |
 | `tools_config.web_search_endpoint_kind` | `duckduckgo`, `searxng`, `brave`, or `json`. |
 | `tools_config.enabled_tools`, `tools_config.disabled_tools` | Exact tool-name arrays. |
 | `tools_config.<tool>` | Exact dispatch-name block for any registered tool. Quote names containing dots in TOML, for example `[tools_config."system.bash"]`. |

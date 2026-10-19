@@ -3,6 +3,56 @@
 AgenC supports multiple search backends through a provider adapter system in
 `runtime/src/tools/WebSearchTool/providers/`.
 
+## Live agent WebSearch
+
+The daemon's model-facing `WebSearch` now uses these same HTTP adapters.
+It tries Grok native search, then DeepSeek Search when enabled for a DeepSeek
+session, then the configured search backend, then DuckDuckGo HTML and instant
+answers. DeepSeek's auto setting leaves an explicit search endpoint in charge;
+`AGENC_DEEPSEEK_WEB_SEARCH=1` puts DeepSeek first even with that endpoint.
+
+`WEB_SEARCH_PROVIDER` selects the backend after the session-native steps. Its
+config equivalent is `[tools_config] web_search_provider`; the environment wins.
+In `auto`, an explicit `AGENC_WEB_SEARCH_ENDPOINT` (or
+`tools_config.web_search_endpoint`) keeps priority. Otherwise the configured
+API keys select Firecrawl, Tavily, Exa, You, Jina, Bing, Mojeek, then Linkup.
+Failures and empty/filtered results fall through to the next provider, then DDG.
+Explicit provider names fail on errors or missing keys without switching to DDG;
+`ddg` selects the keyless fallback and `native` requires a session-native backend.
+
+The existing `AGENC_WEB_SEARCH_ENDPOINT` / `tools_config.web_search_endpoint`
+can override the request URL of an explicitly named provider, using that
+provider's authentication, method and response format. Only point it at a
+trusted endpoint: it receives the provider key. `AGENC_WEB_SEARCH_KIND` /
+`web_search_endpoint_kind` applies only to the generic endpoint in `auto` mode.
+With `custom`, the endpoint overrides `WEB_SEARCH_API`, and the `WEB_*` custom
+settings and guardrails below still apply. Custom presets remain explicit-only.
+
+For example, with `EXA_API_KEY` in the session environment:
+
+```toml
+[tools_config]
+web_search_provider = "exa"
+# Optional trusted proxy or self-hosted equivalent:
+# web_search_endpoint = "https://search.example/exa"
+```
+
+API keys stay in the session environment; they are not read from config.toml.
+Each live adapter request has a 30-second limit and honors cancellation.
+Redirects are rejected to keep credentials at the configured host. The live
+result uses the same title/URL/snippet schema and expandable TUI source list as
+DeepSeek. Named/custom providers have no billing receipt, so their admission
+estimate is unpriced (`null`), like a generic endpoint; AgenC does not count
+these external charges as zero or invent a dollar price. DeepSeek-only searches
+retain their exact receipt accounting.
+
+## Shared adapters and legacy TUI selection
+
+The remaining examples also describe the legacy TUI-local tool. Its `native`
+mode uses the firstParty / Vertex / Foundry path, its `ddg` adapter uses
+`duck-duck-scrape`, and it does not read `tools_config` or `AGENC_WEB_SEARCH_*`.
+The live daemon tool uses the chain and configuration described above.
+
 ## Selection model (read this first)
 
 `WEB_SEARCH_PROVIDER` chooses **how** backends are selected:
@@ -34,7 +84,7 @@ always available).
 
 | Provider | Mode / env | Auth | Method | In auto chain? |
 |---|---|---|---|---|
-| Firecrawl | `FIRECRAWL_API_KEY` | Internal SDK | SDK | yes |
+| Firecrawl | `FIRECRAWL_API_KEY` | `Authorization: Bearer` | POST | yes |
 | Tavily | `TAVILY_API_KEY` | `Authorization: Bearer` | POST | yes |
 | Exa | `EXA_API_KEY` | `x-api-key` | POST | yes |
 | You.com | `YOU_API_KEY` | `X-API-Key` | GET | yes |

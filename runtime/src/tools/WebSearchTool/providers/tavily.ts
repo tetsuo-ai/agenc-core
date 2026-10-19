@@ -4,7 +4,7 @@
  * Auth: Authorization: Bearer tvly-xxxx
  */
 
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
@@ -19,15 +19,15 @@ import {
 export const tavilyProvider: SearchProvider = {
   name: 'tavily',
 
-  isConfigured() {
-    return Boolean(getSelectedProviderEnvironment().TAVILY_API_KEY)
+  isConfigured(environment = getSelectedProviderEnvironment()) {
+    return Boolean(environment.TAVILY_API_KEY)
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
 
-    const res = await fetch('https://api.tavily.com/search', {
+    const res = await fetch(context?.endpoint ?? 'https://api.tavily.com/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -35,15 +35,16 @@ export const tavilyProvider: SearchProvider = {
       },
       body: JSON.stringify({
         query: input.query,
-        max_results: 15,
+        max_results: input.max_results ?? 15,
         include_answer: false,
       }),
       signal,
+      redirect: 'error',
       ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {
-      throw new Error(`Tavily search error ${res.status}: ${await res.text().catch(() => '')}`)
+      throw new Error(`Tavily search error ${res.status}`)
     }
 
     const data = await readSearchProviderJson(res, 'Tavily search API')

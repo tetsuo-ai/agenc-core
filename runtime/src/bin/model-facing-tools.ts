@@ -1,3 +1,4 @@
+import { configuredSearchChain, runConfiguredSearchProviders } from "../tools/WebSearchTool/providers/live.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -221,6 +222,7 @@ export interface ModelFacingToolOptions {
   readonly outputSchema?: Record<string, unknown>;
   /** `[tools]` block from config.toml (env vars win over these). */
   readonly toolsConfig?: {
+    readonly web_search_provider?: string;
     readonly web_search_endpoint?: string;
     readonly web_search_endpoint_kind?: string;
     readonly [k: string]: unknown;
@@ -1266,7 +1268,8 @@ function resolveDeepSeekWebSearchBackend(
  * Grok native path reserves its own model call.
  */
 function webSearchMaxCostUsd(opts: ModelFacingToolOptions): number | null {
-  if (configuredWebSearchEndpoint(opts) !== undefined) return null;
+  if (configuredWebSearchEndpoint(opts) !== undefined ||
+      configuredSearchChain(requireModelFacingRequestEnvironment(opts), opts.toolsConfig).providers.length > 0) return null;
   return resolveDeepSeekWebSearchBackend(opts) !== undefined
     ? DEEPSEEK_SEARCH_USD_PER_REQUEST
     : 0;
@@ -3996,6 +3999,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         if (!query) return json({ error: "query is required" }, true);
         const filters = webSearchFilters(args);
         const endpoint = configuredWebSearchEndpoint(opts);
+        const chain = configuredSearchChain(requestEnvironment, opts.toolsConfig);
         const maxResults = Math.max(
           1,
           Math.min(
@@ -4016,12 +4020,12 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         // DeepSeek's Search API for a deepseek session. A failure or an empty
         // answer falls through to the chain below, which says why.
         const deepseek = resolveDeepSeekWebSearchBackend(opts);
-        // The estimate priced the search exactly when no endpoint is set.
-        const reportsDeepSeekCharge = deepseek !== undefined && endpoint === undefined;
+        // A paid fallback is unpriced. An early DeepSeek success still has an exact receipt.
+        const reportsDeepSeekCharge = deepseek !== undefined && endpoint === undefined && chain.providers.length === 0;
         let deepseekBilled = false;
         let deepseekFallback: string | undefined;
-        const withDeepSeekCharge = (result: ToolResult): ToolResult =>
-          reportsDeepSeekCharge
+        const withDeepSeekCharge = (result: ToolResult, deepseekOnly = false): ToolResult =>
+          reportsDeepSeekCharge || deepseekOnly
             ? {
                 ...result,
                 admissionUsage: {
@@ -4054,7 +4058,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
               source: "deepseek_search",
               provider: "deepseek",
               results,
-            }));
+            }), true);
           }
           deepseekFallback = outcome.kind === "failed"
             ? outcome.reason
@@ -4076,7 +4080,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
               : { ...payload, deepseek_search_fallback: deepseekFallback },
           ));
         // 1. Explicitly configured endpoint (env or config-bridged).
-        if (endpoint !== undefined) {
+        if (endpoint !== undefined && chain.mode === "auto") {
           const kind = webSearchEndpointKind(opts);
           const configured = await runConfiguredEndpointSearch(
             endpoint,
@@ -4101,6 +4105,34 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
               ? { heading: configured.heading }
               : {}),
           });
+        }
+        // Shared keyed adapters use this session's environment, never the TUI's.
+        const configuredProvider = await runConfiguredSearchProviders({
+          chain,
+          environment: requestEnvironment,
+          ...(endpoint !== undefined ? { endpoint } : {}),
+          input: {
+            query,
+            max_results: maxResults,
+            allowed_domains: [...filters.allowedDomains],
+            blocked_domains: [...filters.blockedDomains],
+          },
+          ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
+        });
+        if (configuredProvider !== undefined) {
+          return finish({
+            query,
+            source: configuredProvider.providerName,
+            provider: configuredProvider.providerName,
+            results: filterWebSearchResults(configuredProvider.hits.map(hit => ({
+              title: hit.title,
+              url: hit.url,
+              snippet: (hit.description ?? "").slice(0, 600),
+            })), filters).slice(0, maxResults),
+          });
+        }
+        if (chain.mode === "native") {
+          return json({ error: "No native web search backend is available for this session" }, true);
         }
         // 2. Keyless real-SERP default: DuckDuckGo HTML.
         const htmlResults = filterWebSearchResults(

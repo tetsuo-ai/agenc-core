@@ -6885,7 +6885,7 @@ describe("WebSearch through DeepSeek's Search API", () => {
     }
 
     // With an endpoint configured too, DeepSeek goes first; the endpoint makes
-    // the call unpriced, so no exact charge is reported.
+    // admission unpriced, but a DeepSeek-only success still has an exact receipt.
     const fetchMock = routedFetch([
       [OFFICIAL_SEARCH_URL, json200(searchBody)],
       ["https://search.example/query", json200({ results: [] })],
@@ -6902,7 +6902,7 @@ describe("WebSearch through DeepSeek's Search API", () => {
     const result = await withFetch(fetchMock, () => tool.execute({ query: "news" }));
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(JSON.parse(result.content).source).toBe("deepseek_search");
-    expect(result.admissionUsage).toBeUndefined();
+    expect(result.admissionUsage?.costUsd).toBe(0.00075);
   });
 
   it("cancels the DeepSeek request on the admitted abort instead of falling back", async () => {

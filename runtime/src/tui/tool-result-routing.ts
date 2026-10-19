@@ -304,6 +304,15 @@ export interface WebSearchResultSummary {
 }
 
 const WEB_SEARCH_SOURCE_LABELS: Readonly<Record<string, string>> = {
+  tavily: "Tavily",
+  exa: "Exa",
+  you: "You.com",
+  jina: "Jina",
+  bing: "Bing",
+  mojeek: "Mojeek",
+  linkup: "Linkup",
+  firecrawl: "Firecrawl",
+  custom: "Custom search",
   deepseek_search: "DeepSeek search",
   grok_web_search: "Grok web search",
   duckduckgo_html: "DuckDuckGo",

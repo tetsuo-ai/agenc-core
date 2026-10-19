@@ -3,7 +3,7 @@
  * POST https://api.exa.ai/search
  * Auth: x-api-key: <key>
  */
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
@@ -17,24 +17,24 @@ import {
 export const exaProvider: SearchProvider = {
   name: 'exa',
 
-  isConfigured() {
-    return Boolean(getSelectedProviderEnvironment().EXA_API_KEY)
+  isConfigured(environment = getSelectedProviderEnvironment()) {
+    return Boolean(environment.EXA_API_KEY)
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
 
     const body: Record<string, unknown> = {
       query: input.query,
-      numResults: 15,
+      numResults: input.max_results ?? 15,
       type: 'auto',
     }
 
     if (input.allowed_domains?.length) body.includeDomains = input.allowed_domains
     if (input.blocked_domains?.length) body.excludeDomains = input.blocked_domains
 
-    const res = await fetch('https://api.exa.ai/search', {
+    const res = await fetch(context?.endpoint ?? 'https://api.exa.ai/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -42,11 +42,12 @@ export const exaProvider: SearchProvider = {
       },
       body: JSON.stringify(body),
       signal,
+      redirect: 'error',
       ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {
-      throw new Error(`Exa search error ${res.status}: ${await res.text().catch(() => '')}`)
+      throw new Error(`Exa search error ${res.status}`)
     }
     const data = await readSearchProviderJson(res, 'Exa search API')
     const record = isSearchProviderJsonRecord(data) ? data : undefined

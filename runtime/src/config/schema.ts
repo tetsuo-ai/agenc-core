@@ -160,13 +160,15 @@ export interface ShellEnvironmentPolicy {
 }
 
 export interface ToolsConfig {
+  /** Live WebSearch adapter selection; WEB_SEARCH_PROVIDER wins. Keys stay in env. */
+  readonly web_search_provider?: string;
   /**
-   * Search backend for the WebSearch tool on providers without native
-   * web search. `AGENC_WEB_SEARCH_ENDPOINT` env wins over this value.
+   * Search backend URL after session-native search. With an explicitly named
+   * provider, overrides its endpoint. `AGENC_WEB_SEARCH_ENDPOINT` env wins.
    */
   readonly web_search_endpoint?: string;
   /**
-   * Response format of `web_search_endpoint`:
+   * Response format of `web_search_endpoint` in auto mode:
    * duckduckgo (instant-answer JSON, default) | searxng | brave | json.
    * `AGENC_WEB_SEARCH_KIND` env wins. Brave API keys come from
    * `AGENC_WEB_SEARCH_API_KEY` (secrets never live in config.toml).

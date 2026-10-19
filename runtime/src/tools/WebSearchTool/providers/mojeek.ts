@@ -4,7 +4,7 @@
  * Auth: optional Bearer for API tier
  */
 
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
@@ -20,18 +20,18 @@ import {
 export const mojeekProvider: SearchProvider = {
   name: 'mojeek',
 
-  isConfigured() {
-    return Boolean(getSelectedProviderEnvironment().MOJEEK_API_KEY)
+  isConfigured(environment = getSelectedProviderEnvironment()) {
+    return Boolean(environment.MOJEEK_API_KEY)
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
 
-    const url = new URL('https://www.mojeek.com/search')
+    const url = new URL(context?.endpoint ?? 'https://www.mojeek.com/search')
     url.searchParams.set('q', input.query)
     url.searchParams.set('fmt', 'json')
-    url.searchParams.set('t', '10')
+    url.searchParams.set('t', String(input.max_results ?? 10))
 
     const headers: Record<string, string> = {
       'Accept': 'application/json',
@@ -44,11 +44,12 @@ export const mojeekProvider: SearchProvider = {
     const res = await fetch(url.toString(), {
       headers,
       signal,
+      redirect: 'error',
       ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {
-      throw new Error(`Mojeek search error ${res.status}: ${await res.text().catch(() => '')}`)
+      throw new Error(`Mojeek search error ${res.status}`)
     }
 
     const data = await readSearchProviderJson(res, 'Mojeek search API')

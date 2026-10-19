@@ -1,4 +1,4 @@
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import {
   applyDomainFilters,
   arrayField,
@@ -12,13 +12,13 @@ import { getProxyFetchOptions } from '../../../utils/proxy.js'
 export const firecrawlProvider: SearchProvider = {
   name: 'firecrawl',
 
-  isConfigured() {
-    return Boolean(getSelectedProviderEnvironment().FIRECRAWL_API_KEY)
+  isConfigured(environment = getSelectedProviderEnvironment()) {
+    return Boolean(environment.FIRECRAWL_API_KEY)
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
     let query = input.query
@@ -27,19 +27,20 @@ export const firecrawlProvider: SearchProvider = {
       query = `${query} ${exclusions}`
     }
 
-    const response = await fetch('https://api.firecrawl.dev/v2/search', {
+    const response = await fetch(context?.endpoint ?? 'https://api.firecrawl.dev/v2/search', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${environment.FIRECRAWL_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ query, limit: 15 }),
+      body: JSON.stringify({ query, limit: input.max_results ?? 15 }),
       signal,
+      redirect: 'error',
       ...getProxyFetchOptions({ environment }),
     })
     if (!response.ok) {
       throw new Error(
-        `Firecrawl search error ${response.status}: ${await response.text().catch(() => '')}`,
+        `Firecrawl search error ${response.status}`,
       )
     }
     const payload = await readSearchProviderJson(response, 'Firecrawl search API')
