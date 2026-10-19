@@ -1476,6 +1476,22 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("keeps render health metrics out of the normal conversation", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const metrics = vi.fn(() => ({ averageFps: 380.8, low1PctFps: 11, sampleCount: 100 }));
+    await withRenderedApp(<AgenCTuiApp session={createSession()} isInteractive={false}
+      getFpsMetrics={metrics} />, async ({ output }) => {
+      await vi.waitFor(() => expect(providerProbe.promptProps.length).toBeGreaterThan(0));
+      expect(metrics).toHaveBeenCalled();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(stripAnsi(output()).replace(/\s/gu, "")).not.toContain("Renderhealth:");
+      const handlers = providerProbe.globalKeybindingProps.at(-1)!;
+      (handlers.setScreen as (next: "transcript") => void)("transcript");
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Renderhealth:average380.8FPS"));
+    });
+  });
+
   test("formats render health warnings only for sustained low FPS", async () => {
     const { formatRenderHealthWarning } = await import("./App.js");
 

@@ -4917,7 +4917,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           ) : null}
         </Box>
       ) : null}
-      {renderHealthWarning !== null ? (
+      {screen === "transcript" && renderHealthWarning !== null ? (
         <Text color="warning" wrap="truncate">
           {renderHealthWarning}
         </Text>

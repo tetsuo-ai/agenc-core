@@ -2115,6 +2115,16 @@ describe("PromptInput render surface", () => {
     } finally { await rendered.dispose(); }
   });
 
+  test.each(["!", "!python3 --version"])("returns the normalized shell edit to the text input: %s", async (value) => {
+    const onModeChange = vi.fn();
+    const rendered = await renderPromptInput({ onModeChange });
+    try {
+      const change = harness.baseProps!.onChange as (value: string) => unknown;
+      expect(change(value)).toEqual({ value: value.slice(1), offset: value.length - 1 });
+      expect(onModeChange).toHaveBeenCalledWith("bash");
+    } finally { await rendered.dispose(); }
+  });
+
   test("executes bash-mode input locally and emits transcript events", async () => {
     const emitted: unknown[] = [];
     const setToolJSX = vi.fn();

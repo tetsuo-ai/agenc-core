@@ -332,8 +332,9 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "goal_impossible",
   "goal_judge_unavailable",
   "goal_worktree_baseline_unavailable",
-  // Provider / mode change the user just observed
-  "provider_switched",
+  // Successful model switches already have command feedback. Raw provider
+  // transition diagnostics stay in the event log, including no-op switches.
+  // Rejections and resumed-model changes still need user-visible guidance.
   "provider_switch_rejected",
   "mode_changed",
   "resumed_with_different_model",

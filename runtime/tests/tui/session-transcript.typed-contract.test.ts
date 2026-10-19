@@ -66,3 +66,16 @@ it("keeps compaction ladder diagnostics out of the visible transcript", () => {
   expect(text).toContain("Try /compact");
   expect(text).not.toMatch(/tier=|context_limit|accounted input|internal/);
 });
+
+it("keeps provider switch diagnostics in the event log while retaining rejection guidance", () => {
+  const events: SessionTranscriptEvent[] = [
+    { type: "warning", payload: { cause: "provider_switched", message: "provider deepseek -> deepseek; model deepseek-flash -> deepseek-flash; previous_response_id reset" } },
+    { type: "warning", payload: { cause: "provider_switched", message: "provider deepseek -> openai; model deepseek-flash -> gpt-5; previous_response_id reset" } },
+    { type: "warning", payload: { cause: "provider_switch_rejected", message: "Model switch blocked: incompatible history" } },
+  ];
+  const transcript = adaptTranscriptEvents(events);
+  expect(transcript.messages).toHaveLength(1);
+  expect(JSON.stringify(transcript.messages)).toContain("Model switch blocked");
+  expect(JSON.stringify(transcript.messages)).not.toContain("previous_response_id");
+  expect(events).toHaveLength(3);
+});

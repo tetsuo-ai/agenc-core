@@ -26,6 +26,11 @@
 import type { Session } from "../session/session.js";
 import { readProviderConfig } from "../config/resolve-provider.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
+import { listRegisteredModelCatalogEntries } from "../llm/registry/model-catalog.js";
+import {
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+  providerLocalModelIdFromCatalog,
+} from "../llm/registry/provider-info.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
 import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
 import {
@@ -333,6 +338,16 @@ function updateModelChrome(ctx: SlashCommandContext, model: string): void {
   ctx.appState?.setModel?.(model);
 }
 
+// Custom endpoints intentionally accept private model IDs. Keep that support,
+// but distinguish an unlisted spelling from a verified catalog selection.
+function unverifiedModelNotice(provider: ProviderSlug, model: string): string {
+  const known = BUILT_IN_PROVIDER_MODEL_CATALOG[provider].some(
+    entry => providerLocalModelIdFromCatalog(provider, entry) === model,
+  ) || listRegisteredModelCatalogEntries(provider).some(entry => entry.model === model);
+  return known ? "" :
+    `Unverified custom model "${model}": absent from AgenC's bundled catalog. Check the spelling with /model.\n`;
+}
+
 export const modelCommand: SlashCommand = {
   name: "model",
   description: "Choose a model (or pass a model name)",
@@ -366,7 +381,8 @@ export const modelCommand: SlashCommand = {
       if (access.effect === "unchanged") {
         return {
           kind: "text",
-          text: `Model unchanged: ${selection.provider}/${selection.model}.`,
+          text: unverifiedModelNotice(selection.provider, selection.model) +
+            `Model unchanged: ${selection.provider}/${selection.model}.`,
         };
       }
       const outcome = await applyModelSwitch(
@@ -382,6 +398,9 @@ export const modelCommand: SlashCommand = {
       if (outcome.applied) {
         updateModelChrome(ctx, outcome.model);
       }
-      return { kind: "text", text: outcome.summary };
+      return {
+        kind: "text",
+        text: (outcome.applied ? unverifiedModelNotice(selection.provider, outcome.model) : "") + outcome.summary,
+      };
     }),
 };

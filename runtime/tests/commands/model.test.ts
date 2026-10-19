@@ -456,7 +456,7 @@ describe("modelCommand", () => {
     ).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
-  it.each(["xyz", "deepseek-flsh", "deepseek:deepseek-flsh"])(
+  it.each(["xyz", "deepseek-flsh", "deepseek:deepseek-flsh", "deepseek-flahs"])(
     "refuses %s without changing the pending model, effort, or chrome", async (input) => {
       const session = stubSession({
         provider: "deepseek", model: "deepseek-flash", reasoningEffort: "high",
@@ -473,6 +473,21 @@ describe("modelCommand", () => {
       expect(session.abortTerminal).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["deepseek-flahs", "private-deployment"])("labels %s as unverified on a custom endpoint", async (model) => {
+    const session = stubSession({
+      provider: "deepseek", model: "deepseek-flash",
+      environment: { ...TEST_ENVIRONMENT, DEEPSEEK_BASE_URL: "http://127.0.0.1:8765/v1" },
+    });
+    const result = await modelCommand.execute(mkctx(session, model));
+    expect(session.pendingProviderSwitch).toEqual({ provider: "deepseek", model });
+    expect(result).toMatchObject({ kind: "text", text: expect.stringContaining("Unverified custom model") });
+    expect(result).toMatchObject({ text: expect.stringContaining("/model") });
+    const repeated = await modelCommand.execute(mkctx(session, model));
+    expect(repeated).toMatchObject({ text: expect.stringContaining("Unverified custom model") });
+    const restored = await modelCommand.execute(mkctx(session, "deepseek-flash"));
+    expect(restored.kind === "text" && restored.text).not.toContain("Unverified");
+  });
 
   it("accepts an explicitly qualified custom open-endpoint model", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4.6" });

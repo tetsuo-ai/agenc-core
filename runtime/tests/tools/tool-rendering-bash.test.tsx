@@ -168,6 +168,21 @@ describe("BashOutputView: result line and verbose body visual contract", () => {
     expect(noOutput!.props.dimColor).toBe(true);
   });
 
+  test.each(["plain", "envelope"])("shows the Node diagnostic ahead of its version footer (%s)", (format) => {
+    const output = "evalmachine.<anonymous>:113\n  els.input.focus();\n            ^\n\nTypeError: els.input.focus is not a function\n    at evalmachine.<anonymous>:113:13\n\nNode.js v26.5.0";
+    const content = format === "plain"
+      ? `${output}\n\n[exec exit_code=1 wall_time=0.1230s tokens=253]`
+      : `<bash-stdout></bash-stdout><bash-stderr>${output}</bash-stderr>[exit_code=1]`;
+    expect(resultLine(BashOutputView({ content }))).toEqual({
+      text: "exit 1, TypeError: els.input.focus is not a function",
+      failed: true,
+    });
+    // Expanding still includes the full diagnostic and version.
+    expect(flattenBash(BashOutputView({ content, verbose: true })).some(
+      child => child.props.children === "Node.js v26.5.0",
+    )).toBe(true);
+  });
+
   test("silent non-zero exit notes the failed exit instead of a metadata line", () => {
     // The raw [exit_code=...] metadata block is no longer surfaced; a silent
     // failure is summarized inline instead.

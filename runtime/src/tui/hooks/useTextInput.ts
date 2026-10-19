@@ -8,6 +8,7 @@ import { addToHistory } from '../history/history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
+  TextInputChangeResult,
   TextInputState,
 } from '../../types/textInputTypes.js'
 import {
@@ -39,7 +40,7 @@ function mapInput(input_map: Array<[string, InputHandler]>): InputMapper {
 export type UseTextInputProps = {
   value: string
   /** Return false to refuse the edit; the input then restores its text. */
-  onChange: (value: string) => void | boolean
+  onChange: (value: string) => TextInputChangeResult
   onSubmit?: (value: string) => void
   onExit?: () => void
   onExitMessage?: (show: boolean, key?: string) => void
@@ -154,7 +155,8 @@ export function useTextInput({
 
     updateRenderedInput(nextValue, nextOffset)
 
-    if (previousValue !== nextValue && onChange(nextValue) === false) {
+    const edit = previousValue !== nextValue ? onChange(nextValue) : undefined
+    if (edit === false) {
       // The parent handled this edit as a shortcut and kept its own value.
       // Restore the mirror, or the refused text shows up and the next
       // keystroke builds on it, since the parent's props never change.
@@ -162,6 +164,13 @@ export function useTextInput({
       return
     }
 
+    if (typeof edit === 'object' && edit !== null) {
+      // The parent may consume a mode prefix without changing its props.
+      // Commit its normalized edit before another key can read the mirror.
+      nextValue = edit.value
+      nextOffset = edit.offset
+      updateRenderedInput(nextValue, nextOffset)
+    }
     if (previousOffset !== nextOffset) {
       onOffsetChange(nextOffset)
     }

@@ -20,6 +20,12 @@ export type InlineGhostText = {
   readonly insertPosition: number;
 };
 
+/** An edit accepted as-is, refused, or normalized by the controlled parent. */
+export type TextInputChangeResult = void | boolean | {
+  readonly value: string;
+  readonly offset: number;
+};
+
 /**
  * Base props for text input components
  */
@@ -73,9 +79,10 @@ export type BaseTextInputProps = {
   /**
    * Function to call when value updates. Return false to refuse an edit the
    * caller handled itself (a shortcut such as "?" on an empty prompt); the
-   * input then restores the text it showed.
+   * input then restores the text it showed. Return a value/offset pair to
+   * atomically normalize both the local input mirror and cursor.
    */
-  readonly onChange: (value: string) => void | boolean;
+  readonly onChange: (value: string) => TextInputChangeResult;
 
   /**
    * Function to call when `Enter` is pressed, where first argument is a value of the input.

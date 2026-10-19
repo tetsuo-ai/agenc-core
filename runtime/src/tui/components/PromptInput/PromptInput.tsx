@@ -1511,7 +1511,7 @@ function PromptInput({
         pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
         trackAndSetInput(cleaned);
         setCurrentCursorOffset(cleaned.length);
-        return;
+        return { value: cleaned, offset: cleaned.length };
       }
       const processedValue = value.replaceAll("\t", "    ");
 

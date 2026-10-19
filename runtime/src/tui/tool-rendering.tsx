@@ -549,15 +549,21 @@ export function BashOutputView({
   // The transcript shows one line per step; ctrl+o (verbose) shows the output.
   if (!verbose) {
     if (isFailure) {
-      // The reason is the last line of stderr when there is one (stdout may
-      // end with unrelated progress), else the last line of the output.
-      const lastLine = (text: string) =>
-        text
+      // Prefer a diagnostic over runtime/version footers after a stack trace.
+      // Keep stderr authoritative; plain daemon exec results combine both streams.
+      const failureReason = (text: string) => {
+        const lines = text
           .split("\n")
           .map((line) => stripAnsi(line).trim())
-          .filter((line) => line.length > 0 && parseClampMarker(line) === null)
-          .at(-1);
-      const tail = lastLine(stderrTrimmed) ?? lastLine(stdoutTrimmed);
+          .filter((line) => line.length > 0 && parseClampMarker(line) === null);
+        const last = lines.at(-1);
+        // Test runners can end with a useful aggregate verdict after exceptions.
+        if (last !== undefined && /^FAIL(?:ED)?\b/.test(last)) return last;
+        return lines.find((line) =>
+          /^(?:[\w.]*Error|[\w.]*Exception)(?:\s*\[[^\]]+\])?:\s*\S/i.test(line)
+        ) ?? last;
+      };
+      const tail = failureReason(stderrTrimmed) ?? failureReason(stdoutTrimmed);
       return (
         <ResultLine failed>
           {`exit ${exitCode}${tail !== undefined ? `, ${tail}` : ""}`}

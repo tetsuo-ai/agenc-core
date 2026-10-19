@@ -254,6 +254,25 @@ describe('useTextInput', () => {
     }
   })
 
+  test.each(['!', '!python3 '])('uses a parent-normalized edit atomically: %s', async (prefix) => {
+    const onChange = vi.fn((next: string) => next.startsWith('!')
+      ? { value: next.slice(1), offset: next.length - 1 }
+      : undefined)
+    const onSubmit = vi.fn()
+    const rendered = await renderHookHarness({ onChange, onSubmit, value: '', externalOffset: 0 })
+    try {
+      rendered.latest().onInput(prefix, key())
+      await sleep()
+      expect(rendered.latest().value).toBe(prefix.slice(1))
+      expect(rendered.latest().offset).toBe(prefix.length - 1)
+      // Next characters can arrive before controlled parent props commit.
+      const remaining = prefix === '!' ? 'python3 --version' : '--version'
+      for (const char of remaining) rendered.latest().onInput(char, key())
+      rendered.latest().onInput('', key({ return: true }))
+      expect(onSubmit).toHaveBeenCalledWith('python3 --version')
+    } finally { await rendered.dispose() }
+  })
+
   test('handles cursor movement, kill ring, yank, and yank-pop editing', async () => {
     const rendered = await renderHookHarness({
       columns: 80,
