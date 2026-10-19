@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionSandbox } from "../../../src/sandbox/linux-launcher/session-sandbox.js";
 import * as direct from "../../../src/sandbox/linux-launcher/direct-bwrap.js";
 import * as probes from "../../../src/sandbox/linux-launcher/probe-cache.js";
 
-afterEach(() => vi.restoreAllMocks());
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+beforeEach(() => {
+  Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+});
+afterEach(() => {
+  Object.defineProperty(process, "platform", platform);
+  vi.restoreAllMocks();
+});
 
 describe("session sandbox startup probes", () => {
   it("offers identity-bound cached probe evidence to a new namespace and invalidates a declined plan", async () => {
