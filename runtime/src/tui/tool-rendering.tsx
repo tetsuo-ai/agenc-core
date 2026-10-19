@@ -18,6 +18,7 @@ import { unescapeXml } from "../utils/xml.js";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
+  summarizeWebSearchResult,
 } from "./tool-result-routing.js";
 
 // These views render with raw ANSI color literals ("green"/"red") that aren't
@@ -268,6 +269,42 @@ export function GrepMatchesView({
   //   - count summary:      `...\nFound N total occurrences across M files.`
   //   - bare match/count list: `path:line:content` or `path:count` per line.
   return <ResultLine>{summarizeRawGrepResult(content)}</ResultLine>;
+}
+
+/**
+ * WebSearch result: one line naming the search and the number of results
+ * ("3 results via DeepSeek search"), plus the reason when DeepSeek's search
+ * fell back. Verbose (ctrl+o) lists each source's title and URL.
+ */
+export function WebSearchResultsView({
+  content,
+  verbose = false,
+}: {
+  readonly content: string;
+  readonly verbose?: boolean;
+}): React.ReactElement {
+  const summary = summarizeWebSearchResult(content);
+  if (summary === undefined) {
+    return <ResultLine>{summarizeResultText(content)}</ResultLine>;
+  }
+  const count = summary.results.length;
+  const line =
+    `${count === 0 ? "no results" : `${count} ${count === 1 ? "result" : "results"}`} via ${summary.source}` +
+    (summary.deepseekFallback !== undefined
+      ? ` (DeepSeek search: ${summary.deepseekFallback})`
+      : "");
+  if (!verbose) return <ResultLine>{line}</ResultLine>;
+  return (
+    <Box flexDirection="column">
+      <Text>{line}</Text>
+      {summary.results.map((result, index) => (
+        <Box key={`${index}:${result.url}`} flexDirection="column">
+          <Text>{result.title}</Text>
+          <Text dimColor>{`  ${result.url}`}</Text>
+        </Box>
+      ))}
+    </Box>
+  );
 }
 
 /**
@@ -996,6 +1033,10 @@ export function createTuiTool(name: string): any {
         case "glob-paths-view":
           return (
             <GlobPathsView content={joined} verbose={options?.verbose ?? false} />
+          );
+        case "web-search-view":
+          return (
+            <WebSearchResultsView content={joined} verbose={options?.verbose ?? false} />
           );
         case "generic":
         default:

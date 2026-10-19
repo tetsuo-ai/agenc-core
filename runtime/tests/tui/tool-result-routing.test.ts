@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
+  summarizeWebSearchResult,
 } from "./tool-result-routing.js";
 
 describe("pickToolResultDispatch — TUI tool routing", () => {
@@ -207,5 +208,51 @@ describe("resultTextForTuiTool — content shape coercion", () => {
     const cyc: Record<string, unknown> = {};
     cyc.self = cyc;
     expect(() => resultTextForTuiTool(cyc)).not.toThrow();
+  });
+});
+
+describe("WebSearch results in the TUI", () => {
+  const deepseek = JSON.stringify({
+    query: "DeepSeek V4.1",
+    source: "deepseek_search",
+    provider: "deepseek",
+    results: [
+      { title: "DeepSeek API Docs", url: "https://api-docs.deepseek.com/news/news261017/", snippet: "s" },
+      { title: " ", url: "https://vercel.com/changelog", snippet: "s" },
+    ],
+  });
+
+  test("routes the live JSON result to the web search view, anything else to generic", () => {
+    expect(pickToolResultDispatch("WebSearch", deepseek)).toBe("web-search-view");
+    expect(pickToolResultDispatch("WebSearch", JSON.stringify({ error: "query is required" }))).toBe("generic");
+    expect(pickToolResultDispatch("WebSearch", "Web search results for query")).toBe("generic");
+    expect(pickToolResultDispatch("web_fetch", deepseek)).toBe("generic");
+  });
+
+  test("names the search that answered and lists its sources", () => {
+    expect(summarizeWebSearchResult(deepseek)).toEqual({
+      source: "DeepSeek search",
+      results: [
+        { title: "DeepSeek API Docs", url: "https://api-docs.deepseek.com/news/news261017/" },
+        { title: "https://vercel.com/changelog", url: "https://vercel.com/changelog" },
+      ],
+    });
+    expect(
+      summarizeWebSearchResult(JSON.stringify({
+        query: "q",
+        source: "duckduckgo_html",
+        results: [{ title: "Fallback", url: "https://fallback.example/" }],
+        deepseek_search_fallback: "HTTP 402: Insufficient Balance",
+      })),
+    ).toEqual({
+      source: "DuckDuckGo",
+      results: [{ title: "Fallback", url: "https://fallback.example/" }],
+      deepseekFallback: "HTTP 402: Insufficient Balance",
+    });
+    expect(summarizeWebSearchResult(JSON.stringify({ source: "grok_web_search", results: [] }))?.source)
+      .toBe("Grok web search");
+    expect(
+      summarizeWebSearchResult(JSON.stringify({ source: "https://searx.local:8443/search", kind: "searxng", results: [] }))?.source,
+    ).toBe("searx.local:8443");
   });
 });
