@@ -29,6 +29,7 @@ import { prepareModelToolArgs, validateToolPreflight } from "./tools/execution.j
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation } from "./tools/light-presentation.js";
+import { hasFileMutationMetadata } from "./tools/result-metadata.js";
 import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
@@ -1324,6 +1325,17 @@ export function buildToolRegistry(
     return available;
   }
 
+  // Keep cold DeepSeek requests identical to the familiar Edit/Write profile.
+  // A successful native file mutation makes multi-file patches available for
+  // the remaining work, scoped to that same session rather than a UI selection.
+  const editedSessions = new WeakSet<Session>();
+  function editsWithPatch(): boolean {
+    const session = options.getSession?.();
+    const provider = session?.services?.provider?.name;
+    return lightEditsWithApplyPatch(provider) ||
+      (provider === "deepseek" && session != null && editedSessions.has(session));
+  }
+
   function visibleSpecs(router?: ToolRouter): readonly ConfiguredToolSpec[] {
     const specs = (router?.getSpecs() ?? allSpecs()).filter((spec) => spec.unavailable !== true);
     // A restrictive policy may remove discovery itself. Keep its remaining
@@ -1334,7 +1346,7 @@ export function buildToolRegistry(
     return specs.filter(
       (spec) =>
         (options.lightMode === true
-          ? (lightEditsWithApplyPatch(options.getSession?.()?.services?.provider?.name)
+          ? (editsWithPatch()
             ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined) ||
             // A policy that opts out of MCP deferral wants its allowlisted MCP
@@ -1407,7 +1419,7 @@ export function buildToolRegistry(
       }
       return invoke(opts.abortSignal);
     }
-    return runAdmittedToolCall({
+    const result = await runAdmittedToolCall({
       session,
       turnId: `registry:${session.conversationId}`,
       callId,
@@ -1419,6 +1431,14 @@ export function buildToolRegistry(
         return invoke(signal);
       },
     });
+    if (options.lightMode === true && session.services?.provider?.name === "deepseek" &&
+        result.isError !== true && spec.tool.metadata?.source === "builtin" &&
+        ["Edit", "Write", "MultiEdit", "apply_patch"].includes(spec.tool.name) &&
+        hasFileMutationMetadata(result.metadata) && !editedSessions.has(session)) {
+      editedSessions.add(session);
+      presentationMemo = undefined;
+    }
+    return result;
   }
 
   /**
@@ -1437,7 +1457,7 @@ export function buildToolRegistry(
   }
 
   let presentationMemo: { router: ToolRouter; discovered: readonly string[];
-    provider: string | undefined; tools: LLMTool[] } | undefined;
+    provider: string | undefined; patch: boolean; tools: LLMTool[] } | undefined;
   function buildPresentedTools(router: ToolRouter): LLMTool[] {
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
@@ -1477,13 +1497,14 @@ export function buildToolRegistry(
       const router = buildRouter();
       if (!oneShotFastModeActive()) return buildPresentedTools(router);
       const provider = options.getSession?.()?.services?.provider?.name;
+      const patch = editsWithPatch();
       const discovered = [...discoveredToolNames];
       const memo = presentationMemo;
-      if (memo?.router === router && memo.provider === provider &&
+      if (memo?.router === router && memo.provider === provider && memo.patch === patch &&
           memo.discovered.length === discovered.length &&
           memo.discovered.every((name, i) => name === discovered[i])) return memo.tools;
       const tools = buildPresentedTools(router);
-      presentationMemo = { router, provider, discovered, tools };
+      presentationMemo = { router, provider, patch, discovered, tools };
       return tools;
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
