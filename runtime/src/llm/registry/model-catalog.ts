@@ -963,7 +963,15 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       contextWindow: entry.contextWindow,
       maxContextWindow: entry.contextWindow,
       maxOutputTokens: entry.maxOutputTokens,
-      maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit,
+      // 64k is AgenC's per-call default; the live /models ceiling stays the
+      // upper limit for explicit settings and max-output recovery. Without the
+      // capped default, a custom-endpoint refresh that answered inside the
+      // metadata timeout made 393,216 the default and one that did not kept
+      // 64,000, so the cap differed between identical sessions.
+      ...(entry.maxOutputTokensUpperLimit === undefined ? {} : {
+        maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit,
+        maxOutputTokensCappedDefault: true,
+      }),
       inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: false,
