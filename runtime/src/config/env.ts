@@ -10,6 +10,7 @@
 //   AGENC_MAX_TURNS                               → max_turns
 //   AGENC_COORDINATOR_MODE                        → coordinator_mode
 //   AGENC_STREAM_IDLE_TIMEOUT_MS                  → stream_watchdog_timeout_ms
+//   AGENC_STREAM_QUIET_WARNING_MS                 → stream_quiet_warning_ms
 //   AGENC_PROVIDER_OUTAGE_WAIT_MS                 → provider_outage_wait_ms
 //   AGENC_PROVIDER_OUTAGE_RETRY_MS                → provider_outage_retry_ms
 //   AGENC_XAI_INCREMENTAL                         → providers.grok.incremental_continuation
@@ -62,6 +63,7 @@ export interface EnvSnapshot {
   readonly AGENC_MAX_TURNS?: string;
   readonly AGENC_COORDINATOR_MODE?: string;
   readonly AGENC_STREAM_IDLE_TIMEOUT_MS?: string;
+  readonly AGENC_STREAM_QUIET_WARNING_MS?: string;
   readonly AGENC_PROVIDER_OUTAGE_WAIT_MS?: string;
   readonly AGENC_PROVIDER_OUTAGE_RETRY_MS?: string;
   readonly AGENC_XAI_INCREMENTAL?: string;

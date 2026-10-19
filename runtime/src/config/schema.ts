@@ -1240,7 +1240,7 @@ export function defaultConfig(): AgenCConfig {
     ]) as readonly string[],
     project_doc_max_bytes: 32_768,
     stream_degenerate_guard: true,
-    // Ten-minute stream-idle deadline by default (see
+    // Twenty-minute byte-idle deadline by default (see
     // DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS). A half-open socket or a stalled
     // provider stream otherwise hangs the turn until the user cancels;
     // `0` disables the deadline for operators who need unbounded silence.
