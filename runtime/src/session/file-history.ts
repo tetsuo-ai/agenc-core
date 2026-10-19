@@ -746,6 +746,7 @@ const SHELL_TOOL_ARG_KEYS: Readonly<
 };
 
 const APPLY_PATCH_FILE_MARKERS = [
+  "*** Move to: ",
   "*** Add File: ",
   "*** Delete File: ",
   "*** Update File: ",

@@ -21,6 +21,7 @@ import {
   fileHistoryRewind,
   type FileHistorySnapshot,
 } from "./file-history.js";
+import { applyPatchText } from "../../src/tools/apply-patch/runtime.js";
 import type { RolloutItem } from "./rollout-item.js";
 import {
   acquireCanonicalCompactionLease,
@@ -356,6 +357,34 @@ describe("FileHistorySidecar event wiring", () => {
     await waitForTracked(hist, b);
     expect(hist.getState().trackedFiles.has(a)).toBe(true);
     expect(hist.getState().trackedFiles.has(b)).toBe(true);
+  });
+
+  test.each([false, true])("rewind restores both sides of a patch move (existing destination=%s)", async (existing) => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist, workspaceRoot: project });
+    const source = join(project, "source.txt");
+    const destination = join(project, "destination.txt");
+    writeFileSync(source, "before\n");
+    if (existing) writeFileSync(destination, "destination original\n");
+    const input = [
+      "*** Begin Patch", "*** Update File: source.txt", "*** Move to: destination.txt",
+      "@@", "-before", "+after", "*** End Patch",
+    ].join("\n");
+    try {
+      await hist.makeSnapshot("before-move");
+      sidecar.onEvent(startedEvent("move", "apply_patch", { input }));
+      await waitForTracked(hist, source);
+      await waitForTracked(hist, destination);
+      await applyPatchText(input, { cwd: project, allowedPaths: [project] });
+      await hist.makeSnapshot("after-move");
+      expect(readFileSync(destination, "utf8")).toBe("after\n");
+      await hist.rewindToMessage("before-move");
+      expect(readFileSync(source, "utf8")).toBe("before\n");
+      if (existing) expect(readFileSync(destination, "utf8")).toBe("destination original\n");
+      else expect(() => readFileSync(destination, "utf8")).toThrow();
+    } finally {
+      await sidecar.stop();
+    }
   });
 
   test("user_message events take a barrier snapshot keyed by the event id", async () => {
