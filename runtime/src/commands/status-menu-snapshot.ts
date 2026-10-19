@@ -144,7 +144,7 @@ export function createStatusDashboardSnapshot(params: {
   const warnCount = rows.filter(item => item.state === "warn" || item.state === "error").length;
   return {
     rows,
-    sessionCost: rows.find(item => item.key === "Cost (USD)")?.value ?? null,
+    sessionCost: rows.find(item => item.key === "Cost (USD)" || item.key === "Cost")?.value ?? null,
     activeIndex,
     summary: warnCount > 0 ? `${warnCount} attention` : "all nominal",
   };

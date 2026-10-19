@@ -44,6 +44,22 @@ afterEach(async () => {
 });
 
 describe("status on real git worktrees", () => {
+  it("reads the restored usage authority used by the footer and cost command", async () => {
+    const usage = { runId: "run", sequence: 10, costUsd: 0.0208, heldCostUsd: 0,
+      inputTokens: 12000, outputTokens: 345, totalTokens: 12345, modelCalls: 2,
+      hasUnknownCost: false, models: [], agents: [] };
+    await statusCommand.execute({
+      session: { conversationId: "resumed", services: {},
+        getDaemonSessionSnapshot: async () => ({ tokenUsage: { totalTokens: 0, costUsd: 0 } }),
+      } as unknown as Session,
+      cwd: workspace, home: workspace, argsRaw: "",
+      appState: { setToolJSX: vi.fn(), getSessionUsage: () => usage },
+    });
+    const snapshot = vi.mocked(openStatusDashboard).mock.lastCall?.[1];
+    expect(snapshot?.sessionCost).toBe("$0.0208");
+    expect(snapshot?.rows).toContainEqual(expect.objectContaining({ key: "Tokens emitted", value: "12345 (in: 12000, out: 345)" }));
+  });
+
   it("reports an unborn empty branch as clean", async () => {
     git("init", "--quiet", "--initial-branch=main");
     expect(await statusRow()).toMatchObject({ value: "clean", state: "ok", detail: "branch main" });

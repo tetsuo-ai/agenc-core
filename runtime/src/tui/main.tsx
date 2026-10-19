@@ -299,7 +299,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
               startCapturingEarlyInput();
               // Ink is unmounted, so write outside its frame before awaiting
               // editor teardown, session detach, or the replacement attach.
-              stdout.write("Resuming selected session...\n");
+              stdout.write("\r\x1b[2KResuming selected session...\n");
             }
             await teardownBarrier.drain();
           } finally {

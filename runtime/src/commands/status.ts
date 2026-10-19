@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 
 import { monotonicMs } from "../utils/monotonic.js";
 import type { Session } from "../session/session.js";
+import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 import { isPermissionMode } from "../permissions/types.js";
 import { asRecord } from "../utils/record.js";
 import {
@@ -163,6 +164,7 @@ export function collectStatus(
   cwd: string,
   nowMs: number = monotonicMs(),
   snapshot?: StatusSnapshot,
+  sessionUsage?: unknown,
 ): StatusLine[] {
   const lines: StatusLine[] = [];
   // The deferred TUI flow seeds `conversationId` with a synthetic
@@ -217,7 +219,13 @@ export function collectStatus(
   // daemon-vended snapshot; then a "n/a" placeholder. The daemon
   // snapshot is what makes /status useful on TUI bridge sessions.
   const bt = (session as unknown as { budgetTracker?: typeof session.budgetTracker }).budgetTracker;
-  if (bt) {
+  const hasSessionUsage = isAdmissionUsageSummary(sessionUsage);
+  if (hasSessionUsage) {
+    // Use the same durable total as /cost and the footer. A daemon's local
+    // counters restart when a saved conversation is rehydrated.
+    lines.push({ key: "Tokens emitted", value: `${sessionUsage.totalTokens} (in: ${sessionUsage.inputTokens}, out: ${sessionUsage.outputTokens})` });
+    lines.push({ key: "Cost (USD)", value: `${sessionUsage.hasUnknownCost ? "≥" : ""}$${sessionUsage.costUsd.toFixed(4)}${sessionUsage.costEstimated ? " est." : ""}` });
+  } else if (bt) {
     const emitted = bt.emitted;
     const remaining = bt.remaining;
     lines.push({ key: "Tokens emitted", value: String(emitted) });
@@ -262,7 +270,7 @@ export function collectStatus(
     services?: StatusServices;
   }).services;
   const costSummary = readCostSummary(services?.costSidecar);
-  if (costSummary !== null) {
+  if (!hasSessionUsage && !lines.some(line => line.key === "Cost (USD)") && costSummary !== null) {
     lines.push({ key: "Cost", value: costSummary });
   }
   const registry = services?.permissionModeRegistry ?? null;
@@ -324,7 +332,9 @@ export const statusCommand: SlashCommand = {
           /* best-effort */
         }
       }
-      const lines = collectStatus(ctx.session, ctx.cwd, undefined, snapshot);
+      const sessionUsage = ctx.appState?.getSessionUsage?.() ??
+        ctx.session.services?.executionAdmission?.getUsageSummary?.();
+      const lines = collectStatus(ctx.session, ctx.cwd, undefined, snapshot, sessionUsage);
       const dashboard = createStatusDashboardSnapshot({
         lines,
         git: await collectGitStatus(ctx.cwd),

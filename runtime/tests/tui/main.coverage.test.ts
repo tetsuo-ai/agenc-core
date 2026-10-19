@@ -184,7 +184,7 @@ describe("TUI main coverage", () => {
     const [element] = harness.renderInk.mock.calls[0] as [RenderedTuiElement];
     const teardown = vi.fn(async () => {
       expect(harness.startCapturingEarlyInput).toHaveBeenCalledOnce();
-      expect(stdout.write).toHaveBeenCalledWith("Resuming selected session...\n");
+      expect(stdout.write).toHaveBeenCalledWith("\r\x1b[2KResuming selected session...\n");
     });
     element.props.registerTuiTeardown(teardown);
     setPendingResumeSessionId("conv-loading");
