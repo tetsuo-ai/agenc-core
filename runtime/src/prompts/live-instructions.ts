@@ -169,7 +169,7 @@ async function loadMemoryEntrypointsText(session: Session, cwd: string): Promise
     cwd,
     configStore: session.services.configStore,
     env: session.services.userShell?.childEnvironment ?? session.services.providerEnvironment ?? {},
-    runtimeOptions: { remoteMode: false, ...session.services.runtimeOptions },
+    runtimeOptions: session.services.runtimeOptions ?? { remoteMode: false },
   };
   const project = await resolveAutoMemoryDirectory(owner);
   if (!project.enabled || project.path === undefined) return "";
