@@ -7,10 +7,12 @@
  * (`agenc state resolve-tool-call`) cannot run while the daemon holds the
  * session lock — this command resolves through the live daemon instead.
  *
- * Usage: /resolve <call-id> <disposition> [<evidence-ref> <evidence-sha256>]
+ * Usage: /resolve <call-id> <disposition> [<evidence-ref> <evidence-sha256>] [--session <owning-session-id>]
  *
  * With only the call id and a disposition, the user attests the outcome from
  * their own knowledge and Core records that attestation as the evidence.
+ * A parent can address its child effects; --session selects an exact owner
+ * when several descendants used the same call id.
  */
 
 import {
@@ -24,7 +26,7 @@ type Disposition =
   | "confirmed_no_effect"
   | "remains_unknown";
 
-export type ResolveDaemonToolCallParams =
+export type ResolveDaemonToolCallParams = { readonly effectSessionId?: string } & (
   | {
       readonly toolCallId: string;
       readonly disposition: Disposition;
@@ -37,10 +39,10 @@ export type ResolveDaemonToolCallParams =
       readonly disposition: Disposition;
       readonly attestation: "operator";
       readonly reviewer?: string;
-    };
+    });
 
 const USAGE =
-  "Usage: /resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> [<evidence-ref> <evidence-sha256>]";
+  "Usage: /resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> [<evidence-ref> <evidence-sha256>] [--session <owning-session-id>]";
 
 type ResolvableSession = {
   readonly resolveDaemonToolCall?: (params: ResolveDaemonToolCallParams) => Promise<{
@@ -70,8 +72,14 @@ export const resolveCommand: SlashCommand = {
             "This session cannot resolve effects here. Close the session and run `agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` from the project directory.",
         };
       }
-      const [toolCallId, disposition, evidenceRef, evidenceSha256, extra] =
-        ctx.argsRaw.trim().split(/\s+/u);
+      const args = ctx.argsRaw.trim().split(/\s+/u);
+      const ownerFlag = args.indexOf("--session");
+      const effectSessionId = ownerFlag === -1 ? undefined : args[ownerFlag + 1];
+      if (ownerFlag !== -1 && (ownerFlag !== args.length - 2 || effectSessionId === undefined || effectSessionId.length === 0)) {
+        return { kind: "error", message: USAGE };
+      }
+      if (ownerFlag !== -1) args.splice(ownerFlag);
+      const [toolCallId, disposition, evidenceRef, evidenceSha256, extra] = args;
       if (
         toolCallId === undefined ||
         toolCallId.length === 0 ||
@@ -86,11 +94,12 @@ export const resolveCommand: SlashCommand = {
         return { kind: "error", message: USAGE };
       }
       // The daemon records the reviewer from this client's attachment.
-      const result = await session.resolveDaemonToolCall(
-        evidenceRef === undefined || evidenceSha256 === undefined
+      const result = await session.resolveDaemonToolCall({
+        ...(effectSessionId !== undefined ? { effectSessionId } : {}),
+        ...(evidenceRef === undefined || evidenceSha256 === undefined
           ? { toolCallId, disposition, attestation: "operator" }
-          : { toolCallId, disposition, evidenceRef, evidenceSha256 },
-      );
+          : { toolCallId, disposition, evidenceRef, evidenceSha256 }),
+      });
       if (result.resolved.length === 0) {
         return {
           kind: "text",

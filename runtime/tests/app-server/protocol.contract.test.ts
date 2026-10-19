@@ -247,7 +247,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.33.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.34.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",
@@ -630,6 +630,20 @@ describe("AgenC daemon protocol surface", () => {
       { ...evidence, attempt: { ...attempt, unknownSequence: 1.5 } },
     ]) {
       expect(validate(request("attempt-invalid", params))).toBe(false);
+    }
+  });
+
+  it("accepts an owning child session for effect review without widening unrelated request fields", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    for (const review of [
+      { toolCallId: "child-call" },
+      { toolCallId: "child-call", disposition: "confirmed_no_effect", attestation: "operator" },
+      { toolCallId: "child-call", disposition: "confirmed_no_effect", evidenceRef: "receipt:child", evidenceSha256: "a".repeat(64) },
+    ]) {
+      const request = { jsonrpc: JSON_RPC_VERSION, id: "review-child", method: "session.resolveToolCall",
+        params: { sessionId: "attached-parent", effectSessionId: "owning-child", ...review } };
+      expect(validate(request), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...request, params: { ...request.params, effectSessionId: "" } })).toBe(false);
     }
   });
 

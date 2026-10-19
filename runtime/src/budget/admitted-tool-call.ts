@@ -757,8 +757,9 @@ function createDispatchContext(
   };
 }
 
-function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
+function liveIdentity(context: EffectJournalContext, session: Session): LiveEffectIdentity {
   return {
+    sessionId: session.conversationId,
     runId: context.runId,
     stepId: context.stepId,
     callId: context.callId,
@@ -844,6 +845,7 @@ export async function runAdmittedToolCall(
           (result.isError === true && disposition?.disposition !== "confirmed_committed" &&
             disposition?.disposition !== "confirmed_no_effect"))) {
         poisonLiveEffect(params.session, {
+          sessionId: params.session.conversationId,
           runId: params.session.services.executionAdmission?.scope.runId ?? params.session.conversationId,
           stepId: `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`,
           callId: params.callId, toolName: params.tool.name, recoveryCategory: category,
@@ -1027,7 +1029,7 @@ export async function runAdmittedToolCall(
           disposition?.disposition !== "confirmed_committed" &&
           disposition?.disposition !== "confirmed_no_effect"))
     ) {
-      poisonLiveEffect(params.session, liveIdentity(journal));
+      poisonLiveEffect(params.session, liveIdentity(journal, params.session));
       commit = appendEffectUnknownOutcome(params.session, journal, {
         reason:
           disposition?.disposition === "remains_unknown"
@@ -1166,10 +1168,10 @@ export async function runAdmittedToolCall(
         // This synchronous poison is the immediate retry/mutation gate. Durable
         // evidence is deliberately deferred so storage latency cannot replace
         // or delay the typed caller timeout/abort.
-        poisonLiveEffect(params.session, liveIdentity(journal));
+        poisonLiveEffect(params.session, liveIdentity(journal, params.session));
       }
 
-      const identity = liveIdentity(journal);
+      const identity = liveIdentity(journal, params.session);
       const observation = registerEffectSettlementObserver(params.session, {
         identity,
         settlement: pending.settlement,
@@ -1356,7 +1358,7 @@ export async function runAdmittedToolCall(
       effectClosed = true;
       requireEffectProjection(commit);
     } else if (category !== "idempotent") {
-      poisonLiveEffect(params.session, liveIdentity(journal));
+      poisonLiveEffect(params.session, liveIdentity(journal, params.session));
       const commit = appendEffectUnknownOutcome(params.session, journal, {
         reason: dispatch.context.signal.aborted
           ? "tool_cancelled_after_effect_boundary"

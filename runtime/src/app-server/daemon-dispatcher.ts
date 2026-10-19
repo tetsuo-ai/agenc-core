@@ -3946,6 +3946,7 @@ function validateSessionResolveToolCallParams(
     methodName: "session.resolveToolCall",
     stringFields: [
       "sessionId",
+      "effectSessionId",
       "toolCallId",
       "disposition",
       "evidenceRef",
@@ -3956,6 +3957,9 @@ function validateSessionResolveToolCallParams(
     objectFields: ["attempt"],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
+  if (validated.effectSessionId !== undefined) {
+    validateRequiredString(validated, "session.resolveToolCall", "effectSessionId");
+  }
   const hasEvidenceFields = [
     "disposition",
     "evidenceRef",

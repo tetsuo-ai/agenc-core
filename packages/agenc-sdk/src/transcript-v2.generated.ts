@@ -13,6 +13,9 @@ interface TranscriptV2JsonObject {
 }
 
 export interface PendingEffectReview extends TranscriptV2JsonObject {
+  readonly sessionId?: string;
+  /** False for a descendant's review: its parent can still take prompts. */
+  readonly blocksSession?: boolean;
   readonly callId: string;
   readonly toolName: string;
   readonly description: string;

@@ -1499,6 +1499,7 @@ export function createDaemonTuiSession<
     resolveDaemonToolCall: async (params: ResolveDaemonToolCallParams) => {
       const result = await client.request("session.resolveToolCall", {
         sessionId,
+        ...(params.effectSessionId !== undefined ? { effectSessionId: params.effectSessionId } : {}),
         toolCallId: params.toolCallId,
         disposition: params.disposition,
         ...("attestation" in params
@@ -1510,7 +1511,7 @@ export function createDaemonTuiSession<
         ...(params.reviewer !== undefined ? { reviewer: params.reviewer } : {}),
       });
       eventReplay.publish({ type: "effect_review_acknowledged", payload: {
-        callId: params.toolCallId, disposition: params.disposition, remaining: result.remaining,
+        callId: params.toolCallId, sessionId: params.effectSessionId, disposition: params.disposition, remaining: result.remaining,
       } });
       return result;
     },

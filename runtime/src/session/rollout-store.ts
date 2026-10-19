@@ -3382,10 +3382,11 @@ export class RolloutStore {
         // Failed recovery details must not lift the gate.
       }
       const review = callIds.length > 0
-        ? callIds.map(id => `/resolve ${id} <disposition>`).join("; ")
+        ? callIds.map(id => `/resolve ${id} <disposition> --session ${this.sessionId}`).join("; ")
         : "/resolve <tool-call-id> <disposition>";
       throw new EffectReviewRequiredError(
         `run ${this.sessionId} requires effect review before model execution. ` +
+        `The owning session is ${this.sessionId}; its attached parent can also review this call. ` +
         `Inspect the interrupted tool outcome, then run ${review}. ` +
         "Choose confirmed_committed if it took effect, confirmed_no_effect if you verified no effect, " +
         "or remains_unknown to keep execution blocked.",

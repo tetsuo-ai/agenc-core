@@ -101,6 +101,8 @@ import { createOperatorEffectReviewResolution } from "../../src/state/effect-rev
 import { listUnresolvedUnknownOutcomeEffects } from "../../src/state/unknown-outcome-gate.js";
 import { recordInFlightToolCallUnknownOutcome } from "../../src/state/tool-output-rotation.js";
 import { seedPendingEffectReview } from "../state/helpers/effect-review-fixture.js";
+import { bindLiveAgentSession } from "../../src/agents/live-session.js";
+import { assertNoLiveUnknownEffect, poisonLiveEffect } from "../../src/budget/effect-settlement-supervisor.js";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "../../src/agents/child-approval-context.js";
 import type { ApprovalResolver } from "../../src/permissions/guardian/arbiter.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -2766,6 +2768,119 @@ describe("AgenC delegate background-agent runner", () => {
       driver.close();
       otherDriver.close();
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the parent review a live descendant without lifting another session's mutation gate (#2607)", async () => {
+    const root = mkdtempSync(join(canonicalTmpdir(), "agenc-child-review-"));
+    const cwd = join(root, "workspace");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    const parentId = "conv-parent-review";
+    const childId = "conv-child-review";
+    const now = "2026-10-19T00:00:00.000Z";
+    const parent = makeTopLevelRunner({ conversationId: parentId, workspaceRoot: cwd });
+    const child = makeTopLevelRunner({ conversationId: childId, workspaceRoot: cwd,
+      rolloutItems: [{ type: "event_msg", timestamp: now, payload: {
+        eventId: "unknown-1", id: "unknown-1", seq: 2, msg: { type: "effect_unknown_outcome", payload: {
+          runId: childId, stepId: "tool:step-1", callId: "call-1", toolName: "exec_command",
+          recoveryCategory: "side-effecting", reason: "acknowledgement_lost", requiresReview: true, recordedAt: now,
+        } },
+      } }],
+    });
+    Object.assign(parent.configStore, { homeContext: { path: home } });
+    Object.assign(child.configStore, { homeContext: { path: home } });
+    const childSession = child.session as unknown as Session;
+    const parentSession = parent.session as unknown as Session;
+    const live = { agentId: childId, agentPath: "/root/child", abortController: new AbortController() };
+    const unbind = bindLiveAgentSession(live as never, childSession);
+    Object.assign(parent.control, { getLive: (id: string) => id === childId ? live : undefined });
+    Object.assign(parent.rolloutStore, { listThreadSpawnDescendants: () => [{ childThreadId: childId }] });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    const effects = new StateRunDurabilityRepository(driver);
+    Object.assign(child.rolloutStore, { recordEffectEvent: (event: Event) => {
+      if (event.msg.type !== "effect_review_resolved") throw new Error("unexpected review event");
+      effects.resolveEffectReview({ ...event.msg.payload, eventId: event.eventId! });
+    } });
+    const identity = { runId: childId, stepId: "tool:step-1", callId: "call-1", toolName: "exec_command", recoveryCategory: "side-effecting" as const };
+    try {
+      seedPendingEffectReview(driver, childId, now);
+      poisonLiveEffect(childSession, identity);
+      // A child error must not poison the root or bypass its own mutation fence.
+      expect(() => assertNoLiveUnknownEffect(parentSession, "side-effecting")).not.toThrow();
+      expect(() => assertNoLiveUnknownEffect(childSession, "idempotent")).not.toThrow();
+      expect(() => assertNoLiveUnknownEffect(childSession, "side-effecting")).toThrow();
+      await parent.runner.startAgent({ objective: "idle parent", deferInitialTurn: true });
+      const review = createOperatorEffectReviewResolution({ disposition: "confirmed_no_effect", actorId: "operator",
+        evidenceRef: "test:child-probe", evidenceSha256: "a".repeat(64), reviewedAt: now });
+      const { domainAction: _domainAction, ...pending } = review;
+      await expect(parent.runner.resolveLiveEffectReview(parentId, { sessionId: childId, toolCallId: "call-1",
+        resolution: { ...pending, disposition: "remains_unknown", workflowStatus: "pending" },
+      })).resolves.toMatchObject({ kind: "resolved", durable: true });
+      expect(() => assertNoLiveUnknownEffect(childSession, "interactive")).toThrow();
+      expect(child.rolloutItems).toHaveLength(2);
+      await expect(parent.runner.resolveLiveEffectReview(parentId, { sessionId: childId, toolCallId: "call-1", resolution: review }))
+        .resolves.toMatchObject({ kind: "resolved", durable: true });
+      expect(() => assertNoLiveUnknownEffect(childSession, "side-effecting")).not.toThrow();
+      expect(effects.getEffect(childId, "tool:step-1")?.reviewStatus).toBe("resolved");
+      expect(parent.rolloutItems.some((item) => (item as { payload?: { msg?: { type?: string } } }).payload?.msg?.type === "effect_review_resolved")).toBe(false);
+      await expect(parent.runner.resolveLiveEffectReview(parentId, { sessionId: "unrelated-session", toolCallId: "call-1", resolution: review }))
+        .rejects.toThrow("does not own session");
+    } finally {
+      unbind();
+      await parent.runner.stopAgent(parentId);
+      driver.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("shows and settles a closed child's canonical effect from its parent while respecting the journal lease (#2607)", async () => {
+    const root = mkdtempSync(join(canonicalTmpdir(), "agenc-closed-child-review-"));
+    const cwd = join(root, "workspace");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    const parentId = "conv-closed-child-parent";
+    const childId = "conv-closed-child";
+    const now = "2026-10-19T00:00:00.000Z";
+    const parent = makeTopLevelRunner({ conversationId: parentId, workspaceRoot: cwd });
+    Object.assign(parent.configStore, { homeContext: { path: home } });
+    Object.assign(parent.control, { getLive: () => undefined });
+    Object.assign(parent.rolloutStore, { listThreadSpawnDescendants: () => [{ childThreadId: childId }] });
+    const childStore = new RolloutStore({ cwd, sessionId: childId, agencHome: home, agencVersion: "0.19.11",
+      sessionTempRoot: join(root, "temp"), autoStartScheduler: false });
+    childStore.open({ sessionId: childId, cwd, timestamp: now, originator: "agenc-subagent", agencVersion: "0.19.11" });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const events: Event[] = [
+        { eventId: "child-intent", id: "child-intent", seq: 1, msg: { type: "effect_intent", payload: {
+          formatVersion: 2, runId: childId, stepId: "tool:child", callId: "child-call", toolName: "Browser", recoveryCategory: "interactive",
+          intentDigest: "d".repeat(64), attempt: 1, recordedAt: now,
+        } } },
+        { eventId: "child-unknown", id: "child-unknown", seq: 2, msg: { type: "effect_unknown_outcome", payload: {
+          formatVersion: 2, runId: childId, stepId: "tool:child", callId: "child-call", toolName: "Browser", recoveryCategory: "interactive",
+          outcome: "unknown_outcome", intentEventSeq: 1, reason: "acknowledgement_lost", requiresReview: true, recordedAt: now,
+        } } },
+      ];
+      for (const event of events) { childStore.append(event, { durable: true }); childStore.recordEffectEvent(event); }
+      await parent.runner.startAgent({ objective: "review closed child", deferInitialTurn: true });
+      await expect(parent.runner.getAgentSessionTranscriptV2(parentId, { sessionId: "session_visible_parent" }))
+        .resolves.toMatchObject({ pendingEffectReviews: [{ sessionId: childId, callId: "child-call", toolName: "Browser", blocksSession: false }] });
+      const resolution = createOperatorEffectReviewResolution({ disposition: "confirmed_no_effect", actorId: "operator",
+        evidenceRef: "test:closed-child", evidenceSha256: "b".repeat(64), reviewedAt: now });
+      const params = { sessionId: childId, toolCallId: "child-call", resolution };
+      // A missing live handle never grants a second writer to an open child.
+      await expect(parent.runner.resolveLiveEffectReview(parentId, params)).rejects.toThrow();
+      expect(new StateRunDurabilityRepository(driver).getEffect(childId, "tool:child")?.reviewStatus).toBe("pending");
+      childStore.close();
+      await expect(parent.runner.resolveLiveEffectReview(parentId, { ...params,
+        expectedAttempt: { runId: childId, stepId: "tool:child", unknownEventId: "stale-event", unknownSequence: 2 },
+      })).rejects.toThrow("no longer matches");
+      await expect(parent.runner.resolveLiveEffectReview(parentId, params)).resolves.toMatchObject({ kind: "resolved", durable: true });
+      expect(new StateRunDurabilityRepository(driver).getEffect(childId, "tool:child")?.reviewStatus).toBe("resolved");
+      await expect(parent.runner.getAgentSessionTranscriptV2(parentId, { sessionId: "session_visible_parent" }))
+        .resolves.toMatchObject({ pendingEffectReviews: [] });
+    } finally {
+      childStore.close(); await parent.runner.stopAgent(parentId); driver.close(); rmSync(root, { recursive: true, force: true });
     }
   });
 

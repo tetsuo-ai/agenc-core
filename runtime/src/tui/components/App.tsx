@@ -2647,6 +2647,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const { reviews: pendingEffectReviews, noteRefusal: noteReviewRefusal } = usePendingEffectReviews(props.session);
   const reviewNeeded = pendingEffectReviews.length > 0;
+  const reviewBlocksPrompt = pendingEffectReviews.some(review => review.blocksSession !== false);
   const ledgerVerification = useSyncExternalStore(
     subscribeLedgerVerification,
     getLedgerVerificationSnapshot,
@@ -3035,7 +3036,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     hasActiveSessionTurn ||
     hasActiveModelSubmission;
   const effectiveInputBusy =
-    reviewNeeded ||
+    reviewBlocksPrompt ||
     isLoading ||
     isCompacting ||
     shellAbortController !== null ||
@@ -5062,20 +5063,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         </Text>
       ) : null}
       {reviewNeeded && pendingEffectReviews[0]!.callId.length > 0 && props.session.resolveDaemonToolCall !== undefined ? (
-        <EffectReviewCard key={pendingEffectReviews[0]!.callId}
+        <EffectReviewCard key={`${pendingEffectReviews[0]!.sessionId ?? ""}:${pendingEffectReviews[0]!.callId}`}
           review={pendingEffectReviews[0]!}
           resolve={props.session.resolveDaemonToolCall}
           active={input.length === 0 && permissionRequests.length === 0 && elicitation.prompt === null && !isMessageSelectorVisible && !toolOwnsPrompt}
         />
       ) : null}
-      {reviewNeeded && fullscreen && queuedCommands.length > 0 ? (
+      {reviewBlocksPrompt && fullscreen && queuedCommands.length > 0 ? (
         <Text dimColor wrap="truncate">
           {queuedCommands.length} queued · {queuedCommandInputText(queuedCommands[queuedCommands.length - 1]!)}
         </Text>
       ) : null}
       {showPromptInput ? <GitStatusChrome session={props.session} events={liveSessionEvents} /> : null}
       {promptInputElement}
-      {reviewNeeded ? <Text color="warning">review needed · prompts wait for tool outcome review</Text> : null}
+      {reviewBlocksPrompt ? <Text color="warning">review needed · prompts wait for tool outcome review</Text> : null}
     </Box>
   );
 

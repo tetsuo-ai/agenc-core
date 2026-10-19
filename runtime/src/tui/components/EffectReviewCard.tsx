@@ -21,7 +21,9 @@ export function EffectReviewCard({ review, resolve, active = true }: {
       setError(null);
       const disposition = input === "1" ? "confirmed_no_effect" :
         input === "2" ? "confirmed_committed" : "remains_unknown";
-      void resolve({ toolCallId: review.callId, disposition, attestation: "operator" })
+      void resolve({ toolCallId: review.callId, disposition, attestation: "operator",
+        ...(review.sessionId !== undefined ? { effectSessionId: review.sessionId } : {}),
+      })
         .then(() => { if (disposition === "remains_unknown") submitting.current = false; })
         .catch((err: unknown) => {
           submitting.current = false;
@@ -34,8 +36,11 @@ export function EffectReviewCard({ review, resolve, active = true }: {
   return <Box flexDirection="column" borderStyle="single" borderColor="warning" paddingX={1}>
     <Text color="warning" bold wrap="truncate">Review needed: {review.toolName} {review.description.replace(/\s+/gu, " ")}</Text>
     <Text wrap="truncate">{summarizeToolError(review.error)}</Text>
+    {review.sessionId !== undefined ? <Text wrap="truncate">Owning session: {review.sessionId}</Text> : null}
     <Text>1 It had no effect · 2 It took effect · 3 Keep blocked</Text>
-    <Text dimColor>{busy ? "Recording review..." : "Prompts stay queued. Press 1, 2, or 3 with an empty prompt."}</Text>
+    <Text dimColor>{busy ? "Recording review..." : review.blocksSession === false
+      ? "Child mutations stay blocked. Press 1, 2, or 3 with an empty prompt."
+      : "Prompts stay queued. Press 1, 2, or 3 with an empty prompt."}</Text>
     {error !== null ? <Text color="error">{error}</Text> : null}
   </Box>;
 }

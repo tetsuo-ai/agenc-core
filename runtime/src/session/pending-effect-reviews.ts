@@ -1,6 +1,10 @@
 import type { PendingEffectReview } from "../app-server/protocol/index.js";
 import { isRecord } from "../utils/record.js";
 
+function reviewKey(callId: string, sessionId?: string): string {
+  return sessionId === undefined ? callId : `${sessionId}\0${callId}`;
+}
+
 /** Review state comes from effect events, never from matching model prose. */
 export class PendingEffectReviews {
   private readonly calls = new Map<string, { toolName: string; description: string; error?: string }>();
@@ -10,7 +14,7 @@ export class PendingEffectReviews {
   get reviews(): readonly PendingEffectReview[] { return [...this.pending.values()]; }
 
   recordRefusal(message: string): void {
-    if (this.pending.size > 0) return;
+    if ([...this.pending.values()].some(review => review.blocksSession !== false)) return;
     const ids = [...message.matchAll(/\/resolve ([^\s<>]+)/gu)].map(match => match[1]!);
     for (const callId of ids.length > 0 ? ids : [""]) {
       this.refusals.add(callId);
@@ -32,7 +36,7 @@ export class PendingEffectReviews {
         if (isRecord(review) && typeof review.callId === "string" &&
             typeof review.toolName === "string" && typeof review.description === "string" &&
             typeof review.error === "string") {
-          this.pending.set(review.callId, review as PendingEffectReview);
+          this.pending.set(reviewKey(review.callId, typeof review.sessionId === "string" ? review.sessionId : undefined), review as PendingEffectReview);
         }
       }
       return true;
@@ -52,6 +56,8 @@ export class PendingEffectReviews {
     }
     const callId = payload.callId;
     if (typeof callId !== "string") return false;
+    const sessionId = typeof payload.runId === "string" ? payload.runId : undefined;
+    const key = reviewKey(callId, sessionId);
     if (event.type === "tool_call_started" && typeof payload.toolName === "string") {
       let description = typeof payload.args === "string" ? payload.args : "";
       try {
@@ -71,9 +77,9 @@ export class PendingEffectReviews {
       const call = this.calls.get(callId) ?? { toolName: String(payload.toolName ?? "Tool"), description: "" };
       call.error = payload.result.slice(0, 2000);
       this.calls.set(callId, call);
-      const review = this.pending.get(callId);
+      const review = this.pending.get(key) ?? this.pending.get(callId);
       if (review !== undefined) {
-        this.pending.set(callId, { ...review, error: call.error });
+        this.pending.set(reviewKey(callId, review.sessionId), { ...review, error: call.error });
         return true;
       }
     } else if (event.type === "effect_unknown_outcome" && payload.requiresReview === true &&
@@ -81,8 +87,10 @@ export class PendingEffectReviews {
       const call = this.calls.get(callId);
       this.refusals.delete(callId);
       if (this.refusals.delete("")) this.pending.delete("");
-      this.pending.set(callId, {
+      this.pending.delete(callId);
+      this.pending.set(key, {
         callId,
+        ...(sessionId !== undefined ? { sessionId } : {}),
         toolName: String(payload.toolName ?? call?.toolName ?? "Tool"),
         description: call?.description ?? "Interrupted tool call",
         error: call?.error ?? String(payload.reason ?? "Unknown outcome"),
@@ -90,7 +98,8 @@ export class PendingEffectReviews {
       return true;
     } else if (event.type === "effect_review_resolved" && isRecord(payload.resolution) &&
                (payload.resolution.workflowStatus === "resolved" || payload.resolution.workflowStatus === "abandoned")) {
-      return this.pending.delete(callId);
+      const deleted = this.pending.delete(key);
+      return this.pending.delete(callId) || deleted;
     }
     return false;
   }

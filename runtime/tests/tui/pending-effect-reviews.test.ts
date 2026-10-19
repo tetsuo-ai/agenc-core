@@ -32,3 +32,18 @@ it("advances through multiple refusal placeholders without clearing a keep-block
   state.apply({ type: "effect_review_acknowledged", payload: { callId: "call-1", disposition: "confirmed_no_effect", remaining: 1 } });
   expect(state.reviews.map(review => review.callId)).toEqual(["call-2"]);
 });
+
+it("keeps reviews with the same call id separate across child sessions", () => {
+  const state = new PendingEffectReviews();
+  state.apply({ type: "effect_reviews_snapshot", payload: { reviews: ["child-a", "child-b"].map(sessionId => ({
+    sessionId, callId: "same-call", toolName: "Browser", description: sessionId, error: "acknowledgement lost", blocksSession: false,
+  })) } });
+  expect(state.reviews).toHaveLength(2);
+  state.apply({ type: "effect_review_resolved", payload: { runId: "child-a", callId: "same-call", resolution: { workflowStatus: "resolved" } } });
+  expect(state.reviews).toMatchObject([{ sessionId: "child-b", blocksSession: false }]);
+  state.apply({ type: "effect_review_acknowledged", payload: { callId: "same-call", remaining: 0 } });
+  expect(state.reviews).toHaveLength(1);
+  state.recordRefusal("Run /resolve root-call <disposition>.");
+  expect(state.reviews).toContainEqual(expect.objectContaining({ callId: "root-call" }));
+  expect(state.reviews.some(review => review.blocksSession !== false)).toBe(true);
+});

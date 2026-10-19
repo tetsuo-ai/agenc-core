@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.33.0",
+  "x-agenc-protocol-version": "1.34.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -3012,6 +3012,10 @@
           "type": "string",
           "minLength": 1
         },
+        "effectSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
         "toolCallId": {
           "type": "string",
           "minLength": 1
@@ -3030,6 +3034,10 @@
       "additionalProperties": false,
       "properties": {
         "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effectSessionId": {
           "type": "string",
           "minLength": 1
         },
@@ -3074,6 +3082,10 @@
       "additionalProperties": false,
       "properties": {
         "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effectSessionId": {
           "type": "string",
           "minLength": 1
         },

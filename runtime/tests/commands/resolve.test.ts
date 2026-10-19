@@ -41,11 +41,20 @@ describe("resolveCommand", () => {
     });
   });
 
+  it("addresses the owning child through the attached parent's daemon", async () => {
+    const resolve = vi.fn(resolvedOne);
+    await resolveCommand.execute(mkctx("call_1 confirmed_no_effect --session child-session", resolve));
+    expect(resolve).toHaveBeenCalledWith({ toolCallId: "call_1", disposition: "confirmed_no_effect",
+      attestation: "operator", effectSessionId: "child-session" });
+  });
+
   it.each([
     "call_1",
     "call_1 maybe",
     "call_1 confirmed_no_effect ticket:INC-1",
     `call_1 confirmed_no_effect ticket:INC-1 ${"B".repeat(64)}`,
+    "call_1 confirmed_no_effect --session",
+    "call_1 confirmed_no_effect --session child extra",
   ])("rejects the malformed form %j without calling the daemon", async (args) => {
     const resolve = vi.fn(resolvedOne);
     const res = await resolveCommand.execute(mkctx(args, resolve));

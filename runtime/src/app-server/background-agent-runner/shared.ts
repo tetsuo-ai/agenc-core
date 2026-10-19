@@ -574,6 +574,8 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: ResolveDurableEffectReviewOptions,
   ): Promise<ResolveDurableEffectReviewResult>;
+  /** Canonical root and durably recorded descendants this agent may review. */
+  effectReviewSessionIds?(agentId: string): readonly string[];
   addMcpServer?(
     agentId: string,
     params: AgenCBackgroundAgentMcpAddServerParams,
