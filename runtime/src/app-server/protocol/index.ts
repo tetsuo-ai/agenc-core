@@ -1551,6 +1551,8 @@ export interface AgentCreateParams extends JsonObject {
    * the daemon must validate it before the first model turn is admitted.
    */
   readonly initialDisplayUserMessage?: string | null;
+  /** Expanded human input for first-turn decisions, before skill/hook transforms. */
+  readonly initialUserPromptText?: string;
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   /**

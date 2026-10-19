@@ -101,6 +101,8 @@ export interface AgenCBackgroundAgentStartParams {
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
+  /** Expanded human input for first-turn decisions, before skill/hook transforms. */
+  readonly initialUserPromptText?: string;
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];

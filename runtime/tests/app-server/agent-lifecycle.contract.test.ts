@@ -6013,6 +6013,7 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
       }),
     ).resolves.toMatchObject({
       agentId: "agent_image",
@@ -6030,6 +6031,7 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
       }),
     ]);
     await expect(sessions.getSession("session_image")).resolves.toMatchObject({

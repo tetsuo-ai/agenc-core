@@ -3113,6 +3113,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "objective",
       "resumeSessionId",
       "resumeRolloutPath",
+      "initialUserPromptText",
       "cwd",
       "model",
       "provider",
@@ -3269,7 +3270,8 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     validated.resumeSessionId !== undefined &&
     (validated.initialContent !== undefined ||
       validated.deferInitialTurn !== undefined ||
-      validated.initialDisplayUserMessage !== undefined)
+      validated.initialDisplayUserMessage !== undefined ||
+      validated.initialUserPromptText !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'resumeSessionId' cannot be combined with initial turn content or metadata",
@@ -3286,7 +3288,8 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
   if (
     validated.deferInitialTurn === true &&
     (validated.initialContent !== undefined ||
-      validated.initialDisplayUserMessage !== undefined)
+      validated.initialDisplayUserMessage !== undefined ||
+      validated.initialUserPromptText !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'deferInitialTurn' cannot be combined with initial turn content or metadata",

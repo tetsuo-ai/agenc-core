@@ -863,6 +863,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         const firstSubmitOptions: DaemonSessionSubmitOptions = {
           [DAEMON_USER_PROMPT_PREPARED]: true as const,
+          ...(params.initialUserPromptText !== undefined ? { userPromptText: params.initialUserPromptText } : {}),
           clientMessageId: `user-initial-${managedThread.threadId}`,
           displayUserMessage:
             params.initialDisplayUserMessage === undefined

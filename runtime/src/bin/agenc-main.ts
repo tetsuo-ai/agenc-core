@@ -1838,6 +1838,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
                     ? content[0].text
                     : content,
               }),
+          ...(!deferInitialTurn && firstSubmitOptions?.userPromptText !== undefined
+            ? { initialUserPromptText: firstSubmitOptions.userPromptText }
+            : {}),
           ...(firstSubmitOptions?.displayUserMessage !== undefined
             ? {
                 initialDisplayUserMessage:

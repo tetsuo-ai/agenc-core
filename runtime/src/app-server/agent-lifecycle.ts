@@ -814,6 +814,7 @@ export class AgenCDaemonAgentManager {
           params.initialContent !== undefined ||
           params.deferInitialTurn !== undefined ||
           params.initialDisplayUserMessage !== undefined ||
+          params.initialUserPromptText !== undefined ||
           params.metadata !== undefined ||
           params.unattendedAllow !== undefined ||
           params.unattendedDeny !== undefined)
@@ -1151,6 +1152,9 @@ export class AgenCDaemonAgentManager {
                 : {}),
               ...(params.deferInitialTurn !== undefined
                 ? { deferInitialTurn: params.deferInitialTurn }
+                : {}),
+              ...(params.initialUserPromptText !== undefined
+                ? { initialUserPromptText: params.initialUserPromptText }
                 : {}),
               ...(params.initialDisplayUserMessage !== undefined
                 ? {

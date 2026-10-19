@@ -359,6 +359,16 @@ function daemonHarness(
 }
 
 describe("deferred daemon input ownership", () => {
+  it("preserves expanded human text separately from paste display on cold first submit", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps, preparePrompt: async ({ message }) => message });
+    const text = "Build these independent items:\n1. health\n2. version";
+    await session.submit(text, { displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: text });
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(expect.objectContaining({
+      initialContent: text, initialDisplayUserMessage: "[Pasted text #1 +2 lines]", initialUserPromptText: text,
+    }));
+  });
+
   it("waits for an in-flight cold startup before committing a permission mode", async () => {
     const harness = daemonHarness();
     let releaseStartup!: () => void;

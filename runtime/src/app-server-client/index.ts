@@ -93,6 +93,8 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
+  /** Expanded human input for first-turn decisions, before skill/hook transforms. */
+  readonly initialUserPromptText?: string;
   readonly metadata?: JsonObject;
   /** See `AgentCreateParams.permissionMode`. Forwarded verbatim. */
   readonly permissionMode?:
@@ -189,6 +191,9 @@ export async function startAgenCDaemonPromptAgent(
       : {}),
     ...(options.deferInitialTurn !== undefined
       ? { deferInitialTurn: options.deferInitialTurn }
+      : {}),
+    ...(options.initialUserPromptText !== undefined
+      ? { initialUserPromptText: options.initialUserPromptText }
       : {}),
     ...(options.initialDisplayUserMessage !== undefined
       ? { initialDisplayUserMessage: options.initialDisplayUserMessage }

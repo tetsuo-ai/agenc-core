@@ -10044,6 +10044,18 @@ describe("AgenC delegate background-agent runner", () => {
     expect(session.clearUserStop).toHaveBeenCalledTimes(newerStop ? 0 : 1);
   });
 
+  it("[managed-thread] preserves semantic input in atomic initial turn options", async () => {
+    const { runner, stub } = makeTopLevelRunner({ conversationId: "session-initial-paste-semantics" });
+    const text = "Build these independent items:\n1. health\n2. version";
+    await runner.startAgent({ objective: text, initialContent: text,
+      initialDisplayUserMessage: "[Pasted text #1 +2 lines]", initialUserPromptText: text,
+      unattendedAllow: [], unattendedDeny: [],
+    });
+    expect(stub.thread.submit).toHaveBeenCalledWith(expect.objectContaining({ type: "user_input", input: [{ type: "text", text }],
+      submitOptions: expect.objectContaining({ displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: text }),
+    }));
+  });
+
   it("[managed-thread] uses semantic input for root-turn decisions with a compact paste display", async () => {
     const { runner, control, session, configStore } = makeTopLevelRunner({ conversationId: "session-paste-semantics" });
     await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });

@@ -395,6 +395,7 @@ describe("app-server-client daemon helpers", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
       });
 
       expect(createAgent).toHaveBeenCalledWith(
@@ -420,6 +421,7 @@ describe("app-server-client daemon helpers", () => {
             },
           ],
           initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
         }),
       );
       await startAgenCDaemonPromptAgent({
