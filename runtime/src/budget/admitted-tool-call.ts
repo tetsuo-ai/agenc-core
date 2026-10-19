@@ -856,7 +856,8 @@ async function runAdmittedToolCallTimed(
       try {
         dispatch.context.signal.throwIfAborted();
         const result = await params.invoke(dispatch.context);
-        dispatch.context.signal.throwIfAborted();
+        // Like the durable path for an idempotent call, a cancellation that
+        // arrives after the read finished does not discard its result.
         observation?.release();
         return result;
       } catch (error) {
