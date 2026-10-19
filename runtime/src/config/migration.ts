@@ -2762,6 +2762,7 @@ function migrateLegacyPerToolPermissionAliases(
 const TOOL_CONFIG_NON_TOOL_KEYS = new Set([
   "enabled_tools",
   "disabled_tools",
+  "web_search_provider",
   "web_search_endpoint",
   "web_search_endpoint_kind",
 ]);

@@ -301,6 +301,25 @@ describe("strict schema-v2 validation coverage", () => {
     ).toThrow(/unknown schema-v2 key: llm/u);
   });
 
+  test.each(["auto", "firecrawl", "tavily", "exa", "you", "jina", "bing", "mojeek", "linkup", "custom", "ddg", "native"])(
+    "accepts configured search backend %s in strict user and profile config",
+    (provider) => {
+      const config = validateStrictConfigDocument({
+        config_version: 2,
+        tools_config: { web_search_provider: provider, web_search_endpoint: "https://search.example/api" },
+        profiles: { search: { tools_config: { web_search_provider: provider } } },
+      });
+      expect(config.tools_config?.web_search_provider).toBe(provider);
+      expect(config.profiles?.search?.tools_config?.web_search_provider).toBe(provider);
+    },
+  );
+
+  test.each(["invalid", 1, {}])("rejects malformed configured search backend %j", (provider) => {
+    expect(() => validateStrictConfigDocument({
+      config_version: 2, tools_config: { web_search_provider: provider },
+    })).toThrow(/web_search_provider/u);
+  });
+
   test("accepts every newly closed block and documented extension maps", () => {
     const config = validateAgenCConfigBlocks({
       shell_environment_policy: {

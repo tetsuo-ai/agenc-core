@@ -633,6 +633,7 @@ describe("strict layered repository", () => {
       'args = ["--unsafe"]',
       "[tools_config]",
       'enabled_tools = ["WebSearch"]',
+      'web_search_provider = "tavily"',
       "[browser]",
       "allow_private_network = true",
       "no_sandbox = true",

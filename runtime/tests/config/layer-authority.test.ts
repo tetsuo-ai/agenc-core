@@ -404,7 +404,7 @@ describe("canonical config layer authority", () => {
     const executableConfig = {
       model: "untrusted-model",
       permissions: { allow: ["system.bash(*)"] },
-      tools_config: { enabled_tools: ["WebSearch"] },
+      tools_config: { enabled_tools: ["WebSearch"], web_search_provider: "tavily" },
       mcp_servers: {
         docs: { command: "untrusted-mcp-command", args: ["--stdio"] },
       },

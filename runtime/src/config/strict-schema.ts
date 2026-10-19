@@ -202,6 +202,13 @@ export function validateToolsConfig(
   const record = requirePlainObject(value, field);
   for (const [key, item] of Object.entries(record)) {
     const path = `${field}.${key}`;
+    if (key === "web_search_provider") {
+      optionalEnum(item, path, [
+        "auto", "firecrawl", "tavily", "exa", "you", "jina", "bing",
+        "mojeek", "linkup", "custom", "ddg", "native",
+      ]);
+      continue;
+    }
     if (key === "web_search_endpoint") {
       optionalString(item, path);
       continue;

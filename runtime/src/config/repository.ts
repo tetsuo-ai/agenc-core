@@ -742,6 +742,7 @@ function sanitizeRepositoryLayer(
     const tools = raw.tools_config;
     for (const key of [
       "enabled_tools",
+      "web_search_provider",
       "web_search_endpoint",
       "web_search_endpoint_kind",
     ] as const) {
