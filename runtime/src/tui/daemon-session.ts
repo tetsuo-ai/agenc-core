@@ -3324,8 +3324,18 @@ function transcriptEventFromMcpElicitationRequest(params: JsonObject): JsonObjec
 
 function transcriptEventFromSessionEvent(params: JsonObject): JsonObject | null {
   if (!isJsonObject(params.event)) return null;
+  // The scoped display id below belongs to transcript deduplication. File
+  // checkpoints are keyed by the original daemon user-message id.
+  const eventPayload = isJsonObject(params.event.payload) ? params.event.payload : undefined;
+  const promptId = params.event.type === "user_message" && typeof params.event.id === "string" && params.event.id.length > 0
+    ? params.event.id : undefined;
   return {
     ...params.event,
+    ...(promptId !== undefined && eventPayload !== undefined ? { payload: {
+      ...eventPayload,
+      canonicalUserMessageId: typeof eventPayload.canonicalUserMessageId === "string" && eventPayload.canonicalUserMessageId.length > 0
+        ? eventPayload.canonicalUserMessageId : promptId,
+    } } : {}),
     ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
     ...(typeof params.clientMessageId === "string"
       ? { clientMessageId: params.clientMessageId }

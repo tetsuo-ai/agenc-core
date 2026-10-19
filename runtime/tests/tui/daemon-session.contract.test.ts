@@ -4057,6 +4057,29 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it.each([undefined, "explicit-prompt-id"])("preserves the checkpoint prompt id before scoping live user events (%s)", (canonical) => {
+    const client = createClient();
+    const received: JsonObject[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents?.(event => { received.push(event as JsonObject); });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION, method: "event.session_event",
+      params: {
+        sessionId: "session_1", agentId: "run_1", eventId: "event:4", clientMessageId: "client-submission",
+        event: { id: "user-initial-run_1", type: "user_message", payload: {
+          message: "Edit files", ...(canonical === undefined ? {} : { canonicalUserMessageId: canonical }),
+        } },
+      },
+    });
+    unsubscribe?.();
+    expect(received).toEqual([expect.objectContaining({
+      id: "daemon:run_1:event%3A4",
+      payload: { message: "Edit files", canonicalUserMessageId: canonical ?? "user-initial-run_1" },
+    })]);
+  });
+
   it("scopes repeated canonical event ids by daemon run", () => {
     const client = createClient();
     const received: JsonObject[] = [];
