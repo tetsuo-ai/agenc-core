@@ -3,7 +3,7 @@ import type { AgentRuntimeOptions } from "./session/runtime-options.js";
 import type { Session } from "./session/session.js";
 import type { TurnContext } from "./session/turn-context.js";
 
-const active = new AsyncLocalStorage<boolean>();
+const active = new AsyncLocalStorage<{ readonly sessionId?: string }>();
 /** Never inferred from environment variables or ordinary permission bypass. */
 export function oneShotFastModeSelected(
   options: Partial<AgentRuntimeOptions> | undefined,
@@ -23,5 +23,11 @@ export function requiresAtomicSpendAdmission(session: Session): boolean {
     scope?.maxCostUsd !== undefined || scope?.maxTokens !== undefined ||
     scope?.maxModelCalls !== undefined;
 }
-export function oneShotFastModeActive(): boolean { return active.getStore() === true; }
-export function withOneShotFastMode<T>(run: () => T): T { return active.run(true, run); }
+/** With an id, grants authority only to the session that entered this scope. */
+export function oneShotFastModeActive(sessionId?: string): boolean {
+  const scope = active.getStore();
+  return scope !== undefined && (sessionId === undefined || scope.sessionId === sessionId);
+}
+export function withOneShotFastMode<T>(run: () => T, sessionId?: string): T {
+  return active.run({ sessionId }, run);
+}

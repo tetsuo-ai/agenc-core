@@ -2505,7 +2505,7 @@ async function* runTurnKernelInner(
     // launched here; each command still crosses the manager's live admission.
     await withOneShotFastMode(() => session.services.unifiedExecManager?.prepareOneShotCommandBoundary?.(
       String(session.conversationId), session.unifiedExecOwnerBinding, signal,
-    ));
+    ), String(session.conversationId));
     let content = "";
     const fastMessages = state.messages;
     const loop = runMinimalTurn(session, ctx, fastMessages, modelInstructions, signal, async (modelCalls, lastResponseUsage) => {
@@ -2535,7 +2535,7 @@ async function* runTurnKernelInner(
     });
     try {
       for (;;) {
-        const next = await withOneShotFastMode(() => loop.next());
+        const next = await withOneShotFastMode(() => loop.next(), String(session.conversationId));
         if (next.done) {
           if (next.value.reason === "continue_normal") {
             continuedFromFastMode = true;
@@ -2574,7 +2574,7 @@ async function* runTurnKernelInner(
         if (next.value.type === "turn_complete") content = next.value.content;
         yield next.value;
       }
-    } finally { await withOneShotFastMode(() => loop.return({ reason: "cancelled" })); }
+    } finally { await withOneShotFastMode(() => loop.return({ reason: "cancelled" }), String(session.conversationId)); }
   }
   const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
   let persistedMessageCount =
@@ -2815,7 +2815,7 @@ async function* runTurnKernelInner(
     boundary: "iteration" | "postAssistant",
     options: { readonly force?: boolean } = {},
   ): void => {
-    if (oneShotFastModeActive() || !durableTurnsCfg.checkpointEnabled) return;
+    if (oneShotFastModeActive(String(session.conversationId)) || !durableTurnsCfg.checkpointEnabled) return;
     if (rolloutPersistenceSuspended()) return;
     if (!session.rolloutStore) return;
     if (options.force !== true && durableTurnsCfg.checkpointMinIntervalMs > 0) {

@@ -253,3 +253,17 @@ describe("a frozen permission mode", () => {
     }
   });
 });
+
+
+describe("noFsWriteTools persistence regression #3024", () => {
+  it("restores the original grant and accepts the identical resume policy", async () => {
+    const granted = normalizeSessionToolPolicy({ ...POLICY, noFsWriteTools: ["mcp.desktop.read_file"] });
+    const h = harness();
+    await create(h, granted);
+    const stored = h.runs.at(-1)!.metadata as JsonObject;
+    expect(stored[TOOL_POLICY_METADATA_KEY]).toEqual(granted);
+    expect(resolveCreateToolPolicy(undefined, stored)).toEqual(granted);
+    expect(resolveCreateToolPolicy(granted, stored)).toEqual(granted);
+    expect(() => resolveCreateToolPolicy(POLICY, stored)).toThrow("differs from the policy");
+  });
+});

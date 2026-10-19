@@ -823,7 +823,7 @@ export function flushOneShotEffectJournal(session: Session): void {
 export async function runAdmittedToolCall(
   params: AdmittedToolCallOptions,
 ): Promise<ToolDispatchResult> {
-  if (oneShotFastModeActive() && !requiresAtomicSpendAdmission(params.session)) {
+  if (oneShotFastModeActive(String(params.session.conversationId)) && !requiresAtomicSpendAdmission(params.session)) {
     const category = recoveryCategory(params.tool);
     assertNoLiveUnknownEffect(params.session, category);
     const startedAt = new Date().toISOString();

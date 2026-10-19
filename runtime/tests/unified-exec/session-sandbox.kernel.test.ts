@@ -33,7 +33,7 @@ describe("persistent unified exec lifecycle", () => {
     const sandboxClose = vi.spyOn(SessionSandbox.prototype, "close");
     const launch = vi.spyOn(supervised, "spawnContainedProcess");
     for (let i = 0; i < 2; i++) {
-      const result = await withOneShotFastMode(() => run("printf bypass", { runtimeSandbox: undefined }));
+      const result = await withOneShotFastMode(() => run("printf bypass", { runtimeSandbox: undefined, ownerId: "parent" }), "parent");
       expect(result.stdout).toBe("bypass");
       expect(result.exitCode).toBe(0);
     }
@@ -46,7 +46,7 @@ describe("persistent unified exec lifecycle", () => {
     const sandboxClose = vi.spyOn(SessionSandbox.prototype, "close");
     await run("true");
     for (let i = 0; i < 2; i++) {
-      const result = await withOneShotFastMode(() => run("printf bypass", { runtimeSandbox: undefined }));
+      const result = await withOneShotFastMode(() => run("printf bypass", { runtimeSandbox: undefined, ownerId: "parent" }), "parent");
       expect(result.stdout).toBe("bypass");
       expect(result.exitCode).toBe(0);
     }

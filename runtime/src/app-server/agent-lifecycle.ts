@@ -5180,6 +5180,9 @@ function toolPolicyToMetadata(policy: SessionToolPolicy): JsonObject {
     ...(policy.deferMcpTools !== undefined
       ? { deferMcpTools: policy.deferMcpTools }
       : {}),
+    ...(policy.noFsWriteTools !== undefined
+      ? { noFsWriteTools: [...policy.noFsWriteTools] }
+      : {}),
   };
 }
 

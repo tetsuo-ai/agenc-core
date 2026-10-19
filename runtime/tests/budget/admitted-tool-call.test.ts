@@ -1,3 +1,4 @@
+import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1563,4 +1564,33 @@ describe("runAdmittedToolCall", () => {
       state.effectEvents.filter((event) => event.msg.type === "effect_result"),
     ).toHaveLength(0);
   });
+});
+
+
+it("does not lend a parent's fast scope to a child mutation #3011", async () => {
+  const state = toolHarness();
+  const tool = { name: "child_write", description: "mutation", inputSchema: { type: "object" }, recoveryCategory: "side-effecting", admissionEstimate: zeroAdmissionEstimate, execute: async () => ({ content: "done" }) } as Tool;
+  await withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "child-turn", callId: "child-call", tool, args: {}, invoke: async () => ({ content: "done" }) }), "parent-session");
+  expect(state.session.rolloutStore!.assertToolAdmissionAllowed).toHaveBeenCalledOnce();
+  expect(state.acquire).toHaveBeenCalledOnce();
+});
+
+
+it("enforces a child's durable unknown-outcome gate inside its parent's fast scope #3011", async () => {
+  const state = toolHarness();
+  const invoke = vi.fn(async () => ({ content: "must not execute" }));
+  vi.mocked(state.session.rolloutStore!.assertToolAdmissionAllowed).mockImplementation(() => { throw new Error("durable_unknown_outcome"); });
+  const tool = { name: "child_write", description: "mutation", inputSchema: { type: "object" }, recoveryCategory: "side-effecting", admissionEstimate: zeroAdmissionEstimate } as Tool;
+  await expect(withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "child-turn", callId: "child-call", tool, args: {}, invoke }), "parent-session")).rejects.toThrow("durable_unknown_outcome");
+  expect(invoke).not.toHaveBeenCalled();
+  expect(state.acquire).not.toHaveBeenCalled();
+});
+
+it("keeps the explicitly bound parent's uncapped fast path", async () => {
+  const state = toolHarness();
+  const tool = { name: "read", description: "read", inputSchema: { type: "object" }, recoveryCategory: "idempotent", admissionEstimate: zeroAdmissionEstimate } as Tool;
+  const result = await withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "parent-turn", callId: "parent-call", tool, args: {}, invoke: async () => ({ content: "fast" }) }), String(state.session.conversationId));
+  expect(result.content).toBe("fast");
+  expect(state.acquire).not.toHaveBeenCalled();
+  expect(state.session.rolloutStore!.assertToolAdmissionAllowed).not.toHaveBeenCalled();
 });

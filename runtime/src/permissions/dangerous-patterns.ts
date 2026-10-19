@@ -1,3 +1,4 @@
+import { COMMAND_WRAPPERS, readWrapperOptions, wrapperCommandIndex, wrapperOnlyInspects, wrapperCommandText } from "../utils/shell/transparent-wrappers.js";
 /**
  * Dangerous-pattern constants for the live permission-mode path.
  *
@@ -161,7 +162,7 @@ export function matchedDangerousShellCommandLabel(command: string): string | nul
       return entry.label;
     }
   }
-  return null;
+  return matchedWrappedCommandLabel(command, 0);
 }
 
 export function hasShellConstructRequiringAsk(command: string): boolean {
@@ -184,19 +185,7 @@ function matchedDangerousShellExpansionLabel(command: string): string | null {
   return label === null ? null : `dangerous shell expansion: ${label}`;
 }
 
-const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
-  "env",
-  "exec",
-  "nice",
-  "nohup",
-  "stdbuf",
-  "time",
-  "timeout",
-  "command",
-  "busybox",
-  "toybox",
-  "setsid",
-]);
+const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set(COMMAND_WRAPPERS.keys());
 
 /**
  * Wrappers whose output is the wrapped command's output. Substitution
@@ -569,7 +558,7 @@ function envSplitStringContainsDangerousCommand(command: string): boolean {
   const words = splitSimpleShellWords(command);
   const commandIndex = firstCommandIndex(words, 0);
   if (commandIndex === null) return false;
-  if (normalizedCommandName(words[commandIndex] ?? "") !== "env") {
+  if (COMMAND_WRAPPERS.get(normalizedCommandName(words[commandIndex] ?? ""))?.kind !== "env") {
     return false;
   }
   const splitCommand = envSplitStringCommand(words, commandIndex + 1);
@@ -609,7 +598,7 @@ function shellPrecommandContainsDangerousCommand(command: string): boolean {
 
   let nestedIndex: number | null = null;
   if (commandName === "command") {
-    nestedIndex = commandBuiltinCommandIndex(words, commandIndex + 1);
+    nestedIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   } else if (
     commandName === "builtin" ||
     commandName === "coproc" ||
@@ -905,7 +894,7 @@ function isDownloadProducerCommand(command: string): boolean {
   while (commandIndex !== null) {
     const commandName = normalizedCommandName(words[commandIndex] ?? "");
     if (DOWNLOAD_PRODUCER_COMMANDS.has(commandName)) return true;
-    if (commandName === "env") {
+    if (COMMAND_WRAPPERS.get(commandName)?.kind === "env") {
       const splitCommand = envSplitStringCommand(words, commandIndex + 1);
       if (splitCommand !== null) return isDownloadProducerCommand(splitCommand);
     }
@@ -921,7 +910,7 @@ function isShellSinkCommand(command: string): boolean {
   while (commandIndex !== null) {
     const commandName = normalizedCommandName(words[commandIndex] ?? "");
     if (SHELL_PIPE_SINK_COMMANDS.has(commandName)) return true;
-    if (commandName === "env") {
+    if (COMMAND_WRAPPERS.get(commandName)?.kind === "env") {
       const splitCommand = envSplitStringCommand(words, commandIndex + 1);
       if (splitCommand !== null) return isShellSinkCommand(splitCommand);
     }
@@ -998,6 +987,8 @@ function commandAtIndexContainsRecursiveForceRemove(
   ) {
     return true;
   }
+  const kind = COMMAND_WRAPPERS.get(command)?.kind;
+  if (kind === "xargs" || kind === "precommand") return false;
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
 
   const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
@@ -1020,6 +1011,8 @@ function commandAtIndexContainsForceRemove(
   ) {
     return true;
   }
+  const kind = COMMAND_WRAPPERS.get(command)?.kind;
+  if (kind === "xargs" || kind === "precommand") return false;
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
 
   const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
@@ -1088,337 +1081,25 @@ function firstCommandIndex(
   return index < words.length ? index : null;
 }
 
-function commandIndexAfterWrapper(
-  words: readonly string[],
-  wrapperIndex: number,
-  wrapper: string,
-): number | null {
-  switch (wrapper) {
-    case "env":
-      return envCommandIndex(words, wrapperIndex + 1);
-    case "nice":
-      return niceCommandIndex(words, wrapperIndex + 1);
-    case "timeout":
-      return timeoutCommandIndex(words, wrapperIndex + 1);
-    case "stdbuf":
-      return stdbufCommandIndex(words, wrapperIndex + 1);
-    case "time":
-      return timeCommandIndex(words, wrapperIndex + 1);
-    case "command":
-      return commandBuiltinCommandIndex(words, wrapperIndex + 1);
-    case "exec":
-      return execCommandIndex(words, wrapperIndex + 1);
-    case "nohup":
-      return nohupCommandIndex(words, wrapperIndex + 1);
-    case "busybox":
-    case "toybox":
-      return multiCallAppletIndex(words, wrapperIndex + 1);
-    case "setsid":
-      return flagOnlyWrapperCommandIndex(words, wrapperIndex + 1);
-    default:
-      return null;
-  }
+function commandIndexAfterWrapper(words: readonly string[], wrapperIndex: number, name: string): number | null {
+  const wrapper = COMMAND_WRAPPERS.get(name);
+  if (!wrapper) return null;
+  const args = words.slice(wrapperIndex + 1).map(stripShellQuotes);
+  const read = readWrapperOptions(wrapper, args);
+  if (!read || wrapperOnlyInspects(wrapper, read)) return null;
+  const index = wrapperCommandIndex(wrapper, read, args);
+  return index < args.length ? wrapperIndex + 1 + index : null;
 }
 
-function envCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "-u" || word === "--unset" || word === "-C" || word === "--chdir") {
-      index += 2;
-      continue;
-    }
-    if (word === "-" || isEnvironmentAssignment(word)) {
-      index++;
-      continue;
-    }
-    if (
-      word.startsWith("-u") ||
-      word.startsWith("--unset=") ||
-      word.startsWith("-C") ||
-      word.startsWith("--chdir=")
-    ) {
-      index++;
-      continue;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    return index;
-  }
-  return null;
+function envSplitStringCommand(words: readonly string[], startIndex: number): string | null {
+  const wrapper = COMMAND_WRAPPERS.get("env")!;
+  const args = words.slice(startIndex).map(stripShellQuotes);
+  const read = readWrapperOptions(wrapper, args);
+  return read === undefined ? null : wrapperCommandText(wrapper, read, args) ?? null;
 }
-
-function envSplitStringCommand(
-  words: readonly string[],
-  startIndex: number,
-): string | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "--") return null;
-    if (word === "-S" || word === "--split-string") {
-      return joinedEnvSplitStringCommand(words, index + 1, index + 2);
-    }
-    if (word.startsWith("--split-string=")) {
-      return joinedEnvSplitStringCommand(
-        [word.slice("--split-string=".length), ...words.slice(index + 1)],
-        0,
-        1,
-      );
-    }
-    if (word.startsWith("-S") && word.length > 2) {
-      return joinedEnvSplitStringCommand(
-        [word.slice(2), ...words.slice(index + 1)],
-        0,
-        1,
-      );
-    }
-    if (word === "-u" || word === "--unset" || word === "-C" || word === "--chdir") {
-      index += 2;
-      continue;
-    }
-    if (word === "-" || isEnvironmentAssignment(word)) {
-      index++;
-      continue;
-    }
-    if (
-      word.startsWith("-u") ||
-      word.startsWith("--unset=") ||
-      word.startsWith("-C") ||
-      word.startsWith("--chdir=")
-    ) {
-      index++;
-      continue;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    return null;
-  }
-  return null;
-}
-
-function joinedEnvSplitStringCommand(
-  words: readonly string[],
-  scriptIndex: number,
-  trailingStartIndex: number,
-): string | null {
-  const script = stripShellQuotes(words[scriptIndex] ?? "");
-  if (script.length === 0) return null;
-  const trailing = words.slice(trailingStartIndex).map(stripShellQuotes);
-  return [script, ...trailing].filter((word) => word.length > 0).join(" ");
-}
-
-function niceCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "-n" || word === "--adjustment") {
-      index += 2;
-      continue;
-    }
-    if (word.startsWith("--adjustment=") || /^-\d+$/.test(word)) {
-      index++;
-      continue;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    return index;
-  }
-  return null;
-}
-
-function timeoutCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "--") {
-      index++;
-      break;
-    }
-    if (word === "-k" || word === "--kill-after" || word === "-s" || word === "--signal") {
-      index += 2;
-      continue;
-    }
-    if (
-      word === "--foreground" ||
-      word === "--preserve-status" ||
-      word.startsWith("--kill-after=") ||
-      word.startsWith("--signal=")
-    ) {
-      index++;
-      continue;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    break;
-  }
-  return index + 1 < words.length ? index + 1 : null;
-}
-
-const XARGS_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
-  "-E",
-  "-e",
-  "-I",
-  "-i",
-  "-L",
-  "-n",
-  "-P",
-  "-s",
-  "-d",
-  "--eof",
-  "--replace",
-  "--max-lines",
-  "--max-args",
-  "--max-procs",
-  "--max-chars",
-  "--delimiter",
-]);
 
 function xargsCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "--") {
-      index++;
-      break;
-    }
-    if (XARGS_OPTIONS_WITH_VALUE.has(word)) {
-      index += 2;
-      continue;
-    }
-    if (
-      [...XARGS_OPTIONS_WITH_VALUE].some((option) =>
-        word.startsWith(`${option}=`),
-      ) ||
-      /^-[EIiLlnPsde].+/.test(word)
-    ) {
-      index++;
-      continue;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    return index;
-  }
-  return index < words.length ? index : null;
-}
-
-function stdbufCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "-i" || word === "-o" || word === "-e") {
-      index += 2;
-      continue;
-    }
-    if (
-      word === "--input" ||
-      word === "--output" ||
-      word === "--error" ||
-      word.startsWith("--input=") ||
-      word.startsWith("--output=") ||
-      word.startsWith("--error=") ||
-      /^-[ioe].+/.test(word)
-    ) {
-      index++;
-      continue;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    return index;
-  }
-  return null;
-}
-
-function timeCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "-p" || word === "--portability") {
-      index++;
-      continue;
-    }
-    return index;
-  }
-  return null;
-}
-
-function commandBuiltinCommandIndex(
-  words: readonly string[],
-  startIndex: number,
-): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (!word.startsWith("-") || word === "-") return index;
-    if (/[vV]/.test(word)) return null;
-    index++;
-  }
-  return null;
-}
-
-function execCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "-a") {
-      index += 2;
-      continue;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    return index;
-  }
-  return null;
-}
-
-function nohupCommandIndex(words: readonly string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length && stripShellQuotes(words[index]!) === "--") {
-    index++;
-  }
-  return index < words.length ? index : null;
-}
-
-/**
- * BusyBox and toybox run the applet named by their first argument
- * (`busybox sh -c ...`, `toybox rm ...`, `busybox /bin/rm ...`). A leading
- * dash is one of their own options (`--list`, `--install DIR`, `--help
- * APPLET`, `--long`), and those run no applet.
- */
-function multiCallAppletIndex(
-  words: readonly string[],
-  startIndex: number,
-): number | null {
-  const applet = words[startIndex];
-  if (applet === undefined) return null;
-  return stripShellQuotes(applet).startsWith("-") ? null : startIndex;
-}
-
-/** setsid's flags (`-c`, `-f`, `-w`) take no values before its program. */
-function flagOnlyWrapperCommandIndex(
-  words: readonly string[],
-  startIndex: number,
-): number | null {
-  for (let index = startIndex; index < words.length; index++) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "--") return index + 1 < words.length ? index + 1 : null;
-    if (!word.startsWith("-") || word === "-") return index;
-  }
-  return null;
+  return commandIndexAfterWrapper(words, startIndex - 1, "xargs");
 }
 
 function shellScriptContainsDanger(
@@ -1796,7 +1477,7 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
   while (commandIndex !== null) {
     const commandName = normalizedCommandName(words[commandIndex] ?? "");
     if (
-      commandName === "env" &&
+      COMMAND_WRAPPERS.get(commandName)?.kind === "env" &&
       envSplitStringCommand(words, commandIndex + 1) !== null
     ) {
       return true;
@@ -1805,6 +1486,13 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
       return shellCommandStrings(words, commandIndex).some((script) =>
         shellCommandHasShellConstruct(script, depth + 1)) ||
         shellInputContainsShellConstruct(normalized);
+    }
+    const wrapper = COMMAND_WRAPPERS.get(commandName);
+    if (wrapper) {
+      const args = words.slice(commandIndex + 1).map(stripShellQuotes);
+      const read = readWrapperOptions(wrapper, args);
+      const script = read && !wrapperOnlyInspects(wrapper, read) ? wrapperCommandText(wrapper, read, args) : undefined;
+      if (script !== undefined) return shellCommandHasShellConstruct(script, depth + 1);
     }
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
@@ -2294,4 +1982,31 @@ function isHomeShellExpansionTarget(target: string): boolean {
     normalized === "${HOME}/" ||
     normalized === "${HOME}/*"
   );
+}
+
+/** Judge command-text wrappers using shell semantics, argv wrappers using argv semantics. */
+function matchedWrappedCommandLabel(command: string, depth: number): string | null {
+  if (depth > 32) return "shell wrapper nesting limit";
+  for (const fragment of splitShellFragments(command)) {
+    const words = splitSimpleShellWords(fragment);
+    const index = firstCommandIndex(words, 0);
+    if (index === null) continue;
+    const name = normalizedCommandName(words[index]!);
+    const wrapper = COMMAND_WRAPPERS.get(name);
+    if (!wrapper) continue;
+    const args = words.slice(index + 1).map(stripShellQuotes);
+    const read = readWrapperOptions(wrapper, args);
+    if (!read || wrapperOnlyInspects(wrapper, read)) continue;
+    const next = wrapperCommandIndex(wrapper, read, args);
+    const text = wrapperCommandText(wrapper, read, args);
+    if (next >= args.length && text === undefined) continue;
+    const script = text ?? formatShellWords(args.slice(next));
+    // Re-enter the existing predicates after a finite unwrap. Each call consumes a wrapper.
+    const nested = matchedWrappedCommandLabel(script, depth + 1);
+    if (nested !== null) return nested;
+    for (const entry of DANGEROUS_SHELL_COMMAND_PATTERNS) {
+      if (entry.matches?.(script) === true || (entry.pattern && shellExecutablePatternMatches(script, entry.pattern))) return entry.label;
+    }
+  }
+  return null;
 }

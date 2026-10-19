@@ -564,7 +564,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
   /** Start only the empty containment boundary; command admission still happens in execCommand. */
   async prepareOneShotCommandBoundary(ownerId: string | undefined, ownerBinding: UnifiedExecOwnerBinding | undefined, signal?: AbortSignal): Promise<void> {
-    if (!oneShotFastModeActive() || process.platform !== "linux") return;
+    if (ownerId === undefined || !oneShotFastModeActive(ownerId) || process.platform !== "linux") return;
     const generation = this.sandboxAuthorityGeneration;
     const validate = (): void => {
       this.assertSandboxAuthorityAdmission(generation);
@@ -1682,7 +1682,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
         abortController.signal.throwIfAborted();
       };
-      const oneShot = oneShotFastModeActive() && params.runtimeSandbox === undefined
+      const fastMode = params.ownerId !== undefined && oneShotFastModeActive(params.ownerId);
+      const oneShot = fastMode && params.runtimeSandbox === undefined
         ? await this.oneShotServerFor(params.ownerId).spawn({ program: params.program,
             args: params.args, cwd: params.cwd, env: params.env,
             argv0: params.argv0 ?? basename(params.program) }, validateAdmission, params.signal)
@@ -1698,11 +1699,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (persistent === undefined && params.runtimeSandbox !== undefined)
         probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
       // A declined server startup may have awaited cleanup while authority changed.
-      if (persistent === undefined && oneShotFastModeActive()) validateAdmission();
+      if (persistent === undefined && fastMode) validateAdmission();
       child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         // The native subreaper remains a complete containment boundary. Avoid
         // probing cgroup delegation for every command in this short run.
-        ...(oneShotFastModeActive() ? { linuxContainment: "subreaper" as const } : {}),
+        ...(fastMode ? { linuxContainment: "subreaper" as const } : {}),
         ...(this.prepareContainedLaunches ? { usePreparedLaunch: true } : {}),
         cwd: params.cwd,
         env: params.env,
