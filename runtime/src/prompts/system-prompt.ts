@@ -42,7 +42,7 @@ import {
   lightBudgetActions,
   LIGHT_BUDGET_DEADLINE,
 } from "./light-budget-prompt.js";
-import { lightEditsWithApplyPatch } from "../tools/light-profile.js";
+import { lightEditsWithApplyPatch, lightStatesTaskLimits } from "../tools/light-profile.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -1221,7 +1221,11 @@ export async function assembleSystemPrompt(
   );
   const staticSections: Array<string | null> = light
     ? [
-        lightBudgetWorkflow(opts.outputStyle != null, lightEditsWithApplyPatch(envInfoInputs.provider)),
+        lightBudgetWorkflow(
+          opts.outputStyle != null,
+          lightEditsWithApplyPatch(envInfoInputs.provider),
+          lightStatesTaskLimits(envInfoInputs.provider, promptEnvironment),
+        ),
         lightBudgetSystem(),
         lightBudgetActions(),
         session.services?.runtimeOptions?.nonInteractive === true

@@ -64,6 +64,8 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
+import { LIGHT_FINISH, LIGHT_LIMITED_FINISH } from "./light-budget-prompt.js";
+import { LIGHT_TASK_LIMITS_ENV } from "../tools/light-profile.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
 
 // Minimal TurnContext + Session stubs — only the fields the assembler reads.
@@ -1520,6 +1522,48 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     }
   },
 );
+
+describe("Light finish rules per provider", () => {
+  const lightSession = (env: Record<string, string> = {}) =>
+    ({ services: { runtimeOptions: { lightMode: true }, providerEnvironment: env } }) as unknown as Session;
+  const head = async (provider: string, env?: Record<string, string>, outputStyle?: { name: string; prompt: string }) =>
+    (await assembleSystemPromptSnapshot({ profile: "light", ctx: fakeCtx(), session: lightSession(env), provider, outputStyle })).staticPrefix;
+
+  test("DeepSeek states scope, rerun and report limits in place of the default finish rules", async () => {
+    const deepseek = await head("deepseek");
+    expect(deepseek).toContain(LIGHT_LIMITED_FINISH);
+    expect(deepseek).not.toContain(LIGHT_FINISH);
+    for (const rule of [
+      "Do what was asked and no more",
+      "no error handling for cases that cannot happen",
+      "do not re-verify what already passed",
+      "Report unavailable checks instead of rebuilding their tools",
+      "report the outcome and the check that passed in one or two sentences",
+      "Do not weaken tests or requirements, conceal failures or claim unverified work",
+    ]) expect(deepseek, rule).toContain(rule);
+    // Still Light's budgeted head, well under the standard head.
+    const standard = (await assembleSystemPromptSnapshot({ profile: "standard", ctx: fakeCtx(),
+      session: { services: { runtimeOptions: {} } } as unknown as Session, provider: "deepseek" })).staticPrefix;
+    expect(deepseek.length).toBeLessThan(standard.length * 0.6);
+  });
+
+  test.each(["openai", "anthropic", "grok"])("%s keeps the default Light finish rules", async provider => {
+    const prompt = await head(provider);
+    expect(prompt).toContain(LIGHT_FINISH);
+    expect(prompt).not.toContain(LIGHT_LIMITED_FINISH);
+  });
+
+  test("the session environment switch overrides the provider default both ways", async () => {
+    expect(await head("deepseek", { [LIGHT_TASK_LIMITS_ENV]: "0" })).toContain(LIGHT_FINISH);
+    expect(await head("openai", { [LIGHT_TASK_LIMITS_ENV]: "1" })).toContain(LIGHT_LIMITED_FINISH);
+  });
+
+  test("an output style replaces either finish paragraph", async () => {
+    const styled = await head("deepseek", {}, { name: "custom", prompt: "STYLE_SENTINEL" });
+    expect(styled).not.toContain(LIGHT_LIMITED_FINISH);
+    expect(styled).not.toContain(LIGHT_FINISH);
+  });
+});
 
 test.each([false, true])("Light preserves persistent-session memory instructions (nonInteractive=%s)", async nonInteractive => {
   const snapshot = await assembleSystemPromptSnapshot({
