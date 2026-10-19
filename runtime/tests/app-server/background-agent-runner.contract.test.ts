@@ -2819,9 +2819,18 @@ describe("AgenC delegate background-agent runner", () => {
       })).resolves.toMatchObject({ kind: "resolved", durable: true });
       expect(() => assertNoLiveUnknownEffect(childSession, "interactive")).toThrow();
       expect(child.rolloutItems).toHaveLength(2);
+      // A parent gate can already be referring to this child's exact effect
+      // (the reported bricked-session case). Settling its canonical owner
+      // must clear that mirror too, without touching other parent effects.
+      poisonLiveEffect(parentSession, identity);
+      expect(() => assertNoLiveUnknownEffect(parentSession, "side-effecting")).toThrow();
       await expect(parent.runner.resolveLiveEffectReview(parentId, { sessionId: childId, toolCallId: "call-1", resolution: review }))
         .resolves.toMatchObject({ kind: "resolved", durable: true });
       expect(() => assertNoLiveUnknownEffect(childSession, "side-effecting")).not.toThrow();
+      expect(() => assertNoLiveUnknownEffect(parentSession, "side-effecting")).not.toThrow();
+      poisonLiveEffect(parentSession, { ...identity, runId: parentId, stepId: "other-parent-step" });
+      await parent.runner.resolveLiveEffectReview(parentId, { sessionId: childId, toolCallId: "call-1", resolution: review });
+      expect(() => assertNoLiveUnknownEffect(parentSession, "side-effecting")).toThrow();
       expect(effects.getEffect(childId, "tool:step-1")?.reviewStatus).toBe("resolved");
       expect(parent.rolloutItems.some((item) => (item as { payload?: { msg?: { type?: string } } }).payload?.msg?.type === "effect_review_resolved")).toBe(false);
       await expect(parent.runner.resolveLiveEffectReview(parentId, { sessionId: "unrelated-session", toolCallId: "call-1", resolution: review }))

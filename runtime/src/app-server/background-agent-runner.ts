@@ -3560,6 +3560,28 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     });
   }
 
+  #clearReviewedEffectPoison(
+    active: ActiveBackgroundAgent,
+    params: ResolveDurableEffectReviewOptions,
+    outcome: ResolveDurableEffectReviewResult,
+  ): void {
+    if (outcome.kind === "not_found" || !outcome.durable || params.resolution.workflowStatus === "pending") return;
+    const root = active.bootstrap.session;
+    const sessions = new Set([root]);
+    for (const id of this.effectReviewSessionIds(active.thread.threadId)) {
+      if (id === root.conversationId) continue;
+      const live = active.control.getLive?.(id);
+      const child = live === undefined ? undefined : liveAgentSession(live);
+      if (child !== undefined) sessions.add(child);
+    }
+    // A parent fence may already reference the child's effect. The reviewed
+    // canonical run/step authorizes clearing that exact mirror only; a reused
+    // call id in another run or attempt must remain blocked.
+    for (const session of sessions) resolveLiveEffectPoison(session, {
+      callId: params.toolCallId, runId: outcome.runId, stepId: outcome.stepId,
+    });
+  }
+
   async resolveLiveEffectReview(
     agentId: string,
     params: ResolveDurableEffectReviewOptions,
@@ -3586,6 +3608,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot, agencHome });
       try {
         const result = resolveDurableEffectReview(driver, params);
+        this.#clearReviewedEffectPoison(active, params, result);
         this.#publishEffectReviews(active);
         return result;
       }
@@ -3610,17 +3633,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           project: (event) =>
             rolloutStore.recordEffectEvent(event),
         });
-        if (
-          outcome.kind !== "not_found" &&
-          outcome.durable &&
-          params.resolution.workflowStatus !== "pending"
-        ) {
-          resolveLiveEffectPoison(session, {
-            callId: params.toolCallId,
-            ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
-            ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
-          });
-        }
+        this.#clearReviewedEffectPoison(active, params, outcome);
         if (session === root && active.deferredDurableResumePendingReview &&
           outcome.kind !== "not_found" &&
           !active.bootstrap.rolloutStore.hasPendingEffectReviews?.()) {
