@@ -43,6 +43,7 @@ export class CheckpointPrefixTracker {
   readonly #project = createCheckpointMessageProjector();
   #previousMessages: readonly LLMMessage[] = [];
   #previousEntries: readonly PrefixEntry[] = [];
+  #lastDigest: { readonly records: readonly PositionedCheckpointPrefixRecordV4[]; readonly prefixHash: string } | undefined;
 
   /**
    * Fix the durable prefix of one checkpoint. When `deferring`, the digest is
@@ -126,11 +127,14 @@ export class CheckpointPrefixTracker {
       }
       records[index] = positioned;
     }
-    return {
-      prefixHash: computeCheckpointPrefixHashV4FromRecords(records),
-      persistedMessageCount: records.length,
-      projectedMessages: pending.length,
-    };
+    // A checkpoint taken before the next model sample often repeats the
+    // previous prefix exactly; the digest is a function of these records.
+    const last = this.#lastDigest;
+    const prefixHash = last !== undefined && sameRecords(last.records, records)
+      ? last.prefixHash
+      : computeCheckpointPrefixHashV4FromRecords(records);
+    this.#lastDigest = { records, prefixHash };
+    return { prefixHash, persistedMessageCount: records.length, projectedMessages: pending.length };
   }
 }
 
@@ -206,6 +210,17 @@ function createEntry(
     positioned: undefined,
     sequence: undefined,
   };
+}
+
+function sameRecords(
+  left: readonly PositionedCheckpointPrefixRecordV4[],
+  right: readonly PositionedCheckpointPrefixRecordV4[],
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 function carriesPendingSeal(
