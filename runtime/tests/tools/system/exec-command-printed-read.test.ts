@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,7 @@ import { createExecCommandTool } from "./exec-command.js";
 import { formatUnifiedExecToolContent } from "./exec-result-format.js";
 import { createFileEditTool } from "./file-edit.js";
 import { createFileWriteTool } from "./file-write.js";
+import { createApplyPatchTool } from "../apply-patch/tool.js";
 import {
   mayProvePrintedRead,
   PRINTED_READ_MAX_VISIBLE_BYTES,
@@ -243,6 +244,57 @@ test("a real cat of a small file counts as read and lets Edit through", async ()
   expect(result.isError).not.toBe(true);
   expect(await editRefused(join(root, "money.js"), "Math.floor")).toBe(false);
   expect(hasSessionRead(session, join(root, "money.js"))).toBe(true);
+});
+
+test("apply_patch accepts the same whole-file shell read as Edit", async () => {
+  const file = join(root, "money.js");
+  await writeFile(file, MONEY, "utf8");
+  const shown = await execStandard('for f in *.js; do echo "--- $f ---"; cat -n "$f"; done');
+  expect(shown.isError).not.toBe(true);
+  expect(hasSessionRead(session, file)).toBe(false);
+
+  const patch = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
+  const args = {
+    input: "*** Begin Patch\n*** Update File: money.js\n@@\n-  return Math.floor(amount * 100);\n+  return Math.round(amount * 100);\n*** End Patch",
+    cwd: root,
+    [SESSION_ID_ARG]: session,
+  };
+  expect(patch.preflight?.(args)).toBeNull();
+  const applied = await patch.execute(args);
+  expect(applied.isError, String(applied.content)).not.toBe(true);
+  expect(await readFile(file, "utf8")).toBe(MONEY.replace("Math.floor", "Math.round"));
+});
+
+test("apply_patch can replace an existing file whose complete text was printed", async () => {
+  const file = join(root, "money.js");
+  await writeFile(file, MONEY, "utf8");
+  await record("cat money.js", finished(MONEY));
+  const replacement = MONEY.replace("Math.floor", "Math.round");
+  const patch = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
+  const result = await patch.execute({
+    input: ["*** Begin Patch", "*** Add File: money.js", ...replacement.trimEnd().split("\n").map(line => `+${line}`), "*** End Patch"].join("\n"),
+    cwd: root,
+    [SESSION_ID_ARG]: session,
+  });
+  expect(result.isError, String(result.content)).not.toBe(true);
+  expect(await readFile(file, "utf8")).toBe(replacement);
+});
+
+test.each(["truncated", "changed"])("apply_patch keeps refusing an unproved %s shell read", async reason => {
+  const file = join(root, "money.js");
+  await writeFile(file, MONEY, "utf8");
+  await record("cat money.js", finished(MONEY, { truncated: reason === "truncated" }));
+  const current = reason === "changed" ? MONEY.replace("Math.floor", "Math.ceil") : MONEY;
+  if (reason === "changed") await writeFile(file, current, "utf8");
+  const patch = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
+  const result = await patch.execute({
+    input: "*** Begin Patch\n*** Update File: money.js\n@@\n-  return Math.floor(amount * 100);\n+  return Math.round(amount * 100);\n*** End Patch",
+    cwd: root,
+    [SESSION_ID_ARG]: session,
+  });
+  expect(result.isError).toBe(true);
+  expect(result.content).toContain("File has not been read yet");
+  expect(await readFile(file, "utf8")).toBe(current);
 });
 
 test("a file larger than the default exec output cap, printed with cat, does not count and Edit stays refused", async () => {
