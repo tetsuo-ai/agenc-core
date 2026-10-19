@@ -173,7 +173,7 @@ import {
   DEFAULT_BYTES_PER_TOKEN,
   detectContentType,
 } from "../llm/token-estimation.js";
-import { enforceRuntimeSandboxAttempt } from "./runtimes/sandboxing.js";
+import { enforceRuntimeSandboxAttempt, remoteControlWriteRefusal } from "./runtimes/sandboxing.js";
 import {
   createTransactionGuardContext,
   evaluateToolInvocationTransactionGuard,
@@ -1033,6 +1033,13 @@ export function validateToolPreflight(
         });
       }
       options.onValidatedArgs?.();
+      const ownerRefusal = remoteControlWriteRefusal(tool, args, readToolRuntimeContext(args));
+      if (ownerRefusal !== undefined) {
+        return {
+          ...validationErrorToolResult(`tool:${tool.name}:remote_control_owner_only`, `<tool_use_error>${ownerRefusal}</tool_use_error>`),
+          metadata: { preflightCode: "remote_control_owner_only" },
+        };
+      }
       const failure = tool.preflight?.(args);
       if (failure !== undefined && failure !== null) {
         message = failure.message;

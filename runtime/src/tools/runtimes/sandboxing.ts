@@ -564,14 +564,24 @@ export function enforceRuntimeSandboxAttempt(
   }
 }
 
+const REMOTE_OWNER_ONLY = "Remote control configuration is owner-only and reserved for the native host; edit it outside the agent.";
+
+/** This owner boundary must reject before hooks, classifiers or approval UI. */
+export function remoteControlWriteRefusal(tool: Tool, args: Record<string, unknown>, context?: ToolRuntimeAttemptContext): string | undefined {
+  if (!toolMayMutate(tool)) return undefined;
+  const targets = analyzeWrites(tool, args, context === undefined ? process.cwd() : runtimeCwd(context)).targets;
+  return remoteControlWriteTarget(context, targets) === undefined ? undefined : REMOTE_OWNER_ONLY;
+}
+
+function remoteControlWriteTarget(context: ToolRuntimeAttemptContext | undefined, targets: readonly string[]): string | undefined {
+  const session = context?.invocation.session as { services?: { configStore?: { homeContext?: { path?: string }; managedPaths?: { root?: string } } } } | undefined;
+  const store = session?.services?.configStore;
+  return targets.find(target => isRemoteControlAuthorityPath(target, { home: store?.homeContext?.path, managedRoot: store?.managedPaths?.root, includeAncestors: true }));
+}
+
 function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], policy: SandboxPolicy): void {
-  const session = context.invocation.session as { services?: { configStore?: { homeContext?: { path?: string }; managedPaths?: { root?: string } } } };
-  const store = session.services?.configStore;
-  for (const target of targets) {
-    if (isRemoteControlAuthorityPath(target, { home: store?.homeContext?.path, managedRoot: store?.managedPaths?.root, includeAncestors: true })) {
-      throw new SandboxDeniedError("Remote control configuration is owner-only and reserved for the native host; edit it outside the agent.", { denial: "filesystem", target, policy });
-    }
-  }
+  const target = remoteControlWriteTarget(context, targets);
+  if (target !== undefined) throw new SandboxDeniedError(REMOTE_OWNER_ONLY, { denial: "filesystem", target, policy });
 }
 
 /**
