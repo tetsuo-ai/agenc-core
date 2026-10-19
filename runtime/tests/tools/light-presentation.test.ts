@@ -246,12 +246,16 @@ test("the registry reports compact presentation for standard deferral only", () 
 });
 
 
-test("local server guidance is available before advanced shell fields load", () => {
+test("ordinary shell summaries stay bounded while advanced launches expose the server guidance", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
   const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
-  expect(shell.function.description).toContain("require_escalated");
-  expect(shell.function.description).toContain("allowLocalBinding");
-  expect(shell.function.description).toContain("PID namespace");
-  expect(shell.function.description).toContain("same sandbox_permissions");
+  expect(shell.function.description).toContain("Detach requires an approved require_escalated or full-access launch");
+  expect(shell.function.description!.length).toBeLessThan(800);
   expect(shell.function.description).not.toContain("Lasting services need detach.");
+  registry.discoverToolNames?.(["exec_command"]);
+  const advanced = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
+  expect(advanced.function.description).toContain("require_escalated");
+  expect(advanced.function.description).toContain("allowLocalBinding");
+  expect(advanced.function.description).toContain("PID namespace");
+  expect(advanced.function.description).toContain("same sandbox_permissions");
 });
