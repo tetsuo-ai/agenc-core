@@ -74,10 +74,17 @@ export class PendingEffectReviews {
       }
     } else if (event.type === "tool_call_completed" && payload.isError === true &&
                typeof payload.result === "string") {
+      // Canonical tool completions predate runId on their payload. Preserve
+      // their error context when the call identifies one pending owner, but
+      // never guess between children that reused the same call id.
+      const matches = sessionId === undefined
+        ? [...this.pending.values()].filter(review => review.callId === callId)
+        : [this.pending.get(key) ?? this.pending.get(callId)].filter(review => review !== undefined);
+      if (matches.length > 1) return false;
       const call = this.calls.get(callId) ?? { toolName: String(payload.toolName ?? "Tool"), description: "" };
       call.error = payload.result.slice(0, 2000);
       this.calls.set(callId, call);
-      const review = this.pending.get(key) ?? this.pending.get(callId);
+      const review = matches.length === 1 ? matches[0] : undefined;
       if (review !== undefined) {
         this.pending.set(reviewKey(callId, review.sessionId), { ...review, error: call.error });
         return true;

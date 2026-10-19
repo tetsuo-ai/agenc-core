@@ -52,7 +52,7 @@ describe("session.transcript.v2 durable projection", () => {
       event(4, "clear", { type: "history_cleared", payload: {} }),
     ];
     const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
-    expect(snapshot.pendingEffectReviews).toEqual([{ callId: "call-browser", toolName: "Browser", description: "navigate http://127.0.0.1:4173", error: "Chrome crashed at launch" }]);
+    expect(snapshot.pendingEffectReviews).toEqual([{ sessionId: "run-1", callId: "call-browser", toolName: "Browser", description: "navigate http://127.0.0.1:4173", error: "Chrome crashed at launch" }]);
     expect(daemonTranscriptSnapshotEvents(snapshot, "session-1")).toContainEqual(expect.objectContaining({
       type: "effect_reviews_snapshot", payload: { reviews: snapshot.pendingEffectReviews },
     }));

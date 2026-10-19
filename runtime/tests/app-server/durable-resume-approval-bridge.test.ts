@@ -1076,13 +1076,25 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
       expect(ensureAgentControl(booted!.session).control.getLive("worker-at-restart"))
         .toBeUndefined();
       expect(() => booted!.rolloutStore.assertModelExecutionAllowed()).not.toThrow();
-      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, {
+      const workerReview = {
         sessionId: "worker-at-restart", toolCallId: "worker-call",
         resolution: createOperatorEffectReviewResolution({
           disposition: "confirmed_no_effect", actorId: "operator",
           evidenceRef: "test:worker", evidenceSha256: "a".repeat(64),
           reviewedAt: new Date().toISOString(),
         }),
+      };
+      // #2607 lets the parent address a durable descendant even when its
+      // worker is not running. This nonexistent call has nothing to review;
+      // it must neither construct the worker nor resume its orphaned turn.
+      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, workerReview))
+        .resolves.toEqual({ kind: "not_found" });
+      expect(ensureAgentControl(booted!.session).control.getLive("worker-at-restart"))
+        .toBeUndefined();
+      expect(booted!.rolloutStore.readAll().some(item => item.type === "event_msg" &&
+        item.payload.msg.type === "effect_review_resolved")).toBe(false);
+      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, {
+        ...workerReview, sessionId: "unrelated-worker",
       })).rejects.toThrow(/does not own session/);
       await expect(runner.submitAgentMessage(CONVERSATION_ID, {
         sessionId: CONVERSATION_ID, content: "New turn", originalContent: "New turn",

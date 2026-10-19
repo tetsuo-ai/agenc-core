@@ -39,6 +39,8 @@ it("keeps reviews with the same call id separate across child sessions", () => {
     sessionId, callId: "same-call", toolName: "Browser", description: sessionId, error: "acknowledgement lost", blocksSession: false,
   })) } });
   expect(state.reviews).toHaveLength(2);
+  state.apply({ type: "tool_call_completed", payload: { callId: "same-call", result: "Ambiguous owner error", isError: true } });
+  expect(state.reviews.every(review => review.error === "acknowledgement lost")).toBe(true);
   state.apply({ type: "effect_review_resolved", payload: { runId: "child-a", callId: "same-call", resolution: { workflowStatus: "resolved" } } });
   expect(state.reviews).toMatchObject([{ sessionId: "child-b", blocksSession: false }]);
   state.apply({ type: "effect_review_acknowledged", payload: { callId: "same-call", remaining: 0 } });
@@ -46,4 +48,14 @@ it("keeps reviews with the same call id separate across child sessions", () => {
   state.recordRefusal("Run /resolve root-call <disposition>.");
   expect(state.reviews).toContainEqual(expect.objectContaining({ callId: "root-call" }));
   expect(state.reviews.some(review => review.blocksSession !== false)).toBe(true);
+});
+
+it("retains a canonical owner's error when a tool completion has no run id", () => {
+  const state = new PendingEffectReviews();
+  state.apply({ type: "tool_call_started", payload: { callId: "browser-call", toolName: "Browser", args: '{"action":"new_tab"}' } });
+  state.apply({ type: "effect_unknown_outcome", payload: { runId: "child-owner", callId: "browser-call", toolName: "Browser",
+    recoveryCategory: "side-effecting", requiresReview: true, reason: "acknowledgement_lost" } });
+  state.apply({ type: "tool_call_completed", payload: { callId: "browser-call", result: "Browser CDP pipe closed", isError: true } });
+  expect(state.reviews).toEqual([{ sessionId: "child-owner", callId: "browser-call", toolName: "Browser",
+    description: "new_tab", error: "Browser CDP pipe closed" }]);
 });
