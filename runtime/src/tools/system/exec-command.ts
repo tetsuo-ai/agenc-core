@@ -48,7 +48,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
-import { LOCAL_SERVER_GUIDANCE, PROCESS_DISCOVERY_GUIDANCE } from "./local-server-guidance.js";
+import { LOCAL_SERVER_GUIDANCE } from "./local-server-guidance.js";
 import { execProcessNamespaceNotice } from "./exec-process-namespace.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
 import {
@@ -808,7 +808,7 @@ function detachRefusal(
 ): ToolResult | null {
   const message =
     runtimeSandbox !== undefined
-      ? "This command has not started: detach=true is unavailable inside the sandbox. Keep the server in the foreground with yield_time_ms, or, if escalation is permitted, request one launch with sandbox_permissions=\"require_escalated\" and explain why the local preview needs it. You do not need to disable the sandbox for the whole session."
+      ? "This command has not started: detach=true is unavailable inside the sandbox. " + LOCAL_SERVER_GUIDANCE + " You do not need to disable the sandbox for the whole session."
       : manager.startDetachedProcess === undefined
         ? "detach: true is not supported by this exec manager."
         : null;
@@ -993,7 +993,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   return {
     name: "exec_command",
     description:
-      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, and kill_process stops it. A trailing '&' loses the output, and every process a command leaves behind is stopped when it returns. " + LOCAL_SERVER_GUIDANCE + " " + PROCESS_DISCOVERY_GUIDANCE,
+      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, and kill_process stops it. A trailing '&' loses the output, and every process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
     metadata: {
       family: "terminal",
       source: "builtin",

@@ -20,6 +20,7 @@
  * @module
  */
 
+import { LOCAL_BINDING_GUIDANCE } from "./local-server-guidance.js";
 import { isLightPrintRun } from "../../prompts/light-print.js";
 import { escalationStaysConfined } from "../../sandbox/escalation/confinement.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
@@ -75,14 +76,17 @@ const BIND_DENIED_SIGNATURES: readonly RegExp[] = [
  */
 export const SANDBOX_BIND_DENIED_NO_ESCALATION =
   "[sandbox] The sandbox blocks local servers. Do not run this command again unchanged. " +
-  "Escalation is unavailable; ask the user to enable sandbox.network.allowLocalBinding = true (on Linux, start and test the server in the same command), or run it in their terminal.";
+  "Escalation is unavailable; ask the user to run it in their terminal. " + LOCAL_BINDING_GUIDANCE;
 
 /**
  * A human can still approve, so one escalated retry is the correct move —
  * and exactly one, because a second identical request answers nothing.
  */
 export const SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE =
-  "[sandbox] The sandbox blocks local servers. Retry this command once with sandbox_permissions=\"require_escalated\" and a justification, or ask the user to enable sandbox.network.allowLocalBinding = true (on Linux, start and test the server in the same command).";
+  "[sandbox] The sandbox blocks local servers. Explain that you will start the preview and give its URL. " +
+  "Retry this command once with sandbox_permissions=\"require_escalated\" and a plain-language justification asking to start a preview the user can open in their browser. " +
+  "A persistent server can use detach=true on that approved launch; otherwise keep it in the foreground with yield_time_ms. " +
+  LOCAL_BINDING_GUIDANCE + " Check an escalated server's URL with the same sandbox_permissions, since sandbox loopback may be isolated.";
 
 /**
  * The notice for a finished exec, or null when this was not a sandbox

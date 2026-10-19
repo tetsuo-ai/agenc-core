@@ -7,8 +7,8 @@ const descriptions: Readonly<Record<string, string>> = {
   FileRead: "Read text/images/PDFs/notebooks; authorizes edits. Prefer 1-based offset/limit line windows: default 2000 lines, cap 25000 tokens. Display-only numbers are sparse unless dense_line_numbers. PDFs >10 pages require pages (e.g. 1-5), max 20/read. Empty files warn; directories fail. Successful edits need no reread.",
   Edit: "FileRead first. Replace shortest unique exact old_string with new_string, preserving indentation, omitting unchanged context/display numbers. replace_all replaces every match (default false). Prefer existing files; create only as needed. Emojis only on request.",
   Write: "Create/replace complete files; existing files require FileRead first. Use Edit for partial changes. Documentation/emojis only on request.",
-  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. No trailing &: leftovers stop on return, yielded processes at session end. Detach requires an approved require_escalated or full-access launch.",
-  write_stdin: "Continue exec_command's session_id. Empty chars polls; input requires initial tty=true. Include command newlines. Empty polls need no new escalation; sending input must match the session's sandbox_permissions.",
+  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. No trailing &: leftovers stop on return, yielded processes at session end. Lasting services need detach.",
+  write_stdin: "Continue exec_command's session_id. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
   Glob: "Find file paths by glob, newest modification first. Skip gitignored/build/vendor files unless includeIgnored=true.",
   Grep: "Search with packaged ripgrep, not shell grep/rg; escape literal braces. output_mode: files_with_matches (default paths), content (lines), count. Context/line numbers apply to content. multiline matches across lines with dot-all. Skip ignored/build/vendor files unless includeIgnored=true. Missing ripgrep: agenc doctor, reinstall same version; no fallback.",
   "system.searchTools": "Find by name/family/source/keyword/profile. Listed tools are ready. select or query select:<name> loads schemas; selection alone returns selected tools/scoped suggestions, query/filters search broadly.",
@@ -54,13 +54,7 @@ function presentProperty(schema: unknown, hint: string | null | undefined): unkn
 /** Adapt the earlier Light summaries without hiding accepted arguments. */
 export function lightPresentation(tool: LLMTool, options: { readonly leanExec?: boolean } = {}): LLMTool {
   const presented = lightPresentationCanonical(tool);
-  if (tool.function.name !== "exec_command") return presented;
-  // Detailed server/discovery guidance belongs with the advanced launch schema,
-  // rather than in every ordinary inspection/build request's compact summary.
-  if (options.leanExec !== true) return { ...presented, function: {
-    ...presented.function,
-    description: tool.function.description ?? presented.function.description,
-  } };
+  if (options.leanExec !== true || tool.function.name !== "exec_command") return presented;
   return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
 }
 

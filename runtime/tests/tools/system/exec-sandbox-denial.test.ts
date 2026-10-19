@@ -72,15 +72,16 @@ describe("execSandboxDenialNotice", () => {
     }
     expect(denial({ output, exitCode: 0, escalationAvailable: true })).toBeNull();
   });
-  test("offers the setting in one short line, including a running test with failed listen", () => {
+  test("delivers binding guidance only after a refusal, including a running test with failed listen", () => {
     for (const escalationAvailable of [false, true]) {
       const notice = denial({ exitCode: null, escalationAvailable })?.notice;
       expect(notice).toContain("sandbox.network.allowLocalBinding");
       expect(notice).toContain("true");
       expect(notice).toContain("on Linux, start and test the server in the same command");
       expect(notice?.split("\n")).toHaveLength(1);
-      expect(notice!.length).toBeLessThan(340);
+      expect(notice!.length).toBeLessThan(850);
       expect(notice).not.toContain("—");
+      expect(notice).toContain("private loopback, unreachable from the host browser");
     }
   });
   test("names the sandbox and forbids the retry when nobody can approve", () => {
@@ -97,6 +98,9 @@ describe("execSandboxDenialNotice", () => {
     expect(result?.notice).toBe(SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE);
     expect(result?.notice).toContain("require_escalated");
     expect(result?.notice).toContain("once");
+    expect(result?.notice).toContain("plain-language justification");
+    expect(result?.notice).toContain("detach=true on that approved launch");
+    expect(result?.notice).toContain("same sandbox_permissions");
   });
 
   test("recognizes the phrasings other runtimes use", () => {

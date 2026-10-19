@@ -1360,6 +1360,9 @@ describe("exec_command tool", () => {
       expect(result.content).toContain("require_escalated");
       expect(result.content).not.toContain("--dangerously-bypass-approvals-and-sandbox");
       expect(result.content).toContain("yield_time_ms");
+      expect(result.content).toContain("allowLocalBinding");
+      expect(result.content).toContain("private loopback");
+      expect(result.content).toContain("same sandbox_permissions");
       expect(result.metadata).toMatchObject({ kind: "exec_detach_unavailable", recoverable: true });
       expect(result.effectDisposition).toMatchObject({
         disposition: "confirmed_no_effect",

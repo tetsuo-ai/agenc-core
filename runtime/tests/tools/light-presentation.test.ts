@@ -246,16 +246,15 @@ test("the registry reports compact presentation for standard deferral only", () 
 });
 
 
-test("ordinary shell summaries stay bounded while advanced launches expose the server guidance", () => {
+test("initial Light shell summaries remain byte-identical to the pre-server-fix contract", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
   const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
-  expect(shell.function.description).toContain("Detach requires an approved require_escalated or full-access launch");
-  expect(shell.function.description!.length).toBeLessThan(800);
-  expect(shell.function.description).not.toContain("Lasting services need detach.");
-  registry.discoverToolNames?.(["exec_command"]);
-  const advanced = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
-  expect(advanced.function.description).toContain("require_escalated");
-  expect(advanced.function.description).toContain("allowLocalBinding");
-  expect(advanced.function.description).toContain("PID namespace");
-  expect(advanced.function.description).toContain("same sandbox_permissions");
+  expect(shell.function.description).toBe("Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. No trailing &: leftovers stop on return, yielded processes at session end. Lasting services need detach. Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens, sandbox escalation) are accepted; system.searchTools select:exec_command loads their schema.");
+  registry.discoverToolNames?.(["write_stdin", "exec_command"]);
+  const tools = registry.toLLMTools();
+  expect(tools.find(t => t.function.name === "write_stdin")!.function.description).toBe("Continue exec_command's session_id. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.");
+  const advanced = tools.find(t => t.function.name === "exec_command")!;
+  expect(advanced.function.description).not.toContain("allowLocalBinding");
+  expect(advanced.function.description).not.toContain("PID namespace");
+  expect((advanced.function.parameters.properties as Record<string, { description: string }>).detach!.description).toContain("approved require_escalated launch");
 });

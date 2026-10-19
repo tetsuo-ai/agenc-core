@@ -1,9 +1,12 @@
-/** Shared by the canonical and compact shell descriptions, including deferred discovery. */
+/** Delivered only after a server-related tool result, never in initial Light summaries. */
+export const LOCAL_BINDING_GUIDANCE =
+  "The user can instead enable sandbox.network.allowLocalBinding = true; on Linux, start and test the server in the same command (private loopback, unreachable from the host browser).";
+
 export const LOCAL_SERVER_GUIDANCE =
   "Local previews: explain that you will start a server and give its URL. The sandbox blocks local binding by default. " +
   "If permitted, request one launch with sandbox_permissions=\"require_escalated\" and a plain-language justification explaining why the preview needs it. " +
   "detach=true works only outside the sandbox (including an approved escalated launch); otherwise keep the server in the foreground with yield_time_ms. " +
-  "The user can instead enable sandbox.network.allowLocalBinding=true; on Linux, start and test it in the same command (private loopback, unreachable from the host browser). " +
+  LOCAL_BINDING_GUIDANCE + " " +
   "Check an escalated server's URL with the same sandbox_permissions, since sandbox loopback may be isolated.";
 
 export const PROCESS_DISCOVERY_GUIDANCE =
