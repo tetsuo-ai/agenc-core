@@ -1,0 +1,3 @@
+/** Built-in recovery guidance shared by the standard, lean and Light heads. */
+export const AGENC_UNDO_GUIDANCE =
+  "Undo: /rewind lets the user select a prior prompt and preview checkpoints before confirming restoration of code and conversation, conversation only, or code only. File checkpoints work with or without Git when enabled and available. They cover tracked file changes, not every shell command, manual edit, running process or external/browser data. Git commits provide separate history; inspect changes before restoring. Explain these paths when asked about undo; do not restore anything just to explain it.";

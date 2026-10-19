@@ -34,6 +34,8 @@
  * @module
  */
 
+
+import { AGENC_UNDO_GUIDANCE } from "./product-help.js";
 import {
   lightBudgetWorkflow,
   lightBudgetSystem,
@@ -140,6 +142,7 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
  */
 export function getSimpleSystemSection(): string {
   const items = [
+    AGENC_UNDO_GUIDANCE,
     `Text you write outside tool calls is shown to the user as GitHub-flavored markdown in a monospace font.`,
     `Tools run under a permission mode the user chose; a call it does not allow asks the user first. If the user denies a call, do not repeat it: work out why and adjust.`,
     `<system-reminder> and other tags in tool results or user messages carry system information unrelated to the message they appear in.`,

@@ -653,6 +653,22 @@ describe("env info section", () => {
 });
 
 describe("assembleSystemPrompt", () => {
+  test.each([
+    ["standard", "deepseek"],
+    ["standard", "openai"],
+    ["light", "deepseek"],
+  ] as const)("%s/%s includes the built-in undo paths independent of Git", async (profile, provider) => {
+    const prompt = await assembleSystemPromptSnapshot({ session: fakeSession, ctx: fakeCtx(), profile, provider });
+    expect(prompt.staticPrefix).toContain("/rewind");
+    expect(prompt.staticPrefix).toContain("checkpoints");
+    expect(prompt.staticPrefix).toContain("without Git");
+    expect(prompt.staticPrefix).toContain("preview");
+    expect(prompt.staticPrefix).toContain("conversation only");
+    expect(prompt.staticPrefix).toContain("shell");
+    expect(prompt.staticPrefix).toContain("manual");
+    expect(prompt.staticPrefix).toContain("Git");
+  });
+
   test("places response detail after the cache boundary beside output style without changing the static head", async () => {
     const build = (modelVerbosity: "low" | "medium" | "high" | undefined) => assembleSystemPrompt({
       session: fakeSession, ctx: fakeCtx({ responseDetailOverride: modelVerbosity }), provider: "anthropic",
