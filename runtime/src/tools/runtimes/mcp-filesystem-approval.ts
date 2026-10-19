@@ -7,9 +7,11 @@ export interface McpFilesystemApprovalScope {
 }
 
 export function mcpFilesystemApprovalReason(scope: McpFilesystemApprovalScope): string {
-  return `AgenC cannot determine filesystem write targets for MCP tool ${JSON.stringify(scope.toolName)} ` +
-    `on server ${JSON.stringify(scope.serverName)}. Approve only if you trust this tool to perform ` +
-    "no filesystem writes. Allow once approves this call; allow for session approves this tool's " +
+  // The TUI's compact note may truncate this reason. Put the authority the
+  // human is granting first, before potentially long server/tool names.
+  return "Approve only if you trust this tool to perform no filesystem writes. " +
+    `AgenC cannot determine write targets for MCP tool ${JSON.stringify(scope.toolName)} ` +
+    `on server ${JSON.stringify(scope.serverName)}. Allow once approves this call; allow for session approves this tool's ` +
     "calls for this session. The current filesystem and network sandbox stays enabled.";
 }
 
