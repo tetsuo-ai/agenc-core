@@ -1,3 +1,4 @@
+import { abbreviateHomePaths } from "../../utils/home-path-display.js";
 import React from 'react';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
@@ -482,6 +483,7 @@ function failedToolRowReason(
   rawResult: string | null,
 ): string | undefined {
   if (rawResult === null) return undefined;
+  rawResult = abbreviateHomePaths(rawResult);
   if (kind === 'edit') {
     return summarizeFileEditError(rawResult) ?? undefined;
   }

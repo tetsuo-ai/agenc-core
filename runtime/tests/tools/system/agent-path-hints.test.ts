@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -31,4 +33,11 @@ describe("file-tool path copy", () => {
   expect(workspaceRelativeToolPath("/project/src/a.ts", "/project", false)).toBe("/project/src/a.ts");
   expect(workspaceRelativeToolPath("/elsewhere/a.ts", "/project", true)).toBe("/elsewhere/a.ts");
   expect(workspaceRelativeToolPath("src/a.ts", "/project", true)).toBe("src/a.ts");
+});
+
+ test("abbreviates only paths inside the current user's home", () => {
+  const home = homedir();
+  expect(formatToolPathForDisplay(join(home, ".agenc", "memory", "MEMORY.md"))).toBe("~/.agenc/memory/MEMORY.md");
+  expect(formatToolPathForDisplay(home)).toBe("~");
+  expect(formatToolPathForDisplay(`${home}-other/MEMORY.md`)).toBe(`${home}-other/MEMORY.md`);
 });

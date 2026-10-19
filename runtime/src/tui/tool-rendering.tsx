@@ -13,6 +13,7 @@ import { modelToolAliasTarget } from "../tools/model-tool-aliases.js";
 import { summarizeToolInput } from "./message-renderers/toolRowPreview.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
+import { abbreviateHomePaths } from "../utils/home-path-display.js";
 import { isRecord } from "../utils/record.js";
 import { unescapeXml } from "../utils/xml.js";
 import {
@@ -381,7 +382,7 @@ export function ToolErrorView({
   // One red line under the failed step, like every other result: the reason
   // without wrappers or machine prefixes. The stored result stays intact.
   const message = extractToolTag(content, "tool-error") ?? content;
-  return <ResultLine failed>{summarizeToolError(message)}</ResultLine>;
+  return <ResultLine failed>{summarizeToolError(abbreviateHomePaths(message))}</ResultLine>;
 }
 
 /**
@@ -623,7 +624,7 @@ function displayFilePathFromInput(input: unknown): string {
 }
 
 function truncateInline(value: string, limit = 140): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
+  const normalized = abbreviateHomePaths(value).replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit - 1)}…`;
 }
@@ -967,7 +968,7 @@ export function createTuiTool(name: string): any {
       // `tool-result-routing.ts` so unit tests
       // can exercise the routing logic without dragging the upstream
       // component chain into vitest.
-      const joined = resultTextForTuiTool(content);
+      const joined = abbreviateHomePaths(resultTextForTuiTool(content));
       const target = pickToolResultDispatch(presentationName, joined);
       switch (target) {
         case "suppress":

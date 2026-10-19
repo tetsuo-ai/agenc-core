@@ -1,3 +1,4 @@
+import { abbreviateHomePaths } from "../../utils/home-path-display.js";
 import { c as _c } from "react-compiler-runtime";
 import React, { useContext } from 'react';
 import { ERROR_MESSAGE_USER_ABORT } from 'src/services/compact/compact.js';
@@ -53,8 +54,9 @@ export function AssistantTextMessage(t0) {
     onOpenRateLimitOptions
   } = t0;
   const {
-    text
+    text: rawText
   } = t1;
+  const text = abbreviateHomePaths(rawText);
   const isSelected = useContext(MessageActionsSelectedContext);
   if (isEmptyMessageText(text)) {
     return null;

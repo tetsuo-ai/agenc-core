@@ -112,7 +112,9 @@ describe("memory prompt", () => {
     expect(instructions).toContain("frontmatter `name`, `description`");
     expect(instructions).toContain("`type` (user, feedback, project, reference)");
     expect(instructions).toContain("(an index: one line per file");
-    expect(instructions).toContain("always check memory when the user asks you to check, recall or remember");
+    expect(instructions).toContain("Indexes are injected when available");
+    expect(instructions).toContain("Do not list or probe memory paths");
+    expect(instructions).toContain("read a topic file only when needed");
     expect(instructions).toContain('Grep with pattern="<term>" path="<memory directory>" glob="*.md"');
     // Paths live only in the directory block so the instructions stay cacheable.
     expect(instructions).not.toContain(tempRoot);

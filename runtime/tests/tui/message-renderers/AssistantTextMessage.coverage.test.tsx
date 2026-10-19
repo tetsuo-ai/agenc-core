@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import React from 'react'
 import { describe, expect, test, vi } from 'vitest'
 
@@ -30,3 +31,11 @@ describe('AssistantTextMessage ordinary text coverage', () => {
     expect(output).not.toContain('AGENC')
   })
 })
+
+ test('abbreviates assistant memory paths without mutating the message', async () => {
+  const param = { type: 'text' as const, text: `Saved to ${homedir()}/.agenc/memory/topic.md` };
+  const output = await renderToString(<AssistantTextMessage param={param} addMargin={false} shouldShowDot={false} verbose={false} />, 120);
+  expect(output).toContain('~/.agenc/memory/topic.md');
+  expect(output).not.toContain(homedir());
+  expect(param.text).toContain(homedir());
+});

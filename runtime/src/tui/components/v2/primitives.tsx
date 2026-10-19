@@ -1,3 +1,4 @@
+import { abbreviateHomePaths } from "../../../utils/home-path-display.js";
 import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
@@ -1362,7 +1363,7 @@ export function DiffInline({
       {compact ? null : (
         <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft" gap={1}>
           <ThemedText color="subtle">{op}</ThemedText>
-          <ThemedText color="text2" wrap="truncate-middle">{file}</ThemedText>
+          <ThemedText color="text2" wrap="truncate-middle">{abbreviateHomePaths(file)}</ThemedText>
           <Box flexGrow={1} />
           {stats ? <ThemedText color="subtle">{stats}</ThemedText> : null}
         </ThemedBox>
@@ -1735,7 +1736,7 @@ export function ApprovalCard({
         {commandIsShell ? (
           // A real shell command (Run/Bash): show it behind the `$ ` prompt glyph.
           <ThemedText color="text2" wrap="truncate-end">
-            $ {command}
+            $ {abbreviateHomePaths(command)}
           </ThemedText>
         ) : showPreview || command.trim().length === 0 || command.trim() === '{}' ? null : (
           // A non-shell input (a Write/Edit file_path). Never prefix it with the
@@ -1745,7 +1746,7 @@ export function ApprovalCard({
           // branch above); only surface the bare path when no diff is rendered.
           // Empty/`{}` inputs (EnterPlanMode and friends) render no line at all.
           <ThemedText color="text2" wrap="truncate-end">
-            {command}
+            {abbreviateHomePaths(command)}
           </ThemedText>
         )}
         {showPreview && diffPreview !== undefined ? (
@@ -1779,7 +1780,7 @@ export function ApprovalCard({
                 </Box>
                 <Box flexShrink={1} minWidth={0}>
                   <ThemedText color={fact.color ?? 'text2'} wrap="truncate-middle">
-                    {fact.value}
+                    {abbreviateHomePaths(fact.value)}
                   </ThemedText>
                 </Box>
               </Box>
@@ -1788,7 +1789,7 @@ export function ApprovalCard({
         ) : null}
         {showNote ? (
           <ThemedText color="inactive" wrap="truncate-end">
-            note · {note}
+            note · {abbreviateHomePaths(note ?? "")}
           </ThemedText>
         ) : null}
       </Box>

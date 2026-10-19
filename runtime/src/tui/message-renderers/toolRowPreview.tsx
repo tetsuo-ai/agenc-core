@@ -1,3 +1,4 @@
+import { abbreviateHomePaths } from "../../utils/home-path-display.js";
 import type { ToolKind } from '../components/v2/primitives.js'
 import { nonEmptyString } from '../../utils/stringUtils.js'
 
@@ -14,6 +15,10 @@ import { nonEmptyString } from '../../utils/stringUtils.js'
  * UserToolSuccessMessage — there is no inline-on-call-row preview here.
  */
 export function summarizeToolInput(input: unknown, kind?: ToolKind): string {
+  return abbreviateHomePaths(rawToolInputSummary(input, kind));
+}
+
+function rawToolInputSummary(input: unknown, kind?: ToolKind): string {
   if (!input || typeof input !== 'object') {
     return typeof input === 'string' ? input : ''
   }

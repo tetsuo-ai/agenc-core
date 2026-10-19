@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import React from 'react'
 import { describe, expect, test } from 'vitest'
 
@@ -252,3 +253,15 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
     expect(out).toContain('confirmation required')
   })
 })
+
+ test("abbreviates home paths in commands and permission notes", async () => {
+  const path = `${homedir()}/.agenc/memory/MEMORY.md`;
+  const output = await renderToString(
+    <ApprovalCard risk="low" title="tool · read · needs approval"
+      command={path} commandIsShell={false} facts={[]}
+      note={`Read ${path}`} confirmLabel="enter approve" />,
+    { columns: 120, rows: 40 },
+  );
+  expect(output).toContain("~/.agenc/memory/MEMORY.md");
+  expect(output).not.toContain(homedir());
+});

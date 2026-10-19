@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
 
 vi.mock("./ink.js", () => {
@@ -312,4 +313,20 @@ describe("TUI tool rendering helpers", () => {
       ),
     ).toBeDefined();
   });
+});
+
+ test.each(["exec_command", "system.bash", "Bash"])("%s abbreviates home paths without modifying executed input", (name) => {
+  const command = `ls "${homedir()}/.agenc/memory/MEMORY.md"`;
+  const input = { command };
+  expect(createTuiTool(name).renderToolUseMessage(input)).toBe('ls "~/.agenc/memory/MEMORY.md"');
+  expect(input.command).toBe(command);
+});
+
+ test("abbreviates result and error displays while retaining the original tool result", () => {
+  const content = `File does not exist: ${homedir()}/.agenc/memory/MEMORY.md`;
+  const tool = createTuiTool("custom_tool");
+  expect(tool.renderToolResultMessage(content, undefined, { verbose: true }).props.children.props.children)
+    .toBe("File does not exist: ~/.agenc/memory/MEMORY.md");
+  expect(ToolErrorView({ content }).props.children).toContain("~/.agenc/memory/MEMORY.md");
+  expect(tool.mapToolResultToToolResultBlockParam(content, "id").content).toBe(content);
 });
