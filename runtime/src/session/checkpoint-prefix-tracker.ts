@@ -25,15 +25,18 @@ import type { ToolResultIntegrity } from "./tool-result-integrity.js";
  * tracker does that work once per message and replays the recorded canonical
  * bytes for every later checkpoint, across turns as well.
  *
- * Exactness: an entry is reused only for the same message object whose own
- * data (every key and every leaf value, recursively) still equals the snapshot
- * taken when the entry's projection input was fixed. Projection, redaction
- * (fixed rules), the seal requirement, the shape gate and the record are pure
- * functions of that data, so a reused record is the record a full
- * recomputation produces now, and the digest is byte-identical to
- * computeCheckpointPrefixHashV4 over the full projection. Messages that are
- * not plain data, and inputs that share a tool-result seal still being filled
- * by an earlier persistence job, are never reused.
+ * Exactness: an entry is reused only for a message whose own data (every key
+ * and every leaf value, recursively) still equals the snapshot taken when the
+ * entry's projection input was fixed. Projection, redaction (fixed rules), the
+ * seal requirement, the shape gate and the record are pure functions of that
+ * data, so a reused record is the record a full recomputation produces now,
+ * and the digest is byte-identical to computeCheckpointPrefixHashV4 over the
+ * full projection. Key order is not part of that data: every gate reads named
+ * fields or compares key sets, and the digest writes named fields. Messages
+ * that are not plain data, and inputs that share a tool-result seal still
+ * being filled by an earlier persistence job, are never reused. A message is
+ * looked up by identity first, then at its previous position, because each
+ * turn starts from rebuilt copies of the history.
  */
 export class CheckpointPrefixTracker {
   readonly #entries = new WeakMap<LLMMessage, PrefixEntry>();
@@ -68,11 +71,14 @@ export class CheckpointPrefixTracker {
     const previousEntries = this.#previousEntries;
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index]!;
-      let entry = previousMessages[index] === message
-        ? previousEntries[index]
-        : this.#entries.get(message);
-      if (entry?.snapshot === undefined || !matchesSnapshot(message, entry.snapshot)) {
+      let entry = previousMessages[index] === message ? previousEntries[index] : this.#entries.get(message);
+      let keyed = entry !== undefined;
+      entry ??= previousEntries[index];
+      if (entry === undefined || !reusable(message, entry)) {
         entry = createEntry(message, options);
+        keyed = false;
+      }
+      if (!keyed) {
         if (entry.snapshot === undefined) this.#entries.delete(message);
         else this.#entries.set(message, entry);
       }
@@ -170,10 +176,9 @@ export function checkpointPrefixTrackerFor(owner: object): CheckpointPrefixTrack
 }
 
 interface PrefixEntry {
-  readonly source: LLMMessage;
-  /** Leaf snapshot of `source` when the input was fixed; undefined: never reuse. */
+  /** Leaf snapshot when the input was fixed; undefined: never reuse. */
   snapshot: readonly unknown[] | undefined;
-  /** Projection input until the record exists: `source` or its capture. */
+  /** Projection input until the record exists: the message or its capture. */
   input: LLMMessage | undefined;
   record: CheckpointPrefixRecordV4 | undefined;
   positioned: PositionedCheckpointPrefixRecordV4 | undefined;
@@ -195,7 +200,6 @@ function createEntry(
     if (pending) snapshot = undefined;
   }
   return {
-    source: message,
     snapshot,
     input,
     record: undefined,
@@ -287,8 +291,62 @@ function appendSnapshot(value: unknown, slots: unknown[], depth: number): boolea
   return true;
 }
 
-function matchesSnapshot(message: LLMMessage, snapshot: readonly unknown[]): boolean {
-  return compareSnapshot(message, snapshot, 0) === snapshot.length;
+/** True when `message` holds the data of `entry`; adopts its key order. */
+function reusable(message: LLMMessage, entry: PrefixEntry): boolean {
+  const snapshot = entry.snapshot;
+  if (snapshot === undefined) return false;
+  if (compareSnapshot(message, snapshot, 0) === snapshot.length) return true;
+  if (!equalIgnoringKeyOrder(message, decodeSnapshot(snapshot, 0)[0])) return false;
+  const current = snapshotMessage(message);
+  if (current === undefined) return false;
+  entry.snapshot = current;
+  return true;
+}
+
+type SnapshotNode =
+  | { readonly kind: "leaf"; readonly value: unknown }
+  | { readonly kind: "array"; readonly items: readonly SnapshotNode[] }
+  | { readonly kind: "object"; readonly fields: ReadonlyMap<string, SnapshotNode> };
+
+function decodeSnapshot(snapshot: readonly unknown[], cursor: number): [SnapshotNode, number] {
+  const slot = snapshot[cursor];
+  if (slot === SNAPSHOT_ARRAY) {
+    const items: SnapshotNode[] = [];
+    let next = cursor + 2;
+    for (let index = 0; index < (snapshot[cursor + 1] as number); index += 1) {
+      const [item, after] = decodeSnapshot(snapshot, next);
+      items.push(item);
+      next = after;
+    }
+    return [{ kind: "array", items }, next];
+  }
+  if (slot === SNAPSHOT_OBJECT) {
+    const fields = new Map<string, SnapshotNode>();
+    let next = cursor + 2;
+    for (let index = 0; index < (snapshot[cursor + 1] as number); index += 1) {
+      const [field, after] = decodeSnapshot(snapshot, next + 1);
+      fields.set(snapshot[next] as string, field);
+      next = after;
+    }
+    return [{ kind: "object", fields }, next];
+  }
+  return [{ kind: "leaf", value: slot }, cursor + 1];
+}
+
+function equalIgnoringKeyOrder(value: unknown, node: SnapshotNode): boolean {
+  if (typeof value !== "object" || value === null) return node.kind === "leaf" && node.value === value;
+  if (node.kind === "array") {
+    return Array.isArray(value) && value.length === node.items.length &&
+      node.items.every((item, index) => equalIgnoringKeyOrder(value[index], item));
+  }
+  if (node.kind !== "object" || Array.isArray(value)) return false;
+  let seen = 0;
+  for (const key in value) {
+    const field = node.fields.get(key);
+    if (field === undefined || !equalIgnoringKeyOrder((value as Record<string, unknown>)[key], field)) return false;
+    seen += 1;
+  }
+  return seen === node.fields.size;
 }
 
 /** Returns the cursor after `value`, or -1 at the first difference. */
