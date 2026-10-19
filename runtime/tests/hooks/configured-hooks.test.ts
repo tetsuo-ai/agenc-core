@@ -1638,6 +1638,97 @@ describe("configured hooks runtime", () => {
     );
   });
 
+  test("tool hooks see a DeepSeek batch Edit's target as file_path as well as path", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: "/tmp",
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    const echo = {
+      type: "command" as const,
+      command:
+        "node -e 'let s=\"\"; process.stdin.on(\"data\", c => s += c); process.stdin.on(\"end\", () => { const x = JSON.parse(s); process.stdout.write([x.hook_event_name, x.tool_input.file_path, x.tool_input.path, x.inputs?.file_path, Object.keys(x.tool_input).join(\",\")].join(\"|\")); })'",
+    };
+    runtime.load({
+      PreToolUse: [{ matcher: "Edit", hooks: [echo] }],
+      PostToolUse: [{ matcher: "Edit", hooks: [echo] }],
+      PostToolUseFailure: [{ matcher: "Edit", hooks: [echo] }],
+    });
+    const batch = { path: "/tmp/notes.md", edits: [{ oldText: "a", newText: "b" }] };
+    const invocation = { callId: "c-batch" } as never;
+    const tool = { name: "Edit" } as never;
+
+    await target.preToolUseHooks[0]!({ invocation, tool, args: batch });
+    await target.postToolUseHooks[0]!({ invocation, tool, args: batch, result: { content: "ok" } } as never);
+    await target.failureToolUseHooks[0]!({ invocation, tool, args: batch, error: new Error("x") } as never);
+    // Diagnostics are newest first.
+    expect(runtime.latestDiagnostics().map((diag) => diag.stdout)).toEqual([
+      "PostToolUseFailure|/tmp/notes.md|/tmp/notes.md||path,edits,file_path",
+      "PostToolUse|/tmp/notes.md|/tmp/notes.md|/tmp/notes.md|path,edits,file_path",
+      "PreToolUse|/tmp/notes.md|/tmp/notes.md||path,edits,file_path",
+    ]);
+    // The tool's own arguments are not changed by the hook-facing view.
+    expect(batch).toEqual({ path: "/tmp/notes.md", edits: [{ oldText: "a", newText: "b" }] });
+
+    // Legacy Edit and other tools keep their exact input.
+    await target.preToolUseHooks[0]!({ invocation, tool, args: { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" } });
+    expect(runtime.latestDiagnostics()[0]?.stdout).toBe("PreToolUse|/tmp/a.ts|||file_path,old_string,new_string");
+  });
+
+  test("a PreToolUse hook that echoes or redirects a batch Edit through file_path keeps the batch schema", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: "/tmp",
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    const rewrite = (expression: string) => ({
+      type: "command" as const,
+      command:
+        "node -e 'let s=\"\"; process.stdin.on(\"data\", c => s += c); process.stdin.on(\"end\", () => { const x = JSON.parse(s); const input = x.tool_input; " + expression + "; process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: \"PreToolUse\", updatedInput: input } })); })'",
+    });
+    const batch = { path: "/tmp/notes.md", edits: [{ oldText: "a", newText: "b" }] };
+    const invocation = { callId: "c-batch" } as never;
+    const tool = { name: "Edit" } as never;
+
+    runtime.load({ PreToolUse: [{ matcher: "Edit", hooks: [rewrite("void 0")] }] });
+    expect(await target.preToolUseHooks[0]!({ invocation, tool, args: batch })).toEqual({ kind: "continue", args: batch });
+
+    runtime.load({ PreToolUse: [{ matcher: "Edit", hooks: [rewrite("input.file_path = \"/tmp/other.md\"")] }] });
+    expect(await target.preToolUseHooks[0]!({ invocation, tool, args: batch })).toEqual({
+      kind: "continue",
+      args: { path: "/tmp/other.md", edits: batch.edits },
+    });
+
+    runtime.load({ PreToolUse: [{ matcher: "Edit", hooks: [rewrite("input.path = \"/tmp/own.md\"")] }] });
+    expect(await target.preToolUseHooks[0]!({ invocation, tool, args: batch })).toEqual({
+      kind: "continue",
+      args: { path: "/tmp/own.md", edits: batch.edits },
+    });
+    expect(runtime.latestDiagnostics().map((diag) => diag.error).filter(Boolean)).toEqual([]);
+  });
+
   test("PreToolUse stdin includes invocation context fields", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: "/tmp",

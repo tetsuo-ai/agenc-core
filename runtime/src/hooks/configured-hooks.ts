@@ -54,6 +54,7 @@ import {
 } from "./configured-hook-sources.js";
 import type { HookRuntimeAuthority } from "./runtime-policy.js";
 import type { HookExecutionAuthority } from "./execution-authority.js";
+import { hookToolInput, toolInputFromHook } from "../tools/system/file-edit-target.js";
 
 export type { ConfiguredHookAuthoritySnapshot } from "./configured-hook-sources.js";
 
@@ -582,7 +583,7 @@ export class ConfiguredHooksRuntime {
         ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PreToolUse",
         tool_name: toolName,
-        tool_input: args,
+        tool_input: hookToolInput(toolName, args),
         tool_use_id: invocation.callId,
       });
       if (result.status === "blocking") {
@@ -597,7 +598,10 @@ export class ConfiguredHooksRuntime {
       }
       if (result.status !== "success") return { kind: "continue" };
       const parsed = this.readStructuredOutput(result);
-      const specific = parsed.output;
+      const specific = parsed.output?.updatedInput === undefined ? parsed.output : {
+        ...parsed.output,
+        updatedInput: toolInputFromHook(toolName, args, parsed.output.updatedInput),
+      };
       const legacyBlockReason = legacyBlockReasonFor(
         specific,
         "PreToolUse",
@@ -634,10 +638,10 @@ export class ConfiguredHooksRuntime {
         ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PostToolUse",
         tool_name: toolName,
-        tool_input: args,
+        tool_input: hookToolInput(toolName, args),
         tool_use_id: invocation.callId,
         tool_response: result,
-        inputs: args,
+        inputs: hookToolInput(toolName, args),
         response: result,
       });
       if (run.status === "blocking") {
@@ -699,7 +703,7 @@ export class ConfiguredHooksRuntime {
         ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PostToolUseFailure",
         tool_name: toolName,
-        tool_input: args,
+        tool_input: hookToolInput(toolName, args),
         tool_use_id: invocation.callId,
         error: error instanceof Error ? error.message : String(error),
         error_type: error instanceof Error ? error.name : "Error",
@@ -719,7 +723,7 @@ export class ConfiguredHooksRuntime {
         ...permissionDecisionHookInput(input, this.opts.cwd),
         hook_event_name: "PermissionRequest",
         tool_name: toolName,
-        tool_input: args,
+        tool_input: hookToolInput(toolName, args),
       };
       const handlers = this.engine.selectHandlersForMatcherInputs(
         "PermissionRequest",
