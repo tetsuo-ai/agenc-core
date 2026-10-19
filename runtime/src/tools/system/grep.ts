@@ -534,12 +534,23 @@ async function isRipgrepAvailable(
   const ripgrepPath = selectPinnedRipgrepPath();
   if (ripgrepPath === undefined) return false;
   if (readCapability !== undefined) {
-    // The bound search is its own probe: it runs the same pinned executable
-    // through the same helper and sandbox, and a launch that cannot execute
-    // it reports PINNED_RIPGREP_UNAVAILABLE (see boundRipgrepUnavailable). A
-    // separate --version launch only doubled the launcher cost. A cached
-    // success never skips that sandboxed launch; a cached failure still
-    // fails closed.
+    // Authenticate the bound sandbox before consulting the process-wide
+    // availability cache, exactly as the former probe did: a missing or
+    // failed boundary rejects here. The prepared spawn is settled without a
+    // launch. The bound search is its own probe: it runs the same pinned
+    // executable through the same helper and sandbox, and a launch that
+    // cannot execute it reports PINNED_RIPGREP_UNAVAILABLE (see
+    // boundRipgrepUnavailable). A cached success never skips that sandboxed
+    // launch; a cached failure still fails closed.
+    const command = await prepareBoundRipgrepCommand({
+      readCapability,
+      toolArgs,
+      fallbackCwd: cwd,
+      program: ripgrepPath,
+      args: ["--no-config", "--no-follow", "--version"],
+      env: scrubEnvForChildProcess(process.env),
+    });
+    if (isSandboxPreparedSpawn(command)) command.runSync(() => undefined);
     return ripgrepAvailability !== false;
   }
   if (ripgrepAvailability === false) return false;
