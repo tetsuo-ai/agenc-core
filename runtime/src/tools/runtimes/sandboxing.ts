@@ -310,6 +310,7 @@ export function permissionProfileForRuntimeContext(
 function basePermissionProfileForRuntimeContext(
   context: ToolRuntimeAttemptContext,
   options: RuntimeSandboxProfileOptions,
+  includeRemoteReservations = true,
 ): PermissionProfile {
   if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
     return applyRuntimeAdditionalPermissions(
@@ -328,10 +329,13 @@ function basePermissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  const protectedProfile = protectRemoteControlAuthority(protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+  const baseProtectedProfile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
-  ))));
+  )));
+  const protectedProfile = includeRemoteReservations
+    ? protectRemoteControlAuthority(baseProtectedProfile)
+    : baseProtectedProfile;
   return routineRunOptions(context.invocation.session) === undefined
     ? protectedProfile
     : confineRoutineProfile(protectedProfile);
@@ -533,8 +537,10 @@ export function enforceRuntimeSandboxAttempt(
   // Only the existing file-tool plan/memory and fixed runtime-output exceptions
   // may bypass the home reservation. Evaluate them against the original profile
   // so operator denies and the other non-grantable reservations still win.
+  // Remote config targets were rejected above. Its kernel-only reservation of
+  // a missing leaf's parent must not swallow these native file exceptions.
   const fileToolProfile = shellAccess === null
-    ? basePermissionProfileForRuntimeContext(input.context, { cwd })
+    ? basePermissionProfileForRuntimeContext(input.context, { cwd }, false)
     : profile;
   for (const target of writes.targets) {
     if (
@@ -581,7 +587,12 @@ function remoteControlWriteTarget(context: ToolRuntimeAttemptContext | undefined
 
 function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], policy: SandboxPolicy): void {
   const target = remoteControlWriteTarget(context, targets);
-  if (target !== undefined) throw new SandboxDeniedError(REMOTE_OWNER_ONLY, { denial: "filesystem", target, policy });
+  if (target !== undefined) {
+    const message = policy.kind === "workspace_write"
+      ? `sandbox workspace_write blocked write outside workspace: ${target}. ${REMOTE_OWNER_ONLY}`
+      : REMOTE_OWNER_ONLY;
+    throw new SandboxDeniedError(message, { denial: "filesystem", target, policy });
+  }
 }
 
 /**
