@@ -104,6 +104,19 @@ describe("projectResidentContextUsage", () => {
     expect(projected.usedPercentage).toBe(49);
   });
 
+  it.each([true, false])("uses the daemon's compaction enabled state (%s) over the client's environment", enabled => {
+    const projected = projectResidentContextUsage({
+      ...breakdown({ effectiveWindowTokens: 48_000 }),
+      compactionWindowTokens: 48_000,
+      compactionInputTokens: 36_000,
+      compactionThresholdTokens: enabled ? 35_000 : 48_000,
+    }, {
+      providerEnvironment: enabled ? { AGENC_DISABLE_AUTO_COMPACT: "1" } : {},
+    });
+    expect(projected.autoCompactEnabled).toBe(enabled);
+    expect(projected.compactionThreshold).toBe(enabled ? 35_000 : 48_000);
+  });
+
   it("treats the hard limit as the compact line when auto-compact is disabled", () => {
     const projected = projectResidentContextUsage(
       breakdown({ effectiveWindowTokens: 100_000 }),

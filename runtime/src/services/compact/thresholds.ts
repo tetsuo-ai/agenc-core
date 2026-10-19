@@ -99,6 +99,29 @@ export function getAutoCompactThresholdForEnvironment(
   return Math.max(1, defaultThreshold);
 }
 
+/** Daemon-owned capacity policy shared by the dispatch gate and its snapshots.
+ * A threshold equal to the window means proactive compaction is disabled.
+ * Output reservations belong to admission and never alter this denominator.
+ */
+export function getAutoCompactPolicyForEnvironment(
+  modelOrContext: string | Pick<CompactContext, "options"> | undefined,
+  environment: ProviderEnvironment,
+): {
+  readonly effectiveWindowTokens: number;
+  readonly compactionThresholdTokens: number;
+  readonly autoCompactEnabled: boolean;
+} {
+  const effectiveWindowTokens = getEffectiveContextWindowSizeForEnvironment(modelOrContext, environment);
+  const autoCompactEnabled = isAutoCompactEnabledForEnvironment(environment);
+  return {
+    effectiveWindowTokens,
+    compactionThresholdTokens: autoCompactEnabled
+      ? getAutoCompactThresholdForEnvironment(modelOrContext, environment)
+      : effectiveWindowTokens,
+    autoCompactEnabled,
+  };
+}
+
 export function calculateTokenWarningState(
   tokenUsage: number,
   model: string,

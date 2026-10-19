@@ -27,8 +27,7 @@ import { readPreparedContextPressure, clearPreparedContextPressure } from "../se
 import { readCompactionProgress, subscribeToCompactionProgress } from "../services/compact/progress.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import { toAgenCRuntimeMessages } from "../session/runtime-message-conversion.js";
-import { getAutoCompactThresholdForEnvironment } from "../services/compact/thresholds.js";
-import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/thresholds.js";
+import { getAutoCompactPolicyForEnvironment } from "../services/compact/thresholds.js";
 import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
@@ -3345,12 +3344,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         contextWindow: rawWindow,
         effectiveContextWindowPercent: liveModelInfo?.effectiveContextWindowPercent ?? 100,
       } });
-      const effectiveWindowTokens = rawWindow > 0
-        ? getEffectiveContextWindowSizeForEnvironment({ options: {
+      const compactionPolicy = rawWindow > 0
+        ? getAutoCompactPolicyForEnvironment({ options: {
           mainLoopModel: model,
           contextWindowTokens: effectiveModelWindow,
         } }, bootstrap.session.services.providerEnvironment ?? {})
         : undefined;
+      const effectiveWindowTokens = compactionPolicy?.effectiveWindowTokens;
       const preparedPressure = readPreparedContextPressure(bootstrap.session);
       const pressure = preparedPressure !== undefined && preparedPressure.model === model && preparedPressure.provider === provider && preparedPressure.effectiveWindowTokens === effectiveWindowTokens
         ? preparedPressure : undefined;
@@ -3373,10 +3373,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(compactionWindow !== undefined ? {
           compactionInputTokens: pressure?.inputTokens ?? fallbackInput,
           compactionWindowTokens: compactionWindow,
-          compactionThresholdTokens: pressure?.autoCompactThresholdTokens ?? getAutoCompactThresholdForEnvironment(
-            { options: { mainLoopModel: model, contextWindowTokens: compactionWindow } },
-            bootstrap.session.services.providerEnvironment ?? {},
-          ),
+          compactionThresholdTokens: pressure?.autoCompactThresholdTokens ?? compactionPolicy?.compactionThresholdTokens,
           compactionReservedOutputTokens: pressure?.reservedOutputTokens ?? 0,
         } : {}),
         messageTokens: finiteNumber(messageTokens),

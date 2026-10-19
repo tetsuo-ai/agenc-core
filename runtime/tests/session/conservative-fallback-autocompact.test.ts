@@ -12,6 +12,7 @@ import {
   getPreSamplingAutoCompactTokenLimit,
 } from "../../src/session/run-turn-compaction.js";
 import { AUTOCOMPACT_MAX_WINDOW_FRACTION } from "../../src/services/compact/thresholds.js";
+import { readPreparedContextPressure } from "../../src/session/prepared-context-pressure.js";
 import { buildInitialTurnState } from "../../src/session/turn-state.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
@@ -61,6 +62,56 @@ function pressureOf(messages: readonly LLMMessage[]) {
 }
 
 describe("auto-compaction from a conservative-fallback estimate", () => {
+  test("a client environment window compacts repeatedly inside one tool turn and completes", async () => {
+    const { provider, ctx } = zaiContext();
+    let samples = 0;
+    const admittedInputs: number[] = [];
+    const outputLimits: Array<number | undefined> = [];
+    const toolResult = async () => ({ content: "read complete", isError: false });
+    const registry = {
+      tools: [{ name: "read_probe", description: "Read", inputSchema: { type: "object" },
+        requiresApproval: false, recoveryCategory: "read-only", execute: toolResult }],
+      toLLMTools: () => [], dispatch: toolResult,
+    } as unknown as ToolRegistry;
+    const { session, events } = mkSession({ provider, registry, services: {
+      providerEnvironment: { AGENC_AUTO_COMPACT_WINDOW: "48000" },
+    } });
+    provider.chatStream = async (_messages, _onChunk, options): Promise<LLMResponse> => {
+      samples++;
+      admittedInputs.push(readPreparedContextPressure(session)!.inputTokens);
+      outputLimits.push(options?.maxOutputTokens);
+      const tool = samples <= 3;
+      return {
+        content: tool ? `read ${samples}` : "done",
+        toolCalls: tool ? [{ id: `read-${samples}`, name: "read_probe", arguments: "{}" }] : [],
+        ...(tool ? {
+          providerReasoningContent: "r".repeat(150_000),
+          providerReasoningProvenance: { provider: "zai-coding-plan", model: "glm-5.3" },
+        } : {}),
+        usage: { promptTokens: 1_000, completionTokens: 8, totalTokens: 1_008 },
+        model: "glm-5.3", finishReason: tool ? "tool_calls" : "stop",
+      };
+    };
+    const compact = vi.fn(async () => {
+      const pressure = readPreparedContextPressure(session)!;
+      expect(pressure.source).toBe("conservative_fallback");
+      expect(pressure.effectiveWindowTokens).toBe(48_000);
+      expect(pressure.autoCompactThresholdTokens).toBe(35_000);
+      expect(pressure.inputTokens).toBeGreaterThanOrEqual(35_000);
+      return { wasCompacted: true, compactionResult: {
+        message: "progress retained", replacementHistory: [{ role: "user" as const, content: "progress retained" }],
+      } };
+    });
+    setAutoCompactImplForTests(compact);
+    await drain(runTurn(session, ctx, "read three files then finish"));
+    expect(compact).toHaveBeenCalledTimes(3);
+    expect(samples).toBe(4);
+    expect(admittedInputs.every(input => input < 35_000)).toBe(true);
+    expect(outputLimits).toEqual([MAX_OUTPUT, MAX_OUTPUT, MAX_OUTPUT, MAX_OUTPUT]);
+    expect(events.map(event => classifyTurnTerminal(event.msg)))
+      .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
+  });
+
   test("the live gate counts a tool-call history on the same scale admission will refuse", () => {
     const { provider, ctx } = zaiContext();
     const { session } = mkSession({ provider });

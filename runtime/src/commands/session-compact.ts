@@ -50,9 +50,7 @@ import {
 } from "../permissions/types.js";
 import { asRecord } from "../utils/record.js";
 import {
-  getAutoCompactThresholdForEnvironment,
-  getEffectiveContextWindowSizeForEnvironment,
-  isAutoCompactEnabledForEnvironment,
+  getAutoCompactPolicyForEnvironment,
 } from "../services/compact/thresholds.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
@@ -1145,19 +1143,13 @@ export function computeContextUsageBreakdown(
   const lookup = inputs.contextWindowTokens !== undefined && inputs.contextWindowTokens > 0
     ? { options: { contextWindowTokens: inputs.contextWindowTokens, mainLoopModel: inputs.model } }
     : (inputs.model ?? "");
-  const hardLimit = getEffectiveContextWindowSizeForEnvironment(
+  const policy = getAutoCompactPolicyForEnvironment(
     typeof lookup === "string" ? lookup : (lookup as never),
     inputs.providerEnvironment,
   );
-  const autoCompactEnabled = isAutoCompactEnabledForEnvironment(
-    inputs.providerEnvironment,
-  );
-  const compactionThreshold = autoCompactEnabled
-    ? getAutoCompactThresholdForEnvironment(
-      typeof lookup === "string" ? lookup : (lookup as never),
-      inputs.providerEnvironment,
-    )
-    : hardLimit;
+  const hardLimit = policy.effectiveWindowTokens;
+  const autoCompactEnabled = policy.autoCompactEnabled;
+  const compactionThreshold = policy.compactionThresholdTokens;
   const accountingContext = {
     provider: {
       name: inputs.providerHint?.provider ?? "unknown",

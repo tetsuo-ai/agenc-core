@@ -1,5 +1,6 @@
 export { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_WINDOW_FRACTION, MANUAL_COMPACT_BUFFER_TOKENS, getEffectiveContextWindowSize, getEffectiveContextWindowSizeForEnvironment, getAutoCompactThreshold, getAutoCompactThresholdForEnvironment, calculateTokenWarningState, calculateTokenWarningStateForEnvironment, isAutoCompactEnabled, isAutoCompactEnabledForEnvironment } from "./thresholds.js";
-import { getAutoCompactThreshold, isAutoCompactEnabled } from "./thresholds.js";
+import { getAutoCompactPolicyForEnvironment } from "./thresholds.js";
+import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 /**
  * Automatic compact threshold and warning logic.
  *
@@ -106,7 +107,8 @@ export async function autoCompactIfNeeded(
   if (querySource === "compact" || querySource === "session_memory") {
     return { wasCompacted: false };
   }
-  if (!isAutoCompactEnabled()) {
+  const policy = getAutoCompactPolicyForEnvironment(context, getSelectedProviderEnvironment());
+  if (!policy.autoCompactEnabled) {
     return { wasCompacted: false, skippedReason: "auto-compaction is disabled" };
   }
   // The ladder is its own bound (each tier at most once per episode); the
@@ -127,7 +129,7 @@ export async function autoCompactIfNeeded(
       inputOnly: options.force !== true && querySource !== "model_downshift",
     }) - snipTokensFreed,
   );
-  if (options.force !== true && tokenCount < autoCompactThreshold(context)) {
+  if (options.force !== true && tokenCount < policy.compactionThresholdTokens) {
     return { wasCompacted: false, consecutiveFailures: 0 };
   }
   const { compactConversation } = await import("./compact.js");
@@ -218,8 +220,4 @@ function isAbortError(context: CompactContext, error: unknown): boolean {
     if (message.includes("abort")) return true;
   }
   return false;
-}
-
-function autoCompactThreshold(context: CompactContext): number {
-  return getAutoCompactThreshold(context);
 }

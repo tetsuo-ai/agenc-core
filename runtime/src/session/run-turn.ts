@@ -5,7 +5,8 @@ import { runMinimalTurn } from "./minimal-turn.js";
 import { oneShotFastModeActive, bypassFastModeEnabled, withOneShotFastMode } from "../one-shot-fast-mode.js";
 import { CompactionTransactionError, CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
 import { recordPreparedContextPressure } from "./prepared-context-pressure.js";
-import { getEffectiveContextWindowSize } from "../services/compact/thresholds.js";
+import { getAutoCompactPolicyForEnvironment } from "../services/compact/thresholds.js";
+import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
 import { admitReasoningCapSample, clearReasoningCapPolicyForTransition } from "./reasoning-cap-policy.js";
 /**
@@ -1551,14 +1552,14 @@ async function preparedRequestContextPressure(
       : {}),
     signal,
   });
-  const compactionWindow = getEffectiveContextWindowSize({ options: {
+  const compactionPolicy = getAutoCompactPolicyForEnvironment({ options: {
     mainLoopModel: ctx.modelInfo.slug, contextWindowTokens: window,
-  } });
+  } }, getSelectedProviderEnvironment());
   if (purpose === "dispatch") recordPreparedContextPressure(session, {
     provider: providerName, model,
     inputTokens: accounting.inputTokens,
-    effectiveWindowTokens: compactionWindow,
-    autoCompactThresholdTokens: getPreSamplingAutoCompactTokenLimit(ctx) ?? compactionWindow,
+    effectiveWindowTokens: compactionPolicy.effectiveWindowTokens,
+    autoCompactThresholdTokens: getPreSamplingAutoCompactTokenLimit(ctx) ?? compactionPolicy.compactionThresholdTokens,
     reservedOutputTokens: accounting.reservedOutputTokens,
     source: accounting.source,
     measuredAtMs: Date.now(),

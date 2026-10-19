@@ -1,9 +1,7 @@
 import type { SessionSnapshotResult } from "../app-server/protocol/index.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import {
-  getAutoCompactThresholdForEnvironment,
-  getEffectiveContextWindowSizeForEnvironment,
-  isAutoCompactEnabledForEnvironment,
+  getAutoCompactPolicyForEnvironment,
 } from "../services/compact/thresholds.js";
 
 export type ResidentContextBreakdown = NonNullable<SessionSnapshotResult["contextBreakdown"]>;
@@ -48,13 +46,15 @@ export function projectResidentContextUsage(
   const window = hasAuthoritativeWindow ? authoritativeWindow
     : resident.windowTokens > 0 ? resident.windowTokens : options.contextWindowTokens;
   const lookup = { options: { mainLoopModel: model, contextWindowTokens: window } };
-  const hardLimit = getEffectiveContextWindowSizeForEnvironment(lookup, environment);
-  const autoCompactEnabled = isAutoCompactEnabledForEnvironment(environment);
+  const policy = getAutoCompactPolicyForEnvironment(lookup, environment);
+  const hardLimit = policy.effectiveWindowTokens;
   const authoritativeThreshold = pressure.compactionThresholdTokens;
-  const compactionThreshold = autoCompactEnabled
-    ? typeof authoritativeThreshold === "number" && Number.isFinite(authoritativeThreshold) && authoritativeThreshold > 0
-      ? authoritativeThreshold : getAutoCompactThresholdForEnvironment(lookup, environment)
-    : hardLimit;
+  const hasAuthoritativeThreshold = hasAuthoritativeWindow && typeof authoritativeThreshold === "number" &&
+    Number.isFinite(authoritativeThreshold) && authoritativeThreshold > 0;
+  // The daemon publishes its disabled state as threshold == window. A client
+  // attaching with different env must display the policy the daemon enforces.
+  const compactionThreshold = hasAuthoritativeThreshold ? authoritativeThreshold : policy.compactionThresholdTokens;
+  const autoCompactEnabled = hasAuthoritativeThreshold ? compactionThreshold < hardLimit : policy.autoCompactEnabled;
   const toolsTokens = resident.systemToolTokens + resident.mcpToolTokens;
   const requestInput = pressure.compactionInputTokens;
   // Reserved output is separate; subtracting it from the window would make

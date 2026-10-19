@@ -10,7 +10,7 @@
 import type { LLMMessage } from "../llm/types.js";
 import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import type { CompactionResult } from "../services/compact/types.js";
-import { getAutoCompactThreshold } from "../services/compact/thresholds.js";
+import { getAutoCompactPolicyForEnvironment } from "../services/compact/thresholds.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   extractMessageText,
@@ -65,9 +65,6 @@ import {
   type CompactionFailureDetails,
 } from "../services/compact/failure-details.js";
 import { logForDebugging } from "../utils/debug.js";
-
-const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
-const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
 
 interface AgenCAutoCompactResult {
   readonly wasCompacted: boolean;
@@ -361,22 +358,7 @@ function compactionNotRun(
 }
 
 function getAutoCompactTokenLimit(ctx: TurnContext): number | undefined {
-  if (!isAutoCompactEnabledForNotices()) return undefined;
-
-  const explicit = finitePositive(
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
-      .autoCompactTokenLimit,
-  );
-  if (explicit !== undefined) return explicit;
-
-  const effectiveWindow = finitePositive(modelContextWindow(ctx));
-  if (effectiveWindow === undefined) return undefined;
-  return Math.max(
-    1,
-    effectiveWindow > AUTOCOMPACT_NOTICE_BUFFER_TOKENS
-      ? effectiveWindow - AUTOCOMPACT_NOTICE_BUFFER_TOKENS
-      : effectiveWindow,
-  );
+  return getPreSamplingAutoCompactTokenLimit(ctx);
 }
 
 function messageHasImageContent(message: LLMMessage | undefined): boolean {
@@ -384,12 +366,6 @@ function messageHasImageContent(message: LLMMessage | undefined): boolean {
   return message.content.some(
     (part) => part.type === "image_url" && part.image_url.url.trim().length > 0,
   );
-}
-
-function isAutoCompactEnabledForNotices(): boolean {
-  const raw = getSelectedProviderEnvironment().AGENC_DISABLE_AUTO_COMPACT;
-  if (raw === undefined) return true;
-  return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1051,7 +1027,11 @@ function getActiveContextTokenUsage(
 function getPreSamplingAutoCompactTokenLimit(
   ctx: TurnContext,
 ): number | undefined {
-  if (!isAutoCompactEnabledForNotices()) return undefined;
+  const policy = getAutoCompactPolicyForEnvironment({ options: {
+    mainLoopModel: ctx.modelInfo.slug,
+    contextWindowTokens: finitePositive(modelContextWindow(ctx)),
+  } }, getSelectedProviderEnvironment());
+  if (!policy.autoCompactEnabled) return undefined;
   const explicit = finitePositive(
     (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
       .autoCompactTokenLimit,
@@ -1059,12 +1039,7 @@ function getPreSamplingAutoCompactTokenLimit(
   if (explicit !== undefined) return explicit;
   const contextWindowTokens = finitePositive(modelContextWindow(ctx));
   if (contextWindowTokens === undefined) return undefined;
-  return getAutoCompactThreshold({
-    options: {
-      mainLoopModel: ctx.modelInfo.slug,
-      contextWindowTokens,
-    },
-  });
+  return policy.compactionThresholdTokens;
 }
 
 function getTotalTokenUsage(session: Session): number {
