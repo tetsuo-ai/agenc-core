@@ -194,17 +194,18 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
         readonly message: string;
       }
   >;
-  previewFileRewind?(params: { readonly messageOrdinal: number }): Promise<{
+  previewFileRewind?(params: { readonly messageOrdinal: number; readonly userMessageId?: string }): Promise<{
     readonly ok: boolean;
     readonly sessionId: string;
     readonly code?: string;
     readonly message?: string;
     readonly canRestoreFiles?: boolean;
+    readonly checkpointAvailable?: boolean;
     readonly filesChanged?: readonly string[];
     readonly insertions?: number;
     readonly deletions?: number;
   }>;
-  rewindFilesToMessage?(params: { readonly messageOrdinal: number }): Promise<{
+  rewindFilesToMessage?(params: { readonly messageOrdinal: number; readonly userMessageId?: string }): Promise<{
     readonly ok: boolean;
     readonly sessionId: string;
     readonly code?: string;

@@ -395,6 +395,7 @@ export interface AgenCBackgroundAgentExtendCompactionRetentionParams {
 
 export interface AgenCBackgroundAgentConversationRewindParams {
   readonly sessionId: string;
+  readonly userMessageId?: string;
   readonly messageOrdinal: number;
   /** When aborted (request.cancel), refuse mid-flight rewind work (todo-108). */
   readonly signal?: AbortSignal;

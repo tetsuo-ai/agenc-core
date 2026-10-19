@@ -4527,11 +4527,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // only works for sessions whose tools ran inside the TUI process.
       if (props.session.rewindFilesToMessage !== undefined) {
         const messageOrdinal = resolveSelectableMessageOrdinal(message_2);
-        if (messageOrdinal === -1) {
+        const userMessageId = message_2.canonicalUserMessageId;
+        if (messageOrdinal === -1 && typeof userMessageId !== "string") {
           throw new Error("The selected message is no longer available.");
         }
         const result = await props.session.rewindFilesToMessage({
-          messageOrdinal,
+          messageOrdinal: Math.max(0, messageOrdinal),
+          ...(typeof userMessageId === "string" ? { userMessageId } : {}),
         });
         if (!result.ok) {
           throw new Error(result.message ?? "Failed to restore files.");
@@ -4551,12 +4553,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     async (message_p: any) => {
       if (props.session.previewFileRewind === undefined) return undefined;
       const messageOrdinal = resolveSelectableMessageOrdinal(message_p);
-      if (messageOrdinal === -1) return undefined;
+      const userMessageId = message_p.canonicalUserMessageId;
+      if (messageOrdinal === -1 && typeof userMessageId !== "string") return undefined;
       try {
         const result = await props.session.previewFileRewind({
-          messageOrdinal,
+          messageOrdinal: Math.max(0, messageOrdinal),
+          ...(typeof userMessageId === "string" ? { userMessageId } : {}),
         });
-        if (!result.ok || result.canRestoreFiles !== true) return undefined;
+        if (!result.ok) throw new Error(result.message ?? "Code checkpoint is unavailable.");
+        if (result.checkpointAvailable === false) return undefined;
         return {
           filesChanged: [...(result.filesChanged ?? [])],
           insertions: result.insertions ?? 0,

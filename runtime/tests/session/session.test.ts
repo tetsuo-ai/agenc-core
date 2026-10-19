@@ -3324,6 +3324,38 @@ describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () =>
     return { session, file };
   }
 
+  it("previews and restores a durable checkpoint after its prompt leaves compacted history", async () => {
+    const { session, file } = await buildFileRewindFixture();
+    session.rolloutStore = { readAll: () => [{ type: "event_msg", payload: {
+      id: "user-msg-1", msg: { type: "user_message", payload: { message: "rewind target" } },
+    } }] } as unknown as Session["rolloutStore"];
+    await session.state.with(state => { state.history = [{ role: "user", content: "new prompt" }]; });
+    const preview = await session.previewFileRewind({ messageOrdinal: 0, userMessageId: "user-msg-1" });
+    expect(preview).toMatchObject({ ok: true, canRestoreFiles: true, filesChanged: [file] });
+    expect(readFileSync(file, "utf8")).toBe("modified-by-turn");
+    const restored = await session.rewindFilesToMessage({ messageOrdinal: 0, userMessageId: "user-msg-1" });
+    expect(restored.ok).toBe(true);
+    expect(readFileSync(file, "utf8")).toBe("original");
+  });
+
+  it("does not resurrect a checkpoint retired by an explicit transcript reset", async () => {
+    const { session } = await buildFileRewindFixture();
+    await session.state.with(state => { state.history = []; });
+    session.rolloutStore = { readAll: () => [
+      { type: "event_msg", payload: { id: "user-msg-1", msg: { type: "user_message", payload: { message: "old" } } } },
+      { type: "event_msg", payload: { id: "reset", msg: { type: "history_cleared", payload: {} } } },
+    ] } as unknown as Session["rolloutStore"];
+    expect(await session.previewFileRewind({ messageOrdinal: 0, userMessageId: "user-msg-1" }))
+      .toMatchObject({ ok: false, code: "MESSAGE_NOT_FOUND" });
+  });
+
+  it("never falls back to an ordinal when a durable checkpoint id is unknown", async () => {
+    const { session, file } = await buildFileRewindFixture();
+    const preview = await session.previewFileRewind({ messageOrdinal: 0, userMessageId: "missing-id" });
+    expect(preview).toMatchObject({ ok: false, code: "MESSAGE_NOT_FOUND" });
+    expect(readFileSync(file, "utf8")).toBe("modified-by-turn");
+  });
+
   it("previewFileRewind reports restorable files without touching disk", async () => {
     const { session, file } = await buildFileRewindFixture();
     const preview = await session.previewFileRewind({ messageOrdinal: 0 });

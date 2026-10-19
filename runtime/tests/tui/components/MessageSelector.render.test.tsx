@@ -199,6 +199,30 @@ describe('MessageSelector render paths', () => {
     harness.reset()
   })
 
+  test('offers compacted prompts with code-only restore and an explicit missing checkpoint notice', async () => {
+    const old = { ...userMessage('user-1', 'edit before auto-compaction'), isVisibleInTranscriptOnly: true };
+    const onRestoreCode = vi.fn(async () => {});
+    const rendered = await renderSelector({ messages: [old], onRestoreCode });
+    try {
+      expect(rendered.output()).toContain('edit before auto-compaction');
+      harness.keybindings['messageSelector:top']?.();
+      await sleep();
+      harness.keybindings['messageSelector:select']?.();
+      await sleep();
+      expect(harness.selectProps?.options.map(option => option.value)).toEqual(['code', 'nevermind']);
+      expect(rendered.output()).toContain('This prompt is before the current model context.');
+      await harness.selectProps?.onChange('code');
+      expect(onRestoreCode).toHaveBeenCalledWith(old);
+    } finally { await rendered.dispose(); }
+
+    harness.fileHistoryGetDiffStats.mockResolvedValue(undefined);
+    const unavailable = await renderSelector({ messages: [old], preselectedMessage: old });
+    try {
+      expect(unavailable.output()).toContain('Code checkpoint unavailable for this prompt.');
+      expect(harness.selectProps?.options.map(option => option.value)).toEqual(['nevermind']);
+    } finally { await unavailable.dispose(); }
+  });
+
   test('renders the empty state and closes through the confirmation escape binding', async () => {
     harness.appState.settings.fileCheckpointingEnabled = false
     const onClose = vi.fn()

@@ -164,11 +164,11 @@ describe('MessageSelector coverage for non-restorable pick-list rows', () => {
     ])
 
     try {
-      await waitForOutput(rendered.output, 'No code restore')
+      await waitForOutput(rendered.output, 'Code checkpoint unavailable')
 
       expect(rendered.output()).toContain('! npm test <target> &')
       expect(rendered.output()).not.toContain('&lt;target&gt;')
-      expect(rendered.output()).toContain('No code restore')
+      expect(rendered.output()).toContain('Code checkpoint unavailable')
       expect(rendered.output()).toContain('(current)')
     } finally {
       await rendered.dispose()

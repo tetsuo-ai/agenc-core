@@ -56,3 +56,9 @@ export function selectableMessageOrdinal(messages: readonly Message[], message: 
   return Number.isSafeInteger(message.activeConversationOrdinal) && message.activeConversationOrdinal >= 0
     ? message.activeConversationOrdinal : visibleOrdinal;
 }
+
+/** Durable transcript prompts remain rewind targets after leaving model context. */
+export function rewindUserMessagesFilter(message: Message): message is UserMessage {
+  return selectableUserMessagesFilter(message.isVisibleInTranscriptOnly
+    ? { ...message, isVisibleInTranscriptOnly: false } : message);
+}

@@ -3914,12 +3914,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const result = await preview.call(active.bootstrap.session, {
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
     if (result.ok) {
       return {
         sessionId: params.sessionId,
         ok: true,
         canRestoreFiles: result.canRestoreFiles,
+        checkpointAvailable: result.checkpointAvailable,
         filesChanged: [...result.filesChanged],
         insertions: result.insertions,
         deletions: result.deletions,
@@ -3947,6 +3949,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const result = await rewindFiles.call(active.bootstrap.session, {
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
     if (result.ok) {
       return {

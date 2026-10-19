@@ -2073,6 +2073,7 @@ export interface SessionRewindConversationToMessageParams extends JsonObject {
 export interface SessionFileRewindParams extends JsonObject {
   readonly sessionId: string;
   readonly messageOrdinal: number;
+  readonly userMessageId?: string;
 }
 
 export interface SessionShellExecuteParams extends JsonObject {
@@ -3835,6 +3836,8 @@ export interface SessionTranscriptResult extends JsonObject {
 }
 
 export interface SessionTranscriptV2Message extends JsonObject {
+  /** Runtime user event ID shared with the file checkpoint and history. */
+  readonly canonicalUserMessageId?: string;
   readonly messageId: string;
   readonly commitEventId: string;
   readonly role: "user" | "assistant";
@@ -4109,6 +4112,7 @@ export interface SessionPreviewFileRewindResult extends JsonObject {
   readonly code?: string;
   readonly message?: string;
   readonly canRestoreFiles?: boolean;
+  readonly checkpointAvailable?: boolean;
   readonly filesChanged?: readonly string[];
   readonly insertions?: number;
   readonly deletions?: number;

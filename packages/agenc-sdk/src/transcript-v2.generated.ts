@@ -23,6 +23,8 @@ export interface PendingEffectReview extends TranscriptV2JsonObject {
 }
 
 export interface SessionTranscriptV2Message extends TranscriptV2JsonObject {
+  /** Runtime user event ID shared with the file checkpoint and history. */
+  readonly canonicalUserMessageId?: string;
   readonly messageId: string;
   readonly commitEventId: string;
   readonly role: "user" | "assistant";

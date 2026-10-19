@@ -10,7 +10,7 @@ vi.mock("../../utils/messages.js", () => ({
   isSyntheticMessage: () => false,
 }));
 
-import { selectableUserMessagesFilter } from "./message-selector-filter.js";
+import { rewindUserMessagesFilter, selectableUserMessagesFilter } from "./message-selector-filter.js";
 
 function userMessage(content: unknown, extra: Record<string, unknown> = {}) {
   return {
@@ -56,5 +56,14 @@ describe("selectableUserMessagesFilter", () => {
 
     expect(source).toMatch(/value:\s*'summarize_up_to'[\s\S]*label:\s*'Summarize up to here'/);
     expect(source).not.toContain(`if ("external" === 'ant')`);
+  });
+});
+
+ describe("rewind history across compaction", () => {
+  it("offers historical prompts without making them active conversation ordinals", () => {
+    const old = userMessage("edit before compaction", { isVisibleInTranscriptOnly: true, canonicalUserMessageId: "old-id" });
+    expect(rewindUserMessagesFilter(old as never)).toBe(true);
+    expect(selectableUserMessagesFilter(old as never)).toBe(false);
+    expect(rewindUserMessagesFilter(userMessage("summary", { isCompactSummary: true }) as never)).toBe(false);
   });
 });

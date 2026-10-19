@@ -4123,6 +4123,7 @@ export class AgenCDaemonAgentManager {
     return await this.#runner.previewFileRewind(agentId, {
       sessionId: params.sessionId,
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
   }
 
@@ -4148,6 +4149,7 @@ export class AgenCDaemonAgentManager {
     return await this.#runner.rewindFilesToMessage(agentId, {
       sessionId: params.sessionId,
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
   }
 

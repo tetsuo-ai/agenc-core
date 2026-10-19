@@ -562,6 +562,7 @@ export function sessionTranscriptV2FromRollout(
       const acceptedAt = event.msg.payload.acceptedAt;
       messages.push({
         messageId: clientMessageId ?? `message:${commitEventId}`,
+        canonicalUserMessageId: event.id,
         commitEventId,
         role: "user",
         text,

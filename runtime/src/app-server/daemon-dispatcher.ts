@@ -4241,7 +4241,7 @@ function validateSessionFileRewindParams(
 ): SessionFileRewindParams {
   const validated = validateObjectShape(params, {
     methodName,
-    stringFields: ["sessionId"],
+    stringFields: ["sessionId", "userMessageId"],
     numberFields: ["messageOrdinal"],
   });
   validateRequiredString(validated, methodName, "sessionId");
@@ -4253,6 +4253,10 @@ function validateSessionFileRewindParams(
     throw invalidParams(
       `${methodName} messageOrdinal must be a non-negative integer`,
     );
+  }
+  if (validated.userMessageId !== undefined) {
+    validateRequiredString(validated, methodName, "userMessageId");
+    validateMaximumUtf8Bytes(validated.userMessageId, methodName, "userMessageId", 1024);
   }
   return validated as SessionFileRewindParams;
 }

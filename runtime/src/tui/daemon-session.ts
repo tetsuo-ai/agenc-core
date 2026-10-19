@@ -309,9 +309,11 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   }): Promise<SessionRewindConversationToMessageResult>;
   previewFileRewind?(params: {
     readonly messageOrdinal: number;
+    readonly userMessageId?: string;
   }): Promise<SessionPreviewFileRewindResult>;
   rewindFilesToMessage?(params: {
     readonly messageOrdinal: number;
+    readonly userMessageId?: string;
   }): Promise<SessionRewindFilesToMessageResult>;
   useSessionProviderKey?(provider: string, apiKey: string): Promise<void>;
   applyProviderModelSelection?(selection: {
@@ -440,9 +442,11 @@ export type AgenCDaemonBackedTuiSession<
   }): Promise<SessionRewindConversationToMessageResult>;
   previewFileRewind(params: {
     readonly messageOrdinal: number;
+    readonly userMessageId?: string;
   }): Promise<SessionPreviewFileRewindResult>;
   rewindFilesToMessage(params: {
     readonly messageOrdinal: number;
+    readonly userMessageId?: string;
   }): Promise<SessionRewindFilesToMessageResult>;
 };
 
@@ -1733,11 +1737,13 @@ export function createDaemonTuiSession<
       client.request("session.previewFileRewind", {
         sessionId,
         messageOrdinal: params.messageOrdinal,
+        ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
       } satisfies SessionFileRewindParams),
     rewindFilesToMessage: async (params) =>
       client.request("session.rewindFilesToMessage", {
         sessionId,
         messageOrdinal: params.messageOrdinal,
+        ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
       } satisfies SessionFileRewindParams),
     useSessionProviderKey: async (provider, apiKey) => {
       await client.request("session.setProviderKey", { sessionId, provider, apiKey });
