@@ -78,8 +78,9 @@ export type SqliteDatabase = BetterSqlite3.Database;
  *   returns, and so is every commit before it in the WAL.
  * - `"rebuildable"`: the transaction writes only the SQLite projection of a
  *   canonical rollout journal (`thread_rollout_items`, its `backfill_files`
- *   and `rollout_receipts` bookkeeping and the merged thread metadata), which
- *   backfill rebuilds from the journal. In WAL mode it commits at
+ *   and `rollout_receipts` bookkeeping and the merged thread metadata), or
+ *   the exact tool-pair validation index that its canonical owner resets and
+ *   rebuilds from response items on every open. In WAL mode it commits at
  *   `synchronous = NORMAL`: the commit is in the WAL and visible to every
  *   connection when it returns, and survives the process dying, but it is
  *   fsynced only by the next FULL commit on this database (any connection) or

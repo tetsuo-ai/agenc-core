@@ -3545,6 +3545,10 @@ export class RolloutStore {
     return {
       projection: new StateToolPairProjection(this.stateDriver, {
         discardOnTerminal,
+        // Exact pairing is reconstructed from canonical response items on
+        // every open. Committing the index does not acknowledge an effect;
+        // the journal's existing sync boundaries still own that guarantee.
+        rebuildable: true,
       }),
       projectionId: `checkpoint:${identity}`,
       sourceKey: `rollout:${checkpointProjectionIdentity(this.rolloutPath, "source")}`,

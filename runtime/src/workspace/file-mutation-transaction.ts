@@ -646,14 +646,16 @@ export function __workspaceBoundHelperLaunchPlanForTests(input: {
   readonly platform: NodeJS.Platform;
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly useNoFollow?: boolean;
-}): BoundHelperLaunchPlan {
-  return createBoundHelperLaunchPlan({
+  readonly workerSource?: string;
+}): BoundHelperLaunchPlan & { readonly directorySource: Buffer; readonly workerSource: Buffer } {
+  const directorySource = describeBoundSource(BOUND_DIRECTORY_HELPER_SOURCE);
+  const workerSource = describeBoundSource(input.workerSource ?? BOUND_READ_WORKER_SOURCE);
+  return { ...createBoundHelperLaunchPlan({
     ...input,
     processEnvironment: input.processEnvironment ?? {},
     useNoFollow: input.useNoFollow ?? true,
-    directorySource: describeBoundSource(BOUND_DIRECTORY_HELPER_SOURCE),
-    workerSource: describeBoundSource(BOUND_READ_WORKER_SOURCE),
-  });
+    directorySource, workerSource,
+  }), directorySource: directorySource.bytes, workerSource: workerSource.bytes };
 }
 
 export function __workspaceBoundSourceBootstrapForTests(source: string): {
@@ -1335,61 +1337,8 @@ const createStructuredRipgrepLimiter = (value) => {
 };
 `;
 
-const BOUND_READ_WORKER_SOURCE = String.raw`
-import { spawn } from "node:child_process";
-import { constants } from "node:fs";
-import { lstat, open, stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
-
-const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-const identity = (value) => ({
-  dev: value.dev.toString(10),
-  ino: value.ino.toString(10),
-  mode: value.mode.toString(10),
-});
-const fileStats = (value) => ({
-  ...identity(value),
-  size: Number(value.size),
-  mtimeMs: Number(value.mtimeMs),
-  ctimeMs: Number(value.ctimeMs),
-});
-const sameIdentity = (left, right) =>
-  left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
-const validSegment = (value) =>
-  typeof value === "string" &&
-  value.length > 0 &&
-  value !== "." &&
-  value !== ".." &&
-  !value.includes("/") &&
-  (process.platform !== "win32" || !value.includes("\\"));
-const noFollow =
-  commandLineNoFollowEnabled() && typeof constants.O_NOFOLLOW === "number"
-    ? constants.O_NOFOLLOW
-    : 0;
-function commandLineNoFollowEnabled() {
-  return process.env.AGENC_BOUND_READ_USE_NOFOLLOW !== "0";
-}
-delete process.env.AGENC_BOUND_READ_USE_NOFOLLOW;
-let activeChild = null;
-const stopActiveChildAndExit = () => {
-  if (activeChild === null) process.exit(143);
-  const child = activeChild;
-  child.once("close", () => process.exit(143));
-  child.kill();
-  const forced = setTimeout(() => child.kill("SIGKILL"), 500);
-  forced.unref();
-};
-process.once("SIGTERM", stopActiveChildAndExit);
-process.once("SIGINT", stopActiveChildAndExit);
-
-${STRUCTURED_RIPGREP_LIMITER_SOURCE}
-
-const readCommand = async () => {
-  let raw = "";
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) raw += chunk;
-  return JSON.parse(raw);
-};
+// Kept identical in the isolated traversal worker and the held-cwd basename path.
+const BOUND_READ_OPEN_SOURCE = String.raw`
 const openVerifiedBasename = async (command) => {
   if (
     !Array.isArray(command.parentSegments) ||
@@ -1463,6 +1412,65 @@ const openVerifiedBasename = async (command) => {
     throw error;
   }
 };
+`;
+
+const BOUND_READ_WORKER_SOURCE = String.raw`
+import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import { lstat, open, stat } from "node:fs/promises";
+import { createInterface } from "node:readline";
+
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const identity = (value) => ({
+  dev: value.dev.toString(10),
+  ino: value.ino.toString(10),
+  mode: value.mode.toString(10),
+});
+const fileStats = (value) => ({
+  ...identity(value),
+  size: Number(value.size),
+  mtimeMs: Number(value.mtimeMs),
+  ctimeMs: Number(value.ctimeMs),
+});
+const sameIdentity = (left, right) =>
+  left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+const validSegment = (value) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value !== "." &&
+  value !== ".." &&
+  !value.includes("/") &&
+  (process.platform !== "win32" || !value.includes("\\"));
+const noFollow =
+  commandLineNoFollowEnabled() && typeof constants.O_NOFOLLOW === "number"
+    ? constants.O_NOFOLLOW
+    : 0;
+function commandLineNoFollowEnabled() {
+  return process.env.AGENC_BOUND_READ_USE_NOFOLLOW !== "0";
+}
+delete process.env.AGENC_BOUND_READ_USE_NOFOLLOW;
+let activeChild = null;
+const stopActiveChildAndExit = () => {
+  if (activeChild === null) process.exit(143);
+  const child = activeChild;
+  child.once("close", () => process.exit(143));
+  child.kill();
+  const forced = setTimeout(() => child.kill("SIGKILL"), 500);
+  forced.unref();
+};
+process.once("SIGTERM", stopActiveChildAndExit);
+process.once("SIGINT", stopActiveChildAndExit);
+
+${STRUCTURED_RIPGREP_LIMITER_SOURCE}
+
+const readCommand = async () => {
+  let raw = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) raw += chunk;
+  return JSON.parse(raw);
+};
+${BOUND_READ_OPEN_SOURCE}
+
 const runPinnedRipgrep = async (command, inputHandle) => {
   if (
     typeof command.program !== "string" ||
@@ -1969,6 +1977,55 @@ const stopActiveChildAndExit = () => {
 };
 process.once("SIGTERM", stopActiveChildAndExit);
 process.once("SIGINT", stopActiveChildAndExit);
+// Basename reads never change cwd, so they can use the authenticated
+// directory helper itself. Descendant traversal still gets an isolated worker.
+const openRootReadFile = (() => {
+  const identity = preciseIdentity;
+  const noFollow = boundReadUseNoFollow && typeof constants.O_NOFOLLOW === "number"
+    ? constants.O_NOFOLLOW : 0;
+  ${BOUND_READ_OPEN_SOURCE}
+  return openVerifiedBasename;
+})();
+const runRootRead = async (command) => {
+  let opened;
+  try {
+    opened = await openRootReadFile({
+      ...command, parentSegments: [], name: command.relativeSegments[0],
+      rootIdentity: boundReadDirectoryIdentity,
+    });
+    const stats = {
+      ...preciseIdentity(opened.stats), size: Number(opened.stats.size),
+      mtimeMs: Number(opened.stats.mtimeMs), ctimeMs: Number(opened.stats.ctimeMs),
+    };
+    if (command.operation === "validate_regular_file") {
+      return { type: "result", ok: true, stats };
+    }
+    const maxBytes = Number(command.maxBytes);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw Object.assign(new Error("invalid read byte limit"), { code: "INVALID_COMMAND" });
+    }
+    if (opened.stats.size > maxBytes && command.truncate !== true) {
+      return { type: "result", ok: false, code: "FILE_TOO_LARGE",
+        message: "bound file exceeds the requested byte limit", stats };
+    }
+    let content;
+    if (command.truncate === true && opened.stats.size > maxBytes) {
+      content = Buffer.alloc(maxBytes);
+      const read = await opened.handle.read(content, 0, content.length, 0);
+      content = content.subarray(0, read.bytesRead);
+    } else {
+      content = await opened.handle.readFile();
+    }
+    return { type: "result", ok: true, stats, contentBase64: content.toString("base64") };
+  } catch (error) {
+    if (command.allowMissing === true && error?.code === "ENOENT") {
+      return { type: "result", ok: true, missing: true };
+    }
+    throw error;
+  } finally {
+    await opened?.handle.close();
+  }
+};
 const runBoundReadWorker = async (command) => {
   if (boundReadWorkerSource.length === 0) {
     throw Object.assign(new Error("bound read worker source is unavailable"), {
@@ -2254,6 +2311,10 @@ try {
           });
         }
         const segments = command.relativeSegments;
+        if (segments.length === 1 && command.operation !== "read_text_window") {
+          send(await runRootRead(command));
+          continue;
+        }
         send(
           await runBoundReadWorker({
             ...command,
