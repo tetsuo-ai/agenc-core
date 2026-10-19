@@ -24,8 +24,9 @@ import { DEFERRED_SYNC_INTERVAL_MS, openTurnDurabilityScope, type TurnDurability
  *        advisory lock on the rollout sidecar lockfile via an atomic
  *        link-based handoff (tmp create + `link(tmp, lock)` — atomic
  *        even over NFS) and stores `{pid, startNs}` so the holder's
- *        identity survives PID reuse. Live-PID reclaim is refused
- *        unconditionally; EWOULDBLOCK → SessionLockedError.
+ *        identity survives PID reuse. A same-PID lock is reclaimed only
+ *        with proof that it predates this process; otherwise a live
+ *        PID produces SessionLockedError.
  *   I-24 (atomic write-then-rename) — whole-file rewrites (session
  *        metadata re-append after compaction, schema migrations,
  *        checkpoint-style flushes) go through `rewriteAtomically()`:
@@ -934,10 +935,9 @@ interface LockRecord {
    * wall-clock `Date.now()` stringified start so two AgenC processes
    * with the same PID (rare but possible after PID reuse, or in CI
    * fixtures that fork child Node processes) carry distinct start
-   * identifiers. The session-start identity is used ONLY for forensic
-   * logging — the actual "is this lock alive" check refuses to
-   * reclaim any lock whose PID is currently alive, regardless of
-   * startNs value.
+   * identifiers. On Linux the monotonic stamp, together with the wall
+   * timestamp, can prove a same-PID lock predates the current process.
+   * An unproved live holder is never reclaimed.
    */
   readonly startNs: string;
   readonly acquiredAtIso: string;
@@ -954,12 +954,10 @@ interface LockRecord {
  *     volume hardlinks; we fall back to `openSync(path, 'wx')` which
  *     is itself atomic on NTFS.
  *
- *   - Identity record: `{pid, startNs}`. The startNs field is a
- *     forensic aid; the liveness decision is PID-based and *refuses*
- *     to reclaim a lock whose PID is alive (`kill(pid, 0)` returns
- *     without ENOSRCH). This is strictly stronger than a pure PID
- *     sidecar: the caller cannot trick us into reclaiming a live
- *     lock by claiming to be the same process — we never check that.
+ *   - Identity record: `{pid, startNs, acquiredAtIso}`. Live PIDs are
+ *     protected unless both legacy acquisition clocks prove that a
+ *     same-PID record predates this process. This handles a daemon PID
+ *     reused after restart without admitting another store in the daemon.
  *
  *   - No `proper-lockfile` dep, no `fs-ext` native binding. Adding a
  *     dep for this was considered and rejected because (a) the
@@ -970,8 +968,8 @@ interface LockRecord {
  *
  *   1. The tmp+link dance is atomic on NFS where `open(O_EXCL)` is
  *      not reliable.
- *   2. Live-PID reclaim is never allowed; stale reclaim only proceeds
- *      when `kill(pid, 0)` reports ESRCH.
+ *   2. Stale reclaim requires a dead PID or proof that a same-PID
+ *      record belongs to an earlier process lifetime.
  *   3. The lock payload is structured so future diagnostic tools
  *      (agenc doctor) can show who is holding the rollout.
  */
@@ -998,10 +996,13 @@ export class SessionLock {
       const existing = this.readLockRecord();
       if (existing !== null) {
         // Lock file exists. Decide if we can reclaim.
-        if (processIsAlive(existing.pid)) {
+        if (
+          processIsAlive(existing.pid) &&
+          !sessionLockPredatesCurrentProcess(existing)
+        ) {
           throw new SessionLockedError(existing.pid, this.lockPath);
         }
-        // Stale holder (PID dead). Remove and retry.
+        // Dead holder, or the current PID reused after the holder exited.
         try {
           unlinkSync(this.lockPath);
         } catch (err) {
@@ -1212,6 +1213,54 @@ export class SessionLockedError extends Error {
     );
     this.name = "SessionLockedError";
   }
+}
+
+// Sample clocks before uptime so scheduling delays only make these bounds
+// earlier. Keep a full second of slack for timer precision and startup skew.
+// Linux hrtime uses the system monotonic clock, shared across Node processes.
+const lockProcessMonotonicSample = process.hrtime.bigint();
+const lockProcessWallSample = Date.now();
+const lockProcessUptime = process.uptime();
+const lockProcessStartMonotonicLowerBound =
+  lockProcessMonotonicSample - BigInt(Math.ceil(lockProcessUptime * 1e9)) - 1_000_000_000n;
+const lockProcessStartWallLowerBound =
+  lockProcessWallSample - lockProcessUptime * 1_000 - 1_000;
+
+type SessionLockHolder = {
+  readonly pid?: unknown;
+  readonly startNs?: unknown;
+  readonly acquiredAtIso?: unknown;
+};
+
+/** PID equality alone cannot establish ownership after a cold daemon restart. */
+export function sessionLockIsLiveInCurrentProcess(record: SessionLockHolder): boolean {
+  return record.pid === process.pid && !sessionLockPredatesCurrentProcess(record);
+}
+
+function sessionLockPredatesCurrentProcess(record: SessionLockHolder): boolean {
+  // For other PIDs, platforms or legacy/unreadable stamps, retain the
+  // conservative PID liveness rule. Never infer staleness from wall time alone.
+  if (
+    process.platform !== "linux" ||
+    record.pid !== process.pid ||
+    typeof record.startNs !== "string" ||
+    typeof record.acquiredAtIso !== "string"
+  ) {
+    return false;
+  }
+  const stamp = /^(\d{1,16})-(\d{1,24})$/u.exec(record.startNs);
+  if (stamp === null) return false;
+  const createdAt = Number(stamp[1]);
+  const acquiredAt = Date.parse(record.acquiredAtIso);
+  const monotonicCreatedAt = BigInt(stamp[2]!);
+  return (
+    Number.isSafeInteger(createdAt) && createdAt > 0 &&
+    createdAt < lockProcessStartWallLowerBound &&
+    Number.isFinite(acquiredAt) && acquiredAt >= createdAt &&
+    acquiredAt < lockProcessStartWallLowerBound &&
+    monotonicCreatedAt > 0n &&
+    monotonicCreatedAt < lockProcessStartMonotonicLowerBound
+  );
 }
 
 function processIsAlive(pid: number): boolean {

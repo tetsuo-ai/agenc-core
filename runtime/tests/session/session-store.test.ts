@@ -1116,6 +1116,44 @@ describe("session-store", () => {
     }
   });
 
+  test.skipIf(process.platform !== "linux")("I-23 SessionLock: reclaims a legacy lock from before this same-PID process started", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-lock-reused-pid-"));
+    const lockPath = join(dir, "rollout.jsonl.lock");
+    const lock = new SessionLock(lockPath);
+    try {
+      // A fresh container can assign the previous daemon's PID to its successor.
+      // Both timestamps predate this process, as in a persisted helper journal.
+      writeFileSync(lockPath, JSON.stringify({
+        pid: process.pid,
+        startNs: "1-1",
+        acquiredAtIso: "1970-01-01T00:00:00.001Z",
+      }));
+      lock.acquire();
+      expect(lock.isAcquired).toBe(true);
+      expect(JSON.parse(readFileSync(lockPath, "utf8")).startNs).not.toBe("1-1");
+    } finally {
+      lock.release();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("I-23 SessionLock: refuses a real current-process owner and preserves its exact lease", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-lock-current-owner-"));
+    const lockPath = join(dir, "rollout.jsonl.lock");
+    const owner = new SessionLock(lockPath);
+    const contender = new SessionLock(lockPath);
+    try {
+      owner.acquire();
+      const stamp = readFileSync(lockPath, "utf8");
+      expect(() => contender.acquire()).toThrow(SessionLockedError);
+      contender.release();
+      expect(readFileSync(lockPath, "utf8")).toBe(stamp);
+    } finally {
+      owner.release();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("I-23 SessionLock: two-process exclusivity — spawn child, parent acquire must fail", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agenc-lock-child-"));
     let child: ReturnType<typeof spawn> | null = null;

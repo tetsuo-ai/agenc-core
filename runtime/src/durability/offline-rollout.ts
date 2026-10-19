@@ -19,6 +19,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   hasSupportedFileIdentity,
   SessionLock,
+  sessionLockIsLiveInCurrentProcess,
 } from "../session/session-store.js";
 
 export class OfflineRolloutSourceMissingError extends Error {
@@ -752,8 +753,10 @@ function assertNotHeldByCurrentProcess(
     }
     const parsed = JSON.parse(readFileSync(lockPath, "utf8")) as {
       readonly pid?: unknown;
+      readonly startNs?: unknown;
+      readonly acquiredAtIso?: unknown;
     };
-    if (parsed.pid === process.pid) {
+    if (sessionLockIsLiveInCurrentProcess(parsed)) {
       throw new Error(
         `canonical journal is live in this process (${lockPath}); stop the session before offline mutation`,
       );

@@ -79,6 +79,40 @@ describe.skipIf(process.platform === "win32")(
       },
     );
 
+    it.skipIf(process.platform !== "linux").each([
+      ["read", withPinnedOfflineRolloutReadLease],
+      ["mutation", withPinnedOfflineRolloutLease],
+    ] as const)("recovers a stale same-PID helper lock through the %s lease", (_name, lease) => {
+      const target = fixture();
+      writeFileSync(`${target.sourcePath}.lock`, JSON.stringify({
+        pid: process.pid,
+        startNs: "1-1",
+        acquiredAtIso: "1970-01-01T00:00:00.001Z",
+      }));
+      let entered = false;
+      lease(target, () => { entered = true; });
+      expect(entered).toBe(true);
+      expect(readFileSync(target.sourcePath, "utf8")).toBe("committed\n");
+    });
+
+    it.each([
+      { startNs: "unknown", acquiredAtIso: "1970-01-01T00:00:00.001Z" },
+      { startNs: "1-1", acquiredAtIso: new Date().toISOString() },
+      { startNs: `1-${process.hrtime.bigint()}`, acquiredAtIso: "1970-01-01T00:00:00.001Z" },
+      { startNs: "1-0", acquiredAtIso: "1970-01-01T00:00:00.001Z" },
+      { startNs: `${Date.now()}-${process.hrtime.bigint()}`, acquiredAtIso: new Date().toISOString() },
+    ])("preserves a same-PID lease without proof of a prior process: %j", (record) => {
+      const target = fixture();
+      const stamp = JSON.stringify({ pid: process.pid, ...record });
+      writeFileSync(`${target.sourcePath}.lock`, stamp);
+      expect(() => withPinnedOfflineRolloutReadLease(target, () => {}))
+        .toThrow("canonical journal is live in this process");
+      expect(() => withPinnedOfflineRolloutLease(target, () => {}))
+        .toThrow("canonical journal is live in this process");
+      expect(readFileSync(`${target.sourcePath}.lock`, "utf8")).toBe(stamp);
+      expect(readFileSync(target.sourcePath, "utf8")).toBe("committed\n");
+    });
+
     it("reports the pinned file's exact device and inode numbers", () => {
       const target = fixture();
       const expected = statSync(target.sourcePath, { bigint: true });
