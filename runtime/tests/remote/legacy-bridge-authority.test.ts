@@ -14,6 +14,7 @@ function bridgeContext(prefix: string, environment: Readonly<Record<string, stri
   vi.useFakeTimers();
   const home = mkdtempSync(join(tmpdir(), prefix));
   writeFileSync(join(home, "daemon.cookie"), "c".repeat(64), { mode: 0o600 });
+  writeFileSync(join(home, "config.toml"), "config_version = 2\n[remote_control]\nenabled = true\n", { mode: 0o600 });
   const context = captureRemoteCliRuntimeContext(Object.freeze({ AGENC_HOME: home, AGENC_REMOTE_AUTH_TOKEN: "fixture-token", ...environment }));
   cleanups.push(async () => { await runRemoteSlash("off", context); rmSync(home, { recursive: true, force: true }); });
   return context;

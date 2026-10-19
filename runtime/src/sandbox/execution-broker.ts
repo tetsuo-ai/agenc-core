@@ -65,6 +65,7 @@ import {
   type SandboxPreparedSpawn,
 } from "./execution-prepared-spawn.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
+import { protectRemoteControlAuthority, remoteControlAuthorityPaths } from "./remote-control-protection.js";
 import { cronLockAuthorityRoots, protectCronAuthority } from "./cron-authority-protection.js";
 import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
 import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "./agenc-home-protection.js";
@@ -1162,9 +1163,9 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   #protectProfile(profile: PermissionProfile): PermissionProfile {
     return protectAgencHomeUnderWritableRoot(
-      protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+      protectRemoteControlAuthority(protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
         profile, this.#desktopAuthorityRoot,
-      ), this.#cronAuthorityRoots)),
+      ), this.#cronAuthorityRoots)), remoteControlAuthorityPaths(this.#agencHome, undefined, this.#env)),
       this.#agencHome, this.#cwd, this.#sessionTempRoot,
     );
   }

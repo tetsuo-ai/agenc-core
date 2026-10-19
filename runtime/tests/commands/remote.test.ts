@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -32,6 +32,7 @@ function remoteFixture(
   environment: Readonly<Record<string, string>> = {},
 ): RemoteFixture {
   const agencHome = mkdtempSync(join(tmpdir(), prefix));
+  writeFileSync(join(agencHome, "config.toml"), "config_version = 2\n[remote_control]\nenabled = true\n", { mode: 0o600 });
   const context = captureRemoteCliRuntimeContext(
     Object.freeze({
       AGENC_HOME: agencHome,

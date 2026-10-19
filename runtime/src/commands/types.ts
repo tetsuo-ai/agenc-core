@@ -105,6 +105,8 @@ export interface SlashCommand {
   readonly supportedSurfaces?: readonly SlashCommandSurface[];
   /** Defaults to true. Only set when a command is conditionally visible. */
   readonly isEnabled?: () => boolean;
+  /** Hide from help and completion while retaining typed cleanup/refusal. */
+  readonly isHidden?: boolean;
   /** Bypass the turn loop (default false). */
   readonly immediate?: boolean;
   /** True when this local command can safely execute in non-interactive mode. */

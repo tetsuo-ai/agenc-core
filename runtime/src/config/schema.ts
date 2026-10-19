@@ -915,6 +915,8 @@ export interface AgenCConfig {
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly xaa_idp?: XaaIdpConfig;
   readonly daemon?: DaemonConfig;
+  /** Owner-only phone/browser relay capability. No environment or project authority. */
+  readonly remote_control?: { readonly enabled?: boolean };
   readonly gateway?: GatewayConfig;
   readonly protocol?: ProtocolConfig;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
@@ -1093,6 +1095,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "mcp_servers",
   "xaa_idp",
   "daemon",
+  "remote_control",
   "gateway",
   "protocol",
   "lsp_servers",
@@ -1224,6 +1227,7 @@ export function defaultConfig(): AgenCConfig {
         transport: "stdio",
       }) as McpServerModeConfig,
     }) as McpConfig,
+    remote_control: Object.freeze({ enabled: false }),
     daemon: Object.freeze({
       autostart: true,
     }) as DaemonConfig,

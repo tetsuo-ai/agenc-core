@@ -1636,6 +1636,8 @@ export interface InitializeParams extends JsonObject {
    */
   readonly protocol?: DaemonProtocolInfo;
   readonly clientName?: string;
+  /** Local connector registration, admitted only by owner remote_control policy. */
+  readonly remoteControlBridge?: boolean;
   readonly authCookie?: string;
   readonly capabilities?: JsonObject;
 }

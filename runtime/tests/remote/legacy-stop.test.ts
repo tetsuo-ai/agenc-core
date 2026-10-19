@@ -12,6 +12,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 async function fixture() {
   vi.useFakeTimers();
   const home = mkdtempSync(join(tmpdir(), "legacy-stop-"));
+  writeFileSync(join(home, "config.toml"), "config_version = 2\n[remote_control]\nenabled = true\n", { mode: 0o600 });
   const context = captureRemoteCliRuntimeContext(Object.freeze({ AGENC_HOME: home, AGENC_REMOTE_AUTH_TOKEN: "fixture-token", AGENC_REMOTE_FULL_CONTROL: "1" }));
   const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pairStartResponse());
   cleanups.push(async () => { await runRemoteSlash("off", context); rmSync(home, { recursive: true, force: true }); });

@@ -1042,3 +1042,30 @@ above the cap. Independent monetary limits remain enforced.
 In-flight tools finish before a local partial-result summary is emitted. No extra
 model call is spent generating that summary. Unknown usage retains its reserved
 amount. Provider-reported overruns remain subject to execution admission policy.
+
+## Remote control owner switch
+
+`remote_control` is a home/managed-only table. `remote_control.enabled` is a
+boolean, default `false`:
+
+```toml
+[remote_control]
+enabled = false
+```
+
+The owner can set `enabled = true` by editing `$AGENC_HOME/config.toml` outside
+the agent. Managed `config.toml` and sorted `config.d/*.toml` drop-ins override
+that choice; managed `false` cannot be overridden by user configuration.
+Project/local files, plugins, profiles, `--config`, CLI patches, and environment
+variables have no authority over this setting. `agenc config set/unset` refuses
+the table; use the owner editor and restart the daemon. Agent file tools and
+shell write checks protect the home file and managed sources, including custom
+home paths, symlink targets and managed drop-ins, in every permission mode.
+
+When false, phone starts refuse before connector imports, account checks or
+network access; `/remote` is hidden from help/completion, bridge initialization
+is denied by the daemon, and stored pairings do not reconnect. Local status and
+off still work. `AGENC_REMOTE_FULL_CONTROL` is ignored with a warning. When true,
+the existing full-control consent and sign-in checks still apply. Browser
+`remote.*` enrollment uses the same switch; Telegram Connections have separate
+owner authority. See [remote control](../remote-control.md).

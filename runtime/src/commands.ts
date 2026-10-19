@@ -254,6 +254,7 @@ function projectSlashCommand(
     argumentHint: cmd.argumentHint,
     aliases: cmd.aliases ? [...cmd.aliases] : undefined,
     isEnabled: cmd.isEnabled,
+    get isHidden() { return cmd.isHidden; },
     kind: cmd.kind,
     source: cmd.source,
     loadedFrom: cmd.loadedFrom,

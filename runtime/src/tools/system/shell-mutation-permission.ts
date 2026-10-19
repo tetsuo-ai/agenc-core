@@ -1,3 +1,4 @@
+import { remoteControlAuthorityPaths } from "../../sandbox/remote-control-protection.js";
 import { resolve } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
 import {
@@ -224,6 +225,7 @@ export function shellDeletionProtectedRoots(
     // A refused or unresolvable ambient home contributes nothing; the session
     // root above still stands.
   }
+  for (const root of remoteControlAuthorityPaths()) roots.add(root);
   return [...roots];
 }
 

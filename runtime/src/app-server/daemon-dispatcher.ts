@@ -659,6 +659,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly routines?: RoutineService;
   readonly routinePreparation?: RoutineSessionPreparation;
   readonly remote?: Pick<RemoteService, "handle" | "stop">;
+  readonly remoteControlEnabled?: () => boolean;
   readonly ownerTelegram?: Pick<OwnerTelegramService, "handle">;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
@@ -806,6 +807,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #routines: RoutineService | undefined;
   readonly #routinePreparation: RoutineSessionPreparation | undefined;
   readonly #remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly #remoteControlEnabled: () => boolean;
   readonly #ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
@@ -854,6 +856,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#routines = options.routines;
     this.#routinePreparation = options.routinePreparation;
     this.#remote = options.remote;
+    this.#remoteControlEnabled = options.remoteControlEnabled ?? (() => false);
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
     this.#projectTrust = options.projectTrust;
@@ -986,7 +989,13 @@ export class AgenCDaemonJsonRpcDispatcher {
     const method = message.method;
     try {
       const params = objectParams(message.params);
+      if (connection.remoteControlBridge && !this.#remoteControlEnabled()) {
+        return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+      }
       if (method === "initialize") {
+        if (params.remoteControlBridge === true && !this.#remoteControlEnabled()) {
+          return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+        }
         if (!connection.beginInitialization()) {
           return errorResponse(id, -32000, "Already initialized", {
             code: "CONNECTION_ALREADY_INITIALIZED",
@@ -1047,6 +1056,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             connection,
             negotiated.state.clientCapabilities,
           );
+          connection.remoteControlBridge = params.remoteControlBridge === true;
           connection.markInitialized(negotiated.state);
           return successResponse(id, {
             type: "initialized",
@@ -1071,6 +1081,9 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if ((REMOTE_METHODS as readonly string[]).includes(method)) {
         if (!this.#remote || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        if (!this.#remoteControlEnabled() && !["remote.status", "remote.stop", "remote.capabilities", "remote.revoke", "remote.pair.cancel"].includes(method)) {
+          return errorResponse(id, -32000, "Remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+        }
         await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#remote.handle(method as RemoteMethod, params));
       }
@@ -2736,6 +2749,8 @@ export class AgenCDaemonJsonRpcConnection {
     return this.#cancellationScope;
   }
 
+  remoteControlBridge = false;
+
   markInitialized(state: AgenCDaemonConnectionInitializeState): void {
     this.assertOpen();
     this.#initializeState = state;
@@ -2962,6 +2977,7 @@ function validateInitializeParams(params: JsonObject): InitializeParams {
   const validated = validateObjectShape(params, {
     methodName: "initialize",
     stringFields: ["protocolVersion", "clientName", "authCookie"],
+    booleanFields: ["remoteControlBridge"],
     objectFields: ["protocol", "capabilities"],
   });
   if (validated.protocol !== undefined) {

@@ -344,7 +344,7 @@ Channel tokens live in env, not in TOML:
 | `AGENC_SLACK_BOT_TOKEN`, `AGENC_SLACK_APP_TOKEN` | One-shot Slack credentials; onboarding persists them only in the home-bound native secure storage |
 | `AGENC_WEBCHAT_TOKEN` | One-shot WebChat bearer override; generated persistent tokens live only in the native secure storage |
 | `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native secure storage. |
-| `AGENC_REMOTE_FULL_CONTROL` | Boolean-like. Keeps phone remote control (`agenc remote on`, `/remote on`) turned on without passing `--full-control` on every start. A paired phone gets full control of this computer's AgenC, so it is off unless this is set or the flag is given. Read by the CLI process that starts the bridge; daemon sessions do not consume it |
+| `AGENC_REMOTE_FULL_CONTROL` | Per-run phone full-control consent, only after the owner sets `[remote_control] enabled = true` in home/managed config. Ignored with a warning while disabled; never enables the capability. |
 
 [gateway.md](../gateway.md), [remote-control.md](../remote-control.md).
 

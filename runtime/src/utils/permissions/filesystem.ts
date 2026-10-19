@@ -1,5 +1,6 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
+import { isRemoteControlAuthorityPath } from '../../sandbox/remote-control-protection.js'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
@@ -193,6 +194,7 @@ const PROTECTED_AGENC_CONFIG_FILENAMES = new Set([
 ])
 
 export function isAgenCConfigPath(filePath: string): boolean {
+  if (isRemoteControlAuthorityPath(expandPath(filePath))) return true
   // SECURITY: Normalize path structure first to prevent bypass via redundant ./
   // sequences like `./.agenc/./config.toml` which would evade a raw suffix check.
   const expandedPath = expandPath(filePath)
@@ -405,6 +407,13 @@ export function checkPathSafetyForAutoEdit(
 
   const sharedSafety = checkProtectedPathSafety(path, pathsToCheck)
   if (!sharedSafety.safe) return sharedSafety
+
+  // Owner remote-control authority cannot be approved by a classifier.
+  for (const pathToCheck of pathsToCheck) {
+    if (isRemoteControlAuthorityPath(pathToCheck)) {
+      return { safe: false, message: 'Remote control configuration is owner-only; edit it outside the agent.', classifierApprovable: false }
+    }
+  }
 
   // Check for AgenC config files on all paths
   for (const pathToCheck of pathsToCheck) {

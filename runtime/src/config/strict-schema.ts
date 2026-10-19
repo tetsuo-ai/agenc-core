@@ -620,6 +620,12 @@ const ROOT_FIELD_VALIDATORS = {
   mcp: delegatedObjectValidator("mcp"),
   mcp_servers: delegatedObjectValidator("mcp_servers"),
   daemon: validateDaemon,
+  remote_control: (value) => {
+    if (value === undefined) return;
+    const record = requirePlainObject(value, "remote_control");
+    rejectUnknownFields(record, new Set(["enabled"]), "remote_control");
+    optionalBoolean(record.enabled, "remote_control.enabled");
+  },
   gateway: validateGateway,
   protocol: delegatedObjectValidator("protocol"),
   lsp_servers: validateLspServers,

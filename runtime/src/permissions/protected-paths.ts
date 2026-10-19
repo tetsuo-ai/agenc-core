@@ -7,6 +7,7 @@
  * apply-patch cannot auto-allow paths the shell pipeline would ask about.
  */
 
+import { isRemoteControlAuthorityPath } from "../sandbox/remote-control-protection.js";
 import { getPlatform } from "../utils/platform.js";
 import { containsVulnerableUncPath } from "../utils/shell/readOnlyCommandValidation.js";
 
@@ -186,6 +187,9 @@ export function checkProtectedPathSafety(
   pathsToCheck: readonly string[],
 ): ProtectedPathSafetyResult {
   for (const pathToCheck of pathsToCheck) {
+    if (isRemoteControlAuthorityPath(pathToCheck)) {
+      return { safe: false, message: "Remote control configuration is owner-only; edit it outside the agent.", classifierApprovable: false };
+    }
     if (hasSuspiciousWindowsPathPattern(pathToCheck)) {
       return {
         safe: false,

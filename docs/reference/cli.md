@@ -509,8 +509,17 @@ owners still fail with `RUN_ID_AMBIGUOUS`; changing cwd does not select an owner
 
 ## `remote`
 
+The owner must edit `[remote_control] enabled = true` in
+`$AGENC_HOME/config.toml` outside the agent, then restart the daemon. The default
+is false; managed policy wins. Flags, project config and environment variables
+cannot enable this capability. Disabled starts refuse before connector imports,
+account checks or network access. Local `status` and `off` remain available;
+`/remote` is hidden from TUI help and completion. After owner enablement,
+`--full-control` (or `AGENC_REMOTE_FULL_CONTROL=1`) supplies the existing per-run
+consent, followed by the account check.
+
 ```text
-agenc remote on
+agenc remote on --full-control
 agenc remote status
 agenc remote off
 ```

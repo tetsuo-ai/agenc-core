@@ -1,3 +1,4 @@
+import { remoteControlAuthorityPaths, protectRemoteControlAuthority } from "../../sandbox/remote-control-protection.js";
 import { realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -327,10 +328,10 @@ function basePermissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  const protectedProfile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+  const protectedProfile = protectRemoteControlAuthority(protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
-  )));
+  ))));
   return routineRunOptions(context.invocation.session) === undefined
     ? protectedProfile
     : confineRoutineProfile(protectedProfile);
@@ -416,6 +417,19 @@ export function enforceRuntimeSandboxAttempt(
     cwd,
     sessionTempRoot,
   );
+  // This owner boundary also applies when approval and ordinary sandbox
+  // checks are bypassed. It precedes the mode's early return.
+  if (toolMayMutate(input.tool)) {
+    const writes = analyzeWrites(input.tool, input.args, cwd);
+    const session = input.context.invocation.session as { services?: { configStore?: { homeContext?: { path?: string }; managedPaths?: { root?: string } } } };
+    const store = session.services?.configStore;
+    const authorities = remoteControlAuthorityPaths(store?.homeContext?.path, store?.managedPaths?.root);
+    for (const target of writes.targets) {
+      if (authorities.some(root => overlapsDesktopAuthority(target, root))) {
+        throw new SandboxDeniedError("Remote control configuration is owner-only and reserved for the native host; edit it outside the agent.", { denial: "filesystem", target, policy });
+      }
+    }
+  }
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
     return;
   }

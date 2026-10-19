@@ -505,6 +505,12 @@ function sanitizeTopLevelAuthority(
   ignored: IgnoredConfigValue[],
 ): AgenCConfig {
   const raw = cloneRecord(layer.config as Readonly<Record<string, unknown>>);
+  // A process-launch flag, profile or environment is not owner consent to
+  // expose the daemon. Only canonical home and managed files own this switch.
+  if (layer.scope !== "user" && layer.scope !== "managed" && layer.scope !== "default") {
+    removeKey(raw, "remote_control", layer, ignored,
+      "only home or managed config.toml may enable remote control");
+  }
   for (const key of MANAGED_ONLY_CONFIG_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(raw, key) || layer.scope === "managed") {
       continue;
@@ -1578,6 +1584,9 @@ async function loadLayeredConfigInternal(
     delete provenance.reasoning_effort;
   }
 
+  if (config.remote_control?.enabled !== true && env.AGENC_REMOTE_FULL_CONTROL !== undefined) {
+    options.onWarn?.("AGENC_REMOTE_FULL_CONTROL is ignored while remote_control.enabled is false; only home or managed config.toml can enable remote control.");
+  }
   config = mergeConfigs(config, {
     configVersion: CANONICAL_CONFIG_VERSION,
   });

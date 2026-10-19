@@ -32,9 +32,9 @@ import { resolveHomeContext } from "../config/home.js";
 
 import { createLazyWhisperService } from "../audio/lazy-whisper.js";
 
-import { createLazyRemoteService } from "../remote/lazy-service.js";
+import type { createLazyRemoteService } from "../remote/lazy-service.js";
 
-import { createRemoteBackend } from "../remote/backend.js";
+
 
 import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
 
@@ -1250,6 +1250,7 @@ async function runAgenCDaemonForegroundLocked(
                 sessionLimit: next.config.agent_max_threads,
               }),
             );
+            if (next.config.remote_control?.enabled !== true) remote?.stop();
             activeConfig = next.config;
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
@@ -1351,15 +1352,20 @@ async function runAgenCDaemonForegroundLocked(
         }
         return { sessionId: agent.sessionId, agentId: agent.agentId };
       };
-    remote = createLazyRemoteService({
-      home: authStartup.daemonHome,
-      backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
-      lookupSession: (sessionId) => sessionManager.getSession(sessionId),
-      createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
-      createSession: createRemoteSession,
-      assertControlSession: assertRemoteControlSession,
-    });
-    cleanup.register("daemon-browser-remote", () => remote?.close());
+    if (activeConfig.remote_control?.enabled === true) {
+      const [{ createLazyRemoteService }, { createRemoteBackend }] = await Promise.all([
+        import("../remote/lazy-service.js"), import("../remote/backend.js"),
+      ]);
+      remote = createLazyRemoteService({
+        home: authStartup.daemonHome,
+        backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
+        lookupSession: (sessionId) => sessionManager.getSession(sessionId),
+        createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
+        createSession: createRemoteSession,
+        assertControlSession: assertRemoteControlSession,
+      });
+      cleanup.register("daemon-browser-remote", () => remote?.close());
+    }
     try {
       ownerTelegram = createLazyOwnerTelegramService({
         home: authStartup.daemonHome,
@@ -1385,6 +1391,7 @@ async function runAgenCDaemonForegroundLocked(
         env: { ...host.env, AGENC_HOME: authStartup.daemonHome },
       }),
       remote,
+      remoteControlEnabled: () => activeConfig.remote_control?.enabled === true,
       ownerTelegram,
       agentManager,
       routines,
