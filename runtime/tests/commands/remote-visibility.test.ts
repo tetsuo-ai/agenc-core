@@ -13,3 +13,10 @@ it.each([false, true])("keeps typed /remote registered but shows help/completion
     expect(listTuiCommandList(registry).some(command => command.name === "remote")).toBe(enabled);
   });
 });
+
+it.each([false, true])("uses the explicit TUI store outside async-local context, enabled=%s", enabled => {
+  const registry = buildDefaultRegistry({ surface: "daemon-tui", remoteControlEnabled: () => enabled });
+  expect(registry.find("remote")).toBeDefined();
+  expect(groupHelpCommands(registry.list()).flatMap(group => group.commands).some(command => command.name === "remote")).toBe(enabled);
+  expect(listTuiCommandList(registry).some(command => command.name === "remote")).toBe(enabled);
+});

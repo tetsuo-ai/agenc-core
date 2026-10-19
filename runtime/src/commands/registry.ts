@@ -139,6 +139,8 @@ export class CommandRegistry implements CommandRegistryInterface {
 
 export interface BuildDefaultRegistryOptions {
   readonly surface?: SlashCommandSurface;
+  /** Explicit TUI authority; React callbacks need not inherit async-local context. */
+  readonly remoteControlEnabled?: () => boolean;
 }
 
 function commandSupportsSurface(
@@ -188,7 +190,10 @@ export function buildDefaultRegistry(
     hooksCommand,
     skillsCommand,
     mcpCommand,
-    remoteCommand,
+    options.remoteControlEnabled === undefined ? remoteCommand : {
+      ...remoteCommand,
+      get isHidden() { return options.remoteControlEnabled!() !== true; },
+    },
     pluginsCommand,
     memorySlashCommand,
     resumeCommand,
