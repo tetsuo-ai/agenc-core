@@ -21,34 +21,52 @@ function launch(args: string[]) {
     child.once("close", (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr }); });
   });
 }
+async function crashThenRecoverTwice(mode: string, boundary: string) {
+  const root = mkdtempSync(join(tmpdir(), `observation-${mode}-`));
+  try {
+    const crash = await launch(["crash", root, mode, boundary]);
+    expect(crash.signal, crash.stderr).toBe("SIGKILL");
+    const reports = [];
+    for (let index = 0; index < 2; index++) {
+      const recovery = await launch(["recover", root, mode, boundary]);
+      expect(recovery.code, recovery.stderr).toBe(0);
+      reports.push(JSON.parse(recovery.stdout.trim().split("\n").at(-1)!));
+    }
+    return reports;
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
 
 it.each(["after-execution", "after-transcript"])("repeats a read safely after SIGKILL %s without effect/admission records", async boundary => {
-  const root = mkdtempSync(join(tmpdir(), "observation-crash-"));
-  try {
-    const crash = await launch(["crash", root, "read", boundary]);
-    expect(crash.signal, crash.stderr).toBe("SIGKILL");
-    for (let index = 0; index < 2; index++) {
-      const recovery = await launch(["recover", root, "read", boundary]);
-      expect(recovery.code, recovery.stderr).toBe(0);
-      expect(JSON.parse(recovery.stdout.trim().split("\n").at(-1)!)).toMatchObject({
-        refused: false, effects: "", effectIntents: 0, completions: 1, journals: [],
-      });
-    }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  for (const report of await crashThenRecoverTwice("read", boundary)) {
+    expect(report).toMatchObject({
+      refused: false, effects: "", effectIntents: 0, unknownOutcomes: 0, completions: 1, journals: [],
+      // No review or mutation gate can be left behind by a read.
+      pendingEffectReviews: false, sideEffectAdmission: "allowed",
+    });
+  }
 }, 60_000);
 
 it.each(["after-execution", "after-transcript"])("never duplicates or loses a mutation after SIGKILL %s", async boundary => {
-  const root = mkdtempSync(join(tmpdir(), "mutation-crash-"));
-  try {
-    const crash = await launch(["crash", root, "write", boundary]);
-    expect(crash.signal, crash.stderr).toBe("SIGKILL");
-    for (let index = 0; index < 2; index++) {
-      const recovery = await launch(["recover", root, "write", boundary]);
-      expect(recovery.code, recovery.stderr).toBe(0);
-      const report = JSON.parse(recovery.stdout.trim().split("\n").at(-1)!);
-      expect(report).toMatchObject({ effects: "one\n", effectIntents: 1,
-        completions: boundary === "after-transcript" ? 1 : 0,
-        refused: boundary !== "after-transcript" });
+  for (const report of await crashThenRecoverTwice("write", boundary)) {
+    expect(report).toMatchObject({ effects: "one\n", effectIntents: 1,
+      completions: boundary === "after-transcript" ? 1 : 0,
+      refused: boundary !== "after-transcript" });
+    if (boundary === "after-execution") {
+      // The executed mutation without an acknowledgement stays under review.
+      expect(report).toMatchObject({ unknownOutcomes: 1, pendingEffectReviews: true });
+      expect(report.sideEffectAdmission).not.toBe("allowed");
     }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+}, 60_000);
+
+it.each(["after-execution", "after-transcript"])("keeps a settled mutation exact when a later read dies %s", async boundary => {
+  for (const report of await crashThenRecoverTwice("mixed", boundary)) {
+    expect(report).toMatchObject({
+      refused: false, effects: "one\n", effectIntents: 1, effectIntentCalls: ["call-0"], unknownOutcomes: 0,
+      completions: 2, completedCalls: ["call-0", "call-1"],
+      pendingEffectReviews: false, sideEffectAdmission: "allowed",
+    });
+    // Only the mutation was durably admitted; the read never entered the journal.
+    expect(report.journalSteps).toEqual(["tool:turn-1:call-0"]);
+  }
 }, 60_000);
