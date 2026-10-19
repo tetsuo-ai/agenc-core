@@ -237,6 +237,8 @@ export interface ExecCommandToolOutput {
   readonly timedOut: boolean;
   readonly truncated: boolean;
   readonly original_token_count: number;
+  /** Launch authority for polled output, which may differ from the polling call. */
+  readonly sandboxApplied?: boolean;
   /** True when the command ran with `detach: true`; AgenC neither tracks nor stops it. */
   readonly detached?: boolean;
   /** OS pid of a detached process that was still running when the yield window closed. */

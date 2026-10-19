@@ -8,7 +8,7 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
  * the containment that stops a command's residue never said so.
  */
 export const RESIDUAL_PROCESSES_NOTE =
-  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. To start a service that must keep running after the command returns and after this session ends, call exec_command again with detach: true.]";
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
 
 /** Model-facing alias only; canonical results and structured facts stay intact. */
 export function compactExecExitFooter(content: string): string {

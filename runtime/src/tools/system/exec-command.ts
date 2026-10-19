@@ -48,6 +48,8 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
+import { LOCAL_SERVER_GUIDANCE, PROCESS_DISCOVERY_GUIDANCE } from "./local-server-guidance.js";
+import { execProcessNamespaceNotice } from "./exec-process-namespace.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
 import {
   execSandboxDenialNotice,
@@ -797,7 +799,7 @@ function processObservationDisposition(
 /**
  * Why `detach: true` cannot run here, or null when it can. A detached process
  * escapes every containment the sandbox lease relies on, so it exists only
- * where no sandbox applies; the message names the flag that gets there and
+ * where no sandbox applies; name the single-command approval path and
  * the sandboxed alternative.
  */
 function detachRefusal(
@@ -806,7 +808,7 @@ function detachRefusal(
 ): ToolResult | null {
   const message =
     runtimeSandbox !== undefined
-      ? "detach: true needs the danger-full-access sandbox: start AgenC with --dangerously-bypass-approvals-and-sandbox (or sandbox_mode = \"danger-full-access\"). In a sandboxed session keep the process alive with yield_time_ms instead; it stops when the session ends."
+      ? "This command has not started: detach=true is unavailable inside the sandbox. Keep the server in the foreground with yield_time_ms, or, if escalation is permitted, request one launch with sandbox_permissions=\"require_escalated\" and explain why the local preview needs it. You do not need to disable the sandbox for the whole session."
       : manager.startDetachedProcess === undefined
         ? "detach: true is not supported by this exec manager."
         : null;
@@ -991,7 +993,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   return {
     name: "exec_command",
     description:
-      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, and kill_process stops it. A trailing '&' loses the output, and every process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (danger-full-access sandbox only); the result carries its pid and log file.",
+      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, and kill_process stops it. A trailing '&' loses the output, and every process a command leaves behind is stopped when it returns. " + LOCAL_SERVER_GUIDANCE + " " + PROCESS_DISCOVERY_GUIDANCE,
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -1081,7 +1083,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         detach: {
           type: "boolean",
           description:
-            "Start a detached service with its own session and a log file; AgenC never stops it, so it outlives the command and the session. Waits yield_time_ms (default 2000) for an early exit, then returns the pid and log path. Only under the danger-full-access sandbox (--dangerously-bypass-approvals-and-sandbox); not with tty.",
+            "Start a detached service with its own session and a log file; AgenC never stops it, so it outlives the command and the session. Waits yield_time_ms (default 2000) for an early exit, then returns the pid and log path. Only outside the sandbox (danger-full-access or an approved require_escalated launch); not with tty.",
         },
         ...SANDBOX_PERMISSION_INPUT_PROPERTIES,
         prefix_rule: {
@@ -1320,7 +1322,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const confinedWorktree = runtimeSandbox === undefined
           ? undefined
           : readSandboxExecutionBroker(args)?.worktreeConfinement?.worktree;
-        const notice = denial?.notice ?? execNetworkFailureNotice({
+        const primaryNotice = denial?.notice ?? execNetworkFailureNotice({
           output: execContent,
           exitCode: output.exitCode,
           command: cmd,
@@ -1338,6 +1340,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               exitCode: output.exitCode,
               worktree: confinedWorktree,
             }));
+        const namespaceNotice = execProcessNamespaceNotice({ command: cmd, runtimeSandbox });
+        const notice = [primaryNotice, namespaceNotice].filter(Boolean).join("\n\n") || null;
         return {
           content:
             notice === null ? execContent : `${execContent}\n\n${notice}`,

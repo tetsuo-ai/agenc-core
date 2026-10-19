@@ -96,8 +96,8 @@ test("compact shell fields keep permission and process-lifecycle conditions", ()
   for (const text of ["required for persistent shells/write_stdin input", "Unavailable in contained operations",
     "tty=false and non-interactive flags", "ask the user", "Run button"]) expect(fields.tty!.description).toContain(text);
   for (const text of ["own session", "stdout/stderr logged", "AgenC never stops it", "survives command/session end",
-    "yield_time_ms (default 2000)", "early exit", "pid/log path", "Only danger-full-access",
-    "--dangerously-bypass-approvals-and-sandbox", "never tty"]) expect(fields.detach!.description).toContain(text);
+    "yield_time_ms (default 2000)", "early exit", "pid/log path", "Only outside the sandbox",
+    "approved require_escalated launch", "never tty"]) expect(fields.detach!.description).toContain(text);
   expect(fields.additional_permissions!.description).toContain('sandbox_permissions="with_additional_permissions"');
   expect(fields.justification!.description).toContain("Why elevated execution");
   expect(fields.prefix_rule!.description).toContain("approval caching");
@@ -243,4 +243,15 @@ test("the registry reports compact presentation for standard deferral only", () 
   expect(buildToolRegistry({ workspaceRoot: "/tmp", deferRareTools: true }).compactPresentation).toBe(true);
   expect(buildToolRegistry({ workspaceRoot: "/tmp", deferRareTools: false }).compactPresentation).toBe(false);
   expect(buildToolRegistry({ workspaceRoot: "/tmp", deferRareTools: true, lightMode: true }).compactPresentation).toBe(false);
+});
+
+
+test("local server guidance is available before advanced shell fields load", () => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
+  expect(shell.function.description).toContain("require_escalated");
+  expect(shell.function.description).toContain("allowLocalBinding");
+  expect(shell.function.description).toContain("PID namespace");
+  expect(shell.function.description).toContain("same sandbox_permissions");
+  expect(shell.function.description).not.toContain("Lasting services need detach.");
 });

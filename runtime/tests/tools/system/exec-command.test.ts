@@ -231,6 +231,21 @@ describe("exec_command tool", () => {
     };
   }
 
+  test.skipIf(process.platform !== "linux")("sandbox process probes explain why a persistent server may be invisible", async () => {
+    for (const cmd of ["ps -p 894 -o pid=,ppid=,cmd= || true", "pgrep -af 'node server.js|npm start' || true"]) {
+      const { tool } = mockManagerTool({ execCommand: async () => completedExecOutput("") });
+      const result = await tool.execute(contextArgs({ cmd }, {
+        sandboxMode: "workspace_write", approvalPolicy: "on_request", platformSandbox: true,
+      }));
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("PID namespace");
+      expect(result.content).toContain("daemon restart");
+      expect(result.content).toContain("same sandbox_permissions");
+      expect(result.content).toContain("Before starting another server");
+      expect(result.codeModeResult).toMatchObject({ sandbox_notice: expect.stringContaining("PID namespace") });
+    }
+  });
+
   // Live incident (session conv-mtjdmlfc, 2026-09-02): 21 `npm start` calls
   // over 412 s, each denied by the sandbox, each answered only by the child's
   // own errno text and an escalation request the parser silently discarded.
@@ -1331,7 +1346,7 @@ describe("exec_command tool", () => {
       }
     });
 
-    test("refuses detach under a sandbox and names the flag and the alternative", async () => {
+    test("refuses sandboxed detach and offers a single escalated launch or a managed foreground command", async () => {
       const startDetachedProcess = vi.fn<
         NonNullable<UnifiedExecProcessManagerLike["startDetachedProcess"]>
       >(async () => detachedOutput({ pid: 1 }));
@@ -1342,8 +1357,8 @@ describe("exec_command tool", () => {
       );
 
       expect(result.isError).toBe(true);
-      expect(result.content).toContain("danger-full-access");
-      expect(result.content).toContain("--dangerously-bypass-approvals-and-sandbox");
+      expect(result.content).toContain("require_escalated");
+      expect(result.content).not.toContain("--dangerously-bypass-approvals-and-sandbox");
       expect(result.content).toContain("yield_time_ms");
       expect(result.metadata).toMatchObject({ kind: "exec_detach_unavailable", recoverable: true });
       expect(result.effectDisposition).toMatchObject({

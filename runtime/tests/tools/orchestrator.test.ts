@@ -885,6 +885,28 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     }));
   });
 
+  test.each(["require_escalated", "with_additional_permissions"] as const)(
+    "%s approval explains the scope and shows the requested justification",
+    async (sandboxPermissions) => {
+      const request = vi.fn(async (_ctx: ApprovalCtx) => ({ kind: "denied" as const }));
+      await expect(orchestrateToolCall({
+        tool: mkTool(), approvalCtx: mkCtx(), approvalPolicy: "untrusted",
+        sandboxMode: "workspace_write",
+        approvalArgs: {
+          sandbox_permissions: sandboxPermissions,
+          additional_permissions: { network: { enabled: true } },
+          justification: "Allow the local preview server so you can open your page?",
+        },
+        dispatch: async () => "unexpected", approvalResolver: { request },
+      })).rejects.toBeInstanceOf(ApprovalRejectedError);
+      const ctx = request.mock.calls[0]![0];
+      expect(ctx.retryReason).toContain("Allow the local preview server so you can open your page?");
+      expect(ctx.retryReason).toContain(sandboxPermissions === "require_escalated"
+        ? "outside the sandbox" : "extra sandbox permissions");
+      expect(ctx.retryReason).toContain("this command");
+    },
+  );
+
   test("sandbox_permissions=require_escalated: approval drives first attempt with sandbox off", async () => {
     const dispatches: string[] = [];
     const result = await orchestrateToolCall<string>({

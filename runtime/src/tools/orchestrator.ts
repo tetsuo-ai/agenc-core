@@ -1,3 +1,4 @@
+import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
 /**
  * Tool orchestrator — approval → sandbox → attempt → retry decision
  * pipeline.
@@ -584,6 +585,11 @@ type SandboxPermissionApprovalAction =
   | { readonly kind: "prompt"; readonly reason: string }
   | { readonly kind: "deny"; readonly reason: string };
 
+function sandboxApprovalExplanation(scope: string, justification: string | undefined): string {
+  const reason = justification?.trim();
+  return reason ? `${scope} ${reason}` : `${scope} This permission is separate from approval to run the command with sandbox limits.`;
+}
+
 function sandboxPermissionApprovalAction(opts: {
   readonly request: SandboxPermissionsRequest;
   readonly approvalPolicy: ApprovalPolicy;
@@ -595,6 +601,8 @@ function sandboxPermissionApprovalAction(opts: {
    * outside bypass still denies: there nobody chose to skip the question.
    */
   readonly bypassPermissions?: boolean;
+  readonly justification?: string;
+  readonly escalationConfined?: boolean;
 }): SandboxPermissionApprovalAction {
   switch (opts.request.kind) {
     case "default":
@@ -624,7 +632,9 @@ function sandboxPermissionApprovalAction(opts: {
       }
       return {
         kind: "prompt",
-        reason: "sandbox escalation requested",
+        reason: sandboxApprovalExplanation(opts.escalationConfined === true
+          ? "Allow network access for this command; workspace limits remain."
+          : "Run outside the sandbox for this command.", opts.justification),
       };
     case "with_additional_permissions":
       if (!hasAdditionalSandboxPermissions(opts.request.additionalPermissions)) {
@@ -656,7 +666,7 @@ function sandboxPermissionApprovalAction(opts: {
       }
       return {
         kind: "prompt",
-        reason: "additional sandbox permissions requested",
+        reason: sandboxApprovalExplanation("Allow extra sandbox permissions for this command.", opts.justification),
       };
     default: {
       const _exhaustive: never = opts.request;
@@ -768,6 +778,9 @@ export async function orchestrateToolCall<T>(
   let requirement = toolRequirement;
   const sandboxPermissionApproval = sandboxPermissionApprovalAction({
     request: normalizedSandboxPermissions,
+    escalationConfined: escalationStaysConfined(opts.approvalCtx.invocation.session),
+    justification: (normalizedSandboxPermissions.kind !== "default" ? normalizedSandboxPermissions.justification : undefined)
+      ?? (typeof opts.approvalArgs?.justification === "string" ? opts.approvalArgs.justification : undefined),
     approvalPolicy: effectiveApprovalPolicy,
     granular: opts.granular,
     bypassPermissions: isBypassPermissionsMode,

@@ -99,7 +99,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
   return {
     name: "write_stdin",
     description:
-      "Poll or write to a session exec_command left running, by session_id. chars='' polls any running session for new output; sending input needs a session started with tty=true.",
+      "Poll or write to a session exec_command left running, by session_id. chars='' polls any running session for new output; sending input needs a session started with tty=true and matching sandbox_permissions. Empty polls only read already-approved output and need no new sandbox escalation.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -161,7 +161,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         sandbox_permissions: {
           ...SANDBOX_PERMISSION_INPUT_PROPERTIES.sandbox_permissions,
           description:
-            "The sandbox_permissions value the session was started with, to reach it.",
+            "For non-empty input, match the sandbox_permissions value the session was started with. Empty polls need no escalation.",
         },
       },
       required: ["session_id"],
@@ -249,7 +249,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const denial = execSandboxDenialNotice({
           output: execContent,
           exitCode: output.exitCode,
-          sandboxApplied: runtimeSandbox !== undefined,
+          sandboxApplied: output.sandboxApplied ?? runtimeSandbox !== undefined,
           session: runtimeContext?.invocation.session,
           escalationAvailable: runtimeContext === undefined ||
             sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {
@@ -260,7 +260,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const notice = denial?.notice ?? execNetworkFailureNotice({
           output: execContent,
           exitCode: output.exitCode,
-          runtimeSandbox,
+          runtimeSandbox: output.sandboxApplied === false ? undefined : runtimeSandbox,
           escalationAvailable: runtimeContext !== undefined &&
             sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {
               sandboxMode: runtimeContext.requestedSandboxMode,

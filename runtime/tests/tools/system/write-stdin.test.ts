@@ -189,3 +189,21 @@ test.each([
   expect(result.codeModeResult).toMatchObject({ sandbox_notice: expect.stringContaining("sandbox.network.allowLocalBinding = true") });
   expect(result.metadata?.processId).toBe(7);
 });
+
+
+test("polling an escalated server does not label its OS error as a sandbox denial", async () => {
+  const output = "Error: listen EACCES: permission denied 127.0.0.1:80";
+  const manager: UnifiedExecProcessManagerLike = {
+    maxTimeoutMs: 30_000, execCommand: vi.fn(async () => undefined as never), closeAll: vi.fn(async () => {}),
+    writeStdin: vi.fn(async () => ({ output, stdout: "", stderr: output, exitCode: 1, exit_code: 1,
+      sandboxApplied: false, durationMs: 1, wall_time_seconds: 0.001, timedOut: false,
+      truncated: false, original_token_count: 10 })),
+  };
+  const tool = createUnboundWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+  const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: root, probe: () => ({ kind: "ready", mode: "workspace_write", platform: process.platform }) });
+  const args = { session_id: 7, chars: "" };
+  attachSandboxExecutionBroker(args, broker);
+  const result = await tool.execute(args);
+  expect(result.isError).toBe(true);
+  expect(result.content).not.toContain("sandbox blocks local servers");
+});

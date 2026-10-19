@@ -1020,8 +1020,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
     // A current same-owner binding may collect settled output from a prior
     // generation. It cannot write stdin or control a prior live process.
+    // Output polling observes an already-approved process after owner/lifetime
+    // checks above; it neither launches a command nor writes to its stdin.
+    // Requiring the launch profile here forced another escalation just to read
+    // a local server's output. Input still needs the compatible profile.
     if (
-      request.runtimeSandbox !== undefined &&
+      input.length > 0 && request.runtimeSandbox !== undefined &&
       !runtimeSandboxesCompatible(entry.runtimeSandbox, request.runtimeSandbox)
     ) {
       throw new UnifiedExecError(
@@ -1064,12 +1068,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
-    const collected = await this.collect(entry, {
-      yieldMs: clampWriteYield(request.yield_time_ms, input),
-      signal: request.__abortSignal,
-      maxOutputTokens: request.max_output_tokens,
-      onProgress: request.__onProgress,
-    });
+    const collected = {
+      ...await this.collect(entry, {
+        yieldMs: clampWriteYield(request.yield_time_ms, input),
+        signal: request.__abortSignal,
+        maxOutputTokens: request.max_output_tokens,
+        onProgress: request.__onProgress,
+      }),
+      sandboxApplied: entry.runtimeSandbox !== undefined,
+    };
     if (entry.exitState !== null) {
       this.releaseProcessId(entry.processId);
       return collected;

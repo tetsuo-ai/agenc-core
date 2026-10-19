@@ -29,7 +29,7 @@ export interface ListProcessesToolConfig {
 }
 
 const LIST_PROCESSES_SCOPE_NOTE =
-  "Only sessions this conversation started with exec_command are listed; another conversation's sessions and detached services (detach: true) are not. Stop live sessions with kill_process by session_id or all=true rather than matching command text in the process table, which also selects AgenC's own CLI and process brokers.";
+  "This inventory does not survive a daemon restart; check the known server URL with the same sandbox_permissions used to launch it before assuming it stopped. Only sessions this conversation started with exec_command are listed; another conversation's sessions and detached services (detach: true) are not. Stop live sessions with kill_process by session_id or all=true rather than matching command text in the process table, which also selects AgenC's own CLI and process brokers.";
 
 interface ListProcessesSessionEntry {
   readonly session_id: number;

@@ -199,11 +199,13 @@ session, and is stopped by `closeAll` when the session ends. `detach: true`
 starts a service AgenC never stops: its own session, stdout and stderr in a
 log file under the session temp root, an early-exit wait of `yield_time_ms`
 (default 2 s) so a daemon that rejects its config still reports the error,
-then `running=true pid=<pid> detached=true log=<path>` in the footer. It needs
-the `danger-full-access` sandbox (`--dangerously-bypass-approvals-and-sandbox`
-or `sandbox_mode = "danger-full-access"`): a detached process escapes every
-containment a sandbox lease relies on, so under a sandbox the tool refuses it
-and points at `yield_time_ms`. It cannot be combined with `tty`, and
+then `running=true pid=<pid> detached=true log=<path>` in the footer. It runs
+only outside the sandbox: either the session already uses `danger-full-access`,
+or the user approves this launch with `sandbox_permissions: "require_escalated"`.
+The approval shows why the command needs to leave the sandbox. Ordinary command
+approval does not grant that extra permission. There is no need to disable the
+sandbox for the entire session. Inside the sandbox, use a foreground command
+with `yield_time_ms`. It cannot be combined with `tty`, and
 `kill_process` does not know detached processes; stop one with `kill <pid>`.
 A detached service is not a managed session handle: it does not appear in
 `list_processes`, and `kill_process all: true` does not reach it.
@@ -221,6 +223,18 @@ Set `sandbox.persistent_session = false` to use
 it for every command.
 
 #### Recovering background work
+
+Linux sandbox commands have a private PID namespace. `ps`, `pgrep`, and `pidof`
+inside it cannot see a server launched outside it, even if its saved PID is
+still alive. The managed inventory also does not survive a daemon restart and
+excludes detached services. Before starting another server after reconnecting,
+check its known URL using the same sandbox permissions used for its launch.
+A refused sandbox loopback connection or an empty process list does not prove
+the host server stopped. A check outside the sandbox can require its own
+approval. Empty `write_stdin` polls read an already-approved process's output
+without a new escalation; sending input still requires the launch's compatible
+sandbox profile and normal input approval. Ownership and lifetime checks apply
+to both.
 
 Recovery from hung or leftover work goes through the identities the manager
 already owns, not through the process table. Every yielded `exec_command`
@@ -830,7 +844,10 @@ shell command: the listener is inside that command's private loopback network
 namespace. A separate `exec_command` cannot reach it; `write_stdin` can send a
 curl command to an existing interactive shell in that namespace. Host services
 and external networking remain blocked. With the default setting, a refused
-Python or Node server includes one line explaining this opt-in.
+Python or Node server includes one line explaining this opt-in. This private
+loopback is useful for sandboxed tests; the host browser cannot reach it. For
+a preview in the user's browser, request one approved escalated server launch
+and give the local URL, keeping the session's sandbox default in place.
 
 ### Home workspace vs helper containment
 
