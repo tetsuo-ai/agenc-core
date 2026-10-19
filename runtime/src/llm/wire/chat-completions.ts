@@ -616,7 +616,12 @@ export function buildChatCompletionsRequest(
       ? { preserveReasoningOnlyFor: input.providerCapabilityHints.reasoningContentProvenance }
       : undefined,
   );
-  const normalizedMessages = input.providerCapabilityHints?.runtimeContextInToolResults
+  // The managed DeepSeek route always projects; the session can ask for the
+  // same layout on other routes (native DeepSeek, `runtime_context_in_tool_results`).
+  const runtimeContextInToolResults =
+    input.providerCapabilityHints?.runtimeContextInToolResults === true ||
+    input.options?.runtimeContextInToolResults === true;
+  const normalizedMessages = runtimeContextInToolResults
     ? projectRuntimeContextIntoToolResults(preparedMessages)
     : preparedMessages;
   const replayOnlyAdjacentToolContinuation =
