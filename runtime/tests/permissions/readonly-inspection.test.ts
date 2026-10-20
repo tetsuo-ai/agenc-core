@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertReadOnlyInspectionInvocation, attachReadOnlyInspectionInvocation, inspectReadOnlyCommand, prepareReadOnlyInspectionInvocation, readReadOnlyInspectionInvocation } from "../../src/permissions/readonly-inspection.js";
+import { assertReadOnlyInspectionInvocation, attachReadOnlyInspectionInvocation, inspectReadOnlyCommand, prepareReadOnlyInspectionInvocation, readReadOnlyInspectionInvocation, withSessionPresentationEnvironment } from "../../src/permissions/readonly-inspection.js";
 import { analyzeShellRuntimeAccess } from "../../src/tools/runtimes/shell.js";
 import type { Tool } from "../../src/tools/types.js";
 import { restrictedFileSystemPolicy } from "../../src/sandbox/engine/index.js";
@@ -79,15 +79,33 @@ describe("read-only shell inspection", () => {
     const inspected = inspectReadOnlyCommand("exec_command", { cmd: "cat 'file with spaces.txt'" }, process.cwd());
     if (!inspected.allowed) throw new Error(inspected.reason);
     const invocation = prepareReadOnlyInspectionInvocation(inspected.invocation, sandbox);
-    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd(), baseEnv: {
+      PATH: "/home/user/bin:/usr/bin", LANG: "de_DE.UTF-8", LC_COLLATE: "C", TZ: "Europe/Berlin", TIME_STYLE: "long-iso",
+      LOCPATH: "/home/user/locale", GCONV_PATH: "/home/user/gconv", LD_PRELOAD: "/home/user/hook.so", BASH_ENV: "/home/user/.env",
+    } });
     const wrapped = manager as unknown as { buildSpawnCommand: (input: unknown) => unknown; spawnProcess: (input: unknown) => Promise<never> };
     const build = vi.spyOn(wrapped, "buildSpawnCommand").mockImplementation((input) => input);
     const spawn = vi.spyOn(wrapped, "spawnProcess").mockRejectedValue(new Error("captured before physical execution"));
     await expect(manager.execCommand({ cmd: "cat 'file with spaces.txt'", runtimeSandbox: sandbox, directInvocation: invocation, login: false })).rejects.toThrow("captured before physical execution");
-    expect(build).toHaveBeenCalledWith(expect.objectContaining({ program: invocation.program, args: ["file with spaces.txt"], cwd: process.cwd(), env: invocation.env }));
+    // The inspection keeps its own fixed environment except for the session's
+    // locale and display settings, so collation and dates match the shell.
+    const { LANG: _lang, LC_ALL: _all, ...fixed } = invocation.env;
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ program: invocation.program, args: ["file with spaces.txt"], cwd: process.cwd(),
+      env: { ...fixed, LANG: "de_DE.UTF-8", LC_COLLATE: "C", TZ: "Europe/Berlin", TIME_STYLE: "long-iso" } }));
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ allowDirectBwrap: true, sessionSlot: "inspection" }));
     build.mockRestore();
     spawn.mockRestore();
+  });
+});
+
+describe("session presentation environment", () => {
+  it("takes only the session's locale and display settings into an inspection's environment", () => {
+    expect(withSessionPresentationEnvironment({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_PAGER: "" }, {
+      LANG: "fr_FR.UTF-8", LANGUAGE: "fr:en", LC_TIME: "en_GB.UTF-8", TZ: "America/New_York", QUOTING_STYLE: "shell-escape",
+      BLOCK_SIZE: "'1", LC_ALL: undefined, LOCPATH: "/tmp/locale", GCONV_PATH: "/tmp/gconv", PATH: "/tmp/bin", LD_PRELOAD: "x.so",
+      LC_CTYPE: "../../tmp/evil", TIME_STYLE: "+%F\n%T",
+    })).toEqual({ PATH: "/usr/bin:/bin", GIT_PAGER: "", LANG: "fr_FR.UTF-8", LANGUAGE: "fr:en", LC_TIME: "en_GB.UTF-8",
+      TZ: "America/New_York", QUOTING_STYLE: "shell-escape", BLOCK_SIZE: "'1" });
   });
 });

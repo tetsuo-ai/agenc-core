@@ -10,7 +10,7 @@ import {
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
-import { assertReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
+import { assertReadOnlyInspectionInvocation, withSessionPresentationEnvironment } from "../permissions/readonly-inspection.js";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -764,7 +764,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       program: direct?.program ?? shell,
       args: direct?.args ?? args,
       cwd: direct?.cwd ?? cwd,
-      env: direct?.env ?? buildEnv(this.baseEnv, this.env),
+      // An inspection keeps its fixed environment apart from the session's
+      // locale and display settings, so its output reads as the shell's would.
+      env: direct === undefined
+        ? buildEnv(this.baseEnv, this.env)
+        : withSessionPresentationEnvironment(direct.env, buildEnv(this.baseEnv, this.env)),
       ...(request.runtimeSandbox !== undefined
         ? { runtimeSandbox: request.runtimeSandbox }
         : {}),

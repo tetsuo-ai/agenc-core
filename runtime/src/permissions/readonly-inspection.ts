@@ -200,3 +200,34 @@ export function assertReadOnlyInspectionInvocation(invocation: ReadOnlyInspectio
     throw new Error("Read-only inspection executable changed before launch or invocation authority is missing");
   }
 }
+
+/**
+ * Presentation settings a shell command inherits from the session. A verified
+ * inspection takes them from the session instead of its fixed C locale, so
+ * `ls`, `sort`, `grep` and their messages collate, format dates and sizes, and
+ * quote names exactly as on the ordinary shell path. Only these names pass,
+ * with bounded plain values: locale data paths (LOCPATH), converter modules
+ * (GCONV_PATH) and every other variable stay out.
+ */
+const PRESENTATION_ENVIRONMENT: readonly (readonly [name: RegExp, value: RegExp])[] = [
+  [/^(?:LANG|LANGUAGE|LC_[A-Z]+)$/u, /^[A-Za-z0-9_.@:+-]{0,128}$/u],
+  [/^TZ$/u, /^[A-Za-z0-9_.:/+<>,-]{0,128}$/u],
+  [/^TIME_STYLE$/u, /^[\x20-\x7e]{0,128}$/u],
+  [/^QUOTING_STYLE$/u, /^[a-z-]{0,32}$/u],
+  [/^(?:BLOCK_SIZE|BLOCKSIZE|LS_BLOCK_SIZE|DU_BLOCK_SIZE)$/u, /^[A-Za-z0-9']{0,32}$/u],
+];
+
+export function withSessionPresentationEnvironment(
+  invocationEnv: Readonly<Record<string, string>>,
+  sessionEnv: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const rule = (name: string) => PRESENTATION_ENVIRONMENT.find(([pattern]) => pattern.test(name));
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(invocationEnv)) {
+    if (rule(name) === undefined) env[name] = value;
+  }
+  for (const [name, value] of Object.entries(sessionEnv)) {
+    if (value !== undefined && rule(name)?.[1].test(value) === true) env[name] = value;
+  }
+  return env;
+}

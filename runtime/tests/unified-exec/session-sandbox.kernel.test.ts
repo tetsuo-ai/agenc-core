@@ -9,7 +9,7 @@ import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import * as supervised from "../../src/utils/supervisedProcess.js";
 import { permissionProfileFromRuntimePermissions, restrictedFileSystemPolicy } from "../../src/sandbox/engine/index.js";
 import type { UnifiedExecRuntimeSandbox } from "../../src/unified-exec/types.js";
-import { prepareReadOnlyInspectionInvocation } from "../../src/permissions/readonly-inspection.js";
+import { inspectReadOnlyCommand, prepareReadOnlyInspectionInvocation } from "../../src/permissions/readonly-inspection.js";
 let root: string, manager: UnifiedExecProcessManager, policy: UnifiedExecRuntimeSandbox;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "manager-session-sandbox-"));
@@ -176,6 +176,36 @@ describe("persistent unified exec lifecycle", () => {
     expect(refused.exitCode).not.toBe(0);
     expect(fs.existsSync(path.join(root, "inspection-wrote"))).toBe(false);
     expect(fs.readFileSync(path.join(root, "shell-wrote"), "utf8")).toBe("x");
+  });
+  it("gives verified inspections the session's locale and time zone", async () => {
+    fs.writeFileSync(path.join(root, "accent.txt"), "\u00e9\n");
+    const stamped = path.join(root, "stamped.txt");
+    fs.writeFileSync(stamped, "x");
+    // 20:00 UTC on 2020-01-01 is already 2 January at UTC+9.
+    fs.utimesSync(stamped, new Date("2020-01-01T20:00:00Z"), new Date("2020-01-01T20:00:00Z"));
+    const local = new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: path.join(root, "temp"),
+      baseEnv: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", TZ: "JST-9" } });
+    try {
+      const readOnly: UnifiedExecRuntimeSandbox = { ...policy, preference: "require",
+        permissionProfile: permissionProfileFromRuntimePermissions(restrictedFileSystemPolicy([
+          { path: { kind: "special", value: { kind: "root" } }, access: "read" }]), "disabled") };
+      const inspect = async (cmd: string) => {
+        const inspected = inspectReadOnlyCommand("exec_command", { cmd }, root);
+        if (!inspected.allowed) throw new Error(inspected.reason);
+        return local.execCommand({ cmd, runtimeSandbox: readOnly, workdir: root, yield_time_ms: 1000,
+          directInvocation: prepareReadOnlyInspectionInvocation(inspected.invocation, readOnly) });
+      };
+      const ordinary = (cmd: string) => local.execCommand({ cmd, login: false, runtimeSandbox: policy, yield_time_ms: 1000 });
+      for (const cmd of ["wc -m accent.txt", "ls -l stamped.txt"]) {
+        const [direct, shell] = [await inspect(cmd), await ordinary(cmd)];
+        expect(direct.exitCode).toBe(0);
+        expect(direct.stdout).toBe(shell.stdout);
+      }
+      expect((await inspect("wc -m accent.txt")).stdout).toBe("2 accent.txt\n");
+      expect((await inspect("ls -l stamped.txt")).stdout).toMatch(/ Jan {2}2 {2}2020 stamped\.txt\n$/u);
+    } finally {
+      await local.closeAll();
+    }
   });
   it("closes cached namespaces across authority quiesce and durable shutdown", async () => {
     const launch = vi.spyOn(supervised, "spawnContainedProcess");
