@@ -979,7 +979,12 @@ a project memory file and a global one are treated alike: either is allowed
 without a card unless an ask rule names it, and a deny rule wins. A cowork
 override is readable but gets no write allowance, and with the session's auto
 memory off neither directory is special. A caller without a session keeps the
-process-wide directories.
+process-wide directories. The file tools' own confinement
+(`resolveToolAllowedPaths`, which is what lets `Glob` and `Grep` search the
+memory directories) takes the directories of the session whose turn runs the
+tool, a worktree child's write confinement takes only the directories its
+session may write, and background memory extraction checks its directory with
+the runtime sandbox's own question (`isSessionDurableMemoryWritePath`).
 
 **Landlock vs bubblewrap.** Bubblewrap can express the reservation:
 `--ro-bind` home after `--bind` of the writable ancestor. Landlock cannot

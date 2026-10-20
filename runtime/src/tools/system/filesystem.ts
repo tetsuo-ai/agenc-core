@@ -50,7 +50,11 @@ import { resolve, dirname, basename, join, isAbsolute } from "node:path";
 // pulling the barrel in here made the filesystem tool fail to load in any
 // suite that mocks `node:fs/promises`.
 import { getDurableMemoryRoots } from "../../memory/paths.js";
-import { getCurrentRuntimeSession } from "../../session/current-session.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
+import {
+  getCurrentRuntimeSession,
+  peekScopedRuntimeSession,
+} from "../../session/current-session.js";
 import {
   getSessionTempNamespaceName,
   resolveSessionTempRoot,
@@ -1132,7 +1136,8 @@ export async function isPathAllowed(
  * directories". The roots are runtime-derived from the same resolvers the
  * prompt and recall use, never from model input, and only those two
  * directories are admitted: sibling state under `$AGENC_HOME` (sessions,
- * config, auth) stays denied.
+ * config, auth) stays denied. They are the directories of the session whose
+ * turn runs the tool ({@link durableMemoryRootsForCall}).
  */
 export function resolveToolAllowedPaths(
   allowedPaths: readonly string[],
@@ -1150,7 +1155,7 @@ export function resolveToolAllowedPaths(
     .map((entry) => resolveSessionWorkspaceRoot(entry))
     .filter((entry): entry is string => typeof entry === "string")
     .map((entry) => normalizeFilesystemUnicodeIdentity(resolve(entry)));
-  const memoryRoots = getDurableMemoryRoots().map((root) =>
+  const memoryRoots = durableMemoryRootsForCall().map((root) =>
     normalizeFilesystemUnicodeIdentity(resolve(root)),
   );
   if (normalizedExtraRoots.length === 0 && memoryRoots.length === 0) {
@@ -1159,6 +1164,25 @@ export function resolveToolAllowedPaths(
   return Array.from(
     new Set([...allowedPaths, ...normalizedExtraRoots, ...memoryRoots]),
   );
+}
+
+/**
+ * The durable memory directories of the session whose turn runs this call:
+ * the global root and the project directory its memory prompt names, none
+ * when its auto memory is off. A daemon serves many projects from its own
+ * working directory, so the process-wide project directory names the
+ * daemon's project, and a session's Glob or Grep of its own project memory
+ * was refused as outside the allowed directories while the global root
+ * passed. Outside a session's turn (no scoped session, or one without a
+ * memory owner) the process-wide roots apply as before.
+ */
+function durableMemoryRootsForCall(): readonly string[] {
+  const session = peekScopedRuntimeSession();
+  if (session !== null) {
+    const directories = sessionDurableMemoryDirectoriesOf(session, getCwd());
+    if (directories !== undefined) return directories.roots;
+  }
+  return getDurableMemoryRoots();
 }
 
 function normalizeFilesystemUnicodeIdentity(path: string): string {

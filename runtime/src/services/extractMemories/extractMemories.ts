@@ -53,9 +53,9 @@ import { withSignedAllowedRoots } from "../../agents/_deps/filesystem-args.js";
 import { canWritePathWithCwd } from "../../sandbox/engine/index.js";
 import {
   agencHomeCarveOutAllowsWrite,
+  isSessionDurableMemoryWritePath,
   permissionProfileForLiveSandboxPolicies,
 } from "../../tools/runtimes/sandboxing.js";
-import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
 import type { AgentPath } from "../../agents/registry.js";
 import {
   createMemoryExtractionTriggerState,
@@ -912,8 +912,9 @@ export function initExtractMemories(
       !canWritePathWithCwd(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot) &&
       // The file tools may write the durable memory roots under
       // workspace_write; the extractor's Write calls go through the same
-      // runtime sandbox check, so admit exactly what it admits.
-      !(isDurableMemoryWritePath(memoryDir) &&
+      // runtime sandbox check, so admit exactly what it admits: this
+      // session's own memory directories, not the daemon process's.
+      !(isSessionDurableMemoryWritePath(session.services, memoryDir, ctx.cwd) &&
         agencHomeCarveOutAllowsWrite(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot))
     )) {
       // A child path allowlist cannot grant filesystem authority. Do not

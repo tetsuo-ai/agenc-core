@@ -3239,7 +3239,7 @@ async function prepareChildToolCall(
   // error the model reads and recovers from: a deny at the permission check
   // would end a whole Goal run (a workflow child's denied approval is
   // WorkflowApprovalFailure, policy_denied).
-  const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path);
+  const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path, childSession);
   if (outsideWorktree !== undefined) {
     return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
   }

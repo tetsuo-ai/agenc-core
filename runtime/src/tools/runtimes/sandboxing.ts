@@ -657,14 +657,27 @@ export function agencHomeCarveOutAllowsWrite(
 }
 
 /**
- * Whether `target` lies under a durable memory directory this session's file
- * tools may write: the global root and the project directory the session's
- * memory prompt names, resolved from the session (its ConfigStore, cwd and
- * runtime options). Process-wide state cannot stand in for it: a daemon's own
- * working directory keys its project memory, so in a daemon session that
- * named another project's directory and every memory save was refused. A
- * session without that authority keeps the process-wide roots.
+ * Whether `target` lies under a durable memory directory the file tools of the
+ * session that owns `services` may write at `cwd`: the global root and the
+ * project directory the session's memory prompt names, resolved from the
+ * session (its ConfigStore, cwd and runtime options). Process-wide state
+ * cannot stand in for it: a daemon's own working directory keys its project
+ * memory, so in a daemon session that named another project's directory and
+ * every memory save was refused. A session without that authority keeps the
+ * process-wide roots. The runtime check below and the background memory
+ * extraction's pre-check both ask this, so they admit the same writes.
  */
+export function isSessionDurableMemoryWritePath(
+  services: LiveSessionMemoryServices | undefined,
+  target: string,
+  cwd: string,
+): boolean {
+  const roots = sessionDurableMemoryWriteRoots(services, cwd);
+  return roots === undefined
+    ? isDurableMemoryWritePath(target)
+    : isUnderMemoryRoots(target, roots);
+}
+
 function isSessionDurableMemoryWrite(
   context: ToolRuntimeAttemptContext,
   target: string,
@@ -673,10 +686,7 @@ function isSessionDurableMemoryWrite(
   const services = (context.invocation.session as {
     readonly services?: LiveSessionMemoryServices;
   } | undefined)?.services;
-  const roots = sessionDurableMemoryWriteRoots(services, cwd);
-  return roots === undefined
-    ? isDurableMemoryWritePath(target)
-    : isUnderMemoryRoots(target, roots);
+  return isSessionDurableMemoryWritePath(services, target, cwd);
 }
 
 function isActiveSessionPlanFile(

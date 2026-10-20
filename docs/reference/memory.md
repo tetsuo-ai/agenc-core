@@ -110,11 +110,17 @@ base prompt.
 
 The file tools (`FileRead`, `Glob`, `Grep`, `Write`, `Edit`, `MultiEdit`)
 admit both memory roots regardless of the workspace boundary
-(`resolveToolAllowedPaths` folds in `getDurableMemoryRoots()`), so the model
-can read and write where the prompt points. Only those two directories are
-admitted: sibling state under `$AGENC_HOME` such as
+(`resolveToolAllowedPaths`), so the model can read, search and write where the
+prompt points. The roots are those of the session whose turn runs the tool
+(`sessionDurableMemoryDirectories`): a daemon runs in its own working
+directory, so the process-wide project directory (`getDurableMemoryRoots()`,
+used only outside a session's turn) would name the daemon's project. With the
+session's auto memory off no memory root is admitted. Only those two
+directories are admitted: sibling state under `$AGENC_HOME` such as
 `projects/<slug>/sessions/`, `config.toml` or `auth.json` stays denied, and
-memory writes through these tools are screened by `checkMemorySecrets`.
+memory writes through these tools are screened by `checkMemorySecrets`. A
+worktree child may write the memory directories its session may write and
+nothing else outside its worktree.
 
 ---
 
@@ -164,7 +170,12 @@ sees only the file read/write tools (`MEMORY_EXTRACTION_TOOL_ALLOWLIST`) inside
 the memory directory, and never blocks a turn: in-flight runs are drained at
 session shutdown. `Write` / `extractMemories` may persist those durable
 memory roots on the host even when `AGENC_HOME` is reserved read-only for
-sandboxed children; operator denies and shell redirects still win. See
+sandboxed children; operator denies and shell redirects still win. Before it
+starts a child, extraction checks that the sandbox will admit its writes with
+the same question the runtime sandbox asks (`isSessionDurableMemoryWritePath`,
+the session's own memory directories), so it runs in daemon sessions as in
+direct runs; a cowork override or an operator deny on the directory stops it
+there (`memory directory is not writable under the current sandbox`). See
 [AgenC home under writable sandbox roots](tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots).
 Every gate that stops a run and every failed run emits a
 `warning` event with cause `memory_extraction_skipped` or

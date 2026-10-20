@@ -23,6 +23,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { getDurableMemoryRoots } from "../memory/index.js";
+import { sessionDurableMemoryDirectoriesOf } from "../services/extractMemories/memory-paths.js";
 import { parsePatch } from "../tools/apply-patch/parser.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
@@ -112,13 +113,31 @@ function writeTargets(
 }
 
 /**
+ * The durable memory directories the child's session may write: the global
+ * root and the project directory its memory prompt names, resolved from the
+ * session (worktrees of one repository share the project directory). None
+ * when the session's auto memory is off or a cowork override moved its
+ * memory, which is readable but never a write allowance. A daemon's own
+ * working directory keys the process-wide project directory to another
+ * project, so the process-wide roots apply only to a caller without a
+ * session.
+ */
+function durableMemoryWriteRoots(session: unknown, worktreePath: string): readonly string[] {
+  const directories = sessionDurableMemoryDirectoriesOf(session, worktreePath);
+  if (directories === undefined) return getDurableMemoryRoots();
+  return directories.writable ? directories.roots : [];
+}
+
+/**
  * The refusal for a worktree child's file write that lands outside its
- * worktree, or undefined when the call is not such a write.
+ * worktree, or undefined when the call is not such a write. `session` is the
+ * child's session, whose memory directories it may also write.
  */
 export function worktreeWriteRefusal(
   toolName: string,
   input: unknown,
   worktreePath: string | undefined,
+  session?: unknown,
 ): string | undefined {
   if (worktreePath === undefined || worktreePath.length === 0) return undefined;
   if (input === null || typeof input !== "object" || Array.isArray(input)) return undefined;
@@ -127,13 +146,14 @@ export function worktreeWriteRefusal(
   const targets = writeTargets(toolName, args, base);
   if (targets === undefined || targets.length === 0) return undefined;
   // Besides the worktree: roots a trusted child-tool policy signed into this
-  // call (a session memory directory, for example) and durable memory. The
-  // parent's own workspace root is not among them: it is the tool's closure
-  // root, which is exactly what let the child write into the checkout.
+  // call (a session memory directory, for example) and the session's durable
+  // memory. The parent's own workspace root is not among them: it is the
+  // tool's closure root, which is exactly what let the child write into the
+  // checkout.
   const roots = [
     worktreePath,
     ...verifyAllowedRoots(args[SESSION_ALLOWED_ROOTS_ARG], args[SESSION_ALLOWED_ROOTS_SIG_ARG]),
-    ...getDurableMemoryRoots(),
+    ...durableMemoryWriteRoots(session, worktreePath),
   ].map((root) => ({ lexical: resolve(root), real: realRoot(root) }));
   for (const { given, absolute } of targets) {
     const real = realTarget(absolute);
