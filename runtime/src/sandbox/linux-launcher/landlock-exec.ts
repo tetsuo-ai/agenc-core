@@ -94,6 +94,26 @@ export type LandlockPlan =
     }
   | { readonly kind: "refused"; readonly reason: string };
 
+/**
+ * The nearest ancestor of `subpath`, strictly between `root` and `subpath`,
+ * that exists as a directory, or null. Such an ancestor is part of the
+ * writable root (it is below the root and not itself a carve-out), so a
+ * read-only carve-out nested inside it cannot be expressed under Landlock.
+ */
+function existingWritableAncestor(root: string, subpath: string): string | null {
+  const normalizedRoot = path.resolve(root);
+  let ancestor = path.dirname(path.resolve(subpath));
+  while (ancestor !== normalizedRoot && ancestor.startsWith(`${normalizedRoot}${path.sep}`)) {
+    try {
+      if (fs.statSync(ancestor).isDirectory()) return ancestor;
+    } catch {
+      // Keep walking up; a missing ancestor is created inside the root.
+    }
+    ancestor = path.dirname(ancestor);
+  }
+  return null;
+}
+
 function underNeverGranted(target: string): boolean {
   return [...NEVER_GRANTED_ROOTS].some(
     (root) => target === root || target.startsWith(`${root}/`),
@@ -176,6 +196,23 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
           reason:
             "a writable root carries an existing read-only subpath, which " +
             `an allow-list cannot express: ${subpath}`,
+        };
+      }
+      // A carve-out that does not exist yet but sits inside an existing
+      // writable directory below the root (a narrowed `.git`: the directory is
+      // writable, only its hooks/config/pointer surface must stay read-only).
+      // Landlock cannot keep a path read-only inside a writable directory, and
+      // watching its creation is weaker than a read-only mount: a confined
+      // command could write `.git/hooks` or redirect `.git/commondir` before
+      // the watcher fires, then execute unconfined. Refuse, exactly as a real
+      // `.git` is refused, so bubblewrap is required.
+      const writableAncestor = existingWritableAncestor(root.root, subpath);
+      if (writableAncestor !== null) {
+        return {
+          kind: "refused",
+          reason:
+            "a writable root carries a read-only carve-out inside an existing " +
+            `writable directory, which an allow-list cannot express: ${writableAncestor}`,
         };
       }
       protectedCreateTargets.push(subpath);

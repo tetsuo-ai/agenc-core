@@ -375,6 +375,19 @@ export function getWritableRootsWithCwd(
     const defaultCarveouts = defaultReadOnlySubpathsForWritableRoot(root)
       .filter((candidate) =>
         !resolvedEntries.some((entry) => entry.path === candidate),
+      )
+      // Narrow a real, not-explicitly-granted `.git` from a whole-directory
+      // carve-out to only its execution/redirection paths, so ordinary branch,
+      // add, commit, tag and stash writes (refs, objects, index, HEAD, logs,
+      // the pseudo-refs and message files) succeed in the default sandbox while
+      // hooks/config/info/objects-info/modules/worktrees/commondir stay
+      // read-only. A `.git` gitfile pointer or an absent `.git` is never
+      // narrowed; `.agenc`/`.agents` pass through unchanged.
+      .flatMap((candidate) =>
+        path.basename(candidate) === GIT_METADATA_DIR_NAME &&
+        isExistingDirectory(candidate)
+          ? gitNarrowedReadOnlyCarveouts(candidate)
+          : [candidate],
       );
     const readOnlySubpaths = dedupPaths([
       ...defaultCarveouts,
@@ -570,6 +583,123 @@ function defaultReadOnlySubpathsForWritableRoot(root: string): string[] {
   return PROTECTED_METADATA_PATH_NAMES.map((name) => path.join(normalized, name));
 }
 
+/**
+ * The repository metadata directory whose inert data areas ordinary branch,
+ * add, commit, tag and stash must write. The directory as a whole is kept
+ * protected against the writes that run code or redirect git (below); only
+ * those paths stay read-only, so `refs`, `objects`, the `index`, `HEAD`, the
+ * reflogs, the pseudo-refs and the message files are writable in the default
+ * sandbox without an escalation. `.agenc` and `.agents` are never narrowed.
+ * Threat analysis and git-documentation sources: round4/jobs/gt/REPORT.md.
+ */
+const GIT_METADATA_DIR_NAME = ".git";
+
+/**
+ * Top-level entries inside a `.git` directory that execute code or redirect
+ * git to attacker-controlled code, objects, refs or repositories. A write to
+ * any of these, directly or through a symlink that resolves into them, stays
+ * refused. Everything else inside `.git` is inert data git reads back.
+ *   hooks            githooks(5): executables git runs during ordinary ops
+ *   config           git-config(5): hooksPath/fsmonitor/sshCommand/filter/alias/...
+ *   config.worktree  per-worktree config
+ *   info             gitattributes(5): info/attributes activates filter/diff drivers
+ *   modules          submodule gitdirs carry their own config and hooks
+ *   worktrees        linked-worktree admin dirs: config.worktree, gitdir/commondir
+ *   commondir        redirects the common git directory
+ *   remotes          legacy remote definitions (gitrepository-layout(5)): fetch URLs
+ *   branches         legacy remote shorthands (gitrepository-layout(5)): fetch URLs
+ */
+const GIT_PROTECTED_TOP_LEVEL_ENTRIES: ReadonlySet<string> = new Set([
+  "hooks",
+  "config",
+  "config.worktree",
+  "info",
+  "modules",
+  "worktrees",
+  "commondir",
+  "remotes",
+  "branches",
+]);
+
+/**
+ * Nested entries inside otherwise-writable `.git` data areas that stay
+ * read-only. `objects/info` holds `alternates` and `http-alternates`, which
+ * redirect object lookups to an arbitrary local store or dumb-HTTP URL; loose
+ * objects and packs elsewhere in `objects/` are inert and writable.
+ */
+const GIT_PROTECTED_NESTED_ENTRIES: readonly string[] = ["objects/info"];
+
+function isExistingDirectory(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The protected (read-only) carve-outs inside a narrowed `.git` directory.
+ * Every one that exists is mounted read-only; every one that is missing is
+ * watched by the launcher's created-path monitor (detect, remove, fail the
+ * command), never placeholdered - a placeholder at a missing path inside the
+ * host-bind-mounted `.git` would make bubblewrap create that entry on the real
+ * host `.git`. `commondir` is included so an unparseable write that creates it
+ * (e.g. python, a compiled helper) is caught and removed, matching base.
+ */
+function gitNarrowedReadOnlyCarveouts(gitMetadataPath: string): string[] {
+  const normalized = normalizePathForPolicy(gitMetadataPath);
+  return [...GIT_PROTECTED_TOP_LEVEL_ENTRIES, ...GIT_PROTECTED_NESTED_ENTRIES].map(
+    (entry) => path.join(normalized, ...entry.split("/")),
+  );
+}
+
+
+/**
+ * Whether a `.git`-relative path names the protected execution/redirection
+ * surface. The `.git` directory entry itself (`rel === ""`) is writable; a
+ * path that escapes `.git` fails closed as protected.
+ */
+function relIsWithinGitProtectedSurface(rel: string): boolean {
+  if (rel === "") return false;
+  if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return true;
+  }
+  const [first] = rel.split(path.sep);
+  if (first !== undefined && GIT_PROTECTED_TOP_LEVEL_ENTRIES.has(first)) return true;
+  return GIT_PROTECTED_NESTED_ENTRIES.some(
+    (nested) => rel === nested || rel.startsWith(`${nested}${path.sep}`),
+  );
+}
+
+/**
+ * Whether a write to `target` is to inert, writable data inside the `.git`
+ * metadata directory `gitMetadataPath` (and so may be allowed even though the
+ * directory is a protected-metadata name). Only applies when `.git` is a real
+ * directory, never a `.git` gitfile pointer. Fails closed against symlink and
+ * alternate-path tricks: both the lexical target and its physical,
+ * symlink-resolved spelling must stay inside this `.git` and off the protected
+ * surface.
+ */
+function gitMetadataDirWriteAllowed(
+  gitMetadataPath: string,
+  target: string,
+): boolean {
+  if (path.basename(gitMetadataPath) !== GIT_METADATA_DIR_NAME) return false;
+  if (!isExistingDirectory(gitMetadataPath)) return false;
+  const lexicalRoot = normalizePathForPolicy(gitMetadataPath);
+  const lexicalTarget = normalizePathForPolicy(target);
+  const physicalRoot = canonicalAuthorityPath(gitMetadataPath);
+  const physicalTarget = canonicalAuthorityPath(target);
+  for (const [root, resolved] of [
+    [lexicalRoot, lexicalTarget],
+    [physicalRoot, physicalTarget],
+  ] as const) {
+    if (!isWithinAuthorityPath(resolved, root)) return false;
+    if (relIsWithinGitProtectedSurface(path.relative(root, resolved))) return false;
+  }
+  return true;
+}
+
 interface ResolvedFileSystemEntry {
   readonly path: string;
   readonly access: FileSystemAccessMode;
@@ -715,13 +845,23 @@ function isMetadataWriteDenied(
     sessionTempRoot,
   );
   if (protectedPath === null) return false;
-  return !hasExplicitWriteEntryForMetadataPath(
-    policy,
-    protectedPath,
-    normalizedTarget,
-    cwd,
-    sessionTempRoot,
-  );
+  if (
+    hasExplicitWriteEntryForMetadataPath(
+      policy,
+      protectedPath,
+      normalizedTarget,
+      cwd,
+      sessionTempRoot,
+    )
+  ) {
+    return false;
+  }
+  // A real `.git` directory is narrowed: inert data is writable, only the
+  // execution/redirection surface stays protected. `.agenc`/`.agents` and a
+  // `.git` gitfile pointer are never narrowed (gitMetadataDirWriteAllowed
+  // returns false), so they stay fully denied.
+  if (gitMetadataDirWriteAllowed(protectedPath, normalizedTarget)) return false;
+  return true;
 }
 
 function metadataChildOfWritableRoot(

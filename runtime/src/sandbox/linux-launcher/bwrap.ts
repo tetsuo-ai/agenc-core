@@ -616,6 +616,17 @@ function appendWritableRoot(
       if (protectedName !== null) {
         handledProtectedNames.add(protectedName);
         appendProtectedMissingMetadata(args, root.root, protectedName, protectedCreateTargets);
+      } else if (isWithinDotGit(root.root, subpath)) {
+        // A narrowed `.git` carve-out (hooks/config/info/objects-info/modules/
+        // worktrees/remotes/branches/config.worktree/commondir) that does not
+        // exist yet. The surrounding `.git` is a writable directory, so the
+        // agent could otherwise create it. Do NOT mount a placeholder here: a
+        // mount point at a missing path inside the host-bind-mounted `.git`
+        // makes bubblewrap create that entry on the real host `.git`. Watch it
+        // with the created-path monitor instead (detect, remove, fail the
+        // command), which leaves the repository untouched. Ordinary branch/
+        // add/commit/tag/stash never create these.
+        protectedCreateTargets.push(subpath);
       } else {
         throw new Error(
           `cannot enforce missing read-only subpath inside Linux sandbox: ${subpath}`,
@@ -628,6 +639,18 @@ function appendWritableRoot(
       appendProtectedMissingMetadata(args, root.root, name, protectedCreateTargets);
     }
   }
+}
+
+/**
+ * Whether `subpath` lies inside a `.git` directory of this writable root: a
+ * narrowed git carve-out (its `.git` is writable data with only the
+ * execution/redirection surface kept read-only). A missing carve-out here is
+ * watched by the created-path monitor rather than failing closed.
+ */
+function isWithinDotGit(root: string, subpath: string): boolean {
+  const relative = path.relative(normalizePathForPolicy(root), normalizePathForPolicy(subpath));
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  return relative.split(path.sep).includes(".git");
 }
 
 function appendBindIfExists(args: string[], source: string): void {
