@@ -75,6 +75,7 @@ import {
 } from "../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { validationErrorToolResult } from "../tools/results.js";
+import { isRuntimeInjectedArgKey } from "../tools/strict-args.js";
 import {
   DEADLINE_RESERVE_SPAWN_REFUSAL,
   inDeadlineReserve,
@@ -1737,6 +1738,14 @@ function webFetchMappedIPv4(address: string): string | null {
   return null;
 }
 
+/**
+ * Refuse a key the tool does not take. Keys the runtime injects (`__callId`
+ * and the `__agenc*` channel) are tolerated, as in tools/strict-args.ts: a
+ * subagent's dispatch adds them as plain properties (the signed session id,
+ * the home), and a CSV worker's report_agent_job_result was refused for
+ * `__agencSessionIdSig`, a key the model never wrote. Model-supplied
+ * `__agenc*` keys are stripped before a child's call reaches here.
+ */
 function strictArgs(
   args: Record<string, unknown>,
   opts: {
@@ -1750,7 +1759,7 @@ function strictArgs(
     SESSION_ID_ARG,
   ]);
   for (const key of Object.keys(args)) {
-    if (!allowed.has(key)) {
+    if (!allowed.has(key) && !isRuntimeInjectedArgKey(key)) {
       return refusal({ error: `unknown field \`${key}\`` });
     }
   }

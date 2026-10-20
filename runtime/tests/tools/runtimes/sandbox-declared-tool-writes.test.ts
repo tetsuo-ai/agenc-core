@@ -583,10 +583,15 @@ describe("WorkflowTool and the CSV job tools declare their project stores", () =
             async spawn(ctx) {
               queueMicrotask(() => {
                 void (async () => {
+                  // As a worker's dispatch delivers it: the runtime's signed
+                  // session id and home ride along as plain properties.
                   const result = await report.execute({
-                    job_id: ctx.jobId,
-                    item_id: ctx.itemId,
-                    result: { upper: "ADA" },
+                    ...withSignedSessionId({
+                      job_id: ctx.jobId,
+                      item_id: ctx.itemId,
+                      result: { upper: "ADA" },
+                    }, "csv-worker-session"),
+                    [SESSION_AGENC_HOME_ARG]: home,
                   });
                   reports.push(result);
                   if (result.isError) {
@@ -605,6 +610,11 @@ describe("WorkflowTool and the CSV job tools declare their project stores", () =
     // The job runs in this workspace's store: the report is recorded.
     const own = await runJob(new CsvAgentJobsRepositoryAuthority({ agencHome: home }), cwd);
     expect(own.map((result) => result.content)).toEqual([JSON.stringify({ status: "recorded" })]);
+
+    // A key the report does not take is still refused.
+    const extra = await report.execute({ job_id: "j", item_id: "i", result: {}, extra: 1 });
+    expect(extra.isError).toBe(true);
+    expect(String(extra.content)).toContain("unknown field `extra`");
 
     // A job recording in another home's store is refused with no effect.
     const otherHome = join(root, "other-home");
