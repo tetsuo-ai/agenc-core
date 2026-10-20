@@ -860,8 +860,15 @@ export function buildChatCompletionsRequest(
   return body;
 }
 
+/**
+ * Request metadata for diagnostics and the context-window fit. A caller that
+ * already holds the admission-grade input count passes it as
+ * `accountedPromptTokens`; the whole-request wire estimate, which that count
+ * replaces, is then not serialized at all.
+ */
 export function collectChatCompletionsRequestMetadata(
   request: Record<string, unknown>,
+  accountedPromptTokens?: number,
 ): ChatCompletionsRequestMetadata {
   const messages = Array.isArray(request.messages)
     ? (request.messages as Array<Record<string, unknown>>)
@@ -872,10 +879,13 @@ export function collectChatCompletionsRequestMetadata(
   const roleSequence = messages.map((message) =>
     typeof message.role === "string" ? message.role : "unknown",
   );
-  const serializedPrompt = JSON.stringify({
-    messages: request.messages ?? [],
-    tools: request.tools ?? [],
-  });
+  const estimatedPromptTokens = accountedPromptTokens ?? estimateUtf8TokenUnits(
+    JSON.stringify({
+      messages: request.messages ?? [],
+      tools: request.tools ?? [],
+    }),
+    1,
+  );
   const maxTokens =
     positiveInteger(request.max_tokens as number | undefined) ??
     positiveInteger(request.max_completion_tokens as number | undefined);
@@ -892,7 +902,7 @@ export function collectChatCompletionsRequestMetadata(
     // Admission-grade calls replace this diagnostic wire estimate with the
     // complete TokenAccountingService result. Direct adapter callers still
     // get a UTF-8-aware conservative byte ceiling rather than UTF-16 chars/4.
-    estimatedPromptTokens: estimateUtf8TokenUnits(serializedPrompt, 1),
+    estimatedPromptTokens,
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(maxTokenField !== undefined ? { maxTokenField } : {}),
     toolsAttached: tools.length > 0,

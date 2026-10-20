@@ -1554,13 +1554,11 @@ export class OpenAIProvider implements LLMProvider {
       request.prompt_cache_key = normalizePromptCacheKey(request.prompt_cache_key);
     }
     if (oneShotFastModeActive()) return request;
-    let metadata = collectChatCompletionsRequestMetadata(request);
     const accountedInputTokens = normalizePositiveInteger(
       args.options?.accountedInputTokens,
     );
-    if (accountedInputTokens !== undefined) {
-      metadata = { ...metadata, estimatedPromptTokens: accountedInputTokens };
-    }
+    // The admitted input count replaces the wire estimate, so it is not built.
+    let metadata = collectChatCompletionsRequestMetadata(request, accountedInputTokens);
     metadata = this.fitRequestWithinContextWindow(
       request,
       metadata,
