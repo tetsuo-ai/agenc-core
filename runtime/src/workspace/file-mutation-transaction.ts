@@ -1991,13 +1991,148 @@ const openRootReadFile = (() => {
   ${BOUND_READ_OPEN_SOURCE}
   return openVerifiedBasename;
 })();
-const runRootRead = async (command) => {
-  let opened;
+// On Linux a descendant read needs no isolated worker either: the walk opens
+// each component through the previous directory's descriptor
+// (/proc/self/fd/N/name) with O_NOFOLLOW and O_DIRECTORY, so no component can
+// be a symbolic link or a non-directory and a renamed or exchanged ancestor
+// cannot redirect it, and this helper's own cwd never changes. The leaf gets
+// the same before, opened and after identity checks as a basename read.
+const procFdPath = (descriptor, name) => "/proc/self/fd/" + descriptor + "/" + name;
+let procFdWalkAvailable;
+const descendantReadsInHelper = async () => {
+  if (procFdWalkAvailable !== undefined) return procFdWalkAvailable;
+  procFdWalkAvailable = false;
+  if (
+    process.platform !== "linux" ||
+    !boundReadUseNoFollow ||
+    typeof constants.O_NOFOLLOW !== "number" ||
+    typeof constants.O_DIRECTORY !== "number"
+  ) {
+    return false;
+  }
+  let held;
   try {
-    opened = await openRootReadFile({
+    held = await open(".", constants.O_RDONLY | constants.O_DIRECTORY);
+    const direct = preciseIdentity(await held.stat({ bigint: true }));
+    const viaProc = preciseIdentity(
+      await stat("/proc/self/fd/" + held.fd, { bigint: true }),
+    );
+    procFdWalkAvailable = sameIdentity(direct, viaProc);
+  } catch {
+    procFdWalkAvailable = false;
+  } finally {
+    await held?.close();
+  }
+  return procFdWalkAvailable;
+};
+const notRealDirectory = (error) => {
+  if (error?.code === "ENOTDIR" || error?.code === "ELOOP") {
+    return Object.assign(new Error("relative read parent is not a real directory"), {
+      code: "PATH_IDENTITY_CHANGED",
+    });
+  }
+  return error;
+};
+const openVerifiedDescendant = async (command) => {
+  if (
+    !Array.isArray(command.parentSegments) ||
+    !command.parentSegments.every(validSegment) ||
+    !validSegment(command.name)
+  ) {
+    throw Object.assign(new Error("invalid capability-relative path"), {
+      code: "INVALID_PATH",
+    });
+  }
+  const root = await open(".", constants.O_RDONLY | constants.O_DIRECTORY);
+  let parent = root;
+  try {
+    if (
+      !sameIdentity(
+        preciseIdentity(await root.stat({ bigint: true })),
+        command.rootIdentity,
+      )
+    ) {
+      throw Object.assign(new Error("bound root identity changed"), {
+        code: "PATH_IDENTITY_CHANGED",
+      });
+    }
+    for (const segment of command.parentSegments) {
+      let next;
+      try {
+        next = await open(
+          procFdPath(parent.fd, segment),
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+      } catch (error) {
+        throw notRealDirectory(error);
+      }
+      if (parent !== root) await parent.close();
+      parent = next;
+    }
+    const leafPath = procFdPath(parent.fd, command.name);
+    const leafBefore = await lstat(leafPath, { bigint: true });
+    if (!leafBefore.isFile() || leafBefore.isSymbolicLink()) {
+      throw Object.assign(new Error("read target is not a real regular file"), {
+        code: "PATH_IDENTITY_CHANGED",
+      });
+    }
+    const beforeIdentity = preciseIdentity(leafBefore);
+    const handle = await open(
+      leafPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const opened = await handle.stat({ bigint: true });
+      const expectedIdentity = command.expectedIdentity ?? null;
+      if (
+        !opened.isFile() ||
+        !sameIdentity(preciseIdentity(opened), beforeIdentity) ||
+        (expectedIdentity !== null &&
+          !sameIdentity(preciseIdentity(opened), expectedIdentity))
+      ) {
+        throw Object.assign(new Error("read target identity changed"), {
+          code: "PATH_IDENTITY_CHANGED",
+        });
+      }
+      const leaf = await lstat(leafPath, { bigint: true });
+      if (
+        leaf.isSymbolicLink() ||
+        !sameIdentity(preciseIdentity(leaf), preciseIdentity(opened))
+      ) {
+        throw Object.assign(new Error("read target identity changed"), {
+          code: "PATH_IDENTITY_CHANGED",
+        });
+      }
+      return { handle, stats: opened };
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  } finally {
+    if (parent !== root) await parent.close();
+    await root.close();
+  }
+};
+const runRootRead = (command) =>
+  runVerifiedRead(command, () =>
+    openRootReadFile({
       ...command, parentSegments: [], name: command.relativeSegments[0],
       rootIdentity: boundReadDirectoryIdentity,
-    });
+    }),
+  );
+const runDescendantRead = (command) =>
+  runVerifiedRead(command, () =>
+    openVerifiedDescendant({
+      ...command,
+      parentSegments: command.relativeSegments.slice(0, -1),
+      name: command.relativeSegments[command.relativeSegments.length - 1],
+      rootIdentity: boundReadDirectoryIdentity,
+    }),
+  );
+const runVerifiedRead = async (command, openTarget) => {
+  let opened;
+  try {
+    opened = await openTarget();
     const stats = {
       ...preciseIdentity(opened.stats), size: Number(opened.stats.size),
       mtimeMs: Number(opened.stats.mtimeMs), ctimeMs: Number(opened.stats.ctimeMs),
@@ -2337,6 +2472,13 @@ try {
         const segments = command.relativeSegments;
         if (segments.length === 1 && command.operation !== "read_text_window") {
           send(await runRootRead(command));
+          continue;
+        }
+        if (
+          command.operation !== "read_text_window" &&
+          (await descendantReadsInHelper())
+        ) {
+          send(await runDescendantRead(command));
           continue;
         }
         send(

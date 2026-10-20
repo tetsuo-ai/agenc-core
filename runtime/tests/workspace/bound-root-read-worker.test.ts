@@ -50,7 +50,12 @@ test("reads and validates held-cwd basenames without starting a traversal worker
       .toMatchObject({ ok: false, code: "FILE_TOO_LARGE" });
     expect(await request("read_regular_file", ["file.txt"], { maxBytes: 2, truncate: true }))
       .toMatchObject({ ok: true, contentBase64: Buffer.from("al").toString("base64") });
-    expect(await request("read_regular_file", ["nested", "file.txt"]))
+    // On Linux the helper walks descendants through held descriptors itself;
+    // elsewhere, and for text windows everywhere, they reach the worker.
+    expect(await request("read_regular_file", ["nested", "file.txt"])).toMatchObject(process.platform === "linux"
+      ? { ok: true, contentBase64: Buffer.from("nested\n").toString("base64") }
+      : { ok: false, code: "WORKER_CALLED" });
+    expect(await request("read_text_window", ["nested", "file.txt"], { offset: 0, limit: 1, expectedIdentity: null }))
       .toMatchObject({ ok: false, code: "WORKER_CALLED" });
     const identity = await stat(join(root, "file.txt"), { bigint: true });
     await rename(join(root, "file.txt"), join(root, "original.txt"));
