@@ -21,6 +21,9 @@ export function bindExecutionAdmissionJournal(
   session: Session,
   admission: ExecutionAdmissionClient,
 ): () => void {
+  // During the catch-up below, evidence already in the rollout needs one
+  // fsync proof of the canonical tail, not one per event.
+  let catchUp: { tailSyncNeeded: boolean } | undefined;
   const append = (event: AdmissionJournalEvent): void => {
     // Admission and capacity have already committed. Only their canonical
     // observation moves to the owning session's final/reader barrier. Keep
@@ -32,7 +35,7 @@ export function bindExecutionAdmissionJournal(
         () => ({ type: "execution_admission", payload: captured }), { durable: true });
       return;
     }
-    appendExecutionAdmissionEvent(session, event);
+    appendExecutionAdmissionEvent(session, event, catchUp);
   };
   const unsubscribe =
     admission.subscribeCritical?.(append, () => session.writeBehind?.barrier()) ?? admission.subscribe(append);
@@ -45,6 +48,7 @@ export function bindExecutionAdmissionJournal(
     const replayJournal = admission.replayJournal?.bind(admission);
     let afterSequence = 0;
     let replayed = 0;
+    catchUp = { tailSyncNeeded: false };
     while (replayJournal !== undefined) {
       const page = replayJournal({
         afterSequence,
@@ -76,6 +80,11 @@ export function bindExecutionAdmissionJournal(
       }
       if (page.length < EXECUTION_ADMISSION_CATCHUP_PAGE_SIZE) break;
     }
+    const tailSyncNeeded = catchUp.tailSyncNeeded;
+    catchUp = undefined;
+    // One fsync proof covers every already-present event accepted above, and
+    // the bind does not complete before it.
+    if (tailSyncNeeded) canonicalRolloutStore(session)?.syncCanonicalTail();
     let lastUsageSequence = -1;
     const appendUsage = (summary: AdmissionUsageSummary): void => {
       if (summary.sequence <= lastUsageSequence) return;
@@ -98,6 +107,7 @@ export function bindExecutionAdmissionJournal(
     const usage = admission.getUsageSummary?.();
     if (usage !== undefined) appendUsage(usage);
   } catch (error) {
+    catchUp = undefined;
     unsubscribeUsage?.();
     unsubscribe();
     throw error;
@@ -118,6 +128,7 @@ export function bindExecutionAdmissionJournal(
 function appendExecutionAdmissionEvent(
   session: Session,
   payload: AdmissionJournalEvent,
+  catchUp?: { tailSyncNeeded: boolean },
 ): void {
   // Lightweight structural test adapters predate Session.rolloutStore. Keep
   // their observer contract intact; real Session instances always own this
@@ -147,7 +158,8 @@ function appendExecutionAdmissionEvent(
   const existing = findExecutionAdmissionEvent(rolloutStore, payload.eventId);
   if (existing !== undefined) {
     assertMatchingExecutionAdmissionEvent(existing, payload);
-    rolloutStore.syncCanonicalTail();
+    if (catchUp !== undefined) catchUp.tailSyncNeeded = true;
+    else rolloutStore.syncCanonicalTail();
     return;
   }
 
@@ -277,3 +289,10 @@ function assertMatchingExecutionAdmissionEvent(
     );
   }
 }
+
+/** The session's canonical rollout store, when it has one. */
+function canonicalRolloutStore(session: Session): RolloutStore | undefined {
+  const store = (session as unknown as { readonly rolloutStore?: RolloutStore | null }).rolloutStore;
+  return store ?? undefined;
+}
+
