@@ -236,7 +236,9 @@ export function fitToolResultsToBudget(
 ): ContextFitResult {
   const entries = collectToolResults(messages);
   const replacements = new Map<number, string>();
-  const requested = Math.max(0, Math.ceil(bytesToFree));
+  const requested = Number.isFinite(bytesToFree)
+    ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(bytesToFree)))
+    : Number.MAX_SAFE_INTEGER;
   let remaining = requested;
   const currentBytes = (entry: ToolResultEntry): number => {
     const replaced = replacements.get(entry.index);

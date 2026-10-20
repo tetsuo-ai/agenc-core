@@ -108,6 +108,13 @@ describe("request context fit", () => {
     expect(fit.messages).toHaveLength(messages.length);
   });
 
+  test("treats an unbounded budget as the shortest form", () => {
+    const fit = fitToolResultsToBudget(messages, Number.POSITIVE_INFINITY);
+    expect(fit.exhausted).toBe(true);
+    expect(Number.isFinite(fit.freedBytes)).toBe(true);
+    expect(fit.messages).toEqual(fitToolResultsToBudget(messages, 1_000_000).messages);
+  });
+
   test("is deterministic and never grows a result", () => {
     expect(fitToolResultsToBudget(messages, 9_000)).toEqual(fitToolResultsToBudget(messages, 9_000));
     const tiny: LLMMessage[] = [

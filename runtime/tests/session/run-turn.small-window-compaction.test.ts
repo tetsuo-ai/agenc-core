@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type { LLMMessage, LLMProvider, LLMResponse, LLMTool, LLMToolCall } from "../../src/llm/types.js";
 import { bindExecutionAdmissionJournal } from "../../src/session/execution-admission-journal.js";
+import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import type { SessionServices } from "../../src/session/session.js";
@@ -378,6 +379,14 @@ describe("mid-turn compaction on a 32k effective window (gate scenario 7)", () =
     expect(JSON.parse(String(context?.content))).toMatchObject({
       history_reference: { path: harness.store.rolloutPath },
     });
+    // Rewind keeps its durable prompt identity across every compaction (#3157).
+    const userMessage = eventsOf(rows, "user_message")[0];
+    const promptId = rows.find((row) => row.type === "event_msg" && row.payload.msg.type === "user_message");
+    expect(userMessage).toMatchObject({ message: USER_PROMPT });
+    expect(promptId?.type === "event_msg" ? promptId.payload.id : undefined).toMatch(/^user-msg-/u);
+    expect(reconstructFromRollout(rows).history).toContainEqual(expect.objectContaining({
+      role: "user", content: USER_PROMPT, id: promptId?.type === "event_msg" ? promptId.payload.id : "missing",
+    }));
     // Every exact result stays in the rollout.
     const durable = durableToolResults(rows);
     expect(durable.size).toBe(12);

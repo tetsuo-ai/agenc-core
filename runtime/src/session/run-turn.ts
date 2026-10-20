@@ -1533,8 +1533,12 @@ async function fitPreparedRequestToContext(params: {
   let last: Extract<PreparedRequestFit, { kind: "fitted" }> | undefined;
   for (let attempt = 1; attempt <= CONTEXT_FIT_MAX_ATTEMPTS; attempt += 1) {
     // Cut what the measured overflow needs, at most a few re-measurements.
+    // A request the counter cannot admit at all goes straight to the
+    // shortest form below.
+    if (!Number.isFinite(pressure.inputTokens)) break;
     const overflowTokens = Math.max(1, pressure.inputTokens - pressure.fitInputTokenLimit);
-    bytesToFree += Math.ceil(overflowTokens * bytesPerToken * 1.05) + 256;
+    bytesToFree = Math.min(Number.MAX_SAFE_INTEGER,
+      bytesToFree + Math.ceil(overflowTokens * bytesPerToken * 1.05) + 256);
     const measured = await measure(bytesToFree);
     if (measured === undefined) break;
     last = measured;
