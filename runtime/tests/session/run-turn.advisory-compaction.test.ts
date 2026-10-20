@@ -115,7 +115,7 @@ describe("advisory compaction refusal", () => {
       .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
-  test.each(advisoryRefusals)("$name: a new oversized tool result gets one mandatory attempt without spending advisory failure strikes", async ({ refuse }) => {
+  test.each(advisoryRefusals)("$name: a new oversized tool result gets one mandatory attempt without spending advisory failure strikes", async ({ name, refuse }) => {
     const exercise = createToolExercise(4, 4);
     const compact = vi.fn(async (_messages, _context, _tracking, _snip, injection) =>
       injection === "before_last_user_message" ? refuse() : { wasCompacted: false },
@@ -124,7 +124,11 @@ describe("advisory compaction refusal", () => {
 
     await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
 
-    expect(exercise.samples()).toBe(4);
+    // Every tier declining with no-shrink is structural: the newest result is
+    // shortened (this counter only fits once its body becomes a reference)
+    // and the turn finishes. A rejected summary still ends the turn.
+    const structural = name === "no shrink";
+    expect(exercise.samples()).toBe(structural ? 5 : 4);
     // The mandatory attempt escalates through the degraded ladder (#2497);
     // only standard-tier attempts count as "mandatory attempts" here.
     const attempts = compact.mock.calls.filter((call) =>
@@ -134,8 +138,14 @@ describe("advisory compaction refusal", () => {
     expect((attempts[1]?.[2] as { consecutiveFailures?: number } | undefined)?.consecutiveFailures ?? 0)
       .toBe(0);
     expect(JSON.stringify(attempts[1]?.[0])).toContain("fresh oversized result");
+    if (structural) {
+      expect(JSON.stringify(exercise.requests.at(-1))).toContain("AgenC omitted the body of this read_probe result");
+      expect(JSON.stringify(exercise.requests.at(-1))).toContain("finish the implementation");
+    }
     expect(exercise.events.map((event) => classifyTurnTerminal(event.msg)))
-      .toContainEqual(expect.objectContaining({ outcome: "errored", failureCode: "compact_failed" }));
+      .toContainEqual(structural
+        ? expect.objectContaining({ outcome: "completed", code: 0 })
+        : expect.objectContaining({ outcome: "errored", failureCode: "compact_failed" }));
   });
 
   test.each(advisoryRefusals)("$name: re-prepares after mandatory compaction and continues only with the smaller request", async ({ name, refuse }) => {
@@ -204,7 +214,9 @@ describe("advisory compaction refusal", () => {
       adapterRevision: "1",
       configurationRevision: `${name}-boundary-${overflow}`,
       countTokens: vi.fn(async (request: TokenAccountingRequest) => ({
-        inputTokens: JSON.stringify(request.messages).includes("fresh oversized result")
+        // The oversized result overflows until the request fit shortens it.
+        inputTokens: JSON.stringify(request.messages).includes("fresh oversized result") &&
+          !JSON.stringify(request.messages).includes("to fit the model's context window")
           ? 3_072 + overflow
           : 1_024,
         complete: true,
@@ -224,12 +236,20 @@ describe("advisory compaction refusal", () => {
 
     await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
 
-    expect(capability.countTokens).toHaveBeenCalledTimes(3);
-    expect(exercise.samples()).toBe(overflow === 0 ? 2 : 1);
+    // At the overflow, a no-shrink decline is structural: compaction cannot
+    // reduce the history, so the newest result is shortened (one more native
+    // count measures that request) and the turn continues. A rejected
+    // summary is not structural and still ends the turn.
+    const shortened = overflow === 1 && name === "no shrink";
+    expect(capability.countTokens).toHaveBeenCalledTimes(shortened ? 4 : 3);
+    expect(exercise.samples()).toBe(overflow === 0 || shortened ? 2 : 1);
     if (overflow === 0) expect(exercise.outputLimits.at(-1)).toBe(1_024);
     expect(attempts).toBe(overflow === 0 ? 1 : 2);
+    const lastRequest = JSON.stringify(exercise.requests.at(-1));
+    expect(lastRequest.includes("AgenC shortened this tool result")).toBe(shortened);
+    expect(lastRequest).toContain("finish the implementation");
     expect(exercise.events.map((event) => classifyTurnTerminal(event.msg)))
-      .toContainEqual(expect.objectContaining({ outcome: overflow === 0 ? "completed" : "errored" }));
+      .toContainEqual(expect.objectContaining({ outcome: overflow === 0 || shortened ? "completed" : "errored" }));
   });
 
   test.each(advisoryRefusals)("$name: admits an Ollama-sized growing request by sharing the output reservation clamp", async ({ name, refuse }) => {

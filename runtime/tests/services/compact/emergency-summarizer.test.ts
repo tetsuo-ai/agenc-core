@@ -133,6 +133,41 @@ describe("runtime emergency summarizer", () => {
     expect(reduced.narrative).toContain("Latest assistant text:\nstate two");
   });
 
+  test("repeated emergency summaries carry progress, completed calls and whole marker lines", () => {
+    // Gate scenario 7 compacted at every step; each summary dropped what the
+    // previous one had learned and models re-read finished files.
+    const summarize = createRuntimeEmergencySummarizer(2_048);
+    const marker = (index: number) => `GATE_${index}_abcdef012345`;
+    const read = (index: number) => [`1\u2192# Reading ${index}`, `2\u2192Marker: ${marker(index)}`,
+      ...Array.from({ length: 180 }, (_, line) => `${line + 3}\u2192Line ${line}: filler text of the reading file.`)].join("\n");
+    let previous: string | undefined;
+    for (let index = 0; index < 8; index += 1) {
+      const messages = [
+        ...(previous !== undefined ? [{ role: "user", content: previous }] : []),
+        { role: "assistant", content: index === 0 ? "Reading each file." : `Part-${index - 1} marker ${marker(index - 1)}.`,
+          tool_calls: [{ id: "c1", name: "FileRead", arguments: { file_path: `part-${index}.txt` } }] },
+        { role: "tool", tool_call_id: "c1", tool_name: "FileRead", content: read(index) },
+      ];
+      const text = summarize({ stage: "final", allowedSourceRefIds: [`s${index}`], maxOutputTokens: 8_192,
+        messages: [{ role: "user", content: JSON.stringify({ kind: "untrusted_compaction_transcript", units: [{ messages }] }) }] });
+      expect(conservativeOutputTokenEstimate(text)).toBeLessThanOrEqual(2_048);
+      const body = JSON.parse(text) as { narrative: string; facts: { text: string }[] };
+      // The next compaction reads this summary as the context it rendered.
+      previous = JSON.stringify({ version: 2, kind: "agenc_compaction_context_v2", trust: "untrusted_historical_data",
+        narrative: body.narrative, facts: body.facts.map((fact) => fact.text), open_actions: [] });
+    }
+    const final = JSON.parse(previous!) as { narrative: string; facts: string[] };
+    const all = JSON.stringify(final);
+    for (let index = 0; index < 8; index += 1) expect(all).toContain(marker(index));
+    expect([...all.matchAll(/GATE_\d_[0-9a-f]*/gu)].every((match) => match[0].length === marker(0).length)).toBe(true);
+    expect(final.narrative).toContain("Progress notes (oldest first):\nReading each file.\nPart-0 marker GATE_0_abcdef012345.\n");
+    expect(final.narrative).toContain("Completed tool calls (oldest first):\nFileRead part-0.txt\nFileRead part-1.txt\n");
+    expect(final.narrative).toContain("Latest tool calls:\nFileRead({\"file_path\":\"part-7.txt\"})");
+    // A previous summary is history, never the original request.
+    expect(final.narrative).not.toContain("Original request:");
+    expect(final.facts.at(-1)).toMatch(/^Recorded FileRead part-7\.txt output \(excerpt\):\n1\u2192# Reading 7\n2\u2192Marker: GATE_7_abcdef012345\n/u);
+  });
+
   test("truncateUtf8 cuts on code-point boundaries and marks the cut", () => {
     expect(truncateUtf8("abc", 10)).toBe("abc");
     const cut = truncateUtf8("αβγδε".repeat(10), 12);
@@ -190,7 +225,11 @@ describe("runtime emergency summarizer", () => {
         trust: "untrusted_historical_data",
         version: 2,
       });
-      expect(JSON.stringify(history)).not.toContain("Working message 3");
+      // Dropped messages are gone; earlier assistant progress survives only
+      // as bounded one-line notes inside the summary.
+      expect(JSON.stringify(history)).not.toContain(durableSource[3]!.content);
+      expect(JSON.stringify(history)).not.toContain("Working message 2:");
+      expect(committed.payload.summary.body.narrative).toMatch(/\nProgress notes \(oldest first\):\n(?:.*\n)*Working message 15: progress[^\n]* \[…\]\n/u);
     } finally {
       harness.close();
     }

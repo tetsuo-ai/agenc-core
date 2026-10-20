@@ -319,11 +319,12 @@ function emitAutoCompactFailed(
   phase: CompactionPhase,
   explanation: string,
   details: CompactionFailureDetails | undefined,
+  cause: "auto_compact_failed" | "auto_compact_declined" = "auto_compact_failed",
 ): void {
   const message = `${reason}/${phase}: ${explanation}`;
   const hasDetails = details !== undefined && Object.keys(details).length > 0;
   logForDebugging(
-    `auto_compact_failed ${message}${hasDetails ? ` ${JSON.stringify(details)}` : ""}`,
+    `${cause} ${message}${hasDetails ? ` ${JSON.stringify(details)}` : ""}`,
     { level: "warn" },
   );
   session.emit({
@@ -331,12 +332,33 @@ function emitAutoCompactFailed(
     msg: {
       type: "warning",
       payload: {
-        cause: "auto_compact_failed",
+        cause,
         message,
         ...(hasDetails ? { details } : {}),
       },
     },
   });
+}
+
+/**
+ * Record a structural decline the dispatch caller handled. The fit projection
+ * continued the turn, so the reason is diagnostic (`auto_compact_declined`,
+ * kept out of the transcript); it is a user-visible failure only when the
+ * request could not be made to fit either.
+ */
+export function emitStructuralCompactionDecline(
+  session: Session,
+  decline: StructuralCompactionDecline,
+  continued: boolean,
+): void {
+  emitAutoCompactFailed(
+    session,
+    decline.reason,
+    decline.phase,
+    decline.explanation,
+    decline.details,
+    continued ? "auto_compact_declined" : "auto_compact_failed",
+  );
 }
 
 function compactionNotRun(
@@ -404,6 +426,33 @@ interface RunAutoCompactOptions {
    * replacement while the new history is already canonical.
    */
   readonly onDurableHistoryReplaced?: (durableCount: number) => void;
+  /**
+   * Receives a final unchanged-history refusal that no compaction tier can
+   * overcome (see {@link isStructuralCompactionDecline}) in place of the
+   * `auto_compact_failed` warning. The dispatch caller can still shorten the
+   * outgoing request's tool results and reports the outcome itself.
+   */
+  readonly onStructuralDecline?: (decline: StructuralCompactionDecline) => void;
+}
+
+/** An unchanged-history refusal the request fit projection may still overcome. */
+export interface StructuralCompactionDecline {
+  readonly reason: CompactionReason;
+  readonly phase: CompactionPhase;
+  readonly explanation: string;
+  readonly code: "context_limit" | "no_shrink";
+  readonly details?: CompactionFailureDetails;
+}
+
+/**
+ * Every tier left history unchanged because its candidate cannot fit the
+ * window, or because nothing but the live request and the newest tool
+ * results remains to summarize. Only the outgoing request can shrink further.
+ */
+export function isStructuralCompactionDecline(
+  result: Pick<AutoCompactResult, "skippedCode">,
+): result is { readonly skippedCode: "context_limit" | "no_shrink" } {
+  return result.skippedCode === "context_limit" || result.skippedCode === "no_shrink";
 }
 
 /**
@@ -744,13 +793,23 @@ async function runAutoCompact(
      * dropped, leaving a turn that ended mid-plan with nothing to act on.
      */
     if (result.skippedReason !== undefined) {
-      emitAutoCompactFailed(
-        session,
-        reason,
-        phase,
-        result.skippedReason,
-        result.skippedDetails,
-      );
+      if (options.onStructuralDecline !== undefined && isStructuralCompactionDecline(result)) {
+        options.onStructuralDecline({
+          reason,
+          phase,
+          explanation: result.skippedReason,
+          code: result.skippedCode,
+          ...(result.skippedDetails !== undefined ? { details: result.skippedDetails } : {}),
+        });
+      } else {
+        emitAutoCompactFailed(
+          session,
+          reason,
+          phase,
+          result.skippedReason,
+          result.skippedDetails,
+        );
+      }
     }
     return false;
   } catch (error) {

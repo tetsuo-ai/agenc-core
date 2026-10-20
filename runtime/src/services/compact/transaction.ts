@@ -454,6 +454,45 @@ async function compactConversationTransactionBody(
     rawBoundaryMarker,
     attachments,
   });
+  if (options.automatic) {
+    // Refuse before the intent and before any summarizer call when even an
+    // empty summary could not make this tier's candidate fit. The real
+    // summary only adds to that lower bound, so the ladder moves to the next
+    // tier without spending a provider call on a doomed candidate. The bound
+    // has the committed segment's shape (authenticated markers included) and
+    // a digest placeholder of the same length.
+    const minimalMarker = {
+      version: COMPACTION_HISTORY_MARKER_VERSION,
+      attempt_id: attemptId,
+      summary_sha256: "0".repeat(64),
+    } as const;
+    const minimalSummary = options.createSummaryMessage(renderCompactionContext(
+      { narrative: "", facts: [], open_actions: [], tool_pairs: [] },
+      context.admissionSession?.rolloutStore?.rolloutPath,
+    ));
+    await deadline.wait(assertAutomaticCandidateCanFit({
+      context,
+      minimalCandidateMessages: materializeReplacementHistory({
+        messages: prepared.messages,
+        selectedIndexes,
+        replacementSegment: [
+          {
+            ...rawBoundaryMarker,
+            runtimeOnly: { ...rawBoundaryMarker.runtimeOnly, compactionHistory: { ...minimalMarker, kind: "boundary" } },
+          },
+          {
+            ...minimalSummary,
+            runtimeOnly: { ...minimalSummary.runtimeOnly, compactionHistory: { ...minimalMarker, kind: "summary" } },
+          },
+          ...attachments,
+        ],
+      }),
+      providerName,
+      model,
+      imageBudgetBytes: shrinkAccountingImageBudgetBytes(session),
+    }));
+    deadline.assertActive();
+  }
   const intentAtMs = Date.now();
   const intent: CompactionIntentV1 = {
     format_version: COMPACTION_EVENT_FORMAT_VERSION,
@@ -1567,21 +1606,22 @@ export function shrinkAccountingImageBudgetBytes(
   return configured;
 }
 
-async function validateShrink(params: {
+/**
+ * Counts a history the way the next agent request would be counted (see
+ * {@link validateShrink}); shared by the pre-intent bound and the final check.
+ */
+function createShrinkCounter(params: {
   readonly context: CompactContext;
-  readonly sourceMessages: readonly RuntimeMessage[];
-  readonly candidateMessages: readonly RuntimeMessage[];
   readonly providerName: string;
   readonly model: string;
-  readonly accountingRef: string;
-  readonly automatic: boolean;
   /** See {@link shrinkAccountingImageBudgetBytes}. */
   readonly imageBudgetBytes: number;
-}): Promise<{
-  readonly source: TokenAccountingResult;
-  readonly candidate: TokenAccountingResult;
-  readonly observation: CompactionAccountingObservationV1;
-}> {
+}): {
+  readonly contextWindow: number;
+  readonly outputReserve: number;
+  readonly baseOptions: LLMChatOptions;
+  readonly count: (messages: readonly RuntimeMessage[]) => Promise<TokenAccountingResult>;
+} {
   const contextWindow = params.context.options?.contextWindowTokens ?? 128_000;
   const outputReserve = Math.min(
     params.context.options?.maxOutputTokens ?? 4_000,
@@ -1623,6 +1663,52 @@ async function validateShrink(params: {
       }),
     );
   };
+  return { contextWindow, outputReserve, baseOptions, count };
+}
+
+/**
+ * Lower bound for an automatic tier, before its intent and its summarizer:
+ * the candidate with an empty summary. A tier whose retained messages alone
+ * cannot fit the window fails here exactly as `validateShrink` would fail it
+ * after a provider call (gate scenario 7 spent two summarizer calls on every
+ * such tier). The savings floor stays with `validateShrink`, which sees the
+ * real summary.
+ */
+async function assertAutomaticCandidateCanFit(params: {
+  readonly context: CompactContext;
+  readonly minimalCandidateMessages: readonly RuntimeMessage[];
+  readonly providerName: string;
+  readonly model: string;
+  readonly imageBudgetBytes: number;
+}): Promise<void> {
+  const counter = createShrinkCounter(params);
+  const candidate = await counter.count(params.minimalCandidateMessages);
+  const profile = await params.context.provider?.getExecutionProfile?.(counter.baseOptions);
+  if (fitOutputReservationToContext(
+    candidate, counter.contextWindow, counter.outputReserve, profile?.contextSafetyBufferTokens ?? 0,
+  ) === undefined) {
+    throw new CompactionCannotReduceError("context_limit",
+      `the messages this tier retains need ${candidate.inputTokens} tokens even with an empty summary; ` +
+        "they cannot fit the next reply's minimum output reserve within the context window; history was not changed");
+  }
+}
+
+async function validateShrink(params: {
+  readonly context: CompactContext;
+  readonly sourceMessages: readonly RuntimeMessage[];
+  readonly candidateMessages: readonly RuntimeMessage[];
+  readonly providerName: string;
+  readonly model: string;
+  readonly accountingRef: string;
+  readonly automatic: boolean;
+  /** See {@link shrinkAccountingImageBudgetBytes}. */
+  readonly imageBudgetBytes: number;
+}): Promise<{
+  readonly source: TokenAccountingResult;
+  readonly candidate: TokenAccountingResult;
+  readonly observation: CompactionAccountingObservationV1;
+}> {
+  const { contextWindow, outputReserve, baseOptions, count } = createShrinkCounter(params);
   const [source, candidate] = await Promise.all([
     count(params.sourceMessages),
     count(params.candidateMessages),
