@@ -101,6 +101,7 @@ import {
 import { delegate } from "../agents/delegate.js";
 import {
   runAgentsOnCsv,
+  agentJobStateDatabasePath,
   recordAgentJobResultAsync,
   CsvJobRecoverySupervisor,
   type AgentJobProgressEmitter,
@@ -177,7 +178,9 @@ import {
 } from "../permissions/session-tool-policy.js";
 import { readToolRuntimeContext } from "../tools/runtimes/context.js";
 import { registerSessionCronMutation } from "../tools/runtimes/session-cron.js";
-import { openStateDatabases } from "../state/sqlite-driver.js";
+import { openStateDatabases, resolveStateDatabasePaths } from "../state/sqlite-driver.js";
+import { WORKFLOW_HANDOFF_STORE_DIRNAME } from "../state/database-paths.js";
+import { canonicalAuthorityPath } from "../sandbox/desktop-authority-protection.js";
 import { resolveSecureStorageHome } from "../utils/secureStorage/home.js";
 import { getCACertificates } from "../utils/caCerts.js";
 import { getMTLSConfig } from "../utils/mtls.js";
@@ -285,6 +288,16 @@ function json(content: unknown, isError?: boolean): ToolResult {
   };
 }
 
+/** Whether `store` is one of `declared`, compared as the sandbox compares paths. */
+function sameStoreTarget(store: string, declared: readonly string[]): boolean {
+  try {
+    const target = canonicalAuthorityPath(store);
+    return declared.some((entry) => canonicalAuthorityPath(entry) === target);
+  } catch {
+    return false;
+  }
+}
+
 /** A refusal made before the tool touched anything; see preEffectRefusal. */
 function refusal(content: unknown): ToolResult {
   return validationErrorToolResult(
@@ -317,6 +330,7 @@ function toolMetadata(
     readonly deferred?: boolean;
     readonly hiddenByDefault?: boolean;
     readonly keywords?: readonly string[];
+    readonly fixedWriteTargets?: () => readonly string[];
   } = {},
 ): Tool["metadata"] {
   return {
@@ -327,7 +341,34 @@ function toolMetadata(
     deferred: opts.deferred ?? false,
     keywords: opts.keywords ?? [family],
     preferredProfiles: ["coding", "operator", "general"],
+    ...(opts.fixedWriteTargets !== undefined
+      ? { fixedWriteTargets: opts.fixedWriteTargets }
+      : {}),
   };
+}
+
+/**
+ * The stores WorkflowTool writes itself: it opens the project state and logs
+ * databases (`openStateDatabases`, same options) and keeps step handoffs in
+ * the project's `workflow-handoffs` directory. Each step runs as a delegated
+ * agent whose own tool calls are checked by its own sandbox, as with
+ * spawn_agent. Without a resolvable AgenC home nothing is declared and the
+ * runtime sandbox keeps refusing the call.
+ */
+function workflowStoreWriteTargets(opts: ModelFacingToolOptions): readonly string[] {
+  try {
+    const paths = resolveStateDatabasePaths({
+      cwd: opts.workspaceRoot,
+      agencHome: stateRoot(opts),
+    });
+    return [
+      paths.stateDbPath,
+      paths.logsDbPath,
+      join(paths.projectDir, WORKFLOW_HANDOFF_STORE_DIRNAME),
+    ];
+  } catch {
+    return [];
+  }
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -1789,6 +1830,23 @@ function createMultiAgentV2RuntimeTools(
     opts.csvAgentJobsRepositories ?? UNCONFIGURED_CSV_AGENT_JOBS_REPOSITORIES;
   const roleWorkspace =
     opts.roleCatalog?.workspace ?? createAgentRoleWorkspace(opts.workspaceRoot);
+  /**
+   * Where report_agent_job_result and resolve_csv_job_review write: rows of
+   * this workspace's project state database, the one the repository authority
+   * opens for it (`<agenc-home>/projects/<key>/agenc-state_1.sqlite`). No
+   * argument names a path. Declaring it lets the runtime sandbox verify the
+   * real store; undeclared, every worker report was refused as unverifiable
+   * and each CSV item ended as an unknown outcome. An authority that cannot
+   * name its store declares nothing, and the calls stay refused.
+   */
+  const csvJobStoreWriteTargets = (): readonly string[] => {
+    try {
+      const store = csvAgentJobsRepositories.stateDatabasePath?.(opts.workspaceRoot);
+      return store === undefined ? [] : [store];
+    } catch {
+      return [];
+    }
+  };
 
   const emit = (
     session: Session,
@@ -2156,6 +2214,15 @@ function createMultiAgentV2RuntimeTools(
     if (stop !== undefined && typeof stop !== "boolean") {
       return json({ error: "stop must be a boolean" }, true);
     }
+    // The result is written to the job's own state database. Only this
+    // workspace's store was verified by the sandbox for this call, so a job
+    // that records elsewhere is refused before anything is written.
+    const jobStore = agentJobStateDatabasePath(jobId);
+    if (jobStore !== undefined && !sameStoreTarget(jobStore, csvJobStoreWriteTargets())) {
+      return refusal({
+        error: `job ${jobId} records its results outside this workspace's job store`,
+      });
+    }
     const outcome = await recordAgentJobResultAsync({
       jobId,
       itemId,
@@ -2518,6 +2585,7 @@ function createMultiAgentV2RuntimeTools(
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "job", "report", "result"],
+        fixedWriteTargets: csvJobStoreWriteTargets,
       }),
       recoveryCategory: "side-effecting",
       inputSchema: {
@@ -2659,6 +2727,7 @@ function createMultiAgentV2RuntimeTools(
         mutating: true,
         deferred: true,
         keywords: ["agent", "job", "csv", "review", "resolve"],
+        fixedWriteTargets: csvJobStoreWriteTargets,
       }),
       requiresApproval: true,
       recoveryCategory: "side-effecting",
@@ -5243,6 +5312,7 @@ function createCronAndWorkflowTools(
         mutating: true,
         deferred: true,
         keywords: ["workflow", "run", "pipeline", "fan-out"],
+        fixedWriteTargets: () => workflowStoreWriteTargets(opts),
       }),
       requiresApproval: true,
       recoveryCategory: "side-effecting",
@@ -5295,7 +5365,7 @@ function createCronAndWorkflowTools(
           });
           const artifactStore = new WorkflowHandoffArtifactStore({
             driver,
-            trustedRoot: join(driver.projectDir, "workflow-handoffs"),
+            trustedRoot: join(driver.projectDir, WORKFLOW_HANDOFF_STORE_DIRNAME),
           });
           await artifactStore.recoverIntents();
           const { runAgentWorkflowV2 } =

@@ -32,6 +32,11 @@ import {
   sessionPlanFileAuthority,
 } from "../../planning/session-plan-authority.js";
 import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
+import {
+  LOGS_DATABASE_FILENAME,
+  STATE_DATABASE_FILENAME,
+  WORKFLOW_HANDOFF_STORE_DIRNAME,
+} from "../../state/database-paths.js";
 import type { SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
 import type { ToolRuntimeAttemptContext } from "./context.js";
@@ -534,7 +539,7 @@ export function enforceRuntimeSandboxAttempt(
     );
   }
 
-  // Only the existing file-tool plan/memory, declared task-store and fixed
+  // Only the existing file-tool plan/memory, declared project-store and fixed
   // runtime-output exceptions may bypass the home reservation. Evaluate them
   // against the original profile so operator denies and the other
   // non-grantable reservations still win.
@@ -555,7 +560,7 @@ export function enforceRuntimeSandboxAttempt(
         (isActiveSessionPlanFile(input.context, target) ||
           isDurableMemoryWritePath(target) ||
           ((writes.declared ?? []).includes(target) &&
-            isSessionTaskStore(input.context, target))) &&
+            isSessionProjectStore(input.context, target))) &&
         agencHomeCarveOutAllowsWrite(fileToolProfile.fileSystem, target, cwd, sessionTempRoot)) &&
       !(shellAccess === null &&
         (writes.declared ?? []).includes(target) &&
@@ -601,10 +606,10 @@ function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targ
 /**
  * Whether a restricted policy admits a write to one of the AgenC-home paths
  * the native tools may take outside the workspace: the owning session's plan
- * file, the durable memory roots and the task board's declared project
- * store. The root read entry is treated as a write entry so the target's own
- * deny entries still decide. Shell writes never reach this:
- * `shellAccess === null` gates the callers.
+ * file, the durable memory roots and the runtime-owned project stores a
+ * native tool declared (see DECLARABLE_PROJECT_STORES). The root read entry
+ * is treated as a write entry so the target's own deny entries still decide.
+ * Shell writes never reach this: `shellAccess === null` gates the callers.
  */
 export function agencHomeCarveOutAllowsWrite(
   policy: EngineFileSystemSandboxPolicy,
@@ -632,18 +637,34 @@ function isActiveSessionPlanFile(
 }
 
 /** One storage-key segment, as `projectStorageKey` spells it. */
-const TASK_STORE_PROJECT_KEY = /^[A-Za-z0-9_-]+$/;
+const PROJECT_STORE_KEY = /^[A-Za-z0-9_-]+$/;
 
 /**
- * Whether `target` is a project task-board store,
- * `<agenc-home>/projects/<key>/tasks`, under the AgenC home bound to this
- * session's ConfigStore. Callers apply it only to a target a native tool
- * declared through `fixedWriteTargets` (TaskCreate and TaskUpdate declare
- * their own store), never to a path the model wrote. Both sides are compared
- * canonically, so a store that resolves elsewhere through a link is not one.
- * Without a bound home there is no authority to admit anything.
+ * The runtime-owned stores directly under `<agenc-home>/projects/<key>/`
+ * that a native tool may declare as its write target, each named by the
+ * tools that write it: the task board's store (TaskCreate, TaskUpdate), the
+ * project state database (the CSV job result and review tools, WorkflowTool)
+ * and logs database (WorkflowTool opens both), and WorkflowTool's handoff
+ * artifact store. Sessions, memory, file history and every other entry of the
+ * project directory stay outside the workspace sandbox.
  */
-function isSessionTaskStore(
+const DECLARABLE_PROJECT_STORES: ReadonlySet<string> = new Set([
+  "tasks",
+  STATE_DATABASE_FILENAME,
+  LOGS_DATABASE_FILENAME,
+  WORKFLOW_HANDOFF_STORE_DIRNAME,
+]);
+
+/**
+ * Whether `target` is one of the runtime-owned project stores,
+ * `<agenc-home>/projects/<key>/<store>`, under the AgenC home bound to this
+ * session's ConfigStore. Callers apply it only to a target a native tool
+ * declared through `fixedWriteTargets`, never to a path the model wrote.
+ * Both sides are compared canonically, so a store that resolves elsewhere
+ * through a link is not one. Without a bound home there is no authority to
+ * admit anything.
+ */
+function isSessionProjectStore(
   context: ToolRuntimeAttemptContext,
   target: string,
 ): boolean {
@@ -664,8 +685,8 @@ function isSessionTaskStore(
   if (path.isAbsolute(relative)) return false;
   const [projectKey, store, ...rest] = relative.split(path.sep);
   return rest.length === 0 &&
-    projectKey !== undefined && TASK_STORE_PROJECT_KEY.test(projectKey) &&
-    store === "tasks";
+    projectKey !== undefined && PROJECT_STORE_KEY.test(projectKey) &&
+    store !== undefined && DECLARABLE_PROJECT_STORES.has(store);
 }
 
 function canDeferIndeterminateWritesToPlatformSandbox(
