@@ -1123,13 +1123,32 @@ export function assertAgentInvocationChannelMessage(
   }
 }
 
+/**
+ * Frozen messages whose content was already found not to look like an
+ * invocation channel. A frozen message's content property can never be
+ * reassigned and a string never changes, so the scan of a long history that
+ * is re-validated on every request runs once per message.
+ */
+const contentCheckedFrozenMessages = new WeakSet<object>();
+
+function frozenContentLooksLikeInvocationChannel(
+  message: AgentInvocationMessageLike,
+): boolean {
+  if (contentCheckedFrozenMessages.has(message)) return false;
+  const looksLikeChannel = contentLooksLikeInvocationChannel(message.content);
+  if (!looksLikeChannel && typeof message.content === "string" && Object.isFrozen(message)) {
+    contentCheckedFrozenMessages.add(message);
+  }
+  return looksLikeChannel;
+}
+
 export function validateAgentInvocationMessageSequence(
   messages: readonly AgentInvocationMessageLike[],
 ): void {
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]!;
     if (message.runtimeOnly?.agentInvocation === undefined) {
-      if (contentLooksLikeInvocationChannel(message.content)) {
+      if (frozenContentLooksLikeInvocationChannel(message)) {
         throw new TypeError(
           "agent invocation channel metadata is missing before provider dispatch",
         );

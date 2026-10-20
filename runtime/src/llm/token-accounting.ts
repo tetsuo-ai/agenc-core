@@ -8,7 +8,12 @@
 
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import {
+  matchesPlainDataSnapshot,
+  matchesPlainDataSnapshotIgnoringKeyOrder,
+  snapshotPlainData,
+  type PlainDataSnapshot,
+} from "../utils/plain-data-snapshot.js";
 import { deepSeekReasoningOnlyReplayProvenance } from "./deepseek-reasoning-only-replay.js";
 
 import { LLMContextWindowExceededError } from "./errors.js";
@@ -1026,11 +1031,15 @@ export function estimateUtf8TokenUnits(
   value: string,
   bytesPerToken: number,
 ): number {
+  return utf8TokenUnits(normalizedUtf8UpperBound(value), bytesPerToken);
+}
+
+function utf8TokenUnits(normalizedUpperBound: number, bytesPerToken: number): number {
   const divisor =
     Number.isFinite(bytesPerToken) && bytesPerToken > 0
       ? bytesPerToken
       : TOKEN_ACCOUNTING_UTF8_WORST_CASE_BYTES_PER_TOKEN;
-  return Math.ceil(normalizedUtf8UpperBound(value) / divisor);
+  return Math.ceil(normalizedUpperBound / divisor);
 }
 
 function prepareAccountingRequest(
@@ -1041,11 +1050,11 @@ function prepareAccountingRequest(
   let snapshot: TokenAccountingRequest;
   let promptIdentity: Readonly<Record<string, unknown>>;
   let cacheIdentity: Readonly<Record<string, unknown>>;
-  let serializedCacheIdentity: string;
-  let serializedPromptIdentity: string;
+  let cacheIdentityParts: CanonicalJsonPart[];
+  let promptUpperBound: number;
   let messageProjection: PreparedMessageAccountingProjection;
   try {
-    snapshot = snapshotAccountingRequest(request);
+    snapshot = snapshotAccountingRequest(request, accountingMessageSnapshots);
     const normalizedMessages = prepareMessagesForWire(
       snapshot.messages,
       snapshot.options,
@@ -1077,9 +1086,18 @@ function prepareAccountingRequest(
     // The prompt is part of the complete cache identity. Normalize that tree
     // once, then serialize its prompt subtree for the fallback estimate too.
     // Both serializations retain the same sorted keys and request byte bound.
+    // Each is kept as the ordered parts of its JSON text: messages whose
+    // canonical snapshot was reused from an earlier request reuse their text
+    // and its measured lengths, so only new messages are serialized.
     const canonicalIdentity = canonicalize(cacheIdentity, new Set()) as Record<string, unknown>;
-    serializedCacheIdentity = JSON.stringify(canonicalIdentity);
-    serializedPromptIdentity = JSON.stringify(canonicalIdentity.prompt);
+    const promptParts: CanonicalJsonPart[] = [];
+    appendCanonicalJson(canonicalIdentity.prompt, promptParts);
+    promptUpperBound = Math.max(...canonicalJsonLengths(promptParts));
+    cacheIdentityParts = [];
+    appendCanonicalJson(canonicalIdentity, cacheIdentityParts, {
+      node: canonicalIdentity.prompt,
+      parts: promptParts,
+    });
   } catch (error) {
     if (error instanceof TokenAccountingError) throw error;
     throw new TokenAccountingError(
@@ -1092,7 +1110,7 @@ function prepareAccountingRequest(
   // cache keys. Count every inline source occurrence, then add the projected
   // request bytes. The small metadata overlap intentionally errs conservative.
   const requestBytes =
-    utf8Length(serializedCacheIdentity) + messageProjection.inlineSourceBytes;
+    canonicalJsonUtf8Length(cacheIdentityParts) + messageProjection.inlineSourceBytes;
   if (requestBytes > maxRequestBytes) {
     throw new TokenAccountingError(
       "request_too_large",
@@ -1108,12 +1126,12 @@ function prepareAccountingRequest(
     get digest() {
       return digest ??= createHash("sha256")
         .update(TOKEN_ACCOUNTING_DIGEST_DOMAIN)
-        .update(serializedCacheIdentity, "utf8")
+        .update(canonicalJsonText(cacheIdentityParts), "utf8")
         .digest("hex");
     },
     fallback: conservativeFallbackResult(
       snapshot,
-      serializedPromptIdentity,
+      promptUpperBound,
       messageProjection,
     ),
   };
@@ -1121,6 +1139,7 @@ function prepareAccountingRequest(
 
 function snapshotAccountingRequest(
   request: TokenAccountingRequest,
+  messageSnapshots: AccountingMessageSnapshots,
 ): TokenAccountingRequest {
   const options = request.options;
   const snapshotOptions: LLMChatOptions = Object.freeze({
@@ -1152,7 +1171,7 @@ function snapshotAccountingRequest(
     // to authorize an invocation. Copying it here would force deferred body
     // hashes on the request path. Keep agentInvocation and all other runtime
     // metadata so authenticated projection still sees its original authority.
-    messages: canonicalSnapshot(request.messages.map(accountingSourceMessage)),
+    messages: messageSnapshots.snapshot(request.messages, request.calibrationScope ?? ""),
     options: snapshotOptions,
     ...(request.providerNativeTools !== undefined
       ? {
@@ -1242,7 +1261,7 @@ function cacheIdentityForRequest(
 
 function conservativeFallbackResult(
   request: TokenAccountingRequest,
-  serializedPromptIdentity: string,
+  promptUpperBound: number,
   messageProjection: PreparedMessageAccountingProjection,
 ): TokenAccountingResult {
   const inspection = inspectRequestContent(
@@ -1253,8 +1272,8 @@ function conservativeFallbackResult(
     request.options.promptCacheKey,
     messageProjection.inlineImages,
   );
-  const promptTokens = estimateUtf8TokenUnits(
-    serializedPromptIdentity,
+  const promptTokens = utf8TokenUnits(
+    promptUpperBound,
     conservativeBytesPerToken(request.provider, request.model),
   );
   const frameTokens =
@@ -1539,6 +1558,79 @@ function canonicalSnapshot<T>(value: T): T {
   return canonicalize(value, new Set(), true) as T;
 }
 
+interface AccountingMessageSnapshot {
+  /** Leaves of the accounting source message the snapshot was taken from. */
+  leaves: PlainDataSnapshot;
+  readonly snapshot: LLMMessage;
+}
+
+const ACCOUNTING_MESSAGE_SNAPSHOT_SCOPES = 64;
+
+/**
+ * Canonical snapshots of request messages, reused while a message still
+ * holds the data its snapshot was taken from.
+ *
+ * Every model request is counted with a fresh copy of the whole history, so
+ * a message is looked up by identity first and then at its position in the
+ * previous request of the same calibration scope. A snapshot is reused only
+ * when the message's accounting source still holds the same keys and leaves
+ * (any key order: the snapshot sorts keys). canonicalSnapshot is a pure
+ * function of those, so a reused snapshot equals the one it would build now,
+ * and messages that are not plain data are snapshotted every time.
+ */
+class AccountingMessageSnapshots {
+  readonly #byMessage = new WeakMap<LLMMessage, AccountingMessageSnapshot>();
+  readonly #previous = new Map<string, readonly (AccountingMessageSnapshot | undefined)[]>();
+
+  snapshot(messages: readonly LLMMessage[], scope: string): readonly LLMMessage[] {
+    // Every source first, then the snapshots in order, as the full snapshot
+    // of the mapped array does, so a failure surfaces at the same message.
+    const sources = messages.map(accountingSourceMessage);
+    const previous = this.#previous.get(scope);
+    const entries: (AccountingMessageSnapshot | undefined)[] = new Array(messages.length);
+    const snapshots: LLMMessage[] = new Array(messages.length);
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]!;
+      const source = sources[index]!;
+      let entry = this.#byMessage.get(message);
+      if (entry === undefined || !reusableSnapshot(source, entry)) {
+        entry = previous?.[index];
+        if (entry === undefined || !reusableSnapshot(source, entry)) {
+          const snapshot = canonicalSnapshot(source);
+          const leaves = snapshotPlainData(source);
+          entry = leaves === undefined ? undefined : { leaves, snapshot };
+          snapshots[index] = snapshot;
+        }
+      }
+      if (entry !== undefined) {
+        this.#byMessage.set(message, entry);
+        snapshots[index] ??= entry.snapshot;
+      }
+      entries[index] = entry;
+    }
+    this.#previous.delete(scope);
+    this.#previous.set(scope, entries);
+    if (this.#previous.size > ACCOUNTING_MESSAGE_SNAPSHOT_SCOPES) {
+      this.#previous.delete(this.#previous.keys().next().value!);
+    }
+    // The array is a snapshot as canonicalSnapshot would return it.
+    Object.freeze(snapshots);
+    canonicalSnapshots.add(snapshots);
+    return snapshots;
+  }
+}
+
+function reusableSnapshot(source: LLMMessage, entry: AccountingMessageSnapshot): boolean {
+  if (matchesPlainDataSnapshot(source, entry.leaves)) return true;
+  if (!matchesPlainDataSnapshotIgnoringKeyOrder(source, entry.leaves)) return false;
+  const leaves = snapshotPlainData(source);
+  if (leaves === undefined) return false;
+  entry.leaves = leaves;
+  return true;
+}
+
+const accountingMessageSnapshots = new AccountingMessageSnapshots();
+
 function canonicalize(value: unknown, ancestors: Set<object>, freeze = false): unknown {
   if (
     value === null ||
@@ -1654,20 +1746,147 @@ function safetyMarginForTokens(tokens: number): number {
   );
 }
 
+/**
+ * UTF-8 bytes of `value`. A lone surrogate counts as its three-byte
+ * replacement character, as the encoder writes it; no copy is made.
+ */
 function utf8Length(value: string): number {
-  if (oneShotFastModeActive()) return Buffer.byteLength(value, "utf8");
-  return new TextEncoder().encode(value).byteLength;
+  return Buffer.byteLength(value, "utf8");
 }
 
 function normalizedUtf8UpperBound(value: string): number {
-  // ASCII is unchanged by every Unicode normalization form. Avoid creating
-  // five encoded copies of the same prompt merely to count identical bytes.
-  if (oneShotFastModeActive() && /^[\x00-\x7f]*$/.test(value)) return value.length;
-  let upperBound = utf8Length(value);
-  for (const form of TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS) {
-    upperBound = Math.max(upperBound, utf8Length(value.normalize(form)));
+  return Math.max(...normalizedUtf8Lengths(value));
+}
+
+/** UTF-8 lengths of a text as-is and in NFC, NFD, NFKC and NFKD. */
+type Utf8Lengths = [number, number, number, number, number];
+
+/**
+ * UTF-8 lengths of `value` and of each normalization form of it.
+ *
+ * An ASCII code unit is unchanged by every form, decomposes to nothing else,
+ * is a starter (canonical reordering never moves a mark across it) and is
+ * never the second character of a composition. So a text normalizes piece by
+ * piece at every position that holds an ASCII code unit, and only the pieces
+ * with non-ASCII text need a normalization: each maximal non-ASCII run, with
+ * the ASCII character before it, which a combining mark can compose with.
+ * Every other code unit is ASCII and counts one byte in every form.
+ */
+function normalizedUtf8Lengths(value: string): Utf8Lengths {
+  if (!HAS_NON_ASCII.test(value)) {
+    return [value.length, value.length, value.length, value.length, value.length];
   }
-  return upperBound;
+  const lengths: Utf8Lengths = [0, 0, 0, 0, 0];
+  let pieceUnits = 0;
+  for (const match of value.matchAll(NON_ASCII_RUN)) {
+    const start = match.index > 0 ? match.index - 1 : 0;
+    const end = match.index + match[0].length;
+    const piece = value.slice(start, end);
+    pieceUnits += end - start;
+    lengths[0] += utf8Length(piece);
+    for (let form = 0; form < TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS.length; form += 1) {
+      lengths[form + 1]! += utf8Length(piece.normalize(TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS[form]));
+    }
+  }
+  const ascii = value.length - pieceUnits;
+  for (let form = 0; form < lengths.length; form += 1) lengths[form]! += ascii;
+  return lengths;
+}
+
+const NON_ASCII_RUN = /[^\x00-\x7f]+/g;
+const HAS_NON_ASCII = /[^\x00-\x7f]/;
+
+/**
+ * One part of a JSON text: literal text, or the cached serialization of a
+ * frozen canonical snapshot together with its measured lengths.
+ */
+type CanonicalJsonPart = string | CanonicalJsonPiece;
+
+interface CanonicalJsonPiece {
+  readonly json: string;
+  readonly lengths: Utf8Lengths;
+}
+
+/** Text and lengths of frozen canonical snapshots; they can never change. */
+const canonicalJsonPieces = new WeakMap<object, CanonicalJsonPiece>();
+
+/**
+ * Append the parts of `JSON.stringify(value)` for a canonical value (plain
+ * objects and arrays of JSON scalars with no undefined, as canonicalize
+ * returns them). The parts concatenate to exactly that text, and each part
+ * starts with an ASCII character, so lengths add up across parts.
+ */
+function appendCanonicalJson(
+  value: unknown,
+  parts: CanonicalJsonPart[],
+  known?: { readonly node: unknown; readonly parts: readonly CanonicalJsonPart[] },
+): void {
+  if (known !== undefined && value === known.node && typeof value === "object" && value !== null) {
+    for (const part of known.parts) appendJsonPart(parts, part);
+    return;
+  }
+  if (value === null || typeof value !== "object") {
+    appendJsonPart(parts, JSON.stringify(value));
+    return;
+  }
+  if (canonicalSnapshots.has(value)) {
+    let piece = canonicalJsonPieces.get(value);
+    if (piece === undefined) {
+      const json = JSON.stringify(value);
+      piece = { json, lengths: normalizedUtf8Lengths(json) };
+      canonicalJsonPieces.set(value, piece);
+    }
+    parts.push(piece);
+    return;
+  }
+  if (Array.isArray(value)) {
+    appendJsonPart(parts, "[");
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) appendJsonPart(parts, ",");
+      appendCanonicalJson(value[index] ?? null, parts, known);
+    }
+    appendJsonPart(parts, "]");
+    return;
+  }
+  appendJsonPart(parts, "{");
+  let first = true;
+  for (const key of Object.keys(value)) {
+    const entry = (value as Record<string, unknown>)[key];
+    if (entry === undefined) continue;
+    appendJsonPart(parts, `${first ? "" : ","}${JSON.stringify(key)}:`);
+    first = false;
+    appendCanonicalJson(entry, parts, known);
+  }
+  appendJsonPart(parts, "}");
+}
+
+/** Literal text joins the literal text before it; a cached piece stays whole. */
+function appendJsonPart(parts: CanonicalJsonPart[], part: CanonicalJsonPart): void {
+  const last = parts.length - 1;
+  if (typeof part === "string" && last >= 0 && typeof parts[last] === "string") {
+    parts[last] = `${parts[last] as string}${part}`;
+  } else {
+    parts.push(part);
+  }
+}
+
+function canonicalJsonLengths(parts: readonly CanonicalJsonPart[]): Utf8Lengths {
+  const total: Utf8Lengths = [0, 0, 0, 0, 0];
+  for (const part of parts) {
+    const lengths = typeof part === "string" ? normalizedUtf8Lengths(part) : part.lengths;
+    for (let form = 0; form < total.length; form += 1) total[form]! += lengths[form]!;
+  }
+  return total;
+}
+
+function canonicalJsonUtf8Length(parts: readonly CanonicalJsonPart[]): number {
+  let total = 0;
+  for (const part of parts) total += typeof part === "string" ? utf8Length(part) : part.lengths[0];
+  return total;
+}
+
+function canonicalJsonText(parts: readonly CanonicalJsonPart[]): string {
+  return parts.map((part) => typeof part === "string" ? part : part.json).join("");
 }
 
 function normalizeIdentityPart(value: string, fallback: string): string {
