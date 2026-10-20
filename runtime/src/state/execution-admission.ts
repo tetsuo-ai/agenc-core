@@ -565,11 +565,26 @@ export class ExecutionAdmissionRepository {
     } finally { this.#capturedAdmission = undefined; this.#capturedTimestamp = undefined; }
   }
 
+  /**
+   * Incremental usage views, one per (run, allocation scope). A view holds the
+   * scope's reservation rows; `dirty` names rows to read again before use.
+   * Every change to a reservation row or its scope links is written together
+   * with an admission journal row naming the reservation (the journal is the
+   * canonical record of admission), so a view stays exact by re-reading the
+   * reservations named in journal rows it has not yet applied, from whichever
+   * connection committed them. A write on this connection outside a tracked
+   * write transaction, a journal row that disappeared, or a backlog larger than
+   * a rebuild discards the views instead.
+   */
   readonly #usageViews = new Map<string, {
     readonly projection: AdmissionUsageProjection;
     readonly dirty: Set<string>;
   }>();
-  #usageDatabaseVersion: string | undefined;
+  /** This connection's total_changes() when the views were last brought up to date. */
+  #usageLocalChanges: number | undefined;
+  /** Journal sequence through which the views have applied every journal row. */
+  #usageJournalCursor: number | undefined;
+  #usageLocalChangesStatement?: SqliteStatement<[], { count: number }>;
 
   constructor(
     driver: StateSqliteDriver,
@@ -1890,10 +1905,17 @@ export class ExecutionAdmissionRepository {
   captureUsageSummary(runId: string, allocationKey: string): AdmissionUsageSnapshot {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
+    // Inside a caller's transaction the rows read may never commit, and a
+    // journal sequence read there may be reused after a rollback. Answer from
+    // the table without letting that state into the views.
+    if (this.#driver.state.inTransaction) {
+      return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
+    }
     return this.#driver.transaction(() => {
-      const version = this.#usageVersion();
-      if (version !== this.#usageDatabaseVersion) this.#usageViews.clear();
-      this.#usageDatabaseVersion = version;
+      const sequence = this.#driver.prepareState<[], { sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
+      ).get()?.sequence ?? 0;
+      this.#catchUpUsageViews(sequence);
       const key = JSON.stringify([runId, allocationKey]);
       let view = this.#usageViews.get(key);
       const select = `SELECT reservation.* FROM execution_admission_reservations AS reservation
@@ -1920,9 +1942,6 @@ export class ExecutionAdmissionRepository {
           return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
         }
       }
-      const sequence = this.#driver.prepareState<[], { sequence: number }>(
-        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
-      ).get()?.sequence ?? 0;
       return view.projection.capture(runId, sequence);
     });
   }
@@ -1931,11 +1950,55 @@ export class ExecutionAdmissionRepository {
     this.#usageViews.delete(JSON.stringify([runId, allocationKey]));
   }
 
-  #usageVersion(): string {
-    // These inspect SQLite connection metadata, never a deferred projection.
-    const external = this.#driver.state.pragma("data_version", { simple: true });
-    const changes = this.#driver.state.prepare<[], { count: number }>("SELECT total_changes() AS count").get()?.count;
-    return `${external}:${changes}`;
+  /**
+   * Bring every view up to `sequence`, the journal maximum of this read
+   * snapshot: mark the reservations named by journal rows since the cursor
+   * dirty, from any connection. Commits by other connections that do not
+   * touch admission (the session's rollout projection, durability rows) leave
+   * the journal unchanged and so cost nothing here.
+   */
+  #catchUpUsageViews(sequence: number): void {
+    const local = this.#usageLocalChanges;
+    const cursor = this.#usageJournalCursor;
+    this.#usageLocalChanges = this.#usageLocalVersion();
+    this.#usageJournalCursor = sequence;
+    if (this.#usageViews.size === 0) return;
+    if (
+      this.#usageLocalChanges !== local ||
+      cursor === undefined ||
+      sequence < cursor ||
+      sequence - cursor > MAX_USAGE_PROJECTION_RESERVATIONS
+    ) {
+      this.#usageViews.clear();
+      return;
+    }
+    if (sequence === cursor) return;
+    const rows = this.#driver
+      .prepareState<[number, number], { readonly reservation_id: string | null }>(
+        `SELECT reservation_id FROM execution_admission_journal
+         WHERE sequence > ? AND sequence <= ? ORDER BY sequence`,
+      )
+      .all(cursor, sequence);
+    // Sequences are AUTOINCREMENT and never reused, so a missing one is a
+    // removed row whose change is unknown.
+    if (rows.length !== sequence - cursor) {
+      this.#usageViews.clear();
+      return;
+    }
+    for (const view of this.#usageViews.values()) {
+      for (const row of rows) {
+        if (row.reservation_id !== null) view.dirty.add(row.reservation_id);
+      }
+    }
+  }
+
+  /** Rows changed by this connection, including writes outside admission. */
+  #usageLocalVersion(): number {
+    // Connection metadata, read on the raw connection (no write-behind barrier).
+    const statement = this.#usageLocalChangesStatement ??= this.#driver.state.prepare<[], { count: number }>(
+      "SELECT total_changes() AS count",
+    );
+    return statement.get()!.count;
   }
 
   /** Read a consistent budget snapshot without creating or reserving a scope. */
@@ -2065,7 +2128,6 @@ export class ExecutionAdmissionRepository {
 
   #writeTransaction<T>(operation: () => T): T {
     const outermost = this.#writeDepth === 0;
-    let usageVersionBefore: string | undefined;
     // Nested inside a transaction this repository did not open: whether its
     // rows commit is not observable here, so the buffer cannot be trusted.
     if (outermost && this.#driver.state.inTransaction) this.#journalBufferExact = false;
@@ -2074,9 +2136,14 @@ export class ExecutionAdmissionRepository {
     let result: T;
     try {
       result = this.#driver.transactionImmediate(() => {
-        if (outermost && this.#usageViews.size > 0) {
-          usageVersionBefore = this.#usageVersion();
-          if (this.#usageDatabaseVersion !== usageVersionBefore) this.#usageViews.clear();
+        // Another write on this connection since the views were last brought
+        // up to date changed rows they cannot name.
+        if (
+          outermost &&
+          this.#usageViews.size > 0 &&
+          this.#usageLocalVersion() !== this.#usageLocalChanges
+        ) {
+          this.#usageViews.clear();
         }
         return operation();
       });
@@ -2096,13 +2163,10 @@ export class ExecutionAdmissionRepository {
           if (event.reservationId !== undefined) view.dirty.add(event.reservationId);
         }
       }
-      if (this.#usageViews.size > 0) {
-        const versionAfter = this.#usageVersion();
-        // Another connection may commit just after our write lock releases.
-        // Never credit that writer's change to our own incremental deltas.
-        if (usageVersionBefore?.split(":")[0] !== versionAfter.split(":")[0]) this.#usageViews.clear();
-        this.#usageDatabaseVersion = versionAfter;
-      }
+      // This connection's own rows are now named above. Other connections'
+      // journal rows, including any committed right after this write released
+      // its lock, are caught up from the journal at the next capture.
+      if (this.#usageViews.size > 0) this.#usageLocalChanges = this.#usageLocalVersion();
       for (const event of this.#openJournal) this.#committedJournal.push(event);
       this.#openJournal = [];
     }
