@@ -10,7 +10,12 @@ import {
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
-import { assertReadOnlyInspectionInvocation, withSessionPresentationEnvironment } from "../permissions/readonly-inspection.js";
+import {
+  assertReadOnlyInspectionInvocation,
+  assertReadOnlyShellInvocation,
+  readOnlyShellRefusal,
+  withSessionPresentationEnvironment,
+} from "../permissions/readonly-inspection.js";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -408,10 +413,12 @@ function normalizeOwnerId(ownerId: string | undefined): string | undefined {
  * A verified read-only inspection keeps its own persistent namespace. Its
  * no-write, no-network launch policy is part of the namespace key, so sharing
  * the shell's slot would rebuild a namespace on every switch between the two.
+ * A read-only command line runs with the session environment rather than an
+ * inspection's fixed one, so it has a third slot for the same reason.
  */
-type SessionSandboxSlot = "shell" | "inspection";
+type SessionSandboxSlot = "shell" | "inspection" | "inspection-shell";
 function sessionSandboxKey(ownerId: string | undefined, slot: SessionSandboxSlot): string {
-  return slot === "shell" ? ownerId ?? "" : `${ownerId ?? ""}\u0000inspection`;
+  return slot === "shell" ? ownerId ?? "" : `${ownerId ?? ""}\u0000${slot}`;
 }
 
 function makeDeferredExit(): {
@@ -559,6 +566,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const env = buildEnv(this.baseEnv, this.env);
     return Object.keys(env).some(name =>
       name === "BASH_ENV" || name === "ENV" || name === "SHELLOPTS" || name === "BASHOPTS" || name.startsWith("BASH_FUNC_"));
+  }
+
+  /**
+   * Why a read-only command line cannot run through this manager's shell, or
+   * undefined when it can: the shell must be a system-owned POSIX sh-family
+   * executable, and startup hooks must not redefine the commands the
+   * classification saw.
+   */
+  private readOnlyShellRefusal(): string | undefined {
+    if (this.shellStartupHooksPresent()) return "shell startup hooks can redefine commands";
+    return readOnlyShellRefusal(this.shellPath);
+  }
+
+  readOnlyShellAvailable(): boolean {
+    return this.readOnlyShellRefusal() === undefined;
   }
   private readonly commandWrapperArgv: readonly string[];
   private readonly maxProcesses: number;
@@ -747,8 +769,24 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
 
+    const direct = request.directInvocation;
+    if (direct !== undefined && (request.tty === true || request.login === true || request.shell !== undefined || request.runtimeSandbox !== direct.runtimeSandbox)) {
+      throw new UnifiedExecError("create_process", "Read-only direct execution cannot use shell options or a different sandbox");
+    }
+    const readOnlyShell = request.readOnlyShell;
+    if (readOnlyShell !== undefined) {
+      if (direct !== undefined || request.tty === true || request.login === true || request.shell !== undefined ||
+          request.runtimeSandbox !== readOnlyShell.runtimeSandbox || request.cmd !== readOnlyShell.command ||
+          (request.workdir !== undefined && resolve(request.workdir) !== resolve(readOnlyShell.cwd))) {
+        throw new UnifiedExecError("create_process", "A read-only command line cannot change its command, cwd, shell options or sandbox");
+      }
+      assertReadOnlyShellInvocation(readOnlyShell);
+      const refusal = this.readOnlyShellRefusal();
+      if (refusal !== undefined) throw new UnifiedExecError("create_process", `A read-only command line cannot run here: ${refusal}`);
+    }
+
     const processId = this.allocateProcessId();
-    const cwd = resolve(request.workdir ?? this.cwd);
+    const cwd = resolve(readOnlyShell?.cwd ?? request.workdir ?? this.cwd);
     const shell = resolveShell(request.shell, this.shellPath);
     const command = wrapCommandForShell(
       shell,
@@ -756,19 +794,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       request.cmd,
     );
     const args = commandShellArgs(shell, command, request.login === true);
-    const direct = request.directInvocation;
-    if (direct !== undefined && (request.tty === true || request.login === true || request.shell !== undefined || request.runtimeSandbox !== direct.runtimeSandbox)) {
-      throw new UnifiedExecError("create_process", "Read-only direct execution cannot use shell options or a different sandbox");
-    }
+    const sessionEnv = buildEnv(this.baseEnv, this.env);
     const spawnCommand = this.buildSpawnCommand({
       program: direct?.program ?? shell,
       args: direct?.args ?? args,
       cwd: direct?.cwd ?? cwd,
       // An inspection keeps its fixed environment apart from the session's
-      // locale and display settings, so its output reads as the shell's would.
-      env: direct === undefined
-        ? buildEnv(this.baseEnv, this.env)
-        : withSessionPresentationEnvironment(direct.env, buildEnv(this.baseEnv, this.env)),
+      // locale and display settings; a read-only command line runs with the
+      // session environment, as the ordinary path would.
+      env: direct === undefined ? sessionEnv : withSessionPresentationEnvironment(direct.env, sessionEnv),
       ...(request.runtimeSandbox !== undefined
         ? { runtimeSandbox: request.runtimeSandbox }
         : {}),
@@ -780,6 +814,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? request.ownerId.trim()
         : undefined;
     if (direct !== undefined) assertReadOnlyInspectionInvocation(direct);
+    if (readOnlyShell !== undefined) assertReadOnlyShellInvocation(readOnlyShell);
     const entry = await this.spawnProcess({
       processId,
       callId,
@@ -803,7 +838,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       // executable, mount or lifecycle identities; the namespace key carries
       // the invocation's no-write, no-network policy.
       allowDirectBwrap: this.commandWrapperArgv.length === 0,
-      sessionSlot: direct === undefined ? "shell" : "inspection",
+      sessionSlot: direct !== undefined ? "inspection" : readOnlyShell !== undefined ? "inspection-shell" : "shell",
       startedAt,
       signal: request.__abortSignal,
       sandboxAuthorityGeneration,

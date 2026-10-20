@@ -1,4 +1,5 @@
 import { prepareShellObservation } from "./side-effect-free-shell.js";
+import { sandboxModeRequiresPlatformIsolation } from "./runtimes/sandboxing.js";
 import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 import { toolStage, withToolTiming } from "./stage-timing.js";
 import { interruptedExecReport } from "./interrupted-exec-report.js";
@@ -1337,7 +1338,8 @@ export class ToolRouter {
             },
           );
           const observationTool = await toolStage("sandbox_broker", () => prepareShellObservation(
-            spec.tool, dispatchArgs, opts.turn.cwd, opts.session.services.sandboxExecutionBroker));
+            spec.tool, dispatchArgs, opts.turn.cwd, opts.session.services.sandboxExecutionBroker,
+            { owner: opts.session, ordinaryPathSandboxed: sandboxModeRequiresPlatformIsolation(sandbox) }));
           const executionTool = observationTool ?? spec.tool;
           return runAdmittedToolCall({
             session: opts.session,

@@ -63,11 +63,15 @@ describe("sandbox execution ingress architecture", () => {
       "session/turn-compat.ts:forkForCwd",
       // The read-only fast path narrows the session broker to an inspection
       // fork (every write grant lowered to read, read denials kept, network
-      // disabled) and launches only a verified literal inspection there:
-      // prepareReadOnlyInspectionInvocation refuses any sandbox that is not
-      // mandatory, no-write and no-network, and pins a root-owned native
-      // executable. Neither call can widen authority; a command that tries to
-      // write fails with a read-only file system and cannot open a socket.
+      // disabled), through this one call pair for both of its routes. It
+      // launches there only a verified literal inspection, pinned to a
+      // root-owned native executable, or a command line the read-only
+      // classification admits, run through a system-owned POSIX shell:
+      // prepareReadOnlyInspectionInvocation and prepareReadOnlyShellInvocation
+      // refuse any sandbox that is not mandatory, no-write and no-network, and
+      // the process manager asserts it again before launch. Neither call can
+      // widen authority; a command that tries to write fails with a read-only
+      // file system, and the network seccomp program refuses every connect.
       "tools/side-effect-free-shell.ts:forkForReadOnlyInspection",
       "tools/side-effect-free-shell.ts:runtimeSandbox",
       "tools/system/apply-runtime-sandbox.ts:prepareSpawn",

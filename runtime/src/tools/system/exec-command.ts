@@ -58,7 +58,8 @@ import {
   worktreeWriteDenialNotice,
 } from "./exec-sandbox-denial.js";
 import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing.js";
-import { readReadOnlyInspectionInvocation } from "../../permissions/readonly-inspection.js";
+import { readReadOnlyInspectionInvocation, readReadOnlyShellInvocation } from "../../permissions/readonly-inspection.js";
+import { readOnlyCommandNotice } from "./exec-read-only-notice.js";
 import { isDangerousCommand } from "../../permissions/bash.js";
 import { shellCallRequestsSandboxEscalation } from "../../permissions/read-only-grant.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
@@ -1052,8 +1053,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       // against the child session, not the registry's workspace. Check, gate
       // and record that same directory.
       let inspection: ReturnType<typeof readReadOnlyInspectionInvocation>;
+      let readOnlyShell: ReturnType<typeof readReadOnlyShellInvocation>;
       try {
         inspection = readReadOnlyInspectionInvocation(args);
+        readOnlyShell = readReadOnlyShellInvocation(args);
       } catch (error) {
         // The trusted executable changed after inspection. Nothing has started.
         const message = error instanceof Error ? error.message : String(error);
@@ -1066,7 +1069,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ),
         };
       }
-      const effectiveWorkdir = inspection?.cwd ?? workdir;
+      const effectiveWorkdir = inspection?.cwd ?? readOnlyShell?.cwd ?? workdir;
 
       // Checked here, not in preflight: an earlier call in the same turn may
       // create the directory. Nothing has started, so the refusal is no effect.
@@ -1121,7 +1124,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
-        const runtimeSandbox = inspection?.runtimeSandbox ?? runtimeSandboxForExec(
+        const runtimeSandbox = inspection?.runtimeSandbox ?? readOnlyShell?.runtimeSandbox ?? runtimeSandboxForExec(
           args,
           config?.cwd ?? process.cwd(),
         );
@@ -1164,7 +1167,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               ...commonRequest,
               ...(inspection !== undefined
                 ? { directInvocation: inspection, workdir: inspection.cwd }
-                : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
+                : readOnlyShell !== undefined
+                  ? { readOnlyShell, workdir: readOnlyShell.cwd }
+                  : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
               ...(timeoutMs !== undefined ? { timeoutMs } : {}),
               ...(args.__onProgress !== undefined
                 ? { __onProgress: args.__onProgress }
@@ -1248,7 +1253,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const confinedWorktree = runtimeSandbox === undefined
           ? undefined
           : readSandboxExecutionBroker(args)?.worktreeConfinement?.worktree;
-        const primaryNotice = denial?.notice ?? execNetworkFailureNotice({
+        const ordinaryNotice = (): string | null => denial?.notice ?? execNetworkFailureNotice({
           output: execContent,
           exitCode: output.exitCode,
           command: cmd,
@@ -1266,6 +1271,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               exitCode: output.exitCode,
               worktree: confinedWorktree,
             }));
+        // A read-only command line ran without write or network authority only
+        // because it looked like an inspection, so a refused write or lookup is
+        // that choice, not the session sandbox: escalation advice would mislead.
+        const primaryNotice = readOnlyShell !== undefined
+          ? readOnlyCommandNotice(execContent, output.exitCode)
+          : ordinaryNotice();
         const namespaceNotice = execProcessNamespaceNotice({ command: cmd, runtimeSandbox });
         const notice = [primaryNotice, namespaceNotice].filter(Boolean).join("\n\n") || null;
         return {
@@ -1309,5 +1320,5 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         return errorResult(error);
       }
     },
-  });
+  }, { readOnlyShellAvailable: () => manager.readOnlyShellAvailable?.() === true });
 }

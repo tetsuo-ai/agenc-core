@@ -20,9 +20,13 @@ import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../..
 import { attachToolRuntimeContext } from "../runtimes/context.js";
 import {
   attachReadOnlyInspectionInvocation,
+  attachReadOnlyShellInvocation,
   inspectReadOnlyCommand,
+  inspectReadOnlyShellCommand,
   prepareReadOnlyInspectionInvocation,
+  prepareReadOnlyShellInvocation,
 } from "../../permissions/readonly-inspection.js";
+import { READ_ONLY_COMMAND_NOTICE } from "./exec-read-only-notice.js";
 import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
 import { buildFilteredRegistry, mergeRoleDisallowlist } from "../../agents/run-agent.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "../../agents/built-in-prompts.js";
@@ -1478,6 +1482,71 @@ describe("exec_command tool", () => {
       const standard = lightTool(false);
       await standard.tool.execute(contextArgs({ cmd: "go test ./..." }));
       expect(standard.execCommand.mock.calls.at(-1)?.[0]).not.toHaveProperty("yield_time_ms");
+    });
+  });
+
+  describe("a command line run read-only", () => {
+    const readOnly: UnifiedExecRuntimeSandbox = {
+      preference: "require",
+      permissionProfile: {
+        fileSystem: restrictedFileSystemPolicy([{ path: { kind: "special", value: { kind: "root" } }, access: "read" }]),
+        network: "disabled",
+      },
+    };
+    function readOnlyArgs(cmd: string): Record<string, unknown> {
+      const args = contextArgs({ cmd }, { approvalPolicy: "on_request", sandboxMode: "workspace_write", platformSandbox: true });
+      const inspected = inspectReadOnlyShellCommand({ cmd }, root);
+      if (!inspected.allowed) throw new Error(inspected.reason);
+      attachReadOnlyShellInvocation(args, prepareReadOnlyShellInvocation(inspected.invocation, readOnly));
+      return args;
+    }
+
+    test("hands the classified command line and its sandbox to the manager, without shell options", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const result = await tool.execute(readOnlyArgs("ls -la | head -3"));
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      const request = execCommand.mock.calls[0]![0];
+      expect(request).toMatchObject({ cmd: "ls -la | head -3", workdir: root, runtimeSandbox: readOnly,
+        readOnlyShell: { command: "ls -la | head -3", cwd: root, runtimeSandbox: readOnly } });
+      expect(request).not.toHaveProperty("shell");
+      expect(request).not.toHaveProperty("login");
+      expect(request).not.toHaveProperty("tty");
+      expect(request).not.toHaveProperty("directInvocation");
+    });
+
+    test.each([
+      ["a refused write", "touch: cannot touch 'notes/x': Read-only file system", 1],
+      ["a refused connection", "connect: Operation not permitted", 7],
+      ["a failed lookup", "curl: (6) Could not resolve host: example.com", 6],
+    ])("explains %s as the read-only run, not the session sandbox", async (_name, stderr, exitCode) => {
+      const { tool } = mockManagerTool({ execCommand: vi.fn(async () => failedExecOutput(stderr, exitCode)) });
+      const result = await tool.execute(readOnlyArgs("cat notes.txt | head"));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(stderr);
+      expect(result.content).toContain(READ_ONLY_COMMAND_NOTICE);
+      expect(result.content).not.toContain("[sandbox]");
+      expect(result.content).not.toContain("require_escalated");
+    });
+
+    test("adds nothing to an ordinary failure or a success", async () => {
+      const failed = mockManagerTool({ execCommand: vi.fn(async () => failedExecOutput("", 1)) });
+      expect((await failed.tool.execute(readOnlyArgs("grep -rn missing src | head"))).content).not.toContain("[read-only]");
+      const passed = mockManagerTool();
+      expect((await passed.tool.execute(readOnlyArgs("ls | head"))).content).not.toContain("[read-only]");
+    });
+
+    test("refuses as no effect, without starting anything, when a command line has no authority", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const args = contextArgs({ cmd: "ls | head" });
+      const inspected = inspectReadOnlyShellCommand({ cmd: "ls | head" }, root);
+      if (!inspected.allowed) throw new Error(inspected.reason);
+      attachReadOnlyShellInvocation(args, { ...prepareReadOnlyShellInvocation(inspected.invocation, readOnly) });
+      const result = await tool.execute(args);
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("authority is missing");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(execCommand).not.toHaveBeenCalled();
     });
   });
 

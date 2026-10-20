@@ -1,5 +1,5 @@
 import type { ToolExecutionInjectedArgs } from "../tools/types.js";
-import type { ReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
+import type { ReadOnlyInspectionInvocation, ReadOnlyShellInvocation } from "../permissions/readonly-inspection.js";
 import type {
   AdditionalPermissionProfile,
   NetworkProxyConfig,
@@ -111,6 +111,12 @@ export interface UnifiedExecManagerOptions {
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly ownerBinding?: UnifiedExecOwnerBinding;
   readonly directInvocation?: ReadOnlyInspectionInvocation;
+  /**
+   * A command line classified as read-only: it runs through the session shell
+   * with the session environment, but only in this invocation's mandatory
+   * no-write, no-network sandbox.
+   */
+  readonly readOnlyShell?: ReadOnlyShellInvocation;
   readonly callId?: string;
   readonly cmd: string;
   readonly workdir?: string;
@@ -266,6 +272,8 @@ export interface UnifiedExecProcessManagerLike {
   readonly shellPath?: string;
   /** Whether commands inherit shell startup hooks (BASH_ENV, exported functions, SHELLOPTS). */
   shellStartupHooksPresent?(): boolean;
+  /** Whether a read-only command line can run through the session shell here. */
+  readOnlyShellAvailable?(): boolean;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
   /** Start a service that outlives the command and the session; see DetachedProcessRequest. */
   startDetachedProcess?(

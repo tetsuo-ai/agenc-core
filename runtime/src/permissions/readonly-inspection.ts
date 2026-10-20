@@ -1,9 +1,10 @@
 import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { lexShellCommand, isDirectExecEligible } from "../utils/shell/command-line.js";
 import { validateFlags, type ExternalCommandConfig, type FlagArgType } from "../utils/shell/readOnlyCommandValidation.js";
 import type { UnifiedExecRuntimeSandbox } from "../unified-exec/types.js";
 import { networkPolicyEnabled } from "../sandbox/engine/index.js";
+import { classifyReadOnlyShellIntent, MAX_READ_ONLY_SHELL_COMMAND_LENGTH } from "./read-only-shell-intent.js";
 
 export interface ReadOnlyInspectionCommand {
   readonly command: string;
@@ -74,10 +75,15 @@ function positionalArguments(args: readonly string[], config: ExternalCommandCon
   return positional;
 }
 
+function requestsShellOptions(record: Record<string, unknown>): boolean {
+  return record.shell !== undefined || record.login === true || record.tty === true || record.run_in_background === true ||
+    record.sandbox_permissions === "require_escalated" || record.additional_permissions !== undefined;
+}
+
 export function inspectReadOnlyCommand(toolName: string, input: unknown, cwd: string, options: { readonly enforceWorkspaceBoundary?: boolean; readonly allowWorktreeGitInspection?: boolean } = {}): ReadOnlyInspectionResult {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return refusal("arguments must be an object");
   const record = input as Record<string, unknown>;
-  if (record.shell !== undefined || record.login === true || record.tty === true || record.run_in_background === true || record.sandbox_permissions === "require_escalated" || record.additional_permissions !== undefined) {
+  if (requestsShellOptions(record)) {
     return refusal("shell profiles, interactive execution, background flags, and wider permissions are unavailable");
   }
   const raw = toolName === "exec_command" ? record.cmd : record.command;
@@ -162,13 +168,17 @@ function trustedInspectionExecutable(command: string, cwd: string): string {
   throw new Error(`Read-only inspection requires a trusted installed ${command} executable`);
 }
 
+function assertNoWriteNoNetworkSandbox(runtimeSandbox: UnifiedExecRuntimeSandbox): void {
+  if (runtimeSandbox.preference !== "require" || runtimeSandbox.permissionProfile.fileSystem.kind !== "restricted" || runtimeSandbox.permissionProfile.fileSystem.entries.some((entry) => entry.access === "write") || networkPolicyEnabled(runtimeSandbox.permissionProfile.network)) {
+    throw new Error("Read-only inspection requires mandatory no-write, no-network platform isolation");
+  }
+}
+
 export function prepareReadOnlyInspectionInvocation(
   inspection: ReadOnlyInspectionCommand,
   runtimeSandbox: UnifiedExecRuntimeSandbox,
 ): ReadOnlyInspectionInvocation {
-  if (runtimeSandbox.preference !== "require" || runtimeSandbox.permissionProfile.fileSystem.kind !== "restricted" || runtimeSandbox.permissionProfile.fileSystem.entries.some((entry) => entry.access === "write") || networkPolicyEnabled(runtimeSandbox.permissionProfile.network)) {
-    throw new Error("Read-only inspection requires mandatory no-write, no-network platform isolation");
-  }
+  assertNoWriteNoNetworkSandbox(runtimeSandbox);
   const program = trustedInspectionExecutable(inspection.command, inspection.cwd);
   const env: Record<string, string> = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" };
   if (process.platform === "win32" && process.env.SystemRoot !== undefined) env.SystemRoot = process.env.SystemRoot;
@@ -230,4 +240,88 @@ export function withSessionPresentationEnvironment(
     if (value !== undefined && rule(name)?.[1].test(value) === true) env[name] = value;
   }
   return env;
+}
+
+/** A command line classified as read-only, with the cwd it starts in. */
+export interface ReadOnlyShellCommand {
+  readonly command: string;
+  readonly cwd: string;
+}
+
+/**
+ * A classified read-only command line. It runs exactly as the ordinary shell
+ * path would run it (the session's shell, environment and cwd) but only inside
+ * a mandatory no-write, no-network sandbox. The sandbox is the guarantee: a
+ * misclassified command fails on the refused write or connection.
+ */
+export interface ReadOnlyShellInvocation extends ReadOnlyShellCommand {
+  readonly runtimeSandbox: UnifiedExecRuntimeSandbox;
+}
+
+export type ReadOnlyShellResult =
+  | { readonly allowed: true; readonly invocation: ReadOnlyShellCommand }
+  | { readonly allowed: false; readonly reason: string };
+
+const shellInvocations = new WeakSet<object>();
+const shellInvocationByArgs = new WeakMap<object, ReadOnlyShellInvocation>();
+
+export function inspectReadOnlyShellCommand(input: unknown, cwd: string): ReadOnlyShellResult {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return refusal("arguments must be an object");
+  const record = input as Record<string, unknown>;
+  if (requestsShellOptions(record)) {
+    return refusal("shell profiles, interactive execution, background flags, and wider permissions are unavailable");
+  }
+  const raw = record.cmd;
+  if (typeof raw !== "string" || raw.length > MAX_READ_ONLY_SHELL_COMMAND_LENGTH) return refusal("a bounded command line is required");
+  const intent = classifyReadOnlyShellIntent(raw);
+  if (!intent.allowed) return refusal(intent.reason);
+  const requestedCwd = record.workdir;
+  if (requestedCwd !== undefined && typeof requestedCwd !== "string") return refusal("working directory must be a string");
+  return { allowed: true, invocation: Object.freeze({ command: raw, cwd: resolve(cwd, requestedCwd ?? ".") }) };
+}
+
+export function prepareReadOnlyShellInvocation(
+  command: ReadOnlyShellCommand,
+  runtimeSandbox: UnifiedExecRuntimeSandbox,
+): ReadOnlyShellInvocation {
+  assertNoWriteNoNetworkSandbox(runtimeSandbox);
+  const invocation = Object.freeze({ command: command.command, cwd: command.cwd, runtimeSandbox });
+  shellInvocations.add(invocation);
+  return invocation;
+}
+
+export function attachReadOnlyShellInvocation(args: object, invocation: ReadOnlyShellInvocation): void {
+  shellInvocationByArgs.set(args, invocation);
+}
+
+export function readReadOnlyShellInvocation(args: object): ReadOnlyShellInvocation | undefined {
+  const invocation = shellInvocationByArgs.get(args);
+  if (invocation !== undefined) assertReadOnlyShellInvocation(invocation);
+  return invocation;
+}
+
+export function assertReadOnlyShellInvocation(invocation: ReadOnlyShellInvocation): void {
+  if (!shellInvocations.has(invocation)) throw new Error("Read-only shell invocation authority is missing");
+  assertNoWriteNoNetworkSandbox(invocation.runtimeSandbox);
+}
+
+const READ_ONLY_SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "dash"]);
+
+/**
+ * The session shell a read-only command line runs through, or why it cannot:
+ * a POSIX sh-family shell (the grammar the classification models) that is a
+ * system-owned native executable users cannot replace.
+ */
+export function readOnlyShellRefusal(shellPath: string): string | undefined {
+  if (process.platform === "win32") return "read-only command lines need a POSIX shell";
+  try {
+    const program = realpathSync(shellPath);
+    if (!READ_ONLY_SHELLS.has(basename(shellPath)) && !READ_ONLY_SHELLS.has(basename(program))) {
+      return "the session shell is not a POSIX sh-family shell";
+    }
+    executableIdentity(program);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }

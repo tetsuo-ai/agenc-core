@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertReadOnlyInspectionInvocation, attachReadOnlyInspectionInvocation, inspectReadOnlyCommand, prepareReadOnlyInspectionInvocation, readReadOnlyInspectionInvocation, withSessionPresentationEnvironment } from "../../src/permissions/readonly-inspection.js";
+import { chmodSync, copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { assertReadOnlyInspectionInvocation, assertReadOnlyShellInvocation, attachReadOnlyInspectionInvocation, attachReadOnlyShellInvocation, inspectReadOnlyCommand, inspectReadOnlyShellCommand, prepareReadOnlyInspectionInvocation, prepareReadOnlyShellInvocation, readOnlyShellRefusal, readReadOnlyInspectionInvocation, readReadOnlyShellInvocation, withSessionPresentationEnvironment } from "../../src/permissions/readonly-inspection.js";
 import { analyzeShellRuntimeAccess } from "../../src/tools/runtimes/shell.js";
 import type { Tool } from "../../src/tools/types.js";
 import { restrictedFileSystemPolicy } from "../../src/sandbox/engine/index.js";
@@ -107,5 +110,76 @@ describe("session presentation environment", () => {
       LC_CTYPE: "../../tmp/evil", TIME_STYLE: "+%F\n%T",
     })).toEqual({ PATH: "/usr/bin:/bin", GIT_PAGER: "", LANG: "fr_FR.UTF-8", LANGUAGE: "fr:en", LC_TIME: "en_GB.UTF-8",
       TZ: "America/New_York", QUOTING_STYLE: "shell-escape", BLOCK_SIZE: "'1" });
+  });
+});
+
+describe("read-only shell command lines", () => {
+  const sandbox: UnifiedExecRuntimeSandbox = { preference: "require", permissionProfile: { fileSystem: restrictedFileSystemPolicy([{ path: { kind: "special", value: { kind: "root" } }, access: "read" }]), network: "disabled" } };
+
+  it("classifies a command line with its cwd and refuses shell options", () => {
+    expect(inspectReadOnlyShellCommand({ cmd: "cd src && ls | sort", workdir: "pkg" }, cwd)).toEqual({
+      allowed: true, invocation: { command: "cd src && ls | sort", cwd: "/project/pkg" } });
+    for (const extra of [{ login: true }, { tty: true }, { shell: "/bin/zsh" }, { run_in_background: true },
+      { sandbox_permissions: "require_escalated" }, { additional_permissions: {} }, { workdir: 7 }]) {
+      expect(inspectReadOnlyShellCommand({ cmd: "ls | head", ...extra }, cwd)).toMatchObject({ allowed: false });
+    }
+    expect(inspectReadOnlyShellCommand({ cmd: "ls > out" }, cwd)).toMatchObject({ allowed: false, reason: expect.stringContaining("writes a file") });
+    expect(inspectReadOnlyShellCommand(["ls"], cwd)).toMatchObject({ allowed: false });
+  });
+
+  it("binds a command line to a mandatory no-write, no-network sandbox and refuses copies", () => {
+    const inspected = inspectReadOnlyShellCommand({ cmd: "ls | head" }, cwd);
+    if (!inspected.allowed) throw new Error(inspected.reason);
+    const invocation = prepareReadOnlyShellInvocation(inspected.invocation, sandbox);
+    const args = { cmd: "ls | head" };
+    attachReadOnlyShellInvocation(args, invocation);
+    expect(readReadOnlyShellInvocation(args)).toBe(invocation);
+    expect(readReadOnlyShellInvocation({ ...args })).toBeUndefined();
+    expect(() => assertReadOnlyShellInvocation({ ...invocation })).toThrow(/authority is missing/);
+    expect(() => prepareReadOnlyShellInvocation(inspected.invocation, { ...sandbox, preference: "auto" })).toThrow(/mandatory/);
+    expect(() => prepareReadOnlyShellInvocation(inspected.invocation, { ...sandbox, permissionProfile: { ...sandbox.permissionProfile, network: "enabled" } })).toThrow(/no-network/);
+    expect(() => prepareReadOnlyShellInvocation(inspected.invocation, { ...sandbox, permissionProfile: { ...sandbox.permissionProfile,
+      fileSystem: restrictedFileSystemPolicy([{ path: { kind: "path", path: "/project" }, access: "write" }]) } })).toThrow(/no-write/);
+  });
+
+  it.skipIf(process.platform === "win32")("runs a command line only through a system-owned POSIX shell", () => {
+    expect(readOnlyShellRefusal("/bin/sh")).toBeUndefined();
+    expect(readOnlyShellRefusal("/usr/bin/env")).toMatch(/POSIX sh-family/);
+    expect(readOnlyShellRefusal("/nonexistent/bash")).toBeDefined();
+    const directory = mkdtempSync(join(tmpdir(), "agenc-readonly-shell-"));
+    try {
+      const copy = join(directory, "bash");
+      copyFileSync("/bin/sh", copy);
+      chmodSync(copy, 0o755);
+      expect(readOnlyShellRefusal(copy)).toMatch(/system-owned|writable/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("launches through the session shell and environment in its own warm slot", async () => {
+    const inspected = inspectReadOnlyShellCommand({ cmd: "cd src && ls | sort", workdir: "." }, process.cwd());
+    if (!inspected.allowed) throw new Error(inspected.reason);
+    const invocation = prepareReadOnlyShellInvocation(inspected.invocation, sandbox);
+    const baseEnv = { PATH: "/home/user/bin:/usr/bin:/bin", LANG: "de_DE.UTF-8", HOME: "/home/user" };
+    const manager = new UnifiedExecProcessManager({ cwd: "/somewhere-else", baseEnv, shellPath: "/bin/sh" });
+    expect(manager.readOnlyShellAvailable()).toBe(true);
+    const wrapped = manager as unknown as { buildSpawnCommand: (input: unknown) => unknown; spawnProcess: (input: unknown) => Promise<never> };
+    const build = vi.spyOn(wrapped, "buildSpawnCommand").mockImplementation((input) => input);
+    const spawn = vi.spyOn(wrapped, "spawnProcess").mockRejectedValue(new Error("captured before physical execution"));
+    const request = { cmd: "cd src && ls | sort", runtimeSandbox: sandbox, readOnlyShell: invocation, workdir: process.cwd() };
+    await expect(manager.execCommand(request)).rejects.toThrow("captured before physical execution");
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ program: "/bin/sh", args: ["-c", "cd src && ls | sort"],
+      cwd: process.cwd(), runtimeSandbox: sandbox, env: expect.objectContaining(baseEnv) }));
+    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ allowDirectBwrap: true, sessionSlot: "inspection-shell" }));
+    // Nothing else may ride on the classified command line.
+    for (const changed of [{ cmd: "rm -rf src" }, { runtimeSandbox: { ...sandbox } }, { login: true }, { shell: "/bin/bash" },
+      { tty: true }, { workdir: "/tmp" }, { readOnlyShell: { ...invocation } }]) {
+      await expect(manager.execCommand({ ...request, ...changed })).rejects.toThrow(/read-only command line|authority is missing/);
+    }
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const hooked = new UnifiedExecProcessManager({ cwd: process.cwd(), baseEnv: { ...baseEnv, BASH_ENV: "/home/user/.bashenv" }, shellPath: "/bin/sh" });
+    expect(hooked.readOnlyShellAvailable()).toBe(false);
+    await expect(hooked.execCommand(request)).rejects.toThrow(/startup hooks/);
+    build.mockRestore();
+    spawn.mockRestore();
   });
 });
