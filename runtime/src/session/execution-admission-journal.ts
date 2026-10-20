@@ -21,8 +21,9 @@ export function bindExecutionAdmissionJournal(
   session: Session,
   admission: ExecutionAdmissionClient,
 ): () => void {
-  // During the catch-up below, evidence already in the rollout needs one
-  // fsync proof of the canonical tail, not one per event.
+  // During the catch-up below, a run of evidence already in the rollout needs
+  // one fsync proof of the canonical tail, not one per event. The proof is
+  // taken before the next append and before the bind returns.
   let catchUp: { tailSyncNeeded: boolean } | undefined;
   const append = (event: AdmissionJournalEvent): void => {
     // Admission and capacity have already committed. Only their canonical
@@ -82,8 +83,8 @@ export function bindExecutionAdmissionJournal(
     }
     const tailSyncNeeded = catchUp.tailSyncNeeded;
     catchUp = undefined;
-    // One fsync proof covers every already-present event accepted above, and
-    // the bind does not complete before it.
+    // One fsync proof covers the already-present events accepted since the
+    // last append, and the bind does not complete before it.
     if (tailSyncNeeded) canonicalRolloutStore(session)?.syncCanonicalTail();
     let lastUsageSequence = -1;
     const appendUsage = (summary: AdmissionUsageSummary): void => {
@@ -161,6 +162,14 @@ function appendExecutionAdmissionEvent(
     if (catchUp !== undefined) catchUp.tailSyncNeeded = true;
     else rolloutStore.syncCanonicalTail();
     return;
+  }
+
+  // A catch-up proves the evidence it accepted so far before anything new is
+  // appended after it, as the per-event proofs did: one fsync of the whole
+  // canonical file covers the run of already-present events before it.
+  if (catchUp?.tailSyncNeeded === true) {
+    rolloutStore.syncCanonicalTail();
+    catchUp.tailSyncNeeded = false;
   }
 
   try {
