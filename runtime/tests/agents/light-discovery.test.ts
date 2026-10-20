@@ -90,7 +90,8 @@ describe("Light child capability discovery", () => {
     });
     const results = JSON.parse(result.content).results;
     expect(results.length).toBeGreaterThan(0);
-    expect(results.every((entry: { advertised: boolean }) => entry.advertised)).toBe(true);
+    // Light searches return the compact form: a listed tool carries `listed` and no description.
+    expect(results.every((entry: { listed?: boolean }) => entry.listed === true)).toBe(true);
     expect(results.map((entry: { name: string }) => entry.name)).not.toContain("Specialist");
   });
 
