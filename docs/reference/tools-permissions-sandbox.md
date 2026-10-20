@@ -958,7 +958,11 @@ home stays unwritable.
 **Host vs sandbox.** Sandboxed children cannot write home. `Write` / `Edit`
 and `extractMemories` may still persist the owning session's plan file and
 the durable memory roots (`$AGENC_HOME/memory/`, the project memory
-directory) on the **host** through `agencHomeCarveOutAllowsWrite`. That
+directory) on the **host** through `agencHomeCarveOutAllowsWrite`. The
+memory roots are the ones the session's memory prompt names, resolved from
+the session's ConfigStore and working directory
+(`sessionDurableMemoryWriteRoots`), never from the daemon process, whose own
+working directory would key another project's memory directory. That
 check uses the original unprotected profile so an operator deny, a
 reserved path already on the profile, or an SDK/cowork memory-path
 override still wins. Shell redirects never reach it

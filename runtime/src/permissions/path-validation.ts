@@ -637,6 +637,26 @@ export function isDurableMemoryWritePath(resolvedPath: string): boolean {
   return underDurableMemoryRoots(getPathsForPermissionCheck(resolvedPath));
 }
 
+/**
+ * Whether every spelling of `resolvedPath` (as written, resolved, and through
+ * each link) lies under one of `roots`, each root taken as given and where it
+ * really lives, so a home reached through a link still matches. The roots
+ * must come from trusted session state (the memory directories the session's
+ * memory prompt names), never from tool input.
+ */
+export function isUnderMemoryRoots(
+  resolvedPath: string,
+  roots: readonly string[],
+): boolean {
+  if (roots.length === 0) return false;
+  const candidates = uniquePaths(
+    roots.flatMap((root) => [root, safeResolvePath(root).resolvedPath]),
+  );
+  return getPathsForPermissionCheck(resolvedPath).every((path) =>
+    candidates.some((root) => isPathInside(path, root)),
+  );
+}
+
 function durableMemoryPathPermission(
   resolvedPath: string,
   context: ToolPermissionContext,

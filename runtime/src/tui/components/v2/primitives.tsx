@@ -1778,7 +1778,8 @@ export function ApprovalCard({
           // the file, so this line is redundant and omitted (the `showPreview`
           // branch above); only surface the bare path when no diff is rendered.
           // Empty/`{}` inputs (EnterPlanMode and friends) render no line at all.
-          <ThemedText color="text2" wrap="truncate-end">
+          // A long path loses its middle, never its file name.
+          <ThemedText color="text2" wrap="truncate-middle">
             {command}
           </ThemedText>
         )}

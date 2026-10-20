@@ -21,6 +21,7 @@ import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
 import { approvalInputText } from "./approval-input-text.js";
+import { abbreviateHomePaths } from "../utils/home-path-display.js";
 import { fileEditTargetPath } from "../tools/system/file-edit-target.js";
 import { Box, useInput, type Key } from "./ink.js";
 import type { InputEvent } from "./ink/events/input-event.js";
@@ -602,7 +603,7 @@ function AgenCApprovalOverlay({
         ? "CREATE"
         : "EDIT";
       return {
-        file: built.file,
+        file: abbreviateHomePaths(built.file),
         stats: built.stats,
         lines: built.lines,
         remaining: built.remaining,
@@ -843,7 +844,9 @@ function AgenCApprovalOverlay({
         risk={destructive || runsWithoutSandbox ? "high" : "low"}
         title={`tool · ${name} · ${title}`}
         {...(runsWithoutSandbox ? { summary: `${RUN_WITHOUT_SANDBOX_TITLE} · ${name}` } : {})}
-        command={command.length > 0 ? command : toolUseConfirm.description}
+        // Home paths read as ~/..., as in the transcript's tool rows; the
+        // risk checks above still read the input as given.
+        command={abbreviateHomePaths(command.length > 0 ? command : toolUseConfirm.description)}
         commandIsShell={approvalCommandIsShell(toolUseConfirm)}
         confirmLabel={draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter"}
         facts={[
@@ -865,13 +868,13 @@ function AgenCApprovalOverlay({
             value: draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter",
           },
         ]}
-        note={approvalNote({
+        note={abbreviateHomePaths(approvalNote({
           question: toolUseConfirm.description,
           runsWithoutSandbox,
           writePreviewWarning: writePreviewUnavailable
             ? `Existing content unavailable; this write may overwrite a file. ${fileWritePreview?.kind === "unavailable" ? fileWritePreview.reason : ""}`.trim()
             : undefined,
-        })}
+        }))}
         {...(diffPreview !== undefined ? { diffPreview } : {})}
         requestId={request.id}
         requireTypedConfirmation={destructive}

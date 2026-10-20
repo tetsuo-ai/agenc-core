@@ -31,7 +31,11 @@ import {
   matchesSessionPlanFile,
   sessionPlanFileAuthority,
 } from "../../planning/session-plan-authority.js";
-import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
+import { isDurableMemoryWritePath, isUnderMemoryRoots } from "../../permissions/path-validation.js";
+import {
+  sessionDurableMemoryWriteRoots,
+  type LiveSessionMemoryServices,
+} from "../../services/extractMemories/memory-paths.js";
 import {
   LOGS_DATABASE_FILENAME,
   STATE_DATABASE_FILENAME,
@@ -581,7 +585,7 @@ function enforceRuntimeSandboxAttemptChecks(
       ) &&
       !(shellAccess === null &&
         (isActiveSessionPlanFile(input.context, target) ||
-          isDurableMemoryWritePath(target) ||
+          isSessionDurableMemoryWrite(input.context, target, cwd) ||
           ((writes.declared ?? []).includes(target) &&
             isSessionProjectStore(input.context, target))) &&
         agencHomeCarveOutAllowsWrite(fileToolProfile.fileSystem, target, cwd, sessionTempRoot)) &&
@@ -650,6 +654,29 @@ export function agencHomeCarveOutAllowsWrite(
         : entry,
     ),
   }, target, cwd, sessionTempRoot);
+}
+
+/**
+ * Whether `target` lies under a durable memory directory this session's file
+ * tools may write: the global root and the project directory the session's
+ * memory prompt names, resolved from the session (its ConfigStore, cwd and
+ * runtime options). Process-wide state cannot stand in for it: a daemon's own
+ * working directory keys its project memory, so in a daemon session that
+ * named another project's directory and every memory save was refused. A
+ * session without that authority keeps the process-wide roots.
+ */
+function isSessionDurableMemoryWrite(
+  context: ToolRuntimeAttemptContext,
+  target: string,
+  cwd: string,
+): boolean {
+  const services = (context.invocation.session as {
+    readonly services?: LiveSessionMemoryServices;
+  } | undefined)?.services;
+  const roots = sessionDurableMemoryWriteRoots(services, cwd);
+  return roots === undefined
+    ? isDurableMemoryWritePath(target)
+    : isUnderMemoryRoots(target, roots);
 }
 
 function isActiveSessionPlanFile(

@@ -73,6 +73,7 @@ import { sanitizeSystemReminderContent } from "./attachments/system-reminder-san
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
 import { loadMemoryPrompt } from "../memory/memdir.js";
+import { liveSessionMemoryOwner } from "../services/extractMemories/memory-paths.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { logForDebugging } from "../utils/debug.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
@@ -502,14 +503,11 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
   readonly memoryPrompt: string;
 }> {
   try {
-    const configStore = session.services?.configStore;
-    if (configStore === undefined) return { memoryInstructions: "", memoryPrompt: "" };
-    const prompt = await loadMemoryPrompt({
-      cwd,
-      configStore,
-      env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
-      runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
-    }, session.services?.providerEnvironment);
+    // The owner the runtime sandbox resolves the same directories from
+    // (sessionDurableMemoryWriteRoots), so a memory write lands where both agree.
+    const owner = liveSessionMemoryOwner(session.services, cwd);
+    if (owner === undefined) return { memoryInstructions: "", memoryPrompt: "" };
+    const prompt = await loadMemoryPrompt(owner, session.services?.providerEnvironment);
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
