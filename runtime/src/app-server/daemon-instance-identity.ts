@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { open, opendir, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { resolveProcessHomePathInput } from "../config/home.js";
 import {
@@ -40,6 +41,11 @@ export interface LinuxAgenCDaemonProcessScanLimits {
   readonly maxIoOperations?: number;
   /** Wall-clock budget for the complete discovery pass. */
   readonly maxElapsedMs?: number;
+  /**
+   * Maximum /proc listings in one discovery. Listing starts over only when a
+   * process is reaped while its directory entry is being listed.
+   */
+  readonly maxDirectoryPasses?: number;
   /** Deterministic contract-test clock. */
   readonly now?: () => number;
   /** @internal Deterministic streaming-directory contract-test seam. */
@@ -48,7 +54,25 @@ export interface LinuxAgenCDaemonProcessScanLimits {
   readonly readProcessCwdPath?: (procDir: string) => Promise<string>;
   /** @internal Deterministic candidate filesystem-root contract-test seam. */
   readonly readProcessRootPath?: (procDir: string) => Promise<string>;
+  /**
+   * @internal Deterministic contract-test hook that runs as part of every read
+   * of a candidate's own /proc/<pid> entry; an error it throws is that read's
+   * error.
+   */
+  readonly beforeProcessRead?: (
+    pid: number,
+    entry: LinuxAgenCDaemonProcessEntry,
+  ) => Promise<void> | void;
 }
+
+/** A candidate's own /proc/<pid> entry read during discovery. */
+export type LinuxAgenCDaemonProcessEntry =
+  | "cmdline"
+  | "exe"
+  | "environ"
+  | "root"
+  | "cwd"
+  | "stat";
 
 export class AgenCDaemonProcessScanIncompleteError extends Error {
   constructor(reason: string) {
@@ -63,6 +87,12 @@ export class AgenCDaemonProcessScanIncompleteError extends Error {
 const DEFAULT_LINUX_DAEMON_SCAN_MAX_PROCESS_ENTRIES = 8_192;
 const DEFAULT_LINUX_DAEMON_SCAN_MAX_IO_OPERATIONS = 32_768;
 const DEFAULT_LINUX_DAEMON_SCAN_MAX_ELAPSED_MS = 2_000;
+const DEFAULT_LINUX_DAEMON_SCAN_MAX_DIRECTORY_PASSES = 8;
+/** PF_EXITING in a /proc/<pid>/stat flags field: the task is in do_exit. */
+const LINUX_TASK_FLAG_EXITING = 0x4n;
+/** Bounded wait for an exiting candidate to settle as reaped or zombie. */
+const LINUX_EXITING_TASK_SETTLE_POLLS = 40;
+const LINUX_EXITING_TASK_SETTLE_POLL_MS = 5;
 export const AGENC_LINUX_PROC_IDENTITY_MAX_BYTES = 256 * 1_024;
 export const AGENC_DAEMON_PACKAGE_MANIFEST_MAX_BYTES = 64 * 1_024;
 
@@ -97,12 +127,15 @@ interface LinuxAgenCDaemonProcessScanTracker {
   readonly maxProcessEntries: number;
   readonly maxIoOperations: number;
   readonly maxElapsedMs: number;
+  readonly maxDirectoryPasses: number;
   readonly now: () => number;
   readonly readProcessCwdPath?: (procDir: string) => Promise<string>;
   /** @internal Deterministic candidate filesystem-root contract-test seam. */
   readonly readProcessRootPath?: (procDir: string) => Promise<string>;
+  readonly beforeProcessRead?: LinuxAgenCDaemonProcessScanLimits["beforeProcessRead"];
   processEntries: number;
   ioOperations: number;
+  directoryPasses: number;
 }
 
 interface LinuxDaemonHomeIdentity {
@@ -275,19 +308,74 @@ export async function findLinuxAgenCDaemonProcesses(
   const tracker = createLinuxAgenCDaemonProcessScanTracker(limits);
   assertLinuxAgenCDaemonScanWithinBudget(tracker);
   const identities: AgenCDaemonProcessIdentity[] = [];
+  const listedPids = new Set<number>();
   const openDirectory = limits.openProcDirectory ?? openLinuxProcDirectory;
+  while (true) {
+    tracker.directoryPasses += 1;
+    const vanishedPid = await scanLinuxProcDirectoryPass(
+      openDirectory,
+      host,
+      daemonHome,
+      entrypointMatch,
+      tracker,
+      listedPids,
+      identities,
+    );
+    if (vanishedPid === null) break;
+    if (tracker.directoryPasses >= tracker.maxDirectoryPasses) {
+      throw new AgenCDaemonProcessScanIncompleteError(
+        `process ${vanishedPid} was reaped while /proc was listed and ` +
+          `${tracker.directoryPasses} listings did not complete`,
+      );
+    }
+  }
+  assertLinuxAgenCDaemonScanWithinBudget(tracker);
+  return identities;
+}
+
+/**
+ * List /proc once and inspect every numeric entry that no earlier listing of
+ * this discovery returned. Returns the PID of an entry that vanished while it
+ * was being listed, or null when the listing completed.
+ *
+ * procfs reports d_type DT_UNKNOWN for a process that is reaped between being
+ * found and being listed. Node's Dir then lstat()s `/proc/<pid>`, which fails
+ * with ENOENT, and discards the rest of its buffered read batch. That process
+ * is gone, but the discarded entries may belong to live processes, so the
+ * caller lists again; a later listing returns each process alive throughout
+ * the discovery, so none of them is skipped and none is inspected twice.
+ */
+async function scanLinuxProcDirectoryPass(
+  openDirectory: OpenLinuxProcDirectory,
+  host: AgenCDaemonProcessInspectionHost,
+  daemonHome: string,
+  entrypointMatch: "exact" | "any-install",
+  tracker: LinuxAgenCDaemonProcessScanTracker,
+  listedPids: Set<number>,
+  identities: AgenCDaemonProcessIdentity[],
+): Promise<number | null> {
   consumeLinuxAgenCDaemonScanIo(tracker);
   const directory = await openDirectory("/proc");
+  let vanishedPid: number | null = null;
   let primaryError: unknown;
   try {
     while (true) {
       assertLinuxAgenCDaemonScanWithinBudget(tracker);
-      const entry = await directory.read();
+      let entry: LinuxProcDirectoryEntry | null;
+      try {
+        entry = await directory.read();
+      } catch (error) {
+        vanishedPid = reapedLinuxProcDirectoryEntryPid(error);
+        if (vanishedPid === null) throw error;
+        break;
+      }
       if (entry === null) break;
       if (!entry.isDirectory() || !/^\d+$/u.test(entry.name)) continue;
+      const candidatePid = Number.parseInt(entry.name, 10);
+      if (listedPids.has(candidatePid)) continue;
+      listedPids.add(candidatePid);
       tracker.processEntries += 1;
       assertLinuxAgenCDaemonScanWithinBudget(tracker);
-      const candidatePid = Number.parseInt(entry.name, 10);
       if (
         !Number.isSafeInteger(candidatePid) ||
         candidatePid <= 1 ||
@@ -325,8 +413,27 @@ export async function findLinuxAgenCDaemonProcesses(
     throw primaryError;
   }
   if (closeError !== undefined) throw closeError;
-  assertLinuxAgenCDaemonScanWithinBudget(tracker);
-  return identities;
+  return vanishedPid;
+}
+
+/**
+ * The PID of a `/proc/<pid>` entry whose type lookup failed because the
+ * process no longer exists, or null for every other directory read error.
+ */
+function reapedLinuxProcDirectoryEntryPid(error: unknown): number | null {
+  if (typeof error !== "object" || error === null) return null;
+  const { code, syscall, path } = error as NodeJS.ErrnoException;
+  if (
+    (code !== "ENOENT" && code !== "ESRCH") ||
+    syscall !== "lstat" ||
+    typeof path !== "string"
+  ) {
+    return null;
+  }
+  const match = /^\/proc\/([1-9]\d*)$/u.exec(path);
+  if (match === null) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) ? pid : null;
 }
 
 async function openLinuxProcDirectory(
@@ -358,17 +465,18 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
 ): Promise<AgenCDaemonProcessIdentity | null> {
   if ((host.platform ?? process.platform) !== "linux") return null;
   const procDir = join("/proc", String(pid));
+  let initialProcessStart: string | null = null;
   try {
     // The start token is the outer generation fence. Reading argv or cwd
     // before it permits PID reuse to splice metadata from two processes into
     // one apparently valid proof.
     consumeLinuxAgenCDaemonScanIo(scanTracker);
-    const initialProcessStart = await readAgenCDaemonProcessStart(
+    initialProcessStart = await readAgenCDaemonProcessStart(
       pid,
       host.readProcessIdentity,
     );
     if (initialProcessStart === null) return null;
-    const argv = await readProcList(join(procDir, "cmdline"), scanTracker);
+    const argv = await readProcList(pid, "cmdline", scanTracker);
     const expectedEntrypoint =
       host.entrypointPath.length > 0 ? resolve(host.entrypointPath) : null;
     const expectedEntrypointBasename =
@@ -398,7 +506,12 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
     // execute the daemon script. Exclude only the actual protected system
     // client executable, not a process merely using its name in argv.
     consumeLinuxAgenCDaemonScanIo(scanTracker);
-    const executable = await stat(join(procDir, "exe"), { bigint: true });
+    const executable = await readLinuxProcessEntry(
+      pid,
+      "exe",
+      scanTracker,
+      () => stat(join(procDir, "exe"), { bigint: true }),
+    );
     for (const client of ["/usr/bin/docker", "/usr/bin/podman"]) {
       consumeLinuxAgenCDaemonScanIo(scanTracker);
       try {
@@ -415,20 +528,21 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
     // Compare home directory identities before reading another install's
     // entrypoint. A process serving a different device/inode cannot own this
     // home. Same-home and unknown candidates retain the full identity checks.
-    const environment = await readProcEnv(
-      join(procDir, "environ"),
-      scanTracker,
-    );
+    const environment = await readProcEnv(pid, scanTracker);
     const candidateHome = resolveProcessHomePathInput(environment);
     const candidateRoot = scanTracker?.readProcessRootPath === undefined
       ? join(procDir, "root")
       : await scanTracker.readProcessRootPath(procDir);
+    // Only the default root is the candidate's own /proc/<pid> entry.
+    const candidateRootOwner = scanTracker?.readProcessRootPath === undefined
+      ? pid
+      : undefined;
     const targetHomeBefore = candidateHome === null
       ? null
       : await readLinuxDaemonHomeIdentity(resolve(daemonHome), scanTracker);
     const candidateHomeBefore = candidateHome === null
       ? null
-      : await readLinuxDaemonHomeInProcessRoot(candidateRoot, candidateHome, scanTracker);
+      : await readLinuxDaemonHomeInProcessRoot(candidateRoot, candidateHome, scanTracker, candidateRootOwner);
     if (targetHomeBefore !== null && candidateHomeBefore !== null &&
       !sameLinuxDaemonHomeIdentity(targetHomeBefore, candidateHomeBefore)) {
       // A root or home replacement must not splice a foreign-home observation
@@ -437,14 +551,14 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
       const confirmedProcessStart = await readAgenCDaemonProcessStart(pid, host.readProcessIdentity);
       if (confirmedProcessStart === null || confirmedProcessStart !== initialProcessStart) return null;
       const targetHomeAfter = await readLinuxDaemonHomeIdentity(resolve(daemonHome), scanTracker);
-      const candidateHomeAfter = await readLinuxDaemonHomeInProcessRoot(candidateRoot, candidateHome!, scanTracker);
+      const candidateHomeAfter = await readLinuxDaemonHomeInProcessRoot(candidateRoot, candidateHome!, scanTracker, candidateRootOwner);
       if (!sameLinuxDaemonHomeIdentity(targetHomeBefore, targetHomeAfter) ||
           !sameLinuxDaemonHomeIdentity(candidateHomeBefore, candidateHomeAfter)) {
         throw new AgenCDaemonProcessScanIncompleteError("daemon home changed during inspection");
       }
       return null;
     }
-    const cwdBefore = await readLinuxProcessCwdIdentity(procDir, scanTracker);
+    const cwdBefore = await readLinuxProcessCwdIdentity(pid, procDir, scanTracker);
 
     let entrypointIndex = -1;
     for (let index = 0; index < argv.length; index += 1) {
@@ -487,7 +601,7 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
     if (candidateHome === null || targetHomeBefore === null || candidateHomeBefore === null) {
       return null;
     }
-    const cwdAfter = await readLinuxProcessCwdIdentity(procDir, scanTracker);
+    const cwdAfter = await readLinuxProcessCwdIdentity(pid, procDir, scanTracker);
     consumeLinuxAgenCDaemonScanIo(scanTracker);
     const confirmedProcessStart = await readAgenCDaemonProcessStart(
       pid,
@@ -504,7 +618,7 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
       scanTracker,
     );
     const candidateHomeAfter = await readLinuxDaemonHomeInProcessRoot(
-      candidateRoot, candidateHome, scanTracker,
+      candidateRoot, candidateHome, scanTracker, candidateRootOwner,
     );
     if (
       !sameLinuxProcessCwdIdentity(cwdBefore, cwdAfter) ||
@@ -517,22 +631,28 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
       );
     }
     return { pid, processStart: confirmedProcessStart };
-  } catch (error) {
-    if (isLinuxProcessDisappearanceError(error)) {
+  } catch (caught) {
+    let error = caught;
+    if (caught instanceof LinuxProcessEntryMissingError) {
+      // One of the candidate's own /proc/<pid> entries is missing. That alone
+      // does not prove the process ended: a live process can hide its cwd,
+      // root or executable from this namespace. Skip it only once the
+      // inspected generation is shown to have ended; otherwise fail closed
+      // exactly as that read's error would.
+      if (await proveLinuxProcessDisappearance(pid, () =>
+        hasLinuxProcessGenerationEnded(pid, initialProcessStart, host, scanTracker))) {
+        return null;
+      }
+      error = caught.unavailable;
+    } else if (isLinuxProcessDisappearanceError(caught)) {
       // A cwd or entrypoint can be missing only in the scanner's namespace
       // while the candidate is still alive. A missing pathname is not proof
       // of process disappearance; confirm that through the process token.
-      try {
+      if (await proveLinuxProcessDisappearance(pid, async () => {
         consumeLinuxAgenCDaemonScanIo(scanTracker);
-        if (await readAgenCDaemonProcessStart(pid, host.readProcessIdentity) === null) {
-          return null;
-        }
-      } catch (identityError) {
-        throw new AgenCDaemonProcessScanIncompleteError(
-          `process ${pid} disappearance could not be proved: ` +
-          `${identityError instanceof Error ? identityError.message : "identity unavailable"}; ` +
-          "stop that process in its namespace or make its daemon home readable before retrying",
-        );
+        return await readAgenCDaemonProcessStart(pid, host.readProcessIdentity) === null;
+      })) {
+        return null;
       }
     }
     if (containsAgenCDaemonProcessScanIncompleteError(error)) {
@@ -548,15 +668,161 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
   }
 }
 
+/** A candidate's own /proc/<pid> entry was missing when it was read. */
+class LinuxProcessEntryMissingError extends Error {
+  constructor(
+    readonly pid: number,
+    readonly entry: LinuxAgenCDaemonProcessEntry,
+    /** What fails the inspection closed if the process is still running. */
+    readonly unavailable: unknown,
+  ) {
+    super(`/proc/${pid}/${entry} is missing`);
+    this.name = "LinuxProcessEntryMissingError";
+  }
+}
+
+/**
+ * Read one of a candidate's own /proc/<pid> entries. A missing entry is
+ * reported as LinuxProcessEntryMissingError for the caller to confirm;
+ * `unavailable` maps every read error to the error that fails it closed.
+ */
+async function readLinuxProcessEntry<T>(
+  pid: number,
+  entry: LinuxAgenCDaemonProcessEntry,
+  scanTracker: LinuxAgenCDaemonProcessScanTracker | undefined,
+  read: () => Promise<T>,
+  unavailable: (error: unknown) => unknown = (error) => error,
+): Promise<T> {
+  try {
+    await scanTracker?.beforeProcessRead?.(pid, entry);
+    return await read();
+  } catch (error) {
+    if (isLinuxProcessEntryMissingError(error, entry)) {
+      throw new LinuxProcessEntryMissingError(pid, entry, unavailable(error));
+    }
+    throw unavailable(error);
+  }
+}
+
+function isLinuxProcessEntryMissingError(
+  error: unknown,
+  entry: LinuxAgenCDaemonProcessEntry,
+): boolean {
+  if (error instanceof AggregateError) {
+    return (
+      error.errors.length > 0 &&
+      error.errors.every((inner) => isLinuxProcessEntryMissingError(inner, entry))
+    );
+  }
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  // procfs makes /proc/<pid>/environ root-owned once the task has released
+  // its memory, so an exiting process reports EACCES there, not ENOENT.
+  return (
+    code === "ENOENT" ||
+    code === "ESRCH" ||
+    (entry === "environ" && code === "EACCES")
+  );
+}
+
+async function proveLinuxProcessDisappearance(
+  pid: number,
+  prove: () => Promise<boolean>,
+): Promise<boolean> {
+  try {
+    return await prove();
+  } catch (identityError) {
+    throw new AgenCDaemonProcessScanIncompleteError(
+      `process ${pid} disappearance could not be proved: ` +
+      `${identityError instanceof Error ? identityError.message : "identity unavailable"}; ` +
+      "stop that process in its namespace or make its daemon home readable before retrying",
+    );
+  }
+}
+
+/**
+ * Decide, after one of its own /proc entries went missing, whether the
+ * inspected process generation has ended: the PID is gone, the PID now has
+ * another start token, or the task exited and only waits to be reaped. Such a
+ * task has already released its memory, files, root and cwd, so it cannot be
+ * a running daemon. A task that is still running returns false and the
+ * inspection fails closed; one caught inside exit gets a short bounded wait.
+ */
+async function hasLinuxProcessGenerationEnded(
+  pid: number,
+  initialProcessStart: string | null,
+  host: AgenCDaemonProcessInspectionHost,
+  scanTracker?: LinuxAgenCDaemonProcessScanTracker,
+): Promise<boolean> {
+  for (let poll = 0; ; poll += 1) {
+    if (!host.isPidRunning(pid)) return true;
+    consumeLinuxAgenCDaemonScanIo(scanTracker);
+    const processStart = await readAgenCDaemonProcessStart(
+      pid,
+      host.readProcessIdentity,
+    );
+    if (processStart === null) return true;
+    if (initialProcessStart !== null && processStart !== initialProcessStart) {
+      return true;
+    }
+    const state = await readLinuxTaskExitState(pid, scanTracker);
+    if (state === "gone" || state === "exited") return true;
+    if (state === "running" || poll >= LINUX_EXITING_TASK_SETTLE_POLLS) {
+      return false;
+    }
+    await delay(LINUX_EXITING_TASK_SETTLE_POLL_MS);
+  }
+}
+
+/**
+ * Classify a task from /proc/<pid>/stat: "exited" is a zombie with no thread
+ * left, "exiting" is inside do_exit (or a zombie group leader whose other
+ * threads have not finished), and "running" is everything else.
+ */
+async function readLinuxTaskExitState(
+  pid: number,
+  scanTracker?: LinuxAgenCDaemonProcessScanTracker,
+): Promise<"gone" | "exited" | "exiting" | "running"> {
+  consumeLinuxAgenCDaemonScanIo(scanTracker);
+  let record: string;
+  try {
+    await scanTracker?.beforeProcessRead?.(pid, "stat");
+    record = await readFile(join("/proc", String(pid), "stat"), "utf8");
+  } catch (error) {
+    if (isLinuxProcessEntryMissingError(error, "stat")) return "gone";
+    throw error;
+  }
+  const commandEnd = record.lastIndexOf(")");
+  const fields = commandEnd < 0
+    ? []
+    : record.slice(commandEnd + 2).trim().split(/\s+/u);
+  const state = fields[0];
+  const flags = fields[6];
+  const threads = fields[17];
+  if (
+    state === undefined ||
+    flags === undefined ||
+    threads === undefined ||
+    !/^\d+$/u.test(flags) ||
+    !/^\d+$/u.test(threads)
+  ) {
+    throw new Error("malformed /proc stat record");
+  }
+  if (state === "Z" || state === "X") {
+    return BigInt(threads) <= 1n ? "exited" : "exiting";
+  }
+  return (BigInt(flags) & LINUX_TASK_FLAG_EXITING) === 0n ? "running" : "exiting";
+}
+
 async function readLinuxProcessCwdIdentity(
+  pid: number,
   procDir: string,
   scanTracker?: LinuxAgenCDaemonProcessScanTracker,
 ): Promise<LinuxProcessCwdIdentity> {
   consumeLinuxAgenCDaemonScanIo(scanTracker);
-  const path =
+  const path = await readLinuxProcessEntry(pid, "cwd", scanTracker, () =>
     scanTracker?.readProcessCwdPath === undefined
-      ? await realpath(join(procDir, "cwd"))
-      : await scanTracker.readProcessCwdPath(procDir);
+      ? realpath(join(procDir, "cwd"))
+      : scanTracker.readProcessCwdPath(procDir));
   consumeLinuxAgenCDaemonScanIo(scanTracker);
   const metadata = await stat(path, { bigint: true });
   if (!metadata.isDirectory()) {
@@ -603,19 +869,27 @@ async function readLinuxDaemonHomeIdentity(
  * Each directory is pinned by an fd; O_NOFOLLOW prevents a replaced component
  * from redirecting a lookup into the host filesystem. Absolute symlinks restart
  * at the pinned candidate root. No metadata here authorizes adoption/signals.
+ * `rootOwnerPid` is set when `processRoot` is that process's own
+ * /proc/<pid>/root entry, so a missing root can be checked for process exit.
  */
 async function readLinuxDaemonHomeInProcessRoot(
   processRoot: string,
   homePath: string,
   scanTracker?: LinuxAgenCDaemonProcessScanTracker,
+  rootOwnerPid?: number,
 ): Promise<LinuxDaemonHomeIdentity> {
   if (!isAbsolute(homePath)) {
     throw new AgenCDaemonProcessScanIncompleteError("candidate daemon home is not absolute");
   }
   consumeLinuxAgenCDaemonScanIo(scanTracker);
-  const root = await open(processRoot, constants.O_RDONLY | constants.O_DIRECTORY).catch(() => {
-    throw new AgenCDaemonProcessScanIncompleteError("candidate filesystem root is unreadable");
-  });
+  const openRoot = () => open(processRoot, constants.O_RDONLY | constants.O_DIRECTORY);
+  const rootUnreadable = () =>
+    new AgenCDaemonProcessScanIncompleteError("candidate filesystem root is unreadable");
+  const root = rootOwnerPid === undefined
+    ? await openRoot().catch(() => {
+      throw rootUnreadable();
+    })
+    : await readLinuxProcessEntry(rootOwnerPid, "root", scanTracker, openRoot, rootUnreadable);
   let current = root;
   let components = homePath.normalize("NFC").split("/").filter(Boolean);
   let walked: string[] = [];
@@ -634,6 +908,9 @@ async function readLinuxDaemonHomeInProcessRoot(
       }
       const path = `/proc/self/fd/${current.fd}/${component}`;
       consumeLinuxAgenCDaemonScanIo(scanTracker);
+      if (rootOwnerPid !== undefined) {
+        await scanTracker?.beforeProcessRead?.(rootOwnerPid, "root");
+      }
       let next;
       try {
         next = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -659,7 +936,13 @@ async function readLinuxDaemonHomeInProcessRoot(
     return { device: metadata.dev, inode: metadata.ino };
   } catch (error) {
     if (error instanceof AgenCDaemonProcessScanIncompleteError) throw error;
-    throw new AgenCDaemonProcessScanIncompleteError("candidate daemon home identity is unreadable in its filesystem root");
+    const unreadable = new AgenCDaemonProcessScanIncompleteError("candidate daemon home identity is unreadable in its filesystem root");
+    // The pinned root survives the candidate's exit, but a mount namespace
+    // torn down with it can drop mounts below that root.
+    if (rootOwnerPid !== undefined && isLinuxProcessEntryMissingError(error, "root")) {
+      throw new LinuxProcessEntryMissingError(rootOwnerPid, "root", unreadable);
+    }
+    throw unreadable;
   } finally {
     try {
       if (current !== root) await current.close();
@@ -753,21 +1036,26 @@ async function isCanonicalAgenCDaemonEntrypointPathWithTracker(
 }
 
 async function readProcList(
-  path: string,
+  pid: number,
+  entry: "cmdline" | "environ",
   scanTracker?: LinuxAgenCDaemonProcessScanTracker,
 ): Promise<readonly string[]> {
-  try {
-    consumeLinuxAgenCDaemonScanIo(scanTracker);
-    return (await readBoundedLinuxProcIdentityFile(path))
-      .split("\0")
-      .filter(Boolean);
-  } catch (error) {
-    if (containsAgenCDaemonProcessScanIncompleteError(error)) throw error;
-    if (isLinuxProcessDisappearanceError(error)) throw error;
-    throw new AgenCDaemonProcessScanIncompleteError(
-      `process identity file unavailable for ${path}`,
-    );
-  }
+  const path = join("/proc", String(pid), entry);
+  consumeLinuxAgenCDaemonScanIo(scanTracker);
+  const content = await readLinuxProcessEntry(
+    pid,
+    entry,
+    scanTracker,
+    () => readBoundedLinuxProcIdentityFile(path),
+    (error) =>
+      containsAgenCDaemonProcessScanIncompleteError(error) ||
+      isLinuxProcessDisappearanceError(error)
+        ? error
+        : new AgenCDaemonProcessScanIncompleteError(
+          `process identity file unavailable for ${path}`,
+        ),
+  );
+  return content.split("\0").filter(Boolean);
 }
 
 /** @internal Fixed-memory procfs reader used by discovery contract tests. */
@@ -852,11 +1140,11 @@ function isLinuxProcessDisappearanceError(error: unknown): boolean {
 }
 
 async function readProcEnv(
-  path: string,
+  pid: number,
   scanTracker?: LinuxAgenCDaemonProcessScanTracker,
 ): Promise<Record<string, string>> {
   const environment: Record<string, string> = {};
-  for (const entry of await readProcList(path, scanTracker)) {
+  for (const entry of await readProcList(pid, "environ", scanTracker)) {
     const separator = entry.indexOf("=");
     if (separator <= 0) continue;
     environment[entry.slice(0, separator)] = entry.slice(separator + 1);
@@ -882,11 +1170,20 @@ function createLinuxAgenCDaemonProcessScanTracker(
       limits.maxElapsedMs,
       DEFAULT_LINUX_DAEMON_SCAN_MAX_ELAPSED_MS,
     ),
+    maxDirectoryPasses: Math.max(
+      1,
+      normalizeScanLimit(
+        limits.maxDirectoryPasses,
+        DEFAULT_LINUX_DAEMON_SCAN_MAX_DIRECTORY_PASSES,
+      ),
+    ),
     now,
     readProcessCwdPath: limits.readProcessCwdPath,
     readProcessRootPath: limits.readProcessRootPath,
+    beforeProcessRead: limits.beforeProcessRead,
     processEntries: 0,
     ioOperations: 0,
+    directoryPasses: 0,
   };
 }
 
