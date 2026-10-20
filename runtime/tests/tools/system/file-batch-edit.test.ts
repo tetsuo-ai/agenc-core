@@ -107,6 +107,18 @@ test("batch path participates in permission rules before execution", async () =>
   expect(await readFile(path, "utf8")).toBe("alpha\nbeta\ngamma\n");
 });
 
+test("batch permission reads path even when the edits do not validate, never file_path", async () => {
+  const { path, tool } = await fixture();
+  let permission = createEmptyToolPermissionContext();
+  const context = { session: {}, getAppState: () => ({ toolPermissionContext: permission, denialTracking: { consecutiveDenials: 0, totalDenials: 0 }, autoModeActive: false }) } as ToolEvaluatorContext;
+  const outside = join(root, "..", "outside-batch-edit.txt");
+  expect(await tool.checkPermissions?.({ path: outside, edits: [] }, context)).toMatchObject({ behavior: "ask" });
+  expect(await tool.checkPermissions?.({ file_path: path, edits: [{ oldText: "alpha", newText: "one" }] }, context))
+    .toMatchObject({ behavior: "ask", message: "path must be a non-empty string" });
+  permission = applyPermissionUpdate(permission, { type: "addRules", destination: "session", behavior: "deny", rules: [{ toolName: "Edit", ruleContent: path }] });
+  expect(await tool.checkPermissions?.({ path, edits: "not an array" }, context)).toMatchObject({ behavior: "deny" });
+});
+
 test("missing-file recovery points to the available creation tool", async () => {
   const { path, run } = await fixture(); await rm(path);
   const result = await run([{ oldText: "alpha", newText: "one" }]);

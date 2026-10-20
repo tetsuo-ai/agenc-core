@@ -1293,13 +1293,15 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
       return unreadFilePreflight(args, [validated.file_path], config.allowedPaths[0] ?? process.cwd(), config.allowedPaths);
     },
     checkPermissions(input, context) {
-      const args = input as MultiEditArgs;
-      const validated = validate(args);
-      const filePath = "error" in validated ? undefined : validated.file_path;
+      const args = input as MultiEditArgs & { readonly path?: unknown };
+      // Authority depends on the target alone, as for Edit and Write: MultiEdit is
+      // checked on file_path and the batch Edit on path, whether or not the edits
+      // validate (execution validates them before any write).
+      const filePath = asNonEmptyString(originalDisjoint ? args.path : args.file_path);
       if (!filePath) {
         return {
           behavior: "ask",
-          message: "error" in validated ? validated.error : "Invalid edit path",
+          message: `${originalDisjoint ? "path" : "file_path"} must be a non-empty string`,
         };
       }
       const cwd =
