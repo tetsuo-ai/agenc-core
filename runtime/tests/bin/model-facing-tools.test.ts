@@ -1950,6 +1950,14 @@ describe("model-facing tools", () => {
       expect(task.id).toMatch(/^\d+$/);
       expect(task.owner).toBeUndefined();
       expect(task.status).toBe("pending");
+      // The store the mutating board tools declare to the runtime sandbox is
+      // the directory the task file actually landed in.
+      for (const name of ["TaskCreate", "TaskUpdate"]) {
+        const declared = byName.get(name)!.metadata?.fixedWriteTargets?.() ?? [];
+        expect(declared, name).toHaveLength(1);
+        await expect(readFile(join(declared[0]!, `${task.id}.json`), "utf8"), name)
+          .resolves.toContain('"subject": "Wire tools"');
+      }
 
       const assigned = await byName.get("TaskUpdate")!.execute({
         taskId: task.id,

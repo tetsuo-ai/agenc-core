@@ -40,7 +40,7 @@ import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
-import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { canonicalAuthorityPath, desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
 import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
 import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
@@ -534,9 +534,10 @@ export function enforceRuntimeSandboxAttempt(
     );
   }
 
-  // Only the existing file-tool plan/memory and fixed runtime-output exceptions
-  // may bypass the home reservation. Evaluate them against the original profile
-  // so operator denies and the other non-grantable reservations still win.
+  // Only the existing file-tool plan/memory, declared task-store and fixed
+  // runtime-output exceptions may bypass the home reservation. Evaluate them
+  // against the original profile so operator denies and the other
+  // non-grantable reservations still win.
   // Remote config targets were rejected above. Its kernel-only reservation of
   // a missing leaf's parent must not swallow these native file exceptions.
   const fileToolProfile = shellAccess === null
@@ -552,7 +553,9 @@ export function enforceRuntimeSandboxAttempt(
       ) &&
       !(shellAccess === null &&
         (isActiveSessionPlanFile(input.context, target) ||
-          isDurableMemoryWritePath(target)) &&
+          isDurableMemoryWritePath(target) ||
+          ((writes.declared ?? []).includes(target) &&
+            isSessionTaskStore(input.context, target))) &&
         agencHomeCarveOutAllowsWrite(fileToolProfile.fileSystem, target, cwd, sessionTempRoot)) &&
       !(shellAccess === null &&
         (writes.declared ?? []).includes(target) &&
@@ -597,10 +600,11 @@ function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targ
 
 /**
  * Whether a restricted policy admits a write to one of the AgenC-home paths
- * the file tools may take outside the workspace: the owning session's plan
- * file and the durable memory roots. The root read entry is treated as a
- * write entry so the target's own deny entries still decide. Shell writes
- * never reach this: `shellAccess === null` gates the callers.
+ * the native tools may take outside the workspace: the owning session's plan
+ * file, the durable memory roots and the task board's declared project
+ * store. The root read entry is treated as a write entry so the target's own
+ * deny entries still decide. Shell writes never reach this:
+ * `shellAccess === null` gates the callers.
  */
 export function agencHomeCarveOutAllowsWrite(
   policy: EngineFileSystemSandboxPolicy,
@@ -625,6 +629,43 @@ function isActiveSessionPlanFile(
   target: string,
 ): boolean {
   return matchesSessionPlanFile(target, sessionPlanFileAuthority(context.invocation.session));
+}
+
+/** One storage-key segment, as `projectStorageKey` spells it. */
+const TASK_STORE_PROJECT_KEY = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Whether `target` is a project task-board store,
+ * `<agenc-home>/projects/<key>/tasks`, under the AgenC home bound to this
+ * session's ConfigStore. Callers apply it only to a target a native tool
+ * declared through `fixedWriteTargets` (TaskCreate and TaskUpdate declare
+ * their own store), never to a path the model wrote. Both sides are compared
+ * canonically, so a store that resolves elsewhere through a link is not one.
+ * Without a bound home there is no authority to admit anything.
+ */
+function isSessionTaskStore(
+  context: ToolRuntimeAttemptContext,
+  target: string,
+): boolean {
+  const session = context.invocation.session as {
+    readonly services?: { readonly configStore?: { readonly homeContext?: { readonly path?: unknown } } };
+  } | undefined;
+  const home = session?.services?.configStore?.homeContext?.path;
+  if (typeof home !== "string" || !path.isAbsolute(home)) return false;
+  let relative: string;
+  try {
+    relative = path.relative(
+      path.join(canonicalAuthorityPath(home), "projects"),
+      canonicalAuthorityPath(target),
+    );
+  } catch {
+    return false;
+  }
+  if (path.isAbsolute(relative)) return false;
+  const [projectKey, store, ...rest] = relative.split(path.sep);
+  return rest.length === 0 &&
+    projectKey !== undefined && TASK_STORE_PROJECT_KEY.test(projectKey) &&
+    store === "tasks";
 }
 
 function canDeferIndeterminateWritesToPlatformSandbox(

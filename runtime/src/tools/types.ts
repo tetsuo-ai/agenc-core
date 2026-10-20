@@ -60,10 +60,14 @@ export interface ToolMetadata {
    * path argument, such as a media output directory under the workspace
    * root. The runtime sandbox verifies them exactly like `*path` arguments:
    * they must lie inside the writable workspace under workspace_write and
-   * they are refused under read_only. Declare the narrowest location the
-   * tool actually writes to. A tool that writes wherever the model points
-   * keeps its path arguments instead, and `virtualNoFsWrites` stays reserved
-   * for tools that write nothing the sandbox should verify.
+   * they are refused under read_only. The one location admitted outside the
+   * workspace is a project task-board store
+   * (`<agenc-home>/projects/<key>/tasks`) under the session's bound AgenC
+   * home, through the same AgenC-home carve-out as the session plan file and
+   * durable memory, so operator denies still win. Declare the narrowest
+   * location the tool actually writes to. A tool that writes wherever the
+   * model points keeps its path arguments instead, and `virtualNoFsWrites`
+   * stays reserved for tools that write nothing the sandbox should verify.
    */
   readonly fixedWriteTargets?: () => readonly string[];
   /**
