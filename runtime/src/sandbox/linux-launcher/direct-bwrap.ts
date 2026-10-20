@@ -27,7 +27,7 @@ function fileIdentity(file: string): string {
 }
 
 /** Resolve from this trusted installed module, never the command's cwd/env. */
-function installedRuntimeRoot(): string | undefined {
+export function installedRuntimeRoot(): string | undefined {
   let directory = path.dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 5; depth++) {
     try {
@@ -39,7 +39,7 @@ function installedRuntimeRoot(): string | undefined {
   return undefined;
 }
 
-function launcherReadRoots(node: string, entry: string): string[] {
+export function launcherReadRoots(node: string, entry: string): string[] {
   const roots = new Set<string>();
   for (const file of [node, entry]) {
     if (!fs.existsSync(file)) continue;
