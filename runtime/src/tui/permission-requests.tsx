@@ -516,7 +516,7 @@ function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
   return toolUseConfirm.tool.name;
 }
 
-/** Title of the separate approval asked before a refused call runs without the sandbox. */
+/** The question of the separate approval asked before a refused call runs without the sandbox. */
 export const RUN_WITHOUT_SANDBOX_TITLE = "run without the sandbox?";
 
 /**
@@ -832,7 +832,7 @@ function AgenCApprovalOverlay({
   const runsWithoutSandbox = request.ctx.runsWithoutSandbox === true;
   const title =
     runsWithoutSandbox
-      ? RUN_WITHOUT_SANDBOX_TITLE
+      ? "approval to run without the sandbox"
       : risk === "destructive"
         ? "destructive high-risk approval"
         : risk === "medium"

@@ -780,8 +780,10 @@ the sandbox then refuses the call, it is never rerun without the sandbox on
 that approval. Under the policies that escalate (`untrusted`, which a
 permission card uses, `on_failure`, and `granular` with `sandbox_approval`),
 the orchestrator asks a separate question after the refusal: the card is
-titled "run without the sandbox?", and its reason names the tool, quotes the
-refusal and says that the sandbox's limits on files and network will not apply.
+titled "approval to run without the sandbox", like the other approval cards,
+its summary asks "run without the sandbox?", and its reason names the tool,
+quotes the refusal and says that the sandbox's limits on files and network will
+not apply.
 Approve runs the call once more with the sandbox off; deny keeps it refused and
 stops the turn. The request carries `run_without_sandbox` in its `permissions`
 and `sandbox_permissions: "require_escalated"` in its input, so hooks, the
@@ -969,6 +971,15 @@ override still wins. Shell redirects never reach it
 (`shellAccess === null`). `config.toml` and the rest of home stay
 blocked. Unrestricted and `external_sandbox` policies never open through
 the carve-out.
+
+The file tools' permission checks (`FileRead`, `Write`, `Edit`,
+`MultiEdit`, `NotebookEdit`, `apply_patch`, and read-only delegation) take
+the same directories from the session (`sessionDurableMemoryDirectories`), so
+a project memory file and a global one are treated alike: either is allowed
+without a card unless an ask rule names it, and a deny rule wins. A cowork
+override is readable but gets no write allowance, and with the session's auto
+memory off neither directory is special. A caller without a session keeps the
+process-wide directories.
 
 **Landlock vs bubblewrap.** Bubblewrap can express the reservation:
 `--ro-bind` home after `--bind` of the writable ancestor. Landlock cannot

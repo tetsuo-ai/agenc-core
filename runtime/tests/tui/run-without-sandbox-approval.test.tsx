@@ -117,7 +117,10 @@ describe("the approval to run a refused call without the sandbox", () => {
       // Frames are drawn with cursor moves, not spaces, and wrapped rows end
       // in the popup border: compare without either.
       const frame = card.frame().replace(/[\s│]+/gu, "");
-      expect(frame).toContain("TOOL·WRITE·RUNWITHOUTTHESANDBOX?");
+      // An approval title like the other cards' ("... approval"), which the
+      // release gate also recognizes as an approval card.
+      expect(frame).toContain("TOOL·WRITE·APPROVALTORUNWITHOUTTHESANDBOX");
+      expect(frame).toMatch(/✳TOOL·.*APPROVAL/u);
       if (rows >= 24) {
         // A tall card also shows the refusal and what approving changes.
         expect(frame).toContain("runwithoutthesandbox?·Write");

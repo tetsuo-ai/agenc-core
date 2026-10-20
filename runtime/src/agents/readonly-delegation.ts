@@ -3,6 +3,7 @@ import type { AgentRole } from "./role.js";
 import type { AgentMetadata } from "./registry.js";
 import { inspectReadOnlyCommand } from "../permissions/readonly-inspection.js";
 import { expandTilde, isPathAllowed, matchPathRuleContent } from "../permissions/path-validation.js";
+import { sessionDurableMemoryDirectoriesOf } from "../services/extractMemories/memory-paths.js";
 import { hasTrustedBuiltinImplementation } from "../tools/builtin-provenance.js";
 import { resolve } from "node:path";
 import { getDenyRuleForTool, getRuleByContentsForTool, findMatchingContentRule } from "../permissions/rules.js";
@@ -41,8 +42,11 @@ export function readOnlyDelegationPathAllowed(session: Session, target: string):
   const broker = session.services.sandboxExecutionBroker;
   const profile = broker?.executionAuthority?.().permissionProfile;
   if (profile?.fileSystem.entries.some((entry) => entry.access === "none" && entry.path.kind === "glob" && matchPathRuleContent(resolve(broker!.cwd, entry.path.pattern), resolved, undefined, "wide"))) return false;
+  // Memory files are the session's own memory directories, as for FileRead.
+  const durableMemory = sessionDurableMemoryDirectoriesOf(session, session.sessionConfiguration.cwd);
   return (profile === undefined || canReadPathWithCwd(profile.fileSystem, resolved, broker!.cwd, broker!.sessionTempRoot)) &&
-    [currentContext, inheritedContext].every((context) => isPathAllowed(resolved, context, "read", session.sessionConfiguration.cwd).allowed);
+    [currentContext, inheritedContext].every((context) =>
+      isPathAllowed(resolved, context, "read", session.sessionConfiguration.cwd, undefined, { durableMemory }).allowed);
 }
 
 export function readOnlyDelegationDeniedReadPatterns(session: Session): readonly string[] {

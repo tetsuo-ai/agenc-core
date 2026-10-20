@@ -55,6 +55,7 @@ import {
   hasAutoMemPathOverride,
   isAutoMemoryEnabled,
 } from "../memory/paths.js";
+import type { SessionDurableMemoryDirectories } from "../services/extractMemories/memory-paths.js";
 
 const MAX_DIRS_TO_LIST = 5;
 const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
@@ -79,6 +80,12 @@ export interface ResolvedPathCheckResult extends PathCheckResult {
 export interface ValidatePathOptions {
   readonly extraWorkingDirectories?: readonly string[];
   readonly planFileAuthority?: SessionPlanFileAuthority | null;
+  /**
+   * The session's durable memory directories (the ones its memory prompt
+   * names). Absent, the process-wide roots apply, which in a daemon key the
+   * project memory directory to the daemon's own working directory.
+   */
+  readonly durableMemory?: SessionDurableMemoryDirectories;
   /** Unresolved spellings (trailing dots, 8.3, relative names) for safety only. */
   readonly extraSafetyPaths?: readonly string[];
 }
@@ -92,6 +99,8 @@ export interface ToolPathPermissionOptions {
   readonly operationType: FileOperationType;
   readonly extraWorkingDirectories?: readonly string[];
   readonly planFileAuthority?: SessionPlanFileAuthority | null;
+  /** See {@link ValidatePathOptions.durableMemory}. */
+  readonly durableMemory?: SessionDurableMemoryDirectories;
 }
 
 export function formatDirectoryList(directories: string[]): string {
@@ -648,11 +657,19 @@ export function isUnderMemoryRoots(
   resolvedPath: string,
   roots: readonly string[],
 ): boolean {
-  if (roots.length === 0) return false;
+  return pathsUnderRoots(getPathsForPermissionCheck(resolvedPath), roots);
+}
+
+/** Every spelling under some root, each root also where it really lives. */
+function pathsUnderRoots(
+  paths: readonly string[],
+  roots: readonly string[],
+): boolean {
+  if (roots.length === 0 || paths.length === 0) return false;
   const candidates = uniquePaths(
     roots.flatMap((root) => [root, safeResolvePath(root).resolvedPath]),
   );
-  return getPathsForPermissionCheck(resolvedPath).every((path) =>
+  return paths.every((path) =>
     candidates.some((root) => isPathInside(path, root)),
   );
 }
@@ -663,16 +680,25 @@ function durableMemoryPathPermission(
   operationType: FileOperationType,
   cwd: string,
   precomputedPathsToCheck?: readonly string[],
+  sessionMemory?: SessionDurableMemoryDirectories,
 ): PathCheckResult | null {
-  if (
-    !isAutoMemoryEnabled() ||
-    (operationType !== "read" && hasAutoMemPathOverride())
-  )
-    return null;
-  // An arbitrary SDK override gets no write carveout.
   const paths =
     precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
-  if (!underDurableMemoryRoots(paths)) return null;
+  if (sessionMemory !== undefined) {
+    // The session's own directories, so project and global memory files are
+    // the same kind of file here as in its memory prompt. Auto memory off
+    // leaves no roots; a cowork override is readable, not a write carve-out.
+    if (operationType !== "read" && !sessionMemory.writable) return null;
+    if (!pathsUnderRoots(paths, sessionMemory.roots)) return null;
+  } else {
+    if (
+      !isAutoMemoryEnabled() ||
+      (operationType !== "read" && hasAutoMemPathOverride())
+    )
+      return null;
+    // An arbitrary SDK override gets no write carveout.
+    if (!underDurableMemoryRoots(paths)) return null;
+  }
   return (
     matchingRuleResult(
       resolvedPath,
@@ -738,6 +764,7 @@ export function isPathAllowed(
     operationType,
     cwd,
     precomputedPathsToCheck,
+    options.durableMemory,
   );
   if (memoryPermission !== null) return memoryPermission;
 
@@ -1134,6 +1161,7 @@ export function checkToolPathPermission(
       )
         ? opts.planFileAuthority
         : null,
+      ...(opts.durableMemory !== undefined ? { durableMemory: opts.durableMemory } : {}),
     },
   );
   // A file tool confines itself to the workspace root plus the signed roots

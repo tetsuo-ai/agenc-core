@@ -63,6 +63,7 @@ import {
   workspaceRelativeToolPath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import {
   createToolEffectDispositionEvidence,
   settledNoEffectToolResult,
@@ -343,6 +344,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         operationType: "write",
         extraWorkingDirectories: allowedPaths,
         planFileAuthority: sessionPlanFileAuthority(context.session),
+        durableMemory: sessionDurableMemoryDirectoriesOf(context.session, cwd),
       });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {

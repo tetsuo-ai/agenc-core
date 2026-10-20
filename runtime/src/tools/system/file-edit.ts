@@ -63,6 +63,7 @@ import {
   workspaceRelativeToolPath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
@@ -921,6 +922,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         operationType: asString(args.old_string) === "" ? "create" : "write",
         extraWorkingDirectories: config.allowedPaths,
         planFileAuthority: sessionPlanFileAuthority(context.session),
+        durableMemory: sessionDurableMemoryDirectoriesOf(context.session, cwd),
       });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
@@ -1322,6 +1324,7 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
         operationType: !originalDisjoint && firstOldString === "" ? "create" : "write",
         extraWorkingDirectories: config.allowedPaths,
         planFileAuthority: sessionPlanFileAuthority(context.session),
+        durableMemory: sessionDurableMemoryDirectoriesOf(context.session, cwd),
       });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {

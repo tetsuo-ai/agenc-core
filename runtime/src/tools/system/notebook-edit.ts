@@ -2,6 +2,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import { isRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { Tool, ToolResult } from "../types.js";
@@ -165,6 +166,7 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         context: context.getAppState().toolPermissionContext,
         operationType: "write",
         extraWorkingDirectories: [config.workspaceRoot],
+        durableMemory: sessionDurableMemoryDirectoriesOf(context.session, config.workspaceRoot),
       });
     },
     async execute(args) {

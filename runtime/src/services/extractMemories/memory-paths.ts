@@ -377,6 +377,67 @@ export function liveSessionMemoryOwner(
   };
 }
 
+/** The durable memory directories of a live session, as its memory prompt names them. */
+export interface SessionDurableMemoryDirectories {
+  /** The global root and the project directory; empty when auto memory is off. */
+  readonly roots: readonly string[];
+  /**
+   * False when a cowork override moved the project directory: an override is
+   * readable memory, never a write carve-out (as in `isDurableMemoryWritePath`).
+   */
+  readonly writable: boolean;
+}
+
+/**
+ * The durable memory directories of a live session in `cwd`, resolved from
+ * its memory owner: the ones its memory prompt names. Undefined when the
+ * session has no owner to resolve them from (callers keep the process-wide
+ * roots then). The permission layer and the runtime sandbox both use this, so
+ * a memory file is treated the same way whichever check sees it.
+ */
+export function sessionDurableMemoryDirectories(
+  services: LiveSessionMemoryServices | undefined,
+  cwd: string,
+): SessionDurableMemoryDirectories | undefined {
+  const owner = liveSessionMemoryOwner(services, cwd);
+  if (owner === undefined) return undefined;
+  try {
+    const { result: project, source } = resolveAutoMemoryDirectoryWithSource(owner);
+    if (!project.enabled || project.path === undefined) return { roots: [], writable: false };
+    const global = resolveGlobalMemoryDirectorySync(owner);
+    return {
+      roots: global === undefined ? [project.path] : [global, project.path],
+      writable: source !== "cowork_override",
+    };
+  } catch {
+    return { roots: [], writable: false };
+  }
+}
+
+/**
+ * `sessionDurableMemoryDirectories` for a session object, at its configured
+ * working directory (the one its turns, and so its memory prompt, use), or
+ * `fallbackCwd` when it has none.
+ */
+export function sessionDurableMemoryDirectoriesOf(
+  session: unknown,
+  fallbackCwd: string,
+): SessionDurableMemoryDirectories | undefined {
+  if (typeof session !== "object" || session === null) return undefined;
+  const owner = session as {
+    readonly services?: LiveSessionMemoryServices;
+    readonly sessionConfiguration?: { readonly cwd?: unknown };
+  };
+  let cwd = fallbackCwd;
+  try {
+    const configured = owner.sessionConfiguration?.cwd;
+    if (typeof configured === "string" && configured.length > 0) cwd = configured;
+  } catch {
+    // A session snapshot without readable configuration keeps the fallback.
+  }
+  return sessionDurableMemoryDirectories(owner.services, cwd);
+}
+
 /**
  * The durable memory directories the file tools of a live session may write
  * under the workspace sandbox: the global root and the project directory its
@@ -389,18 +450,9 @@ export function sessionDurableMemoryWriteRoots(
   services: LiveSessionMemoryServices | undefined,
   cwd: string,
 ): readonly string[] | undefined {
-  const owner = liveSessionMemoryOwner(services, cwd);
-  if (owner === undefined) return undefined;
-  try {
-    const { result: project, source } = resolveAutoMemoryDirectoryWithSource(owner);
-    if (!project.enabled || project.path === undefined || source === "cowork_override") {
-      return [];
-    }
-    const global = resolveGlobalMemoryDirectorySync(owner);
-    return global === undefined ? [project.path] : [global, project.path];
-  } catch {
-    return [];
-  }
+  const directories = sessionDurableMemoryDirectories(services, cwd);
+  if (directories === undefined) return undefined;
+  return directories.writable ? directories.roots : [];
 }
 
 export function isPathInsideMemoryDir(candidate: string, memoryDir: string): boolean {

@@ -13,6 +13,7 @@
  */
 
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
@@ -139,6 +140,9 @@ function permissionForPatch(
   // here the permission layer asked to approve a patch the tool would then
   // apply anyway (#2131).
   const planFileAuthority = sessionPlanFileAuthority(context.session);
+  // Memory files are judged against the session's own memory directories,
+  // the ones its memory prompt names.
+  const durableMemory = sessionDurableMemoryDirectoriesOf(context.session, cwd);
 
   for (const hunk of hunks) {
     for (const target of pathsForHunk(hunk)) {
@@ -151,6 +155,7 @@ function permissionForPatch(
         operationType: target.operationType,
         extraWorkingDirectories: allowedPaths,
         planFileAuthority,
+        durableMemory,
       });
       if (result.behavior !== "allow") return result;
     }
