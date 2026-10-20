@@ -756,6 +756,35 @@ model is told to proceed and not re-ask the same questions.
 | `User did not provide answers.` with `confirmed_no_effect` | The call ran without a TUI-recorded `__callId` answer. Use the picker or skip; do not inject `answers` in the model payload. |
 | Hook allowed `AskUserQuestion` but the picker still opened | Expected. Only a hook/evaluator **deny** short-circuits the prompt. |
 
+### Running a refused call without the sandbox
+
+Approving a call (its permission card, a session grant, extra sandbox
+permissions, an exec-policy prompt) lets it run inside the sandbox only. When
+the sandbox then refuses the call, it is never rerun without the sandbox on
+that approval. Under the policies that escalate (`untrusted`, which a
+permission card uses, `on_failure`, and `granular` with `sandbox_approval`),
+the orchestrator asks a separate question after the refusal: the card is
+titled "run without the sandbox?", and its reason names the tool, quotes the
+refusal and says that the sandbox's limits on files and network will not apply.
+Approve runs the call once more with the sandbox off; deny keeps it refused and
+stops the turn. The request carries `run_without_sandbox` in its `permissions`
+and `sandbox_permissions: "require_escalated"` in its input, so hooks, the
+guardian and session grants see a request to leave the sandbox, and a session
+grant of the call never answers it (`runtime/src/tools/orchestrator.ts`,
+`runtime/src/sandbox/escalation/sandboxing.ts`).
+
+The refusal goes back to the model instead, with no question, when the policy
+does not escalate (`never`, `on_request`, `granular` without
+`sandbox_approval`), in a routine run, for a tool that opts out
+(`escalateOnFailure: false`), for a tool whose own card collects its input,
+in a worktree or read-only delegation child, and when the refused attempt
+already ran without the sandbox (an approved `require_escalated` request, an
+exec-policy rule, `danger-full-access`): such a refusal names a path that stays
+protected with the sandbox off. The model's explicit way out is unchanged:
+`sandbox_permissions: "require_escalated"` with a `justification`, asked as
+one card before the call runs, or granted without a card under
+`bypassPermissions`.
+
 ### Mobile session-wide approval
 
 Remote clients may settle the currently pending request with

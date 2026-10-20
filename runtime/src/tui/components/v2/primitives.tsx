@@ -1548,6 +1548,7 @@ export function approvalDiffPreviewBudget(
 export function ApprovalCard({
   risk,
   title,
+  summary,
   command,
   commandIsShell = true,
   facts,
@@ -1566,6 +1567,8 @@ export function ApprovalCard({
 }: {
   readonly risk: 'low' | 'high'
   readonly title: string
+  /** Replaces the risk summary row, for a card whose question the risk tier does not say. */
+  readonly summary?: string
   readonly command: string
   /**
    * Whether `command` is an actual SHELL command (Run/Bash) that should carry
@@ -1599,7 +1602,7 @@ export function ApprovalCard({
   const primaryFact = facts[0]?.value ?? title
   // The action picker below owns the "1/2/3 + confirm" affordance — keep the
   // summary line to identity only (no repeated confirm text, no `{}` inputs).
-  const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact}`
+  const approvalSummary = summary ?? `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact}`
   // The approval popup is rendered into a fixed-height slot (the layout
   // overlay row, or the modal context). Without a height cap the body grows
   // past the popup's own bottom border and bleeds onto the footer below it.

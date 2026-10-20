@@ -292,6 +292,69 @@ export function toolWantsNoSandboxApproval(
   }
 }
 
+/** Why a call the sandbox refused is not offered a run without it. */
+export type UnsandboxedRetryUnavailable =
+  | "already_unsandboxed"
+  | "interactive_tool"
+  | "confined_session";
+
+/**
+ * Whether a call the sandbox refused can be offered one run without it, or
+ * why not. Not when the refused attempt already ran without the OS sandbox
+ * (an approved require_escalated request, an exec-policy rule, a full-access
+ * or external sandbox): the refusal then came from a path that stays
+ * protected with the sandbox off, and a retry is refused the same way. Not
+ * for a tool that collects its input through its own card (request_user_input,
+ * AskUserQuestion), which cannot also carry a separate question. Not in a
+ * worktree or read-only delegation child, which never offers a way out of its
+ * sandbox (escalation/confinement.ts).
+ */
+export function unsandboxedRetryUnavailable(opts: {
+  readonly refusedSandbox: EscalationSandboxMode;
+  readonly tool: Tool;
+  readonly confinedSession: boolean;
+}): UnsandboxedRetryUnavailable | undefined {
+  if (opts.refusedSandbox !== "workspace_write" && opts.refusedSandbox !== "read_only") {
+    return "already_unsandboxed";
+  }
+  if (opts.tool.requiresUserInteraction?.() === true) return "interactive_tool";
+  if (opts.confinedSession) return "confined_session";
+  return undefined;
+}
+
+/**
+ * The question asked before a call the sandbox refused runs again without it:
+ * the tool, the refusal, what approving changes and, when the call was
+ * approved before it ran, that the earlier approval did not cover this.
+ */
+export function runWithoutSandboxQuestion(opts: {
+  readonly toolName: string;
+  readonly refusal: string;
+  readonly approvedSandboxedRun: boolean;
+}): string {
+  const refusal = opts.refusal.trim().replace(/[\s.]+$/u, "");
+  return [
+    `Run ${opts.toolName} without the sandbox?`,
+    `The sandbox refused it: ${refusal.length > 0 ? refusal : "no reason was given"}.`,
+    "If you approve, it runs once more with the sandbox off, so the sandbox's limits on files and network do not apply to it.",
+    ...(opts.approvedSandboxedRun
+      ? ["Your earlier approval only let it run inside the sandbox."]
+      : []),
+  ].join(" ");
+}
+
+/**
+ * The input an approval to run without the sandbox is asked with: the call's
+ * own input, marked the way an explicit escalation request is marked, so
+ * approval hooks, the guardian, the approval journal and the session approval
+ * cache all see a request to leave the sandbox, never the sandboxed call.
+ */
+export function runWithoutSandboxApprovalInput(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...args, sandbox_permissions: "require_escalated" };
+}
+
 /** The only keys `additional_permissions` and its members may carry. */
 const ADDITIONAL_PERMISSION_KEYS: ReadonlySet<string> = new Set([
   "network",

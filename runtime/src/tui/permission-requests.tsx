@@ -515,6 +515,26 @@ function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
   return toolUseConfirm.tool.name;
 }
 
+/** Title of the separate approval asked before a refused call runs without the sandbox. */
+export const RUN_WITHOUT_SANDBOX_TITLE = "run without the sandbox?";
+
+/**
+ * The card's note. A request to run without the sandbox always keeps its
+ * question (the refusal and what approving changes), with a Write card's
+ * preview warning after it; other cards show the warning instead of their
+ * reason, as before.
+ */
+function approvalNote(opts: {
+  readonly question: string;
+  readonly runsWithoutSandbox: boolean;
+  readonly writePreviewWarning: string | undefined;
+}): string {
+  if (!opts.runsWithoutSandbox) return opts.writePreviewWarning ?? opts.question;
+  return opts.writePreviewWarning === undefined
+    ? opts.question
+    : `${opts.question} ${opts.writePreviewWarning}`;
+}
+
 /** Live shell/command tool names whose approval input IS a runnable command. */
 const SHELL_COMMAND_TOOL_NAMES: ReadonlySet<string> = new Set([
   "system.bash",
@@ -805,40 +825,53 @@ function AgenCApprovalOverlay({
     </Popup>;
   }
   const name = toolLabel(toolUseConfirm);
+  // The separate question asked after the sandbox refused an approved call:
+  // its title and summary say so, because the reason text below is the first
+  // row a short terminal drops.
+  const runsWithoutSandbox = request.ctx.runsWithoutSandbox === true;
   const title =
-    risk === "destructive"
-      ? "destructive high-risk approval"
-      : risk === "medium"
-        ? "medium-risk approval"
-        : "needs approval";
+    runsWithoutSandbox
+      ? RUN_WITHOUT_SANDBOX_TITLE
+      : risk === "destructive"
+        ? "destructive high-risk approval"
+        : risk === "medium"
+          ? "medium-risk approval"
+          : "needs approval";
   return (
     <Box flexDirection="column" gap={1}>
       <ApprovalCard
-        risk={destructive ? "high" : "low"}
+        risk={destructive || runsWithoutSandbox ? "high" : "low"}
         title={`tool · ${name} · ${title}`}
+        {...(runsWithoutSandbox ? { summary: `${RUN_WITHOUT_SANDBOX_TITLE} · ${name}` } : {})}
         command={command.length > 0 ? command : toolUseConfirm.description}
         commandIsShell={approvalCommandIsShell(toolUseConfirm)}
         confirmLabel={draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter"}
         facts={[
           { label: "tool", value: name },
-          {
-            label: "scope",
-            value: risk === "low" ? "session" : risk,
-            color: destructive
-              ? "error"
-              : risk === "medium"
-                ? "warning"
-                : "text2",
-          },
+          runsWithoutSandbox
+            ? { label: "sandbox", value: "would be off", color: "error" }
+            : {
+                label: "scope",
+                value: risk === "low" ? "session" : risk,
+                color: destructive
+                  ? "error"
+                  : risk === "medium"
+                    ? "warning"
+                    : "text2",
+              },
           { label: "request", value: request.id },
           {
             label: "confirmation",
             value: draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter",
           },
         ]}
-        note={writePreviewUnavailable
-          ? `Existing content unavailable; this write may overwrite a file. ${fileWritePreview?.kind === "unavailable" ? fileWritePreview.reason : ""}`.trim()
-          : toolUseConfirm.description}
+        note={approvalNote({
+          question: toolUseConfirm.description,
+          runsWithoutSandbox,
+          writePreviewWarning: writePreviewUnavailable
+            ? `Existing content unavailable; this write may overwrite a file. ${fileWritePreview?.kind === "unavailable" ? fileWritePreview.reason : ""}`.trim()
+            : undefined,
+        })}
         {...(diffPreview !== undefined ? { diffPreview } : {})}
         requestId={request.id}
         requireTypedConfirmation={destructive}

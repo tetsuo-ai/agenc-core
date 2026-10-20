@@ -6,6 +6,21 @@ import {
 } from "../../permissions/review-decision.js";
 import type { AdditionalSandboxPermissions } from "./sandboxing.js";
 
+/**
+ * The permission named on an approval request whose approval runs the call
+ * without the OS sandbox after the sandbox refused it. The approval journal's
+ * `request_permissions` event lists it next to `tool.use`, and the daemon's
+ * `event.permission_request` passes that list on, so every client can show
+ * the request as that question instead of an ordinary tool approval.
+ */
+export const RUN_WITHOUT_SANDBOX_PERMISSION = "run_without_sandbox";
+
+/** Whether a projected permission list asks to run a call without the sandbox. */
+export function permissionsRunWithoutSandbox(permissions: unknown): boolean {
+  return Array.isArray(permissions) &&
+    permissions.includes(RUN_WITHOUT_SANDBOX_PERMISSION);
+}
+
 export type NetworkApprovalProtocol =
   | "http"
   | "https"

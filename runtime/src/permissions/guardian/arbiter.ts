@@ -23,10 +23,11 @@ import type {
   BlockedRequestObserver,
   NetworkPolicyDecider,
 } from "../../sandbox/network-policy.js";
-import type {
-  AvailableApprovalDecision,
-  NetworkApprovalContext,
-  ParsedApprovalCommand,
+import {
+  RUN_WITHOUT_SANDBOX_PERMISSION,
+  type AvailableApprovalDecision,
+  type NetworkApprovalContext,
+  type ParsedApprovalCommand,
 } from "../../sandbox/escalation/approvals.js";
 import type {
   ExecPolicyAmendment,
@@ -257,6 +258,13 @@ export interface ApprovalCtx {
   readonly signal?: AbortSignal;
   readonly guardianReviewId?: string;
   readonly retryReason?: string;
+  /**
+   * Approving runs the call without the OS sandbox: the separate question the
+   * orchestrator asks after the sandbox refused a call. Clients show it as
+   * that question, never as an ordinary tool approval, and a session grant
+   * of it never answers for the sandboxed call (or the reverse).
+   */
+  readonly runsWithoutSandbox?: boolean;
   readonly cwd?: string;
   readonly command?: readonly string[];
   readonly parsedCommand?: ParsedApprovalCommand;
@@ -578,10 +586,13 @@ async function resolveApproval(
       mcpFilesystemApproval !== undefined
         ? [{ kind: "mcp_no_fs_writes", ...mcpFilesystemApproval }]
         : approvalCache !== null
-        ? buildApprovalCacheKeys(
-            toolFromApprovalCtx(opts.ctx),
-            opts.ctx.invocation,
-            opts.args ?? {},
+        ? approvalCacheKeysForRequest(
+            opts.ctx,
+            buildApprovalCacheKeys(
+              toolFromApprovalCtx(opts.ctx),
+              opts.ctx.invocation,
+              opts.args ?? {},
+            ),
           )
         : [];
     let fetchedResult: RequestApprovalResult | undefined;
@@ -729,7 +740,10 @@ function beginDurableApprovalJournal(
             : {}),
           turnId: opts.ctx.turnId,
           permissions: opts.ctx.approvalKind === "cross_provider_spawn"
-            ? ["cross_provider_spawn"] : ["tool.use"],
+            ? ["cross_provider_spawn"]
+            : opts.ctx.runsWithoutSandbox === true
+              ? ["tool.use", RUN_WITHOUT_SANDBOX_PERMISSION]
+              : ["tool.use"],
           ...(opts.ctx.retryReason !== undefined
             ? { reason: opts.ctx.retryReason }
             : {}),
@@ -1353,6 +1367,20 @@ function resolveApprovalCache(
   const store = services?.toolApprovals as
     ApprovalCacheAdapter | null | undefined;
   return store && typeof store.withCachedApproval === "function" ? store : null;
+}
+
+/**
+ * A session grant of a request to run a call without the sandbox is kept apart
+ * from grants of the call itself: approving the sandboxed call for the session
+ * never answers a later request to run it unsandboxed, nor the reverse.
+ */
+function approvalCacheKeysForRequest(
+  ctx: ApprovalCtx,
+  keys: readonly unknown[],
+): readonly unknown[] {
+  return ctx.runsWithoutSandbox === true
+    ? keys.map((key) => ({ runWithoutSandbox: key }))
+    : keys;
 }
 
 function buildApprovalCacheKeys(

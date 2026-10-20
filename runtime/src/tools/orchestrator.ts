@@ -10,8 +10,10 @@ import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
  *      approval policy + filesystem sandbox kind to decide
  *      skip / needs_approval / forbidden.
  *   2. **Two-pass sandbox escalation** — first attempt under the
- *      selected sandbox; on a `SandboxDeniedError`, request approval
- *      and retry with sandbox disabled.
+ *      selected sandbox; on a `SandboxDeniedError`, ask a separate
+ *      approval to run it without the sandbox (never reusing an earlier
+ *      approval of the sandboxed call) and only then retry with the
+ *      sandbox disabled.
  *   3. **`requestApproval()`** — consult the registered
  *      `permission-request` hooks first, route auto-reviewed
  *      approvals through the guardian reviewer when configured, then
@@ -77,13 +79,17 @@ import {
   hasAdditionalSandboxPermissions,
   normalizeSandboxPermissionsRequest,
   runtimeAdditionalPermissionsForSandboxRequest,
+  runWithoutSandboxApprovalInput,
+  runWithoutSandboxQuestion,
   sandboxOverrideForFirstAttempt,
   sandboxPermissionsFromArgs,
   selectFirstAttemptSandbox,
   toolEscalatesOnFailure,
   toolWantsNoSandboxApproval,
+  unsandboxedRetryUnavailable,
   type SandboxPermissionsInput,
   type SandboxPermissionsRequest,
+  type UnsandboxedRetryUnavailable,
 } from "../sandbox/escalation/sandboxing.js";
 import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
 import type { Policy } from "../sandbox/execpolicy/policy.js";
@@ -579,6 +585,31 @@ function approvalRejectionMessage(
   return "rejected by user";
 }
 
+/**
+ * What the model reads when running a refused call without the sandbox was
+ * not approved: the refusal, that the unsandboxed run did not happen, and
+ * not to retry it unchanged. A person's denial keeps the "Permission
+ * denied:" prefix the TUI denial renderer recognizes.
+ */
+function runWithoutSandboxRejectionMessage(
+  result: RequestApprovalResult,
+  toolName: string,
+  refusal: string,
+): string {
+  const refused =
+    `The sandbox refused ${toolName}${refusal.length > 0 ? ` (${refusal})` : ""}, ` +
+    "and running it without the sandbox was not approved.";
+  const advice = "Do not retry the same call; choose a different approach or ask the user how to proceed.";
+  if (result.source === "resolver" && result.decision.kind === "denied") {
+    const reason = result.reason?.trim();
+    return `Permission denied: ${refused}${reason ? ` ${reason}` : ""} ${advice}`;
+  }
+  if (result.source === "default_deny") {
+    return `${refused} No approval resolver is available in this session to allow it. ${advice}`;
+  }
+  return `${refused} ${approvalRejectionMessage(result, toolName)}`;
+}
+
 type SandboxPermissionApprovalAction =
   | { readonly kind: "none" }
   | { readonly kind: "granted"; readonly reason: string }
@@ -717,8 +748,10 @@ function approvalContextForSandboxPermissions(
  *      or the session mode). Dispatch inside `attemptWithRetry` so
  *      transient errors get one bounded retry.
  *   4. If the first attempt (or its retry) throws
- *      `SandboxDeniedError`: request approval, then retry the tool
- *      with `sandbox = "danger_full_access"` (sandbox disabled).
+ *      `SandboxDeniedError`: ask a separate approval to run it without
+ *      the sandbox, then retry the tool with
+ *      `sandbox = "danger_full_access"` (sandbox disabled). An approval of
+ *      the sandboxed call never covers that retry.
  */
 export async function orchestrateToolCall<T>(
   opts: OrchestrateToolCallOpts<T>,
@@ -1000,46 +1033,69 @@ export async function orchestrateToolCall<T>(
       throw err;
     }
 
-    // Step 3 — approval-gated escalation to sandbox=off.
-    if (!alreadyApproved) {
-      const escalationCtx: ApprovalCtx = {
-        ...opts.approvalCtx,
-        ...(opts.tool.requiresUserInteraction?.() === true
-          ? { requiresUserInteraction: true }
-          : {}),
-        retryReason:
-          err.message || "command failed; retry without sandbox?",
-      };
-      const approval = await requestApproval({
-        ctx: escalationCtx,
-        ...(approvalSignal !== undefined ? { signal: approvalSignal } : {}),
-        ...(opts.permissionHooks !== undefined ? { hooks: opts.permissionHooks } : {}),
-        ...(opts.permissionDecisionHooks !== undefined
-          ? { permissionDecisionHooks: opts.permissionDecisionHooks }
-          : {}),
-        ...(opts.approvalArgs !== undefined ? { args: opts.approvalArgs } : {}),
-        ...(opts.guardianApprovalReviewer !== undefined
-          ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
-          : {}),
-        ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
-        ...(opts.getActiveTurnId !== undefined ? { getActiveTurnId: opts.getActiveTurnId } : {}),
-        ...(opts.onNoApprovalResolver !== undefined
-          ? { onNoResolver: opts.onNoApprovalResolver }
-          : {}),
-      });
-      await recordApprovalPolicyOutcome(opts, escalationCtx, approval, {
-        stage: "sandbox_escalation",
-      });
-      if (!isApprovalAccepted(approval.decision)) {
-        // The sandboxed attempt above already ran; only the unsandboxed
-        // retry is refused, and its effect records stay as they are.
-        throw new ApprovalRejectedError(
-          approvalRejectionMessage(approval, escalationCtx.toolName),
-          approval.decision,
-          approval.source,
-          "sandbox_escalation",
-        );
-      }
+    // Nothing to ask about: the refused attempt already ran without the OS
+    // sandbox (its refusal names a path that stays protected even then), the
+    // tool's own card collects its input, or the session never leaves its
+    // sandbox. The original denial stands.
+    const unavailable = unsandboxedRetryUnavailable({
+      refusedSandbox: firstSandbox,
+      tool: opts.tool,
+      confinedSession: escalationStaysConfined(opts.approvalCtx.invocation.session),
+    });
+    if (unavailable !== undefined) {
+      await recordSandboxPolicyOutcome(opts, `sandbox_escalation_${unavailable}`);
+      throw err;
+    }
+
+    // Step 3: a separate approval to run without the sandbox, every time.
+    // Approving the call (its permission card, a session grant, extra
+    // sandbox permissions) only ever let it run inside the sandbox, so that
+    // approval never covers this retry. The request names the tool, the
+    // refusal and what approving changes; its input carries the same mark as
+    // an explicit require_escalated request, which keeps hooks, the guardian
+    // and session grants from taking it for the sandboxed call.
+    const refusal = typeof err.message === "string" ? err.message : "";
+    const escalationCtx: ApprovalCtx = {
+      ...opts.approvalCtx,
+      retryReason: runWithoutSandboxQuestion({
+        toolName: opts.approvalCtx.toolName,
+        refusal,
+        approvedSandboxedRun: alreadyApproved,
+      }),
+      runsWithoutSandbox: true,
+      availableDecisions: defaultAvailableApprovalDecisions({}),
+    };
+    const approval = await requestApproval({
+      ctx: escalationCtx,
+      ...(approvalSignal !== undefined ? { signal: approvalSignal } : {}),
+      ...(opts.permissionHooks !== undefined ? { hooks: opts.permissionHooks } : {}),
+      ...(opts.permissionDecisionHooks !== undefined
+        ? { permissionDecisionHooks: opts.permissionDecisionHooks }
+        : {}),
+      ...(opts.approvalArgs !== undefined
+        ? { args: runWithoutSandboxApprovalInput(opts.approvalArgs) }
+        : {}),
+      ...(opts.guardianApprovalReviewer !== undefined
+        ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
+        : {}),
+      ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
+      ...(opts.getActiveTurnId !== undefined ? { getActiveTurnId: opts.getActiveTurnId } : {}),
+      ...(opts.onNoApprovalResolver !== undefined
+        ? { onNoResolver: opts.onNoApprovalResolver }
+        : {}),
+    });
+    await recordApprovalPolicyOutcome(opts, escalationCtx, approval, {
+      stage: "sandbox_escalation",
+    });
+    if (!isApprovalAccepted(approval.decision)) {
+      // Only the unsandboxed retry is refused. An attempt that ran inside
+      // the sandbox before its refusal keeps its effect records.
+      throw new ApprovalRejectedError(
+        runWithoutSandboxRejectionMessage(approval, escalationCtx.toolName, refusal),
+        approval.decision,
+        approval.source,
+        "sandbox_escalation",
+      );
     }
 
     // Retry with sandbox disabled.
@@ -1088,7 +1144,10 @@ async function recordApprovalRequirementOutcome(
 
 async function recordSandboxPolicyOutcome(
   opts: OrchestrateToolCallOpts<unknown>,
-  reasonCode: "sandbox_escalation_disabled" | "sandbox_escalation_not_allowed",
+  reasonCode:
+    | "sandbox_escalation_disabled"
+    | "sandbox_escalation_not_allowed"
+    | `sandbox_escalation_${UnsandboxedRetryUnavailable}`,
 ): Promise<void> {
   await recordPermissionAuditEvent(
     opts.permissionAuditLogger,

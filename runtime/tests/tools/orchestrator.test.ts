@@ -1511,11 +1511,15 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(resolver.request).not.toHaveBeenCalled();
   });
 
-  test("sandbox-denied under untrusted policy: escalates via approval then retries sandbox=off (wants_no_sandbox_approval=true)", async () => {
+  test("sandbox-denied under untrusted policy: asks separately to run without the sandbox, then retries sandbox=off (wants_no_sandbox_approval=true)", async () => {
     // `AskForApproval::UnlessTrusted` → wants_no_sandbox_approval = true.
     const dispatches: string[] = [];
+    const asked: ApprovalCtx[] = [];
     const resolver: ApprovalResolver = {
-      request: async () => ({ kind: "approved" }),
+      request: async (ctx) => {
+        asked.push(ctx);
+        return { kind: "approved" };
+      },
     };
     const result = await orchestrateToolCall<string>({
       tool: mkTool(),
@@ -1537,9 +1541,46 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     });
     expect(result).toBe("ok");
     // Under `untrusted`, the initial approval-classification path
-    // prompts; that approval also satisfies the post-denial retry, so
-    // the escalation dispatches sandbox=off once without re-prompting.
+    // prompts. That approval only let the call run inside the sandbox: the
+    // retry without it is asked separately, after the refusal.
     expect(dispatches).toEqual(["workspace_write", "danger_full_access"]);
+    expect(asked.map((ctx) => ctx.runsWithoutSandbox === true)).toEqual([false, true]);
+    expect(asked[1]!.retryReason).toMatch(/^Run test\.cmd without the sandbox\? The sandbox refused it: fs blocked\./u);
+  });
+
+  test("sandbox-denied under untrusted policy: declining the run without the sandbox keeps the call refused", async () => {
+    const dispatches: string[] = [];
+    const resolver: ApprovalResolver = {
+      request: async (ctx) =>
+        ctx.runsWithoutSandbox === true
+          ? { kind: "denied", decidedBy: "user" }
+          : { kind: "approved" },
+    };
+    const rejection = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      dispatch: async (sandbox) => {
+        dispatches.push(sandbox);
+        if (sandbox !== "danger_full_access") {
+          throw new SandboxDeniedError("fs blocked", {
+            denial: "filesystem",
+            target: "/tmp/block",
+            policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+          });
+        }
+        return "ok";
+      },
+      approvalResolver: resolver,
+    }).then(() => undefined, (error: unknown) => error);
+    expect(rejection).toBeInstanceOf(ApprovalRejectedError);
+    expect((rejection as ApprovalRejectedError).stage).toBe("sandbox_escalation");
+    expect((rejection as ApprovalRejectedError).message).toBe(
+      "Permission denied: The sandbox refused test.cmd (fs blocked), and running it without the sandbox was not approved. " +
+        "Do not retry the same call; choose a different approach or ask the user how to proceed.",
+    );
+    expect(dispatches).toEqual(["workspace_write"]);
   });
 
   test("escalateOnFailure=false: SandboxDeniedError bails without approval (sandboxing behavior)", async () => {

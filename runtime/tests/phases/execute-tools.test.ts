@@ -2219,8 +2219,15 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       withDenialTracking: true,
     });
 
+    // A write the workspace sandbox admits: this approval runs it inside the
+    // sandbox. (With no target the sandbox refuses the write, and running it
+    // without the sandbox would need its own approval.)
     const state = mkState({
-      toolCalls: [{ id: "c-hook-ask", name: "Write", arguments: "{}" }],
+      toolCalls: [{
+        id: "c-hook-ask",
+        name: "Write",
+        arguments: JSON.stringify({ file_path: "/tmp/hook-ask.txt", content: "x" }),
+      }],
     });
 
     await executeTools(state, mkCtx(), session);
