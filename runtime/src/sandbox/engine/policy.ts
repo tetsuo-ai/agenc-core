@@ -381,8 +381,8 @@ export function getWritableRootsWithCwd(
       // add, commit, tag and stash writes (refs, objects, index, HEAD, logs,
       // the pseudo-refs and message files) succeed in the default sandbox while
       // hooks/config/info/objects-info/modules/worktrees/commondir stay
-      // read-only. A `.git` gitfile pointer or an absent `.git` is never
-      // narrowed; `.agenc`/`.agents` pass through unchanged.
+      // read-only. A `.git` gitfile pointer, a `.git` symlink, or an absent
+      // `.git` is never narrowed; `.agenc`/`.agents` pass through unchanged.
       .flatMap((candidate) =>
         path.basename(candidate) === GIT_METADATA_DIR_NAME &&
         isExistingDirectory(candidate)
@@ -631,7 +631,10 @@ const GIT_PROTECTED_NESTED_ENTRIES: readonly string[] = ["objects/info"];
 
 function isExistingDirectory(target: string): boolean {
   try {
-    return fs.statSync(target).isDirectory();
+    // lstat, not stat: a `.git` symlink is a pointer, the same class as a
+    // gitfile. Following it would narrow the link name and admit writes into
+    // whatever directory it names, including one outside the workspace.
+    return fs.lstatSync(target).isDirectory();
   } catch {
     return false;
   }
@@ -675,10 +678,10 @@ function relIsWithinGitProtectedSurface(rel: string): boolean {
  * Whether a write to `target` is to inert, writable data inside the `.git`
  * metadata directory `gitMetadataPath` (and so may be allowed even though the
  * directory is a protected-metadata name). Only applies when `.git` is a real
- * directory, never a `.git` gitfile pointer. Fails closed against symlink and
- * alternate-path tricks: both the lexical target and its physical,
- * symlink-resolved spelling must stay inside this `.git` and off the protected
- * surface.
+ * directory, never a `.git` gitfile pointer or a `.git` symlink. Fails closed
+ * against symlink and alternate-path tricks: both the lexical target and its
+ * physical, symlink-resolved spelling must stay inside this `.git` and off
+ * the protected surface.
  */
 function gitMetadataDirWriteAllowed(
   gitMetadataPath: string,
@@ -857,9 +860,9 @@ function isMetadataWriteDenied(
     return false;
   }
   // A real `.git` directory is narrowed: inert data is writable, only the
-  // execution/redirection surface stays protected. `.agenc`/`.agents` and a
-  // `.git` gitfile pointer are never narrowed (gitMetadataDirWriteAllowed
-  // returns false), so they stay fully denied.
+  // execution/redirection surface stays protected. `.agenc`/`.agents`, a
+  // `.git` gitfile pointer and a `.git` symlink are never narrowed
+  // (gitMetadataDirWriteAllowed returns false), so they stay fully denied.
   if (gitMetadataDirWriteAllowed(protectedPath, normalizedTarget)) return false;
   return true;
 }

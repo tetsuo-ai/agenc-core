@@ -14,7 +14,8 @@ import { createExecCommandTool } from "../../../src/tools/system/exec-command.js
 // as a pointer, so ordinary branch/add/commit/tag/stash writes (refs, objects,
 // index, HEAD, logs, pseudo-refs, message files) succeed without an escalation
 // while hooks/config/info/objects-info/modules/worktrees/commondir stay
-// read-only. See round4/jobs/gt/REPORT.md for the threat analysis.
+// read-only. A `.git` gitfile or `.git` symlink is a pointer, not a directory,
+// and stays fully protected. See round4/jobs/gt/REPORT.md for the threat analysis.
 
 let root: string;
 beforeEach(() => {
@@ -127,6 +128,32 @@ describe("narrowed .git write policy (file-tool preflight)", () => {
     // narrowed: rewriting the pointer redirects all metadata.
     fs.writeFileSync(path.join(root, ".git"), "gitdir: /elsewhere/.git/worktrees/wt\n");
     expect(canWrite(path.join(root, ".git"))).toBe(false);
+  });
+
+  it("keeps a .git symlink pointer fully protected", () => {
+    // A `.git` symlink is the same class of pointer as a gitfile: following
+    // it would admit writes into whatever directory it names, including one
+    // outside the workspace (HEAD, objects, or an arbitrary file such as
+    // id_rsa when the link names ~/.ssh).
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "git-symlink-target-")));
+    try {
+      fs.mkdirSync(path.join(outside, "hooks"), { recursive: true });
+      fs.mkdirSync(path.join(outside, "refs", "heads"), { recursive: true });
+      fs.writeFileSync(path.join(outside, "HEAD"), "ref: refs/heads/main\n");
+      fs.writeFileSync(path.join(outside, "id_rsa"), "secret\n");
+      fs.symlinkSync(outside, path.join(root, ".git"));
+      expect(canWrite(path.join(root, ".git"))).toBe(false);
+      expect(canWrite(path.join(root, ".git", "HEAD"))).toBe(false);
+      expect(canWrite(path.join(root, ".git", "refs", "heads", "main"))).toBe(false);
+      expect(canWrite(path.join(root, ".git", "id_rsa"))).toBe(false);
+      expect(canWrite(path.join(root, ".git", "hooks", "pre-commit"))).toBe(false);
+      const writableRoots = getWritableRootsWithCwd(workspacePolicy(), root, root);
+      const workspace = writableRoots.find((entry) => entry.root === root);
+      expect(workspace?.readOnlySubpaths).toContain(path.join(root, ".git"));
+      expect(workspace?.readOnlySubpaths).not.toContain(path.join(root, ".git", "hooks"));
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("keeps an absent .git fully protected (cannot be created with hooks)", () => {
