@@ -81,6 +81,7 @@ const HOSTED_FND_TEST_FILES = [
 const KERNEL_TEST_FILES = [
   "tests/routines/scheduled-session-mode-sandbox.kernel.test.ts",
   "tests/sandbox/landlock-seccomp.kernel.test.ts",
+  "tests/sandbox/linux-launcher/bound-search-launch.kernel.test.ts",
   "tests/sandbox/linux-launcher/direct-bwrap.kernel.test.ts",
   "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
   "tests/sandbox/linux-launcher/local-binding.kernel.test.ts",
