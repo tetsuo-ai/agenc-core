@@ -235,6 +235,64 @@ function canonicalRecordBytes(record: CanonicalFieldRecord): Buffer {
 }
 
 /**
+ * Recorded field runs appended in order and kept in one contiguous buffer, so
+ * a digest can replay any leading run of them with a single hash update.
+ * Only records produced by {@link CanonicalFieldRecorder} can be appended.
+ */
+export class CanonicalRecordLog {
+  #bytes = Buffer.allocUnsafeSlow(4_096);
+  #byteLength = 0;
+  readonly #ends: number[] = [];
+  readonly #payloadEnds: number[] = [];
+
+  get recordCount(): number {
+    return this.#ends.length;
+  }
+
+  append(record: CanonicalFieldRecord): void {
+    const bytes = canonicalRecordBytes(record);
+    const needed = this.#byteLength + bytes.length;
+    if (needed > this.#bytes.length) {
+      const grown = Buffer.allocUnsafeSlow(Math.max(needed, this.#bytes.length * 2));
+      this.#bytes.copy(grown, 0, 0, this.#byteLength);
+      this.#bytes = grown;
+    }
+    bytes.copy(this.#bytes, this.#byteLength);
+    this.#byteLength = needed;
+    this.#ends.push(needed);
+    this.#payloadEnds.push((this.#payloadEnds.at(-1) ?? 0) + record.payloadByteLength);
+  }
+
+  /** Keep only the first `recordCount` records. */
+  truncate(recordCount: number): void {
+    if (!Number.isSafeInteger(recordCount) || recordCount < 0 || recordCount > this.#ends.length) {
+      throw new RangeError("canonical record log truncation is outside the log");
+    }
+    this.#ends.length = recordCount;
+    this.#payloadEnds.length = recordCount;
+    this.#byteLength = recordCount === 0 ? 0 : this.#ends[recordCount - 1]!;
+  }
+
+  /** The bytes and payload length of the first `recordCount` records. */
+  static prefix(
+    log: CanonicalRecordLog,
+    recordCount: number,
+  ): { readonly bytes: Buffer; readonly payloadByteLength: number } {
+    if (!(#ends in log)) {
+      throw new TypeError("canonical record log was not created by this module");
+    }
+    if (!Number.isSafeInteger(recordCount) || recordCount < 0 || recordCount > log.#ends.length) {
+      throw new RangeError("canonical record log prefix is outside the log");
+    }
+    if (recordCount === 0) return { bytes: Buffer.alloc(0), payloadByteLength: 0 };
+    return {
+      bytes: log.#bytes.subarray(0, log.#ends[recordCount - 1]!),
+      payloadByteLength: log.#payloadEnds[recordCount - 1]!,
+    };
+  }
+}
+
+/**
  * Small streaming writer used by both body identities and checkpoint-v2
  * hashes. Every field is domain-separated and length-prefixed; callers never
  * need to materialize one giant JSON string solely to hash it.
@@ -277,6 +335,16 @@ export class CanonicalSha256Writer implements CanonicalFieldWriter {
   writeRecord(record: CanonicalFieldRecord): void {
     this.#hash.update(canonicalRecordBytes(record));
     this.#payloadByteLength += record.payloadByteLength;
+  }
+
+  /**
+   * Replay the first `recordCount` records of a log; equal to replaying each
+   * of those records in order with {@link writeRecord}.
+   */
+  writeRecordLog(log: CanonicalRecordLog, recordCount: number): void {
+    const prefix = CanonicalRecordLog.prefix(log, recordCount);
+    this.#hash.update(prefix.bytes);
+    this.#payloadByteLength += prefix.payloadByteLength;
   }
 
   digest(): string {

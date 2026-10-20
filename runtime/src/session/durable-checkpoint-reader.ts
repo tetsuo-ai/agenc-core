@@ -16,6 +16,7 @@ import {
 import { assertCompactionHistoryMarkerV1 } from "./compaction-history-marker.js";
 import {
   CanonicalFieldRecorder,
+  CanonicalRecordLog,
   CanonicalSha256Writer,
   TOOL_RESULT_DIGEST_PREFIX,
   ToolResultCanonicalizationError,
@@ -27,12 +28,14 @@ import {
   type ToolResultIntegrityFailure,
 } from "./tool-result-integrity.js";
 import {
+  StreamingToolPairValidator,
   validateToolPairSequence,
   type ToolPairDanglingUse,
   type ToolPairIntegrityFailure,
   type ToolPairOperationalDeferral,
   type ToolPairProjection,
   type ToolPairProjectionSummary,
+  type ToolPairValidationOutcome,
 } from "./tool-pair-validator.js";
 import {
   LEGACY_TURN_CHECKPOINT_SLICE_KEYS,
@@ -739,6 +742,364 @@ export function validateCheckpointPrefix(
     ...params,
     checkpoint: params.checkpoint,
   });
+}
+
+/**
+ * Validates the current-schema checkpoints (checkpoint v4, prefix digest v4)
+ * of one growing history in order, so that opening a session costs one pass
+ * over its messages instead of one pass per checkpoint.
+ *
+ * {@link validateCheckpointPrefixV4} runs its gates over the whole prefix of
+ * every checkpoint: the shape and seal-placement gate per message, the
+ * agent-invocation sequence, the tool-pair stream (which also verifies every
+ * result's seal), then the digest. Each gate is a left-to-right pass whose
+ * state after a prefix that passed is the state a fresh pass reaches there:
+ * the per-message gates have no state, a passing invocation sequence never
+ * ends inside a channel group, and the tool-pair stream is one streaming
+ * validator. So for a checkpoint whose prefix extends the last one, running
+ * every gate in the same order over only the new messages, continuing the
+ * same tool-pair stream, yields the outcome and failure the full validation
+ * yields. The digest replays the recorded canonical bytes of every message in
+ * one hash update (its message count is framed first, so each checkpoint still
+ * hashes its whole prefix, but nothing is encoded twice).
+ *
+ * `validate` returns `undefined` whenever that argument does not hold (another
+ * checkpoint version, a shorter prefix than one already validated, holes in
+ * the history); the caller then runs the full validation. A history whose
+ * messages are not the objects validated before starts over from its first
+ * message. The tool-pair stream lives under its own projection id, so full
+ * validations on the same projection never disturb it. Call {@link close}
+ * when done to finish that projection run.
+ */
+export class IncrementalCheckpointPrefixValidatorV4 {
+  readonly #params: Omit<
+    CheckpointPrefixValidationParams<TurnCheckpointV4Event>,
+    "checkpoint" | "messages" | "maxPrefixMessages"
+  >;
+  #messages: ReadonlyArray<ToolResultIntegrityResponseItem> | undefined;
+  /** The message objects validated so far, by history index. */
+  readonly #validated: ToolResultIntegrityResponseItem[] = [];
+  #toolPairs: StreamingToolPairValidator | undefined;
+  /** Position and field records of every recorded message, in order. */
+  readonly #records = new CanonicalRecordLog();
+  #recorded = 0;
+  #lastDigest: { readonly count: number; readonly prefixHash: string } | undefined;
+
+  constructor(
+    params: Omit<
+      CheckpointPrefixValidationParams<TurnCheckpointV4Event>,
+      "checkpoint" | "messages" | "maxPrefixMessages"
+    >,
+  ) {
+    this.#params = params;
+  }
+
+  /** Messages that passed every structural gate of the current history. */
+  get validatedMessageCount(): number {
+    return this.#validated.length;
+  }
+
+  /** Forget the current history; the next checkpoint starts from its first message. */
+  reset(): void {
+    this.#finishToolPairs();
+    this.#messages = undefined;
+    this.#validated.length = 0;
+    this.#records.truncate(0);
+    this.#recorded = 0;
+    this.#lastDigest = undefined;
+  }
+
+  /** Finish the open tool-pair projection run. The validator can be reused. */
+  close(): void {
+    this.reset();
+  }
+
+  validate(
+    checkpoint: TurnCheckpointV4Event,
+    messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  ): DurableCheckpointPrefixValidation | undefined {
+    if (
+      checkpoint.checkpointVersion !== DURABLE_CHECKPOINT_READ_VERSION ||
+      checkpoint.prefixHashVersion !== 4
+    ) {
+      return undefined;
+    }
+    const count = checkpoint.persistedMessageCount;
+    if (
+      !Number.isSafeInteger(count) ||
+      count < 0 ||
+      count > messages.length ||
+      count > MAX_CHECKPOINT_PREFIX_MESSAGES
+    ) {
+      return undefined;
+    }
+    if (!this.#continues(messages)) {
+      this.reset();
+      this.#messages = messages;
+    }
+    const start = this.#validated.length;
+    if (count < start) return undefined;
+    for (let index = start; index < count; index += 1) {
+      if (messages[index] === undefined) return undefined;
+    }
+
+    // 1. Shape and seal placement of each new message.
+    for (let index = start; index < count; index += 1) {
+      const message = messages[index]!;
+      try {
+        assertResponseItemShape(message, index, true);
+      } catch (error) {
+        if (error instanceof DurableCheckpointReadError) {
+          return {
+            status: "invalid",
+            failure: {
+              kind: "integrity_failure",
+              code: "checkpoint_response_shape_invalid",
+              index,
+              reason: error.message,
+            },
+          };
+        }
+        throw error;
+      }
+      if (message.role !== "tool" && message.toolResultIntegrity !== undefined) {
+        return {
+          status: "invalid",
+          failure: {
+            kind: "integrity_failure",
+            code: "misplaced_tool_result_integrity",
+            index,
+            reason:
+              "tool-result integrity metadata is attached to a non-tool message",
+          },
+        };
+      }
+    }
+
+    // 2. The invocation sequence of the new messages. The validated prefix
+    // passed as a whole, so no channel group straddles its end.
+    try {
+      validateAgentInvocationResponseSequence(messages.slice(start, count));
+    } catch (error) {
+      if (error instanceof DurableCheckpointReadError) {
+        return {
+          status: "invalid",
+          failure: {
+            kind: "integrity_failure",
+            code: "agent_invocation_integrity_failure",
+            index: null,
+            reason: error.message,
+          },
+        };
+      }
+      throw error;
+    }
+
+    // 3. Continue the tool-pair stream, then judge it at this prefix's end.
+    const toolPairs = this.#continueToolPairs(
+      messages,
+      start,
+      count,
+      checkpoint.boundary === "postAssistant",
+    );
+    if (toolPairs.status === "invalid" || toolPairs.status === "deferred") {
+      return toolPairs;
+    }
+
+    // 4. Record each new message once, then digest the whole prefix.
+    const recorded = this.#record(messages, count);
+    if (recorded !== undefined) return recorded;
+    let prefixHash: string;
+    if (this.#lastDigest?.count === count) {
+      prefixHash = this.#lastDigest.prefixHash;
+    } else {
+      const writer = new CanonicalSha256Writer(CHECKPOINT_PREFIX_V4_DIGEST_DOMAIN);
+      writer.writeCount("message-count", count);
+      writer.writeRecordLog(this.#records, 2 * count);
+      prefixHash = writer.digest().slice(TOOL_RESULT_DIGEST_PREFIX.length);
+      this.#lastDigest = { count, prefixHash };
+    }
+    if (!constantTimeDigestEqual(prefixHash, checkpoint.prefixHash)) {
+      return {
+        status: "invalid",
+        failure: {
+          kind: "integrity_failure",
+          code: "checkpoint_prefix_digest_mismatch",
+          index: null,
+          reason: "checkpoint prefix digest does not match persisted history",
+        },
+      };
+    }
+    return {
+      status: "valid",
+      prefixHash,
+      toolPairs: toolPairs.summary,
+      danglingToolCalls:
+        toolPairs.status === "dangling" ? toolPairs.summary.openCallCount : 0,
+      danglingToolUses:
+        toolPairs.status === "dangling" ? toolPairs.danglingToolUses : [],
+    };
+  }
+
+  /** True when `messages` still holds every message validated so far. */
+  #continues(messages: ReadonlyArray<ToolResultIntegrityResponseItem>): boolean {
+    if (messages !== this.#messages) return false;
+    const validated = this.#validated;
+    if (messages.length < validated.length) return false;
+    for (let index = 0; index < validated.length; index += 1) {
+      if (messages[index] !== validated[index]) return false;
+    }
+    return true;
+  }
+
+  #continueToolPairs(
+    messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+    start: number,
+    count: number,
+    allowDanglingAtEnd: boolean,
+  ): ToolPairValidationOutcome {
+    const projection = this.#params.projection;
+    let validator = this.#toolPairs;
+    try {
+      const outcome = projection.runAtomically(() => {
+        validator ??= new StreamingToolPairValidator(projection, {
+          projectionId: this.#params.projectionId,
+          sourceKey: this.#params.sourceKey,
+          requireResultIntegrity: true,
+          expectedRunId: this.#params.expectedRunId,
+        });
+        for (let index = start; index < count; index += 1) {
+          const failure = validator.push(messages[index]!);
+          if (failure !== undefined) return failure;
+        }
+        return validator.peekFinish(allowDanglingAtEnd);
+      });
+      if (validator?.terminalFailureOutcome !== undefined) {
+        // The stream closed (and its projection run with it); a later
+        // checkpoint of this history starts over, as a full validation does.
+        this.#toolPairs = undefined;
+        this.reset();
+        return outcome;
+      }
+      this.#toolPairs = validator;
+      for (let index = start; index < count; index += 1) {
+        this.#validated.push(messages[index]!);
+      }
+      return outcome;
+    } catch (error) {
+      // The projection rolled back what this call pushed; the stream state
+      // no longer matches it, so the history starts over next time.
+      const summary = validator?.summary() ?? {
+        callCount: 0,
+        resolvedCount: 0,
+        openCallCount: 0,
+        maximumOpenCallCount: 0,
+        logicalIndexBytes: 0,
+      };
+      this.#toolPairs = validator;
+      this.reset();
+      return {
+        status: "deferred",
+        failure: {
+          kind: "operational_deferral",
+          code: "tool_pair_projection_unavailable",
+          index: null,
+          reason:
+            error instanceof Error && error.message.length > 0
+              ? `tool-pair projection is unavailable: ${error.message}`
+              : "tool-pair projection is unavailable",
+        },
+        summary,
+      };
+    }
+  }
+
+  /** Record messages up to `count`; a failure maps as the full digest maps it. */
+  #record(
+    messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+    count: number,
+  ): DurableCheckpointPrefixValidation | undefined {
+    for (let index = this.#recorded; index < count; index += 1) {
+      let record: CheckpointPrefixRecordV4;
+      try {
+        record = recordCheckpointPrefixMessageV4(messages[index]!, index);
+      } catch (error) {
+        return checkpointDigestFailure(error);
+      }
+      const position = new CanonicalFieldRecorder();
+      position.writeCount("message-index", index);
+      this.#records.append(position.finish());
+      this.#records.append(record.fields);
+      this.#recorded = index + 1;
+    }
+    return undefined;
+  }
+
+  /**
+   * Close the open projection run (an ephemeral projection discards it). Its
+   * outcome was already judged per checkpoint; finishing is cleanup only, so
+   * a projection that fails here leaves the run to its next reset.
+   */
+  #finishToolPairs(): void {
+    const validator = this.#toolPairs;
+    this.#toolPairs = undefined;
+    if (validator === undefined || validator.terminalFailureOutcome !== undefined) return;
+    try {
+      this.#params.projection.runAtomically(() => {
+        validator.finish({ allowDanglingAtEnd: true });
+      });
+    } catch {
+      // Cleanup only; see above.
+    }
+  }
+}
+
+/** Map a digest-time error exactly as {@link validateCheckpointPrefixWithHasher} maps it. */
+function checkpointDigestFailure(error: unknown): DurableCheckpointPrefixValidation {
+  if (error instanceof DurableCheckpointReadError) {
+    return {
+      status: "invalid",
+      failure: {
+        kind: "integrity_failure",
+        code: "checkpoint_response_shape_invalid",
+        index: null,
+        reason: error.message,
+      },
+    };
+  }
+  if (error instanceof ToolResultCanonicalizationError) {
+    if (error.kind === "operational_deferral") {
+      return {
+        status: "deferred",
+        failure: {
+          kind: "operational_deferral",
+          code: "checkpoint_prefix_body_deferred",
+          index: null,
+          reason: error.message,
+          cause: {
+            kind: "operational_deferral",
+            code: error.code as ToolResultIntegrityDeferral["code"],
+            reason: error.message,
+          },
+        },
+      };
+    }
+    return {
+      status: "invalid",
+      failure: {
+        kind: "integrity_failure",
+        code: "checkpoint_prefix_body_invalid",
+        index: null,
+        reason: error.message,
+        cause: {
+          kind: "integrity_failure",
+          code: error.code as ToolResultIntegrityFailure["code"],
+          reason: error.message,
+        },
+      },
+    };
+  }
+  throw error;
 }
 
 function validateCheckpointPrefixWithHasher(
