@@ -11,7 +11,7 @@ const descriptions: Readonly<Record<string, string>> = {
   write_stdin: "Continue exec_command's session_id. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
   Glob: "Find file paths by glob, newest modification first. Skip gitignored/build/vendor files unless includeIgnored=true.",
   Grep: "Search with packaged ripgrep, not shell grep/rg; escape literal braces. output_mode: files_with_matches (default paths), content (lines), count. Context/line numbers apply to content. multiline matches across lines with dot-all. Skip ignored/build/vendor files unless includeIgnored=true. Missing ripgrep: agenc doctor, reinstall same version; no fallback.",
-  "system.searchTools": "Find by name/family/source/keyword/profile. Listed tools are ready. select or query select:<name> loads schemas; selection alone returns selected tools/scoped suggestions, query/filters search broadly.",
+  "system.searchTools": "Find unlisted tools by name or keyword (tools, not files or code). Listed tools are ready. select loads a tool's schema by exact name.",
 };
 
 const path = "Workspace/absolute path; not an agent-tree ID.";
@@ -51,13 +51,24 @@ function presentProperty(schema: unknown, hint: string | null | undefined): unkn
   return rest;
 }
 
-/** Adapt the earlier Light summaries without hiding accepted arguments. */
-export function lightPresentation(tool: LLMTool, options: { readonly leanExec?: boolean } = {}): LLMTool {
+/**
+ * Adapt the earlier Light summaries without hiding accepted arguments. The lean exec_command and
+ * system.searchTools show their common fields until system.searchTools selects them.
+ */
+export function lightPresentation(
+  tool: LLMTool,
+  options: { readonly leanExec?: boolean; readonly leanSearch?: boolean } = {},
+): LLMTool {
   const presented = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
     ? tool
     : lightPresentationCanonical(tool);
-  if (options.leanExec !== true || tool.function.name !== "exec_command") return presented;
-  return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
+  if (options.leanExec === true && tool.function.name === "exec_command") {
+    return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
+  }
+  if (options.leanSearch === true && tool.function.name === "system.searchTools") {
+    return withOnlyFields(presented, LEAN_SEARCH_FIELDS, LEAN_SEARCH_POINTER);
+  }
+  return presented;
 }
 
 /** Show only `fields`; execution still accepts the rest, and `pointer` says how to load them. */
@@ -90,6 +101,15 @@ function withOnlyFields(presented: LLMTool, fields: ReadonlySet<string>, pointer
 const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeoutMs"]);
 const LEAN_EXEC_POINTER =
   " Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens, sandbox escalation) are accepted; system.searchTools select:exec_command loads their schema.";
+
+/**
+ * The system.searchTools fields a Light session sees until it selects system.searchTools. Of 296
+ * recorded searches (round 3 and 4 swarm runs, all modes), 289 used query or select; 45 of the 53
+ * that passed a filter passed maxResults beside a query, which caps results at five anyway. Shown,
+ * the six filters cost every request about 60 tokens. Execution accepts every field either way.
+ */
+const LEAN_SEARCH_FIELDS: ReadonlySet<string> = new Set(["query", "select"]);
+const LEAN_SEARCH_POINTER = " select:system.searchTools adds its filters.";
 
 /**
  * The Grep fields a standard session sees until system.searchTools selects Grep. In 80 qb-ten

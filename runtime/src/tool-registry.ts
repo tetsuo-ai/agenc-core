@@ -777,6 +777,7 @@ export function buildToolRegistry(
           isDeferredSpec(spec) ? { ...spec, deferred: true } : spec,
         )),
     onDiscoverTools: markDiscovered,
+    ...(options.lightMode === true ? { compactResults: true } : {}),
     ...(options.mcpToolsProvider?.primeCatalogs !== undefined
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
       : {}),
@@ -1455,10 +1456,11 @@ export function buildToolRegistry(
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
       const leanExec = searchVisible && !discoveredToolNames.has("exec_command");
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
+      const leanSearch = !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
       const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
-        if (options.lightMode === true) return lightPresentation(tool, { leanExec });
+        if (options.lightMode === true) return lightPresentation(tool, { leanExec, leanSearch });
         // Standard sessions with the default deferral send compact wording for
         // the core tools (same fields, same schema) and the lean exec_command
         // and Grep until system.searchTools selects them.

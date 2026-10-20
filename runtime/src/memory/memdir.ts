@@ -201,6 +201,44 @@ export function buildMemoryInstructionLines(): string[] {
 }
 
 /**
+ * Interactive Light's rendering of {@link buildMemoryInstructionLines}: the
+ * same save, forget, format, index and recall rules in fewer words. Light
+ * resends its head on every model call, where these rules were the largest
+ * part not about safety. Light lists no Grep tool, so recall names grep on the
+ * memory directory instead of the Grep tool call.
+ */
+export function buildLightMemoryInstructionLines(): string[] {
+  return [
+    `# ${AUTO_MEM_DISPLAY_NAME}`,
+    '',
+    `File memory: one markdown file per fact plus a \`${ENTRYPOINT_NAME}\` index, in the global (user, all projects) or project (this repository) directory under "Memory directories".`,
+    '- Save at once when asked to remember; to forget, delete the file and its index line. Also save who the user is and how they work, feedback they gave or confirmed (with the reason), project context not in the code (decisions and why, deadlines, incidents, owners) and pointers to external systems. Never save code patterns, file paths, git history, fix recipes, AGENC.md content or in-progress task state; from an activity log save only the non-obvious.',
+    `- \`<topic>.md\`: frontmatter \`name\`, \`description\` (one specific line for judging relevance) and \`type\` (${MEMORY_TYPES.join(', ')}), then the fact; feedback and project add **Why:** and **How to apply:** lines. Then add \`- [Title](topic.md): one-line hook\` to that directory's \`${ENTRYPOINT_NAME}\` (one line per file, under 150 characters, no frontmatter; first ${MAX_ENTRYPOINT_LINES} lines load). Update a topic's file instead of duplicating it.`,
+    '- Indexes are injected when non-empty; do not list or probe memory paths. Recall from injected indexes and attached memories; read a topic file only when needed, or grep the memory directory. Read an index only to update it. Verify past claims before acting; fix or delete stale memories. Ignore memory if asked.',
+  ]
+}
+
+/**
+ * Interactive Light's directory block: the two paths and the existence rule.
+ * The scope notes live in {@link buildLightMemoryInstructionLines}.
+ */
+export function buildLightMemoryDirectoryLines(
+  projectMemoryDir: string,
+  extraGuidelines: readonly string[] | undefined,
+  globalMemoryDir: string,
+): string[] {
+  return [
+    '# Memory directories',
+    `- Global: \`${globalMemoryDir}\``,
+    `- Project: \`${projectMemoryDir}\``,
+    'Both exist: Write there directly, without mkdir or existence checks.',
+    ...(extraGuidelines !== undefined && extraGuidelines.length > 0
+      ? ['', ...extraGuidelines]
+      : []),
+  ]
+}
+
+/**
  * The memory directory block for the dynamic tail: the two durable paths,
  * the session layer, and any per-session guidance a host injected.
  */
@@ -392,13 +430,22 @@ export async function loadMemoryPrompt(
 
   // Harness guarantees the directories exist so the model can write without
   // checking. The prompt text reflects this ("already exist").
-  return {
-    instructions: owner?.runtimeOptions?.lightMode === true && owner.runtimeOptions.nonInteractive === true
-      ? '' : buildMemoryInstructionLines().join('\n'),
-    directories: owner?.runtimeOptions?.lightMode === true && owner.runtimeOptions.nonInteractive === true
-      ? isLightPrintRun(owner.runtimeOptions, presentationEnvironment)
+  const light = owner?.runtimeOptions?.lightMode === true
+  if (light && owner.runtimeOptions.nonInteractive === true) {
+    return {
+      instructions: '',
+      directories: isLightPrintRun(owner.runtimeOptions, presentationEnvironment)
         ? lightPrintMemoryContext(autoDir, globalDir, extraGuidelines)
-        : lightMemoryContext(autoDir, globalDir, extraGuidelines)
-      : buildMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
+        : lightMemoryContext(autoDir, globalDir, extraGuidelines),
+    }
   }
+  return light
+    ? {
+        instructions: buildLightMemoryInstructionLines().join('\n'),
+        directories: buildLightMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
+      }
+    : {
+        instructions: buildMemoryInstructionLines().join('\n'),
+        directories: buildMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
+      }
 }

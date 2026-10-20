@@ -152,6 +152,32 @@ function modelFacingToolSearchMetadata(
   };
 }
 
+const SUMMARY_MAX_CHARS = 160;
+const SUMMARY_MIN_CHARS = 40;
+
+/**
+ * The opening sentences of a catalog description, at least SUMMARY_MIN_CHARS
+ * and at most SUMMARY_MAX_CHARS long: enough to decide whether to load the
+ * tool. Loading it sends the full description with its schema.
+ */
+export function catalogSummary(description: string): string {
+  const flat = description.replace(/\s+/g, " ").trim();
+  const boundary = /[.!?](?=\s|$)/g;
+  let end = flat.length;
+  for (let match = boundary.exec(flat); match !== null; match = boundary.exec(flat)) {
+    if (match.index + 1 >= SUMMARY_MIN_CHARS) {
+      end = match.index + 1;
+      break;
+    }
+  }
+  const summary = flat.slice(0, end);
+  if (summary.length <= SUMMARY_MAX_CHARS) return summary;
+  const cut = summary.lastIndexOf(" ", SUMMARY_MAX_CHARS - 3);
+  return `${summary.slice(0, cut > 0 ? cut : SUMMARY_MAX_CHARS - 3)}...`;
+}
+
+const COMPACT_LOAD_HINT = "Load an unlisted tool with select:<name> before calling it.";
+
 function normalizeSelections(args: Record<string, unknown>): readonly string[] {
   const parsedQuery = parseToolSearchQuery(toOptionalString(args.query));
   return [
@@ -310,6 +336,34 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       const loaded = selectedEntries.map((entry) => entry.name);
       if (loaded.length > 0) {
         config.onDiscoverTools?.(loaded);
+      }
+
+      if (config.compactResults === true) {
+        // Name and summary for a tool still to load; listed and just-loaded
+        // tools send their own schema and description, so only the name.
+        let loadable = false;
+        const entries = results.map((entry) => {
+          const selected = selectedEntries.some((candidate) => candidate.name === entry.name);
+          const advertised = advertisedToolNames?.has(entry.name) ?? false;
+          const ready = selected || advertised;
+          if (!ready && (advertisedToolNames !== undefined || entry.metadata.deferred)) loadable = true;
+          const useHint = mcpUseHint(entry.name, ready);
+          return {
+            name: modelFacingToolSearchText(entry.name),
+            ...(selected ? { loaded: true } : advertised ? { listed: true } : {
+              description: modelFacingToolSearchText(catalogSummary(entry.description)),
+            }),
+            ...(useHint !== undefined ? { useHint: modelFacingToolSearchText(useHint) } : {}),
+          };
+        });
+        return okResult({
+          ...(loaded.length > 0 ? { loaded: loaded.map(modelFacingToolSearchText) } : {}),
+          ...(missingSelections.length > 0
+            ? { missingSelections: missingSelections.map(modelFacingToolSearchText) }
+            : {}),
+          results: entries,
+          ...(loadable ? { hint: COMPACT_LOAD_HINT } : {}),
+        });
       }
 
       return okResult({

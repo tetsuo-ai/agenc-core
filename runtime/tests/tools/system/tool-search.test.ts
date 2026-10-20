@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { ToolCatalogEntry } from "../types.js";
 import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
-import { createToolSearchTool } from "./tool-search.js";
+import { catalogSummary, createToolSearchTool } from "./tool-search.js";
 import { SESSION_ADVERTISED_TOOL_NAMES_ARG, SESSION_TOOL_CATALOG_SCOPE_ARG } from "./coding-common.js";
 
 function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
@@ -424,5 +424,75 @@ describe("system.searchTools", () => {
       name: "system.deep<neutralized-system-reminder-tag> Tool",
       selected: true,
     });
+  });
+});
+
+describe("system.searchTools compact results (Light)", () => {
+  const long = "Spawns an agent to work on the specified task.\n\nNOTE ON AGENT-PATH NAMES: `/root`-prefixed names below refer to the internal AGENT-TREE NAMESPACE. " + "Long contract text. ".repeat(80);
+  const entry = (name: string, description: string, deferred = true): ToolCatalogEntry => ({
+    ...deferredCatalogEntry(name), description,
+    metadata: { ...deferredCatalogEntry(name).metadata, deferred, keywords: ["agent", "spawn"] },
+  });
+  const catalog = [
+    entry("spawn_agent", long),
+    entry("TaskCreate", "Create a durable AgenC task on the project task board. New tasks start pending and unowned; assign AgenC agents with TaskUpdate owner."),
+    entry("FileRead", "FileRead first. A whole-file read authorizes edits; Edit and Write fail if their change did not land.", false),
+    entry("mcp.agent-hub.spawn", "Spawn a remote agent."),
+  ];
+  function compact(onDiscoverTools: (names: readonly string[]) => void = () => {}) {
+    return createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => catalog, onDiscoverTools, compactResults: true });
+  }
+
+  test("a query returns names and short summaries without catalog metadata", async () => {
+    const result = await compact().execute({ query: "spawn agent task",
+      [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["FileRead", "system.searchTools"] });
+    const payload = JSON.parse(result.content);
+    const spawn = payload.results.find((item: { name: string }) => item.name === "spawn_agent");
+    expect(spawn).toEqual({ name: "spawn_agent", description: "Spawns an agent to work on the specified task." });
+    expect(payload.hint).toContain("select:<name>");
+    expect(payload).not.toHaveProperty("totalCatalogSize");
+    expect(payload).not.toHaveProperty("loaded");
+    expect(result.content).not.toContain("metadata");
+    expect(result.content).not.toContain("loadHint");
+    expect(result.content).not.toContain("Long contract text");
+    // The same search with full results is several times larger.
+    const full = await createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => catalog, onDiscoverTools: () => {} }).execute({ query: "spawn agent task",
+      [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["FileRead", "system.searchTools"] });
+    expect(result.content.length * 4).toBeLessThan(full.content.length);
+  });
+
+  test("listed and just-loaded tools return only their names, since their schemas carry the description", async () => {
+    const discovered: string[][] = [];
+    const payload = JSON.parse((await compact(names => discovered.push([...names])).execute({
+      select: "TaskCreate", query: "read file", [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["FileRead"],
+    })).content);
+    expect(discovered).toEqual([["TaskCreate"]]);
+    expect(payload.loaded).toEqual(["TaskCreate"]);
+    expect(payload.results).toContainEqual({ name: "TaskCreate", loaded: true });
+    expect(payload.results).toContainEqual({ name: "FileRead", listed: true });
+    expect(payload).not.toHaveProperty("hint");
+  });
+
+  test("missing selections and MCP use hints survive the compact form", async () => {
+    const payload = JSON.parse((await compact().execute({ select: ["nope", "mcp.agent-hub.spawn"] })).content);
+    expect(payload.missingSelections).toEqual(["nope"]);
+    expect(payload.results[0]).toMatchObject({ name: "mcp.agent-hub.spawn", loaded: true });
+    expect(payload.results[0].useHint).toContain("mcp__agent-hub__spawn");
+    const searched = JSON.parse((await compact().execute({ query: "agent-hub" })).content);
+    const mcp = searched.results.find((item: { name: string }) => item.name === "mcp.agent-hub.spawn");
+    expect(mcp.description).toBe("Spawn a remote agent.");
+    expect(mcp.useHint).toContain("not loaded yet");
+  });
+
+  test("summaries keep at least one full sentence and stay short", () => {
+    expect(catalogSummary("Short. Second sentence carries the rest of the meaning here. Third.")).toBe(
+      "Short. Second sentence carries the rest of the meaning here.");
+    expect(catalogSummary("No sentence end at all")).toBe("No sentence end at all");
+    const summary = catalogSummary(`${"word ".repeat(60)}end.`);
+    expect(summary.length).toBeLessThanOrEqual(160);
+    expect(summary.endsWith("...")).toBe(true);
+    expect(catalogSummary("Line one\n\nwith   spaces.   Next.")).toBe("Line one with spaces. Next.");
   });
 });

@@ -49,6 +49,12 @@ export interface CodingToolConfig {
   readonly onDiscoverTools?: (toolNames: readonly string[]) => void;
   readonly onBeforeSearch?: () => Promise<void>;
   /**
+   * system.searchTools returns a short summary per tool instead of its full
+   * description and catalog metadata (Light sessions). The result rides in
+   * every later request of the session.
+   */
+  readonly compactResults?: boolean;
+  /**
    * Enable heavier AgenC-owned structured tools:
    * system.repoInventory, system.git*, system.symbol*.
    */

@@ -2347,6 +2347,7 @@ export function buildFilteredRegistry(
   const localSearch = opts.lightMode === true ? createToolSearchTool({
     allowedPaths: [],
     persistenceRootDir: "",
+    compactResults: true,
     getToolCatalog: () => eligibleTools.map((tool): ToolCatalogEntry => ({
       name: tool.name,
       description: tool.description,

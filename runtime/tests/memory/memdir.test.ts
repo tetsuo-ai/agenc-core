@@ -163,6 +163,43 @@ describe("memory prompt", () => {
     expect(await memory.loadMemoryPrompt({ ...owner, settings: { userSettings: { autoMemoryEnabled: false } } })).toBeNull();
   });
 
+  it("interactive Light sends the same memory rules in fewer words, with grep for recall", async () => {
+    const env = { HOME: tempRoot, AGENC_HOME: join(tempRoot, "home") };
+    const cwd = join(tempRoot, "repo");
+    const configStore = new ConfigStore({ home: env.AGENC_HOME, env, cwd });
+    const owner = { cwd, env, configStore,
+      runtimeOptions: { remoteMode: false, lightMode: true, nonInteractive: false, coworkMemoryExtraGuidelines: "OWNER_POLICY" } };
+    const light = await memory.loadMemoryPrompt(owner);
+    const standard = await memory.loadMemoryPrompt({ ...owner, runtimeOptions: { ...owner.runtimeOptions, lightMode: false } });
+    const instructions = light!.instructions;
+    expect(instructions.startsWith("# auto memory")).toBe(true);
+    for (const rule of [
+      "one markdown file per fact plus a `MEMORY.md` index", "global (user, all projects)", "project (this repository)",
+      "Save at once when asked to remember", "to forget, delete the file and its index line",
+      "who the user is and how they work", "feedback they gave or confirmed (with the reason)",
+      "project context not in the code (decisions and why, deadlines, incidents, owners)", "pointers to external systems",
+      "Never save code patterns, file paths, git history, fix recipes, AGENC.md content or in-progress task state",
+      "activity log", "frontmatter `name`, `description`", "`type` (user, feedback, project, reference)",
+      "**Why:** and **How to apply:**", "`- [Title](topic.md): one-line hook`", "under 150 characters, no frontmatter",
+      "first 200 lines load", "instead of duplicating", "Indexes are injected when non-empty",
+      "do not list or probe memory paths", "read a topic file only when needed",
+      "grep the memory directory", "Read an index only to update it", "Verify past claims before acting",
+      "fix or delete stale memories", "Ignore memory if asked",
+    ]) expect(instructions, rule).toContain(rule);
+    expect(instructions).not.toContain("Grep with pattern=");
+    expect(instructions).not.toContain(tempRoot);
+    expect(instructions.length).toBeLessThan(standard!.instructions.length * 0.85);
+    const directories = light!.directories;
+    expect(directories).toContain(`- Global: \`${await resolveGlobalMemoryDirectory(owner)}\``);
+    expect(directories).toContain(`- Project: \`${(await resolveAutoMemoryDirectory(owner)).path}\``);
+    expect(directories).toContain("Write there directly, without mkdir or existence checks");
+    expect(directories.endsWith("\nOWNER_POLICY")).toBe(true);
+    expect(directories.length).toBeLessThan(standard!.directories.length);
+    // Standard sessions keep the full wording.
+    expect(standard!.instructions).toBe(memory.buildMemoryInstructionLines().join("\n"));
+    expect(standard!.directories).toContain("Session memory");
+  });
+
   it.skipIf(process.platform === "win32")(
     "loadMemoryPrompt creates the memory directories owner-only under a permissive umask",
     async () => {

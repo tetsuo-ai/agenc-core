@@ -12,8 +12,9 @@ function withoutDescriptions(value: unknown): unknown {
 
 test("all eight Light schemas retain the canonical contract and source schema", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
-  // Selecting exec_command loads its full schema; the lean default is covered separately below.
-  registry.discoverToolNames?.(["Edit", "Write", "Grep", "Glob", "write_stdin", "exec_command"]);
+  // Selecting exec_command or system.searchTools loads its full schema; the lean defaults are
+  // covered separately below.
+  registry.discoverToolNames?.(["Edit", "Write", "Grep", "Glob", "write_stdin", "exec_command", "system.searchTools"]);
   const wire = registry.toLLMTools();
   expect(wire.map(t => t.function.name).sort()).toEqual([
     "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
@@ -160,6 +161,23 @@ test("Light presents a lean exec_command until system.searchTools selects it", (
   const canonical = registry.tools.find(t => t.name === "exec_command")!;
   expect(withoutDescriptions(full.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
   expect(full.function.description).not.toContain("select:exec_command");
+});
+
+test("Light presents system.searchTools with query and select until it selects itself", () => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  const lean = registry.toLLMTools().find(t => t.function.name === "system.searchTools")!;
+  expect(Object.keys(lean.function.parameters.properties as object).sort()).toEqual(["query", "select"]);
+  expect(lean.function.description).toContain("not files or code");
+  expect(lean.function.description).toContain("select:system.searchTools adds its filters");
+  registry.discoverToolNames?.(["system.searchTools"]);
+  const full = registry.toLLMTools().find(t => t.function.name === "system.searchTools")!;
+  const canonical = registry.tools.find(t => t.name === "system.searchTools")!;
+  expect(withoutDescriptions(full.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
+  expect(full.function.description).not.toContain("adds its filters");
+  // Standard sessions keep every field.
+  const standard = buildToolRegistry({ workspaceRoot: "/tmp" }).toLLMTools()
+    .find(t => t.function.name === "system.searchTools")!;
+  expect(Object.keys(standard.function.parameters.properties as object)).toContain("maxResults");
 });
 
 test("Standard sessions keep the canonical exec_command", () => {
