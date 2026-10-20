@@ -14,6 +14,8 @@
  * recover: open the same rollout in a fresh process (opening re-validates
  * every checkpoint from scratch), reconstruct, resume the interrupted turn,
  * finish it, then reopen and validate every checkpoint again.
+ * open-kill <n>: open the same rollout and SIGKILL inside that open-time
+ * validation, at its n-th checkpoint (its projection transaction never commits).
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,6 +26,9 @@ import type { LLMMessage, LLMProvider, LLMResponse } from "../../../src/llm/type
 import { PermissionModeRegistry } from "../../../src/permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../../../src/permissions/types.js";
 import { CheckpointPrefixTracker } from "../../../src/session/checkpoint-prefix-tracker.js";
+import { IncrementalCheckpointPrefixValidatorV4 } from "../../../src/session/durable-checkpoint-reader.js";
+import { openStateDatabases } from "../../../src/state/sqlite-driver.js";
+import { StateToolPairProjection } from "../../../src/state/tool-pair-projection.js";
 import { planLegacyDurableCheckpointUpgrade } from "../../../src/session/durable-checkpoint-upgrade.js";
 import { computeCheckpointPrefixHashV4, readTurnCheckpoint } from "../../../src/session/durable-checkpoint-reader.js";
 import type { Event } from "../../../src/session/event-log.js";
@@ -41,8 +46,8 @@ const FIRST_TURN_CALLS = 12;
 const SECOND_TURN_CALLS = 12;
 const SECOND_PROMPT = "read the second batch";
 const [command, root, killPoint, killBoundary, killOrdinal] = process.argv.slice(2);
-if (root === undefined || (command !== "crash" && command !== "recover")) {
-  throw new Error("usage: crash <root> <before-append|after-append> <postAssistant|iteration> <ordinal> | recover <root>");
+if (root === undefined || (command !== "crash" && command !== "recover" && command !== "open-kill")) {
+  throw new Error("usage: crash <root> <before-append|after-append> <postAssistant|iteration> <ordinal> | recover <root> | open-kill <root> <n>");
 }
 const cwd = join(root, "workspace");
 const home = join(root, "home");
@@ -270,9 +275,30 @@ if (command === "crash") {
   await drain(session.runTurn(SECOND_PROMPT, { ctx: context("turn-two") }));
   note({ error: "the second turn completed without reaching the kill point" });
   process.exit(3);
+} else if (command === "open-kill") {
+  const validate = IncrementalCheckpointPrefixValidatorV4.prototype.validate;
+  let validated = 0;
+  IncrementalCheckpointPrefixValidatorV4.prototype.validate = function (...args) {
+    if ((validated += 1) === Number(killPoint)) {
+      note({ killed: "open-validation", validated });
+      process.kill(process.pid, "SIGKILL");
+    }
+    return validate.apply(this, args);
+  };
+  openStore(true);
+  note({ error: "the open finished without reaching the kill point" });
+  process.exit(3);
 } else {
   // Opening re-validates every persisted checkpoint and fails on any mismatch.
+  // Count the exact tool-pair projection's work while it does.
+  const insertCall = StateToolPairProjection.prototype.insertCall;
+  let openInserts = 0;
+  StateToolPairProjection.prototype.insertCall = function (...args) {
+    openInserts += 1;
+    return insertCall.apply(this, args);
+  };
   const store = openStore(true);
+  StateToolPairProjection.prototype.insertCall = insertCall;
   const before = validateAll(store.readAll());
   const reconstruction = reconstructFromRollout(store.readAll(), {
     checkpointProjection: store.checkpointProjectionContext("checkpoint-prefix-crash"),
@@ -302,8 +328,13 @@ if (command === "crash") {
   reopened.close();
   const results = items.filter((item) => item.type === "response_item" && item.payload.role === "tool")
     .map((item) => (item as Extract<RolloutItem, { type: "response_item" }>).payload.toolCallId);
+  const state = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+  const projectionRuns = state.state
+    .prepare("SELECT status, COUNT(*) AS runs FROM tool_pair_projection_runs WHERE projection_id LIKE 'checkpoint-upgrade:%' GROUP BY status")
+    .all();
+  state.close();
   process.stdout.write(`${JSON.stringify({
-    before, after, resumable,
+    before, after, resumable, openInserts, projectionRuns,
     resumed: attempt.resumed,
     reason: "reason" in attempt ? attempt.reason : undefined,
     turnCompleted: events.includes("turn_complete"),

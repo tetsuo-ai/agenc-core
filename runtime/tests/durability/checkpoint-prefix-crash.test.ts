@@ -89,4 +89,40 @@ describe("checkpoint prefix digests across process death", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 90_000);
+
+  it("SIGKILL inside the open-time validation commits nothing and the next open resumes exactly", async () => {
+    const root = mkdtempSync(join(tmpdir(), "checkpoint-open-crash-"));
+    try {
+      const crashed = await run(["crash", root, "after-append", "iteration", "9"]);
+      expect(crashed.signal, crashed.stderr).toBe("SIGKILL");
+      // Die in the middle of validating the persisted checkpoints on open.
+      const killed = await run(["open-kill", root, "20"]);
+      expect(killed.signal, killed.stderr).toBe("SIGKILL");
+      const trace = readFileSync(join(root, "trace.log"), "utf8").trim().split("\n")
+        .map((line) => JSON.parse(line) as { killed?: string; validated?: number });
+      expect(trace.at(-1)).toEqual({ killed: "open-validation", validated: 20 });
+
+      const recovered = await run(["recover", root]);
+      expect(recovered.code, recovered.stderr).toBe(0);
+      const report = JSON.parse(recovered.stdout.trim().split("\n").at(-1)!);
+      expect(report.before.checkpoints).toBeGreaterThan(40);
+      expect(report.before.recomputed).toBe(report.before.checkpoints);
+      expect(report.after.recomputed).toBe(report.after.checkpoints);
+      expect(report.plan).toEqual({ status: "planned", changed: false, validated: report.after.checkpoints });
+      expect(report.resumable).toHaveLength(1);
+      expect(report.resumable[0]).toMatchObject({ turnId: "turn-two", integrity: "valid" });
+      expect(report).toMatchObject({ resumed: true, turnCompleted: true, toolResults: 24 });
+      expect(report.effects).toEqual(ALL_EFFECTS);
+      expect(report.distinctToolResults).toBe(report.toolResults);
+      // The killed open's scratch projection rows never committed, and every
+      // later validation discarded its own.
+      expect(report.projectionRuns).toEqual([]);
+      // Opening validated every checkpoint with each call entering the exact
+      // projection once for the checkpoints and once for the live history,
+      // not once per checkpoint that covers it.
+      expect(report.openInserts).toBeLessThanOrEqual(2 * report.toolResults);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 90_000);
 });
