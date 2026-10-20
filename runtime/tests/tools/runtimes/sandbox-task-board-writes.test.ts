@@ -198,22 +198,27 @@ describe("task board writes under the runtime sandbox", () => {
     expect(listed.content).toBe("No tasks found");
   });
 
-  it("verifies the store the board tools declare instead of exempting them", () => {
+  it.each([
+    ["TaskCreate", { subject: "x" }],
+    ["TaskUpdate", { taskId: "1", status: "completed" }],
+  ] as const)("admits %s under workspace_write by verifying the store it declares", (name, args) => {
+    const tool = boardTools().get(name)!;
+    expect(attempt(tool, args)).not.toThrow();
+    // Verified, not exempted: the declared target is exactly the store.
+    expect(tool.metadata?.virtualNoFsWrites).not.toBe(true);
+    expect(tool.metadata?.fixedWriteTargets?.())
+      .toEqual([tasksDir({ workspaceRoot: cwd, agencHome: home })]);
+    expect(attempt(tool, args, { sandboxMode: "read_only" }))
+      .toThrow(new RegExp(`read_only blocked write-capable operation ${name}`));
+  });
+
+  it("leaves the read-only board tools untouched", () => {
     const tools = boardTools();
-    const store = tasksDir({ workspaceRoot: cwd, agencHome: home });
-    for (const name of ["TaskCreate", "TaskUpdate"]) {
-      const tool = tools.get(name)!;
-      expect(tool.metadata?.virtualNoFsWrites, name).not.toBe(true);
-      expect(tool.metadata?.fixedWriteTargets?.(), name).toEqual([store]);
-    }
     for (const name of ["TaskGet", "TaskList"]) {
       expect(tools.get(name)!.isReadOnly, name).toBe(true);
+      expect(tools.get(name)!.metadata?.fixedWriteTargets, name).toBeUndefined();
+      expect(attempt(tools.get(name)!, {}, { sandboxMode: "read_only" }), name).not.toThrow();
     }
-
-    expect(attempt(tools.get("TaskCreate")!, { subject: "x" })).not.toThrow();
-    expect(attempt(tools.get("TaskUpdate")!, { taskId: "1", status: "completed" })).not.toThrow();
-    expect(attempt(tools.get("TaskCreate")!, { subject: "x" }, { sandboxMode: "read_only" }))
-      .toThrow(/read_only blocked write-capable operation TaskCreate/);
   });
 
   it("honors an operator deny over the AgenC home and requires the session's bound home", () => {
