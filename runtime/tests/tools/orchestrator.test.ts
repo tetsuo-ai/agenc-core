@@ -1548,6 +1548,37 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(asked[1]!.retryReason).toMatch(/^Run test\.cmd without the sandbox\? The sandbox refused it: fs blocked\./u);
   });
 
+  test.each([
+    [undefined, ""],
+    // The daemon TUI sends the decision's name as its reason: nothing to add.
+    ["denied", ""],
+    ["Not outside my home, please.", " Not outside my home, please."],
+  ])("declining the run without the sandbox with reason %j", async (reason, expected) => {
+    const rejection = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      dispatch: async () => {
+        throw new SandboxDeniedError("fs blocked", {
+          denial: "filesystem",
+          target: "/tmp/block",
+          policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+        });
+      },
+      approvalResolver: {
+        request: async (ctx) =>
+          ctx.runsWithoutSandbox === true
+            ? { kind: "denied", decidedBy: "user", ...(reason !== undefined ? { reason } : {}) }
+            : { kind: "approved" },
+      },
+    }).then(() => undefined, (error: unknown) => error);
+    expect((rejection as ApprovalRejectedError).message).toBe(
+      "Permission denied: The sandbox refused test.cmd (fs blocked), and running it without the sandbox was not approved." +
+        `${expected} Do not retry the same call; choose a different approach or ask the user how to proceed.`,
+    );
+  });
+
   test("sandbox-denied under untrusted policy: declining the run without the sandbox keeps the call refused", async () => {
     const dispatches: string[] = [];
     const resolver: ApprovalResolver = {

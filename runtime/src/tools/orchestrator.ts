@@ -601,8 +601,10 @@ function runWithoutSandboxRejectionMessage(
     "and running it without the sandbox was not approved.";
   const advice = "Do not retry the same call; choose a different approach or ask the user how to proceed.";
   if (result.source === "resolver" && result.decision.kind === "denied") {
+    // Clients that send the decision's own name as its reason add nothing.
     const reason = result.reason?.trim();
-    return `Permission denied: ${refused}${reason ? ` ${reason}` : ""} ${advice}`;
+    const extra = reason && reason !== result.decision.kind ? ` ${reason}` : "";
+    return `Permission denied: ${refused}${extra} ${advice}`;
   }
   if (result.source === "default_deny") {
     return `${refused} No approval resolver is available in this session to allow it. ${advice}`;
