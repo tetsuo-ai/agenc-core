@@ -814,10 +814,29 @@ export class IncrementalCheckpointPrefixValidatorV4 {
     this.reset();
   }
 
-  validate(
+  /**
+   * The history-derivation work, in message visits, that {@link validate}
+   * does for this checkpoint: every message it has not validated yet passes
+   * each gate once (`newMessagePasses` visits) and the whole prefix is checked
+   * for identity and replayed into the digest (`prefixPasses` visits).
+   * Undefined when `validate` would leave the checkpoint to the full validator.
+   */
+  plannedWork(
     checkpoint: TurnCheckpointV4Event,
     messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
-  ): DurableCheckpointPrefixValidation | undefined {
+    newMessagePasses: number,
+    prefixPasses: number,
+  ): number | undefined {
+    const plan = this.#plan(checkpoint, messages);
+    if (plan === undefined) return undefined;
+    return (plan.count - plan.start) * newMessagePasses + plan.count * prefixPasses;
+  }
+
+  /** Where `validate` would start and end, without changing any state. */
+  #plan(
+    checkpoint: TurnCheckpointV4Event,
+    messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  ): { readonly start: number; readonly count: number; readonly continues: boolean } | undefined {
     if (
       checkpoint.checkpointVersion !== DURABLE_CHECKPOINT_READ_VERSION ||
       checkpoint.prefixHashVersion !== 4
@@ -833,15 +852,26 @@ export class IncrementalCheckpointPrefixValidatorV4 {
     ) {
       return undefined;
     }
-    if (!this.#continues(messages)) {
-      this.reset();
-      this.#messages = messages;
-    }
-    const start = this.#validated.length;
+    const continues = this.#continues(messages);
+    const start = continues ? this.#validated.length : 0;
     if (count < start) return undefined;
     for (let index = start; index < count; index += 1) {
       if (messages[index] === undefined) return undefined;
     }
+    return { start, count, continues };
+  }
+
+  validate(
+    checkpoint: TurnCheckpointV4Event,
+    messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  ): DurableCheckpointPrefixValidation | undefined {
+    const plan = this.#plan(checkpoint, messages);
+    if (plan === undefined) return undefined;
+    if (!plan.continues) {
+      this.reset();
+      this.#messages = messages;
+    }
+    const { start, count } = plan;
 
     // 1. Shape and seal placement of each new message.
     for (let index = start; index < count; index += 1) {

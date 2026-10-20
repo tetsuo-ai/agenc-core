@@ -54,6 +54,10 @@ const LEGACY_CHECKPOINT_PREFIX_PASSES = 20;
 // A v2/v3 promotion validates the frozen v2 digest (13), computes the v3
 // digest (6), and validates the generated v4 checkpoint (13).
 const INTEGRITY_CHECKPOINT_UPGRADE_PREFIX_PASSES = 32;
+// An incremental current-schema validation passes each message it has not
+// validated yet through every gate once (13) and traverses the whole prefix
+// twice: the identity check of the validated messages and the digest replay.
+const INCREMENTAL_CHECKPOINT_PREFIX_PASSES = 2;
 // Canonical rollback reduction can scan the history, scan backward across
 // contextual pre-turn rows, and copy the retained prefix. Reserve all three
 // possible passes before invoking it so adversarial rollback streams cannot
@@ -308,12 +312,31 @@ function planCheckpointUpgrade(
           : readable.sourceVersion === DURABLE_CHECKPOINT_READ_VERSION
             ? CURRENT_CHECKPOINT_PREFIX_PASSES
             : INTEGRITY_CHECKPOINT_UPGRADE_PREFIX_PASSES;
-      const reservedWork = reserveHistoryDerivationWork(
-        historyDerivationWork,
-        persistedMessageCount,
-        prefixPasses,
-        maxHistoryDerivationWork,
-      );
+      // Charge what the validation will actually traverse: an incremental
+      // validation only passes new messages through the gates.
+      const incrementalWork =
+        readable.version === DURABLE_CHECKPOINT_READ_VERSION
+          ? incremental.plannedWork(
+              readable.checkpoint,
+              history,
+              CURRENT_CHECKPOINT_PREFIX_PASSES,
+              INCREMENTAL_CHECKPOINT_PREFIX_PASSES,
+            )
+          : undefined;
+      const reservedWork =
+        incrementalWork !== undefined
+          ? reserveHistoryDerivationWork(
+              historyDerivationWork,
+              incrementalWork,
+              1,
+              maxHistoryDerivationWork,
+            )
+          : reserveHistoryDerivationWork(
+              historyDerivationWork,
+              persistedMessageCount,
+              prefixPasses,
+              maxHistoryDerivationWork,
+            );
       if (reservedWork === undefined) {
         return {
           status: "deferred",
@@ -347,10 +370,33 @@ function planCheckpointUpgrade(
         }
       } else {
         let sourceValidation =
-          (readable.version === DURABLE_CHECKPOINT_READ_VERSION
+          incrementalWork !== undefined && readable.version === DURABLE_CHECKPOINT_READ_VERSION
             ? incremental.validate(readable.checkpoint, history)
-            : undefined) ??
-          validateCheckpointPrefix({
+            : undefined;
+        if (sourceValidation === undefined) {
+          if (incrementalWork !== undefined) {
+            // The plan and the validation decline alike; should they ever
+            // differ, the full validation is charged in full first.
+            const fullWork = reserveHistoryDerivationWork(
+              historyDerivationWork,
+              persistedMessageCount,
+              prefixPasses,
+              maxHistoryDerivationWork,
+            );
+            if (fullWork === undefined) {
+              return {
+                status: "deferred",
+                failure: {
+                  kind: "operational_deferral",
+                  code: "history_derivation_work_limit",
+                  itemIndex,
+                  reason: `checkpoint validation would exceed the aggregate history-derivation work limit of ${maxHistoryDerivationWork} message visits`,
+                },
+              };
+            }
+            historyDerivationWork = fullWork;
+          }
+          sourceValidation = validateCheckpointPrefix({
             checkpoint: readable.checkpoint,
             expectedRunId: params.runId,
             messages: history,
@@ -358,6 +404,7 @@ function planCheckpointUpgrade(
             projectionId: checkpointProjectionId(params.projectionId),
             sourceKey: params.sourceKey,
           });
+        }
         // A checkpoint written without the recovery results counts fewer
         // messages than the persisted prefix it describes, so the persisted
         // view fails its digest or ends inside a call's results. The

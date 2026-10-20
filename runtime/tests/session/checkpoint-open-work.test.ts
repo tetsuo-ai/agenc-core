@@ -109,4 +109,29 @@ describe("opening a long session", () => {
     });
     expect(projectionRuns()).toEqual([]);
   });
+
+  it("charges the open-time work bound for what an incremental validation traverses", () => {
+    const history = longSession(60);
+    const checkpoints = writerCheckpoints(history);
+    const items = rolloutItems(history, checkpoints);
+    const plan = (maxHistoryDerivationWork: number, projectionId: string) => planLegacyDurableCheckpointUpgrade({
+      items, runId: RUN_ID, projection, projectionId, sourceKey: projectionId, maxHistoryDerivationWork,
+    });
+    // Full re-validation of every checkpoint would charge 13 visits per
+    // message of every prefix (13 x 7,320 = 95,160); the incremental pass
+    // charges 13 per message once plus two prefix scans per checkpoint.
+    const prefixVisits = checkpoints.reduce((sum, event) => sum + event.persistedMessageCount, 0);
+    expect(13 * prefixVisits).toBeGreaterThan(90_000);
+    expect(plan(50_000, "bound-incremental")).toMatchObject({
+      status: "planned",
+      plan: { checkpointsValidated: checkpoints.length },
+    });
+    // The bound still holds for the work actually done.
+    expect(plan(10_000, "bound-exceeded")).toMatchObject({
+      status: "deferred",
+      failure: { code: "history_derivation_work_limit" },
+    });
+    expect(projectionRuns()).toEqual([]);
+  });
 });
+
