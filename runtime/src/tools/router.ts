@@ -1928,7 +1928,13 @@ async function toolDispatchErrorResult(err: unknown, session?: Session, toolName
         : {}),
       metadata: {
         ...(approvalDenialEndsTurn(err)
-          ? { approvalDenied: true, approvalDeniedStage: err.stage }
+          ? {
+              approvalDenied: true,
+              approvalDeniedStage: err.stage,
+              ...(err.sandboxRefusal !== undefined
+                ? { approvalDeniedSandboxRefusal: err.sandboxRefusal }
+                : {}),
+            }
           : {}),
         approvalFailure: {
           decision: err.decision.kind,

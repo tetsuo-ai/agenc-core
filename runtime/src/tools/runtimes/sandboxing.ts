@@ -402,7 +402,30 @@ function applyRuntimeAdditionalPermissions(
   return effectivePermissionProfile(profile, normalized);
 }
 
+/** Refusals this gate made: each was made before the tool ran. */
+const REFUSED_BEFORE_RUNNING = new WeakSet<object>();
+
+/**
+ * Whether the sandbox refused this call before the tool ran, at this gate,
+ * rather than from inside a tool that had already started. Only the gate
+ * brands its own errors; nothing a model sends can carry the brand.
+ */
+export function sandboxRefusedBeforeRunning(error: unknown): boolean {
+  return typeof error === "object" && error !== null && REFUSED_BEFORE_RUNNING.has(error);
+}
+
 export function enforceRuntimeSandboxAttempt(
+  input: RuntimeSandboxEnforcementInput,
+): void {
+  try {
+    enforceRuntimeSandboxAttemptChecks(input);
+  } catch (error) {
+    if (error instanceof SandboxDeniedError) REFUSED_BEFORE_RUNNING.add(error);
+    throw error;
+  }
+}
+
+function enforceRuntimeSandboxAttemptChecks(
   input: RuntimeSandboxEnforcementInput,
 ): void {
   const cwd = runtimeCwd(input.context);

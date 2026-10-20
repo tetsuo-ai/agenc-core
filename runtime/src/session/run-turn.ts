@@ -437,18 +437,24 @@ class RegularTurnTask implements SessionTask {
 
 /**
  * The transcript text for a turn the user ended by denying approval. It
- * says what was denied and, for a denied unsandboxed retry, that the call
- * had already run once inside the sandbox.
+ * says what was denied and, for a denied run without the sandbox, what the
+ * sandbox did first: refused the call before it ran (the runtime gate), or
+ * blocked it after it had started inside the sandbox.
  */
 function approvalDeniedExplanation(
   denied: readonly { readonly toolName: string; readonly metadata?: Record<string, unknown> }[],
 ): string {
-  const names = (stage: "before_execution" | "sandbox_escalation") => [
+  type Outcome = "before_execution" | "refused_before_running" | "blocked_while_running";
+  const outcome = (metadata: Record<string, unknown> | undefined): Outcome =>
+    metadata?.approvalDeniedStage !== "sandbox_escalation"
+      ? "before_execution"
+      : metadata.approvalDeniedSandboxRefusal === "before_running"
+        ? "refused_before_running"
+        : "blocked_while_running";
+  const names = (wanted: Outcome) => [
     ...new Set(
       denied
-        .filter((result) =>
-          (result.metadata?.approvalDeniedStage === "sandbox_escalation") ===
-          (stage === "sandbox_escalation"))
+        .filter((result) => outcome(result.metadata) === wanted)
         .map((result) => result.toolName),
     ),
   ];
@@ -459,11 +465,20 @@ function approvalDeniedExplanation(
       `Approval was denied for ${beforeExecution.join(", ")}. The turn stopped without running the denied action.`,
     );
   }
-  const retried = names("sandbox_escalation");
-  if (retried.length > 0) {
+  const refused = names("refused_before_running");
+  if (refused.length > 0) {
+    const [subject, object] = refused.length === 1 ? ["it", "it"] : ["they", "them"];
     sentences.push(
-      `Approval was denied to run ${retried.join(", ")} again without the sandbox. ` +
-        `${retried.join(", ")} already ran once inside the sandbox, which blocked it; ` +
+      `Approval was denied to run ${refused.join(", ")} without the sandbox. ` +
+        `The sandbox refused ${refused.join(", ")} before ${subject} ran, so ${subject} changed nothing, ` +
+        `and the turn stopped without running ${object} outside the sandbox.`,
+    );
+  }
+  const blocked = names("blocked_while_running");
+  if (blocked.length > 0) {
+    sentences.push(
+      `Approval was denied to run ${blocked.join(", ")} again without the sandbox. ` +
+        `${blocked.join(", ")} already ran once inside the sandbox, which blocked it; ` +
         "anything that attempt changed before the block remains, and the turn stopped without the unsandboxed retry.",
     );
   }
@@ -3905,9 +3920,10 @@ async function* runTurnKernelInner(
         // A denial the user made is their decision, not a failure: the turn
         // stops the way a user Stop does (the session already holds as
         // stopped by the user) and waits for the next prompt. A call denied
-        // before execution never ran; a denied unsandboxed retry keeps the
-        // effect records of the sandboxed attempt that did run. The stable
-        // reason lets clients say what was denied instead of "errored".
+        // before execution never ran, nor did one the sandbox refused before
+        // it ran; a denied unsandboxed retry of a call that started inside
+        // the sandbox keeps that attempt's effect records. The stable reason
+        // lets clients say what was denied instead of "errored".
         const error = new Error(lastContent);
         state.messages.push({ role: "assistant", content: lastContent });
         await syncSessionState();

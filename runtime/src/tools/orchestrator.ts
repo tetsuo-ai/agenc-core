@@ -104,7 +104,7 @@ import {
 import { asRecord } from "../utils/record.js";
 import { routineRunOptions } from "../session/runtime-options.js";
 import { readPendingPhysicalSettlement } from "./physical-settlement.js";
-import { indeterminateMcpWriteScope } from "./runtimes/sandboxing.js";
+import { indeterminateMcpWriteScope, sandboxRefusedBeforeRunning } from "./runtimes/sandboxing.js";
 import { McpFilesystemApprovalRequiredError, mcpFilesystemApprovalReason } from "./runtimes/mcp-filesystem-approval.js";
 
 export { requestApproval };
@@ -481,6 +481,12 @@ function effectiveApprovalPolicyForTool(
  * without the sandbox.
  */
 export type ApprovalRejectionStage = "before_execution" | "sandbox_escalation";
+/**
+ * For a refused `sandbox_escalation`: whether the sandbox refused the call
+ * before it ran (`before_running`, the runtime gate) or from inside the
+ * running call (`while_running`).
+ */
+export type SandboxRefusalTiming = "before_running" | "while_running";
 const ROUTINE_SANDBOX_ONLY_REASON =
   "routine commands run only inside the OS sandbox";
 const ROUTINE_SANDBOX_ONLY_MESSAGE =
@@ -502,17 +508,21 @@ export class ApprovalRejectedError extends Error {
   /** Where the decision came from; absent for callers that predate it. */
   readonly source?: RequestApprovalResult["source"];
   readonly stage: ApprovalRejectionStage;
+  /** Set with stage `sandbox_escalation`: when the sandbox refused the call. */
+  readonly sandboxRefusal?: SandboxRefusalTiming;
   constructor(
     message: string,
     decision: ReviewDecision,
     source?: RequestApprovalResult["source"],
     stage: ApprovalRejectionStage = "before_execution",
+    sandboxRefusal?: SandboxRefusalTiming,
   ) {
     super(message);
     this.name = "ApprovalRejectedError";
     this.decision = decision;
     if (source !== undefined) this.source = source;
     this.stage = stage;
+    if (sandboxRefusal !== undefined) this.sandboxRefusal = sandboxRefusal;
   }
 }
 
@@ -1091,12 +1101,14 @@ export async function orchestrateToolCall<T>(
     });
     if (!isApprovalAccepted(approval.decision)) {
       // Only the unsandboxed retry is refused. An attempt that ran inside
-      // the sandbox before its refusal keeps its effect records.
+      // the sandbox before its refusal keeps its effect records; one the
+      // runtime gate refused never ran. The turn-stop text says which.
       throw new ApprovalRejectedError(
         runWithoutSandboxRejectionMessage(approval, escalationCtx.toolName, refusal),
         approval.decision,
         approval.source,
         "sandbox_escalation",
+        sandboxRefusedBeforeRunning(err) ? "before_running" : "while_running",
       );
     }
 

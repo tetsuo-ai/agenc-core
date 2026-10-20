@@ -435,7 +435,13 @@ function approvalRejectedResult(err: ApprovalRejectedError, session?: object): T
           : {}),
       },
       ...(approvalDenialEndsTurn(err)
-        ? { approvalDenied: true, approvalDeniedStage: err.stage }
+        ? {
+            approvalDenied: true,
+            approvalDeniedStage: err.stage,
+            ...(err.sandboxRefusal !== undefined
+              ? { approvalDeniedSandboxRefusal: err.sandboxRefusal }
+              : {}),
+          }
         : {}),
     },
     ...(approvalDenialEndsTurn(err) || isWorkflowApprovalSession(session)
