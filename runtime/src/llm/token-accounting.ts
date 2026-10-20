@@ -1590,6 +1590,8 @@ class AccountingMessageSnapshots {
     const entries: (AccountingMessageSnapshot | undefined)[] = new Array(messages.length);
     const snapshots: LLMMessage[] = new Array(messages.length);
     for (let index = 0; index < messages.length; index += 1) {
+      // A hole stays a hole, as mapping and snapshotting the array leave it.
+      if (!(index in sources)) continue;
       const message = messages[index]!;
       const source = sources[index]!;
       let entry = this.#byMessage.get(message);

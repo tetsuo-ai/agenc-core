@@ -1136,8 +1136,12 @@ function frozenContentLooksLikeInvocationChannel(
 ): boolean {
   if (contentCheckedFrozenMessages.has(message)) return false;
   const looksLikeChannel = contentLooksLikeInvocationChannel(message.content);
-  if (!looksLikeChannel && typeof message.content === "string" && Object.isFrozen(message)) {
-    contentCheckedFrozenMessages.add(message);
+  if (!looksLikeChannel && Object.isFrozen(message)) {
+    // Only an own data property holding a string is fixed by the freeze.
+    const descriptor = Object.getOwnPropertyDescriptor(message, "content");
+    if (descriptor !== undefined && "value" in descriptor && typeof descriptor.value === "string") {
+      contentCheckedFrozenMessages.add(message);
+    }
   }
   return looksLikeChannel;
 }
