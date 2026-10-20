@@ -782,6 +782,10 @@ export function buildToolRegistry(
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
       : {}),
   });
+  // A sandbox notice that tells the model to retry with sandbox_permissions
+  // loads exec_command's full schema for the next request: the lean schema
+  // Light and deferred standard sessions present hides that field.
+  const onEscalationAdvised = (): void => markDiscovered(["exec_command"]);
   const shellTools = [
     createExecCommandTool({
       lightMode: options.lightMode,
@@ -793,6 +797,7 @@ export function buildToolRegistry(
         : standardDeferral
           ? { onSessionYielded: () => markDiscovered(PROCESS_SESSION_TOOLS) }
           : {}),
+      onEscalationAdvised,
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
@@ -802,6 +807,7 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
+      onEscalationAdvised,
     }),
     createKillProcessTool({
       cwd: options.workspaceRoot,

@@ -14,14 +14,16 @@ import {
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
   confirmedNoEffectDisposition,
+  execEscalationGrant,
   runtimeSandboxForExec,
   SANDBOX_PERMISSION_INPUT_PROPERTIES,
 } from "./exec-command.js";
 import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
-import { execSandboxDenialNotice, sandboxEscalationAvailable } from "./exec-sandbox-denial.js";
+import { execSandboxDenialNotice } from "./exec-sandbox-denial.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
+import { notifyExecEscalationDiscovery } from "../exec-session-discovery.js";
 
 export interface WriteStdinToolConfig {
   readonly lightMode?: boolean;
@@ -30,6 +32,12 @@ export interface WriteStdinToolConfig {
   readonly env?: Record<string, string>;
   readonly maxTimeoutMs?: number;
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
+  /**
+   * A sandbox notice on this result tells the model to retry the session's
+   * exec_command with sandbox_permissions: present exec_command's full
+   * schema on the next request.
+   */
+  readonly onEscalationAdvised?: () => void;
 }
 
 function asString(value: unknown): string | undefined {
@@ -243,31 +251,28 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           (output.exitCode === null && !stillAlive);
         const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
         const runtimeContext = readToolRuntimeContext(args);
-        // A permission-mode allow runs this attempt under `never`, but an escalation request
-        // still meets the session's own policy: read that one for what a retry can get.
-        const escalationPolicy = runtimeContext?.requestedApprovalPolicy ?? runtimeContext?.approvalPolicy;
         const denial = execSandboxDenialNotice({
           output: execContent,
           exitCode: output.exitCode,
           sandboxApplied: output.sandboxApplied ?? runtimeSandbox !== undefined,
           session: runtimeContext?.invocation.session,
-          escalationAvailable: runtimeContext === undefined ||
-            sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {
-              sandboxMode: runtimeContext.requestedSandboxMode,
-              session: runtimeContext.invocation.session,
-            }),
+          escalation: execEscalationGrant(args, "with_approval"),
         });
-        const notice = denial?.notice ?? execNetworkFailureNotice({
-          output: execContent,
-          exitCode: output.exitCode,
-          runtimeSandbox: output.sandboxApplied === false ? undefined : runtimeSandbox,
-          escalationAvailable: runtimeContext !== undefined &&
-            sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {
-              sandboxMode: runtimeContext.requestedSandboxMode,
-              session: runtimeContext.invocation.session,
-            }),
-          escalationWithoutAsking: escalationPolicy === "never",
-        });
+        const networkEscalation = execEscalationGrant(args, "unavailable");
+        const networkNotice = denial === null
+          ? execNetworkFailureNotice({
+              output: execContent,
+              exitCode: output.exitCode,
+              runtimeSandbox: output.sandboxApplied === false ? undefined : runtimeSandbox,
+              escalation: networkEscalation,
+            })
+          : null;
+        // The retry the notice asks for is the session's exec_command launch:
+        // present that tool's sandbox_permissions on the next request.
+        if (denial?.advisesEscalation === true || (networkNotice !== null && networkEscalation !== "unavailable")) {
+          notifyExecEscalationDiscovery(args, config?.onEscalationAdvised);
+        }
+        const notice = denial?.notice ?? networkNotice;
         return {
           content: notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,

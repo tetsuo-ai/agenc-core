@@ -1356,12 +1356,14 @@ describe("exec_command tool", () => {
       >(async () => detachedOutput({ pid: 1 }));
       const { tool, execCommand } = toolWithManager(startDetachedProcess);
 
-      const result = await tool.execute(
-        sandboxedArgs({ cmd: "python3 -m http.server 8080", detach: true, workdir: root }),
-      );
+      const result = await tool.execute(contextArgs(
+        { cmd: "python3 -m http.server 8080", detach: true, workdir: root },
+        { approvalPolicy: "on_request", sandboxMode: "workspace_write", platformSandbox: true },
+      ));
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("require_escalated");
+      expect(result.content).toContain("plain-language justification");
       expect(result.content).not.toContain("--dangerously-bypass-approvals-and-sandbox");
       expect(result.content).toContain("yield_time_ms");
       expect(result.content).toContain("allowLocalBinding");
@@ -1374,6 +1376,26 @@ describe("exec_command tool", () => {
       });
       expect(startDetachedProcess).not.toHaveBeenCalled();
       expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    // The launch outside the sandbox is offered in the words of how the
+    // session grants it, and not at all where nobody can grant it.
+    test("words the sandboxed detach refusal for how the session grants a launch outside the sandbox", async () => {
+      const { tool } = toolWithManager(async () => detachedOutput({ pid: 1 }));
+      const cmd = { cmd: "python3 -m http.server 8080", detach: true, workdir: root };
+      const bypass = await tool.execute(contextArgs(cmd, {
+        approvalPolicy: "never", mode: "bypassPermissions", sandboxMode: "workspace_write", platformSandbox: true,
+      }));
+      expect(bypass.content).toContain("require_escalated");
+      expect(bypass.content).toContain("runs outside the sandbox without asking");
+      expect(bypass.content).not.toContain("If permitted");
+      const nobody = await tool.execute(sandboxedArgs(cmd));
+      expect(nobody.isError).toBe(true);
+      expect(nobody.content).not.toContain("require_escalated");
+      expect(nobody.content).toContain("cannot launch outside it");
+      expect(nobody.content).toContain("yield_time_ms");
+      expect(nobody.content).toContain("allowLocalBinding");
+      expect(nobody.content).toContain("run it in their terminal");
     });
 
     test("refuses detach when the exec manager cannot detach", async () => {

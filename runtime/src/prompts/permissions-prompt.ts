@@ -76,12 +76,17 @@ export const BYPASS_AUTONOMY_NOTE =
  * requests are rejected, is false there. A model told it gave up on opening a
  * page in the user's browser and started the browser's binary inside the
  * sandbox, which crashed it. The text names only the cases bypass users
- * expect to leave the sandbox, GUI apps and blocked network: an escalated
- * command also skips the shell write guards, and `--bypass-approvals` keeps
- * file changes inside the workspace.
+ * expect to leave the sandbox: GUI apps, blocked network, and one retry of an
+ * operation the user asked for that the sandbox refused on a protected path
+ * (exec_command's notice for protected .git metadata says the same,
+ * tools/system/exec-sandbox-denial.ts). Without that last case a model told
+ * by the notice to retry a requested commit escalated answered that it could
+ * not work around the sandbox. An escalated command also skips the shell write
+ * guards, and `--bypass-approvals` keeps file changes inside the workspace, so
+ * protected files are never written another way.
  */
 export const APPROVAL_POLICY_BYPASS_ESCALATION =
-  "Approval policy is currently never, and this session runs in bypass mode, so a request to leave the sandbox is granted without asking. Use it only for a GUI app (open, xdg-open, osascript) that opens a browser or a file, or for network access the sandbox blocks: provide `sandbox_permissions` with the value `\"require_escalated\"` and a one-line `justification`. Keep file changes inside the workspace, and do not work around the sandbox another way, such as starting an app's binary directly.\n";
+  "Approval policy is currently never, and this session runs in bypass mode, so a request to leave the sandbox is granted without asking. Use it only for a GUI app (open, xdg-open, osascript) that opens a browser or a file, for network access the sandbox blocks, or for one retry of an operation the user explicitly asked for that the sandbox refused on a protected path, such as a git command on protected .git metadata: provide `sandbox_permissions` with the value `\"require_escalated\"` and a one-line `justification`. Keep file changes inside the workspace, do not write protected files another way, and do not work around the sandbox another way, such as starting an app's binary directly.\n";
 
 /**
  * Approval policy: unless trusted. Begins with one literal space character.
@@ -419,7 +424,7 @@ export const LIGHT_APPROVAL_NEVER =
 
 /** Light rendering of APPROVAL_POLICY_BYPASS_ESCALATION. */
 export const LIGHT_APPROVAL_BYPASS_ESCALATION =
-  "Approval policy never: bypass mode grants a request to leave the sandbox without asking. Use it only for GUI apps (open, xdg-open, osascript) or blocked network: call exec_command with sandbox_permissions \"require_escalated\" and a one-line justification. Keep file changes inside the workspace; do not work around the sandbox another way.";
+  "Approval policy never: bypass mode grants a request to leave the sandbox without asking. Use it only for GUI apps (open, xdg-open, osascript), blocked network, or one retry of an operation the user asked for that the sandbox refused on a protected path such as .git: call exec_command with sandbox_permissions \"require_escalated\" and a one-line justification. Keep file changes inside the workspace; do not write protected files another way or otherwise work around the sandbox.";
 
 /**
  * Where the bypass escalation text applies. The same sessions get escalation

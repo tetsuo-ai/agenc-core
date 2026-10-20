@@ -1,5 +1,6 @@
 import { effectivePermissionProfile } from "../../sandbox/engine/policy-transforms.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
+import type { SandboxEscalationGrant } from "./exec-sandbox-denial.js";
 
 const LOOKUP_FAILURE = /\bEAI_AGAIN\b|\bENOTFOUND\b|\bENETUNREACH\b|could not resolve (?:host|proxy)|temporary failure in name resolution|name or service not known|network is unreachable/iu;
 // `curl -s` and `wget -q` print nothing when a lookup or connect fails, so only the exit status tells:
@@ -21,8 +22,11 @@ export function execNetworkFailureNotice(params: {
   /** The shell command, when known: a silent client's exit status is its only signal. */
   readonly command?: string;
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
-  readonly escalationAvailable: boolean;
-  /** Approvals are off (bypass), so the escalated retry runs without asking anyone. */
+  /** How a retry outside the sandbox would be answered (sandboxEscalationGrant). */
+  readonly escalation?: SandboxEscalationGrant;
+  /** Older callers: a retry outside the sandbox can be granted. */
+  readonly escalationAvailable?: boolean;
+  /** Older callers: approvals are off (bypass), so the escalated retry runs without asking anyone. */
   readonly escalationWithoutAsking?: boolean;
 }): string | null {
   const sandbox = params.runtimeSandbox;
@@ -34,13 +38,16 @@ export function execNetworkFailureNotice(params: {
     !(LOOKUP_FAILURE.test(params.output) || silentClientNetworkFailure(params.command, params.exitCode))
   ) return null;
 
-  if (!params.escalationAvailable) {
+  const grant = params.escalation ?? (params.escalationAvailable !== true
+    ? "unavailable"
+    : params.escalationWithoutAsking === true ? "without_asking" : "with_approval");
+  if (grant === "unavailable") {
     return "[sandbox] This command's network access was disabled; " +
       "network approval is unavailable in this session, so use local dependencies or report the blocker.";
   }
   // Models in bypass sessions sometimes declined the retry as "working around your sandbox setting":
   // say that the user turned approvals off, so the retry is theirs to run.
-  return params.escalationWithoutAsking === true
+  return grant === "without_asking"
     ? "[sandbox] This command's network access was disabled. Approvals are off in this session, so a retry " +
       "with sandbox_permissions=\"require_escalated\" runs without asking: retry it once."
     : "[sandbox] This command's network access was disabled; retry it once with " +

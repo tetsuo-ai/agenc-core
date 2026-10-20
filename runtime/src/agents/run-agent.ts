@@ -22,7 +22,7 @@ import { isEffectReviewRequired, waitForEffectReview } from "../session/effect-r
 import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
 import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
-import { bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
+import { bindExecEscalationDiscovery, bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { createToolSearchTool } from "../tools/system/tool-search.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
@@ -2344,6 +2344,13 @@ export function buildFilteredRegistry(
   const execSessionToolNames: readonly string[] = opts.lightMode === true
     ? ["write_stdin"]
     : PROCESS_SESSION_TOOLS;
+  // A sandbox notice that tells the model to retry with sandbox_permissions
+  // loads exec_command's full schema. A Light child presents its own
+  // discoveries; other children present the parent registry's tools, whose
+  // exec_command reports the advice to that registry itself.
+  const execEscalationAdvised = opts.lightMode === true
+    ? { onExecEscalationAdvised: () => discoverToolNames(["exec_command"]) }
+    : {};
   const localSearch = opts.lightMode === true ? createToolSearchTool({
     allowedPaths: [],
     persistenceRootDir: "",
@@ -2379,6 +2386,7 @@ export function buildFilteredRegistry(
         ...opts,
         toolCatalogScope,
         onExecSessionYielded: () => discoverToolNames(execSessionToolNames),
+        ...execEscalationAdvised,
         ...(searchTools !== undefined ? { searchTools } : {}),
       });
       const sessionSurface = (wrapped as Tool & {
@@ -2531,6 +2539,7 @@ export function buildFilteredRegistry(
           ...opts,
           toolCatalogScope,
           onExecSessionYielded: () => discoverToolNames(execSessionToolNames),
+          ...execEscalationAdvised,
           ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
         });
         if ("result" in prepared) return prepared.result;
@@ -2980,6 +2989,7 @@ function wrapToolForChild(
     readonly toolCatalogScope?: ReadonlySet<string>;
     readonly searchTools?: Tool["execute"];
     readonly onExecSessionYielded?: () => void;
+    readonly onExecEscalationAdvised?: () => void;
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
@@ -3196,6 +3206,7 @@ async function prepareChildToolCall(
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
     readonly onExecSessionYielded?: () => void;
+    readonly onExecEscalationAdvised?: () => void;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }
@@ -3300,6 +3311,10 @@ async function prepareChildToolCall(
     // Both admitted registry dispatch and direct tool execution use this final
     // argument object. Bind after every policy rewrite and authority injection.
     bindExecSessionDiscovery(childArgs, opts.onExecSessionYielded);
+  }
+  if ((tool.name === "exec_command" || tool.name === "write_stdin") &&
+      opts.onExecEscalationAdvised !== undefined) {
+    bindExecEscalationDiscovery(childArgs, opts.onExecEscalationAdvised);
   }
   return { args: childArgs };
 }

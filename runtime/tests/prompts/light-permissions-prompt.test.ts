@@ -106,9 +106,10 @@ describe("Light permission section", () => {
     const light = section("bypassPermissions", "workspace_write", false, true)!;
     expect(light).toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
     expect(light).toContain("Approval policy never: bypass mode grants a request to leave the sandbox without asking.");
-    expect(light).toContain("only for GUI apps (open, xdg-open, osascript) or blocked network");
+    expect(light).toContain("only for GUI apps (open, xdg-open, osascript), blocked network, or one retry of an operation the user asked for that the sandbox refused on a protected path such as .git");
     expect(light).toContain("sandbox_permissions \"require_escalated\" and a one-line justification");
     expect(light).toContain("Keep file changes inside the workspace");
+    expect(light).toContain("do not write protected files another way");
     expect(light).not.toContain("such commands are rejected");
     expect(light).toContain("Tool calls are pre-approved");
   });

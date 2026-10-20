@@ -581,6 +581,22 @@ The SDK mirrors the split: `createSession({ bypassApprovals: true })` sends
 `permissionMode: "bypassPermissions"` and leaves the sandbox on, while
 `dangerouslyBypassApprovalsAndSandbox: true` remains the no-sandbox option.
 
+When the OS sandbox refuses a command (a server's bind, a lookup with the
+network off, or git writing protected `.git` metadata such as `config`,
+`worktrees` or `modules`), `exec_command` and `write_stdin` add one `[sandbox]`
+line worded for how the session answers a retry with
+`sandbox_permissions: "require_escalated"`: `bypassPermissions` in a
+workspace-write sandbox runs it without a card; a mode with approvals asks the
+user on a card (the git line asks for no `prefix_rule`, so the approval covers
+that command only); where nobody can grant it (a scheduled routine, a read-only
+delegation child, a `-p` run outside bypass, the `never` policy, a worktree
+child for git) the line says so and names what the user can do instead. The git
+line offers the retry only for a git operation the user asked for and never
+suggests writing `.git` files directly. When a line offers the retry, the next
+request presents `exec_command`'s full schema, so Light and deferred standard
+sessions, whose lean schema hides the escalation fields, have them
+(`runtime/src/tools/system/exec-sandbox-denial.ts`).
+
 The shell write policy permits workspace content writes in `bypassPermissions`,
 `acceptEdits` and `auto`, and after approval otherwise. Default mode presents
 an approval card for a shell edit rather than rejecting an edit the user can

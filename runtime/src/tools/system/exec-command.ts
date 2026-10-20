@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
-import { notifyExecSessionDiscovery } from "../exec-session-discovery.js";
+import { notifyExecEscalationDiscovery, notifyExecSessionDiscovery } from "../exec-session-discovery.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 import {
@@ -49,13 +49,14 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
-import { LOCAL_SERVER_GUIDANCE } from "./local-server-guidance.js";
+import { localServerGuidance } from "./local-server-guidance.js";
 import { execProcessNamespaceNotice } from "./exec-process-namespace.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
 import {
   execSandboxDenialNotice,
-  sandboxEscalationAvailable,
+  sandboxEscalationGrant,
   worktreeWriteDenialNotice,
+  type SandboxEscalationGrant,
 } from "./exec-sandbox-denial.js";
 import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing.js";
 import { readReadOnlyInspectionInvocation, readReadOnlyShellInvocation } from "../../permissions/readonly-inspection.js";
@@ -82,6 +83,33 @@ export interface ExecCommandToolConfig extends BashToolConfig {
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
   /** Advertise the continuation tool before a yielded handle reaches the model. */
   readonly onSessionYielded?: () => void;
+  /**
+   * A sandbox notice on this result tells the model to retry with
+   * sandbox_permissions: present exec_command's full schema on the next
+   * request, so the field is there to use (a lean schema hides it).
+   */
+  readonly onEscalationAdvised?: () => void;
+}
+
+/**
+ * How this call's session answers a retry outside the sandbox. A
+ * permission-mode allow runs an attempt under `never`, but an escalation
+ * request still meets the session's own policy: read that one. `fallback`
+ * covers a call without a runtime context (direct tool use).
+ */
+export function execEscalationGrant(
+  args: Record<string, unknown>,
+  fallback: SandboxEscalationGrant,
+): SandboxEscalationGrant {
+  const runtimeContext = readToolRuntimeContext(args);
+  if (runtimeContext === undefined) return fallback;
+  return sandboxEscalationGrant(
+    runtimeContext.requestedApprovalPolicy ?? runtimeContext.approvalPolicy,
+    {
+      sandboxMode: runtimeContext.requestedSandboxMode,
+      session: runtimeContext.invocation.session,
+    },
+  );
 }
 
 const PLAIN_INTERACTIVE_SHELL_RE =
@@ -726,16 +754,18 @@ function processObservationDisposition(
 /**
  * Why `detach: true` cannot run here, or null when it can. A detached process
  * escapes every containment the sandbox lease relies on, so it exists only
- * where no sandbox applies; name the single-command approval path and
- * the sandboxed alternative.
+ * where no sandbox applies; name the single-command launch outside the
+ * sandbox in the words that fit how this session grants it, and the
+ * sandboxed alternative.
  */
 function detachRefusal(
   runtimeSandbox: UnifiedExecRuntimeSandbox | undefined,
   manager: UnifiedExecProcessManagerLike,
+  escalation: SandboxEscalationGrant,
 ): ToolResult | null {
   const message =
     runtimeSandbox !== undefined
-      ? "This command has not started: detach=true is unavailable inside the sandbox. " + LOCAL_SERVER_GUIDANCE + " You do not need to disable the sandbox for the whole session."
+      ? "This command has not started: detach=true is unavailable inside the sandbox. " + localServerGuidance(escalation) + " You do not need to disable the sandbox for the whole session."
       : manager.startDetachedProcess === undefined
         ? "detach: true is not supported by this exec manager."
         : null;
@@ -1129,8 +1159,14 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           config?.cwd ?? process.cwd(),
         );
         if (detach) {
-          const refusal = detachRefusal(runtimeSandbox, manager);
-          if (refusal !== null) return refusal;
+          const escalation = execEscalationGrant(args, "with_approval");
+          const refusal = detachRefusal(runtimeSandbox, manager, escalation);
+          if (refusal !== null) {
+            if (runtimeSandbox !== undefined && escalation !== "unavailable") {
+              notifyExecEscalationDiscovery(args, config?.onEscalationAdvised);
+            }
+            return refusal;
+          }
         }
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
@@ -1235,45 +1271,44 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           });
         }
         const runtimeContext = readToolRuntimeContext(args);
-        // A permission-mode allow runs this attempt under `never`, but an escalation request
-        // still meets the session's own policy: read that one for what a retry can get.
-        const escalationPolicy = runtimeContext?.requestedApprovalPolicy ?? runtimeContext?.approvalPolicy;
         const denial = execSandboxDenialNotice({
           output: execContent,
           exitCode: output.exitCode,
+          command: cmd,
           sandboxApplied: runtimeSandbox !== undefined,
           session: runtimeContext?.invocation.session,
-          escalationAvailable:
-            runtimeContext === undefined ||
-            sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {
-              sandboxMode: runtimeContext.requestedSandboxMode,
-              session: runtimeContext.invocation.session,
-            }),
+          escalation: execEscalationGrant(args, "with_approval"),
         });
         const confinedWorktree = runtimeSandbox === undefined
           ? undefined
           : readSandboxExecutionBroker(args)?.worktreeConfinement?.worktree;
-        const ordinaryNotice = (): string | null => denial?.notice ?? execNetworkFailureNotice({
-          output: execContent,
-          exitCode: output.exitCode,
-          command: cmd,
-          runtimeSandbox,
-          escalationAvailable: runtimeContext !== undefined &&
-            sandboxEscalationAvailable(escalationPolicy ?? runtimeContext.approvalPolicy, {
-              sandboxMode: runtimeContext.requestedSandboxMode,
-              session: runtimeContext.invocation.session,
-            }),
-          escalationWithoutAsking: escalationPolicy === "never",
-        }) ?? (confinedWorktree === undefined
-          ? null
-          : worktreeWriteDenialNotice({
-              output: execContent,
-              exitCode: output.exitCode,
-              worktree: confinedWorktree,
-            }));
         // A read-only command line ran without write or network authority only
         // because it looked like an inspection, so a refused write or lookup is
         // that choice, not the session sandbox: escalation advice would mislead.
+        const ordinaryNotice = (): string | null => {
+          const networkEscalation = execEscalationGrant(args, "unavailable");
+          const networkNotice = denial === null
+            ? execNetworkFailureNotice({
+                output: execContent,
+                exitCode: output.exitCode,
+                command: cmd,
+                runtimeSandbox,
+                escalation: networkEscalation,
+              })
+            : null;
+          // The notice tells the model to retry with sandbox_permissions: the
+          // next request must present that field.
+          if (denial?.advisesEscalation === true || (networkNotice !== null && networkEscalation !== "unavailable")) {
+            notifyExecEscalationDiscovery(args, config?.onEscalationAdvised);
+          }
+          return denial?.notice ?? networkNotice ?? (confinedWorktree === undefined
+            ? null
+            : worktreeWriteDenialNotice({
+                output: execContent,
+                exitCode: output.exitCode,
+                worktree: confinedWorktree,
+              }));
+        };
         const primaryNotice = readOnlyShell !== undefined
           ? readOnlyCommandNotice(execContent, output.exitCode)
           : ordinaryNotice();
