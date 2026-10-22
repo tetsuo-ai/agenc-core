@@ -617,6 +617,7 @@ describe("UnifiedExecProcessManager", () => {
         }),
       ).rejects.toMatchObject({
         code: "stdin_closed",
+        message: "This session cannot receive input. Use kill_process with this session_id to stop it, or write_stdin with empty chars to poll output.",
       } satisfies Partial<UnifiedExecError>);
 
       const polled = await manager.writeStdin({

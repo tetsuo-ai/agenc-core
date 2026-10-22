@@ -29,10 +29,11 @@ function fixture(output: ExecCommandToolOutput, options: Partial<BuildToolRegist
 }
 
 describe("Light terminal companion exposure", () => {
-  test.each(["registry", "tool executor"])("exposes stdin after a real yield through %s, keeping its canonical contract", async route => {
+  test.each(["registry", "tool executor"])("exposes polling and termination after a real yield through %s, keeping its canonical contract", async route => {
     const { registry, manager, visible } = fixture({ ...finished, exitCode: null, process_id: 71 });
     const other = fixture(finished);
     expect(visible()).not.toContain("write_stdin");
+    expect(visible()).not.toContain("kill_process");
     expect(registry.tools.some(tool => tool.name === "write_stdin")).toBe(true);
     const result = route === "registry"
       ? await registry.dispatch({ id: "yield-1", name: "exec_command", arguments: '{"cmd":"pwd"}' })
@@ -40,7 +41,11 @@ describe("Light terminal companion exposure", () => {
     expect(result.isError).not.toBe(true);
     expect(result.content).toContain("session_id=71");
     expect(visible()).toContain("write_stdin");
+    expect(visible()).toContain("kill_process");
     expect(other.visible()).not.toContain("write_stdin");
+    expect(other.visible()).not.toContain("kill_process");
+    expect(registry.toLLMTools().find(tool => tool.function.name === "kill_process")?.function.parameters)
+      .toEqual(registry.tools.find(tool => tool.name === "kill_process")!.inputSchema);
     const tool = registry.tools.find(tool => tool.name === "write_stdin")!;
     expect(tool.requiresApproval).toBe(true);
     const shown = registry.toLLMTools().find(tool => tool.function.name === "write_stdin")!;
@@ -51,6 +56,7 @@ describe("Light terminal companion exposure", () => {
     await registry.dispatch({ id: "poll-1", name: "write_stdin", arguments: '{"session_id":71,"chars":""}' });
     expect(manager.writeStdin).toHaveBeenCalledOnce();
     expect(visible()).toContain("write_stdin");
+    expect(visible()).toContain("kill_process");
   });
 
   test.each([
@@ -62,6 +68,7 @@ describe("Light terminal companion exposure", () => {
     const { registry, visible } = fixture(output);
     await registry.dispatch({ id: "run", name: "exec_command", arguments: '{"cmd":"pwd"}' });
     expect(visible()).not.toContain("write_stdin");
+    expect(visible()).not.toContain("kill_process");
   });
 
   test("does not expand when preflight refuses a shell mutation", async () => {
@@ -70,6 +77,7 @@ describe("Light terminal companion exposure", () => {
     expect(result.isError).toBe(true);
     expect(manager.execCommand).not.toHaveBeenCalled();
     expect(visible()).not.toContain("write_stdin");
+    expect(visible()).not.toContain("kill_process");
   });
 
   test("keeps manual discovery and discovery-disabled fallback usable", async () => {
@@ -81,12 +89,13 @@ describe("Light terminal companion exposure", () => {
   });
 
   test.each([
-    { toolsConfig: { disabled_tools: ["write_stdin"] } },
-    { unavailableCalledTools: ["write_stdin"] },
+    { toolsConfig: { disabled_tools: ["write_stdin", "kill_process"] } },
+    { unavailableCalledTools: ["write_stdin", "kill_process"] },
   ])("automatic discovery cannot re-enable an unavailable tool %#", async options => {
     const { registry, visible } = fixture({ ...finished, exitCode: null, process_id: 71 }, options);
     await registry.dispatch({ id: "yield", name: "exec_command", arguments: '{"cmd":"pwd"}' });
     expect(visible()).not.toContain("write_stdin");
+    expect(visible()).not.toContain("kill_process");
   });
 
   test("normal sessions still expose stdin initially", () => {
@@ -106,6 +115,8 @@ const childOptions = (id: string) => ({
   sandboxExecutionBroker: explicitDangerBroker,
   unadmittedDispatchOverride: TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
 });
+const hasKill = (registry: ReturnType<typeof buildToolRegistry>) =>
+  registry.toLLMTools().some(tool => tool.function.name === "kill_process");
 const hasStdin = (registry: ReturnType<typeof buildToolRegistry>) =>
   registry.toLLMTools().some(tool => tool.function.name === "write_stdin");
 
@@ -120,6 +131,7 @@ describe("Light child terminal continuation ownership", () => {
     expect(result.isError).not.toBe(true);
     expect(result.content).toContain("session_id=71");
     expect([hasStdin(parent), hasStdin(child), hasStdin(sibling)]).toEqual([false, true, false]);
+    expect([hasKill(parent), hasKill(child), hasKill(sibling)]).toEqual([false, true, false]);
     await child.dispatch({ id: "poll", name: "write_stdin", arguments: '{"session_id":71}' });
     expect(manager.writeStdin).toHaveBeenCalledOnce();
   });
@@ -134,16 +146,18 @@ describe("Light child terminal continuation ownership", () => {
     expect(policy).toHaveBeenCalled();
     expect(manager.execCommand).toHaveBeenCalledOnce();
     expect([hasStdin(parent), hasStdin(child), hasStdin(nested)]).toEqual([false, false, true]);
+    expect([hasKill(parent), hasKill(child), hasKill(nested)]).toEqual([false, false, true]);
   });
 
   test.each([
-    { disabledTools: new Set(["write_stdin"]) },
+    { disabledTools: new Set(["write_stdin", "kill_process"]) },
     { allowlist: ["exec_command", "system.searchTools"] },
   ])("cannot expose a restricted child tool %#", async restrictions => {
     const { registry: parent } = fixture({ ...finished, exitCode: null, process_id: 71 });
     const child = buildFilteredRegistry(parent, { ...childOptions("child"), ...restrictions });
     await child.dispatch({ id: "run", name: "exec_command", arguments: '{"cmd":"pwd"}' });
     expect(hasStdin(child)).toBe(false);
+    expect(hasKill(child)).toBe(false);
     expect(hasStdin(parent)).toBe(false);
   });
 
@@ -160,10 +174,11 @@ describe("Light child terminal continuation ownership", () => {
   });
 
   test("keeps the parent's unavailable catalog restriction", async () => {
-    const { registry: parent } = fixture({ ...finished, exitCode: null, process_id: 71 }, { unavailableCalledTools: ["write_stdin"] });
+    const { registry: parent } = fixture({ ...finished, exitCode: null, process_id: 71 }, { unavailableCalledTools: ["write_stdin", "kill_process"] });
     const child = buildFilteredRegistry(parent, childOptions("child"));
     expect((await child.dispatch({ id: "run", name: "exec_command", arguments: '{"cmd":"pwd"}' })).isError).not.toBe(true);
     expect(hasStdin(child)).toBe(false);
+    expect(hasKill(child)).toBe(false);
     expect(hasStdin(parent)).toBe(false);
   });
 
@@ -182,5 +197,6 @@ describe("Light child terminal continuation ownership", () => {
     expect((await child.dispatch({ id: "run", name: "exec_command", arguments: '{"cmd":"pwd"}' })).isError).toBe(true);
     expect(manager.execCommand).not.toHaveBeenCalled();
     expect([hasStdin(parent), hasStdin(child)]).toEqual([false, false]);
+    expect([hasKill(parent), hasKill(child)]).toEqual([false, false]);
   });
 });

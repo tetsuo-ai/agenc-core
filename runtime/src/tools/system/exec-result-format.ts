@@ -24,13 +24,28 @@ export const RESIDUAL_PROCESSES_REPEAT_NOTE =
   "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running.]";
 
 /**
+ * How to check a server: the pattern {@link SERVER_CHECK_NOTE} and the first
+ * {@link RESIDUAL_PROCESSES_NOTE} of a session give once.
+ */
+export const SERVER_CHECK_GUIDANCE =
+  "To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command.";
+
+/**
  * Shown once per session after a command that started a program and waited a
  * fixed time for it without leaving it running (`server & pid=$!; sleep 1;
  * curl ...; kill $pid`, `timeout 2 node server.js`): the same server guidance
  * as {@link RESIDUAL_PROCESSES_NOTE}, for the next check.
  */
 export const SERVER_CHECK_NOTE =
-  "[note: exec_command stops every process a command leaves running when it returns, so nothing needs a later kill, pkill or pgrep. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command.]";
+  `[note: exec_command stops every process a command leaves running when it returns, so nothing needs a later kill, pkill or pgrep. ${SERVER_CHECK_GUIDANCE}]`;
+
+/**
+ * {@link SERVER_CHECK_NOTE} for a check that was still running when it
+ * returned (a yielded session, which kill_process or a poll handles next, or
+ * a detached service): the guidance without the claim that nothing needs a
+ * later kill.
+ */
+export const SERVER_CHECK_RUNNING_NOTE = `[note: ${SERVER_CHECK_GUIDANCE}]`;
 
 /**
  * A command that started something in the background and then slept, or ran a
@@ -87,17 +102,27 @@ export function residualNoteOncePerSession(content: string, sessionId: string | 
 /**
  * {@link SERVER_CHECK_NOTE} for a command that waited a fixed time for a
  * program it started, once per session and only when the session has not had
- * the server guidance yet; undefined otherwise.
+ * the server guidance yet; undefined otherwise. A command still running when
+ * it returned (`stillRunning`) gets {@link SERVER_CHECK_RUNNING_NOTE}.
  */
-export function serverCheckNoteOncePerSession(sessionId: string | undefined, command: string): string | undefined {
+export function serverCheckNoteOncePerSession(
+  sessionId: string | undefined,
+  command: string,
+  stillRunning = false,
+): string | undefined {
   if (sessionId === undefined || !waitsFixedTimeForProgram(command)) return undefined;
-  return firstFor(sessionsWithServerGuidance, sessionId) ? SERVER_CHECK_NOTE : undefined;
+  if (!firstFor(sessionsWithServerGuidance, sessionId)) return undefined;
+  return stillRunning ? SERVER_CHECK_RUNNING_NOTE : SERVER_CHECK_NOTE;
 }
 
 /** Model-facing alias only; canonical results and structured facts stay intact. */
 export function compactExecExitFooter(content: string): string {
-  const note = [RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE, SERVER_CHECK_NOTE]
-    .map((text) => `\n${text}`)
+  const note = [
+    RESIDUAL_PROCESSES_NOTE,
+    RESIDUAL_PROCESSES_REPEAT_NOTE,
+    SERVER_CHECK_NOTE,
+    SERVER_CHECK_RUNNING_NOTE,
+  ].map((text) => `\n${text}`)
     .find((text) => content.endsWith(text)) ?? "";
   const footerEnd = content.length - note.length;
   return content.slice(0, footerEnd).replace(
@@ -132,6 +157,7 @@ export function formatUnifiedExecToolContent(
     footerLines.push(`command_outcome=${output.command_outcome} cleanup_complete=true`);
   } else if (output.exitCode !== null) {
     footerLines.push(`exit_code=${output.exitCode}`);
+    if (output.timedOut) footerLines.push("timed_out=true");
   } else if (output.detached === true && output.pid !== undefined) {
     // A detached service that was still running when the yield window
     // closed. AgenC does not track it, so there is no session_id: the pid
@@ -197,6 +223,7 @@ export function unifiedExecCodeModeResult(
     result.cleanup_complete = true;
   } else if (output.exitCode !== null) {
     result.exit_code = output.exitCode;
+    if (output.timedOut) result.timed_out = true;
   } else if (output.detached === true && output.pid !== undefined) {
     result.running = true;
   } else if (output.process_id !== undefined) {
