@@ -65,7 +65,7 @@ export function lightStatesTaskLimits(
   return modelFamilyFor(providerName, model) === "deepseek";
 }
 
-/** Light sessions on a DeepSeek-family model advertise the batch Edit shape (#3163). */
+/** DeepSeek and abliteration.ai Large V2 Light sessions use batch Edit (#3163). */
 export function lightUsesBatchEdit(providerName: string | undefined, model?: string): boolean {
-  return modelFamilyFor(providerName, model) === "deepseek";
+  return modelFamilyFor(providerName, model) === "deepseek" || lightUsesGlmTuning(providerName, model);
 }
