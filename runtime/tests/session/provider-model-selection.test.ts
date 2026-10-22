@@ -156,6 +156,17 @@ describe("model catalog admission", () => {
     expect(resolveProviderModelSelection({}, current, { model: "deepseek:deepseek-v4-pro" }))
       .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
   });
+
+  test("admits a private deployment named as a modelOverrides value", () => {
+    const config = { modelOverrides: { "deepseek-flash": "private-flash-deployment" } };
+    expect(resolveProviderModelSelection(config, current, { model: "private-flash-deployment" }))
+      .toMatchObject({ provider: "deepseek", model: "private-flash-deployment" });
+    expect(() => resolveProviderModelSelection(config, current, { model: "xyz" }))
+      .toThrow(/unknown model .*did you mean 'deepseek-flash'/u);
+    expect(() => resolveProviderModelSelection({
+      modelOverrides: { "private-flash-deployment": "deepseek-flash" },
+    }, current, { model: "private-flash-deployment" })).toThrow(/unknown model/u);
+  });
 });
 
 
