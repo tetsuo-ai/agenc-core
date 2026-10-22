@@ -15,7 +15,12 @@ import {
   createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
-import { RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE, SERVER_CHECK_NOTE } from "./exec-result-format.js";
+import {
+  RESIDUAL_PROCESSES_NOTE,
+  RESIDUAL_PROCESSES_REPEAT_NOTE,
+  SERVER_CHECK_NOTE,
+  SERVER_CHECK_RUNNING_NOTE,
+} from "./exec-result-format.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-stdin.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -1548,6 +1553,22 @@ describe("exec_command tool", () => {
       expect(first.content).toContain(SERVER_CHECK_NOTE);
       expect(second.content).not.toContain(SERVER_CHECK_NOTE);
       expect(tests.content).not.toContain(SERVER_CHECK_NOTE);
+    });
+
+    test("a fixed-wait check still running when it yields gets the server guidance without the claim that nothing needs a kill", async () => {
+      // The yielded session needs kill_process or a poll (Light loads both with it).
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
+        ...completedExecOutput("listening on 3000"), exitCode: null, exit_code: null, process_id: 71,
+      }));
+      const { tool: noteTool } = mockManagerTool({ execCommand });
+      const session = { __agencSessionId: `yielded-${Math.random()}` };
+      const yielded = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000; wait", ...session }));
+      expect(yielded.content).toContain("session_id=71");
+      expect(yielded.content.endsWith(`\n${SERVER_CHECK_RUNNING_NOTE}`)).toBe(true);
+      expect(yielded.content).not.toContain("nothing needs a later kill");
+      execCommand.mockResolvedValue(completedExecOutput("ok"));
+      const later = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000; kill $!", ...session }));
+      expect(later.content).not.toContain("To check a server");
     });
   });
 

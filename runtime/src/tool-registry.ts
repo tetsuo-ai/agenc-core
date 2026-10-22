@@ -796,7 +796,7 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
       ...(options.lightMode === true
-        ? { onSessionYielded: () => markDiscovered(["write_stdin"]) }
+        ? { onSessionYielded: () => markDiscovered(["write_stdin", "kill_process"]) }
         : standardDeferral
           ? { onSessionYielded: () => markDiscovered(PROCESS_SESSION_TOOLS) }
           : {}),

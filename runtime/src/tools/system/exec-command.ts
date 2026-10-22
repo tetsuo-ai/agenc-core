@@ -1333,8 +1333,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const namespaceNotice = execProcessNamespaceNotice({ command: cmd, runtimeSandbox });
         const notice = [primaryNotice, namespaceNotice].filter(Boolean).join("\n\n") || null;
         // How to check a server after one that waited a fixed time, unless a
-        // sandbox or process notice already says what to do next.
-        const serverNote = notice === null ? serverCheckNoteOncePerSession(noteSessionId, cmd) : undefined;
+        // sandbox or process notice already says what to do next. A check still
+        // running gets the guidance without the claim that nothing needs a
+        // later kill: its session needs kill_process or a poll.
+        const serverNote = notice === null
+          ? serverCheckNoteOncePerSession(noteSessionId, cmd, stillAlive)
+          : undefined;
         const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
         return {
           content:

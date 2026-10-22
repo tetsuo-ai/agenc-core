@@ -2339,10 +2339,10 @@ export function buildFilteredRegistry(
       if (toolCatalogScope.has(name)) discoveredToolNames.add(name);
     }
   };
-  // A live exec session makes its process tools callable: Light children only
-  // poll it, other children follow the standard deferral of all three.
+  // A live exec session exposes polling and termination to Light children;
+  // other children follow the standard deferral of all three process tools.
   const execSessionToolNames: readonly string[] = opts.lightMode === true
-    ? ["write_stdin"]
+    ? ["write_stdin", "kill_process"]
     : PROCESS_SESSION_TOOLS;
   // A sandbox notice that tells the model to retry with sandbox_permissions
   // loads exec_command's full schema. A Light child presents its own
