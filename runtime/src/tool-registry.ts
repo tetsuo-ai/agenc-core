@@ -30,7 +30,7 @@ import { prepareModelToolArgs, validateToolPreflight } from "./tools/execution.j
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation } from "./tools/light-presentation.js";
 import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
-import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit } from "./tools/light-profile.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -796,7 +796,10 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
       ...(options.lightMode === true
-        ? { onSessionYielded: () => markDiscovered(["write_stdin", "kill_process"]) }
+        ? {
+            onSessionYielded: () => markDiscovered(["write_stdin", "kill_process"]),
+            serverChecksDescribed: () => describesServerChecks(),
+          }
         : standardDeferral
           ? { onSessionYielded: () => markDiscovered(PROCESS_SESSION_TOOLS) }
           : {}),
@@ -1141,6 +1144,16 @@ export function buildToolRegistry(
     if (options.lightMode !== true) return false;
     const identity = sessionModelIdentity();
     return lightUsesBatchEdit(identity.provider, identity.model);
+  }
+  /**
+   * Whether this session's exec_command description says how to check a
+   * server (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS). Its exec
+   * results then leave the same guidance out of their notes.
+   */
+  function describesServerChecks(): boolean {
+    if (options.lightMode !== true) return false;
+    const identity = sessionModelIdentity();
+    return lightUsesGlmTuning(identity.provider, identity.model);
   }
   // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
   // names even when the canonical tool is disabled or unavailable so an
@@ -1499,7 +1512,8 @@ export function buildToolRegistry(
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
-          return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true });
+          return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true,
+            glmServerChecks: describesServerChecks() });
         }
         // Standard sessions with the default deferral send compact wording for
         // the core tools (same fields, same schema) and the lean exec_command,

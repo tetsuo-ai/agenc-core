@@ -1,5 +1,14 @@
 import type { LLMTool } from "../llm/types.js";
 
+/**
+ * exec_command's server guidance for Light sessions on abliteration.ai Large V2, sent with every
+ * request, so their exec result notes leave it out. It opens with SERVER_CHECK_GUIDANCE
+ * (tools/system/exec-result-format.ts), the pattern other sessions get once in a note, and adds
+ * what Large V2 got wrong: `wait` on a live server blocks the command until its timeout.
+ */
+export const LIGHT_GLM_SERVER_CHECKS =
+  "To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. Never use `wait` on a server: it keeps the command blocked until its timeout.";
+
 // Presentation only; execution and discovery retain the canonical tool. The
 // shared Light wording keeps every field, alternative, default and validation
 // keyword on the wire (null removes only a redundant property description,
@@ -67,12 +76,16 @@ export function lightPresentation(
     readonly leanSearch?: boolean;
     readonly leanRead?: boolean;
     readonly lightSession?: boolean;
+    readonly glmServerChecks?: boolean;
   } = {},
 ): LLMTool {
   const canonical = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
     ? tool
     : lightPresentationCanonical(tool);
-  const presented = options.lightSession === true ? withLightSessionFields(canonical) : canonical;
+  const sessionTool = options.lightSession === true ? withLightSessionFields(canonical) : canonical;
+  const presented = options.lightSession === true && options.glmServerChecks === true && tool.function.name === "exec_command"
+    ? { ...sessionTool, function: { ...sessionTool.function, description: `${sessionTool.function.description} ${LIGHT_GLM_SERVER_CHECKS}` } }
+    : sessionTool;
   if (options.leanExec === true && tool.function.name === "exec_command") {
     return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
   }
