@@ -19,13 +19,23 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 export const RESIDUAL_PROCESSES_NOTE =
   "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
 
+/**
+ * {@link RESIDUAL_PROCESSES_NOTE} without its server guidance, for a session
+ * whose exec_command description already says how to check a server on every
+ * request (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+ */
+export const RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE =
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
+
 /** The same fact on a later command of a session that already got {@link RESIDUAL_PROCESSES_NOTE}. */
 export const RESIDUAL_PROCESSES_REPEAT_NOTE =
   "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running.]";
 
 /**
  * How to check a server: the pattern {@link SERVER_CHECK_NOTE} and the first
- * {@link RESIDUAL_PROCESSES_NOTE} of a session give once.
+ * {@link RESIDUAL_PROCESSES_NOTE} of a session give once. The exec_command
+ * description of a Light session on abliteration.ai Large V2 opens with it on
+ * every request (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
  */
 export const SERVER_CHECK_GUIDANCE =
   "To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command.";
@@ -87,13 +97,29 @@ function firstFor(sessions: Set<string>, sessionId: string): boolean {
  * call: a session's first residue note is the full one (and gives the session
  * the server guidance), later ones are a line. Without a session the content
  * is returned unchanged.
+ *
+ * `serverGuidanceDescribed`: the session's exec_command description carries
+ * the server guidance on every request, so its first note (and a note without
+ * a session) leaves it out. If the session later loses that description (a
+ * model switch), its next residue note is the full one.
  */
-export function residualNoteOncePerSession(content: string, sessionId: string | undefined): string {
-  if (sessionId === undefined) return content;
+export function residualNoteOncePerSession(
+  content: string,
+  sessionId: string | undefined,
+  serverGuidanceDescribed = false,
+): string {
   const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
   if (!content.endsWith(note)) return content;
-  if (!firstFor(sessionsWithResidualNote, sessionId)) {
-    return `${content.slice(0, -note.length)}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
+  const result = content.slice(0, -note.length);
+  if (sessionId === undefined) {
+    return serverGuidanceDescribed ? `${result}\n${RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE}` : content;
+  }
+  const first = firstFor(sessionsWithResidualNote, sessionId);
+  if (serverGuidanceDescribed) {
+    return `${result}\n${first ? RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE : RESIDUAL_PROCESSES_REPEAT_NOTE}`;
+  }
+  if (!first && sessionsWithServerGuidance.has(sessionId)) {
+    return `${result}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
   }
   sessionsWithServerGuidance.add(sessionId);
   return content;
@@ -119,6 +145,7 @@ export function serverCheckNoteOncePerSession(
 export function compactExecExitFooter(content: string): string {
   const note = [
     RESIDUAL_PROCESSES_NOTE,
+    RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE,
     RESIDUAL_PROCESSES_REPEAT_NOTE,
     SERVER_CHECK_NOTE,
     SERVER_CHECK_RUNNING_NOTE,

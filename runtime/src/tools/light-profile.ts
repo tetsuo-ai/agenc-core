@@ -1,6 +1,12 @@
 import { isEnvDefinedFalsy, isEnvTruthy } from "../utils/envBoolean.js";
 import { modelFamilyFor } from "../llm/model-family.js";
 
+/** The provider/model gate used for abliteration.ai Large V2 in cbee37540. */
+export function lightUsesGlmTuning(providerName: string | undefined, model?: string): boolean {
+  return providerName?.trim().toLowerCase() === "abliteration" &&
+    model?.trim().toLowerCase() === "abliterated-model-large-v2";
+}
+
 /** Initial exposure only. Tool documentation, validation and execution stay canonical. */
 export const LIGHT_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "system.searchTools",

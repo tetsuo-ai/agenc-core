@@ -4,6 +4,7 @@ import {
   compactExecExitFooter,
   formatUnifiedExecToolContent,
   RESIDUAL_PROCESSES_NOTE,
+  RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE,
   RESIDUAL_PROCESSES_REPEAT_NOTE,
   SERVER_CHECK_GUIDANCE,
   SERVER_CHECK_NOTE,
@@ -296,6 +297,23 @@ test.each(["aborted", "unavailable"] as const)("%s is neither normal exit nor ru
   for (const key of ["exit_code", "running", "yielded", "signal_terminated", "residual_processes_terminated", "residual_processes_observed"]) {
     expect(structured).not.toHaveProperty(key);
   }
+});
+
+test("a session whose exec_command description carries the server guidance gets residue notes without it", () => {
+  // A Light session on abliteration.ai Large V2 reads it there on every request
+  // (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+  const full = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
+  const described = full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE);
+  const repeat = full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE);
+  const session = `exec-result-format-described-${Math.random()}`;
+  expect(residualNoteOncePerSession(full, session, true)).toBe(described);
+  expect(compactExecExitFooter(described)).toBe(described.replace("[exec exit_code=", "[exit "));
+  expect(residualNoteOncePerSession(full, session, true)).toBe(repeat);
+  expect(residualNoteOncePerSession(full, undefined, true)).toBe(described);
+  // After a model switch away from that description, the next residue note carries the guidance once.
+  expect(residualNoteOncePerSession(full, session)).toBe(full);
+  expect(residualNoteOncePerSession(full, session)).toBe(repeat);
+  expect(serverCheckNoteOncePerSession(session, "PORT=0 timeout 2 node server.js")).toBeUndefined();
 });
 
 test("a fixed-wait check still running gets the server guidance once, without the claim that nothing needs a kill", () => {
