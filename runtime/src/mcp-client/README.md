@@ -124,6 +124,14 @@ This POSIX design trusts the host OS and same-user native processes; it is not a
 boundary against compromise of the user's account. Unsupported platforms fail
 closed for audited controls without granting unsigned servers equivalent rights.
 
+The audited list also names Desktop's marketplace actions. `marketplace_status`,
+`marketplace_find_work` and `marketplace_review_inbox` are reads.
+`marketplace_post_task`, `marketplace_work_on` and `marketplace_review` are app
+actions: they write no file, they are approval-gated like UI changes and refused
+in plan mode, and each one hands work to an agent Desktop runs with its own frozen
+tool policy and wallet limits. Desktop lists them only when the person allows chats
+to use the marketplace.
+
 Only local daemon user turns may discover/use the private tools. Captured tools
 are checked again after approval and asynchronous transport preflight. A real
 runtime-approved invocation is reused only when its private marker, call, session,
