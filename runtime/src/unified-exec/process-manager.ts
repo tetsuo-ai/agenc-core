@@ -1137,7 +1137,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (!entry.tty) {
         throw new UnifiedExecError(
           "stdin_closed",
-          "This session cannot receive input. Use kill_process with this session_id to stop it, or write_stdin with empty chars to poll output.",
+          "This session cannot receive input. Stop it with kill_process and this session_id, poll output with write_stdin and empty chars, or rerun with tty=true if the command needs input.",
         );
       }
       if (entry.exitState !== null) {
@@ -1151,7 +1151,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         if (entry.stored.kind !== "pty") {
           throw new UnifiedExecError(
             "stdin_closed",
-            "This session cannot receive input. Use kill_process with this session_id to stop it, or write_stdin with empty chars to poll output.",
+            "This session cannot receive input. Stop it with kill_process and this session_id, poll output with write_stdin and empty chars, or rerun with tty=true if the command needs input.",
           );
         }
         entry.stored.process.write(input);
