@@ -1,6 +1,8 @@
 import { expect, test } from "vitest";
 import { buildToolRegistry } from "../../src/tool-registry.js";
 import { bindAdmittedToolHarness } from "../helpers/admitted-tool-harness.js";
+import { builtTools } from "../../src/session/run-turn-sampling-request.js";
+import type { TurnContext } from "../../src/session/turn-context.js";
 import type { Tool } from "../../src/tools/types.js";
 
 function owner(provider = "deepseek") {
@@ -123,4 +125,49 @@ test("switching native DeepSeek models rebuilds the initial editor catalog", () 
   Object.assign(session.services, { providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) } });
   expect(registry.toLLMTools().map(t => t.function.name)).not.toContain("apply_patch");
   expect(registry.toLLMTools().map(t => t.function.name)).toEqual(expect.arrayContaining(["Edit", "Write"]));
+});
+
+test.each(["openai-compatible", "lmstudio", "ollama"])("%s opts into the multi-file editor per Light session", provider => {
+  const session = gatewayOwner(provider, "DeepSeek-v4.1-Flash-EXL3");
+  Object.assign(session.services, { runtimeOptions: { lightMode: true }, providerEnvironment: { AGENC_LIGHT_APPLY_PATCH: "1" } });
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => session });
+  Object.assign(session.services, { registry });
+  const names = () => builtTools(session, { modelProviderId: provider } as TurnContext).map(t => t.function.name).sort();
+  expect(names()).toEqual(["FileRead", "apply_patch", "exec_command", "system.searchTools"]);
+  registry.discoverToolNames?.(["Edit", "Write"]);
+  expect(names()).toEqual(expect.arrayContaining(["Edit", "Write", "apply_patch"]));
+  expect(registry.tools.find(t => t.name === "Edit")?.inputSchema.required).toEqual(["file_path", "old_string", "new_string"]);
+  Object.assign(session.services, { userShell: { childEnvironment: { AGENC_LIGHT_APPLY_PATCH: "0" } } });
+  expect(names()).not.toContain("apply_patch");
+
+  const other = gatewayOwner(provider, "DeepSeek-v4.1-Flash-EXL3");
+  Object.assign(other.services, { runtimeOptions: { lightMode: true }, providerEnvironment: {} });
+  const otherRegistry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => other });
+  Object.assign(other.services, { registry: otherRegistry });
+  expect(builtTools(other, { modelProviderId: provider } as TurnContext).map(t => t.function.name).sort())
+    .toEqual(["Edit", "FileRead", "Write", "exec_command", "system.searchTools"]);
+});
+
+test.each(["0", ""])("local Light keeps the default editors for opt-out %j", value => {
+  const session = owner("openai-compatible");
+  Object.assign(session.services, { providerEnvironment: { AGENC_LIGHT_APPLY_PATCH: value } });
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => session });
+  expect(registry.toLLMTools().map(t => t.function.name).sort())
+    .toEqual(["Edit", "FileRead", "Write", "exec_command", "system.searchTools"]);
+});
+
+test("the local editor switch leaves standard mode and non-local model defaults unchanged", () => {
+  const session = owner("openai-compatible");
+  Object.assign(session.services, { providerEnvironment: { AGENC_LIGHT_APPLY_PATCH: "1" }, runtimeOptions: { lightMode: false } });
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", getSession: () => session });
+  Object.assign(session.services, { registry });
+  const names = builtTools(session, { modelProviderId: "openai-compatible" } as TurnContext).map(t => t.function.name);
+  expect(names).toEqual(expect.arrayContaining(["Edit", "Write"]));
+  expect(names).not.toContain("apply_patch");
+  for (const [provider, model, expected] of [["openai", "gpt-6-luna", true], ["deepseek", "deepseek-flash", true], ["anthropic", "claude-haiku", false]] as const) {
+    const cloud = gatewayOwner(provider, model);
+    Object.assign(cloud.services, { providerEnvironment: { AGENC_LIGHT_APPLY_PATCH: "1" } });
+    expect(buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => cloud })
+      .toLLMTools().some(t => t.function.name === "apply_patch")).toBe(expected);
+  }
 });

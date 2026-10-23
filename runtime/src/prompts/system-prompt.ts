@@ -1246,7 +1246,7 @@ export async function assembleSystemPrompt(
     ? [
         lightBudgetWorkflow(
           opts.outputStyle != null,
-          lightEditsWithApplyPatch(envInfoInputs.provider, envInfoInputs.model),
+          lightEditsWithApplyPatch(envInfoInputs.provider, envInfoInputs.model, promptEnvironment),
           lightStatesTaskLimits(envInfoInputs.provider, promptEnvironment, envInfoInputs.model),
         ),
         lightBudgetSystem(),

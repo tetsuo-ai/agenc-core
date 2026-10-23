@@ -1370,10 +1370,12 @@ export function buildToolRegistry(
       return specs;
     }
     const lightIdentity = options.lightMode === true ? sessionModelIdentity() : { provider: undefined, model: undefined };
+    const services = options.getSession?.()?.services;
+    const lightEnvironment = services?.userShell?.childEnvironment ?? services?.providerEnvironment ?? {};
     return specs.filter(
       (spec) =>
         (options.lightMode === true
-          ? (lightEditsWithApplyPatch(lightIdentity.provider, lightIdentity.model)
+          ? (lightEditsWithApplyPatch(lightIdentity.provider, lightIdentity.model, lightEnvironment)
             ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined) ||
             // The plan-mode reminder ends planning with AskUserQuestion or

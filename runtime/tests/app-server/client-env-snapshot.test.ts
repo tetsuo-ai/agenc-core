@@ -12,8 +12,44 @@ import {
   withheldModelProviderCredentials,
 } from "../../src/app-server/client-env-snapshot.js";
 import { isSecretEnvKey } from "../../src/utils/secretEnv.js";
+import { lightEditsWithApplyPatch, lightStatesTaskLimits } from "../../src/tools/light-profile.js";
 
 describe("daemon client environment snapshots", () => {
+  it.each(["1", "0"])("forwards the local Light editor switch %s", value => {
+    const snapshot = collectDaemonClientEnvOverrides({ AGENC_LIGHT_APPLY_PATCH: value });
+    expect(snapshot.AGENC_LIGHT_APPLY_PATCH).toBe(value);
+    const merged = mergeDaemonClientEnvironment({ AGENC_LIGHT_APPLY_PATCH: "1" }, normalizeDaemonClientEnvOverrides(snapshot));
+    expect(lightEditsWithApplyPatch("openai-compatible", "DeepSeek-v4.1-Flash-EXL3", merged ?? {})).toBe(value === "1");
+  });
+
+  it("clears an omitted local Light editor switch between daemon clients", () => {
+    const snapshot = collectDaemonClientEnvOverrides({});
+    expect(snapshot.AGENC_LIGHT_APPLY_PATCH).toBe("");
+    const merged = mergeDaemonClientEnvironment({ AGENC_LIGHT_APPLY_PATCH: "1" }, snapshot);
+    expect(merged).not.toHaveProperty("AGENC_LIGHT_APPLY_PATCH");
+    expect(lightEditsWithApplyPatch("openai-compatible", undefined, merged ?? {})).toBe(false);
+  });
+
+  it.each(["1", "0"])("forwards Light task limits %s into a local model session", value => {
+    const snapshot = collectDaemonClientEnvOverrides({ AGENC_LIGHT_TASK_LIMITS: value });
+    expect(snapshot.AGENC_LIGHT_TASK_LIMITS).toBe(value);
+    const merged = mergeDaemonClientEnvironment(
+      { AGENC_LIGHT_TASK_LIMITS: value === "1" ? "0" : "1" },
+      normalizeDaemonClientEnvOverrides(snapshot),
+    );
+    expect(lightStatesTaskLimits("openai-compatible", merged ?? {}, "DeepSeek-v4.1-Flash-EXL3"))
+      .toBe(value === "1");
+  });
+
+  it("clears omitted Light task limits instead of inheriting another client's setting", () => {
+    const snapshot = collectDaemonClientEnvOverrides({});
+    expect(snapshot.AGENC_LIGHT_TASK_LIMITS).toBe("");
+    const merged = mergeDaemonClientEnvironment({ AGENC_LIGHT_TASK_LIMITS: "1" }, snapshot);
+    expect(merged).not.toHaveProperty("AGENC_LIGHT_TASK_LIMITS");
+    expect(lightStatesTaskLimits("openai-compatible", merged ?? {})).toBe(false);
+    expect(lightStatesTaskLimits("deepseek", merged ?? {})).toBe(true);
+  });
+
   it("keeps the local micro receipt path outside the session snapshot", () => {
     const snapshot = collectDaemonClientEnvOverrides({
       AGENC_MICRO_PRINT_RECEIPT: "/tmp/caller-owned-receipt.jsonl",

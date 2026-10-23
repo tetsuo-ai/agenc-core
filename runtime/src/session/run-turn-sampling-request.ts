@@ -18,6 +18,7 @@ import type { StreamModelRequestContract } from "../phases/stream-model.js";
 import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
 import type { TurnState } from "./turn-state.js";
+import { lightEditsWithApplyPatch } from "../tools/light-profile.js";
 import { messageText } from "./run-turn-messages.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/thresholds.js";
@@ -135,7 +136,11 @@ export function builtTools(
   // Keep the initial local catalog small, but do not revoke tools loaded
   // through discovery. Cloud providers are untouched.
   if (usesLocalToolProfile(ctx.modelProviderId)) {
-    const baseProfile = new Set(filterToolsForLocalProfile(advertised));
+    const environment = session.services.userShell?.childEnvironment ?? session.services.providerEnvironment ?? {};
+    const baseProfile = new Set(filterToolsForLocalProfile(advertised, {
+      allowApplyPatch: session.services.runtimeOptions?.lightMode === true &&
+        lightEditsWithApplyPatch(ctx.modelProviderId, ctx.modelInfo?.slug, environment),
+    }));
     const desktop = new Set(session.services.mcpManager?.getAuthenticatedDesktopToolNames?.() ?? []);
     const discovered = session.services.registry.getDiscoveredToolNames?.();
     const liveMcp = new Set(

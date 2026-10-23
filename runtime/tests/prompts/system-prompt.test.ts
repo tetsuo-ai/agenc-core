@@ -1676,3 +1676,15 @@ describe("Light's model-family tuning follows the model through gateways", () =>
     expect(prompt).toBe(await head("anthropic", "claude-haiku-5-5"));
   });
 });
+
+test.each(["openai-compatible", "lmstudio", "ollama"])("local Light patch guidance follows the owning %s session", async provider => {
+  const head = async (env: Record<string, string>, childEnv?: Record<string, string>) =>
+    (await assembleSystemPromptSnapshot({ profile: "light", ctx: fakeCtx(), provider,
+      session: { services: { runtimeOptions: { lightMode: true, nonInteractive: true }, providerEnvironment: env,
+        ...(childEnv === undefined ? {} : { userShell: { childEnvironment: childEnv } }) } } as unknown as Session,
+    })).staticPrefix;
+  expect(await head({ AGENC_LIGHT_APPLY_PATCH: "1" })).toContain("Edit and create files with apply_patch; put all hunks of one change in one patch.");
+  expect(await head({})).not.toContain("Edit and create files with apply_patch");
+  expect(await head({ AGENC_LIGHT_APPLY_PATCH: "0" })).not.toContain("Edit and create files with apply_patch");
+  expect(await head({ AGENC_LIGHT_APPLY_PATCH: "1" }, {})).not.toContain("Edit and create files with apply_patch");
+});

@@ -1,5 +1,6 @@
 import { isEnvDefinedFalsy, isEnvTruthy } from "../utils/envBoolean.js";
 import { modelFamilyFor } from "../llm/model-family.js";
+import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 
 /** Initial exposure only. Tool documentation, validation and execution stay canonical. */
 export const LIGHT_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -28,15 +29,21 @@ export const LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set
  * (OpenRouter `openai/gpt-6-luna`, Venice `openai-gpt-6-luna`). Native DeepSeek
  * Flash also uses the multi-file editor so one change can update source, tests
  * and documentation together. Other DeepSeek models/routes retain batch Edit
- * until measured; Edit and Write remain discoverable on every route.
+ * until measured; local providers may opt in per session with
+ * AGENC_LIGHT_APPLY_PATCH=1. Edit and Write remain discoverable on every route.
  */
 export function lightEditsWithApplyPatch(
   providerName: string | undefined,
   model?: string,
+  env: Readonly<Record<string, string | undefined>> = {},
 ): boolean {
+  if (usesLocalToolProfile(providerName)) return isEnvTruthy(env[LIGHT_APPLY_PATCH_ENV]);
   return modelFamilyFor(providerName, model) === "openai" ||
     (providerName === "deepseek" && model?.trim().toLowerCase() === "deepseek-flash");
 }
+
+/** Explicit local Light editor selection; defaults to the existing Edit/Write profile. */
+export const LIGHT_APPLY_PATCH_ENV = "AGENC_LIGHT_APPLY_PATCH";
 
 /** `AGENC_LIGHT_TASK_LIMITS=1` or `=0` in the session environment overrides the provider default. */
 export const LIGHT_TASK_LIMITS_ENV = "AGENC_LIGHT_TASK_LIMITS";

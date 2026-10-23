@@ -90,6 +90,8 @@ obj/
 !runtime/eval/tasks/*/fixture/*.json
 !runtime/eval/tasks/*/solution/*.json
 !runtime/eval/suites/**/*.json
+!docs/benchmarks/local-light-task-limits/fixtures.json
+!docs/benchmarks/local-light-task-limits/results.json
 id.json
 deploy/
 # deploy/ guards deployment state/keys; documentation is exempt.

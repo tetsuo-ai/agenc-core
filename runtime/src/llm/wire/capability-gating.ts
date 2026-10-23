@@ -391,9 +391,10 @@ export function usesLocalToolProfile(
 /** Filter an advertised tool list down to the local profile. */
 export function filterToolsForLocalProfile<
   T extends { readonly function: { readonly name: string } },
->(tools: readonly T[]): readonly T[] {
+>(tools: readonly T[], options: { readonly allowApplyPatch?: boolean } = {}): readonly T[] {
   return tools.filter((tool) =>
-    LOCAL_PROFILE_TOOL_NAMES.has(tool.function.name),
+    LOCAL_PROFILE_TOOL_NAMES.has(tool.function.name) ||
+    (options.allowApplyPatch === true && tool.function.name === "apply_patch"),
   );
 }
 

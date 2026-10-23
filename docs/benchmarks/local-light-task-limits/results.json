@@ -1,0 +1,1833 @@
+{
+  "schema_version": 1,
+  "host": {
+    "client": "Spark 1 (spark-db08), Linux ARM64",
+    "node": "26.12.1",
+    "model": "DeepSeek-v4.1-Flash-EXL3",
+    "engine": "TensorFold",
+    "base_url": "http://127.0.0.1:8888/v1",
+    "context_window_tokens": 1048576,
+    "thinking": false,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 20,
+    "engine_max_tokens": 32768,
+    "request_max_tokens": 8192,
+    "parallel": 4,
+    "note": "Existing model deployment retained; may span both Sparks. Client-side experiment on Spark 1, not a single-device inference benchmark."
+  },
+  "fixtures_sha256": "b06835119378e56a33f6fff969839ed7e4a1cddbc80ede5f884d82a90d903c46",
+  "experiments": [
+    {
+      "name": "task-limits",
+      "reference_revision": "2a25d23c334fc289084d234aeb2070ffcdcdf790",
+      "candidate_revision": "f7fb6e39c104ec795b6dd0b2a37c909adb0b0cce",
+      "reference_archive_sha256": "461ab7e9c9d6afc7fcbde73d1c74249b9e81e7f4ab7a9b01404ba6f18fcaf9b5",
+      "candidate_archive_sha256": "04d4a1a02bab6fdd48ce2104678cdcf3ad7646bda2b543875bd3dabae94b9d92",
+      "candidate_source_diff_sha256": "581fe5962ec2600d1d4620edb33a4f8bd365f9fbd43a6f1052251da53f052c3c",
+      "outcome": "Reject as blanket efficiency optimization; retain independently proven forwarding bugfix without enabling defaults.",
+      "runs": [
+        {
+          "id": "000011",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 1,
+          "wall_seconds": 24.599,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 17797,
+            "outputTokens": 1619,
+            "totalTokens": 19416,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000012",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 1,
+          "wall_seconds": 27.994,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 27315,
+            "outputTokens": 1827,
+            "totalTokens": 29142,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 8,
+          "tool_calls": {
+            "exec_command": 4,
+            "Write": 2,
+            "Edit": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 1,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000013",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 1,
+          "wall_seconds": 59.305,
+          "agenc_exit_code": 2,
+          "token_usage": {
+            "inputTokens": 72130,
+            "outputTokens": 4715,
+            "totalTokens": 76845,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 14,
+          "tool_calls": {
+            "exec_command": 5,
+            "Write": 5,
+            "FileRead": 2,
+            "Edit": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 4,
+          "denied_permission_count": 1
+        },
+        {
+          "id": "000014",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 1,
+          "wall_seconds": 23.323,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 11925,
+            "outputTokens": 1782,
+            "totalTokens": 13707,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 4,
+          "tool_calls": {
+            "exec_command": 3
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 0,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000015",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 2,
+          "wall_seconds": 33.343,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 42133,
+            "outputTokens": 1983,
+            "totalTokens": 44116,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 10,
+          "tool_calls": {
+            "exec_command": 8,
+            "Write": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 0,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000016",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 2,
+          "wall_seconds": 31.131,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 18795,
+            "outputTokens": 2153,
+            "totalTokens": 20948,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000017",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 2,
+          "wall_seconds": 33.64,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 26986,
+            "outputTokens": 2570,
+            "totalTokens": 29556,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 8,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 3,
+            "FileRead": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 1,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000018",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 2,
+          "wall_seconds": 19.362,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 11095,
+            "outputTokens": 1503,
+            "totalTokens": 12598,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 4,
+          "tool_calls": {
+            "exec_command": 2,
+            "Write": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 1,
+          "heldout_exit_code": 1,
+          "correctness_passed": false,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 1,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000019",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 3,
+          "wall_seconds": 25.048,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 17849,
+            "outputTokens": 1622,
+            "totalTokens": 19471,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000020",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 3,
+          "wall_seconds": 33.888,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 32439,
+            "outputTokens": 2401,
+            "totalTokens": 34840,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 9,
+          "tool_calls": {
+            "exec_command": 4,
+            "Write": 2,
+            "Edit": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 1,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000021",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 3,
+          "wall_seconds": 26.992,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 18831,
+            "outputTokens": 2195,
+            "totalTokens": 21026,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 2,
+            "Write": 2,
+            "FileRead": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 1,
+          "heldout_exit_code": 1,
+          "correctness_passed": false,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 1,
+          "denied_permission_count": 0
+        },
+        {
+          "id": "000022",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 3,
+          "wall_seconds": 30.768,
+          "agenc_exit_code": 2,
+          "token_usage": {
+            "inputTokens": 24316,
+            "outputTokens": 2418,
+            "totalTokens": 26734,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 7,
+          "tool_calls": {
+            "exec_command": 2,
+            "Write": 3,
+            "FileRead": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 2,
+          "denied_permission_count": 1
+        }
+      ],
+      "summary": {
+        "before/csv-bugfix": {
+          "total_tokens": [
+            19416,
+            20948,
+            19471
+          ],
+          "wall_seconds": [
+            24.599,
+            31.131,
+            25.048
+          ],
+          "model_calls": [
+            6,
+            6,
+            6
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 3
+        },
+        "before/sqlite-cli": {
+          "total_tokens": [
+            76845,
+            12598,
+            21026
+          ],
+          "wall_seconds": [
+            59.305,
+            19.362,
+            26.992
+          ],
+          "model_calls": [
+            14,
+            4,
+            6
+          ],
+          "correctness_pass_rate": 0.3333333333333333,
+          "completed_exit_zero": 2
+        },
+        "after/csv-bugfix": {
+          "total_tokens": [
+            29142,
+            44116,
+            34840
+          ],
+          "wall_seconds": [
+            27.994,
+            33.343,
+            33.888
+          ],
+          "model_calls": [
+            8,
+            10,
+            9
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 3
+        },
+        "after/sqlite-cli": {
+          "total_tokens": [
+            13707,
+            29556,
+            26734
+          ],
+          "wall_seconds": [
+            23.323,
+            33.64,
+            30.768
+          ],
+          "model_calls": [
+            4,
+            8,
+            7
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 2
+        }
+      },
+      "verification": "All measured implementations reverified in minimal bubblewrap: read-only code, private tmp, no network.",
+      "paired_workload": {
+        "before": {
+          "metrics": {
+            "total_tokens": {
+              "aggregate": 40497,
+              "samples": [
+                96261,
+                33546,
+                40497
+              ]
+            },
+            "wall_seconds": {
+              "aggregate": 52.04,
+              "samples": [
+                83.904,
+                50.492999999999995,
+                52.04
+              ]
+            }
+          },
+          "gates": {
+            "correctness_pass_rate": 0.6666666666666666,
+            "supplied_tests_unchanged": 1,
+            "sandbox_enabled": 1
+          },
+          "sample_count": 3
+        },
+        "after": {
+          "metrics": {
+            "total_tokens": {
+              "aggregate": 61574,
+              "samples": [
+                42849,
+                73672,
+                61574
+              ]
+            },
+            "wall_seconds": {
+              "aggregate": 64.656,
+              "samples": [
+                51.317,
+                66.983,
+                64.656
+              ]
+            }
+          },
+          "gates": {
+            "correctness_pass_rate": 1,
+            "supplied_tests_unchanged": 1,
+            "sandbox_enabled": 1
+          },
+          "sample_count": 3
+        }
+      },
+      "decision": {
+        "decision": "revert",
+        "eligible": false,
+        "next_measurement": "none",
+        "target_reached": false,
+        "improved_objectives": [],
+        "violated_objectives": [
+          "total_tokens",
+          "wall_seconds"
+        ],
+        "comparisons": {
+          "total_tokens": {
+            "verdict": "regressed",
+            "delta": -21077,
+            "relative": -0.5204583055534978,
+            "violated": true
+          },
+          "wall_seconds": {
+            "verdict": "regressed",
+            "delta": -12.616000000000007,
+            "relative": -0.2424289008455036,
+            "violated": true
+          }
+        },
+        "primary_delta": -21077,
+        "rank_score": -0.5204583055534978,
+        "reason": "violated total_tokens, wall_seconds"
+      }
+    },
+    {
+      "name": "apply-patch",
+      "reference_revision": "2a25d23c334fc289084d234aeb2070ffcdcdf790",
+      "candidate_revision": "199ce1348437a9e70718e0626dc457b94ac50de3",
+      "integrated_source_equivalent": "12139d01cbdb1f0893e9f273cc89aa18c4c63218",
+      "reference_archive_sha256": "461ab7e9c9d6afc7fcbde73d1c74249b9e81e7f4ab7a9b01404ba6f18fcaf9b5",
+      "candidate_archive_sha256": "abedbf892a6a2045bfa802652dfd0d7cffe287587c50664ea4d14ee6f42dd63c",
+      "outcome": "Reject editor alone as an efficiency optimization; no default enabled.",
+      "runs": [
+        {
+          "id": "000001",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 1,
+          "wall_seconds": 41.135,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 35746,
+            "outputTokens": 2800,
+            "totalTokens": 38546,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 9,
+          "tool_calls": {
+            "exec_command": 6,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000002",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 1,
+          "wall_seconds": 29.793,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 27661,
+            "outputTokens": 1976,
+            "totalTokens": 29637,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 8,
+          "tool_calls": {
+            "exec_command": 4,
+            "apply_patch": 3
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000003",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 1,
+          "wall_seconds": 19.242,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 15237,
+            "outputTokens": 1450,
+            "totalTokens": 16687,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 5,
+          "tool_calls": {
+            "exec_command": 2,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 1,
+          "heldout_exit_code": 1,
+          "correctness_passed": false,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 1,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000004",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 1,
+          "wall_seconds": 46.611,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 41759,
+            "outputTokens": 3782,
+            "totalTokens": 45541,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 9,
+          "tool_calls": {
+            "exec_command": 4,
+            "apply_patch": 3,
+            "FileRead": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 1,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000005",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 2,
+          "wall_seconds": 83.378,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 150882,
+            "outputTokens": 5654,
+            "totalTokens": 156536,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 23,
+          "tool_calls": {
+            "exec_command": 10,
+            "apply_patch": 11,
+            "FileRead": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 2,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000006",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 2,
+          "wall_seconds": 37.273,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 21940,
+            "outputTokens": 2664,
+            "totalTokens": 24604,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 7,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2,
+            "Edit": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000007",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 2,
+          "wall_seconds": 52.348,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 38309,
+            "outputTokens": 4628,
+            "totalTokens": 42937,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 8,
+          "tool_calls": {
+            "exec_command": 3,
+            "apply_patch": 3,
+            "FileRead": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 1,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000008",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 2,
+          "wall_seconds": 35.406,
+          "agenc_exit_code": 2,
+          "token_usage": {
+            "inputTokens": 24475,
+            "outputTokens": 2714,
+            "totalTokens": 27189,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 7,
+          "tool_calls": {
+            "exec_command": 4,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 1,
+          "denied_permission_count": 1,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000009",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 3,
+          "wall_seconds": 26.246,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 18210,
+            "outputTokens": 1825,
+            "totalTokens": 20035,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000010",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 3,
+          "wall_seconds": 38.811,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 35204,
+            "outputTokens": 2641,
+            "totalTokens": 37845,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 9,
+          "tool_calls": {
+            "exec_command": 7,
+            "apply_patch": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000011",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 3,
+          "wall_seconds": 28.546,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 20077,
+            "outputTokens": 2128,
+            "totalTokens": 22205,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000012",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 3,
+          "wall_seconds": 72.702,
+          "agenc_exit_code": 2,
+          "token_usage": {
+            "inputTokens": 62155,
+            "outputTokens": 6820,
+            "totalTokens": 68975,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 10,
+          "tool_calls": {
+            "exec_command": 5,
+            "apply_patch": 3,
+            "FileRead": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 3,
+          "denied_permission_count": 1,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        }
+      ],
+      "summary": {
+        "before/csv-bugfix": {
+          "total_tokens": [
+            38546,
+            24604,
+            20035
+          ],
+          "wall_seconds": [
+            41.135,
+            37.273,
+            26.246
+          ],
+          "model_calls": [
+            9,
+            7,
+            6
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 3
+        },
+        "before/sqlite-cli": {
+          "total_tokens": [
+            16687,
+            27189,
+            22205
+          ],
+          "wall_seconds": [
+            19.242,
+            35.406,
+            28.546
+          ],
+          "model_calls": [
+            5,
+            7,
+            6
+          ],
+          "correctness_pass_rate": 0.6666666666666666,
+          "completed_exit_zero": 2
+        },
+        "after/csv-bugfix": {
+          "total_tokens": [
+            29637,
+            156536,
+            37845
+          ],
+          "wall_seconds": [
+            29.793,
+            83.378,
+            38.811
+          ],
+          "model_calls": [
+            8,
+            23,
+            9
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 3
+        },
+        "after/sqlite-cli": {
+          "total_tokens": [
+            45541,
+            42937,
+            68975
+          ],
+          "wall_seconds": [
+            46.611,
+            52.348,
+            72.702
+          ],
+          "model_calls": [
+            9,
+            8,
+            10
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 2
+        }
+      },
+      "verification": "All12 measured solutions reverified with completed-suite receipts in minimal bubblewrap; outcomes match original.",
+      "paired_workload": {
+        "before": {
+          "metrics": {
+            "total_tokens": {
+              "aggregate": 51793,
+              "samples": [
+                55233,
+                51793,
+                42240
+              ]
+            },
+            "wall_seconds": {
+              "aggregate": 60.376999999999995,
+              "samples": [
+                60.376999999999995,
+                72.679,
+                54.792
+              ]
+            }
+          },
+          "gates": {
+            "correctness_pass_rate": 0.8333333333333334,
+            "supplied_tests_unchanged": 1,
+            "sandbox_enabled": 1
+          },
+          "sample_count": 3
+        },
+        "after": {
+          "metrics": {
+            "total_tokens": {
+              "aggregate": 106820,
+              "samples": [
+                75178,
+                199473,
+                106820
+              ]
+            },
+            "wall_seconds": {
+              "aggregate": 111.513,
+              "samples": [
+                76.404,
+                135.726,
+                111.513
+              ]
+            }
+          },
+          "gates": {
+            "correctness_pass_rate": 1,
+            "supplied_tests_unchanged": 1,
+            "sandbox_enabled": 1
+          },
+          "sample_count": 3
+        }
+      },
+      "decision": {
+        "decision": "revert",
+        "eligible": false,
+        "next_measurement": "none",
+        "target_reached": false,
+        "improved_objectives": [],
+        "violated_objectives": [
+          "total_tokens",
+          "wall_seconds"
+        ],
+        "comparisons": {
+          "total_tokens": {
+            "verdict": "regressed",
+            "delta": -55027,
+            "relative": -1.0624408703878903,
+            "violated": true
+          },
+          "wall_seconds": {
+            "verdict": "regressed",
+            "delta": -51.13600000000001,
+            "relative": -0.8469450287361083,
+            "violated": true
+          }
+        },
+        "primary_delta": -55027,
+        "rank_score": -1.0624408703878903,
+        "reason": "violated total_tokens, wall_seconds"
+      }
+    },
+    {
+      "reference_revision": "2a25d23c334fc289084d234aeb2070ffcdcdf790",
+      "candidate_revision": "199ce1348437a9e70718e0626dc457b94ac50de3",
+      "integrated_source_equivalent": "12139d01cbdb1f0893e9f273cc89aa18c4c63218",
+      "reference_archive_sha256": "461ab7e9c9d6afc7fcbde73d1c74249b9e81e7f4ab7a9b01404ba6f18fcaf9b5",
+      "candidate_archive_sha256": "abedbf892a6a2045bfa802652dfd0d7cffe287587c50664ea4d14ee6f42dd63c",
+      "name": "combined",
+      "outcome": "Retain explicit opt-in: median wall7.1% lower; total-token median inconclusive(+1.2%); all candidate task checks pass. No defaults changed.",
+      "runs": [
+        {
+          "id": "000001",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 1,
+          "wall_seconds": 53.717,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 60536,
+            "outputTokens": 3671,
+            "totalTokens": 64207,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 14,
+          "tool_calls": {
+            "exec_command": 7,
+            "Write": 2,
+            "Edit": 4
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000002",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 1,
+          "wall_seconds": 22.807,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 18240,
+            "outputTokens": 1547,
+            "totalTokens": 19787,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "apply_patch": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000003",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 1,
+          "wall_seconds": 16.648,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 11045,
+            "outputTokens": 1288,
+            "totalTokens": 12333,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 4,
+          "tool_calls": {
+            "exec_command": 2,
+            "Write": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 1,
+          "heldout_exit_code": 1,
+          "correctness_passed": false,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 1,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000004",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 1,
+          "wall_seconds": 46.483,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 53974,
+            "outputTokens": 3708,
+            "totalTokens": 57682,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 11,
+          "tool_calls": {
+            "exec_command": 4,
+            "apply_patch": 4,
+            "FileRead": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 1,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000005",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 2,
+          "wall_seconds": 17.298,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 11079,
+            "outputTokens": 1203,
+            "totalTokens": 12282,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 4,
+          "tool_calls": {
+            "exec_command": 3
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000006",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 2,
+          "wall_seconds": 24.726,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 18097,
+            "outputTokens": 1709,
+            "totalTokens": 19806,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000007",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 2,
+          "wall_seconds": 22.827,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 16317,
+            "outputTokens": 1781,
+            "totalTokens": 18098,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 5,
+          "tool_calls": {
+            "exec_command": 3,
+            "apply_patch": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000008",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 2,
+          "wall_seconds": 30.907,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 20454,
+            "outputTokens": 2355,
+            "totalTokens": 22809,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 6,
+          "tool_calls": {
+            "exec_command": 3,
+            "Write": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000009",
+          "variant": "before",
+          "task": "csv-bugfix",
+          "repeat": 3,
+          "wall_seconds": 29.6,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 28287,
+            "outputTokens": 2068,
+            "totalTokens": 30355,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 8,
+          "tool_calls": {
+            "exec_command": 4,
+            "Write": 2,
+            "Edit": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000010",
+          "variant": "after",
+          "task": "csv-bugfix",
+          "repeat": 3,
+          "wall_seconds": 33.935,
+          "agenc_exit_code": 0,
+          "token_usage": {
+            "inputTokens": 44879,
+            "outputTokens": 2161,
+            "totalTokens": 47040,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 11,
+          "tool_calls": {
+            "exec_command": 6,
+            "apply_patch": 4
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 4,
+          "heldout_count": 10,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 0,
+          "denied_permission_count": 0,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        },
+        {
+          "id": "000011",
+          "variant": "before",
+          "task": "sqlite-cli",
+          "repeat": 3,
+          "wall_seconds": 66.299,
+          "agenc_exit_code": 2,
+          "token_usage": {
+            "inputTokens": 76113,
+            "outputTokens": 5314,
+            "totalTokens": 81427,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 14,
+          "tool_calls": {
+            "exec_command": 7,
+            "Write": 4,
+            "FileRead": 1,
+            "Edit": 1
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": false,
+          "tool_error_count": 5,
+          "denied_permission_count": 3,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "Edit",
+            "Write"
+          ]
+        },
+        {
+          "id": "000012",
+          "variant": "after",
+          "task": "sqlite-cli",
+          "repeat": 3,
+          "wall_seconds": 31.422,
+          "agenc_exit_code": 2,
+          "token_usage": {
+            "inputTokens": 31910,
+            "outputTokens": 2301,
+            "totalTokens": 34211,
+            "costUsd": 0,
+            "costKnown": true
+          },
+          "model_calls": 8,
+          "tool_calls": {
+            "exec_command": 5,
+            "apply_patch": 2
+          },
+          "supplied_tests_unchanged": true,
+          "visible_exit_code": 0,
+          "heldout_exit_code": 0,
+          "correctness_passed": true,
+          "visible_count": 3,
+          "heldout_count": 8,
+          "sandbox_enabled": true,
+          "limited_finish_on_all_calls": true,
+          "tool_error_count": 1,
+          "denied_permission_count": 1,
+          "initial_tool_names": [
+            "tool2__system_x2esearchTools",
+            "exec_command",
+            "FileRead",
+            "apply_patch"
+          ]
+        }
+      ],
+      "summary": {
+        "before/csv-bugfix": {
+          "total_tokens": [
+            64207,
+            19806,
+            30355
+          ],
+          "wall_seconds": [
+            53.717,
+            24.726,
+            29.6
+          ],
+          "model_calls": [
+            14,
+            6,
+            8
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 3
+        },
+        "before/sqlite-cli": {
+          "total_tokens": [
+            12333,
+            22809,
+            81427
+          ],
+          "wall_seconds": [
+            16.648,
+            30.907,
+            66.299
+          ],
+          "model_calls": [
+            4,
+            6,
+            14
+          ],
+          "correctness_pass_rate": 0.6666666666666666,
+          "completed_exit_zero": 2
+        },
+        "after/csv-bugfix": {
+          "total_tokens": [
+            19787,
+            12282,
+            47040
+          ],
+          "wall_seconds": [
+            22.807,
+            17.298,
+            33.935
+          ],
+          "model_calls": [
+            6,
+            4,
+            11
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 3
+        },
+        "after/sqlite-cli": {
+          "total_tokens": [
+            57682,
+            18098,
+            34211
+          ],
+          "wall_seconds": [
+            46.483,
+            22.827,
+            31.422
+          ],
+          "model_calls": [
+            11,
+            5,
+            8
+          ],
+          "correctness_pass_rate": 1,
+          "completed_exit_zero": 2
+        }
+      },
+      "paired_workload": {
+        "before": {
+          "metrics": {
+            "total_tokens": {
+              "aggregate": 76540,
+              "samples": [
+                76540,
+                42615,
+                111782
+              ]
+            },
+            "wall_seconds": {
+              "aggregate": 70.365,
+              "samples": [
+                70.365,
+                55.632999999999996,
+                95.899
+              ]
+            }
+          },
+          "gates": {
+            "correctness_pass_rate": 0.8333333333333334,
+            "supplied_tests_unchanged": 1,
+            "sandbox_enabled": 1
+          },
+          "sample_count": 3
+        },
+        "after": {
+          "metrics": {
+            "total_tokens": {
+              "aggregate": 77469,
+              "samples": [
+                77469,
+                30380,
+                81251
+              ]
+            },
+            "wall_seconds": {
+              "aggregate": 65.357,
+              "samples": [
+                69.28999999999999,
+                40.125,
+                65.357
+              ]
+            }
+          },
+          "gates": {
+            "correctness_pass_rate": 1,
+            "supplied_tests_unchanged": 1,
+            "sandbox_enabled": 1
+          },
+          "sample_count": 3
+        }
+      },
+      "decision": {
+        "decision": "keep",
+        "eligible": true,
+        "next_measurement": "none",
+        "target_reached": false,
+        "improved_objectives": [
+          "wall_seconds"
+        ],
+        "violated_objectives": [],
+        "comparisons": {
+          "total_tokens": {
+            "verdict": "inconclusive",
+            "delta": -929,
+            "relative": -0.01213744447347792,
+            "violated": false
+          },
+          "wall_seconds": {
+            "verdict": "improved",
+            "delta": 5.007999999999996,
+            "relative": 0.07117174731755839,
+            "violated": false
+          }
+        },
+        "primary_delta": -929,
+        "rank_score": 0.07117174731755839,
+        "reason": "improved wall_seconds without violating other required objectives"
+      },
+      "all_trial_totals": {
+        "before": {
+          "total_tokens": 230937,
+          "wall_seconds": 221.897,
+          "model_calls": 52
+        },
+        "after": {
+          "total_tokens": 189100,
+          "wall_seconds": 174.772,
+          "model_calls": 45
+        }
+      },
+      "verification": "Completed-suite receipts enforced during every measured trial."
+    }
+  ],
+  "sampling": {
+    "repetitions_per_task_per_variant": 3,
+    "tasks": [
+      "csv-bugfix",
+      "sqlite-cli"
+    ],
+    "variant_order_by_repeat": [
+      [
+        "before",
+        "after"
+      ],
+      [
+        "after",
+        "before"
+      ],
+      [
+        "before",
+        "after"
+      ]
+    ],
+    "quality_gate": "Unchanged supplied tests; all expected visible/held-out tests execute and pass; no skipped tests. Independent verifier runs with read-only code and no network.",
+    "aggregation": "For each repeat sum both tasks; compare medians across3 repeats. Per-task arrays and every trial retained.",
+    "threshold": "More than5% improvement; no greater than5% regression in required wall time.",
+    "token_metric": "Total input+output tokens reported by AgenC, including cached input. No paid API usage in measurements.",
+    "latency_metric": "Wall time of AgenC CLI process; independent post-run verification excluded.",
+    "inference_cache": "Server caching left unchanged; no reset between runs."
+  },
+  "verification_receipt_recheck": {
+    "measured_implementations": 24,
+    "all_outcomes_match_original": true,
+    "reproducer_tests": "Early SystemExit(0), os._exit(0), zero tests, incomplete suites and skips cannot count as a pass.",
+    "additional_trials_verified_during_measurement": 12
+  }
+}
