@@ -136,6 +136,12 @@ interface FetchJsonOptions {
   readonly jsonBody?: Readonly<Record<string, unknown>>;
   /** Overrides the resolver's timeout for one large listing. */
   readonly timeoutMs?: number;
+  /**
+   * Told when the endpoint answered the JSON returned: now for a new
+   * download, earlier for one shared between resolvers. Not called when this
+   * resolver's own cache answers or the request fails.
+   */
+  readonly onAnswer?: (answeredAt: number) => void;
 }
 
 /**
@@ -216,6 +222,8 @@ export class ModelMetadataResolver {
   private ollamaCloudTags?: MetadataJson;
   private ollamaCloudListed?: readonly OllamaCloudModelRow[];
   private readonly ollamaCloudShown = new Map<string, OllamaCloudModelRow>();
+  /** When Ollama answered each `ollamaCloudShown` row. */
+  private readonly ollamaCloudShownAt = new Map<string, number>();
   private readonly readSavedApiKey?: (provider: string) => string | undefined;
   private readonly fetchImpl?: typeof fetch;
   private readonly env: Readonly<Record<string, string | undefined>>;
@@ -263,6 +271,7 @@ export class ModelMetadataResolver {
       this.ollamaCloudTags = undefined;
       this.ollamaCloudListed = undefined;
       this.ollamaCloudShown.clear();
+      this.ollamaCloudShownAt.clear();
       this.inFlightJson = new Map();
       this.jsonCache = new Map();
       this.endpointRevision = revision;
@@ -635,6 +644,8 @@ export class ModelMetadataResolver {
     const shared = this.endpointCatalogs;
     const scope = this.endpointScope(params);
     if (shared === undefined || scope === undefined) return this.fetchJson(url, options);
+    // The shared download reports when the endpoint answered, also on reuse.
+    const { onAnswer, ...downloadOptions } = options;
     return this.fetchJson(url, options, () => shared.get(scope, {
       baseUrl,
       url,
@@ -645,7 +656,7 @@ export class ModelMetadataResolver {
       },
       ...(options.jsonBody !== undefined ? { body: JSON.stringify(options.jsonBody) } : {}),
       timeoutMs: options.timeoutMs ?? this.timeoutMs,
-    }, () => this.fetchJsonUncached(url, options)));
+    }, () => this.fetchJsonUncached(url, downloadOptions), onAnswer === undefined ? {} : { onAnswer }));
   }
 
   private async resolveOpenRouterMetadata(
@@ -703,6 +714,7 @@ export class ModelMetadataResolver {
     this.cacheRevision(params);
     const headers = authHeaders("ollama-cloud", config, this.credentialEnvironment("ollama-cloud"));
     const timeoutMs = this.liveModelListTimeoutMs();
+    let showAnsweredAt: number | undefined;
     const [tags, show] = await Promise.all([
       this.fetchEndpointJson(params, OLLAMA_CLOUD_BASE_URL, `${OLLAMA_CLOUD_ORIGIN}/api/tags`, {
         ...(headers !== undefined ? { headers } : {}),
@@ -714,6 +726,9 @@ export class ModelMetadataResolver {
           ...(headers !== undefined ? { headers } : {}),
           jsonBody: { model: model.trim() },
           timeoutMs,
+          onAnswer: (answeredAt) => {
+            showAnsweredAt = answeredAt;
+          },
         }),
     ]);
     if (tags !== undefined && tags !== this.ollamaCloudTags) {
@@ -723,7 +738,10 @@ export class ModelMetadataResolver {
     const shown = model !== undefined && show !== undefined
       ? parseOllamaCloudShow(model.trim(), show)
       : undefined;
-    if (shown !== undefined) this.ollamaCloudShown.set(shown.model, shown);
+    if (shown !== undefined) {
+      this.ollamaCloudShown.set(shown.model, shown);
+      if (showAnsweredAt !== undefined) this.ollamaCloudShownAt.set(shown.model, showAnsweredAt);
+    }
     if (this.ollamaCloudListed === undefined && this.ollamaCloudShown.size === 0) return undefined;
     const listed = this.ollamaCloudListed ?? [];
     const rows = [
@@ -735,7 +753,12 @@ export class ModelMetadataResolver {
       rows.map((row, priority) => ollamaCloudCatalogEntry(row, priority, "list")),
       { replace: this.ollamaCloudListed !== undefined },
     );
-    if (shown !== undefined) recordPublishedModelDetail("ollama-cloud", shown.model);
+    // Mark each detailed row with the time Ollama answered for it: an answer
+    // read again from a cache must not make a row look newer than it is.
+    for (const row of this.ollamaCloudShown.values()) {
+      const answeredAt = this.ollamaCloudShownAt.get(row.model);
+      if (answeredAt !== undefined) recordPublishedModelDetail("ollama-cloud", row.model, answeredAt);
+    }
     return Object.freeze(rows);
   }
 
@@ -808,7 +831,9 @@ export class ModelMetadataResolver {
         signal: controller.signal,
       }, this.fetchImpl!);
       if (!response.ok) return undefined;
-      return await response.json();
+      const json = await response.json() as MetadataJson | undefined;
+      if (json !== undefined) options.onAnswer?.(Date.now());
+      return json;
     } catch {
       return undefined;
     } finally {

@@ -29,6 +29,33 @@ describe("EndpointMetadataCache", () => {
     expect(download).toHaveBeenCalledTimes(1);
   });
 
+  it("tells each caller when the endpoint answered, also waiters and reuse", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(1_000);
+      const cache = new EndpointMetadataCache();
+      const scope = cache.observe("ollama-cloud", "a");
+      const pending = deferred<object>();
+      const times: number[] = [];
+      const onAnswer = (answeredAt: number) => { times.push(answeredAt); };
+      const first = cache.get(scope, request, () => pending.promise, { onAnswer });
+      const waiter = cache.get(scope, request, () => pending.promise, { onAnswer });
+      vi.setSystemTime(2_000);
+      pending.resolve({ ok: true });
+      await Promise.all([first, waiter]);
+      vi.setSystemTime(9_000);
+      expect(await cache.get(scope, request, async () => ({ ok: false }), { onAnswer })).toEqual({ ok: true });
+      expect(times).toEqual([2_000, 2_000, 2_000]);
+      const failed: number[] = [];
+      await cache.get(cache.observe("ollama-cloud", "b"), request, async () => undefined, {
+        onAnswer: (answeredAt) => { failed.push(answeredAt); },
+      });
+      expect(failed).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     { baseUrl: "https://example.test/v1/" },
     { url: "https://example.test/v1/models?account=b" },
