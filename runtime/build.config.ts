@@ -857,7 +857,6 @@ const external = [
   '@modelcontextprotocol/sdk',
   'node-pty',
   '@anthropic-ai/bedrock-sdk',
-  '@aws-sdk/client-bedrock',
   '@aws-sdk/client-bedrock-runtime',
   '@smithy/core',
   '@smithy/node-http-handler',

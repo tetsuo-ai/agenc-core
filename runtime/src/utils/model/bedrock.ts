@@ -1,4 +1,3 @@
-import memoize from 'lodash-es/memoize.js'
 import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import {
   resolveBuiltInProviderRegionalEndpoint,
@@ -7,10 +6,8 @@ import {
   resolveProviderBaseURLEnvironment,
   resolveProviderCredentialEnvironment,
 } from '../../llm/registry/provider-ingress.js'
-import { logError } from '../log.js'
 import { getAWSClientProxyConfig } from '../proxy.js'
 import { getSelectedProviderEnvironment } from './providers.js'
-import { parseClaudeModelId } from './claudeModelId.js'
 
 const AMAZON_BEDROCK_PROVIDER = 'amazon-bedrock'
 
@@ -72,89 +69,6 @@ function resolveBedrockSdkClientSettings(
   })
 }
 
-export const getBedrockInferenceProfiles = memoize(async function (): Promise<
-  string[]
-> {
-  const [client, { ListInferenceProfilesCommand }] = await Promise.all([
-    createBedrockClient(),
-    import('@aws-sdk/client-bedrock'),
-  ])
-  const allProfiles = []
-  let nextToken: string | undefined
-
-  try {
-    do {
-      const command = new ListInferenceProfilesCommand({
-        ...(nextToken && { nextToken }),
-        typeEquals: 'SYSTEM_DEFINED',
-      })
-      const response = await client.send(command)
-
-      if (response.inferenceProfileSummaries) {
-        allProfiles.push(...response.inferenceProfileSummaries)
-      }
-
-      nextToken = response.nextToken
-    } while (nextToken)
-
-    // Filter for provider models (SYSTEM_DEFINED filtering handled in query)
-    return allProfiles
-      .filter(profile => profile.inferenceProfileId?.includes('anthropic'))
-      .map(profile => profile.inferenceProfileId)
-      .filter(Boolean) as string[]
-  } catch (error) {
-    logError(error as Error)
-    throw error
-  }
-})
-
-export function findFirstMatch(
-  profiles: string[],
-  substring: string,
-): string | null {
-  return profiles.find(p => p.includes(substring)) ?? null
-}
-
-/**
- * The first inference profile serving exactly `firstPartyId`. Claude 4+ ids
- * compare by parsed identity, so searching for claude-opus-5 can never
- * return a claude-opus-5-5 profile (or the reverse), whatever order the
- * profiles are listed in; a dated id also requires the same snapshot.
- * Claude 3 ids, which the parser does not read, keep the substring search.
- */
-export function findProfileForModel(
-  profiles: string[],
-  firstPartyId: string,
-): string | null {
-  const wanted = parseClaudeModelId(firstPartyId)
-  if (wanted === undefined) return findFirstMatch(profiles, firstPartyId)
-  return (
-    profiles.find(profile => {
-      const id = parseClaudeModelId(profile)
-      return (
-        id !== undefined &&
-        id.canonical === wanted.canonical &&
-        (wanted.snapshot === undefined || id.snapshot === wanted.snapshot)
-      )
-    }) ?? null
-  )
-}
-
-async function createBedrockClient() {
-  const { BedrockClient } = await import('@aws-sdk/client-bedrock')
-  const environment = getSelectedProviderEnvironment()
-  const settings = resolveBedrockSdkClientSettings(environment)
-
-  const clientConfig: ConstructorParameters<typeof BedrockClient>[0] = {
-    region: settings.region,
-    // AWS SDK annotates credential objects with internal source metadata.
-    credentials: { ...settings.credentials },
-    ...(await getAWSClientProxyConfig(environment)),
-  }
-
-  return new BedrockClient(clientConfig)
-}
-
 export async function createBedrockRuntimeClient() {
   const { BedrockRuntimeClient } = await import(
     '@aws-sdk/client-bedrock-runtime'
@@ -173,45 +87,8 @@ export async function createBedrockRuntimeClient() {
   return new BedrockRuntimeClient(clientConfig)
 }
 
-export const getInferenceProfileBackingModel = memoize(async function (
-  profileId: string,
-): Promise<string | null> {
-  try {
-    const [client, { GetInferenceProfileCommand }] = await Promise.all([
-      createBedrockClient(),
-      import('@aws-sdk/client-bedrock'),
-    ])
-    const command = new GetInferenceProfileCommand({
-      inferenceProfileIdentifier: profileId,
-    })
-    const response = await client.send(command)
-
-    if (!response.models || response.models.length === 0) {
-      return null
-    }
-
-    // Use the first model as the primary backing model for cost calculation
-    // In practice, application inference profiles typically load balance between
-    // similar models with the same cost structure
-    const primaryModel = response.models[0]
-    if (!primaryModel?.modelArn) {
-      return null
-    }
-
-    // Extract model name from ARN
-    // ARN format: arn:aws:bedrock:region:account:foundation-model/model-name
-    const lastSlashIndex = primaryModel.modelArn.lastIndexOf('/')
-    return lastSlashIndex >= 0
-      ? primaryModel.modelArn.substring(lastSlashIndex + 1)
-      : primaryModel.modelArn
-  } catch (error) {
-    logError(error as Error)
-    return null
-  }
-})
-
 /**
- * Check if a model ID is a foundation model (e.g., "anthropic.agenc-sonnet-4-5-20250929-v1:0")
+ * Check if a model ID is a foundation model (e.g., "anthropic.claude-sonnet-4-5-20250929-v1:0")
  */
 export function isFoundationModel(modelId: string): boolean {
   return modelId.startsWith('anthropic.')
@@ -248,10 +125,10 @@ export type BedrockRegionPrefix = (typeof BEDROCK_REGION_PREFIXES)[number]
  * Extract the region prefix from a Bedrock cross-region inference model ID.
  * Handles both plain model IDs and full ARN format.
  * For example:
- * - "eu.anthropic.agenc-sonnet-4-5-20250929-v1:0" → "eu"
- * - "us.anthropic.agenc-3-7-sonnet-20250219-v1:0" → "us"
- * - "arn:aws:bedrock:ap-northeast-2:123:inference-profile/global.anthropic.agenc-opus-4-6-v1" → "global"
- * - "anthropic.agenc-3-5-sonnet-20241022-v2:0" → undefined (foundation model)
+ * - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0" → "eu"
+ * - "us.anthropic.claude-3-7-sonnet-20250219-v1:0" → "us"
+ * - "arn:aws:bedrock:ap-northeast-2:123:inference-profile/global.anthropic.claude-opus-4-6-v1" → "global"
+ * - "anthropic.claude-3-5-sonnet-20241022-v2:0" → undefined (foundation model)
  * - "claude-sonnet-4-5-20250929" → undefined (first-party format)
  */
 export function getBedrockRegionPrefix(
@@ -276,8 +153,8 @@ export function getBedrockRegionPrefix(
  * If the model is not a Bedrock model, it will be returned as-is.
  *
  * For example:
- * - applyBedrockRegionPrefix("us.anthropic.agenc-sonnet-4-5-v1:0", "eu") → "eu.anthropic.agenc-sonnet-4-5-v1:0"
- * - applyBedrockRegionPrefix("anthropic.agenc-sonnet-4-5-v1:0", "eu") → "eu.anthropic.agenc-sonnet-4-5-v1:0"
+ * - applyBedrockRegionPrefix("us.anthropic.claude-sonnet-4-5-v1:0", "eu") → "eu.anthropic.claude-sonnet-4-5-v1:0"
+ * - applyBedrockRegionPrefix("anthropic.claude-sonnet-4-5-v1:0", "eu") → "eu.anthropic.claude-sonnet-4-5-v1:0"
  * - applyBedrockRegionPrefix("claude-sonnet-4-5-20250929", "eu") → "claude-sonnet-4-5-20250929" (not a Bedrock model)
  */
 export function applyBedrockRegionPrefix(

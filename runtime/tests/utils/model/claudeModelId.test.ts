@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 
 import { parseClaudeModelId } from "../../../src/utils/model/claudeModelId.js";
 import { firstPartyNameToCanonical } from "../../../src/utils/model/model.js";
-import { findProfileForModel } from "../../../src/utils/model/bedrock.js";
 import { getModelCosts } from "../../../src/utils/modelCost.js";
 import {
   computeUsdCostWithResolution,
@@ -197,38 +196,5 @@ describe("one identity for pricing and capabilities", () => {
       ).toBe(claudeApiOpus55 ? "claude-opus-5-5" :
         id?.platform === "anthropic" && id.canonical === "claude-opus-5" ? "claude-opus-5" : undefined);
     }
-  });
-});
-
-describe("Bedrock inference profile selection", () => {
-  const opus55 = "us.anthropic.claude-opus-5-5-v1:0";
-  const opus5 = "us.anthropic.claude-opus-5-v1:0";
-  const fable51 = "global.anthropic.claude-fable-5-1";
-  const fable5 = "global.anthropic.claude-fable-5";
-
-  test("returns the profile for the exact model in either listing order", () => {
-    for (const profiles of [[opus55, opus5, fable51, fable5], [fable5, fable51, opus5, opus55]]) {
-      expect(findProfileForModel(profiles, "claude-opus-5"), profiles.join()).toBe(opus5);
-      expect(findProfileForModel(profiles, "claude-opus-5-5"), profiles.join()).toBe(opus55);
-      expect(findProfileForModel(profiles, "claude-fable-5"), profiles.join()).toBe(fable5);
-      expect(findProfileForModel(profiles, "claude-fable-5-1"), profiles.join()).toBe(fable51);
-    }
-  });
-
-  test("finds nothing rather than a neighbour", () => {
-    expect(findProfileForModel([opus55], "claude-opus-5")).toBeNull();
-    expect(findProfileForModel([opus5], "claude-opus-5-5")).toBeNull();
-    expect(findProfileForModel([fable51], "claude-fable-5")).toBeNull();
-  });
-
-  test("requires the snapshot of a dated model and keeps Claude 3 substring matching", () => {
-    const profiles = [
-      "us.anthropic.claude-opus-4-1-20250805-v1:0",
-      "us.anthropic.claude-opus-4-20250514-v1:0",
-      "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-    ];
-    expect(findProfileForModel(profiles, "claude-opus-4-20250514")).toBe(profiles[1]);
-    expect(findProfileForModel(profiles, "claude-opus-4-1-20250805")).toBe(profiles[0]);
-    expect(findProfileForModel(profiles, "claude-3-7-sonnet-20250219")).toBe(profiles[2]);
   });
 });

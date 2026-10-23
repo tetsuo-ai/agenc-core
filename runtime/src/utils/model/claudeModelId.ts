@@ -8,8 +8,8 @@
  * - Claude API: `claude-<family>-<major>[-<minor>]`, optionally with a
  *   dated snapshot (`-YYYYMMDD`) and optionally qualified as
  *   `anthropic/<id>` or `anthropic:<id>`.
- * - Amazon Bedrock: `[<geo>.]anthropic.claude-<...>` (and this
- *   repository's `anthropic.agenc-<...>` inference-profile spelling), with
+ * - Amazon Bedrock: `[<geo>.]anthropic.claude-<...>` (and the
+ *   `anthropic.agenc-<...>` spelling older AgenC builds wrote by mistake), with
  *   an optional snapshot and `-v<N>[:<N>]` version, optionally inside an
  *   inference-profile or foundation-model ARN.
  * - Google Cloud Vertex AI: `claude-<...>@YYYYMMDD`.

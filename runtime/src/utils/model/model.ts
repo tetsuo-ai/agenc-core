@@ -341,16 +341,16 @@ export function getDefaultMainLoopModel(): ModelName {
 /**
  * Pure string-match that strips date/provider suffixes from a first-party model
  * name. Input must already be a 1P-format ID (e.g. 'claude-3-7-sonnet-20250219',
- * 'us.anthropic.agenc-opus-4-6-v1:0'). Does not touch settings, so safe at
+ * 'us.anthropic.claude-opus-4-6-v1:0'). Does not touch settings, so safe at
  * module top-level (see MODEL_COSTS in modelCost.ts).
  */
 export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
-  // Bedrock inference-profile IDs brand the model segment as
-  // "anthropic.agenc-<model>" (e.g. "us.anthropic.agenc-opus-4-6-v1"). Normalize
-  // that segment back to the canonical "claude-<model>" spelling so the version
-  // branches below match instead of falling through to the generic regex (which
-  // would only capture "agenc-opus").
+  // Older AgenC builds wrote Bedrock ids as "anthropic.agenc-<model>" (a
+  // rebranding mistake; AWS spells the segment "anthropic.claude-<model>").
+  // Normalize that spelling so ids recorded by those builds still reach the
+  // version branches below instead of the generic regex (which would only
+  // capture "agenc-opus").
   name = name.replaceAll('anthropic.agenc-', 'anthropic.claude-')
   // The Claude 5 generation pairs models whose ids contain each other
   // (fable-5 / fable-5-1, opus-5 / opus-5-5), so it resolves only by exact
@@ -422,7 +422,7 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
 
 /**
  * Maps a full model string to a shorter canonical version that's unified across 1P and 3P providers.
- * For example, 'claude-3-5-haiku-20241022' and 'us.anthropic.agenc-3-5-haiku-20241022-v1:0'
+ * For example, 'claude-3-5-haiku-20241022' and 'us.anthropic.claude-3-5-haiku-20241022-v1:0'
  * would both be mapped to 'claude-3-5-haiku'.
  * @param fullModelName The full model name (e.g., 'claude-3-5-haiku-20241022')
  * @returns The short name (e.g., 'claude-3-5-haiku') if found, or the original name if no mapping exists

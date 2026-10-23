@@ -272,6 +272,19 @@ describe("provider/model configuration authority", () => {
     });
   });
 
+  test.each([
+    ["opus", "us.anthropic.claude-opus-4-7-v1"],
+    ["sonnet", "us.anthropic.claude-sonnet-4-6"],
+    ["haiku", "us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+  ])("projects the %s alias to its Amazon Bedrock model id", (model, expected) => {
+    expect(
+      resolveProviderModelLayer(defaultConfig(), {
+        model_provider: "amazon-bedrock",
+        model,
+      }),
+    ).toMatchObject({ model_provider: "amazon-bedrock", model: expected });
+  });
+
   test("applies model overrides while projecting an alias", () => {
     const override = "arn:aws:bedrock:example:opus-4-7";
     const base = mergeConfigs(defaultConfig(), {
