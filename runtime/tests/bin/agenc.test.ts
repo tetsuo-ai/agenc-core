@@ -57,6 +57,7 @@ import { ConfigStore } from "../config/store.js";
 import { defaultConfig } from "../config/schema.js";
 import {
   assembleSystemPrompt,
+  resolveMemoryOnRequest,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "../prompts/system-prompt.js";
 import {
@@ -1476,7 +1477,10 @@ describe("prepareTurnRuntimeInputs", () => {
   it("reloads MCP instructions while leaving workspace instructions to Session.runTurn", async () => {
     const repoRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-turn-inputs-"));
     const nested = join(repoRoot, "pkg");
-    const memoryDir = join(repoRoot, ".agenc-memory");
+    const home = join(repoRoot, "session-home");
+    // The session's global memory index, with content: an interactive session
+    // whose memory is empty gets the rules on request instead (next test).
+    const memoryDir = join(home, "memory");
     const memoryMdPath = join(memoryDir, "MEMORY.md");
     await mkdir(nested, { recursive: true });
     await mkdir(memoryDir, { recursive: true });
@@ -1485,7 +1489,6 @@ describe("prepareTurnRuntimeInputs", () => {
     await writeFile(memoryMdPath, "MEMORY-ONE\n", "utf8");
 
     let instructionText = "MCP-ONE";
-    const home = join(repoRoot, "session-home");
     const store = new ConfigStore({ home, cwd: nested, env: { HOME: repoRoot, AGENC_HOME: home } });
     await store.reload();
     const load = vi.spyOn(memoryPrompt, "loadMemoryPrompt");
@@ -1516,8 +1519,9 @@ describe("prepareTurnRuntimeInputs", () => {
       registry: { tools: [{ name: "bash" }] },
     });
     expect(first).not.toHaveProperty("projectInstructions");
-    // Auto memory is on by default: the cacheable instructions and the
-    // per-session directory block both come out of the turn inputs.
+    // Auto memory is on by default and this memory has content: the cacheable
+    // instructions and the per-session directory block both come out of the
+    // turn inputs.
     expect(first.memoryInstructionsText).toContain("# auto memory");
     expect(first.memoryPromptText).toContain("# Memory directories");
     expect(first.memoryPromptText).toContain(join(home, "memory"));
@@ -1552,6 +1556,48 @@ describe("prepareTurnRuntimeInputs", () => {
     ]);
 
     await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it("leaves the memory rules to the on-request reminder while an interactive session's memory is empty", async () => {
+    const repoRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-turn-inputs-empty-"));
+    onTestFinished(() => rm(repoRoot, { recursive: true, force: true }));
+    const nested = join(repoRoot, "pkg");
+    const home = join(repoRoot, "session-home");
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(repoRoot, "package.json"), "{}", "utf8");
+    const store = new ConfigStore({ home, cwd: nested, env: { HOME: repoRoot, AGENC_HOME: home } });
+    await store.reload();
+    const sessionWith = (runtimeOptions: Record<string, unknown>) => ({
+      services: {
+        configStore: store,
+        runtimeOptions,
+        mcpManager: { effectiveServers: vi.fn(async () => new Map()) },
+      },
+    } as unknown as Session);
+    const inputsOf = (session: Session) => prepareTurnRuntimeInputs({
+      session,
+      configStore: store,
+      workspaceRoot: nested,
+      memoryDir: join(home, "memory"),
+      memoryMdPath: join(home, "memory", "MEMORY.md"),
+      registry: { tools: [{ name: "bash" }] },
+    });
+
+    // The fixed prefix leaves both halves out; the reminder carries the same
+    // rules and the session's directories with the first message about memory.
+    const interactive = sessionWith({ simpleMode: false, remoteMode: false });
+    const inputs = await inputsOf(interactive);
+    expect(inputs.memoryInstructionsText).toBe("");
+    expect(inputs.memoryPromptText).toBe("");
+    const onRequest = await resolveMemoryOnRequest(interactive, nested);
+    expect(onRequest).toContain("# auto memory");
+    expect(onRequest).toContain("# Memory directories");
+    expect(onRequest).toContain(join(home, "memory"));
+
+    // A run without a human keeps the rules in its prompt.
+    const unattended = await inputsOf(sessionWith({ simpleMode: false, remoteMode: false, nonInteractive: true }));
+    expect(unattended.memoryInstructionsText).toContain("# auto memory");
+    expect(unattended.memoryPromptText).toContain(join(home, "memory"));
   });
 });
 

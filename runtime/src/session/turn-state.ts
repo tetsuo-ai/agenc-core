@@ -456,6 +456,21 @@ export interface TurnState {
    * it. Turn-scoped like the ledger mark, and deliberately not journaled.
    */
   completionGateUnavailablePrompted: boolean;
+  /**
+   * Exact output: the candidate answer's exact text, held while the
+   * verification rounds run as internal work. Runtime-only; a resumed turn
+   * holds none and asks for its final answer instead.
+   */
+  completionGateHeldAnswer: string | undefined;
+  /** Exact output: a verification reply said the held answer must change. */
+  completionGateAnswerChanged: boolean;
+  /** Exact output: the gate asked for the final answer itself after verification. */
+  completionGateFinalAnswerRequested: boolean;
+  /**
+   * Exact output: the text the turn ends with, set when the gate settles on a
+   * held answer and consumed by the turn's completion.
+   */
+  completionGateFinalAnswer: string | undefined;
 
   // ── Phase 4c — goal gate (`/goal`) — turn-scoped ──
   /**
@@ -622,6 +637,10 @@ export function buildInitialTurnState(
     completionGateLastRequest: undefined,
     completionGateSettled: false,
     completionGateUnavailablePrompted: false,
+    completionGateHeldAnswer: undefined,
+    completionGateAnswerChanged: false,
+    completionGateFinalAnswerRequested: false,
+    completionGateFinalAnswer: undefined,
     goalGateToolLedgerMark: 0,
     // Phase 5
     streamingToolExecutor: null,

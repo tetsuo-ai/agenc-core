@@ -66,7 +66,7 @@ import {
 } from "./system-prompt.js";
 import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
 import { LIGHT_FINISH, LIGHT_LIMITED_FINISH } from "./light-budget-prompt.js";
-import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS } from "./product-help.js";
+import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_GUIDANCE, AGENC_UNDO_PATHS } from "./product-help.js";
 import { LIGHT_LOADED_INSTRUCTIONS_NOTE } from "./live-instructions.js";
 import { LIGHT_TASK_LIMITS_ENV } from "../tools/light-profile.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
@@ -661,18 +661,18 @@ describe("assembleSystemPrompt", () => {
   test.each([
     ["standard", "deepseek"],
     ["standard", "openai"],
-  ] as const)("%s/%s includes the built-in undo paths independent of Git", async (profile, provider) => {
+  ] as const)("%s/%s answers AgenC questions without tools and leaves the undo paths to the product-help reminder", async (profile, provider) => {
     const prompt = await assembleSystemPromptSnapshot({ session: fakeSession, ctx: fakeCtx(), profile, provider });
     expect(prompt.staticPrefix).toContain("capabilities");
     expect(prompt.staticPrefix).toContain("without tools");
-    expect(prompt.staticPrefix).toContain("/rewind");
-    expect(prompt.staticPrefix).toContain("checkpoints");
-    expect(prompt.staticPrefix).toContain("without Git");
-    expect(prompt.staticPrefix).toContain("preview");
-    expect(prompt.staticPrefix).toContain("conversation only");
-    expect(prompt.staticPrefix).toContain("shell");
-    expect(prompt.staticPrefix).toContain("manual");
-    expect(prompt.staticPrefix).toContain("Git");
+    expect(prompt.staticPrefix).toContain(AGENC_UNDO_GUIDANCE);
+    // Every head is resent on every request; the /rewind facts arrive with a
+    // message that asks about undoing (prompts/attachments/product-help.ts).
+    expect(prompt.text).not.toContain("/rewind");
+    expect(prompt.text).not.toContain(AGENC_UNDO_PATHS);
+    for (const fact of ["/rewind", "checkpoints", "without Git", "preview", "conversation only", "shell", "manual"]) {
+      expect(AGENC_UNDO_PATHS).toContain(fact);
+    }
   });
 
   test.each(["deepseek", "openai"] as const)(
@@ -1025,8 +1025,20 @@ describe("assembleSystemPrompt", () => {
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const configStore = new ConfigStore({ home, cwd: home, env: { HOME: home, AGENC_HOME: home } });
     const registry = { tools: [{ name: "FileRead" }, { name: "Write" }] };
+    // A run without a human keeps the rules in its fixed prefix; an interactive
+    // session with empty memory sends them on request (prompts/attachments/memory-on-request.ts).
+    const interactive = await assembleBaseInstructionsForModel({
+      session: { services: { configStore, runtimeOptions: { simpleMode: false, nonInteractive: false } } },
+      ctx: fakeCtx({ cwd: home }),
+      registry,
+      provider: "grok",
+      permissionContext: null,
+      profile: "standard",
+    });
+    expect(interactive).not.toContain("# auto memory");
+    expect(interactive).not.toContain("# Memory directories");
     const standard = await assembleBaseInstructionsForModel({
-      session: { services: { configStore, runtimeOptions: { simpleMode: false } } },
+      session: { services: { configStore, runtimeOptions: { simpleMode: false, nonInteractive: true } } },
       ctx: fakeCtx({ cwd: home }),
       registry,
       provider: "grok",
