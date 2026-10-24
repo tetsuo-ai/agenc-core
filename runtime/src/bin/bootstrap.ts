@@ -722,20 +722,25 @@ let ordinarySubmitModulesPreload: Promise<void> | undefined;
  * submit (see `deferAgentStartupSideEffects`), and that submit then loads the
  * code it runs: the turn kernel for the prompt check and the turn, the
  * model-facing tools for interrupted-job recovery and the cron runner, and the
- * cron store. Loading that code took about 10 ms of the time between the
- * user's Enter and the first model request. Load it while the session waits
- * for the user instead. Only modules are evaluated here; every startup side
- * effect still runs at the submit, under its authority, in its order. Once per
- * process; a module that fails to load fails again where the submit imports it.
+ * cron store, and MCP startup builds and compiles its configuration schema on
+ * first use. That took about 13 ms of the time between the user's Enter and
+ * the first model request. Do it while the session waits for the user instead.
+ * Only modules are evaluated and a schema parses an empty configuration (no
+ * I/O); every startup side effect still runs at the submit, under its
+ * authority, in its order. Once per process; a module that fails to load fails
+ * again where the submit imports it.
  */
-function preloadOrdinarySubmitModules(): void {
-  ordinarySubmitModulesPreload ??= new Promise<void>((resolve) => {
+export function preloadOrdinarySubmitModules(): Promise<void> {
+  return ordinarySubmitModulesPreload ??= new Promise<void>((resolve) => {
     setImmediate(resolve);
   }).then(async () => {
     for (const load of [
       () => import("../session/run-turn.js"),
       () => import("./model-facing-tools.js"),
       () => import("../utils/cronTasks.js"),
+      () => import("../services/mcp/types.js").then(({ McpJsonConfigSchema }) => {
+        McpJsonConfigSchema().safeParse({ mcpServers: {} });
+      }),
     ]) {
       try {
         await load();
@@ -2424,7 +2429,7 @@ async function bootstrapLocalRuntimeSessionScoped(
 
         if (options.deferAgentStartupSideEffects === true) {
           s.appendDeferredOrdinarySubmitHook(activateAgentStartupSideEffects);
-          preloadOrdinarySubmitModules();
+          void preloadOrdinarySubmitModules();
         } else {
           await activateAgentStartupSideEffects();
         }
