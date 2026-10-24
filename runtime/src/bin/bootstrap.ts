@@ -715,6 +715,37 @@ export interface PreparedConfiguredExecutionAuthority {
   rollback(): void;
 }
 
+let ordinarySubmitModulesPreload: Promise<void> | undefined;
+
+/**
+ * A daemon session defers its startup side effects to its first ordinary
+ * submit (see `deferAgentStartupSideEffects`), and that submit then loads the
+ * code it runs: the turn kernel for the prompt check and the turn, the
+ * model-facing tools for interrupted-job recovery and the cron runner, and the
+ * cron store. Loading that code took about 10 ms of the time between the
+ * user's Enter and the first model request. Load it while the session waits
+ * for the user instead. Only modules are evaluated here; every startup side
+ * effect still runs at the submit, under its authority, in its order. Once per
+ * process; a module that fails to load fails again where the submit imports it.
+ */
+function preloadOrdinarySubmitModules(): void {
+  ordinarySubmitModulesPreload ??= new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  }).then(async () => {
+    for (const load of [
+      () => import("../session/run-turn.js"),
+      () => import("./model-facing-tools.js"),
+      () => import("../utils/cronTasks.js"),
+    ]) {
+      try {
+        await load();
+      } catch {
+        // Reported where the submit path imports the module.
+      }
+    }
+  });
+}
+
 function waitForPartialMcpDisposal(task: Promise<void>): Promise<void> {
   return withTimeout(
     task,
@@ -2393,6 +2424,7 @@ async function bootstrapLocalRuntimeSessionScoped(
 
         if (options.deferAgentStartupSideEffects === true) {
           s.appendDeferredOrdinarySubmitHook(activateAgentStartupSideEffects);
+          preloadOrdinarySubmitModules();
         } else {
           await activateAgentStartupSideEffects();
         }
