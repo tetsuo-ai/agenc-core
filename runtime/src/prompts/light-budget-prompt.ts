@@ -3,6 +3,15 @@ import {
   UNTRUSTED_TOOL_RESULT_BOUNDARY,
 } from "../tools/untrusted-tool-result-framing.js";
 
+/**
+ * Contract rule both Light finish paragraphs carry (round 4 job sq). Lost long-task solves replaced behavior the
+ * request did not change in their first patch (data the old code kept for its callers was dropped or overwritten),
+ * and their tests could not notice. A general working principle, not a task hint; it adds no test-writing rule, so
+ * the model's own later review of its patch stays as it was.
+ */
+export const LIGHT_KEEP_BEHAVIOR =
+  "Keep behavior the request does not change: inputs the code accepts, data it keeps, its outputs and errors.";
+
 /** Light's default finish rules: deliver, check, report. */
 export const LIGHT_FINISH = lightFinish(false);
 
@@ -10,7 +19,7 @@ function lightFinish(glmBatchedSteps: boolean): string {
   const failureHandling = glmBatchedSteps
     ? "fix all failures you can diagnose before retrying"
     : "diagnose the first failure and fix its cause before retrying";
-  return `Complete requested files, exports and error cases. Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. Briefly report results and stop. Report unavailable checks instead of rebuilding their tools.`;
+  return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. Briefly report results and stop. Report unavailable checks instead of rebuilding their tools.`;
 }
 
 /**
@@ -24,7 +33,7 @@ function lightLimitedFinish(glmBatchedSteps: boolean): string {
   const failureHandling = glmBatchedSteps
     ? "fixing all failures you can diagnose"
     : "fixing the first failure's cause";
-  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and do not re-verify what already passed. Report unavailable checks instead of rebuilding their tools. When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
+  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. ${LIGHT_KEEP_BEHAVIOR} Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and do not re-verify what already passed. Report unavailable checks instead of rebuilding their tools. When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
 }
 
 export const LIGHT_GLM_BATCHED_STEPS =
