@@ -80,6 +80,32 @@ describe("daemon launcher handoff", () => {
       expect(capabilityDigest(["--proc", "/proc"])).not.toBe(capabilityDigest(["--bind", "/proc", "/proc"]));
     } finally { fs.rmSync(s.dir, { recursive: true, force: true }); }
   });
+  // Job og: every sandbox policy (inspection, read-only shell, workspace-write)
+  // re-ran the namespace and --help probes, two synchronous child processes on
+  // the daemon's event loop, on the path of that policy's first command.
+  it("runs the namespace and help probes once per context across policies", () => {
+    const s = setup();
+    try {
+      const readOnly = s.args.map((arg) => arg.includes('"access":"write"')
+        ? arg.replace('"access":"write"', '"access":"read"') : arg);
+      expect(readOnly).not.toEqual(s.args);
+      const writeHint = prepareLinuxSandboxProbeHint(s.args, s.dir, s.env)!;
+      const readHint = prepareLinuxSandboxProbeHint(readOnly, s.dir, s.env)!;
+      expect(writeHint).toBeDefined(); expect(readHint).toBeDefined();
+      // Each policy has its own proc-mount probe; the context's capability
+      // probe ran once.
+      expect(s.run).toHaveBeenCalledTimes(2);
+      expect(s.capabilities).toHaveBeenCalledTimes(1);
+      // A failed launch re-probes what it relied on, capabilities included.
+      readHint.invalidate();
+      expect(prepareLinuxSandboxProbeHint(readOnly, s.dir, s.env)).toBeDefined();
+      expect(s.run).toHaveBeenCalledTimes(3);
+      expect(s.capabilities).toHaveBeenCalledTimes(2);
+      // A new context (another environment) probes its own capabilities.
+      prepareLinuxSandboxProbeHint(s.args, s.dir, { ...s.env, LANG: "C" });
+      expect(s.capabilities).toHaveBeenCalledTimes(3);
+    } finally { fs.rmSync(s.dir, { recursive: true, force: true }); }
+  });
   it("does not cache namespace/proc failures or opt nonstandard launch paths in", () => {
     const s = setup();
     try {
