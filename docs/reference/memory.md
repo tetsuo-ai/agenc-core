@@ -102,6 +102,18 @@ returns two pieces that the system prompt assembler places separately:
 loader creates both memory directories so the model can write to them
 without checking first. The block is about 700 tokens in total.
 
+An interactive session (Light or standard) whose global and project
+`MEMORY.md` indexes are both empty when its prompt is assembled leaves both
+pieces out of its fixed prefix. The rules and directories arrive once, as a
+reminder before the first user message that asks about memory or states
+something worth remembering (`prompts/attachments/memory-on-request.ts`: a
+request to remember, recall or forget, the user's role, a preference or
+standing instruction, a team convention or a pointer to an external system),
+and stay in place for the rest of the session. A message that only describes
+the user in passing ("I'm new to this repo") does not bring them. Runs without
+a human (`agenc -p`, scheduled routines) keep the rules in the prefix; the
+compact and coordinator heads carry no memory rules.
+
 Each live turn also appends the global and project `MEMORY.md` indexes to
 the instruction envelope (`prompts/live-instructions.ts`), truncated by
 `truncateEntrypointContent` and framed as untrusted
