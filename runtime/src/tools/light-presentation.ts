@@ -229,10 +229,11 @@ const LEAN_GREP_POINTER =
 /**
  * Standard sessions' own wording for core tools whose Light text does not fit them: FileRead
  * keeps dense line numbers in standard sessions, and Light has no MultiEdit. Same fields and
- * schema as the canonical tool.
+ * schema as the canonical tool. That a successful edit needs no reread is said once, by the
+ * standard head's tool section (prompts/system-prompt.ts getUsingYourToolsSection).
  */
 const standardDescriptions: Readonly<Record<string, string>> = {
-  FileRead: "Read text, images, PDFs or Jupyter notebooks. Default: the first 2000 lines, numbered from 1 (cat -n); for a large file pass offset (1-based) and limit and read only what you need. A read over 25000 tokens fails. PDFs over 10 pages need pages (at most 20 per read). Directories fail: list them with the shell. A whole-file read authorizes edits; Edit and Write fail if their change did not land, so do not re-read to check one.",
+  FileRead: "Read text, images, PDFs or Jupyter notebooks. Default: the first 2000 lines, numbered from 1 (cat -n); for a large file pass offset (1-based) and limit and read only what you need. A read over 25000 tokens fails. PDFs over 10 pages need pages (at most 20 per read). Directories fail: list them with the shell. A whole-file read authorizes edits.",
   MultiEdit: "Several exact replacements in one file, applied in order, each to the result of the one before. Read the file first (FileRead, or exec_command output that printed it whole). Each old_string must be unique when its edit applies unless replace_all is set. The file is written only if every edit succeeds.",
   Skill: "Run a skill listed in the system reminders within this conversation; when one matches the request, call it before responding. Skill names only: MCP tools are called through their own function after system.searchTools loads them.",
 };
@@ -253,12 +254,19 @@ function withoutVendorKeys(value: unknown): unknown {
 /**
  * Standard-session wording for a built-in tool: Light's compact text where it fits
  * (`lightWording`), the standard text above for FileRead, MultiEdit and Skill, and the lean
- * exec_command and Grep until system.searchTools selects them. The schema keeps every
- * field, default and standard validation keyword; only AgenC's x-agenc-* keys stay off the wire.
+ * exec_command, Grep and system.searchTools until system.searchTools selects them (the search
+ * filters with the same pointer as {@link LEAN_SEARCH_FIELDS} describes). The schema of every
+ * other tool keeps every field, default and standard validation keyword; only AgenC's x-agenc-*
+ * keys stay off the wire.
  */
 export function standardPresentation(
   tool: LLMTool,
-  options: { readonly lightWording?: boolean; readonly leanExec?: boolean; readonly leanGrep?: boolean } = {},
+  options: {
+    readonly lightWording?: boolean;
+    readonly leanExec?: boolean;
+    readonly leanGrep?: boolean;
+    readonly leanSearch?: boolean;
+  } = {},
 ): LLMTool {
   const name = tool.function.name;
   const description = standardDescriptions[name];
@@ -269,7 +277,9 @@ export function standardPresentation(
       : presentWith(tool, description, standardFieldHints[name] ?? {});
   const worded = options.leanGrep === true && name === "Grep"
     ? withOnlyFields(presented, LEAN_GREP_FIELDS, LEAN_GREP_POINTER)
-    : presented;
+    : options.leanSearch === true && name === "system.searchTools"
+      ? withFieldSchemas(withOnlyFields(presented, LEAN_SEARCH_FIELDS, LEAN_SEARCH_POINTER), { select: { type: "string" } })
+      : presented;
   return {
     ...worded,
     function: {

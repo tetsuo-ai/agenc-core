@@ -15,7 +15,7 @@ import {
   createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
-import { RESIDUAL_PROCESSES_NOTE } from "./exec-result-format.js";
+import { RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE, SERVER_CHECK_NOTE } from "./exec-result-format.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-stdin.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -310,6 +310,18 @@ describe("exec_command tool", () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
       expect(result.content).toContain("same command");
+    });
+
+    test("a sandbox notice about a server check leaves out the server guidance", async () => {
+      // The notice says what to do next (escalate, or start and test in the same command);
+      // advice about waiting for a port would compete with it.
+      const { tool } = toolWith(completedExecOutput(PYTHON_SERVER_SOCKET_DENIED));
+      const result = await tool.execute(sandboxedArgs({
+        cmd: "python3 -m http.server 8123 & sleep 1; curl -s localhost:8123; kill $!",
+        workdir: root, __agencSessionId: `sandbox-server-${Math.random()}`,
+      }));
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
+      expect(result.content).not.toContain(SERVER_CHECK_NOTE);
     });
 
     test("keeps the server diagnostic when background cleanup makes the shell succeed", async () => {
@@ -1501,6 +1513,41 @@ describe("exec_command tool", () => {
       expect(result.content).toContain(RESIDUAL_PROCESSES_NOTE);
       expect(result.metadata).toMatchObject({ residualProcessesTerminated: true });
       expect(result.codeModeResult).toMatchObject({ residual_processes_terminated: true });
+    });
+
+    test("a session's later residue notes are short; the server guidance came with the first", async () => {
+      const { tool: noteTool } = mockManagerTool({
+        execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
+          ...completedExecOutput("listening on 3000"),
+          residual_processes_terminated: true,
+        })),
+      });
+      const session = { __agencSessionId: `residue-${Math.random()}` };
+      const smoke = "node server.js & sleep 1; curl -s localhost:3000/health";
+
+      const first = await noteTool.execute(fullAccessArgs({ cmd: smoke, ...session }));
+      const second = await noteTool.execute(fullAccessArgs({ cmd: smoke, ...session }));
+      const otherSession = await noteTool.execute(fullAccessArgs({ cmd: smoke, __agencSessionId: `${session.__agencSessionId}-b` }));
+
+      expect(first.content).toContain(RESIDUAL_PROCESSES_NOTE);
+      expect(second.content).not.toContain(RESIDUAL_PROCESSES_NOTE);
+      expect(second.content).toContain(RESIDUAL_PROCESSES_REPEAT_NOTE);
+      expect(otherSession.content).toContain(RESIDUAL_PROCESSES_NOTE);
+      expect(second.metadata).toMatchObject({ residualProcessesTerminated: true });
+    });
+
+    test("a check that waited a fixed time for a server it started gets the server guidance once", async () => {
+      const { tool: noteTool } = mockManagerTool({
+        execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () =>
+          completedExecOutput("Listening on http://localhost:39485")),
+      });
+      const session = { __agencSessionId: `fixed-wait-${Math.random()}` };
+      const first = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      const second = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      const tests = await noteTool.execute(fullAccessArgs({ cmd: "npm test", __agencSessionId: `${session.__agencSessionId}-b` }));
+      expect(first.content).toContain(SERVER_CHECK_NOTE);
+      expect(second.content).not.toContain(SERVER_CHECK_NOTE);
+      expect(tests.content).not.toContain(SERVER_CHECK_NOTE);
     });
   });
 

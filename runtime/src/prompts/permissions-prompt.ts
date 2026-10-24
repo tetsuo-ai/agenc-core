@@ -458,11 +458,14 @@ export const LIGHT_BYPASS_AUTONOMY_NOTE =
   "Tool calls are pre-approved: never ask for tool permission or plan approval or pause to confirm local, reversible work; the action rules above still apply. Ask one question (AskUserQuestion) only if the task is genuinely ambiguous, else make reasonable assumptions; when the work is done and verified, stop and report.";
 
 /**
- * LIGHT_BYPASS_AUTONOMY_NOTE for a standard head, which names its action rules' section. Standard
- * sessions keep the auto-mode reminder, so this note leaves its assumptions sentence to it.
+ * LIGHT_BYPASS_AUTONOMY_NOTE for a standard head, which names its action rules' section. A
+ * standard session whose permissions carry this note gets no auto-mode reminder either
+ * (prompts/attachments/auto-mode.ts): the note keeps that reminder's "make reasonable assumptions"
+ * and its secrets rule, which the standard head's action rules do not state; the action rules
+ * already cover its destructive, shared-system and posting rules.
  */
 export const COMPACT_BYPASS_AUTONOMY_NOTE =
-  "Tool calls are pre-approved: never ask for tool permission or plan approval or pause to confirm local, reversible work; the rules in 'Executing actions with care' still apply. Ask one question (AskUserQuestion) only if the task is genuinely ambiguous; when the work is done and verified, stop and report.";
+  "Tool calls are pre-approved: never ask for tool permission or plan approval or pause to confirm local, reversible work; the rules in 'Executing actions with care' still apply, and never share a secret unless the user authorized that secret and its destination. Ask one question (AskUserQuestion) only if the task is genuinely ambiguous, else make reasonable assumptions; when the work is done and verified, stop and report.";
 
 const LIGHT_APPROVAL_TEXT: Partial<Record<PermissionMode, string>> = {
   plan: LIGHT_APPROVAL_UNLESS_TRUSTED,

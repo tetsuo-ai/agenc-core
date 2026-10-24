@@ -1502,10 +1502,10 @@ export function buildToolRegistry(
           return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true });
         }
         // Standard sessions with the default deferral send compact wording for
-        // the core tools (same fields, same schema) and the lean exec_command
-        // and Grep until system.searchTools selects them.
+        // the core tools (same fields, same schema) and the lean exec_command,
+        // Grep and system.searchTools until system.searchTools selects them.
         return standardDeferral
-          ? standardPresentation(tool, { lightWording: STANDARD_COMPACT_PRESENTATION.has(spec.tool.name), leanExec, leanGrep })
+          ? standardPresentation(tool, { lightWording: STANDARD_COMPACT_PRESENTATION.has(spec.tool.name), leanExec, leanGrep, leanSearch })
           : tool;
       });
       if (!deferRareTools) return tools;

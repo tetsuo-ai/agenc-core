@@ -146,8 +146,9 @@ export interface CriticalSystemReminderAttachment {
 }
 
 /**
- * Built-in product help that Light keeps out of its fixed head: sent once,
- * before the user message that asks for it (prompts/attachments/product-help.ts).
+ * Built-in product help that the heads keep out of their fixed prefix: sent
+ * once, before the user message that asks for it
+ * (prompts/attachments/product-help.ts).
  */
 export interface ProductHelpAttachment {
   readonly kind: "product_help";
@@ -338,6 +339,8 @@ export interface McpResourceAttachment {
 export interface SkillListingAttachment {
   readonly kind: "skill_listing";
   readonly content: string;
+  /** The request that carries the listing lists the Skill tool, so no fallback path is needed. */
+  readonly skillToolListed?: boolean;
 }
 
 /**
@@ -347,6 +350,8 @@ export interface SkillListingAttachment {
 export interface SkillRelevanceAttachment {
   readonly kind: "skill_relevance";
   readonly content: string;
+  /** See {@link SkillListingAttachment.skillToolListed}. */
+  readonly skillToolListed?: boolean;
 }
 
 /**
