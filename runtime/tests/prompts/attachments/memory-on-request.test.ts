@@ -52,10 +52,22 @@ const MEMORY_MESSAGES = [
   "Our release deadline is next Thursday.",
   "Bugs are tracked in Jira project PAY.",
   "The staging dashboard is at https://grafana.example.com/d/abc",
+  // The example user messages of the memory type taxonomy (memory/types.ts).
+  "I'm a data scientist investigating what logging we have in place",
+  "I've been writing Go for ten years but this is my first time touching the React side of this repo",
+  "stop summarizing what you just did at the end of every response, I can read the diff",
+  "we're freezing all non-critical merges after Thursday; mobile team is cutting a release branch",
+  "check the Linear project \"INGEST\" if you want context on these tickets, that's where we track all pipeline bugs",
+  "perfect, keep doing that",
+  // Held-out memory turns of earlier benchmark suites.
+  "Ignore all saved memory for this turn. What report price prefix have I supplied in this conversation?",
+  "Update only my saved report price preference: use the exact prefix USD followed by a space.",
+  "For this turn only, my temporary report price notation is ZYX 7.00000. Do not remember this.",
 ];
 
-// The round 4 benchmark prompts other than explain ("I'm new to this repo").
+// The round 4 benchmark prompts, and task requests that only use memory-like words.
 const TASK_PROMPTS = [
+  "I'm new to this repo. What does it do, where does execution start, and how does data flow? Name the relevant files and say what units amounts use. Please just explain; don't change files.",
   "The checkout test is failing. Please fix the calculation and cover the edge cases described in the README with tests.",
   "Add an optional --pending flag to the list command so it only shows unfinished tasks. The normal list must keep working. Add pytest tests for this, including an empty list.",
   "Rename prettyName to formatDisplayName throughout the source. Remove the old name completely, keep behavior the same, and update tests to cover all five views.",
@@ -65,6 +77,11 @@ const TASK_PROMPTS = [
   "From sales.csv, who are our top three customers by revenue? Follow the accounting rules in the README. Give each customer and their exact USD total, highest first. Please don't change any files.",
   "Also document --pending in the README with a runnable example and what it filters.",
   "The tests in this repo are failing. Fix the source code so that npm test passes. Do not modify the tests.",
+  "I have a SQLite database in /data/ that seems to have some issues. When I query it, I'm only seeing 8 records. Can you help recover them?",
+  "Large runs can consume excessive memory because per-file results are accumulated before writing. Stream them instead.",
+  "Build pMARS (http://www.koth.org/pmars/) from source with no X server.",
+  "Make this a fire-and-forget call so the request handler returns at once.",
+  "Run npm test exactly twice in two separate exec_command calls because I am explicitly requesting two runs.",
 ];
 
 describe("memory-on-request attachment producer", () => {
