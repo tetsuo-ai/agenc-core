@@ -32,7 +32,7 @@ function count(request: RecordedRequest, needle: string): number {
 }
 
 /** One tool round, then a final answer, for every turn, in a standard session with compact tool wording. */
-async function scriptedSession(mode: PermissionMode) {
+async function scriptedSession(mode: PermissionMode, contextOverrides: Record<string, unknown> = {}) {
   const requests: RecordedRequest[] = [];
   const provider = mkProvider();
   let step = 0;
@@ -61,7 +61,7 @@ async function scriptedSession(mode: PermissionMode) {
   });
   await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(), mode });
   const context = {
-    ...mkCtx({ permissionMode: mode, sandboxPolicy: { value: "workspace_write" } } as never),
+    ...mkCtx({ permissionMode: mode, sandboxPolicy: { value: "workspace_write" }, ...contextOverrides } as never),
     permissionInstructionsDeferred: true,
   };
   const instructions = await assembleBaseInstructionsForModel({
@@ -122,6 +122,15 @@ describe("standard fixed request prefix", () => {
     expect(text(asked.messages[index]!)).toContain("# Memory directories");
     expect(text(asked.messages[index + 1]!)).toContain("Remember that I prefer tabs over spaces.");
     for (const request of requests.slice(2)) expect(count(request, MEMORY_RULES_MARKER)).toBe(1);
+  });
+
+  test("the compact head of local tool providers carries no memory rules and gets none on request", async () => {
+    const compact = await scriptedSession("bypassPermissions", { modelProviderId: "ollama" });
+    await compact.turn("turn-1", "Remember that I prefer tabs over spaces.");
+    for (const request of compact.requests) {
+      expect(request.systemPrompt).not.toContain(MEMORY_RULES_MARKER);
+      expect(count(request, MEMORY_RULES_MARKER)).toBe(0);
+    }
   });
 
   test("an undo question gets the paths once; the head only says to answer it without tools", async () => {
