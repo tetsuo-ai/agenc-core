@@ -103,6 +103,7 @@ describe("writeCsvOutput", () => {
       leafMutation: 0x500d0156,
       ancestorMutation: 0x500d0152,
       inheritedRead: 0x90000001,
+      creationOnly: 0x100026,
     });
   });
 
@@ -390,6 +391,47 @@ describe("writeCsvOutput", () => {
       ).rejects.toThrow(expected);
     },
   );
+
+  it("trusts a Windows creation-only container grant like a sticky parent", async () => {
+    if (process.platform !== "win32") return;
+    // The ACE C:\Windows\Temp propagates to every directory beneath it:
+    // synchronize, add file, add subdirectory, traverse — container-inherit
+    // only, so it can never reach file contents or delete entries.
+    execFileSync(
+      "icacls.exe",
+      [root, "/grant", "*S-1-5-32-545:(CI)(S,WD,AD,X)"],
+      { encoding: "buffer" },
+    );
+    await expect(
+      writeCsvOutput({
+        capability: createCsvOutputRootCapability(root),
+        jobId: "windows-creation-only",
+        requestedPath: join(root, "windows-creation-only.csv"),
+        mode: "create_new",
+        headers: ["value"],
+        rows: [["owned"]],
+      }),
+    ).resolves.toMatchObject({ path: join(root, "windows-creation-only.csv") });
+  });
+
+  it("rejects a Windows container grant that can delete capture entries", async () => {
+    if (process.platform !== "win32") return;
+    execFileSync(
+      "icacls.exe",
+      [root, "/grant", "*S-1-5-32-545:(CI)(DC)"],
+      { encoding: "buffer" },
+    );
+    await expect(
+      writeCsvOutput({
+        capability: createCsvOutputRootCapability(root),
+        jobId: "windows-delete-child",
+        requestedPath: join(root, "windows-delete-child.csv"),
+        mode: "create_new",
+        headers: ["value"],
+        rows: [["secret"]],
+      }),
+    ).rejects.toThrow(/mutation/u);
+  });
 
   it("revalidates the Darwin mutation boundary before recovery filesystem actions", async () => {
     if (process.platform !== "darwin") return;
