@@ -14,6 +14,7 @@ import {
   resolveToolOutputLogPath,
 } from "./tool-output-rotation.js";
 import { recoverDaemonStateOnStartup } from "./recovery.js";
+import { openTurnDurabilityScope } from "../durability/turn-durability.js";
 
 let home = "";
 let cwd = "";
@@ -423,6 +424,96 @@ describe("AgenCSessionSnapshotPolicy", () => {
     // The trailing timer finds nothing left to write.
     timers[0]?.();
     expect(snapshotCount("session-exchange")).toBe(2);
+  });
+
+  // Job og: inside a running turn the first change after a quiet period (a
+  // reply's text, its tool calls) wrote a snapshot, a synchronous SQLite
+  // commit, on the path to the next model request.
+  it("delays in-turn writes and writes them at the exchange boundary", () => {
+    seedRun("run-turn", "session-turn");
+    const timers: { callback: () => void; delayMs: number }[] = [];
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => "2026-05-01T00:00:00.000Z",
+      agencHome: home,
+      setTimeout: (callback, delayMs) => {
+        timers.push({ callback, delayMs });
+        return { unref: vi.fn() };
+      },
+      clearTimeout: vi.fn(),
+    });
+    const releaseTurn = openTurnDurabilityScope("run-turn");
+    try {
+      policy.recordSessionEvent("session-turn", {
+        method: "event.session_event",
+        params: {
+          agentId: "run-turn",
+          event: { type: "agent_message", id: "reply-1", payload: { message: "Looking around." } },
+        },
+      });
+      policy.recordSessionEvent("session-turn", {
+        method: "event.tool_request",
+        params: {
+          agentId: "run-turn",
+          eventId: "evt-turn",
+          requestId: "tool-turn",
+          toolName: "FileRead",
+          input: { path: "a.txt" },
+        },
+      });
+      // Nothing was written on the path to the next request; one timer holds
+      // both changes.
+      expect(snapshotCount("session-turn")).toBe(0);
+      expect(timers.map((timer) => timer.delayMs)).toEqual([250]);
+      timers[0]!.callback();
+      expect(snapshotCount("session-turn")).toBe(1);
+      expect(latestSnapshot("session-turn").toolState).toMatchObject({
+        inFlight: { "tool-turn": { status: "running" } },
+      });
+      // The tool result lands inside the coalescing window: one trailing timer.
+      policy.recordSessionEvent("session-turn", {
+        method: "event.session_event",
+        params: {
+          agentId: "run-turn",
+          event: {
+            type: "tool_call_completed",
+            payload: { callId: "tool-turn", result: "ok", isError: false },
+          },
+        },
+      });
+      expect(snapshotCount("session-turn")).toBe(1);
+      expect(timers).toHaveLength(2);
+    } finally {
+      releaseTurn();
+    }
+    // The exchange completes (message.stream returns): its state is written at
+    // once, carrying the deferred tool result, even for an already known user
+    // message.
+    policy.recordMessageExchange({
+      sessionId: "session-turn",
+      agentId: "run-turn",
+      content: "hello",
+      messageId: "message-turn",
+      streamId: "stream-turn",
+      acceptedAt: "2026-05-01T00:00:00.000Z",
+    });
+    expect(snapshotCount("session-turn")).toBe(2);
+    expect(latestSnapshot("session-turn").toolState).toMatchObject({
+      inFlight: {},
+      completed: { "tool-turn": { status: "completed" } },
+    });
+    const again = policy.recordMessageExchange({
+      sessionId: "session-turn",
+      agentId: "run-turn",
+      content: "hello",
+      messageId: "message-turn",
+      streamId: "stream-turn",
+      acceptedAt: "2026-05-01T00:00:00.000Z",
+    });
+    expect(again).toBeUndefined();
+    expect(snapshotCount("session-turn")).toBe(2);
+    // The trailing timer finds nothing left to write.
+    timers[1]!.callback();
+    expect(snapshotCount("session-turn")).toBe(2);
   });
 
   it("bounds tool inputs and keeps at most 20 completed calls in the snapshot", () => {
