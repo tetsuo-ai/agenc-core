@@ -807,24 +807,6 @@ const agencKnownMissingOptionalExternal = {
   },
 };
 
-export const __agencBuildConfigTest = {
-  agencOptionalExternal,
-  compileWindowsProcessBroker,
-  entry,
-  featureFlagLiteral,
-  inlineCopiedTreeFeatureCalls,
-  isBundledBareImport,
-  isKnownMissingOptionalModule,
-  publicPackageName,
-  relocatedTuiSourceRoots,
-  relocatedUpstreamRoots,
-  resolveAgenCBareSrc,
-  resolveRelativeAgenCSource,
-  shouldUseAgenCResolution,
-  sourceFileBaseAliases,
-  sourceRootForImporter,
-} as const;
-
 const external = [
   '@anthropic-ai/mcpb',
   '@tetsuo-ai/desktop-tool-contracts',
@@ -839,6 +821,22 @@ const external = [
   'audio-capture-napi',
   'cross-spawn',
   'execa',
+  // One copy per process for packages the moved-source resolver externalizes
+  // selectively: bundling a second copy next to the node_modules one splits
+  // singleton state across the app (chalk's color-level adjustments are the
+  // known case). check-bundle-duplicates.mjs fails the build when a package
+  // ends up inlined and external at once.
+  '@alcalzone/ansi-tokenize',
+  '@anthropic-ai/sdk',
+  'chalk',
+  'diff',
+  'figures',
+  'highlight.js',
+  'ignore',
+  'lru-cache',
+  'marked',
+  'shell-quote',
+  'strip-ansi',
   // Relocated sources and external consumers already use this package. Keep
   // schemas, error constructors and metadata registries on the same instance.
   'zod',
@@ -875,6 +873,25 @@ const external = [
   'scheduler',
   'usehooks-ts',
 ];
+
+export const __agencBuildConfigTest = {
+  agencOptionalExternal,
+  compileWindowsProcessBroker,
+  entry,
+  external,
+  featureFlagLiteral,
+  inlineCopiedTreeFeatureCalls,
+  isBundledBareImport,
+  isKnownMissingOptionalModule,
+  publicPackageName,
+  relocatedTuiSourceRoots,
+  relocatedUpstreamRoots,
+  resolveAgenCBareSrc,
+  resolveRelativeAgenCSource,
+  shouldUseAgenCResolution,
+  sourceFileBaseAliases,
+  sourceRootForImporter,
+} as const;
 
 const macroBuildTime = process.env.AGENC_BUILD_TIME ?? new Date().toISOString();
 
