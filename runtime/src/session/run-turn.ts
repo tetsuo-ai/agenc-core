@@ -2046,7 +2046,9 @@ export async function drainInFlight(
 
 const EMPTY_RESPONSE_RETRY_TEXT =
   "Your previous response contained no visible final answer. " +
-  "Return the final answer now in the assistant output channel.";
+  "Continue the user's task from the current state. If work remains, use the " +
+  "appropriate tools within existing permissions; otherwise return the final " +
+  "answer in the assistant output channel.";
 
 /**
  * Backoff before each empty-response retry of an unattended run (`agenc -p`),
@@ -4016,7 +4018,8 @@ async function* runTurnKernelInner(
 
     const lastAssistant = state.assistantMessages.at(-1);
     const assistantText = lastAssistant?.text ?? "";
-    if (assistantText.length > 0) lastContent = assistantText;
+    const hasAssistantText = assistantText.trim().length > 0;
+    if (hasAssistantText) lastContent = assistantText;
     // No tool calls + no transition → commit + terminate.
     if (!state.needsFollowUp && state.toolUseBlocks.length === 0) {
       // Reasoning providers can occasionally complete a response after
@@ -4028,7 +4031,7 @@ async function* runTurnKernelInner(
       // broken provider from creating an unbounded sampling loop. The retry
       // happens before commit(), so it never consumes a maxTurns iteration.
       if (
-        assistantText.length === 0 &&
+        !hasAssistantText &&
         emptyResponseRetryCount < emptyResponseRetryLimit(session)
       ) {
         emptyResponseRetryCount += 1;
@@ -4070,7 +4073,7 @@ async function* runTurnKernelInner(
         continue;
       }
       const stopReason =
-        assistantText.length === 0 ? "empty_response" : "completed";
+        hasAssistantText ? "completed" : "empty_response";
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
       if (stopReason === "empty_response") {
         lastContent = emptyResponseExhaustedMessage(emptyResponseRetryCount);

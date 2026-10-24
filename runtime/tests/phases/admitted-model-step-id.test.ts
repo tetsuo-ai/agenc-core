@@ -41,7 +41,9 @@ const CONTEXT_WINDOW_TOKENS = 64_000;
 const MAX_OUTPUT_TOKENS = 256;
 const EMPTY_RESPONSE_RETRY_TEXT =
   "Your previous response contained no visible final answer. " +
-  "Return the final answer now in the assistant output channel.";
+  "Continue the user's task from the current state. If work remains, use the " +
+  "appropriate tools within existing permissions; otherwise return the final " +
+  "answer in the assistant output channel.";
 
 function admittedRequest(
   input: readonly LLMMessage[],
