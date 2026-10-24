@@ -5,8 +5,10 @@ import {
   formatUnifiedExecToolContent,
   RESIDUAL_PROCESSES_NOTE,
   RESIDUAL_PROCESSES_REPEAT_NOTE,
-  residualNoteOncePerSession,
+  SERVER_CHECK_NOTE,
+  serverGuidanceOncePerSession,
   unifiedExecCodeModeResult,
+  waitsFixedTimeForProgram,
 } from "../../../src/tools/system/exec-result-format.js";
 import type { ExecCommandToolOutput } from "../../../src/unified-exec/types.js";
 import { frameUntrustedToolResultContent } from "../../../src/tools/untrusted-tool-result-framing.js";
@@ -111,15 +113,52 @@ describe("formatUnifiedExecToolContent", () => {
   test("a session gets the full residue note once and the short one on later commands", () => {
     const full = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
     const session = `exec-result-format-${Math.random()}`;
-    expect(residualNoteOncePerSession(full, session)).toBe(full);
-    const repeat = residualNoteOncePerSession(full, session);
+    const smoke = "node server.js & sleep 1; curl -s localhost:3000/health";
+    expect(serverGuidanceOncePerSession(full, session, smoke)).toBe(full);
+    const repeat = serverGuidanceOncePerSession(full, session, smoke);
     expect(repeat).toBe(full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE));
     expect(compactExecExitFooter(repeat)).toBe(repeat.replace("[exec exit_code=", "[exit "));
-    // Another session, a result without the note and a call without a session are unchanged.
-    expect(residualNoteOncePerSession(full, `${session}-other`)).toBe(full);
+    // The residue note carried the server guidance: a later fixed wait gets no second copy.
     const plain = formatUnifiedExecToolContent(output({}), true);
-    expect(residualNoteOncePerSession(plain, session)).toBe(plain);
-    expect(residualNoteOncePerSession(full, undefined)).toBe(full);
+    expect(serverGuidanceOncePerSession(plain, session, "PORT=0 timeout 2 node server.js")).toBe(plain);
+    // Another session, a plain command and a call without a session are unchanged.
+    expect(serverGuidanceOncePerSession(full, `${session}-other`, smoke)).toBe(full);
+    expect(serverGuidanceOncePerSession(plain, session, "npm test")).toBe(plain);
+    expect(serverGuidanceOncePerSession(full, undefined, smoke)).toBe(full);
+  });
+
+  test("a check that waited a fixed time for a program it started gets the server guidance once per session", () => {
+    // Seen in DeepSeek Light server runs: the check cleans up after itself, so no residue note fires.
+    const plain = formatUnifiedExecToolContent(output({ output: "Listening on http://localhost:39485" }), true);
+    const session = `exec-result-format-fixed-${Math.random()}`;
+    const first = serverGuidanceOncePerSession(plain, session, "PORT=0 timeout 2 node server.js; true");
+    expect(first).toBe(`${plain}\n${SERVER_CHECK_NOTE}`);
+    expect(compactExecExitFooter(first)).toBe(first.replace("[exec exit_code=", "[exit "));
+    expect(serverGuidanceOncePerSession(plain, session, "node server.js & pid=$!; sleep 0.5; curl -s localhost:3000; kill $pid")).toBe(plain);
+    // The first residue note of the session still says how to keep a service running.
+    const residue = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
+    expect(serverGuidanceOncePerSession(residue, session, "nginx")).toBe(residue);
+    expect(SERVER_CHECK_NOTE).toContain("nothing needs a later kill, pkill or pgrep");
+    expect(SERVER_CHECK_NOTE).toContain("in a bounded loop instead of a fixed sleep or timeout");
+  });
+
+  test.each([
+    ["cd /workspace && PORT=0 node server.js & sleep 1; kill %1 2>/dev/null; wait 2>/dev/null", true],
+    ["npm start >/tmp/srv.log 2>&1 & pid=$!; sleep 0.5; curl -s http://127.0.0.1:3000/health; kill $pid", true],
+    ["(PORT=0 node server.js &) ; sleep 0.6; npm test 2>&1 | tail -8", true],
+    ["PORT=0 timeout 2 node server.js; true", true],
+    ["timeout 3 python3 -m http.server 8123", true],
+    // Not a fixed wait for a program it started: chains, redirections, test timeouts, a polling loop.
+    ["cd /workspace && npm test 2>&1 | tail -20", false],
+    ["make 2>&1; sleep 1", false],
+    ["sleep 2 && echo done", false],
+    ["a && b && sleep 1", false],
+    ["cmd &> log; sleep 1", false],
+    ["timeout 30 npm test", false],
+    ["timeout 5 npm test", false],
+    ["node server.js > /tmp/s.log 2>&1 & for i in $(seq 1 50); do grep -q Listening /tmp/s.log && break; sleep 0.1; done", false],
+  ])("fixed wait for a started program: %s -> %s", (command, expected) => {
+    expect(waitsFixedTimeForProgram(command)).toBe(expected);
   });
 
   test("an ordinary exit has neither marker", () => {

@@ -12,7 +12,9 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
  * edit, and searched the process table for leftovers (where `pkill -f` can
  * match the command's own shell), each step another model call. The note
  * says that nothing is left to stop and how to wait for a server: a bounded
- * loop on its port or log line, requests and `kill $!` in one command.
+ * loop on its port or log line, requests and `kill $!` in one command. A
+ * check that waited with `timeout 2` or `sleep` and cleaned up after itself
+ * leaves no residue; {@link SERVER_CHECK_NOTE} carries the same guidance then.
  */
 export const RESIDUAL_PROCESSES_NOTE =
   "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
@@ -21,33 +23,80 @@ export const RESIDUAL_PROCESSES_NOTE =
 export const RESIDUAL_PROCESSES_REPEAT_NOTE =
   "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running.]";
 
-/** Sessions that got the full residue note, oldest first; bounded for long-lived daemons. */
-const sessionsWithResidualNote = new Set<string>();
-const RESIDUAL_NOTE_SESSION_LIMIT = 4096;
+/**
+ * Shown once per session after a command that started a program and waited a
+ * fixed time for it without leaving it running (`server & pid=$!; sleep 1;
+ * curl ...; kill $pid`, `timeout 2 node server.js`): the same server guidance
+ * as {@link RESIDUAL_PROCESSES_NOTE}, for the next check.
+ */
+export const SERVER_CHECK_NOTE =
+  "[note: exec_command stops every process a command leaves running when it returns, so nothing needs a later kill, pkill or pgrep. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command.]";
 
 /**
- * Keep the server guidance to the first residue note of a session: every
- * tool result is replayed on each later request, so a repeated full note
- * costs its length again on every call. Content without the note, or
- * without a session, is returned unchanged.
+ * A command that started something in the background and then slept, or ran a
+ * program (not its tests) under a timeout of a few seconds to see it start.
+ * `&&`, `2>&1` and `&>` are not background jobs.
  */
-export function residualNoteOncePerSession(content: string, sessionId: string | undefined): string {
+const FIXED_WAIT_FOR_PROGRAM = new RegExp([
+  String.raw`(?:^|[^&>])&(?![&>\d])[^|]*?\bsleep\s+\d`,
+  String.raw`\btimeout\s+(?:-\S+\s+)*[0-5](?:\.\d+)?s?\s+(?:\w+=\S*\s+)*(?:node|nodejs|python3?|npm|npx|pnpm|yarn|deno|bun|ruby|rails|php|go|java|uvicorn|gunicorn|flask|cargo|dotnet)\b(?![^;&|\n]*\btest)`,
+].join("|"), "u");
+
+/** A shell loop: a command that already polls needs no advice about polling. */
+const SHELL_LOOP = /(?:^|[\s;&|(])(?:for|while|until)\s/u;
+
+/** Whether `command` waits a fixed time for a program it started. */
+export function waitsFixedTimeForProgram(command: string): boolean {
+  return FIXED_WAIT_FOR_PROGRAM.test(command) && !SHELL_LOOP.test(command);
+}
+
+/** Sessions that got each note, oldest first; bounded for long-lived daemons. */
+const sessionsWithResidualNote = new Set<string>();
+const sessionsWithServerGuidance = new Set<string>();
+const NOTE_SESSION_LIMIT = 4096;
+
+/** Record `sessionId`; true when it was not recorded before. */
+function firstFor(sessions: Set<string>, sessionId: string): boolean {
+  if (sessions.has(sessionId)) return false;
+  if (sessions.size >= NOTE_SESSION_LIMIT) {
+    const oldest = sessions.values().next().value;
+    if (oldest !== undefined) sessions.delete(oldest);
+  }
+  sessions.add(sessionId);
+  return true;
+}
+
+/**
+ * Server guidance once per session. Every tool result is replayed on each
+ * later request, so a repeated full note costs its length again on every
+ * call: a session's first residue note is the full one, later ones are a
+ * line, and a command that waited a fixed time for a program it started gets
+ * {@link SERVER_CHECK_NOTE} once, unless the session already has the
+ * guidance. Without a session the content is returned unchanged.
+ */
+export function serverGuidanceOncePerSession(
+  content: string,
+  sessionId: string | undefined,
+  command: string,
+): string {
+  if (sessionId === undefined) return content;
   const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
-  if (sessionId === undefined || !content.endsWith(note)) return content;
-  if (!sessionsWithResidualNote.has(sessionId)) {
-    if (sessionsWithResidualNote.size >= RESIDUAL_NOTE_SESSION_LIMIT) {
-      const oldest = sessionsWithResidualNote.values().next().value;
-      if (oldest !== undefined) sessionsWithResidualNote.delete(oldest);
+  if (content.endsWith(note)) {
+    if (!firstFor(sessionsWithResidualNote, sessionId)) {
+      return `${content.slice(0, -note.length)}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
     }
-    sessionsWithResidualNote.add(sessionId);
+    sessionsWithServerGuidance.add(sessionId);
     return content;
   }
-  return `${content.slice(0, -note.length)}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
+  if (waitsFixedTimeForProgram(command) && firstFor(sessionsWithServerGuidance, sessionId)) {
+    return `${content}\n${SERVER_CHECK_NOTE}`;
+  }
+  return content;
 }
 
 /** Model-facing alias only; canonical results and structured facts stay intact. */
 export function compactExecExitFooter(content: string): string {
-  const note = [RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE]
+  const note = [RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE, SERVER_CHECK_NOTE]
     .map((text) => `\n${text}`)
     .find((text) => content.endsWith(text)) ?? "";
   const footerEnd = content.length - note.length;

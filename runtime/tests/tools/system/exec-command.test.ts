@@ -15,7 +15,7 @@ import {
   createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
-import { RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE } from "./exec-result-format.js";
+import { RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE, SERVER_CHECK_NOTE } from "./exec-result-format.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-stdin.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -1522,6 +1522,20 @@ describe("exec_command tool", () => {
       expect(second.content).toContain(RESIDUAL_PROCESSES_REPEAT_NOTE);
       expect(otherSession.content).toContain(RESIDUAL_PROCESSES_NOTE);
       expect(second.metadata).toMatchObject({ residualProcessesTerminated: true });
+    });
+
+    test("a check that waited a fixed time for a server it started gets the server guidance once", async () => {
+      const { tool: noteTool } = mockManagerTool({
+        execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () =>
+          completedExecOutput("Listening on http://localhost:39485")),
+      });
+      const session = { __agencSessionId: `fixed-wait-${Math.random()}` };
+      const first = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      const second = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      const tests = await noteTool.execute(fullAccessArgs({ cmd: "npm test", __agencSessionId: `${session.__agencSessionId}-b` }));
+      expect(first.content).toContain(SERVER_CHECK_NOTE);
+      expect(second.content).not.toContain(SERVER_CHECK_NOTE);
+      expect(tests.content).not.toContain(SERVER_CHECK_NOTE);
     });
   });
 

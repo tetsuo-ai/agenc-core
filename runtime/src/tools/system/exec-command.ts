@@ -46,7 +46,7 @@ import {
 import { isSearchOrReadBashCommand } from "../../utils/bash/commands.js";
 import {
   formatUnifiedExecToolContent,
-  residualNoteOncePerSession,
+  serverGuidanceOncePerSession,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
@@ -1273,9 +1273,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         if ((output.process_id ?? output.session_id) !== undefined && output.detached !== true) {
           notifyExecSessionDiscovery(args, config?.onSessionYielded);
         }
-        const execContent = residualNoteOncePerSession(
+        const execContent = serverGuidanceOncePerSession(
           formatUnifiedExecToolContent(output, config?.lightMode === true),
           resolveSessionId(args as Record<string, unknown>),
+          cmd,
         );
         if (!detach && tty !== true) {
           rememberPrintedOutput({

@@ -197,7 +197,10 @@ footer: `[note: this command left processes running ... detach: true]`. The
 first such note of a session also says that nothing is left to stop and how to
 check a server: wait for its port or log line in a bounded loop instead of a
 fixed sleep, then make the requests and `kill $!` in the same command. Later
-notes in that session are one line. A
+notes in that session are one line. A command that waited a fixed time for a
+program it started without leaving it running (`server & sleep 1; curl ...;
+kill $pid`, `timeout 2 node server.js`) gets the same server guidance once per
+session. A
 process kept alive with `yield_time_ms` has a `session_id`, lives for the
 session, and is stopped by `closeAll` when the session ends. `detach: true`
 starts a service AgenC never stops: its own session, stdout and stderr in a
