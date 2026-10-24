@@ -55,6 +55,20 @@
  * tool and recovery continuations to six samples, each with an 8,192-token
  * output cap. Exhausting that allowance stops an ongoing tool loop.
  *
+ * Exact output (`--output-format json|stream-json`, or `exactOutput` on the
+ * turn or session) skips the gate unless `completion_gate.exact_output =
+ * "verify"` opts in. Then the same checks run and only the final answer
+ * moves: the candidate answer that drew the first request is held, the
+ * checklist rounds stay internal work, and the turn ends with the held answer
+ * byte for byte. A verification reply can ask to replace it with the line
+ * {@link COMPLETION_GATE_ANSWER_CHANGED_MARKER}; the runtime then asks once
+ * for the corrected answer in the task's own form, and that reply is the
+ * final answer.
+ *
+ * With a run deadline the gate does not start a verification round it
+ * cannot finish before the reserve (see {@link verificationExceedsDeadline});
+ * it settles as `deadline_reserve` instead.
+ *
  * @module
  */
 
@@ -69,7 +83,11 @@ import type {
 } from "../session/turn-state.js";
 import { verifiedLiteralFile } from "./completion-gate-literal.js";
 import { isPlanMode } from "../session/plan-mode.js";
-import { inDeadlineReserve } from "../session/run-deadline.js";
+import {
+  deadlineRemainingMs,
+  inDeadlineReserve,
+  runDeadlineOf,
+} from "../session/run-deadline.js";
 import { isSubagentSessionSource } from "../session/run-turn-queued-commands.js";
 import { hasFileMutationMetadata } from "../tools/result-metadata.js";
 
@@ -80,18 +98,33 @@ export const COMPLETION_GATE_MAX_OUTPUT_TOKENS = 8_192;
 export const COMPLETION_GATE_TASK_TEXT_MAX_CHARS = 6_000;
 export const COMPLETION_GATE_MAX_UNMET_ITEMS = 20;
 const UNMET_ITEM_MAX_CHARS = 200;
+/** Shortest verification round the deadline guard assumes. */
+export const COMPLETION_GATE_DEADLINE_MIN_ROUND_MS = 60_000;
+
+/**
+ * The line an exact-output verification reply ends with when its held final
+ * answer must change. Only a line holding nothing else counts.
+ */
+export const COMPLETION_GATE_ANSWER_CHANGED_MARKER = "<final_answer_changed/>";
 
 export type CompletionGateMode = "auto" | "always" | "never";
+/** `completion_gate.exact_output`: skip the check for exact-output turns (default), or run it. */
+export type CompletionGateExactOutputPolicy = "verify" | "skip";
 
 export interface ResolvedCompletionGatePolicy {
   readonly enabled: boolean;
   readonly maxRounds: number;
+  readonly exactOutput: CompletionGateExactOutputPolicy;
 }
 
 /** Per-turn plan, resolved once; `undefined` on `TurnState` means not gated. */
 export interface CompletionGatePlan {
   readonly maxRounds: number;
   readonly taskText: string;
+  /** The caller requires the exact final answer: rounds stay internal. */
+  readonly exactOutput?: true;
+  /** Turn start (epoch ms): paces the deadline guard. */
+  readonly startedAtMs?: number;
 }
 
 export type CompletionGateOutcome =
@@ -177,6 +210,8 @@ const UNLINKED_ITEMS_LEAD =
   "No successful tool result since your last change names what these checked items claim";
 const UNLINKED_ITEMS_ACTION =
   "Put on each item's line the command you ran or the file you inspected; a check you already ran after your last change counts and need not be re-run.";
+const EXACT_OUTPUT_REVIEW_NOTE =
+  `This review stays internal: the caller receives your earlier final answer unchanged. If that answer must change, end this reply with a line containing only ${COMPLETION_GATE_ANSWER_CHANGED_MARKER}.`;
 
 export function resolveCompletionGatePolicy(
   config: Pick<Config, "completionGate"> | undefined,
@@ -197,7 +232,9 @@ export function resolveCompletionGatePolicy(
           Math.max(1, Math.floor(requested)),
         )
       : DEFAULT_COMPLETION_GATE_ROUNDS;
-  return { enabled, maxRounds };
+  const exactOutput: CompletionGateExactOutputPolicy =
+    config?.completionGate?.exact_output === "verify" ? "verify" : "skip";
+  return { enabled, maxRounds, exactOutput };
 }
 
 export function planCompletionGateForTurn(input: {
@@ -206,6 +243,8 @@ export function planCompletionGateForTurn(input: {
   readonly session: Pick<Session, "services" | "sessionConfiguration">;
   readonly isRootHumanTurn: boolean;
   readonly taskText: string | undefined;
+  /** Turn start (epoch ms), recorded for the deadline guard. */
+  readonly turnStartedAt?: number;
 }): CompletionGatePlan | undefined {
   const { ctx, session } = input;
   const policy = resolveCompletionGatePolicy(
@@ -223,14 +262,54 @@ export function planCompletionGateForTurn(input: {
   }
   const taskText = (input.taskText ?? "").trim();
   if (taskText.length === 0) return undefined;
-  if (input.exactOutput ?? session.services?.runtimeOptions?.exactOutput ?? false) return undefined;
+  // An exact-output caller is verified only when it opted in: the rounds then
+  // run as internal work and the final answer stays the model's own.
+  const exactOutput =
+    input.exactOutput ?? session.services?.runtimeOptions?.exactOutput ?? false;
+  if (exactOutput && policy.exactOutput === "skip") return undefined;
   return {
     maxRounds: policy.maxRounds,
     taskText:
       taskText.length > COMPLETION_GATE_TASK_TEXT_MAX_CHARS
         ? `${taskText.slice(0, COMPLETION_GATE_TASK_TEXT_MAX_CHARS)}\n[task text truncated]`
         : taskText,
+    ...(exactOutput ? { exactOutput: true as const } : {}),
+    ...(input.turnStartedAt !== undefined ? { startedAtMs: input.turnStartedAt } : {}),
   };
+}
+
+/**
+ * Whether the run deadline (#2503) leaves no room for a verification round:
+ * the reserve has begun, or the time left before it is shorter than one
+ * round. A round is estimated from this turn's own pace, two model calls at
+ * its mean time per call so far, and never less than
+ * {@link COMPLETION_GATE_DEADLINE_MIN_ROUND_MS}. A run without a deadline
+ * always has room.
+ */
+export function verificationExceedsDeadline(
+  session: object,
+  plan: Pick<CompletionGatePlan, "startedAtMs">,
+  modelCalls: number,
+  nowMs: number = Date.now(),
+): boolean {
+  const deadline = runDeadlineOf(session);
+  if (deadline === undefined) return false;
+  const beforeReserveMs = deadlineRemainingMs(deadline) - deadline.reserveMs;
+  if (beforeReserveMs <= 0) return true;
+  const elapsedMs =
+    plan.startedAtMs === undefined ? 0 : Math.max(0, nowMs - plan.startedAtMs);
+  const roundMs = Math.max(
+    COMPLETION_GATE_DEADLINE_MIN_ROUND_MS,
+    (2 * elapsedMs) / Math.max(1, modelCalls),
+  );
+  return beforeReserveMs < roundMs;
+}
+
+/** An exact-output verification reply asked to replace its held final answer. */
+export function reportsFinalAnswerChanged(text: string): boolean {
+  return text
+    .split(/\r?\n/u)
+    .some((line) => line.trim() === COMPLETION_GATE_ANSWER_CHANGED_MARKER);
 }
 
 interface ChecklistItem {
@@ -644,9 +723,15 @@ export function buildCompletionGateMessage(input: {
   readonly unmetItems: readonly string[];
   /** Checked items no fresh result names; quoted apart for `unmet_items`. */
   readonly unlinkedItems?: readonly string[];
+  /** The caller requires the exact final answer: say the review stays internal. */
+  readonly exactOutput?: boolean;
 }): string {
   const open = `<completion_gate round="${input.round}" of="${input.maxRounds}">`;
-  const close = "Keep the answer concise: at most five grouped evidence lines. Reuse current evidence; do not expand the task.\n</completion_gate>";
+  const close = [
+    "Keep the answer concise: at most five grouped evidence lines. Reuse current evidence; do not expand the task.",
+    ...(input.exactOutput === true ? [EXACT_OUTPUT_REVIEW_NOTE] : []),
+    "</completion_gate>",
+  ].join("\n");
   if (input.reason === "no_verification") {
     return [
       open,
@@ -690,6 +775,19 @@ export function buildCompletionGateMessage(input: {
     neutralizeEnvelopeTags(input.taskText),
     "</task_instruction>",
     close,
+  ].join("\n");
+}
+
+/**
+ * Exact output, after verification: ask once for the final answer itself.
+ * Sent when a verification reply said its held answer must change, or when a
+ * resumed turn no longer holds one.
+ */
+export function buildCompletionGateFinalAnswerMessage(): string {
+  return [
+    `<completion_gate final_answer="requested">`,
+    "Verification is complete. Reply now with your final answer to the original task, exactly in the form the task asks for. The caller receives this reply as the answer: give only the answer, without the checklist and without mentioning this review.",
+    "</completion_gate>",
   ].join("\n");
 }
 
@@ -815,6 +913,40 @@ function isAnswerOnlyCompletion(
   );
 }
 
+/**
+ * Same recovery-shared resets as the continuation nudge: a gate re-entry is a
+ * fresh sample, not a continuation of a recovery ladder.
+ */
+function prepareGateReentry(state: TurnState): void {
+  state.maxOutputTokensRecoveryCount = 0;
+  state.reasoningOnlyRecoveryCount = undefined;
+  state.reasoningCapPolicy = undefined;
+  state.hasAttemptedReactiveCompact = false;
+  state.maxOutputTokensOverride = undefined;
+  state.pendingToolUseSummary = undefined;
+  state.stopHookActive = undefined;
+  state.transition = { reason: "completion_gate" };
+}
+
+/**
+ * End an exact-output turn whose verification rounds ran. The turn ends with
+ * the held answer, unchanged, unless a verification reply said that answer
+ * must change or a resumed turn no longer holds one: then one more request
+ * asks for the final answer itself, and that reply ends the turn. Out of time,
+ * the held answer stands.
+ */
+function finishExactOutputTurn(state: TurnState, outOfTime: boolean): void {
+  const held = state.completionGateHeldAnswer;
+  if (held !== undefined && (outOfTime || !state.completionGateAnswerChanged)) {
+    state.completionGateFinalAnswer = held;
+    return;
+  }
+  if (outOfTime) return;
+  state.completionGateFinalAnswerRequested = true;
+  injectCompletionGateMessage(state, buildCompletionGateFinalAnswerMessage());
+  prepareGateReentry(state);
+}
+
 export async function completionGate(
   state: TurnState,
   ctx: TurnContext,
@@ -838,6 +970,11 @@ export async function completionGate(
   if (state.turnCount >= maxTurns) return state;
 
   const round = state.completionGateRound;
+  const exactOutput = plan.exactOutput === true;
+  // Exact output: any verification reply may ask to replace the held answer.
+  if (exactOutput && round > 0 && reportsFinalAnswerChanged(text)) {
+    state.completionGateAnswerChanged = true;
+  }
   const settle = (
     outcome: "verified" | "partial" | "exhausted" | "skipped",
     reason: CompletionGateReason,
@@ -869,6 +1006,10 @@ export async function completionGate(
           },
         },
       });
+    }
+    // A round-0 decision leaves the candidate answer as the final answer.
+    if (exactOutput && round > 0) {
+      finishExactOutputTurn(state, reason === "deadline_reserve");
     }
     return state;
   };
@@ -971,8 +1112,16 @@ export async function completionGate(
       reportedItems,
     );
   }
+  // Another round would not finish before the deadline reserve begins: accept
+  // the answer now rather than push the run into its last minutes.
+  if (verificationExceedsDeadline(session, plan, state.turnCount)) {
+    return settle("skipped", "deadline_reserve", toolCallsSinceInjection);
+  }
   const injectItems =
     reason === "unavailable_unproven" ? unavailableItems : unmetItems;
+  // Exact output: the candidate answer is the final answer unless the
+  // review replaces it, so hold its exact text before the first request.
+  if (exactOutput && round === 0) state.completionGateHeldAnswer = text;
   state.completionGateSampleStart ??= state.modelSampleOrdinal;
   state.completionGateRound += 1;
   state.completionGateToolLedgerMark = state.completedToolResults.length;
@@ -986,19 +1135,11 @@ export async function completionGate(
       round: state.completionGateRound,
       maxRounds: plan.maxRounds,
       taskText: plan.taskText,
+      exactOutput,
       ...request,
     }),
   );
-  // Same recovery-shared resets as the continuation nudge: the re-entry is
-  // a fresh sample, not a continuation of a recovery ladder.
-  state.maxOutputTokensRecoveryCount = 0;
-  state.reasoningOnlyRecoveryCount = undefined;
-  state.reasoningCapPolicy = undefined;
-  state.hasAttemptedReactiveCompact = false;
-  state.maxOutputTokensOverride = undefined;
-  state.pendingToolUseSummary = undefined;
-  state.stopHookActive = undefined;
-  state.transition = { reason: "completion_gate" };
+  prepareGateReentry(state);
   emitCompletionGate(session, ctx, state, {
     outcome: "injected",
     reason,

@@ -34,6 +34,7 @@ import { ProcessBrokerV3StatusDecoder, PROCESS_BROKER_V3_CAPABILITY, type Proces
 import { PROCESS_BROKER_V2_CAPABILITY } from "./process-broker-protocol-v2.js";
 import { consumeDirectBwrapPlan, type PreparedDirectBwrap, type DirectBwrapHandoff } from "./direct-bwrap-handoff.js";
 import { isSignalablePid } from "./child-signal.js";
+import { preferLaunchedProcessAsOomVictim } from "./oom-preference.js";
 
 import {
   resolveTrustedWindowsSystemExecutable,
@@ -901,6 +902,8 @@ export function spawnContainedProcess(
     if (child.pid === undefined || child.pid <= 0) {
       throw new Error("contained process did not publish a pid");
     }
+    // Before the gate receives its command: the command inherits the score.
+    preferLaunchedProcessAsOomVictim(child.pid);
     if (cgroupPath !== null) {
       writeFileSync(join(cgroupPath, "cgroup.procs"), `${child.pid}\n`);
       linuxCgroupBoundaries.set(child, {
@@ -1023,6 +1026,9 @@ function spawnLinuxSubreaperContainedProcess(
       "Linux process containment broker did not publish a safe pid",
     );
   }
+  // Before the bootstrap payload: the broker forks the command only after it
+  // reads that payload, so the command and its descendants inherit the score.
+  preferLaunchedProcessAsOomVictim(child.pid);
   const status = child.stdio[3];
   if (
     status === undefined ||
@@ -1552,6 +1558,8 @@ export function prepareContainedProcessLaunch(cwd: string): void {
     // uncaught exception in the daemon.
     child.on("error", () => {});
     const rootPid = child.pid;
+    // The prepared gate waits for its command; that command inherits the score.
+    preferLaunchedProcessAsOomVictim(rootPid);
     const gate = child.stdio[3];
     if (
       rootPid === undefined ||

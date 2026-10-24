@@ -169,6 +169,21 @@ when AgenC cannot tell; `/status` says why
   The sample allowance is checkpointed. Transport retries retain their own
   existing limits. If the model keeps working past six samples without a final
   answer, the run stops with `max_turns` and an unverified-result warning.
+  With `--output-format json` or `stream-json` the caller requires the exact
+  final answer, and the check is skipped by default: `finalMessage` is the
+  model's first final answer. `completion_gate.exact_output = "verify"` in the
+  config runs the same check for structured output as internal work: the
+  answer that drew the first request is held, the checklist rounds appear in
+  the event stream only as ordinary agent messages and tool calls (the gate's
+  decisions are `completion_gate` records in the session rollout), and
+  `finalMessage` is the held answer byte for byte. A verification reply that
+  ends with a line containing only `<final_answer_changed/>` gets one more
+  request for the corrected answer in the task's own form, and that reply
+  becomes `finalMessage`. A structured run whose verification uses up its six
+  samples keeps its held answer and exit 0, with the `completion_gate_exhausted`
+  warning event. No result field or event type is added. With `--deadline`, a
+  verification round that would not finish before the reserve is not started
+  (recorded as `skipped`, reason `deadline_reserve`).
   Clear information requests (such as MCP data queries or explanations) can finish without a workspace checklist when the turn has successful tool results and no commands or recorded workspace writes. Requests mentioning implementation, execution or output artifacts retain verification, as do ambiguous tasks, explicit checklists and verification rounds already in progress. The gate records this applicability decision as `skipped` with reason `answer_only`; it does not certify answer correctness or change tool permissions.
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
