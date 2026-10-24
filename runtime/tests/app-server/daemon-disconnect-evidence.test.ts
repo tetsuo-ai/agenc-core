@@ -23,6 +23,18 @@ describe("daemon disconnect evidence", () => {
     expect(readCgroupMemoryEvidence(() => { throw new Error("no procfs"); })).toBeUndefined();
   });
 
+  it("falls back to the unified root and keeps only safe integer counters", () => {
+    const files: Record<string, string> = {
+      "/proc/self/cgroup": "12:memory:/\n0::/missing\n",
+      "/sys/fs/cgroup/memory.current": "2048\n",
+      "/sys/fs/cgroup/memory.max": "max\n",
+      "/sys/fs/cgroup/memory.peak": "4096\n",
+      "/sys/fs/cgroup/memory.events": "oom -1\noom_kill 2\nhigh not-a-number\nmax 1\noom_group_kill 9007199254740992\n",
+    };
+    expect(readCgroupMemoryEvidence(path => { if (!(path in files)) throw new Error("absent"); return files[path]!; }))
+      .toEqual({ currentBytes: 2048, peakBytes: 4096, oom_kill: 2, max: 1 });
+  });
+
   function fixture() {
     const home = mkdtempSync(join(tmpdir(), "daemon-disconnect-")); homes.push(home);
     const env = { HOME: home, AGENC_HOME: home };

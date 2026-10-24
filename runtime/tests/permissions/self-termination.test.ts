@@ -35,4 +35,12 @@ describe("shell self-termination prevention", () => {
   it("does not invent a denial if the process inventory is unavailable", () => {
     expect(selfTerminationRisk("pkill -f worker.py", { ...probe([]), processes: () => { throw new Error("unavailable"); } })).toBeNull();
   });
+  it("does not interpret substitutions, unknown flags, or extra operands as a target", () => {
+    const fixture = probe([30]);
+    expect(selfTerminationRisk("kill $PPID", fixture)).toBeNull();
+    expect(selfTerminationRisk("kill `pgrep agenc`", fixture)).toBeNull();
+    expect(selfTerminationRisk("pkill -u root -f agenc", fixture)).toBeNull();
+    expect(selfTerminationRisk("killall agenc extra", fixture)).toBeNull();
+    expect(fixture.matchingPids).not.toHaveBeenCalled();
+  });
 });
