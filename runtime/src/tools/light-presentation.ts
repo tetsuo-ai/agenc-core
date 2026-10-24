@@ -229,10 +229,11 @@ const LEAN_GREP_POINTER =
 /**
  * Standard sessions' own wording for core tools whose Light text does not fit them: FileRead
  * keeps dense line numbers in standard sessions, and Light has no MultiEdit. Same fields and
- * schema as the canonical tool.
+ * schema as the canonical tool. That a successful edit needs no reread is said once, by the
+ * standard head's tool section (prompts/system-prompt.ts getUsingYourToolsSection).
  */
 const standardDescriptions: Readonly<Record<string, string>> = {
-  FileRead: "Read text, images, PDFs or Jupyter notebooks. Default: the first 2000 lines, numbered from 1 (cat -n); for a large file pass offset (1-based) and limit and read only what you need. A read over 25000 tokens fails. PDFs over 10 pages need pages (at most 20 per read). Directories fail: list them with the shell. A whole-file read authorizes edits; Edit and Write fail if their change did not land, so do not re-read to check one.",
+  FileRead: "Read text, images, PDFs or Jupyter notebooks. Default: the first 2000 lines, numbered from 1 (cat -n); for a large file pass offset (1-based) and limit and read only what you need. A read over 25000 tokens fails. PDFs over 10 pages need pages (at most 20 per read). Directories fail: list them with the shell. A whole-file read authorizes edits.",
   MultiEdit: "Several exact replacements in one file, applied in order, each to the result of the one before. Read the file first (FileRead, or exec_command output that printed it whole). Each old_string must be unique when its edit applies unless replace_all is set. The file is written only if every edit succeeds.",
   Skill: "Run a skill listed in the system reminders within this conversation; when one matches the request, call it before responding. Skill names only: MCP tools are called through their own function after system.searchTools loads them.",
 };
