@@ -56,10 +56,14 @@ test("fast and normal multi-call wire requests preserve identical instructions, 
         ...session.permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
       }) });
       const ctx = mkCtx({ cwd, permissionInstructionsDeferred: true, permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
-        config: { ...mkCtx().config, bypassFastMode: fast } });
+        config: { ...mkCtx().config, bypassFastMode: fast, completionGate: { exact_output: "verify" } } });
       expect(bypassFastModeEnabled(session, ctx)).toBe(fast);
       await drain(runTurn(session, ctx, "Read the existing file, replace it, read it again, and edit it.", { exactOutput: true }));
-      expect(bodies).toHaveLength(6);
+      // Five tool rounds, the answer, then the opt-in exact-output completion
+      // check: its first request and the one asking for a checklist after "done".
+      expect(bodies).toHaveLength(8);
+      expect(JSON.parse(bodies[6]!).messages.at(-1).content).toContain('<completion_gate round="1" of="3">');
+      expect(JSON.parse(bodies[7]!).messages.at(-1).content).toContain('<completion_gate round="2" of="3">');
       expect(events.filter(event => event.msg.type === "tool_call_completed")
         .map(event => event.msg)).not.toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ isError: true }) }));
       expect(await readFile(path, "utf8")).toBe("edited contents\n");

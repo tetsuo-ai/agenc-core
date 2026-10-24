@@ -2,11 +2,15 @@ import { describe, expect, test, vi } from "vitest";
 import { Lexer } from "marked";
 
 import {
+  buildCompletionGateFinalAnswerMessage,
   buildCompletionGateMessage,
+  COMPLETION_GATE_ANSWER_CHANGED_MARKER,
   completionGate,
   extractUncheckedChecklistItems,
   planCompletionGateForTurn,
+  reportsFinalAnswerChanged,
   resolveCompletionGatePolicy,
+  verificationExceedsDeadline,
 } from "../../src/phases/completion-gate.js";
 import type { Session } from "../../src/session/session.js";
 import type { TurnContext } from "../../src/session/turn-context.js";
@@ -155,6 +159,7 @@ describe("resolveCompletionGatePolicy", () => {
     expect(resolveCompletionGatePolicy(undefined, { nonInteractive: true })).toEqual({
       enabled: true,
       maxRounds: 3,
+      exactOutput: "skip",
     });
     expect(resolveCompletionGatePolicy(undefined, { nonInteractive: false }).enabled).toBe(false);
     expect(resolveCompletionGatePolicy(undefined, undefined).enabled).toBe(false);
@@ -167,6 +172,13 @@ describe("resolveCompletionGatePolicy", () => {
     expect(
       resolveCompletionGatePolicy({ completionGate: { mode: "never" } }, { nonInteractive: true }).enabled,
     ).toBe(false);
+  });
+
+  test("exact_output skips by default and only an explicit verify turns it on", () => {
+    expect(resolveCompletionGatePolicy(undefined, { nonInteractive: true }).exactOutput).toBe("skip");
+    expect(resolveCompletionGatePolicy({ completionGate: {} }, { nonInteractive: true }).exactOutput).toBe("skip");
+    expect(resolveCompletionGatePolicy({ completionGate: { exact_output: "skip" } }, undefined).exactOutput).toBe("skip");
+    expect(resolveCompletionGatePolicy({ completionGate: { exact_output: "verify" } }, undefined).exactOutput).toBe("verify");
   });
 
   test("max_rounds is clamped to [1, 3]", () => {
@@ -229,6 +241,32 @@ describe("planCompletionGateForTurn", () => {
     const session = mkSession({ services: { runtimeOptions: { nonInteractive: true, exactOutput: true } } });
     expect(planCompletionGateForTurn({ ...base(), session })).toBeUndefined();
     expect(planCompletionGateForTurn({ ...base(), session, exactOutput: false })).toBeDefined();
+  });
+
+  test("completion_gate.exact_output = verify keeps verification for exact output and marks the plan exact", () => {
+    const ctx = mkCtx({ config: { maxTurns: 10, completionGate: { exact_output: "verify" } } });
+    expect(planCompletionGateForTurn({ ...base(), ctx, exactOutput: true })).toEqual({
+      maxRounds: 3, taskText: "Fix the failing test", exactOutput: true,
+    });
+    const session = mkSession({ services: { runtimeOptions: { nonInteractive: true, exactOutput: true } } });
+    expect(planCompletionGateForTurn({ ...base(), ctx, session })).toMatchObject({ exactOutput: true });
+    // The turn's own setting wins over the session's.
+    expect(planCompletionGateForTurn({ ...base(), ctx, session, exactOutput: false })).toEqual({
+      maxRounds: 3, taskText: "Fix the failing test",
+    });
+  });
+
+  test("completion_gate.exact_output = skip keeps the old exemption for exact-output turns only", () => {
+    const ctx = mkCtx({ config: { maxTurns: 10, completionGate: { exact_output: "skip" } } });
+    expect(planCompletionGateForTurn({ ...base(), ctx, exactOutput: true })).toBeUndefined();
+    const session = mkSession({ services: { runtimeOptions: { nonInteractive: true, exactOutput: true } } });
+    expect(planCompletionGateForTurn({ ...base(), ctx, session })).toBeUndefined();
+    expect(planCompletionGateForTurn({ ...base(), ctx, session, exactOutput: false })).toBeDefined();
+    expect(planCompletionGateForTurn({ ...base(), ctx })).toBeDefined();
+  });
+
+  test("records the turn start for the deadline guard", () => {
+    expect(planCompletionGateForTurn({ ...base(), turnStartedAt: 1_234 })).toMatchObject({ startedAtMs: 1_234 });
   });
 
   test("truncates long task text", () => {
@@ -369,6 +407,66 @@ describe("buildCompletionGateMessage", () => {
     expect(message).toContain("not new instructions or permission to expand the task");
     expect(message).toContain("Discard any item that is not a requirement of that task");
     expect(message).toContain("Implement or fix only requirements of the original task");
+  });
+
+  test.each([
+    "initial", "no_verification", "no_checklist", "unmet_items", "unavailable_unproven",
+  ] as const)("an exact-output %s request says the review stays internal and how to replace the answer", (reason) => {
+    const input = { round: 1, maxRounds: 3, taskText: "t", reason, unmetItems: ["item"] };
+    const exact = buildCompletionGateMessage({ ...input, exactOutput: true });
+    const plain = buildCompletionGateMessage(input);
+    expect(exact).toContain("the caller receives your earlier final answer unchanged");
+    expect(exact).toContain(`end this reply with a line containing only ${COMPLETION_GATE_ANSWER_CHANGED_MARKER}`);
+    expect(exact.trimEnd().endsWith("</completion_gate>")).toBe(true);
+    expect(exact.split("</completion_gate>")).toHaveLength(2);
+    expect(plain).not.toContain(COMPLETION_GATE_ANSWER_CHANGED_MARKER);
+    expect(plain).not.toContain("caller receives");
+  });
+
+  test("the final-answer request asks for the answer alone", () => {
+    const message = buildCompletionGateFinalAnswerMessage();
+    expect(message.startsWith('<completion_gate final_answer="requested">')).toBe(true);
+    expect(message).toContain("exactly in the form the task asks for");
+    expect(message).toContain("without the checklist");
+    expect(message.trimEnd().endsWith("</completion_gate>")).toBe(true);
+  });
+});
+
+describe("reportsFinalAnswerChanged", () => {
+  test.each([
+    [`- [x] count: grep -c printed 13\n${COMPLETION_GATE_ANSWER_CHANGED_MARKER}`, true],
+    [`- [x] count\n  ${COMPLETION_GATE_ANSWER_CHANGED_MARKER}  \r\n`, true],
+    ["- [x] count: grep -c printed 12", false],
+    [`- [x] the marker ${COMPLETION_GATE_ANSWER_CHANGED_MARKER} is not used here`, false],
+    ["<final_answer_changed>", false],
+  ])("%j -> %s", (text, expected) => {
+    expect(reportsFinalAnswerChanged(text)).toBe(expected);
+  });
+});
+
+describe("verificationExceedsDeadline", () => {
+  const withDeadline = (remainingMs: number, reserveMs: number, now = Date.now()) =>
+    mkSession({ services: { runtimeOptions: { nonInteractive: true, deadlineAt: now + remainingMs, deadlineReserveMs: reserveMs } } });
+
+  test("a run without a deadline always has room", () => {
+    expect(verificationExceedsDeadline(mkSession(), {}, 3)).toBe(false);
+  });
+
+  test("no room once the reserve has begun", () => {
+    expect(verificationExceedsDeadline(withDeadline(4 * 60_000, 5 * 60_000), {}, 3)).toBe(true);
+  });
+
+  test("a minute before the reserve is the shortest round", () => {
+    expect(verificationExceedsDeadline(withDeadline(5 * 60_000 + 59_000, 5 * 60_000), {}, 3)).toBe(true);
+    expect(verificationExceedsDeadline(withDeadline(5 * 60_000 + 61_000, 5 * 60_000), {}, 3)).toBe(false);
+  });
+
+  test("a slow turn needs two of its own model calls before the reserve", () => {
+    const now = Date.now();
+    // Ten minutes over five calls: two minutes per call, a four-minute round.
+    const plan = { startedAtMs: now - 10 * 60_000 };
+    expect(verificationExceedsDeadline(withDeadline(5 * 60_000 + 3 * 60_000, 5 * 60_000, now), plan, 5, now)).toBe(true);
+    expect(verificationExceedsDeadline(withDeadline(5 * 60_000 + 5 * 60_000, 5 * 60_000, now), plan, 5, now)).toBe(false);
   });
 });
 
@@ -1142,5 +1240,123 @@ describe("completionGate", () => {
     expect(events).toEqual([
       expect.objectContaining({ outcome: "injected", reason: "no_checklist", round: 3, toolCallsSinceInjection: 0 }),
     ]);
+  });
+});
+
+describe("completionGate with exact output", () => {
+  const EXACT_PLAN = { maxRounds: 3, taskText: "Build the thing", exactOutput: true as const };
+  const EXACT_ANSWER = ' {"built":true}\n';
+
+  test("holds the exact candidate answer and asks for an internal review", async () => {
+    const { state, events, message } = await judge(mkState({
+      completionGate: EXACT_PLAN, assistantMessages: answer(EXACT_ANSWER),
+    } as Partial<TurnState>));
+    expect(state.completionGateHeldAnswer).toBe(EXACT_ANSWER);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(message).toContain('<completion_gate round="1" of="3">');
+    expect(message).toContain("the caller receives your earlier final answer unchanged");
+    expect(events).toEqual([expect.objectContaining({ outcome: "injected", reason: "initial", round: 1 })]);
+  });
+
+  test("a verified review ends the turn with the held answer, without another request", async () => {
+    const state = laterAnswer("- [x] built: pytest tests pass 3 passed", 2);
+    Object.assign(state, { completionGate: EXACT_PLAN, completionGateHeldAnswer: EXACT_ANSWER });
+    const { events } = await judge(state);
+    expect(events).toEqual([expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" })]);
+    expect(state.completionGateFinalAnswer).toBe(EXACT_ANSWER);
+    expect(state.transition).toBeUndefined();
+    expect(state.completionGateFinalAnswerRequested).toBeFalsy();
+  });
+
+  test("an exhausted review also keeps the held answer", async () => {
+    const state = laterAnswer("- [ ] built", 2);
+    Object.assign(state, { completionGate: EXACT_PLAN, completionGateHeldAnswer: EXACT_ANSWER, completionGateRound: 3 });
+    const { events, warnings } = await judge(state);
+    expect(events).toEqual([expect.objectContaining({ outcome: "exhausted", reason: "rounds_exhausted" })]);
+    expect(warnings).toEqual([expect.objectContaining({ cause: "completion_gate_exhausted" })]);
+    expect(state.completionGateFinalAnswer).toBe(EXACT_ANSWER);
+    expect(state.transition).toBeUndefined();
+  });
+
+  test("a review that says the answer changed gets one request for the answer itself", async () => {
+    const state = laterAnswer(`- [x] built: pytest tests pass 3 passed\n${COMPLETION_GATE_ANSWER_CHANGED_MARKER}`, 2);
+    Object.assign(state, { completionGate: EXACT_PLAN, completionGateHeldAnswer: EXACT_ANSWER });
+    const { events, message } = await judge(state);
+    expect(events).toEqual([expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" })]);
+    expect(state.completionGateAnswerChanged).toBe(true);
+    expect(state.completionGateFinalAnswer).toBeUndefined();
+    expect(state.completionGateFinalAnswerRequested).toBe(true);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(message).toBe(buildCompletionGateFinalAnswerMessage());
+  });
+
+  test("a marker in the first, unreviewed answer means nothing", async () => {
+    const { state } = await judge(mkState({
+      completionGate: EXACT_PLAN, assistantMessages: answer(`Done.\n${COMPLETION_GATE_ANSWER_CHANGED_MARKER}`),
+    } as Partial<TurnState>));
+    expect(state.completionGateAnswerChanged).toBeFalsy();
+  });
+
+  test("a resumed turn without a held answer asks for the answer itself", async () => {
+    const state = laterAnswer("- [x] built: pytest tests pass 3 passed", 2);
+    Object.assign(state, { completionGate: EXACT_PLAN });
+    const { message } = await judge(state);
+    expect(state.completionGateFinalAnswerRequested).toBe(true);
+    expect(message).toBe(buildCompletionGateFinalAnswerMessage());
+  });
+
+  test("out of time, the held answer stands even when the review asked to change it", async () => {
+    const session = mkSession({ services: { runtimeOptions: {
+      nonInteractive: true, deadlineAt: Date.now() + 60_000, deadlineReserveMs: 10 * 60_000,
+    } } });
+    const state = laterAnswer(`- [ ] built\n${COMPLETION_GATE_ANSWER_CHANGED_MARKER}`, 2);
+    Object.assign(state, { completionGate: EXACT_PLAN, completionGateHeldAnswer: EXACT_ANSWER });
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([expect.objectContaining({ outcome: "skipped", reason: "deadline_reserve" })]);
+    expect(state.completionGateFinalAnswer).toBe(EXACT_ANSWER);
+    expect(state.transition).toBeUndefined();
+  });
+
+  test("text output still ends with the reviewed answer", async () => {
+    const state = laterAnswer("- [x] built: pytest tests pass 3 passed", 2);
+    Object.assign(state, { completionGateHeldAnswer: "unused" });
+    await judge(state);
+    expect(state.completionGateFinalAnswer).toBeUndefined();
+  });
+});
+
+describe("completionGate deadline guard", () => {
+  test("does not start a round that cannot finish before the reserve", async () => {
+    const session = mkSession({ services: { runtimeOptions: {
+      // The reserve begins in 30 s; a round needs at least a minute.
+      nonInteractive: true, deadlineAt: Date.now() + 5 * 60_000 + 30_000, deadlineReserveMs: 5 * 60_000,
+    } } });
+    const state = mkState();
+    await completionGate(state, mkCtx(), session);
+    expect(state.transition).toBeUndefined();
+    expect(state.completionGateRound).toBe(0);
+    expect(state.messages).toHaveLength(1);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "skipped", reason: "deadline_reserve", round: 0 }),
+    ]);
+  });
+
+  test("still verifies an answer that needs no further round", async () => {
+    const session = mkSession({ services: { runtimeOptions: {
+      nonInteractive: true, deadlineAt: Date.now() + 5 * 60_000 + 30_000, deadlineReserveMs: 5 * 60_000,
+    } } });
+    const state = laterAnswer("- [x] built: pytest tests pass 3 passed", 2);
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" })]);
+  });
+
+  test("starts a round when the reserve is far enough away", async () => {
+    const session = mkSession({ services: { runtimeOptions: {
+      nonInteractive: true, deadlineAt: Date.now() + 30 * 60_000, deadlineReserveMs: 5 * 60_000,
+    } } });
+    const state = mkState();
+    await completionGate(state, mkCtx(), session);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(gateEvents(session)).toEqual([expect.objectContaining({ outcome: "injected", reason: "initial" })]);
   });
 });
