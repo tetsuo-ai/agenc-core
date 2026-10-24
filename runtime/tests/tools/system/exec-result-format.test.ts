@@ -6,7 +6,8 @@ import {
   RESIDUAL_PROCESSES_NOTE,
   RESIDUAL_PROCESSES_REPEAT_NOTE,
   SERVER_CHECK_NOTE,
-  serverGuidanceOncePerSession,
+  residualNoteOncePerSession,
+  serverCheckNoteOncePerSession,
   unifiedExecCodeModeResult,
   waitsFixedTimeForProgram,
 } from "../../../src/tools/system/exec-result-format.js";
@@ -113,31 +114,32 @@ describe("formatUnifiedExecToolContent", () => {
   test("a session gets the full residue note once and the short one on later commands", () => {
     const full = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
     const session = `exec-result-format-${Math.random()}`;
-    const smoke = "node server.js & sleep 1; curl -s localhost:3000/health";
-    expect(serverGuidanceOncePerSession(full, session, smoke)).toBe(full);
-    const repeat = serverGuidanceOncePerSession(full, session, smoke);
+    expect(residualNoteOncePerSession(full, session)).toBe(full);
+    const repeat = residualNoteOncePerSession(full, session);
     expect(repeat).toBe(full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE));
     expect(compactExecExitFooter(repeat)).toBe(repeat.replace("[exec exit_code=", "[exit "));
     // The residue note carried the server guidance: a later fixed wait gets no second copy.
+    expect(serverCheckNoteOncePerSession(session, "PORT=0 timeout 2 node server.js")).toBeUndefined();
+    // Another session, a result without the note and a call without a session are unchanged.
+    expect(residualNoteOncePerSession(full, `${session}-other`)).toBe(full);
     const plain = formatUnifiedExecToolContent(output({}), true);
-    expect(serverGuidanceOncePerSession(plain, session, "PORT=0 timeout 2 node server.js")).toBe(plain);
-    // Another session, a plain command and a call without a session are unchanged.
-    expect(serverGuidanceOncePerSession(full, `${session}-other`, smoke)).toBe(full);
-    expect(serverGuidanceOncePerSession(plain, session, "npm test")).toBe(plain);
-    expect(serverGuidanceOncePerSession(full, undefined, smoke)).toBe(full);
+    expect(residualNoteOncePerSession(plain, session)).toBe(plain);
+    expect(residualNoteOncePerSession(full, undefined)).toBe(full);
   });
 
   test("a check that waited a fixed time for a program it started gets the server guidance once per session", () => {
     // Seen in DeepSeek Light server runs: the check cleans up after itself, so no residue note fires.
-    const plain = formatUnifiedExecToolContent(output({ output: "Listening on http://localhost:39485" }), true);
     const session = `exec-result-format-fixed-${Math.random()}`;
-    const first = serverGuidanceOncePerSession(plain, session, "PORT=0 timeout 2 node server.js; true");
-    expect(first).toBe(`${plain}\n${SERVER_CHECK_NOTE}`);
-    expect(compactExecExitFooter(first)).toBe(first.replace("[exec exit_code=", "[exit "));
-    expect(serverGuidanceOncePerSession(plain, session, "node server.js & pid=$!; sleep 0.5; curl -s localhost:3000; kill $pid")).toBe(plain);
+    expect(serverCheckNoteOncePerSession(session, "npm test")).toBeUndefined();
+    expect(serverCheckNoteOncePerSession(session, "PORT=0 timeout 2 node server.js; true")).toBe(SERVER_CHECK_NOTE);
+    expect(serverCheckNoteOncePerSession(session, "node server.js & pid=$!; sleep 0.5; curl -s localhost:3000; kill $pid")).toBeUndefined();
+    expect(serverCheckNoteOncePerSession(undefined, "PORT=0 timeout 2 node server.js")).toBeUndefined();
     // The first residue note of the session still says how to keep a service running.
     const residue = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
-    expect(serverGuidanceOncePerSession(residue, session, "nginx")).toBe(residue);
+    expect(residualNoteOncePerSession(residue, session)).toBe(residue);
+    const plain = formatUnifiedExecToolContent(output({ output: "Listening on http://localhost:39485" }), true);
+    const noted = `${plain}\n${SERVER_CHECK_NOTE}`;
+    expect(compactExecExitFooter(noted)).toBe(noted.replace("[exec exit_code=", "[exit "));
     expect(SERVER_CHECK_NOTE).toContain("nothing needs a later kill, pkill or pgrep");
     expect(SERVER_CHECK_NOTE).toContain("in a bounded loop instead of a fixed sleep or timeout");
   });

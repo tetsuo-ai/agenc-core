@@ -312,6 +312,18 @@ describe("exec_command tool", () => {
       expect(result.content).toContain("same command");
     });
 
+    test("a sandbox notice about a server check leaves out the server guidance", async () => {
+      // The notice says what to do next (escalate, or start and test in the same command);
+      // advice about waiting for a port would compete with it.
+      const { tool } = toolWith(completedExecOutput(PYTHON_SERVER_SOCKET_DENIED));
+      const result = await tool.execute(sandboxedArgs({
+        cmd: "python3 -m http.server 8123 & sleep 1; curl -s localhost:8123; kill $!",
+        workdir: root, __agencSessionId: `sandbox-server-${Math.random()}`,
+      }));
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
+      expect(result.content).not.toContain(SERVER_CHECK_NOTE);
+    });
+
     test("keeps the server diagnostic when background cleanup makes the shell succeed", async () => {
       const { tool } = toolWith(completedExecOutput(PYTHON_SERVER_SOCKET_DENIED));
       const result = await tool.execute(sandboxedArgs({ cmd: "python3 -m http.server 8123 & wait; true", workdir: root }));

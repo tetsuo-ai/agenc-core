@@ -67,31 +67,31 @@ function firstFor(sessions: Set<string>, sessionId: string): boolean {
 }
 
 /**
- * Server guidance once per session. Every tool result is replayed on each
+ * The residue note once per session. Every tool result is replayed on each
  * later request, so a repeated full note costs its length again on every
- * call: a session's first residue note is the full one, later ones are a
- * line, and a command that waited a fixed time for a program it started gets
- * {@link SERVER_CHECK_NOTE} once, unless the session already has the
- * guidance. Without a session the content is returned unchanged.
+ * call: a session's first residue note is the full one (and gives the session
+ * the server guidance), later ones are a line. Without a session the content
+ * is returned unchanged.
  */
-export function serverGuidanceOncePerSession(
-  content: string,
-  sessionId: string | undefined,
-  command: string,
-): string {
+export function residualNoteOncePerSession(content: string, sessionId: string | undefined): string {
   if (sessionId === undefined) return content;
   const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
-  if (content.endsWith(note)) {
-    if (!firstFor(sessionsWithResidualNote, sessionId)) {
-      return `${content.slice(0, -note.length)}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
-    }
-    sessionsWithServerGuidance.add(sessionId);
-    return content;
+  if (!content.endsWith(note)) return content;
+  if (!firstFor(sessionsWithResidualNote, sessionId)) {
+    return `${content.slice(0, -note.length)}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
   }
-  if (waitsFixedTimeForProgram(command) && firstFor(sessionsWithServerGuidance, sessionId)) {
-    return `${content}\n${SERVER_CHECK_NOTE}`;
-  }
+  sessionsWithServerGuidance.add(sessionId);
   return content;
+}
+
+/**
+ * {@link SERVER_CHECK_NOTE} for a command that waited a fixed time for a
+ * program it started, once per session and only when the session has not had
+ * the server guidance yet; undefined otherwise.
+ */
+export function serverCheckNoteOncePerSession(sessionId: string | undefined, command: string): string | undefined {
+  if (sessionId === undefined || !waitsFixedTimeForProgram(command)) return undefined;
+  return firstFor(sessionsWithServerGuidance, sessionId) ? SERVER_CHECK_NOTE : undefined;
 }
 
 /** Model-facing alias only; canonical results and structured facts stay intact. */

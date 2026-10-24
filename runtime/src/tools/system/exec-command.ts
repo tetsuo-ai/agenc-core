@@ -46,7 +46,8 @@ import {
 import { isSearchOrReadBashCommand } from "../../utils/bash/commands.js";
 import {
   formatUnifiedExecToolContent,
-  serverGuidanceOncePerSession,
+  residualNoteOncePerSession,
+  serverCheckNoteOncePerSession,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
@@ -1273,10 +1274,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         if ((output.process_id ?? output.session_id) !== undefined && output.detached !== true) {
           notifyExecSessionDiscovery(args, config?.onSessionYielded);
         }
-        const execContent = serverGuidanceOncePerSession(
+        const noteSessionId = resolveSessionId(args as Record<string, unknown>);
+        const execContent = residualNoteOncePerSession(
           formatUnifiedExecToolContent(output, config?.lightMode === true),
-          resolveSessionId(args as Record<string, unknown>),
-          cmd,
+          noteSessionId,
         );
         if (!detach && tty !== true) {
           rememberPrintedOutput({
@@ -1331,9 +1332,13 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           : ordinaryNotice();
         const namespaceNotice = execProcessNamespaceNotice({ command: cmd, runtimeSandbox });
         const notice = [primaryNotice, namespaceNotice].filter(Boolean).join("\n\n") || null;
+        // How to check a server after one that waited a fixed time, unless a
+        // sandbox or process notice already says what to do next.
+        const serverNote = notice === null ? serverCheckNoteOncePerSession(noteSessionId, cmd) : undefined;
+        const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
         return {
           content:
-            notice === null ? execContent : `${execContent}\n\n${notice}`,
+            notice === null ? content : `${content}\n\n${notice}`,
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output, notice),
           effectDisposition: processObservationDisposition(
