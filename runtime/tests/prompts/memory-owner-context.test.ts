@@ -86,9 +86,10 @@ describe("memory prompt owner context", () => {
     // Interactive Light with empty memory keeps the rules out of its fixed
     // prefix and resolves them for the memory-on-request reminder.
     const interactive = await owner("interactive", "", { lightMode: true });
-    expect(await resolveMemoryPromptInputs(interactive.session, interactive.cwd))
-      .toEqual({ memoryInstructions: "", memoryPrompt: "" });
     const onRequest = await resolveMemoryOnRequest(interactive.session, interactive.cwd);
+    // Both prefix halves stay empty; the on-request text comes along for /context.
+    expect(await resolveMemoryPromptInputs(interactive.session, interactive.cwd))
+      .toEqual({ memoryInstructions: "", memoryPrompt: "", memoryOnRequest: onRequest });
     expect(onRequest).toContain("# auto memory");
     expect(onRequest).toContain((await resolveAutoMemoryDirectory(interactive.options)).path);
     // It names the directories the runtime sandbox admits memory writes to.
@@ -100,6 +101,7 @@ describe("memory prompt owner context", () => {
     const withMemory = await resolveMemoryPromptInputs(interactive.session, interactive.cwd);
     expect(withMemory.memoryInstructions).toContain("# auto memory");
     expect(withMemory.memoryPrompt).toContain("# Memory directories");
+    expect(withMemory.memoryOnRequest).toBeUndefined();
     expect(await resolveMemoryOnRequest(interactive.session, interactive.cwd))
       .toBe([withMemory.memoryInstructions, withMemory.memoryPrompt].join("\n\n"));
   });
@@ -129,9 +131,9 @@ describe("memory prompt owner context", () => {
 
   test("an interactive standard session with empty memory sends its rules on request only", async () => {
     const interactive = await owner("standard-interactive");
-    expect(await resolveMemoryPromptInputs(interactive.session, interactive.cwd))
-      .toEqual({ memoryInstructions: "", memoryPrompt: "" });
     const onRequest = await resolveMemoryOnRequest(interactive.session, interactive.cwd);
+    expect(await resolveMemoryPromptInputs(interactive.session, interactive.cwd))
+      .toEqual({ memoryInstructions: "", memoryPrompt: "", memoryOnRequest: onRequest });
     // The standard rules (not Light's) and the standard directory block.
     expect(onRequest).toContain(MEMORY_RULES_MARKER);
     expect(onRequest).not.toContain(LIGHT_MEMORY_RULES_MARKER);
@@ -143,6 +145,7 @@ describe("memory prompt owner context", () => {
     writeFileSync(join(await resolveGlobalMemoryDirectory(interactive.options), "MEMORY.md"), "- [Editor](editor.md): vim\n");
     const withMemory = await resolveMemoryPromptInputs(interactive.session, interactive.cwd);
     expect(withMemory.memoryInstructions).toBe(buildMemoryInstructionLines().join("\n"));
+    expect(withMemory.memoryOnRequest).toBeUndefined();
     expect(withMemory.memoryPrompt).toContain("# Memory directories");
     // A scheduled routine keeps the rules in its prefix whatever the memory holds.
     const routine = await owner("standard-routine", "", { routineRun: true });
