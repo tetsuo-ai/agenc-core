@@ -439,6 +439,29 @@ existing stop reason and exit code; text-mode `agenc -p` prints the
 warning to stderr, and structured output includes the warning event.
 `mode = "never"` turns the gate off, `mode = "always"` applies it to
 interactive sessions too.
+
+Turns whose caller requires the exact final answer (`agenc -p
+--output-format json` or `stream-json`, or `exactOutput` on a turn or
+session) skip the gate by default (`completion_gate.exact_output = "skip"`):
+the final answer is the model's first one. `completion_gate.exact_output =
+"verify"` verifies them the same way, as internal work. The first answer that
+draws a request is held; the checklist rounds stay in history and reach a
+structured-output client only as ordinary agent messages and tool calls (the
+gate's decisions are `completion_gate` records in the rollout), and the turn
+ends with the held answer byte for byte. A verification reply can end with a
+line containing only `<final_answer_changed/>`; the runtime then asks once
+for the corrected final answer in the task's own form, and that reply is the
+final answer. If such a turn runs out of its six verification samples, it
+ends with the held answer and the `completion_gate_exhausted` warning instead
+of `max_turns`.
+
+With a run deadline (`agenc -p --deadline`) the gate does not start a
+verification round that cannot finish before the reserve: when the time left
+before the reserve is shorter than one round, estimated as two model calls at
+the turn's mean pace so far and at least one minute, the answer is accepted
+and recorded as `skipped` with reason `deadline_reserve`, as inside the
+reserve.
+
 `compaction` controls the degraded compaction ladder. When automatic
 compaction at the context limit declines to shrink the history (the
 summary would not save enough, or the summarizer failed), the runtime
@@ -903,7 +926,7 @@ keybinding file or watcher.
 | `durableTurns` | Durable-turn block. |
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. `enabled` defaults to `true`. When false, restart reports `no-checkpoint` and opens a fresh turn. `minIntervalMs` throttles ordinary `iteration` and `postAssistant` writes. It does not defer the forced pre-admission checkpoint after `modelSampleOrdinal` advances. |
 | `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. Automatic continuation applies only to a root whose descendant edges are all closed with recorded terminal outcomes. Turns with unfinished workers follow the ordinary bootstrap path; resuming them is follow-up work. When false, startup opens a fresh turn with reason `disabled`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
-| `completion_gate`, `completion_gate.mode`, `completion_gate.max_rounds` | Non-interactive verification round. `mode` is `auto` (default: only sessions created with `runtimeOptions.nonInteractive`), `always`, or `never`; `max_rounds` is clamped to `1..3`, default `3`. See [Built-in defaults](#built-in-defaults). |
+| `completion_gate`, `completion_gate.mode`, `completion_gate.max_rounds`, `completion_gate.exact_output` | Non-interactive verification round. `mode` is `auto` (default: only sessions created with `runtimeOptions.nonInteractive`), `always`, or `never`; `max_rounds` is clamped to `1..3`, default `3`; `exact_output` is `skip` (default: no check for exact-output turns) or `verify` (they are checked as internal work and keep their final answer). See [Built-in defaults](#built-in-defaults). |
 | `goal`, `goal.max_rounds`, `goal.stall_rounds`, `goal.judge_model`, `goal.verify_timeout_ms` | Policy for `/goal`. `max_rounds` is how many continuations a goal may use before it stops as `budget_exhausted` (`1..100`, default `20`); `stall_rounds` is how many rounds in a row may end without a successful tool call before the goal stalls (default `3`); `judge_model` pins the independent reviewer's model (default: the session model); `verify_timeout_ms` bounds each verification command the runtime runs (default `600000`). See [goal.md](goal.md). |
 | `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The switches enable or disable individual guards. They do not select an idempotent replay policy. |
 

@@ -178,6 +178,28 @@ describe("run deadline in the turn loop (#2503)", () => {
     ]);
   });
 
+  test("the completion gate does not start a round that cannot finish before the reserve", async () => {
+    // 300 s budget, 60 s reserve; the work takes 200 s, so the final answer
+    // arrives 40 s before the reserve, less than the one-minute shortest round.
+    const late = deadlineExercise({ toolRounds: 1, stepMs: 200_000, budgetMs: 300_000, reserveMs: 60_000 });
+    const phases = await collect(late.session);
+    expect(late.samples()).toBe(2);
+    expect(phases.at(-1)).toMatchObject({ stopReason: "completed" });
+    const gates = (events: readonly Event[]) => events.flatMap((event) =>
+      event.msg.type === "completion_gate" ? [event.msg.payload] : [],
+    );
+    expect(gates(late.events)).toEqual([
+      expect.objectContaining({ outcome: "skipped", reason: "deadline_reserve", round: 0 }),
+    ]);
+    expect(warnings(late.events, "deadline_reserve")).toEqual([]);
+
+    // With 140 s left before the reserve the same answer is checked.
+    const early = deadlineExercise({ toolRounds: 1, stepMs: 100_000, budgetMs: 300_000, reserveMs: 60_000 });
+    await collect(early.session);
+    expect(early.samples()).toBeGreaterThan(2);
+    expect(gates(early.events)[0]).toMatchObject({ outcome: "injected", reason: "initial", round: 1 });
+  });
+
   test("a turn still running at the deadline ends deadline_reached", async () => {
     // The third tool call is still running when the deadline passes.
     const exercise = deadlineExercise({

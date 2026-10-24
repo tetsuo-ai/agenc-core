@@ -2717,6 +2717,7 @@ async function* runTurnKernelInner(
   let continuedFromFastMode = false;
   let fastUsage: LLMUsage | undefined;
   let fastCanonicalResponse: LLMResponse | undefined;
+  let fastTransportFailure: { readonly error: unknown } | undefined;
   if (opts.resume === undefined && bypassFastModeEnabled(session, ctx)) {
     session.rolloutStore?.store.enableOneShotFastMode();
     emitTurnStarted(resolvedReferenceContextItem);
@@ -2765,6 +2766,7 @@ async function* runTurnKernelInner(
             state.lastResponseUsage = next.value.lastResponseUsage;
             session.rolloutStore?.store.finishOneShotFastMode();
             fastCanonicalResponse = next.value.canonicalResponse;
+            fastTransportFailure = next.value.transportFailure;
             const response = next.value.recoveryResponse;
             if (response) {
               state.assistantMessages = [assistantMessageFromResponse(response, false, session.services.provider.name)];
@@ -2865,6 +2867,7 @@ async function* runTurnKernelInner(
     isRootHumanTurn: commons.rootHumanTurnText !== undefined,
     taskText: commons.rootHumanTurnText,
     exactOutput: opts.exactOutput,
+    turnStartedAt: commons.turnStartedAt,
   });
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
@@ -3395,6 +3398,21 @@ async function* runTurnKernelInner(
   // site share an identical config object. Pure synchronous resolution.
   const behavioralCfg: BehavioralConfig = resolveBehavioralConfig();
 
+  // The fast loop handed over a model call that failed in transport. That
+  // attempt keeps its admission row (held unknown once dispatched) and its
+  // task-budget charge, and it added nothing to history, so the resample
+  // replays no tool. Like a standard-loop reconnect it spends one re-entry of
+  // the shared recovery ladder, and as a new physical request it takes the
+  // next sample identity, checkpointed before admission by the loop below:
+  // admission refuses the failed attempt's terminal row, which ended such
+  // runs as `execution admission deny: provider_call_failed_after_dispatch`.
+  // The run deadline and the standard retry ladder apply from here on.
+  if (fastTransportFailure !== undefined) {
+    const reservation = await reserveRecoveryReentry(session, state, { triggerName: "reconnect" });
+    if (reservation.kind !== "reserved") throw fastTransportFailure.error;
+    advanceModelSampleOrdinal(state);
+  }
+
   // The phase loop: the "while streaming & tools" outer loop.
   while (true) {
     const cancelledAtLoopStart = await finishCancelledIfAborted();
@@ -3405,9 +3423,10 @@ async function* runTurnKernelInner(
 
     // Bound all verification samples, including tool continuations and recovery.
     // The old round counter advanced only on tool-free answers, so a single
-    // gate prompt could launch an arbitrarily long investigation.
+    // gate prompt could launch an arbitrarily long investigation. An
+    // exact-output request for the final answer itself counts too.
     if (state.completionGate !== undefined && state.completionGateRound > 0 &&
-        !state.completionGateSettled) {
+        (!state.completionGateSettled || state.completionGateFinalAnswerRequested)) {
       // Older checkpoints have only the round counter. Start conservatively
       // from the ordinal available there; new checkpoints preserve the allowance.
       state.completionGateSampleStart ??= Math.max(0, state.modelSampleOrdinal - COMPLETION_GATE_MAX_SAMPLES + 1);
@@ -3416,6 +3435,17 @@ async function* runTurnKernelInner(
         await syncSessionState();
         emitWarning(session.eventLog, session.nextInternalSubId(), "completion_gate_exhausted",
           "Completion verification reached its sample limit; the final result remains unverified.");
+        // Exact output: the answer that existed before verification began is
+        // still the caller's answer; an internal check that ran out of samples
+        // does not turn the run into a failure.
+        const held = state.completionGate.exactOutput === true
+          ? state.completionGateHeldAnswer : undefined;
+        if (held !== undefined) {
+          lastContent = held;
+          emitTurnComplete(lastContent);
+          yield { type: "turn_complete", content: lastContent, usage, stopReason: "completed" };
+          return { reason: "completed" };
+        }
         emitTurnComplete(lastContent, "max_turns");
         yield { type: "turn_complete", content: lastContent, usage, stopReason: "max_turns" };
         return { reason: "max_turns" };
@@ -4059,6 +4089,14 @@ async function* runTurnKernelInner(
         }
         continue;
       }
+      // Exact output: the completion gate settled on the answer it held while
+      // its checklist rounds ran, so the turn ends with those exact bytes. A
+      // reply to its request for the final answer is that answer as sampled.
+      if (state.completionGateFinalAnswer !== undefined) {
+        lastContent = state.completionGateFinalAnswer;
+        state.completionGateFinalAnswer = undefined;
+      }
+      state.completionGateFinalAnswerRequested = false;
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
       });
