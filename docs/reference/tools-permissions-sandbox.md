@@ -193,7 +193,11 @@ Legacy `system.*` utilities (not the primary edit surface):
 Background processes and services. `exec_command` stops every process a
 command leaves behind when the command returns (a trailing `&`, `nohup`,
 `setsid`, a daemon that forks) and says so in the result, on a line after the
-footer: `[note: this command left processes running ... detach: true]`. A
+footer: `[note: this command left processes running ... detach: true]`. The
+first such note of a session also says that nothing is left to stop and how to
+check a server: wait for its port or log line in a bounded loop instead of a
+fixed sleep, then make the requests and `kill $!` in the same command. Later
+notes in that session are one line. A
 process kept alive with `yield_time_ms` has a `session_id`, lives for the
 session, and is stopped by `closeAll` when the session ends. `detach: true`
 starts a service AgenC never stops: its own session, stdout and stderr in a

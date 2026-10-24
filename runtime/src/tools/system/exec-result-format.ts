@@ -6,14 +6,51 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
  * is complete. Without it the model saw exit 0 for `nginx` or
  * `nohup server &`, then found nothing listening, and could not learn why:
  * the containment that stops a command's residue never said so.
+ *
+ * The usual residue is a server a command started to smoke-test it. Models
+ * then waited for it with a fixed `sleep 1`, ran the check again after an
+ * edit, and searched the process table for leftovers (where `pkill -f` can
+ * match the command's own shell), each step another model call. The note
+ * says that nothing is left to stop and how to wait for a server: a bounded
+ * loop on its port or log line, requests and `kill $!` in one command.
  */
 export const RESIDUAL_PROCESSES_NOTE =
-  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
+
+/** The same fact on a later command of a session that already got {@link RESIDUAL_PROCESSES_NOTE}. */
+export const RESIDUAL_PROCESSES_REPEAT_NOTE =
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running.]";
+
+/** Sessions that got the full residue note, oldest first; bounded for long-lived daemons. */
+const sessionsWithResidualNote = new Set<string>();
+const RESIDUAL_NOTE_SESSION_LIMIT = 4096;
+
+/**
+ * Keep the server guidance to the first residue note of a session: every
+ * tool result is replayed on each later request, so a repeated full note
+ * costs its length again on every call. Content without the note, or
+ * without a session, is returned unchanged.
+ */
+export function residualNoteOncePerSession(content: string, sessionId: string | undefined): string {
+  const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
+  if (sessionId === undefined || !content.endsWith(note)) return content;
+  if (!sessionsWithResidualNote.has(sessionId)) {
+    if (sessionsWithResidualNote.size >= RESIDUAL_NOTE_SESSION_LIMIT) {
+      const oldest = sessionsWithResidualNote.values().next().value;
+      if (oldest !== undefined) sessionsWithResidualNote.delete(oldest);
+    }
+    sessionsWithResidualNote.add(sessionId);
+    return content;
+  }
+  return `${content.slice(0, -note.length)}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
+}
 
 /** Model-facing alias only; canonical results and structured facts stay intact. */
 export function compactExecExitFooter(content: string): string {
-  const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
-  const footerEnd = content.endsWith(note) ? content.length - note.length : content.length;
+  const note = [RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE]
+    .map((text) => `\n${text}`)
+    .find((text) => content.endsWith(text)) ?? "";
+  const footerEnd = content.length - note.length;
   return content.slice(0, footerEnd).replace(
     /(^|\n)\[exec exit_code=(-?\d+)((?: [^\r\n]*)?)\]$/,
     "$1[exit $2$3]",

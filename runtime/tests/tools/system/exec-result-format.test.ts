@@ -4,6 +4,8 @@ import {
   compactExecExitFooter,
   formatUnifiedExecToolContent,
   RESIDUAL_PROCESSES_NOTE,
+  RESIDUAL_PROCESSES_REPEAT_NOTE,
+  residualNoteOncePerSession,
   unifiedExecCodeModeResult,
 } from "../../../src/tools/system/exec-result-format.js";
 import type { ExecCommandToolOutput } from "../../../src/unified-exec/types.js";
@@ -94,6 +96,30 @@ describe("formatUnifiedExecToolContent", () => {
     expect(lines.at(-2)).toMatch(/^\[exec exit_code=0 /);
     expect(lines.at(-1)).toBe(RESIDUAL_PROCESSES_NOTE);
     expect(RESIDUAL_PROCESSES_NOTE).toContain("detach: true");
+  });
+
+  test("the residue note says nothing is left to stop and how to wait for a server without a fixed sleep", () => {
+    // A server started to smoke-test it is the usual residue. Models waited for it with `sleep 1`,
+    // searched the process table for leftovers afterwards and lost a model call to each.
+    expect(RESIDUAL_PROCESSES_NOTE).toContain("Nothing is left to stop or look for.");
+    expect(RESIDUAL_PROCESSES_NOTE).toContain("wait for its port or log line in a bounded loop instead of a fixed sleep");
+    expect(RESIDUAL_PROCESSES_NOTE).toContain("`kill $!` in the same command");
+    expect(RESIDUAL_PROCESSES_REPEAT_NOTE).toContain("Cleanup is complete; those processes are no longer running.");
+    expect(RESIDUAL_PROCESSES_REPEAT_NOTE.length).toBeLessThan(RESIDUAL_PROCESSES_NOTE.length / 4);
+  });
+
+  test("a session gets the full residue note once and the short one on later commands", () => {
+    const full = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
+    const session = `exec-result-format-${Math.random()}`;
+    expect(residualNoteOncePerSession(full, session)).toBe(full);
+    const repeat = residualNoteOncePerSession(full, session);
+    expect(repeat).toBe(full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE));
+    expect(compactExecExitFooter(repeat)).toBe(repeat.replace("[exec exit_code=", "[exit "));
+    // Another session, a result without the note and a call without a session are unchanged.
+    expect(residualNoteOncePerSession(full, `${session}-other`)).toBe(full);
+    const plain = formatUnifiedExecToolContent(output({}), true);
+    expect(residualNoteOncePerSession(plain, session)).toBe(plain);
+    expect(residualNoteOncePerSession(full, undefined)).toBe(full);
   });
 
   test("an ordinary exit has neither marker", () => {
