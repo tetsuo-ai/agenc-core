@@ -822,7 +822,12 @@ async function runAgenCDaemonForegroundLocked(
           );
         },
       });
-      cleanup.register("daemon-heartbeat", disposeHeartbeat);
+      // A beat still being written when the daemon stops publishes nothing;
+      // waiting for it removes its temporary file before the process exits.
+      cleanup.register("daemon-heartbeat", async () => {
+        disposeHeartbeat();
+        await disposeHeartbeat.idle();
+      });
     }
     // daemon.log appends across daemons, so this is the durable record that a
     // daemon was replaced; a foreground run writes it to its terminal instead.

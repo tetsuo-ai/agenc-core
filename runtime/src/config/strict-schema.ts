@@ -289,8 +289,9 @@ function validateCompletionGate(value: unknown): void {
   if (value === undefined) return;
   const field = "completion_gate";
   const record = requirePlainObject(value, field);
-  rejectUnknownFields(record, new Set(["mode", "max_rounds"]), field);
+  rejectUnknownFields(record, new Set(["mode", "max_rounds", "exact_output"]), field);
   optionalEnum(record.mode, `${field}.mode`, ["auto", "always", "never"]);
+  optionalEnum(record.exact_output, `${field}.exact_output`, ["verify", "skip"]);
   optionalPositiveInteger(record.max_rounds, `${field}.max_rounds`);
   if (typeof record.max_rounds === "number" && record.max_rounds > 10) {
     throw new InvalidStrictConfigError(`${field}.max_rounds`, "exceeds the maximum of 10 rounds");

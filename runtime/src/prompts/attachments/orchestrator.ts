@@ -81,18 +81,19 @@ export interface GetAttachmentsOptions {
   /** Captured print-session presentation; never changes approval policy. */
   readonly lightPrint?: boolean;
   /**
-   * The permission instructions sent with this request already carry Light's
-   * bypass autonomy note (prompts/permissions-prompt.ts LIGHT_BYPASS_AUTONOMY_NOTE),
-   * which says what the auto-mode pulse says. The session tail that holds it
-   * rides on every request, so the pulse would only repeat it.
+   * The permission instructions sent with this request already carry the
+   * head's bypass autonomy note (prompts/permissions-prompt.ts
+   * LIGHT_BYPASS_AUTONOMY_NOTE or COMPACT_BYPASS_AUTONOMY_NOTE), which says
+   * what the auto-mode pulse says. The session tail that holds it rides on
+   * every request, so the pulse would only repeat it.
    */
   readonly autonomyStatedInPermissions?: boolean;
   /**
-   * Present for an interactive Light session whose fixed prefix carries no
-   * memory rules (its memory was empty when the prompt was assembled):
-   * resolves the rules and directories for the memory-on-request reminder.
+   * Present for an interactive session whose fixed prefix carries no memory
+   * rules (its memory was empty when the prompt was assembled): resolves the
+   * rules and directories for the memory-on-request reminder.
    */
-  readonly lightMemoryOnRequest?: () => Promise<string | undefined>;
+  readonly memoryOnRequest?: () => Promise<string | undefined>;
   /**
    * The instructions sent with this request carry loaded instruction files,
    * framed with prompts/live-instructions.ts LIGHT_LOADED_INSTRUCTIONS_NOTE,

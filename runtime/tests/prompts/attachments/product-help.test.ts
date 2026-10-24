@@ -1,6 +1,7 @@
 /**
- * Light leaves the built-in undo paths out of its fixed head and sends them
- * once, with the user message that asks about undoing work.
+ * Every head leaves the built-in undo paths out of its fixed prefix and the
+ * producer sends them once, with the user message that asks about undoing
+ * work.
  */
 import { describe, expect, test } from "vitest";
 
@@ -131,25 +132,34 @@ describe("product-help attachment producer", () => {
       content: `<system-reminder>\n${AGENC_UNDO_PATHS}\n</system-reminder>`,
       runtimeOnly: { mergeBoundary: "user_context" },
     });
-    // Standard and lean heads keep the same paths in their static head.
-    expect(AGENC_UNDO_GUIDANCE.endsWith(AGENC_UNDO_PATHS)).toBe(true);
+    // The standard and lean heads keep only the rule to answer such questions without tools.
+    expect(AGENC_UNDO_GUIDANCE).not.toContain(AGENC_UNDO_PATHS);
+    expect(AGENC_UNDO_GUIDANCE).toContain("undo commands directly without tools");
     for (const fact of ["/rewind", "preview checkpoints", "conversation only", "with or without Git",
       "not every shell command, manual edit, running process", "do not restore anything just to explain it"]) {
       expect(AGENC_UNDO_PATHS).toContain(fact);
     }
   });
 
-  test("only Light sessions, only for the human's own message of this turn", async () => {
+  test("every session gets the undo paths, only for the human's own message of this turn", async () => {
     const text = "How do I undo that?";
-    expect(await produce(text, { lightMode: false })).toEqual([]);
-    expect(await produce(text, { lightMode: undefined })).toEqual([]);
-    for (const turnProvenance of [
-      undefined,
-      { turnId: "turn-1", rootHumanTurn: null },
-      { turnId: "turn-2", rootHumanTurn: { turnId: "turn-1", text } },
-    ]) {
-      expect(await produce(text, { turnProvenance })).toEqual([]);
+    expect(await produce(text, { lightMode: false })).toEqual([{ kind: "product_help", topic: "undo" }]);
+    expect(await produce(text, { lightMode: undefined })).toEqual([{ kind: "product_help", topic: "undo" }]);
+    for (const lightMode of [true, false]) {
+      for (const turnProvenance of [
+        undefined,
+        { turnId: "turn-1", rootHumanTurn: null },
+        { turnId: "turn-2", rootHumanTurn: { turnId: "turn-1", text } },
+      ]) {
+        expect(await produce(text, { lightMode, turnProvenance })).toEqual([]);
+      }
     }
+  });
+
+  test("standard heads name AGENC.md themselves; Light keeps the instruction-file reminder", async () => {
+    const text = "What does AGENC.md say about tests?";
+    expect(await produce(text, { lightMode: false })).toEqual([]);
+    expect(await produce(text, { lightMode: true })).toEqual([{ kind: "product_help", topic: "instructions" }]);
   });
 
   test("never sends the paths twice: a retained copy in front of the model suppresses it", async () => {

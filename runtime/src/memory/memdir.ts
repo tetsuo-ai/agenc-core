@@ -124,9 +124,10 @@ export interface MemoryPromptSections {
   /** Memory directory paths (and per-session guidance) for the dynamic tail. */
   readonly directories: string
   /**
-   * Interactive Light with no memory yet: both halves are empty and this text
-   * (instructions and directories together) is sent only with a user message
-   * that is about memory or durable facts (prompts/attachments/memory-on-request.ts).
+   * An interactive session with no memory yet: both halves are empty and this
+   * text (instructions and directories together) is sent only with a user
+   * message that is about memory or durable facts
+   * (prompts/attachments/memory-on-request.ts).
    */
   readonly onRequest?: string
 }
@@ -242,6 +243,22 @@ export const LIGHT_MEMORY_RECALL_RULES =
 /** Opening words of Light's memory rules; their presence means the rules are in front of the model. */
 export const LIGHT_MEMORY_RULES_MARKER =
   'Save durable facts in the global (user, all projects) or project (this repository) memory directory'
+
+/** Opening words of the standard and lean heads' memory rules ({@link buildMemoryInstructionLines}). */
+export const MEMORY_RULES_MARKER =
+  '"Memory directories" lists global memory (user-level, across projects) and project memory (this repository).'
+
+/** The standard and lean heads' memory rules and directories as one block, for the on-request reminder. */
+export function buildMemoryOnRequestText(
+  projectMemoryDir: string,
+  extraGuidelines: readonly string[] | undefined,
+  globalMemoryDir: string,
+): string {
+  return [
+    buildMemoryInstructionLines().join('\n'),
+    buildMemoryDirectoryLines(projectMemoryDir, extraGuidelines, globalMemoryDir).join('\n'),
+  ].join('\n\n')
+}
 
 /** Interactive Light's memory rules and directories as one block, for the on-request reminder. */
 export function buildLightMemoryOnRequestText(
@@ -494,16 +511,22 @@ export async function loadMemoryPrompt(
         : lightMemoryContext(autoDir, globalDir, extraGuidelines),
     }
   }
-  // Interactive Light resends its fixed prefix on every model call. A session
-  // whose memory is still empty sends the rules and directories only with a
-  // message about memory or durable facts; the background extractor keeps
-  // saving project facts either way. Decided once per assembly, so the prefix
-  // stays byte-stable for the session.
-  if (light && !(await memoryIndexesHaveContent([globalDir, autoDir]))) {
+  // An interactive session resends its fixed prefix on every model call. A
+  // session whose memory is still empty sends the rules and directories only
+  // with a message about memory or durable facts; the background extractor
+  // keeps saving project facts either way. Decided once per assembly, so the
+  // prefix stays byte-stable for the session. Runs without a human
+  // (owner.runtimeOptions.nonInteractive, scheduled routines) keep the
+  // standard rules in the head.
+  const interactive = owner?.runtimeOptions !== undefined &&
+    owner.runtimeOptions.nonInteractive !== true && owner.runtimeOptions.routineRun !== true
+  if ((light || interactive) && !(await memoryIndexesHaveContent([globalDir, autoDir]))) {
     return {
       instructions: '',
       directories: '',
-      onRequest: buildLightMemoryOnRequestText(autoDir, extraGuidelines, globalDir),
+      onRequest: light
+        ? buildLightMemoryOnRequestText(autoDir, extraGuidelines, globalDir)
+        : buildMemoryOnRequestText(autoDir, extraGuidelines, globalDir),
     }
   }
   return light

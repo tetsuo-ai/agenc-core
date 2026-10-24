@@ -497,11 +497,15 @@ function getMemoryInstructionsSection(
  * Resolve both halves of the memory prompt for a live session. Returns empty
  * strings when auto memory is disabled, and fails closed (no memory prompt)
  * when the memory directories or settings authority cannot be resolved, so a
- * memory misconfiguration never blocks prompt assembly.
+ * memory misconfiguration never blocks prompt assembly. An interactive
+ * session whose memory is empty gets both halves empty and the same rules and
+ * directories as `memoryOnRequest`, which the memory-on-request reminder sends
+ * with its first message about memory (memory/memdir.ts loadMemoryPrompt).
  */
 export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnapshot, cwd: string): Promise<{
   readonly memoryInstructions: string;
   readonly memoryPrompt: string;
+  readonly memoryOnRequest?: string;
 }> {
   try {
     // The owner the runtime sandbox resolves the same directories from
@@ -512,6 +516,9 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
+      ...(prompt?.onRequest !== undefined && prompt.onRequest.length > 0
+        ? { memoryOnRequest: prompt.onRequest }
+        : {}),
     };
   } catch (error) {
     logForDebugging(
@@ -523,13 +530,14 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
 }
 
 /**
- * Interactive Light's memory rules and directories for the memory-on-request
- * reminder (prompts/attachments/memory-on-request.ts), whatever the memory
- * holds now: the session's fixed prefix left them out when its memory was empty
- * at assembly. Undefined when memory is disabled or unavailable. Resolved from
- * the same owner as resolveMemoryPromptInputs and the runtime sandbox.
+ * An interactive session's memory rules and directories for the
+ * memory-on-request reminder (prompts/attachments/memory-on-request.ts),
+ * whatever the memory holds now: the session's fixed prefix left them out when
+ * its memory was empty at assembly. Undefined when memory is disabled or
+ * unavailable. Resolved from the same owner as resolveMemoryPromptInputs and
+ * the runtime sandbox.
  */
-export async function resolveLightMemoryOnRequest(session: SystemPromptSessionSnapshot, cwd: string): Promise<string | undefined> {
+export async function resolveMemoryOnRequest(session: SystemPromptSessionSnapshot, cwd: string): Promise<string | undefined> {
   try {
     const owner = liveSessionMemoryOwner(session.services, cwd);
     if (owner === undefined) return undefined;

@@ -260,7 +260,7 @@ test("standard sessions with deferral send compact core tools with the canonical
   const lean = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
   expect(Object.keys(lean.function.parameters.properties as object).sort()).toEqual(["cmd", "timeoutMs", "workdir"]);
   expect(lean.function.description).toContain("select:exec_command loads them");
-  registry.discoverToolNames?.(["exec_command", "Grep"]);
+  registry.discoverToolNames?.(["exec_command", "Grep", "system.searchTools"]);
   const wire = registry.toLLMTools();
   for (const item of wire) {
     const canonical = registry.tools.find(t => t.name === item.function.name)!;
@@ -277,6 +277,25 @@ test("standard sessions with deferral send compact core tools with the canonical
   expect(multi.function.description).toContain("The file is written only if every edit succeeds");
   // The canonical tools are untouched.
   expect(registry.tools.find(t => t.name === "Grep")!.inputSchema).toHaveProperty("properties.pattern.x-agenc-maxUtf8Bytes");
+});
+
+test("standard sessions send the lean system.searchTools until it is selected", () => {
+  // Of 296 recorded searches 289 used only query or select (LEAN_SEARCH_FIELDS); the six
+  // filters cost every standard request about 75 tokens.
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", deferRareTools: true });
+  const search = () => registry.toLLMTools().find(t => t.function.name === "system.searchTools")!;
+  const canonical = registry.tools.find(t => t.name === "system.searchTools")!;
+  expect(Object.keys(search().function.parameters.properties as object).sort()).toEqual(["query", "select"]);
+  expect((search().function.parameters.properties as Record<string, unknown>).select).toEqual({ type: "string" });
+  expect(search().function.description).toContain("select:system.searchTools adds its filters.");
+  // The deferred-tool pointer still follows the description.
+  expect(search().function.description).toContain("Deferred tools you can load with select:");
+  registry.discoverToolNames?.(["system.searchTools"]);
+  expect(withoutDescriptions(search().function.parameters)).toEqual(withoutVendorKeys(withoutDescriptions(canonical.inputSchema)));
+  expect(search().function.description).not.toContain("adds its filters");
+  // Without deferral every field stays.
+  const full = buildToolRegistry({ workspaceRoot: "/tmp" }).toLLMTools().find(t => t.function.name === "system.searchTools")!;
+  expect(Object.keys(full.function.parameters.properties as object)).toContain("maxResults");
 });
 
 test("standard sessions send the lean Grep until system.searchTools selects it", async () => {

@@ -340,13 +340,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "skill_listing": {
       const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER} ${skillLoadingGuidance(content)}\n\n${content}`),
+        wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER} ${skillLoadingGuidance(content, attachment.skillToolListed === true)}\n\n${content}`),
       );
     }
     case "skill_relevance": {
       const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER} ${skillLoadingGuidance(content)}\n\n${content}`),
+        wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER} ${skillLoadingGuidance(content, attachment.skillToolListed === true)}\n\n${content}`),
       );
     }
     case "instruction_update": {
@@ -394,14 +394,19 @@ export const SKILL_LISTING_REMINDER_HEADER =
 const SKILL_LOADING_GUIDANCE =
   "If a skill fits, use Skill when it is callable. Otherwise, if system.searchTools is callable, find and select Skill there, then wait for its schema before invoking it. Never call a listed skill name as a tool or invent an unavailable call.";
 
+/** The same rule when the request that carries the listing lists the Skill tool itself. */
+const SKILL_LISTED_GUIDANCE =
+  "If a skill fits, use Skill. Never call a listed skill name as a tool or invent an unavailable call.";
+
 /** Only a listing that names plugin skills needs the plugin rules. */
 const PLUGIN_SKILL_GUIDANCE =
   "A [plugin: id] label identifies the plugin that provides that skill. An @plugin-id mention selects that plugin; use its listed skill names, which may differ from the plugin name. Discover its MCP tools separately with system.searchTools when callable; an empty tool search does not mean its listed skills are unavailable.";
 
-function skillLoadingGuidance(content: string): string {
+function skillLoadingGuidance(content: string, skillToolListed = false): string {
+  const guidance = skillToolListed ? SKILL_LISTED_GUIDANCE : SKILL_LOADING_GUIDANCE;
   return content.includes("[plugin:")
-    ? `${SKILL_LOADING_GUIDANCE} ${PLUGIN_SKILL_GUIDANCE}`
-    : SKILL_LOADING_GUIDANCE;
+    ? `${guidance} ${PLUGIN_SKILL_GUIDANCE}`
+    : guidance;
 }
 
 function permissionModeMessage(
