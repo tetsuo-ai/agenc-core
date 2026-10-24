@@ -226,9 +226,21 @@ describe("compact standard permission section", () => {
   test("bypass names the standard head's section for the action rules", () => {
     const text = compact("bypassPermissions", "danger_full_access")!;
     expect(text).toContain(LIGHT_APPROVAL_NEVER);
-    expect(text).toContain("the rules in 'Executing actions with care' still apply.");
+    expect(text).toContain("the rules in 'Executing actions with care' still apply");
     expect(text).not.toContain("the action rules above");
     expect(compact("bypassPermissions", "workspace_write")).toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
+  });
+
+  test("bypass carries what the auto-mode reminder it replaces adds to the standard head", () => {
+    // The auto-mode reminder is skipped when this note is present (session/permission-instructions.ts),
+    // so its assumptions sentence and its secrets rule live here; the head's action rules already
+    // cover its destructive, shared-system and posting rules.
+    expect(COMPACT_BYPASS_AUTONOMY_NOTE).toContain("else make reasonable assumptions");
+    expect(COMPACT_BYPASS_AUTONOMY_NOTE).toContain("never share a secret unless the user authorized that secret and its destination");
+    expect(compact("bypassPermissions", "workspace_write")).toContain(COMPACT_BYPASS_AUTONOMY_NOTE);
+    for (const mode of ["default", "acceptEdits", "plan"] as const) {
+      expect(compact(mode, "workspace_write")).not.toContain(COMPACT_BYPASS_AUTONOMY_NOTE);
+    }
   });
 
   test("Light wins when both are set", () => {

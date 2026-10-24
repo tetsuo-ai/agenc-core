@@ -1,26 +1,26 @@
 /**
- * Product-help attachment producer (Light sessions only).
+ * Product-help attachment producer.
  *
- * Light resends its head on every model call, so built-in help that only a
- * few user messages need stays out of it. When the root human message of the
+ * Every head is resent on every model call, so built-in help that only a few
+ * user messages need stays out of it. When the root human message of the
  * current turn asks how to undo, revert, roll back or restore work, the
  * producer sends the undo paths (/rewind checkpoints, their limits, Git
- * history); when it mentions instruction files and none is loaded, it names
- * AgenC's (AGENC.md) and says none is loaded. Loaded instruction files already
- * say where they are (prompts/live-instructions.ts).
+ * history), in every session. In a Light session, when it mentions
+ * instruction files and none is loaded, it names AgenC's (AGENC.md) and says
+ * none is loaded; loaded instruction files already say where they are
+ * (prompts/live-instructions.ts), and the standard and lean heads name AGENC.md
+ * themselves. In a standard session that lists the Skill tool, a message about
+ * skills gets the skill-authoring rules.
  * Each topic goes once, on the turn's first request. The retention ledger
  * anchors the reminder before that message and replays it in place on every
  * later request, so the cached prefix never moves and the text is not sent
  * twice.
  *
- * Standard and lean heads keep both in their static head
- * (prompts/product-help.ts, prompts/system-prompt.ts).
- *
  * @module
  */
 
 import type { LLMMessage } from "../../llm/types.js";
-import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS, LIGHT_LOADED_INSTRUCTIONS_NOTE } from "../product-help.js";
+import { AGENC_INSTRUCTION_FILE, AGENC_SKILL_AUTHORING, AGENC_UNDO_PATHS, LIGHT_LOADED_INSTRUCTIONS_NOTE } from "../product-help.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 
 /**
@@ -45,9 +45,18 @@ export function asksAboutInstructionFiles(text: string): boolean {
   return INSTRUCTIONS_REQUEST.test(text);
 }
 
+/** Skills, the skill file, or its allowed-tools field. */
+const SKILLS_REQUEST = /\b(?:skills?|SKILL\.md|allowed-tools)\b/iu;
+
+/** Whether `text` is about skills. */
+export function asksAboutSkills(text: string): boolean {
+  return SKILLS_REQUEST.test(text);
+}
+
 const TOPICS = [
-  { topic: "undo", matches: asksAboutUndo, text: AGENC_UNDO_PATHS },
-  { topic: "instructions", matches: asksAboutInstructionFiles, text: AGENC_INSTRUCTION_FILE },
+  { topic: "undo", matches: asksAboutUndo, text: AGENC_UNDO_PATHS, light: true, standard: true },
+  { topic: "instructions", matches: asksAboutInstructionFiles, text: AGENC_INSTRUCTION_FILE, light: true, standard: false },
+  { topic: "skills", matches: asksAboutSkills, text: AGENC_SKILL_AUTHORING, light: false, standard: true },
 ] as const;
 
 function contains(messages: readonly LLMMessage[], needle: string): boolean {
@@ -68,7 +77,8 @@ function instructionFilesLoaded(opts: Parameters<AttachmentProducer>[0]): boolea
 }
 
 export const productHelpProducer: AttachmentProducer = async (opts) => {
-  if (opts.lightMode !== true) return [];
+  const light = opts.lightMode === true;
+  const skillListed = opts.loadedTools.some((tool) => tool.function.name === "Skill");
   // Only the human's own message decides; a synthetic follow-up or a
   // delegated child turn carries no root-human text for this turn.
   const provenance = opts.turnProvenance;
@@ -80,7 +90,9 @@ export const productHelpProducer: AttachmentProducer = async (opts) => {
   // Each topic once: a copy already in front of the model (retained from an
   // earlier request or turn) suppresses it.
   return TOPICS
-    .filter(({ topic, matches, text }) => matches(root.text) && !contains(opts.messages, text) &&
-      !(topic === "instructions" && instructionFilesLoaded(opts)))
+    .filter((entry) => (light ? entry.light : entry.standard) && entry.matches(root.text) &&
+      !contains(opts.messages, entry.text) &&
+      !(entry.topic === "instructions" && instructionFilesLoaded(opts)) &&
+      !(entry.topic === "skills" && !skillListed))
     .map(({ topic }) => ({ kind: "product_help", topic }));
 };

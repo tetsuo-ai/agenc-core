@@ -19,7 +19,7 @@ function makeOpts(text: string, partial?: Partial<GetAttachmentsOptions>): GetAt
   return {
     sessionKey: { conversationId: "conv-memory-on-request" },
     lightMode: true,
-    lightMemoryOnRequest: async () => RULES,
+    memoryOnRequest: async () => RULES,
     turnProvenance: { turnId: "turn-1", rootHumanTurn: { turnId: "turn-1", text } },
     userInput: text,
     loadedTools: [],
@@ -107,7 +107,7 @@ describe("memory-on-request attachment producer", () => {
   test("only when the fixed prefix left the rules out, only for the human's message of this turn, never twice", async () => {
     const text = "Remember that I prefer tabs.";
     // The prefix carries the rules (memory had content) or memory is off: no resolver.
-    expect(await produce(text, { lightMemoryOnRequest: undefined })).toEqual([]);
+    expect(await produce(text, { memoryOnRequest: undefined })).toEqual([]);
     for (const turnProvenance of [
       undefined,
       { turnId: "turn-1", rootHumanTurn: null },
@@ -118,9 +118,9 @@ describe("memory-on-request attachment producer", () => {
     const retained: LLMMessage = { role: "user", content: `<system-reminder>\n${RULES}\n</system-reminder>`,
       runtimeOnly: { mergeBoundary: "user_context" } };
     const resolve = vi.fn(async () => RULES);
-    expect(await produce(text, { messages: [retained, { role: "user", content: text }], lightMemoryOnRequest: resolve })).toEqual([]);
+    expect(await produce(text, { messages: [retained, { role: "user", content: text }], memoryOnRequest: resolve })).toEqual([]);
     expect(resolve).not.toHaveBeenCalled();
     // Memory disabled after assembly: the resolver finds nothing to send.
-    expect(await produce(text, { lightMemoryOnRequest: async () => undefined })).toEqual([]);
+    expect(await produce(text, { memoryOnRequest: async () => undefined })).toEqual([]);
   });
 });

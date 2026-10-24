@@ -1,6 +1,7 @@
 /**
- * Light leaves the built-in undo paths out of its fixed head and sends them
- * once, with the user message that asks about undoing work.
+ * Every head leaves the built-in undo paths out of its fixed prefix and the
+ * producer sends them once, with the user message that asks about undoing
+ * work; standard sessions get the skill-authoring rules the same way.
  */
 import { describe, expect, test } from "vitest";
 
@@ -9,13 +10,14 @@ import type { ToolPermissionContext } from "../../permissions/types.js";
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
 import {
   AGENC_INSTRUCTION_FILE,
+  AGENC_SKILL_AUTHORING,
   AGENC_UNDO_GUIDANCE,
   AGENC_UNDO_PATHS,
   LIGHT_LOADED_INSTRUCTIONS_NOTE,
 } from "../product-help.js";
 import { attachmentsToMessages } from "./messages.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
-import { asksAboutInstructionFiles, asksAboutUndo, productHelpProducer } from "./product-help.js";
+import { asksAboutInstructionFiles, asksAboutSkills, asksAboutUndo, productHelpProducer } from "./product-help.js";
 
 function makeOpts(text: string, partial?: Partial<GetAttachmentsOptions>): GetAttachmentsOptions {
   return {
@@ -131,24 +133,51 @@ describe("product-help attachment producer", () => {
       content: `<system-reminder>\n${AGENC_UNDO_PATHS}\n</system-reminder>`,
       runtimeOnly: { mergeBoundary: "user_context" },
     });
-    // Standard and lean heads keep the same paths in their static head.
-    expect(AGENC_UNDO_GUIDANCE.endsWith(AGENC_UNDO_PATHS)).toBe(true);
+    // The standard and lean heads keep only the rule to answer such questions without tools.
+    expect(AGENC_UNDO_GUIDANCE).not.toContain(AGENC_UNDO_PATHS);
+    expect(AGENC_UNDO_GUIDANCE).toContain("undo commands directly without tools");
     for (const fact of ["/rewind", "preview checkpoints", "conversation only", "with or without Git",
       "not every shell command, manual edit, running process", "do not restore anything just to explain it"]) {
       expect(AGENC_UNDO_PATHS).toContain(fact);
     }
   });
 
-  test("only Light sessions, only for the human's own message of this turn", async () => {
+  test("every session gets the undo paths, only for the human's own message of this turn", async () => {
     const text = "How do I undo that?";
+    expect(await produce(text, { lightMode: false })).toEqual([{ kind: "product_help", topic: "undo" }]);
+    expect(await produce(text, { lightMode: undefined })).toEqual([{ kind: "product_help", topic: "undo" }]);
+    for (const lightMode of [true, false]) {
+      for (const turnProvenance of [
+        undefined,
+        { turnId: "turn-1", rootHumanTurn: null },
+        { turnId: "turn-2", rootHumanTurn: { turnId: "turn-1", text } },
+      ]) {
+        expect(await produce(text, { lightMode, turnProvenance })).toEqual([]);
+      }
+    }
+  });
+
+  test("standard heads name AGENC.md themselves; Light keeps the instruction-file reminder", async () => {
+    const text = "What does AGENC.md say about tests?";
     expect(await produce(text, { lightMode: false })).toEqual([]);
-    expect(await produce(text, { lightMode: undefined })).toEqual([]);
-    for (const turnProvenance of [
-      undefined,
-      { turnId: "turn-1", rootHumanTurn: null },
-      { turnId: "turn-2", rootHumanTurn: { turnId: "turn-1", text } },
-    ]) {
-      expect(await produce(text, { turnProvenance })).toEqual([]);
+    expect(await produce(text, { lightMode: true })).toEqual([{ kind: "product_help", topic: "instructions" }]);
+  });
+
+  test("a standard session that lists Skill gets the skill-authoring rules with a message about skills, once", async () => {
+    const skill = { type: "function" as const, function: { name: "Skill", description: "", parameters: { type: "object" } } };
+    const text = "Write a project skill that formats our changelog.";
+    expect(asksAboutSkills(text)).toBe(true);
+    expect(await produce(text, { lightMode: false, loadedTools: [skill] })).toEqual([{ kind: "product_help", topic: "skills" }]);
+    const [message] = attachmentsToMessages(await produce(text, { lightMode: false, loadedTools: [skill] }));
+    expect(message?.content).toBe(`<system-reminder>\n${AGENC_SKILL_AUTHORING}\n</system-reminder>`);
+    // Not without the Skill tool, not in Light, not twice, not for task prompts.
+    expect(await produce(text, { lightMode: false })).toEqual([]);
+    expect(await produce(text, { lightMode: true, loadedTools: [skill] })).toEqual([]);
+    const retained: LLMMessage = { role: "user", content: `<system-reminder>\n${AGENC_SKILL_AUTHORING}\n</system-reminder>`,
+      runtimeOnly: { mergeBoundary: "user_context" } };
+    expect(await produce(text, { lightMode: false, loadedTools: [skill], messages: [retained, { role: "user", content: text }] })).toEqual([]);
+    for (const task of TASK_PROMPTS) {
+      expect(await produce(task, { lightMode: false, loadedTools: [skill] })).toEqual([]);
     }
   });
 

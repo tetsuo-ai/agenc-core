@@ -301,9 +301,9 @@ import {
   type StructuralCompactionDecline,
 } from "./run-turn-compaction.js";
 import { fitToolResultsToBudget, type ContextFitResult } from "./request-context-fit.js";
-import { permissionInstructionsStateLightAutonomy } from "./permission-instructions.js";
-import { LIGHT_MEMORY_RULES_MARKER } from "../memory/memdir.js";
-import { resolveLightMemoryOnRequest } from "../prompts/system-prompt.js";
+import { permissionInstructionsStateAutonomy } from "./permission-instructions.js";
+import { LIGHT_MEMORY_RULES_MARKER, MEMORY_RULES_MARKER } from "../memory/memdir.js";
+import { resolveMemoryOnRequest } from "../prompts/system-prompt.js";
 import { logForDebugging } from "../utils/debug.js";
 
 // Declarations that moved to the run-turn-* sibling modules. Re-exported so
@@ -953,18 +953,18 @@ async function prepareSamplingRequestBoundary(
     sessionKey: session,
     lightMode: session.services.runtimeOptions?.lightMode === true,
     lightPrint: isLightPrintRun(session.services.runtimeOptions, session.services.providerEnvironment),
-    autonomyStatedInPermissions: permissionInstructionsStateLightAutonomy(
+    autonomyStatedInPermissions: permissionInstructionsStateAutonomy(
       session,
       samplingContext,
       permissionContext,
       state.modelInstructions,
     ),
-    // An interactive Light session whose prompt was assembled with empty
-    // memory has no memory rules in its fixed prefix (memory/memdir.ts).
-    ...(session.services.runtimeOptions?.lightMode === true &&
-      session.services.runtimeOptions.nonInteractive !== true &&
-      !state.modelInstructions.includes(LIGHT_MEMORY_RULES_MARKER)
-      ? { lightMemoryOnRequest: () => resolveLightMemoryOnRequest(session, ctx.cwd) }
+    // An interactive session whose prompt was assembled with empty memory has
+    // no memory rules in its fixed prefix (memory/memdir.ts).
+    ...(session.services.runtimeOptions?.nonInteractive !== true &&
+      !state.modelInstructions.includes(LIGHT_MEMORY_RULES_MARKER) &&
+      !state.modelInstructions.includes(MEMORY_RULES_MARKER)
+      ? { memoryOnRequest: () => resolveMemoryOnRequest(session, ctx.cwd) }
       : {}),
     lightInstructionFilesLoaded: state.modelInstructions.includes(LIGHT_LOADED_INSTRUCTIONS_NOTE),
     admittedMemorySelector: createAdmittedMemorySelector(session),

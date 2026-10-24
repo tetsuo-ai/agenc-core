@@ -1,6 +1,6 @@
 /**
- * Memory-on-request attachment producer (interactive Light sessions whose
- * memory was empty when the prompt was assembled).
+ * Memory-on-request attachment producer (interactive sessions, Light or
+ * standard, whose memory was empty when the prompt was assembled).
  *
  * Such a session's fixed prefix carries no memory rules and no memory
  * directories (memory/memdir.ts loadMemoryPrompt). When the root human message
@@ -17,7 +17,7 @@
  */
 
 import type { LLMMessage } from "../../llm/types.js";
-import { LIGHT_MEMORY_RULES_MARKER } from "../../memory/memdir.js";
+import { LIGHT_MEMORY_RULES_MARKER, MEMORY_RULES_MARKER } from "../../memory/memdir.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 
 /** Roles in "I'm a data engineer", "I am the release manager". */
@@ -82,7 +82,7 @@ function contains(messages: readonly LLMMessage[], needle: string): boolean {
 }
 
 export const memoryOnRequestProducer: AttachmentProducer = async (opts) => {
-  const resolve = opts.lightMemoryOnRequest;
+  const resolve = opts.memoryOnRequest;
   if (resolve === undefined) return [];
   // Only the human's own message of this turn decides.
   const provenance = opts.turnProvenance;
@@ -93,7 +93,7 @@ export const memoryOnRequestProducer: AttachmentProducer = async (opts) => {
   }
   if (!asksAboutMemory(root.text)) return [];
   // Already in front of the model: retained from an earlier request or turn.
-  if (contains(opts.messages, LIGHT_MEMORY_RULES_MARKER)) return [];
+  if (contains(opts.messages, LIGHT_MEMORY_RULES_MARKER) || contains(opts.messages, MEMORY_RULES_MARKER)) return [];
   const content = await resolve();
   return content === undefined || content.length === 0
     ? []

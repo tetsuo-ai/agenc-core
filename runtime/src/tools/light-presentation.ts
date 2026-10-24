@@ -253,12 +253,19 @@ function withoutVendorKeys(value: unknown): unknown {
 /**
  * Standard-session wording for a built-in tool: Light's compact text where it fits
  * (`lightWording`), the standard text above for FileRead, MultiEdit and Skill, and the lean
- * exec_command and Grep until system.searchTools selects them. The schema keeps every
- * field, default and standard validation keyword; only AgenC's x-agenc-* keys stay off the wire.
+ * exec_command, Grep and system.searchTools until system.searchTools selects them (the search
+ * filters with the same pointer as {@link LEAN_SEARCH_FIELDS} describes). The schema of every
+ * other tool keeps every field, default and standard validation keyword; only AgenC's x-agenc-*
+ * keys stay off the wire.
  */
 export function standardPresentation(
   tool: LLMTool,
-  options: { readonly lightWording?: boolean; readonly leanExec?: boolean; readonly leanGrep?: boolean } = {},
+  options: {
+    readonly lightWording?: boolean;
+    readonly leanExec?: boolean;
+    readonly leanGrep?: boolean;
+    readonly leanSearch?: boolean;
+  } = {},
 ): LLMTool {
   const name = tool.function.name;
   const description = standardDescriptions[name];
@@ -269,7 +276,9 @@ export function standardPresentation(
       : presentWith(tool, description, standardFieldHints[name] ?? {});
   const worded = options.leanGrep === true && name === "Grep"
     ? withOnlyFields(presented, LEAN_GREP_FIELDS, LEAN_GREP_POINTER)
-    : presented;
+    : options.leanSearch === true && name === "system.searchTools"
+      ? withFieldSchemas(withOnlyFields(presented, LEAN_SEARCH_FIELDS, LEAN_SEARCH_POINTER), { select: { type: "string" } })
+      : presented;
   return {
     ...worded,
     function: {

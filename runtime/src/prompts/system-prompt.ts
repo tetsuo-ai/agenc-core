@@ -307,11 +307,9 @@ export function getUsingYourToolsSection(
     );
   }
 
-  if (enabledTools.has("Skill")) {
-    items.push(
-      `Project skills live in .agenc/skills/<name>/SKILL.md with a name and a one-line description in the frontmatter. Leave allowed-tools empty: project skills ignore it, and for user skills a non-empty list makes every Skill invocation ask for approval. Skill is only for skills, never MCP tool names.`,
-    );
-  }
+  // How to write a project skill arrives with a message about skills
+  // (prompts/attachments/product-help.ts); the Skill tool's description says
+  // that it runs skills only, never MCP tools.
 
   if (hasMcpTool) {
     items.push(
@@ -523,13 +521,14 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
 }
 
 /**
- * Interactive Light's memory rules and directories for the memory-on-request
- * reminder (prompts/attachments/memory-on-request.ts), whatever the memory
- * holds now: the session's fixed prefix left them out when its memory was empty
- * at assembly. Undefined when memory is disabled or unavailable. Resolved from
- * the same owner as resolveMemoryPromptInputs and the runtime sandbox.
+ * An interactive session's memory rules and directories for the
+ * memory-on-request reminder (prompts/attachments/memory-on-request.ts),
+ * whatever the memory holds now: the session's fixed prefix left them out when
+ * its memory was empty at assembly. Undefined when memory is disabled or
+ * unavailable. Resolved from the same owner as resolveMemoryPromptInputs and
+ * the runtime sandbox.
  */
-export async function resolveLightMemoryOnRequest(session: SystemPromptSessionSnapshot, cwd: string): Promise<string | undefined> {
+export async function resolveMemoryOnRequest(session: SystemPromptSessionSnapshot, cwd: string): Promise<string | undefined> {
   try {
     const owner = liveSessionMemoryOwner(session.services, cwd);
     if (owner === undefined) return undefined;
