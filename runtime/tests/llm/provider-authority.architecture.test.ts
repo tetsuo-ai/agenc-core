@@ -642,7 +642,7 @@ describe("provider authority architecture", () => {
 
   test("provider and web request paths cannot rediscover client env from process globals", () => {
     const directSessionEnvironment =
-      /process\.env\.(?:(?:OPENAI|ANTHROPIC|GEMINI|MISTRAL|NVIDIA|MINIMAX|XAI|GROK|OLLAMA|LMSTUDIO|OPENROUTER|GROQ|DEEPSEEK|AWS_BEDROCK|GITHUB|GH|GOOGLE|AGENC_XAI)_[A-Z0-9_]+|(?:FIRECRAWL|BING|EXA|JINA|LINKUP|MOJEEK|TAVILY|YOU)_API_KEY|WEB_[A-Z0-9_]+)/u;
+      /process\.env\.(?:(?:OPENAI|ANTHROPIC|GEMINI|MISTRAL|NVIDIA|MINIMAX|XAI|GROK|OLLAMA|LMSTUDIO|OPENROUTER|GROQ|DEEPSEEK|AWS_BEDROCK|GITHUB|GH|GOOGLE|AGENC_XAI)_[A-Z0-9_]+|(?:FIRECRAWL|BING|EXA|JINA|KEENABLE|LINKUP|MOJEEK|TAVILY|YOU)_API_KEY|WEB_[A-Z0-9_]+)/u;
     const allowedIngress = new Set([
       "services/github/deviceFlow.ts",
       "utils/env.ts",
@@ -667,6 +667,7 @@ describe("provider authority architecture", () => {
       "BING_API_KEY",
       "EXA_API_KEY",
       "JINA_API_KEY",
+      "KEENABLE_API_KEY",
       "LINKUP_API_KEY",
       "MOJEEK_API_KEY",
       "TAVILY_API_KEY",

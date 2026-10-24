@@ -303,7 +303,7 @@ describe("strict schema-v2 validation coverage", () => {
     ).toThrow(/unknown schema-v2 key: llm/u);
   });
 
-  test.each(["auto", "firecrawl", "tavily", "exa", "you", "jina", "bing", "mojeek", "linkup", "custom", "ddg", "native"])(
+  test.each(["auto", "firecrawl", "tavily", "exa", "you", "jina", "bing", "mojeek", "linkup", "keenable", "custom", "ddg", "native"])(
     "accepts configured search backend %s in strict user and profile config",
     (provider) => {
       const config = validateStrictConfigDocument({

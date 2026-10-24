@@ -14,6 +14,7 @@ const fixtures = [
   ['bing', 'BING_API_KEY', 'api.bing.microsoft.com', 'Ocp-Apim-Subscription-Key', 'fixture', { webPages: { value: [hit] } }],
   ['mojeek', 'MOJEEK_API_KEY', 'www.mojeek.com', 'Authorization', 'Bearer fixture', { response: { results: [hit] } }],
   ['linkup', 'LINKUP_API_KEY', 'api.linkup.so', 'Authorization', 'Bearer fixture', { results: [hit] }],
+  ['keenable', 'KEENABLE_API_KEY', 'api.keenable.ai', 'X-API-Key', 'fixture', { results: [hit] }],
 ] as const
 
 function tool(env: NodeJS.ProcessEnv = {}, toolsConfig?: ModelFacingToolOptions['toolsConfig']) {
@@ -115,6 +116,34 @@ describe('configured providers in live WebSearch', () => {
     expect(fetch).toHaveBeenCalledOnce()
     await expect(tool({ WEB_SEARCH_PROVIDER: 'exa' }).execute({ query: 'news' })).rejects.toThrow('not configured')
     await expect(tool({ WEB_SEARCH_PROVIDER: 'invalid' }).execute({ query: 'news' })).rejects.toThrow('Unknown web search provider')
+  })
+
+  it('runs explicit Keenable without a key on its keyless endpoint and leaves it out of auto', async () => {
+    const fetch = vi.fn(async (url: string) => url.includes('keenable')
+      ? response({ results: [{ ...hit, description: '', snippet: 'Fixture\n\nsearch   evidence' }] })
+      : new Response(`<a class="result__a" href="${hit.url}">${hit.title}</a>`))
+    vi.stubGlobal('fetch', fetch)
+    const result = await tool({ WEB_SEARCH_PROVIDER: 'keenable' }).execute({ query: 'fixture', max_results: 3, allowed_domains: ['docs.example'] })
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.keenable.ai/v1/search/public')
+    expect(new Headers(init.headers).get('X-Keenable-Title')).toBe('AgenC')
+    expect(new Headers(init.headers).has('X-API-Key')).toBe(false)
+    expect(init.redirect).toBe('error')
+    expect(JSON.parse(String(init.body))).toEqual({ query: 'fixture', max_results: 3, site: 'docs.example' })
+    expect(JSON.parse(result.content)).toMatchObject({ source: 'keenable', results: [hit] })
+
+    fetch.mockClear()
+    await tool({}).execute({ query: 'news' })
+    expect(fetch.mock.calls.map(c => new URL(c[0]).hostname)).toEqual(['html.duckduckgo.com'])
+  })
+
+  it('tries Keenable last among configured keys, on its keyed endpoint', async () => {
+    const fetch = vi.fn(async (url: string) => url.includes('linkup')
+      ? new Response('unavailable', { status: 503 }) : response({ results: [hit] }))
+    vi.stubGlobal('fetch', fetch)
+    const result = await tool({ KEENABLE_API_KEY: 'fixture', LINKUP_API_KEY: 'fixture' }).execute({ query: 'news' })
+    expect(fetch.mock.calls.map(c => String(c[0]))).toEqual(['https://api.linkup.so/v1/search', 'https://api.keenable.ai/v1/search'])
+    expect(JSON.parse(result.content).source).toBe('keenable')
   })
 
   it('runs custom presets with the live session environment', async () => {

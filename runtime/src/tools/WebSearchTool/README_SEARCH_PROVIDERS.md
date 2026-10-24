@@ -51,10 +51,12 @@ answers. DeepSeek's auto setting leaves an explicit search endpoint in charge;
 config equivalent is `[tools_config] web_search_provider`; the environment wins.
 In `auto`, an explicit `AGENC_WEB_SEARCH_ENDPOINT` (or
 `tools_config.web_search_endpoint`) keeps priority. Otherwise the configured
-API keys select Firecrawl, Tavily, Exa, You, Jina, Bing, Mojeek, then Linkup.
+API keys select Firecrawl, Tavily, Exa, You, Jina, Bing, Mojeek, Linkup, then Keenable.
 Failures and empty/filtered results fall through to the next provider, then DDG.
 Explicit provider names fail on errors or missing keys without switching to DDG;
 `ddg` selects the keyless fallback and `native` requires a session-native backend.
+Explicit `keenable` needs no key: without `KEENABLE_API_KEY` it uses Keenable's
+keyless tier.
 
 The existing `AGENC_WEB_SEARCH_ENDPOINT` / `tools_config.web_search_endpoint`
 can override the request URL of an explicitly named provider, using that
@@ -96,14 +98,14 @@ The live daemon tool uses the chain and configuration described above.
 | Mode | Behavior |
 |---|---|
 | `auto` (default) | Try **configured** first-party providers in priority order; fall through on failure |
-| `firecrawl` / `tavily` / `exa` / `you` / `jina` / `bing` / `mojeek` / `linkup` / `ddg` | That provider only: throws on failure |
+| `firecrawl` / `tavily` / `exa` / `you` / `jina` / `bing` / `mojeek` / `linkup` / `keenable` / `ddg` | That provider only: throws on failure |
 | `custom` | Custom HTTP / `WEB_PROVIDER` preset only: throws on failure. **Not in the auto chain** |
 | `native` | Provider-native web search only (requires firstParty / Vertex / Foundry provider) |
 
 **Auto chain (only):**
 
 ```text
-firecrawl → tavily → exa → you → jina → bing → mojeek → linkup → ddg
+firecrawl → tavily → exa → you → jina → bing → mojeek → linkup → keenable → ddg
 ```
 
 DuckDuckGo is last (free, rate-limited). Each step runs only when that
@@ -128,6 +130,7 @@ always available).
 | Bing | `BING_API_KEY` | `Ocp-Apim-Subscription-Key` | GET | yes |
 | Mojeek | `MOJEEK_API_KEY` | `Authorization: Bearer` (optional) | GET | yes |
 | Linkup | `LINKUP_API_KEY` | `Authorization: Bearer` | POST | yes |
+| Keenable | `KEENABLE_API_KEY` (optional with `WEB_SEARCH_PROVIDER=keenable`) | `X-API-Key` (optional) | POST | yes, with a key |
 | DuckDuckGo | *(no key)* |: | SDK | yes (last) |
 | Custom HTTP | `WEB_SEARCH_PROVIDER=custom` + `WEB_SEARCH_API` / `WEB_URL_TEMPLATE` | Configurable | GET/POST | **no** |
 | SearXNG preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=searxng` |: | GET | **no** |
@@ -149,7 +152,8 @@ export EXA_API_KEY=your-exa-key
 # Bing
 export BING_API_KEY=your-bing-key
 
-# Firecrawl / You.com / Jina / Mojeek / Linkup: same pattern: set their *_API_KEY
+# Firecrawl / You.com / Jina / Mojeek / Linkup / Keenable: same pattern: set their *_API_KEY
+# Keenable also runs keyless (rate-limited) with WEB_SEARCH_PROVIDER=keenable
 # DuckDuckGo needs no key and is the auto fallback when nothing else is configured
 
 # Fail loudly if Tavily is down (don't fall through)
@@ -400,6 +404,40 @@ Content-Type: application/json
 }
 ```
 
+### Keenable
+
+```bash
+export KEENABLE_API_KEY=your-keenable-key   # joins the auto chain
+# or, without a key (keyless tier, rate-limited):
+export WEB_SEARCH_PROVIDER=keenable
+```
+
+**Request:**
+```
+POST https://api.keenable.ai/v1/search          # /v1/search/public without a key
+X-API-Key: your-keenable-key                     # only sent when KEENABLE_API_KEY is set
+X-Keenable-Title: AgenC
+Content-Type: application/json
+
+{"query": "search terms", "max_results": 10}
+```
+
+A single `allowed_domains` entry is also sent as `"site"`.
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "title": "Result Title",
+      "url": "https://example.com/page",
+      "description": "",
+      "snippet": "Text from the page..."
+    }
+  ]
+}
+```
+
 ### SearXNG (custom preset)
 
 ```bash
@@ -628,7 +666,7 @@ connection reset). A hard "anomaly in the request" block surfaces an actionable
 error listing the API-key env vars to configure instead.
 
 The first-party direct providers (Tavily, Exa, You.com, Jina, Bing, Mojeek,
-Linkup, Firecrawl) do a single request with no internal retry: in `auto` mode
+Linkup, Keenable, Firecrawl) do a single request with no internal retry: in `auto` mode
 the chain itself falls through to the next provider on failure.
 
 ## Custom provider security guardrails

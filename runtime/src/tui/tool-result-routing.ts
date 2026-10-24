@@ -311,6 +311,7 @@ const WEB_SEARCH_SOURCE_LABELS: Readonly<Record<string, string>> = {
   bing: "Bing",
   mojeek: "Mojeek",
   linkup: "Linkup",
+  keenable: "Keenable",
   firecrawl: "Firecrawl",
   custom: "Custom search",
   deepseek_search: "DeepSeek search",

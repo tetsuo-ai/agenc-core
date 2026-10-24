@@ -45,6 +45,11 @@ export interface SearchProvider {
   readonly name: string
   /** Returns true when the env vars / config needed for this provider are present */
   isConfigured(environment?: ProviderEnvironment): boolean
+  /**
+   * Explicit WEB_SEARCH_PROVIDER=<name> may run while isConfigured() is false
+   * (the backend has a keyless tier). Auto mode still requires isConfigured().
+   */
+  readonly selectableWithoutKey?: boolean
   /** Perform the search. Throw on unrecoverable errors. */
   search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput>
 }

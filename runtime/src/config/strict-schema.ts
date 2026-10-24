@@ -205,7 +205,7 @@ export function validateToolsConfig(
     if (key === "web_search_provider") {
       optionalEnum(item, path, [
         "auto", "firecrawl", "tavily", "exa", "you", "jina", "bing",
-        "mojeek", "linkup", "custom", "ddg", "native",
+        "mojeek", "linkup", "keenable", "custom", "ddg", "native",
       ]);
       continue;
     }
