@@ -9,8 +9,7 @@
  * instruction files and none is loaded, it names AgenC's (AGENC.md) and says
  * none is loaded; loaded instruction files already say where they are
  * (prompts/live-instructions.ts), and the standard and lean heads name AGENC.md
- * themselves. In a standard session that lists the Skill tool, a message about
- * skills gets the skill-authoring rules.
+ * themselves.
  * Each topic goes once, on the turn's first request. The retention ledger
  * anchors the reminder before that message and replays it in place on every
  * later request, so the cached prefix never moves and the text is not sent
@@ -20,7 +19,7 @@
  */
 
 import type { LLMMessage } from "../../llm/types.js";
-import { AGENC_INSTRUCTION_FILE, AGENC_SKILL_AUTHORING, AGENC_UNDO_PATHS, LIGHT_LOADED_INSTRUCTIONS_NOTE } from "../product-help.js";
+import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS, LIGHT_LOADED_INSTRUCTIONS_NOTE } from "../product-help.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 
 /**
@@ -45,18 +44,9 @@ export function asksAboutInstructionFiles(text: string): boolean {
   return INSTRUCTIONS_REQUEST.test(text);
 }
 
-/** Skills, the skill file, or its allowed-tools field. */
-const SKILLS_REQUEST = /\b(?:skills?|SKILL\.md|allowed-tools)\b/iu;
-
-/** Whether `text` is about skills. */
-export function asksAboutSkills(text: string): boolean {
-  return SKILLS_REQUEST.test(text);
-}
-
 const TOPICS = [
   { topic: "undo", matches: asksAboutUndo, text: AGENC_UNDO_PATHS, light: true, standard: true },
   { topic: "instructions", matches: asksAboutInstructionFiles, text: AGENC_INSTRUCTION_FILE, light: true, standard: false },
-  { topic: "skills", matches: asksAboutSkills, text: AGENC_SKILL_AUTHORING, light: false, standard: true },
 ] as const;
 
 function contains(messages: readonly LLMMessage[], needle: string): boolean {
@@ -78,7 +68,6 @@ function instructionFilesLoaded(opts: Parameters<AttachmentProducer>[0]): boolea
 
 export const productHelpProducer: AttachmentProducer = async (opts) => {
   const light = opts.lightMode === true;
-  const skillListed = opts.loadedTools.some((tool) => tool.function.name === "Skill");
   // Only the human's own message decides; a synthetic follow-up or a
   // delegated child turn carries no root-human text for this turn.
   const provenance = opts.turnProvenance;
@@ -92,7 +81,6 @@ export const productHelpProducer: AttachmentProducer = async (opts) => {
   return TOPICS
     .filter((entry) => (light ? entry.light : entry.standard) && entry.matches(root.text) &&
       !contains(opts.messages, entry.text) &&
-      !(entry.topic === "instructions" && instructionFilesLoaded(opts)) &&
-      !(entry.topic === "skills" && !skillListed))
+      !(entry.topic === "instructions" && instructionFilesLoaded(opts)))
     .map(({ topic }) => ({ kind: "product_help", topic }));
 };

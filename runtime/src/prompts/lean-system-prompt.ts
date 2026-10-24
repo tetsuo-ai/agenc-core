@@ -135,8 +135,9 @@ export function getLeanUsingYourToolsSection(
   if (has("TodoWrite") && !deferredTools.has("TodoWrite")) {
     items.push(`Use TodoWrite for longer work with 3 or more distinct steps, not for a task a few tool calls finish, and send each update in the same response as the tool call for the next step, never in a response of its own. Each time you mark a task completed, tell the user in one or two sentences of your own what you finished and what comes next, naming the concrete result, then continue; the user follows the plan through these notes. When the last task is done, say so and stop.`);
   }
-  // How to write a project skill arrives with a message about skills
-  // (prompts/attachments/product-help.ts); the Skill tool says it runs skills only.
+  if (has("Skill")) {
+    items.push(`Skill runs skills only. A project skill lives in .agenc/skills/<name>/SKILL.md with a name and a one-line description in its frontmatter; leave allowed-tools empty (project skills ignore it, and for user skills it makes every invocation ask for approval).`);
+  }
   if (enabledTools.has("system.searchTools") || [...enabledTools].some((name) => name.startsWith("mcp."))) {
     items.push(`MCP tools are named mcp.<server>.<tool>; load one with system.searchTools when it is not in your function list, then call it through the tool-call interface with JSON arguments (an encoded name such as mcp__server__tool maps back to it). MCP tools are not skills or shell commands, and their results cannot be simulated with scripts.`);
   }

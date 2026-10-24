@@ -11,14 +11,6 @@ export const AGENC_UNDO_GUIDANCE =
   "Answer greetings and general questions about AgenC's capabilities or undo commands directly without tools. Use tools when the answer needs workspace facts or the user requests work.";
 
 /**
- * How to write a project skill, for a standard session (whose head lists the
- * Skill tool) asked about skills. The standard and lean heads leave it out of
- * the fixed prefix; the Skill tool's own description says it runs skills only.
- */
-export const AGENC_SKILL_AUTHORING =
-  "Project skills live in .agenc/skills/<name>/SKILL.md with a name and a one-line description in the frontmatter. Leave allowed-tools empty: project skills ignore it, and for user skills a non-empty list makes every Skill invocation ask for approval.";
-
-/**
  * Light's framing of loaded instruction files (prompts/live-instructions.ts),
  * where it names them instead of in the head it resends on every request.
  */

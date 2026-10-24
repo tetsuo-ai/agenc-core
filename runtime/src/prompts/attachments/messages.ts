@@ -20,7 +20,7 @@ import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.j
 import { renderUntrustedWorkspaceData } from "../untrusted-workspace-content.js";
 import { formatContextPressureReminder } from "../../utils/messages.js";
 import { sanitizeSystemReminderContent } from "./system-reminder-sanitizer.js";
-import { AGENC_INSTRUCTION_FILE, AGENC_SKILL_AUTHORING, AGENC_UNDO_PATHS } from "../product-help.js";
+import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS } from "../product-help.js";
 import type { Attachment } from "./types.js";
 import { relevantMemoryFingerprint } from "./relevant-memory-fingerprint.js";
 
@@ -371,7 +371,6 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
 const PRODUCT_HELP: Readonly<Record<Extract<Attachment, { kind: "product_help" }>["topic"], string>> = {
   undo: AGENC_UNDO_PATHS,
   instructions: AGENC_INSTRUCTION_FILE,
-  skills: AGENC_SKILL_AUTHORING,
 };
 
 /** Opening sentences of the `instruction_update` reminder. */

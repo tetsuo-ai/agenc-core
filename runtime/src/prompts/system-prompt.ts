@@ -307,9 +307,11 @@ export function getUsingYourToolsSection(
     );
   }
 
-  // How to write a project skill arrives with a message about skills
-  // (prompts/attachments/product-help.ts); the Skill tool's description says
-  // that it runs skills only, never MCP tools.
+  if (enabledTools.has("Skill")) {
+    items.push(
+      `Project skills live in .agenc/skills/<name>/SKILL.md with a name and a one-line description in the frontmatter. Leave allowed-tools empty: project skills ignore it, and for user skills a non-empty list makes every Skill invocation ask for approval. Skill is only for skills, never MCP tool names.`,
+    );
+  }
 
   if (hasMcpTool) {
     items.push(
