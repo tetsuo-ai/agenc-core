@@ -961,7 +961,11 @@ async function buildSyntheticSystemMessage(opts: {
     const outputStyle = await getOutputStyleConfig();
     // Mirror `prepareTurnRuntimeInputs`: the memory instructions and the
     // directory block are part of every turn's prompt when auto memory is
-    // enabled, so /context must count them too.
+    // enabled, so /context must count them too. An interactive session whose
+    // memory was empty when its prompt was assembled carries them instead as
+    // a reminder from its first message about memory on
+    // (prompts/attachments/memory-on-request.ts); /context counts that block
+    // as well, so the memory a session can load never drops out of the count.
     const memory = await resolveMemoryPromptInputs(opts.session, opts.ctx.cwd);
     const assembled = await assembleSystemPrompt({
       ...buildAssembleSystemPromptOpts({
@@ -987,6 +991,7 @@ async function buildSyntheticSystemMessage(opts: {
       ...(permissionContext === null ? [] : [
         getSessionPermissionInstructions(opts.session, opts.ctx, permissionContext),
       ]),
+      memory.memoryOnRequest ?? "",
     ].filter((section) => section.length > 0).join("\n\n");
     return {
       role: "system",

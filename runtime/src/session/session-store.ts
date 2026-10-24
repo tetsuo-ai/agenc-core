@@ -133,6 +133,16 @@ import {
 
 export const I4_FSYNC_RETRY_MS = 100;
 
+/** What a rollout mirror learns about one committed append. */
+export interface RolloutCommitNotice {
+  /**
+   * The append was written while a turn of this journal is open (turn-scoped
+   * durability). A mirror may then catch up later in the turn instead of at
+   * once; outside a turn every commit is mirrored when it happens.
+   */
+  readonly withinTurn: boolean;
+}
+
 /**
  * Durable events that keep their fsync inside a turn (turn-scoped
  * durability). A turn's end is the turn boundary. The others are records
@@ -1935,7 +1945,9 @@ export class SessionStore {
   private flushDepth = 0;
   private readonly deferredFlushDiagnostics: SessionStoreDiagnostic[] = [];
   /** Best-effort mirror notification after rollout bytes are appended. */
-  private onRolloutCommitted?: (rolloutPath: string) => void;
+  private onRolloutCommitted?: (rolloutPath: string, commit: RolloutCommitNotice) => void;
+  /** An in-turn commit was announced and no out-of-turn notice followed it yet. */
+  private inTurnCommitsUnannounced = false;
   /**
    * I-38 async fsync retries currently in flight. Tracked so `close()`
    * can wait for them to settle (or so tests can await completion).
@@ -2396,7 +2408,7 @@ export class SessionStore {
   }
 
   setOnRolloutCommitted(
-    listener: ((rolloutPath: string) => void) | undefined,
+    listener: ((rolloutPath: string, commit: RolloutCommitNotice) => void) | undefined,
   ): void {
     this.onRolloutCommitted = listener;
   }
@@ -2743,8 +2755,10 @@ export class SessionStore {
         this.fileSize += Buffer.byteLength(lines, "utf8");
         this.trajectoryExport.writeItems(toWrite);
         try {
+          const commit: RolloutCommitNotice = { withinTurn: this.turnSyncDeferrals > 0 };
+          this.inTurnCommitsUnannounced = commit.withinTurn;
           withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
-            () => this.onRolloutCommitted?.(this.rolloutPath));
+            () => this.onRolloutCommitted?.(this.rolloutPath, commit));
         } catch {
           // The rollout is already appended. A mirror callback cannot make this
           // canonical flush fail or cause its items to be re-queued.
@@ -2818,9 +2832,26 @@ export class SessionStore {
       if (this.turnSyncDeferrals === 0) {
         if (mode === "sync") this.syncDeferredWrites();
         else this.armDeferredSync();
+        this.announceTurnBoundary();
       }
       releaseScope();
     };
+  }
+
+  /**
+   * The last turn scope closed: a mirror that batches in-turn commits
+   * catches up now, so it is current at every turn boundary, as when each
+   * commit was mirrored at once.
+   */
+  private announceTurnBoundary(): void {
+    if (!this.inTurnCommitsUnannounced || this.closed) return;
+    this.inTurnCommitsUnannounced = false;
+    try {
+      withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
+        () => this.onRolloutCommitted?.(this.rolloutPath, { withinTurn: false }));
+    } catch {
+      // As for a commit's notice: the mirror cannot fail the journal.
+    }
   }
 
   /**

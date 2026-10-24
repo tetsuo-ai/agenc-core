@@ -63,6 +63,7 @@ import {
   SessionStoreFlushScheduler,
   type AppendOptions,
   type CompactionIndexSnapshot,
+  type RolloutCommitNotice,
   type SessionStoreOpts,
 } from "./session-store.js";
 import {
@@ -4048,7 +4049,7 @@ export class RolloutStore {
    * `FileThreadStore` uses this to keep `thread_rollout_items` current.
    */
   setOnRolloutCommitted(
-    listener: ((rolloutPath: string) => void) | undefined,
+    listener: ((rolloutPath: string, commit: RolloutCommitNotice) => void) | undefined,
   ): void {
     this.store.setOnRolloutCommitted(listener);
   }

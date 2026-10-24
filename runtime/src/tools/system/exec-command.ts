@@ -46,6 +46,8 @@ import {
 import { isSearchOrReadBashCommand } from "../../utils/bash/commands.js";
 import {
   formatUnifiedExecToolContent,
+  residualNoteOncePerSession,
+  serverCheckNoteOncePerSession,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
@@ -86,6 +88,12 @@ export interface ExecCommandToolConfig extends BashToolConfig {
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
   /** Advertise the continuation tool before a yielded handle reaches the model. */
   readonly onSessionYielded?: () => void;
+  /**
+   * Whether the exec_command description this session sees already says how
+   * to check a server (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+   * Every request carries it then, so the result notes leave it out.
+   */
+  readonly serverChecksDescribed?: () => boolean;
   /**
    * A sandbox notice on this result tells the model to retry with
    * sandbox_permissions: present exec_command's full schema on the next
@@ -1272,7 +1280,13 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         if ((output.process_id ?? output.session_id) !== undefined && output.detached !== true) {
           notifyExecSessionDiscovery(args, config?.onSessionYielded);
         }
-        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
+        const noteSessionId = resolveSessionId(args as Record<string, unknown>);
+        const serverChecksDescribed = config?.serverChecksDescribed?.() === true;
+        const execContent = residualNoteOncePerSession(
+          formatUnifiedExecToolContent(output, config?.lightMode === true),
+          noteSessionId,
+          serverChecksDescribed,
+        );
         if (!detach && tty !== true) {
           rememberPrintedOutput({
             cmd,
@@ -1326,9 +1340,18 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           : ordinaryNotice();
         const namespaceNotice = execProcessNamespaceNotice({ command: cmd, runtimeSandbox });
         const notice = [primaryNotice, namespaceNotice].filter(Boolean).join("\n\n") || null;
+        // How to check a server after one that waited a fixed time, unless a
+        // sandbox or process notice already says what to do next or the
+        // description already says it on every request. A check still running
+        // gets the guidance without the claim that nothing needs a later kill:
+        // its session needs kill_process or a poll.
+        const serverNote = notice === null && !serverChecksDescribed
+          ? serverCheckNoteOncePerSession(noteSessionId, cmd, stillAlive)
+          : undefined;
+        const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
         return {
           content:
-            notice === null ? execContent : `${execContent}\n\n${notice}`,
+            notice === null ? content : `${content}\n\n${notice}`,
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output, notice),
           effectDisposition: processObservationDisposition(

@@ -4,7 +4,15 @@ import {
   compactExecExitFooter,
   formatUnifiedExecToolContent,
   RESIDUAL_PROCESSES_NOTE,
+  RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE,
+  RESIDUAL_PROCESSES_REPEAT_NOTE,
+  SERVER_CHECK_GUIDANCE,
+  SERVER_CHECK_NOTE,
+  SERVER_CHECK_RUNNING_NOTE,
+  residualNoteOncePerSession,
+  serverCheckNoteOncePerSession,
   unifiedExecCodeModeResult,
+  waitsFixedTimeForProgram,
 } from "../../../src/tools/system/exec-result-format.js";
 import type { ExecCommandToolOutput } from "../../../src/unified-exec/types.js";
 import { frameUntrustedToolResultContent } from "../../../src/tools/untrusted-tool-result-framing.js";
@@ -26,6 +34,28 @@ function output(overrides: Partial<ExecCommandToolOutput>): ExecCommandToolOutpu
 }
 
 describe("formatUnifiedExecToolContent", () => {
+  test.each([false, true])("a hard timeout retains its exit code and timeout marker (light=%s)", light => {
+    const result = output({ exitCode: 143, exit_code: 143, timedOut: true });
+    const content = formatUnifiedExecToolContent(result, light);
+    expect(content).toContain("exit_code=143 timed_out=true");
+    expect(compactExecExitFooter(content)).toContain("[exit 143 timed_out=true");
+    expect(unifiedExecCodeModeResult(result)).toMatchObject({ exit_code: 143, timed_out: true });
+  });
+
+  test("an elapsed yield window is not a hard timeout", () => {
+    const result = output({ exitCode: null, exit_code: null, process_id: 7, timedOut: true });
+    expect(formatUnifiedExecToolContent(result)).toContain("yielded=true");
+    expect(formatUnifiedExecToolContent(result)).not.toContain("timed_out=true");
+    expect(unifiedExecCodeModeResult(result)).toMatchObject({ yielded: true, session_id: 7 });
+    expect(unifiedExecCodeModeResult(result)).not.toHaveProperty("timed_out");
+  });
+
+  test("a hard timeout without an exit code still reports the timeout", () => {
+    const result = output({ exitCode: null, exit_code: null, timedOut: true });
+    expect(formatUnifiedExecToolContent(result)).toContain("timed_out=true");
+    expect(unifiedExecCodeModeResult(result)).toMatchObject({ timed_out: true });
+  });
+
   test.each([false, true])(
     "removes terminal decorations before framing without changing raw output (light=%s)",
     (light) => {
@@ -94,6 +124,68 @@ describe("formatUnifiedExecToolContent", () => {
     expect(lines.at(-2)).toMatch(/^\[exec exit_code=0 /);
     expect(lines.at(-1)).toBe(RESIDUAL_PROCESSES_NOTE);
     expect(RESIDUAL_PROCESSES_NOTE).toContain("detach: true");
+  });
+
+  test("the residue note says nothing is left to stop and how to wait for a server without a fixed sleep", () => {
+    // A server started to smoke-test it is the usual residue. Models waited for it with `sleep 1`,
+    // searched the process table for leftovers afterwards and lost a model call to each.
+    expect(RESIDUAL_PROCESSES_NOTE).toContain("Nothing is left to stop or look for.");
+    expect(RESIDUAL_PROCESSES_NOTE).toContain("wait for its port or log line in a bounded loop instead of a fixed sleep");
+    expect(RESIDUAL_PROCESSES_NOTE).toContain("`kill $!` in the same command");
+    expect(RESIDUAL_PROCESSES_REPEAT_NOTE).toContain("Cleanup is complete; those processes are no longer running.");
+    expect(RESIDUAL_PROCESSES_REPEAT_NOTE.length).toBeLessThan(RESIDUAL_PROCESSES_NOTE.length / 4);
+  });
+
+  test("a session gets the full residue note once and the short one on later commands", () => {
+    const full = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
+    const session = `exec-result-format-${Math.random()}`;
+    expect(residualNoteOncePerSession(full, session)).toBe(full);
+    const repeat = residualNoteOncePerSession(full, session);
+    expect(repeat).toBe(full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE));
+    expect(compactExecExitFooter(repeat)).toBe(repeat.replace("[exec exit_code=", "[exit "));
+    // The residue note carried the server guidance: a later fixed wait gets no second copy.
+    expect(serverCheckNoteOncePerSession(session, "PORT=0 timeout 2 node server.js")).toBeUndefined();
+    // Another session, a result without the note and a call without a session are unchanged.
+    expect(residualNoteOncePerSession(full, `${session}-other`)).toBe(full);
+    const plain = formatUnifiedExecToolContent(output({}), true);
+    expect(residualNoteOncePerSession(plain, session)).toBe(plain);
+    expect(residualNoteOncePerSession(full, undefined)).toBe(full);
+  });
+
+  test("a check that waited a fixed time for a program it started gets the server guidance once per session", () => {
+    // Seen in DeepSeek Light server runs: the check cleans up after itself, so no residue note fires.
+    const session = `exec-result-format-fixed-${Math.random()}`;
+    expect(serverCheckNoteOncePerSession(session, "npm test")).toBeUndefined();
+    expect(serverCheckNoteOncePerSession(session, "PORT=0 timeout 2 node server.js; true")).toBe(SERVER_CHECK_NOTE);
+    expect(serverCheckNoteOncePerSession(session, "node server.js & pid=$!; sleep 0.5; curl -s localhost:3000; kill $pid")).toBeUndefined();
+    expect(serverCheckNoteOncePerSession(undefined, "PORT=0 timeout 2 node server.js")).toBeUndefined();
+    // The first residue note of the session still says how to keep a service running.
+    const residue = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
+    expect(residualNoteOncePerSession(residue, session)).toBe(residue);
+    const plain = formatUnifiedExecToolContent(output({ output: "Listening on http://localhost:39485" }), true);
+    const noted = `${plain}\n${SERVER_CHECK_NOTE}`;
+    expect(compactExecExitFooter(noted)).toBe(noted.replace("[exec exit_code=", "[exit "));
+    expect(SERVER_CHECK_NOTE).toContain("nothing needs a later kill, pkill or pgrep");
+    expect(SERVER_CHECK_NOTE).toContain("in a bounded loop instead of a fixed sleep or timeout");
+  });
+
+  test.each([
+    ["cd /workspace && PORT=0 node server.js & sleep 1; kill %1 2>/dev/null; wait 2>/dev/null", true],
+    ["npm start >/tmp/srv.log 2>&1 & pid=$!; sleep 0.5; curl -s http://127.0.0.1:3000/health; kill $pid", true],
+    ["(PORT=0 node server.js &) ; sleep 0.6; npm test 2>&1 | tail -8", true],
+    ["PORT=0 timeout 2 node server.js; true", true],
+    ["timeout 3 python3 -m http.server 8123", true],
+    // Not a fixed wait for a program it started: chains, redirections, test timeouts, a polling loop.
+    ["cd /workspace && npm test 2>&1 | tail -20", false],
+    ["make 2>&1; sleep 1", false],
+    ["sleep 2 && echo done", false],
+    ["a && b && sleep 1", false],
+    ["cmd &> log; sleep 1", false],
+    ["timeout 30 npm test", false],
+    ["timeout 5 npm test", false],
+    ["node server.js > /tmp/s.log 2>&1 & for i in $(seq 1 50); do grep -q Listening /tmp/s.log && break; sleep 0.1; done", false],
+  ])("fixed wait for a started program: %s -> %s", (command, expected) => {
+    expect(waitsFixedTimeForProgram(command)).toBe(expected);
   });
 
   test("an ordinary exit has neither marker", () => {
@@ -205,4 +297,35 @@ test.each(["aborted", "unavailable"] as const)("%s is neither normal exit nor ru
   for (const key of ["exit_code", "running", "yielded", "signal_terminated", "residual_processes_terminated", "residual_processes_observed"]) {
     expect(structured).not.toHaveProperty(key);
   }
+});
+
+test("a session whose exec_command description carries the server guidance gets residue notes without it", () => {
+  // A Light session on abliteration.ai Large V2 reads it there on every request
+  // (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+  const full = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
+  const described = full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE);
+  const repeat = full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE);
+  const session = `exec-result-format-described-${Math.random()}`;
+  expect(residualNoteOncePerSession(full, session, true)).toBe(described);
+  expect(compactExecExitFooter(described)).toBe(described.replace("[exec exit_code=", "[exit "));
+  expect(residualNoteOncePerSession(full, session, true)).toBe(repeat);
+  expect(residualNoteOncePerSession(full, undefined, true)).toBe(described);
+  // After a model switch away from that description, the next residue note carries the guidance once.
+  expect(residualNoteOncePerSession(full, session)).toBe(full);
+  expect(residualNoteOncePerSession(full, session)).toBe(repeat);
+  expect(serverCheckNoteOncePerSession(session, "PORT=0 timeout 2 node server.js")).toBeUndefined();
+});
+
+test("a fixed-wait check still running gets the server guidance once, without the claim that nothing needs a kill", () => {
+  // Its session is live: kill_process or a poll comes next.
+  const session = `exec-result-format-running-${Math.random()}`;
+  const check = "node server.js & sleep 1; curl -s localhost:3000; wait";
+  expect(serverCheckNoteOncePerSession(session, check, true)).toBe(SERVER_CHECK_RUNNING_NOTE);
+  expect(SERVER_CHECK_RUNNING_NOTE).toBe(`[note: ${SERVER_CHECK_GUIDANCE}]`);
+  expect(SERVER_CHECK_NOTE).toContain(SERVER_CHECK_GUIDANCE);
+  expect(serverCheckNoteOncePerSession(session, check, true)).toBeUndefined();
+  expect(serverCheckNoteOncePerSession(session, check)).toBeUndefined();
+  const yielded = formatUnifiedExecToolContent(output({ exitCode: null, exit_code: null, process_id: 7 }), true);
+  const noted = `${yielded}\n${SERVER_CHECK_RUNNING_NOTE}`;
+  expect(compactExecExitFooter(noted)).toBe(noted);
 });

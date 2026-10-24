@@ -301,6 +301,13 @@ export interface CompletionGateConfig {
   readonly mode?: "auto" | "always" | "never";
   /** Verification prompts per turn; default and hard cap 3. */
   readonly max_rounds?: number;
+  /**
+   * Turns whose caller requires the exact final answer (`--output-format
+   * json` or `stream-json`, `exactOutput` on a turn or session). `skip`
+   * (default): no completion check for these turns. `verify`: the check runs
+   * as internal work and the turn still ends with the model's own answer.
+   */
+  readonly exact_output?: "verify" | "skip";
 }
 
 /**

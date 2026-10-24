@@ -1,0 +1,73 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Job og: a daemon session's first ordinary submit loaded the turn kernel, the
+// model-facing tools and the cron store, and built the MCP configuration
+// schema, between the user's Enter and the first model request. The preload
+// does that work while the session waits, without running any startup effect.
+
+const evaluated = vi.hoisted(() => ({
+  runTurn: 0,
+  modelFacingTools: 0,
+  cronTasks: 0,
+  mcpParses: [] as unknown[],
+}));
+
+vi.mock("../../src/session/run-turn.js", async (importOriginal) => {
+  evaluated.runTurn += 1;
+  return importOriginal();
+});
+vi.mock("../../src/bin/model-facing-tools.js", async (importOriginal) => {
+  evaluated.modelFacingTools += 1;
+  const actual = await importOriginal<typeof import("../../src/bin/model-facing-tools.js")>();
+  return {
+    ...actual,
+    resumeInterruptedAgentJobs: vi.fn(() => {
+      throw new Error("the preload must not resume interrupted jobs");
+    }),
+    startCronSchedulerRunner: vi.fn(() => {
+      throw new Error("the preload must not start the cron runner");
+    }),
+  };
+});
+vi.mock("../../src/utils/cronTasks.js", async (importOriginal) => {
+  evaluated.cronTasks += 1;
+  return importOriginal();
+});
+vi.mock("../../src/services/mcp/types.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/services/mcp/types.js")>();
+  return {
+    ...actual,
+    McpJsonConfigSchema: () => {
+      const schema = actual.McpJsonConfigSchema();
+      return {
+        safeParse: (value: unknown) => {
+          evaluated.mcpParses.push(value);
+          return schema.safeParse(value);
+        },
+      };
+    },
+  };
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("first-submit preload", () => {
+  it("loads the first-submit modules once per process and runs no startup effect", async () => {
+    const { preloadOrdinarySubmitModules } = await import("../../src/bin/bootstrap.js");
+    const tools = await import("../../src/bin/model-facing-tools.js");
+    const before = { ...evaluated, mcpParses: [...evaluated.mcpParses] };
+    const first = preloadOrdinarySubmitModules();
+    expect(preloadOrdinarySubmitModules()).toBe(first);
+    await first;
+    expect(evaluated.runTurn).toBeGreaterThanOrEqual(1);
+    expect(evaluated.modelFacingTools).toBeGreaterThanOrEqual(1);
+    expect(evaluated.cronTasks).toBeGreaterThanOrEqual(1);
+    // Exactly one schema warm-up, on an empty configuration (no I/O).
+    expect(evaluated.mcpParses.slice(before.mcpParses.length)).toEqual([{ mcpServers: {} }]);
+    expect(tools.resumeInterruptedAgentJobs).not.toHaveBeenCalled();
+    expect(tools.startCronSchedulerRunner).not.toHaveBeenCalled();
+    // A second call neither loads nor parses again.
+    await preloadOrdinarySubmitModules();
+    expect(evaluated.mcpParses.length).toBe(before.mcpParses.length + 1);
+  });
+});

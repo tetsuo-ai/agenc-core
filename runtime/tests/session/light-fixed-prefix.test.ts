@@ -10,7 +10,7 @@ import { assembleBaseInstructionsForModel } from "../../src/prompts/system-promp
 import { LIGHT_BYPASS_AUTONOMY_NOTE } from "../../src/prompts/permissions-prompt.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS, LIGHT_LOADED_INSTRUCTIONS_NOTE } from "../../src/prompts/product-help.js";
 import { LIGHT_MEMORY_RULES_MARKER } from "../../src/memory/memdir.js";
-import { permissionInstructionsStateLightAutonomy } from "../../src/session/permission-instructions.js";
+import { permissionInstructionsStateAutonomy } from "../../src/session/permission-instructions.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
@@ -81,7 +81,7 @@ describe("Light fixed request prefix", () => {
       expect(request.systemPrompt).toContain(LIGHT_BYPASS_AUTONOMY_NOTE);
       expect(count(request, "Auto mode is active")).toBe(0);
     }
-    expect(permissionInstructionsStateLightAutonomy(
+    expect(permissionInstructionsStateAutonomy(
       light.session, light.context, light.session.permissionModeRegistry.current(), "",
     )).toBe(true);
 
@@ -95,7 +95,7 @@ describe("Light fixed request prefix", () => {
     const standard = await scriptedSession("bypassPermissions", false);
     await standard.turn("turn-1", "Fix the failing test.");
     expect(count(standard.requests[0]!, "## Auto Mode Active")).toBe(1);
-    expect(permissionInstructionsStateLightAutonomy(
+    expect(permissionInstructionsStateAutonomy(
       standard.session, standard.context, standard.session.permissionModeRegistry.current(), "",
     )).toBe(false);
   });

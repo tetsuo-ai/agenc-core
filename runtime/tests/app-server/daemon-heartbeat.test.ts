@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -74,7 +74,7 @@ describe("daemon heartbeat", () => {
     ]);
   });
 
-  it("writes a beat at once and on every interval, with pid, memory and lag", () => {
+  it("writes a beat at once and on every interval, with pid, memory and lag", async () => {
     const dispose = installAgenCDaemonHeartbeat({ path, intervalMs: 1_000, proc });
     try {
       expect(readAgenCDaemonHeartbeat(path)).toMatchObject({
@@ -85,7 +85,10 @@ describe("daemon heartbeat", () => {
         uptimeS: 1_620,
         eventLoopLagMs: 0,
       });
-      vi.advanceTimersByTime(2_000);
+      vi.advanceTimersByTime(1_000);
+      await dispose.idle();
+      vi.advanceTimersByTime(1_000);
+      await dispose.idle();
       const third = readAgenCDaemonHeartbeat(path);
       expect(third?.beat).toBe(3);
       expect(third?.at).toBe("2026-09-06T12:39:02.000Z");
@@ -94,7 +97,7 @@ describe("daemon heartbeat", () => {
     }
   });
 
-  it("measures a late tick as event-loop lag", () => {
+  it("measures a late tick as event-loop lag", async () => {
     let drift = 0;
     const dispose = installAgenCDaemonHeartbeat({
       path,
@@ -105,10 +108,56 @@ describe("daemon heartbeat", () => {
     try {
       drift = 700; // the loop was busy; this tick observes the clock 700 ms late
       vi.advanceTimersByTime(1_000);
+      await dispose.idle();
       expect(readAgenCDaemonHeartbeat(path)?.eventLoopLagMs).toBe(700);
     } finally {
       dispose();
     }
+  });
+
+  // og: the interval beat's fsyncs used to run on the event loop, so a slow
+  // disk stalled every request the daemon served for the length of an fsync.
+  it("writes interval beats off the event loop", async () => {
+    const dispose = installAgenCDaemonHeartbeat({ path, intervalMs: 1_000, proc });
+    try {
+      vi.advanceTimersByTime(1_000);
+      // The tick returned before anything was written: the file still holds
+      // the first beat until the thread-pool write completes.
+      expect(readAgenCDaemonHeartbeat(path)?.beat).toBe(1);
+      await dispose.idle();
+      expect(readAgenCDaemonHeartbeat(path)?.beat).toBe(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("skips a tick while the previous beat is still being written", async () => {
+    const dispose = installAgenCDaemonHeartbeat({ path, intervalMs: 1_000, proc });
+    try {
+      vi.advanceTimersByTime(1_000);
+      vi.advanceTimersByTime(1_000);
+      await dispose.idle();
+      expect(readAgenCDaemonHeartbeat(path)?.beat).toBe(2);
+      vi.advanceTimersByTime(1_000);
+      await dispose.idle();
+      expect(readAgenCDaemonHeartbeat(path)?.beat).toBe(3);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("publishes nothing for a beat still in flight when it stops", async () => {
+    const errors: unknown[] = [];
+    const dispose = installAgenCDaemonHeartbeat({
+      path, intervalMs: 1_000, proc, onError: (error) => errors.push(error),
+    });
+    vi.advanceTimersByTime(1_000);
+    dispose();
+    expect(existsSync(path)).toBe(false);
+    await dispose.idle();
+    expect(existsSync(path)).toBe(false);
+    expect(readdirSync(home).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect(errors).toEqual([]);
   });
 
   it("removes its own file on a clean stop and leaves another process's alone", () => {

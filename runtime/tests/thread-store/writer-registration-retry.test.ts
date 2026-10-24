@@ -144,7 +144,7 @@ describe.each(["createThread", "resumeThread"] as const)("%s writer publication"
       type: "response_item", payload: { role: "user", content: "prior callback evidence", id: "prior" },
     });
     current.rollout.flushDurable();
-    expect(previous).toHaveBeenCalledWith(current.rollout.rolloutPath);
+    expect(previous).toHaveBeenCalledWith(current.rollout.rolloutPath, { withinTurn: false });
     expect(() => register(current, operation)).not.toThrow();
   });
 });

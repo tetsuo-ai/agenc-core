@@ -88,8 +88,8 @@ async function bundledRegistrySkills(
  */
 export const skillListingProducer: AttachmentProducer = async (opts, tracking) => {
   if (opts.subagentDepth > 0) return [];
-  const lightBeforeSkill = opts.lightMode === true &&
-    !opts.loadedTools.some(tool => tool.function.name === "Skill");
+  const skillToolListed = opts.loadedTools.some(tool => tool.function.name === "Skill");
+  const lightBeforeSkill = opts.lightMode === true && !skillToolListed;
   if (!opts.skillsManager) return [];
   // A session whose policy leaves out the Skill tool cannot load anything the
   // listing would name.
@@ -139,7 +139,7 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
     );
     if (relevant.lines.length === 0) return [];
     for (const name of relevant.names) tracking.listedSkillNames.add(name);
-    return [{ kind: "skill_relevance", content: relevant.lines.join("\n") }];
+    return [{ kind: "skill_relevance", content: relevant.lines.join("\n"), ...(skillToolListed ? { skillToolListed } : {}) }];
   }
   const { listing, stats, listedNames } = buildSkillListingWithinBudget(
     catalog,
@@ -176,6 +176,7 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
     {
       kind: "skill_listing",
       content: listing,
+      ...(skillToolListed ? { skillToolListed } : {}),
     },
   ];
 };

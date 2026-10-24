@@ -1,5 +1,14 @@
 import type { LLMTool } from "../llm/types.js";
 
+/**
+ * exec_command's server guidance for Light sessions on abliteration.ai Large V2, sent with every
+ * request, so their exec result notes leave it out. It opens with SERVER_CHECK_GUIDANCE
+ * (tools/system/exec-result-format.ts), the pattern other sessions get once in a note, and adds
+ * what Large V2 got wrong: `wait` on a live server blocks the command until its timeout.
+ */
+export const LIGHT_GLM_SERVER_CHECKS =
+  "To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. Never use `wait` on a server: it keeps the command blocked until its timeout.";
+
 // Presentation only; execution and discovery retain the canonical tool. The
 // shared Light wording keeps every field, alternative, default and validation
 // keyword on the wire (null removes only a redundant property description,
@@ -67,12 +76,16 @@ export function lightPresentation(
     readonly leanSearch?: boolean;
     readonly leanRead?: boolean;
     readonly lightSession?: boolean;
+    readonly glmServerChecks?: boolean;
   } = {},
 ): LLMTool {
   const canonical = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
     ? tool
     : lightPresentationCanonical(tool);
-  const presented = options.lightSession === true ? withLightSessionFields(canonical) : canonical;
+  const sessionTool = options.lightSession === true ? withLightSessionFields(canonical) : canonical;
+  const presented = options.lightSession === true && options.glmServerChecks === true && tool.function.name === "exec_command"
+    ? { ...sessionTool, function: { ...sessionTool.function, description: `${sessionTool.function.description} ${LIGHT_GLM_SERVER_CHECKS}` } }
+    : sessionTool;
   if (options.leanExec === true && tool.function.name === "exec_command") {
     return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
   }
@@ -229,10 +242,11 @@ const LEAN_GREP_POINTER =
 /**
  * Standard sessions' own wording for core tools whose Light text does not fit them: FileRead
  * keeps dense line numbers in standard sessions, and Light has no MultiEdit. Same fields and
- * schema as the canonical tool.
+ * schema as the canonical tool. That a successful edit needs no reread is said once, by the
+ * standard head's tool section (prompts/system-prompt.ts getUsingYourToolsSection).
  */
 const standardDescriptions: Readonly<Record<string, string>> = {
-  FileRead: "Read text, images, PDFs or Jupyter notebooks. Default: the first 2000 lines, numbered from 1 (cat -n); for a large file pass offset (1-based) and limit and read only what you need. A read over 25000 tokens fails. PDFs over 10 pages need pages (at most 20 per read). Directories fail: list them with the shell. A whole-file read authorizes edits; Edit and Write fail if their change did not land, so do not re-read to check one.",
+  FileRead: "Read text, images, PDFs or Jupyter notebooks. Default: the first 2000 lines, numbered from 1 (cat -n); for a large file pass offset (1-based) and limit and read only what you need. A read over 25000 tokens fails. PDFs over 10 pages need pages (at most 20 per read). Directories fail: list them with the shell. A whole-file read authorizes edits.",
   MultiEdit: "Several exact replacements in one file, applied in order, each to the result of the one before. Read the file first (FileRead, or exec_command output that printed it whole). Each old_string must be unique when its edit applies unless replace_all is set. The file is written only if every edit succeeds.",
   Skill: "Run a skill listed in the system reminders within this conversation; when one matches the request, call it before responding. Skill names only: MCP tools are called through their own function after system.searchTools loads them.",
 };
@@ -253,12 +267,19 @@ function withoutVendorKeys(value: unknown): unknown {
 /**
  * Standard-session wording for a built-in tool: Light's compact text where it fits
  * (`lightWording`), the standard text above for FileRead, MultiEdit and Skill, and the lean
- * exec_command and Grep until system.searchTools selects them. The schema keeps every
- * field, default and standard validation keyword; only AgenC's x-agenc-* keys stay off the wire.
+ * exec_command, Grep and system.searchTools until system.searchTools selects them (the search
+ * filters with the same pointer as {@link LEAN_SEARCH_FIELDS} describes). The schema of every
+ * other tool keeps every field, default and standard validation keyword; only AgenC's x-agenc-*
+ * keys stay off the wire.
  */
 export function standardPresentation(
   tool: LLMTool,
-  options: { readonly lightWording?: boolean; readonly leanExec?: boolean; readonly leanGrep?: boolean } = {},
+  options: {
+    readonly lightWording?: boolean;
+    readonly leanExec?: boolean;
+    readonly leanGrep?: boolean;
+    readonly leanSearch?: boolean;
+  } = {},
 ): LLMTool {
   const name = tool.function.name;
   const description = standardDescriptions[name];
@@ -269,7 +290,9 @@ export function standardPresentation(
       : presentWith(tool, description, standardFieldHints[name] ?? {});
   const worded = options.leanGrep === true && name === "Grep"
     ? withOnlyFields(presented, LEAN_GREP_FIELDS, LEAN_GREP_POINTER)
-    : presented;
+    : options.leanSearch === true && name === "system.searchTools"
+      ? withFieldSchemas(withOnlyFields(presented, LEAN_SEARCH_FIELDS, LEAN_SEARCH_POINTER), { select: { type: "string" } })
+      : presented;
   return {
     ...worded,
     function: {
