@@ -107,6 +107,35 @@ describe("live rollout mirror", () => {
     }
   });
 
+  it("catches up at the turn boundary in one pass, in file order", () => {
+    const { rollout } = openLiveThread("after-turn");
+    const projection = vi.spyOn(StateThreadRepository.prototype, "appendRolloutProjection");
+    const release = rollout.deferSyncsForTurn();
+    rollout.appendRollout(item("a"), { durable: true });
+    rollout.appendRollout(item("b"), { durable: true });
+    expect(projection).not.toHaveBeenCalled();
+    // A completed or aborted turn releases its scope: the mirror is current
+    // again without waiting for the timer, as when every commit was mirrored.
+    release("background");
+    expect(projection).toHaveBeenCalledTimes(1);
+    const items = projection.mock.calls[0]![0].items;
+    expect(items.map((row) => JSON.parse(row.payloadJson).id)).toEqual(["a", "b"]);
+    expect(mirroredBytes(rollout.rolloutPath)).toBe(statSync(rollout.rolloutPath).size);
+    // The cancelled timer has nothing left to do; later commits outside a
+    // turn are mirrored at once.
+    vi.advanceTimersByTime(LIVE_ROLLOUT_INDEX_DELAY_MS);
+    expect(projection).toHaveBeenCalledTimes(1);
+    rollout.appendRollout(item("c"), { durable: true });
+    expect(projection).toHaveBeenCalledTimes(2);
+  });
+
+  it("announces a turn boundary only after in-turn commits", () => {
+    const { rollout } = openLiveThread("quiet-turn");
+    const projection = vi.spyOn(StateThreadRepository.prototype, "appendRolloutProjection");
+    rollout.deferSyncsForTurn()("sync");
+    expect(projection).not.toHaveBeenCalled();
+  });
+
   it("catches up at once when the writer is shut down", () => {
     const { rollout, store } = openLiveThread("shutdown");
     const release = rollout.deferSyncsForTurn();

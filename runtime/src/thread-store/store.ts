@@ -1400,8 +1400,10 @@ export class FileThreadStore implements ThreadStore {
    * one SQLite transaction per append on the path to the next model request.
    * The mirror is rebuildable: its receipts record the indexed size, so the
    * later pass reads exactly the appended tail, and a crash before it only
-   * leaves that tail for the next index of the file. Explicit reads,
-   * unbinding, closing and the next commit outside a turn mirror at once.
+   * leaves that tail for the next index of the file. The end of the turn
+   * (the journal announces it), explicit reads, unbinding, closing and every
+   * commit outside a turn mirror at once, so the mirror is current at each
+   * turn boundary as before.
    */
   private bindLiveRecorder(threadId: ThreadId, rolloutStore: RolloutStore): void {
     rolloutStore.setOnRolloutCommitted((rolloutPath, commit: RolloutCommitNotice) => {

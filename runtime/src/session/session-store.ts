@@ -1946,6 +1946,8 @@ export class SessionStore {
   private readonly deferredFlushDiagnostics: SessionStoreDiagnostic[] = [];
   /** Best-effort mirror notification after rollout bytes are appended. */
   private onRolloutCommitted?: (rolloutPath: string, commit: RolloutCommitNotice) => void;
+  /** An in-turn commit was announced and no out-of-turn notice followed it yet. */
+  private inTurnCommitsUnannounced = false;
   /**
    * I-38 async fsync retries currently in flight. Tracked so `close()`
    * can wait for them to settle (or so tests can await completion).
@@ -2754,6 +2756,7 @@ export class SessionStore {
         this.trajectoryExport.writeItems(toWrite);
         try {
           const commit: RolloutCommitNotice = { withinTurn: this.turnSyncDeferrals > 0 };
+          this.inTurnCommitsUnannounced = commit.withinTurn;
           withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
             () => this.onRolloutCommitted?.(this.rolloutPath, commit));
         } catch {
@@ -2829,9 +2832,26 @@ export class SessionStore {
       if (this.turnSyncDeferrals === 0) {
         if (mode === "sync") this.syncDeferredWrites();
         else this.armDeferredSync();
+        this.announceTurnBoundary();
       }
       releaseScope();
     };
+  }
+
+  /**
+   * The last turn scope closed: a mirror that batches in-turn commits
+   * catches up now, so it is current at every turn boundary, as when each
+   * commit was mirrored at once.
+   */
+  private announceTurnBoundary(): void {
+    if (!this.inTurnCommitsUnannounced || this.closed) return;
+    this.inTurnCommitsUnannounced = false;
+    try {
+      withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
+        () => this.onRolloutCommitted?.(this.rolloutPath, { withinTurn: false }));
+    } catch {
+      // As for a commit's notice: the mirror cannot fail the journal.
+    }
   }
 
   /**
