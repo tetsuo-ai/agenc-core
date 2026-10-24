@@ -200,9 +200,15 @@ fixed sleep, then make the requests and `kill $!` in the same command. Later
 notes in that session are one line. A command that waited a fixed time for a
 program it started without leaving it running (`server & sleep 1; curl ...;
 kill $pid`, `timeout 2 node server.js`) gets the same server guidance once per
-session. A
-process kept alive with `yield_time_ms` has a `session_id`, lives for the
-session, and is stopped by `closeAll` when the session ends. `detach: true`
+session. If such a check is still running when it yields, the note gives the
+guidance without saying that nothing needs a later kill: its `session_id`
+needs `kill_process` or a poll. In Light sessions on abliteration.ai's
+`abliterated-model-large-v2`, the `exec_command` description gives this
+guidance on every request, with a warning never to run `wait` on a server, so
+the notes leave it out. A process kept alive with `yield_time_ms` has a
+`session_id`, lives for the session, and is stopped by `closeAll` when the
+session ends; a Light session loads `write_stdin` and `kill_process` when a
+command yields one. `detach: true`
 starts a service AgenC never stops: its own session, stdout and stderr in a
 log file under the session temp root, an early-exit wait of `yield_time_ms`
 (default 2 s) so a daemon that rejects its config still reports the error,

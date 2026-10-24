@@ -89,6 +89,12 @@ export interface ExecCommandToolConfig extends BashToolConfig {
   /** Advertise the continuation tool before a yielded handle reaches the model. */
   readonly onSessionYielded?: () => void;
   /**
+   * Whether the exec_command description this session sees already says how
+   * to check a server (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+   * Every request carries it then, so the result notes leave it out.
+   */
+  readonly serverChecksDescribed?: () => boolean;
+  /**
    * A sandbox notice on this result tells the model to retry with
    * sandbox_permissions: present exec_command's full schema on the next
    * request, so the field is there to use (a lean schema hides it).
@@ -1275,9 +1281,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           notifyExecSessionDiscovery(args, config?.onSessionYielded);
         }
         const noteSessionId = resolveSessionId(args as Record<string, unknown>);
+        const serverChecksDescribed = config?.serverChecksDescribed?.() === true;
         const execContent = residualNoteOncePerSession(
           formatUnifiedExecToolContent(output, config?.lightMode === true),
           noteSessionId,
+          serverChecksDescribed,
         );
         if (!detach && tty !== true) {
           rememberPrintedOutput({
@@ -1333,8 +1341,13 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const namespaceNotice = execProcessNamespaceNotice({ command: cmd, runtimeSandbox });
         const notice = [primaryNotice, namespaceNotice].filter(Boolean).join("\n\n") || null;
         // How to check a server after one that waited a fixed time, unless a
-        // sandbox or process notice already says what to do next.
-        const serverNote = notice === null ? serverCheckNoteOncePerSession(noteSessionId, cmd) : undefined;
+        // sandbox or process notice already says what to do next or the
+        // description already says it on every request. A check still running
+        // gets the guidance without the claim that nothing needs a later kill:
+        // its session needs kill_process or a poll.
+        const serverNote = notice === null && !serverChecksDescribed
+          ? serverCheckNoteOncePerSession(noteSessionId, cmd, stillAlive)
+          : undefined;
         const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
         return {
           content:

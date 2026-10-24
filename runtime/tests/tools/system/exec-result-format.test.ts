@@ -4,8 +4,11 @@ import {
   compactExecExitFooter,
   formatUnifiedExecToolContent,
   RESIDUAL_PROCESSES_NOTE,
+  RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE,
   RESIDUAL_PROCESSES_REPEAT_NOTE,
+  SERVER_CHECK_GUIDANCE,
   SERVER_CHECK_NOTE,
+  SERVER_CHECK_RUNNING_NOTE,
   residualNoteOncePerSession,
   serverCheckNoteOncePerSession,
   unifiedExecCodeModeResult,
@@ -31,6 +34,28 @@ function output(overrides: Partial<ExecCommandToolOutput>): ExecCommandToolOutpu
 }
 
 describe("formatUnifiedExecToolContent", () => {
+  test.each([false, true])("a hard timeout retains its exit code and timeout marker (light=%s)", light => {
+    const result = output({ exitCode: 143, exit_code: 143, timedOut: true });
+    const content = formatUnifiedExecToolContent(result, light);
+    expect(content).toContain("exit_code=143 timed_out=true");
+    expect(compactExecExitFooter(content)).toContain("[exit 143 timed_out=true");
+    expect(unifiedExecCodeModeResult(result)).toMatchObject({ exit_code: 143, timed_out: true });
+  });
+
+  test("an elapsed yield window is not a hard timeout", () => {
+    const result = output({ exitCode: null, exit_code: null, process_id: 7, timedOut: true });
+    expect(formatUnifiedExecToolContent(result)).toContain("yielded=true");
+    expect(formatUnifiedExecToolContent(result)).not.toContain("timed_out=true");
+    expect(unifiedExecCodeModeResult(result)).toMatchObject({ yielded: true, session_id: 7 });
+    expect(unifiedExecCodeModeResult(result)).not.toHaveProperty("timed_out");
+  });
+
+  test("a hard timeout without an exit code still reports the timeout", () => {
+    const result = output({ exitCode: null, exit_code: null, timedOut: true });
+    expect(formatUnifiedExecToolContent(result)).toContain("timed_out=true");
+    expect(unifiedExecCodeModeResult(result)).toMatchObject({ timed_out: true });
+  });
+
   test.each([false, true])(
     "removes terminal decorations before framing without changing raw output (light=%s)",
     (light) => {
@@ -272,4 +297,35 @@ test.each(["aborted", "unavailable"] as const)("%s is neither normal exit nor ru
   for (const key of ["exit_code", "running", "yielded", "signal_terminated", "residual_processes_terminated", "residual_processes_observed"]) {
     expect(structured).not.toHaveProperty(key);
   }
+});
+
+test("a session whose exec_command description carries the server guidance gets residue notes without it", () => {
+  // A Light session on abliteration.ai Large V2 reads it there on every request
+  // (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+  const full = formatUnifiedExecToolContent(output({ residual_processes_terminated: true }), true);
+  const described = full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE);
+  const repeat = full.replace(RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE);
+  const session = `exec-result-format-described-${Math.random()}`;
+  expect(residualNoteOncePerSession(full, session, true)).toBe(described);
+  expect(compactExecExitFooter(described)).toBe(described.replace("[exec exit_code=", "[exit "));
+  expect(residualNoteOncePerSession(full, session, true)).toBe(repeat);
+  expect(residualNoteOncePerSession(full, undefined, true)).toBe(described);
+  // After a model switch away from that description, the next residue note carries the guidance once.
+  expect(residualNoteOncePerSession(full, session)).toBe(full);
+  expect(residualNoteOncePerSession(full, session)).toBe(repeat);
+  expect(serverCheckNoteOncePerSession(session, "PORT=0 timeout 2 node server.js")).toBeUndefined();
+});
+
+test("a fixed-wait check still running gets the server guidance once, without the claim that nothing needs a kill", () => {
+  // Its session is live: kill_process or a poll comes next.
+  const session = `exec-result-format-running-${Math.random()}`;
+  const check = "node server.js & sleep 1; curl -s localhost:3000; wait";
+  expect(serverCheckNoteOncePerSession(session, check, true)).toBe(SERVER_CHECK_RUNNING_NOTE);
+  expect(SERVER_CHECK_RUNNING_NOTE).toBe(`[note: ${SERVER_CHECK_GUIDANCE}]`);
+  expect(SERVER_CHECK_NOTE).toContain(SERVER_CHECK_GUIDANCE);
+  expect(serverCheckNoteOncePerSession(session, check, true)).toBeUndefined();
+  expect(serverCheckNoteOncePerSession(session, check)).toBeUndefined();
+  const yielded = formatUnifiedExecToolContent(output({ exitCode: null, exit_code: null, process_id: 7 }), true);
+  const noted = `${yielded}\n${SERVER_CHECK_RUNNING_NOTE}`;
+  expect(compactExecExitFooter(noted)).toBe(noted);
 });

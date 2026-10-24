@@ -68,11 +68,12 @@ function gatewayOwner(provider: string, model: string) {
   return session;
 }
 test.each([
+  ["abliteration", "abliterated-model-large-v2"],
   ["openrouter", "deepseek/deepseek-v4.1-flash-1017"],
   ["ollama-cloud", "deepseek-v4.1-flash:1017"],
   ["venice", "deepseek-v4-1-flash-1017"],
   ["abliteration", "abliterated-model-large-flash"],
-])("a DeepSeek model through %s gets the batch Edit DeepSeek's own API gets", (provider, model) => {
+])("%s %s gets the batch Edit DeepSeek's own API gets", (provider, model) => {
   const session = gatewayOwner(provider, model);
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => session });
   const tools = registry.toLLMTools();
@@ -88,10 +89,10 @@ test.each([
   expect(registry.toLLMTools().map(t => t.function.name).sort()).toEqual(["FileRead", "apply_patch", "exec_command", "system.searchTools"]);
 });
 test.each([
+  ["zai", "abliterated-model-large-v2"],
   ["openrouter", "z-ai/glm-5.3"],
   ["ollama-cloud", "gpt-oss:120b"],
   ["venice", "zai-org-glm-5-2"],
-  ["abliteration", "abliterated-model-large-v2"],
   ["abliteration", "abliterated-model-large"],
   ["abliteration", "abliterated-model"],
 ])("other gateway models keep the canonical Light editors: %s %s", (provider, model) => {
@@ -107,6 +108,17 @@ test("a model switch on the same gateway rebuilds the presented editor", () => {
   expect(registry.toLLMTools().find(t => t.function.name === "Edit")?.function.parameters.required).toEqual(["file_path", "old_string", "new_string"]);
   Object.assign(session.services, { providerService: { current: () => ({ provider: "openrouter", model: "deepseek/deepseek-v4.1-flash-1017" }) } });
   expect(registry.toLLMTools().find(t => t.function.name === "Edit")?.function.parameters.required).toEqual(["path", "edits"]);
+});
+
+test("Large V2 batch Edit is Light-only and follows same-provider model switches", () => {
+  const session = gatewayOwner("abliteration", "abliterated-model-large-v2");
+  const standard = buildToolRegistry({ workspaceRoot: "/tmp", getSession: () => session });
+  expect(standard.tools.find(t => t.name === "Edit")?.inputSchema.required).toEqual(["file_path", "old_string", "new_string"]);
+  const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => session });
+  expect(light.tools.find(t => t.name === "Edit")?.inputSchema.required).toEqual(["path", "edits"]);
+  Object.assign(session.services, { providerService: { current: () => ({ provider: "abliteration", model: "abliterated-model-large" }) } });
+  expect(light.toLLMTools().find(t => t.function.name === "Edit")?.function.parameters.required).toEqual(["file_path", "old_string", "new_string"]);
+  expect(light.tools.find(t => t.name === "Edit")?.inputSchema.required).toEqual(["file_path", "old_string", "new_string"]);
 });
 
 // The native Flash route uses the existing multi-file editor; gateways and Pro

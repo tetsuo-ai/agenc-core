@@ -19,9 +19,26 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 export const RESIDUAL_PROCESSES_NOTE =
   "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
 
+/**
+ * {@link RESIDUAL_PROCESSES_NOTE} without its server guidance, for a session
+ * whose exec_command description already says how to check a server on every
+ * request (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+ */
+export const RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE =
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
+
 /** The same fact on a later command of a session that already got {@link RESIDUAL_PROCESSES_NOTE}. */
 export const RESIDUAL_PROCESSES_REPEAT_NOTE =
   "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running.]";
+
+/**
+ * How to check a server: the pattern {@link SERVER_CHECK_NOTE} and the first
+ * {@link RESIDUAL_PROCESSES_NOTE} of a session give once. The exec_command
+ * description of a Light session on abliteration.ai Large V2 opens with it on
+ * every request (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+ */
+export const SERVER_CHECK_GUIDANCE =
+  "To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command.";
 
 /**
  * Shown once per session after a command that started a program and waited a
@@ -30,7 +47,15 @@ export const RESIDUAL_PROCESSES_REPEAT_NOTE =
  * as {@link RESIDUAL_PROCESSES_NOTE}, for the next check.
  */
 export const SERVER_CHECK_NOTE =
-  "[note: exec_command stops every process a command leaves running when it returns, so nothing needs a later kill, pkill or pgrep. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command.]";
+  `[note: exec_command stops every process a command leaves running when it returns, so nothing needs a later kill, pkill or pgrep. ${SERVER_CHECK_GUIDANCE}]`;
+
+/**
+ * {@link SERVER_CHECK_NOTE} for a check that was still running when it
+ * returned (a yielded session, which kill_process or a poll handles next, or
+ * a detached service): the guidance without the claim that nothing needs a
+ * later kill.
+ */
+export const SERVER_CHECK_RUNNING_NOTE = `[note: ${SERVER_CHECK_GUIDANCE}]`;
 
 /**
  * A command that started something in the background and then slept, or ran a
@@ -72,13 +97,29 @@ function firstFor(sessions: Set<string>, sessionId: string): boolean {
  * call: a session's first residue note is the full one (and gives the session
  * the server guidance), later ones are a line. Without a session the content
  * is returned unchanged.
+ *
+ * `serverGuidanceDescribed`: the session's exec_command description carries
+ * the server guidance on every request, so its first note (and a note without
+ * a session) leaves it out. If the session later loses that description (a
+ * model switch), its next residue note is the full one.
  */
-export function residualNoteOncePerSession(content: string, sessionId: string | undefined): string {
-  if (sessionId === undefined) return content;
+export function residualNoteOncePerSession(
+  content: string,
+  sessionId: string | undefined,
+  serverGuidanceDescribed = false,
+): string {
   const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
   if (!content.endsWith(note)) return content;
-  if (!firstFor(sessionsWithResidualNote, sessionId)) {
-    return `${content.slice(0, -note.length)}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
+  const result = content.slice(0, -note.length);
+  if (sessionId === undefined) {
+    return serverGuidanceDescribed ? `${result}\n${RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE}` : content;
+  }
+  const first = firstFor(sessionsWithResidualNote, sessionId);
+  if (serverGuidanceDescribed) {
+    return `${result}\n${first ? RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE : RESIDUAL_PROCESSES_REPEAT_NOTE}`;
+  }
+  if (!first && sessionsWithServerGuidance.has(sessionId)) {
+    return `${result}\n${RESIDUAL_PROCESSES_REPEAT_NOTE}`;
   }
   sessionsWithServerGuidance.add(sessionId);
   return content;
@@ -87,17 +128,28 @@ export function residualNoteOncePerSession(content: string, sessionId: string | 
 /**
  * {@link SERVER_CHECK_NOTE} for a command that waited a fixed time for a
  * program it started, once per session and only when the session has not had
- * the server guidance yet; undefined otherwise.
+ * the server guidance yet; undefined otherwise. A command still running when
+ * it returned (`stillRunning`) gets {@link SERVER_CHECK_RUNNING_NOTE}.
  */
-export function serverCheckNoteOncePerSession(sessionId: string | undefined, command: string): string | undefined {
+export function serverCheckNoteOncePerSession(
+  sessionId: string | undefined,
+  command: string,
+  stillRunning = false,
+): string | undefined {
   if (sessionId === undefined || !waitsFixedTimeForProgram(command)) return undefined;
-  return firstFor(sessionsWithServerGuidance, sessionId) ? SERVER_CHECK_NOTE : undefined;
+  if (!firstFor(sessionsWithServerGuidance, sessionId)) return undefined;
+  return stillRunning ? SERVER_CHECK_RUNNING_NOTE : SERVER_CHECK_NOTE;
 }
 
 /** Model-facing alias only; canonical results and structured facts stay intact. */
 export function compactExecExitFooter(content: string): string {
-  const note = [RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE, SERVER_CHECK_NOTE]
-    .map((text) => `\n${text}`)
+  const note = [
+    RESIDUAL_PROCESSES_NOTE,
+    RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE,
+    RESIDUAL_PROCESSES_REPEAT_NOTE,
+    SERVER_CHECK_NOTE,
+    SERVER_CHECK_RUNNING_NOTE,
+  ].map((text) => `\n${text}`)
     .find((text) => content.endsWith(text)) ?? "";
   const footerEnd = content.length - note.length;
   return content.slice(0, footerEnd).replace(
@@ -132,6 +184,7 @@ export function formatUnifiedExecToolContent(
     footerLines.push(`command_outcome=${output.command_outcome} cleanup_complete=true`);
   } else if (output.exitCode !== null) {
     footerLines.push(`exit_code=${output.exitCode}`);
+    if (output.timedOut) footerLines.push("timed_out=true");
   } else if (output.detached === true && output.pid !== undefined) {
     // A detached service that was still running when the yield window
     // closed. AgenC does not track it, so there is no session_id: the pid
@@ -197,6 +250,7 @@ export function unifiedExecCodeModeResult(
     result.cleanup_complete = true;
   } else if (output.exitCode !== null) {
     result.exit_code = output.exitCode;
+    if (output.timedOut) result.timed_out = true;
   } else if (output.detached === true && output.pid !== undefined) {
     result.running = true;
   } else if (output.process_id !== undefined) {

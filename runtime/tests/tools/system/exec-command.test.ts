@@ -15,7 +15,13 @@ import {
   createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
-import { RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_REPEAT_NOTE, SERVER_CHECK_NOTE } from "./exec-result-format.js";
+import {
+  RESIDUAL_PROCESSES_NOTE,
+  RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE,
+  RESIDUAL_PROCESSES_REPEAT_NOTE,
+  SERVER_CHECK_NOTE,
+  SERVER_CHECK_RUNNING_NOTE,
+} from "./exec-result-format.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-stdin.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -1548,6 +1554,45 @@ describe("exec_command tool", () => {
       expect(first.content).toContain(SERVER_CHECK_NOTE);
       expect(second.content).not.toContain(SERVER_CHECK_NOTE);
       expect(tests.content).not.toContain(SERVER_CHECK_NOTE);
+    });
+
+    test("a fixed-wait check still running when it yields gets the server guidance without the claim that nothing needs a kill", async () => {
+      // The yielded session needs kill_process or a poll (Light loads both with it).
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
+        ...completedExecOutput("listening on 3000"), exitCode: null, exit_code: null, process_id: 71,
+      }));
+      const { tool: noteTool } = mockManagerTool({ execCommand });
+      const session = { __agencSessionId: `yielded-${Math.random()}` };
+      const yielded = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000; wait", ...session }));
+      expect(yielded.content).toContain("session_id=71");
+      expect(yielded.content.endsWith(`\n${SERVER_CHECK_RUNNING_NOTE}`)).toBe(true);
+      expect(yielded.content).not.toContain("nothing needs a later kill");
+      execCommand.mockResolvedValue(completedExecOutput("ok"));
+      const later = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000; kill $!", ...session }));
+      expect(later.content).not.toContain("To check a server");
+    });
+
+    test("a session whose exec_command description says how to check a server gets no second copy in a note", async () => {
+      // A Light session on abliteration.ai Large V2 (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+      let described = true;
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
+        ...completedExecOutput("listening on 3000"),
+        residual_processes_terminated: true,
+      }));
+      const noteTool = createExecCommandTool({
+        cwd: root, allowedPaths: [root], serverChecksDescribed: () => described,
+        unifiedExecManager: { maxTimeoutMs: 30_000, execCommand, writeStdin: vi.fn(), closeAll: vi.fn(async () => {}) },
+      });
+      const session = { __agencSessionId: `described-${Math.random()}` };
+      const residue = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000/health", ...session }));
+      expect(residue.content).toContain(RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE);
+      execCommand.mockResolvedValue(completedExecOutput("Listening on http://localhost:39485"));
+      const fixedWait = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      for (const result of [residue, fixedWait]) expect(result.content).not.toContain("To check a server");
+      // After a switch to a model without that description, the next fixed wait gets the guidance once.
+      described = false;
+      const switched = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      expect(switched.content).toContain(SERVER_CHECK_NOTE);
     });
   });
 
