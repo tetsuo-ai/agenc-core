@@ -622,6 +622,9 @@ describe("providers/ollama entrypoint", () => {
     // Ollama could not load the model: the same answer on every retry.
     [500, "model requires more system memory (23.4 GiB) than is available (7.9 GiB)", LLMModelLoadError, false],
     [500, "llama runner process has terminated: exit status 2", LLMModelLoadError, false],
+    [500, "failed to load model", LLMModelLoadError, false],
+    [500, "not enough memory to load this model", LLMModelLoadError, false],
+    [500, "model runner has unexpectedly stopped", LLMModelLoadError, false],
     [403, "forbidden", LLMAuthenticationError, false],
     // A rate limit is waited out by its own path, not retried as an outage.
     [429, "too many requests, please slow down", LLMRateLimitError, false],

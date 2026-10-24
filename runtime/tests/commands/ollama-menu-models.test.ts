@@ -89,6 +89,26 @@ describe("local Ollama's installed models for the menus", () => {
     expect(parseOllamaTags({})).toBeUndefined();
   });
 
+  it("skips empty names, duplicates, non-objects, and rows that cannot complete text", () => {
+    expect(parseOllamaTags({
+      models: [
+        null,
+        "skip",
+        { name: "   " },
+        { model: "from-model-field" },
+        { name: "keep", capabilities: ["completion", 1, "tools"] },
+        { name: "keep" },
+        { name: "embed-only", capabilities: ["embedding"] },
+        { name: "tools-only", capabilities: ["tools"] },
+      ],
+    })).toEqual([
+      { model: "from-model-field" },
+      { model: "keep", capabilities: ["completion", "tools"] },
+    ]);
+    expect(parseOllamaTags(null)).toBeUndefined();
+    expect(parseOllamaTags({ models: "nope" })).toBeUndefined();
+  });
+
   it("asks the server the session uses, even when its address carries /v1", async () => {
     const ollama = await fakeOllama();
     const ctx = context({ OLLAMA_BASE_URL: `${ollama.url}/v1` });
