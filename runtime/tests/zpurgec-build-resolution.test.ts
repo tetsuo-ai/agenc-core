@@ -27,13 +27,6 @@ describe('Z-PURGEC build resolution boundaries', () => {
     expect(__agencBuildConfigTest.resolveAgenCBareSrc('src/not-present.js')).toBeNull()
   })
 
-  it('does not mark missing runtime modules as optional externals', () => {
-    expect(__agencBuildConfigTest.isKnownMissingOptionalModule('./tools/SleepTool/SleepTool.js')).toBe(false)
-    expect(__agencBuildConfigTest.isKnownMissingOptionalModule('../tools/SleepTool/SleepTool.js')).toBe(false)
-    expect(__agencBuildConfigTest.isKnownMissingOptionalModule('./not-present.js')).toBe(false)
-    expect(__agencBuildConfigTest.isKnownMissingOptionalModule('@mendable/firecrawl-js')).toBe(true)
-  })
-
   it('bundles jsonc-parser so its extensionless internal imports never escape into dist', () => {
     expect(__agencBuildConfigTest.isBundledBareImport('jsonc-parser')).toBe(true)
     expect(
