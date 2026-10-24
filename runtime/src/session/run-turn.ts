@@ -2717,6 +2717,7 @@ async function* runTurnKernelInner(
   let continuedFromFastMode = false;
   let fastUsage: LLMUsage | undefined;
   let fastCanonicalResponse: LLMResponse | undefined;
+  let fastTransportFailure: { readonly error: unknown } | undefined;
   if (opts.resume === undefined && bypassFastModeEnabled(session, ctx)) {
     session.rolloutStore?.store.enableOneShotFastMode();
     emitTurnStarted(resolvedReferenceContextItem);
@@ -2765,6 +2766,7 @@ async function* runTurnKernelInner(
             state.lastResponseUsage = next.value.lastResponseUsage;
             session.rolloutStore?.store.finishOneShotFastMode();
             fastCanonicalResponse = next.value.canonicalResponse;
+            fastTransportFailure = next.value.transportFailure;
             const response = next.value.recoveryResponse;
             if (response) {
               state.assistantMessages = [assistantMessageFromResponse(response, false, session.services.provider.name)];
@@ -3395,6 +3397,21 @@ async function* runTurnKernelInner(
   // per turn so the top-of-loop evaluate site and the post-tool record
   // site share an identical config object. Pure synchronous resolution.
   const behavioralCfg: BehavioralConfig = resolveBehavioralConfig();
+
+  // The fast loop handed over a model call that failed in transport. That
+  // attempt keeps its admission row (held unknown once dispatched) and its
+  // task-budget charge, and it added nothing to history, so the resample
+  // replays no tool. Like a standard-loop reconnect it spends one re-entry of
+  // the shared recovery ladder, and as a new physical request it takes the
+  // next sample identity, checkpointed before admission by the loop below:
+  // admission refuses the failed attempt's terminal row, which ended such
+  // runs as `execution admission deny: provider_call_failed_after_dispatch`.
+  // The run deadline and the standard retry ladder apply from here on.
+  if (fastTransportFailure !== undefined) {
+    const reservation = await reserveRecoveryReentry(session, state, { triggerName: "reconnect" });
+    if (reservation.kind !== "reserved") throw fastTransportFailure.error;
+    advanceModelSampleOrdinal(state);
+  }
 
   // The phase loop: the "while streaming & tools" outer loop.
   while (true) {

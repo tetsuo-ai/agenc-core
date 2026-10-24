@@ -73,7 +73,9 @@ export async function* runMinimalTurn(
     requiresResponse: (response: LLMResponse) => boolean;
     completedTool: (result: CompletedToolResultRecord) => void;
   },
-): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage; recoveryResponse?: LLMResponse; canonicalResponse?: LLMResponse }> {
+): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage; recoveryResponse?: LLMResponse; canonicalResponse?: LLMResponse;
+  /** The model call this loop handed over after a transport fault; it must be sampled again. */
+  transportFailure?: { readonly error: unknown } }> {
   // The initial options bound eligibility before any preparation work.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
   let options = buildProviderOptions(request, ctx, signal, session);
@@ -123,9 +125,10 @@ export async function* runMinimalTurn(
         if (canonicalBoundary === undefined || !isFastPathTransportHandoff(error, signal)) throw error;
         // The failed attempt published nothing to this loop's history, so the
         // canonical loop resumes from the last complete response or tool result.
+        // Tools run only after a complete response: none of this attempt's ran.
         handoff = true;
         emitFastPathTransportHandoff(session, ctx, error, completedToolCallIds);
-        return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
+        return { reason: "continue_normal", modelCalls, usage, lastResponseUsage, transportFailure: { error } };
       }
       modelCalls++;
       responses.push(response);
