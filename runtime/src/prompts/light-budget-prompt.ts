@@ -12,6 +12,14 @@ import {
 export const LIGHT_KEEP_BEHAVIOR =
   "Keep behavior the request does not change: inputs the code accepts, data it keeps, its outputs and errors.";
 
+/**
+ * Numeric answers over data come from a command. In measured runs gpt-6-luna at medium effort summed the rows of a
+ * small data file in its head in most Light runs and lost the answer when that sum slipped; DeepSeek Light computed
+ * such totals with a command, so its own finish paragraph (LIGHT_LIMITED_FINISH) is unchanged. A general working
+ * principle, not a task hint.
+ */
+export const LIGHT_COMPUTE_FROM_DATA = "Compute numeric answers from data with a command, not mentally.";
+
 /** Light's default finish rules: deliver, check, report. */
 export const LIGHT_FINISH = lightFinish(false);
 
@@ -19,7 +27,7 @@ function lightFinish(glmBatchedSteps: boolean): string {
   const failureHandling = glmBatchedSteps
     ? "fix all failures you can diagnose before retrying"
     : "diagnose the first failure and fix its cause before retrying";
-  return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. Briefly report results and stop. Report unavailable checks instead of rebuilding their tools.`;
+  return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. ${LIGHT_COMPUTE_FROM_DATA} Briefly report results and stop. Report unavailable checks instead of rebuilding their tools.`;
 }
 
 /**
