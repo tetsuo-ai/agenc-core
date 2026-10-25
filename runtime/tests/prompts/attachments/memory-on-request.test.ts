@@ -1,19 +1,20 @@
 /**
- * An interactive Light session whose memory was empty when its prompt was
- * assembled gets the memory rules and directories with the first message about
- * memory or durable facts, once.
+ * An interactive session (Light or standard) whose memory was empty when its
+ * prompt was assembled gets the memory rules and directories with the first
+ * message about memory or durable facts, once.
  */
 import { describe, expect, test, vi } from "vitest";
 
 import type { LLMMessage } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
-import { LIGHT_MEMORY_RULES_MARKER } from "../../memory/memdir.js";
+import { LIGHT_MEMORY_RULES_MARKER, MEMORY_RULES_MARKER } from "../../memory/memdir.js";
 import { attachmentsToMessages } from "./messages.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 import { asksAboutMemory, memoryOnRequestProducer } from "./memory-on-request.js";
 
 const RULES = `# auto memory\n\n${LIGHT_MEMORY_RULES_MARKER}: ...\n\n# Memory directories (both exist: Write there directly, without mkdir)\n- Global: \`/home/u/.agenc/memory/\``;
+const STANDARD_RULES = `# auto memory\n\n${MEMORY_RULES_MARKER}\n\n# Memory directories (both exist: Write there directly, without mkdir)\n- Global: \`/home/u/.agenc/memory/\``;
 
 function makeOpts(text: string, partial?: Partial<GetAttachmentsOptions>): GetAttachmentsOptions {
   return {
@@ -63,6 +64,8 @@ const MEMORY_MESSAGES = [
   "Ignore all saved memory for this turn. What report price prefix have I supplied in this conversation?",
   "Update only my saved report price preference: use the exact prefix USD followed by a space.",
   "For this turn only, my temporary report price notation is ZYX 7.00000. Do not remember this.",
+  "Read MEMORY.md if you need the project facts.",
+  "What's in MEMORY.md?",
 ];
 
 // The round 4 benchmark prompts, and task requests that only use memory-like words.
@@ -82,6 +85,8 @@ const TASK_PROMPTS = [
   "Build pMARS (http://www.koth.org/pmars/) from source with no X server.",
   "Make this a fire-and-forget call so the request handler returns at once.",
   "Run npm test exactly twice in two separate exec_command calls because I am explicitly requesting two runs.",
+  "I'm getting an error when I start the server.",
+  "I am getting an error in the checkout test.",
 ];
 
 describe("memory-on-request attachment producer", () => {
@@ -122,5 +127,43 @@ describe("memory-on-request attachment producer", () => {
     expect(resolve).not.toHaveBeenCalled();
     // Memory disabled after assembly: the resolver finds nothing to send.
     expect(await produce(text, { memoryOnRequest: async () => undefined })).toEqual([]);
+  });
+
+  test("already-sent standard rules, including as text parts, are not sent again", async () => {
+    const text = "Remember that I prefer tabs.";
+    const resolve = vi.fn(async () => STANDARD_RULES);
+    const retained: LLMMessage = {
+      role: "user",
+      content: `<system-reminder>\n${STANDARD_RULES}\n</system-reminder>`,
+      runtimeOnly: { mergeBoundary: "user_context" },
+    };
+    expect(await produce(text, {
+      messages: [retained, { role: "user", content: text }],
+      memoryOnRequest: resolve,
+    })).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled();
+
+    const parts: LLMMessage = {
+      role: "user",
+      content: [
+        { type: "text", text: STANDARD_RULES },
+        { type: "image_url", image_url: { url: "https://example.test/note.png" } },
+      ],
+    };
+    expect(await produce(text, {
+      messages: [parts, { role: "user", content: text }],
+      memoryOnRequest: resolve,
+    })).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled();
+
+    const lightParts: LLMMessage = {
+      role: "user",
+      content: [{ type: "text", text: RULES }],
+    };
+    expect(await produce(text, {
+      messages: [lightParts, { role: "user", content: text }],
+      memoryOnRequest: resolve,
+    })).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

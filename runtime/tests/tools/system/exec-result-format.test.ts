@@ -175,7 +175,10 @@ describe("formatUnifiedExecToolContent", () => {
     ["(PORT=0 node server.js &) ; sleep 0.6; npm test 2>&1 | tail -8", true],
     ["PORT=0 timeout 2 node server.js; true", true],
     ["timeout 3 python3 -m http.server 8123", true],
+    ["timeout 5 node server.js", true],
+    ["timeout 5s python3 -m http.server 8123", true],
     // Not a fixed wait for a program it started: chains, redirections, test timeouts, a polling loop.
+    ["timeout 6 node server.js", false],
     ["cd /workspace && npm test 2>&1 | tail -20", false],
     ["make 2>&1; sleep 1", false],
     ["sleep 2 && echo done", false],

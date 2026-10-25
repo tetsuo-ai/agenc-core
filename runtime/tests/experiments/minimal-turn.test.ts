@@ -53,6 +53,69 @@ test("aborted turns do not send a request or run a command", async () => {
   expect(f.execCommand).not.toHaveBeenCalled();
 });
 
+function transportBoundary(callProvider: () => Promise<never>) {
+  return {
+    callProvider,
+    requiresResponse: () => false,
+    completedTool: () => {},
+  };
+}
+
+test("a live transport fault through the canonical boundary hands off without replaying tools", async () => {
+  const f = fixture([]);
+  const error = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  const callProvider = vi.fn(async () => { throw error; });
+  const loop = runMinimalTurn(f.session, {} as TurnContext,
+    [{ role: "user", content: "x" }], "", new AbortController().signal, undefined,
+    transportBoundary(callProvider));
+  await loop.next();
+  expect(await loop.next()).toMatchObject({
+    done: true,
+    value: { reason: "continue_normal", modelCalls: 0, transportFailure: { error } },
+  });
+  expect(callProvider).toHaveBeenCalledOnce();
+  expect(f.provider.chatStream).not.toHaveBeenCalled();
+  expect(f.execCommand).not.toHaveBeenCalled();
+  expect(f.session.emit).toHaveBeenCalledWith(expect.objectContaining({
+    msg: expect.objectContaining({
+      type: "warning",
+      payload: expect.objectContaining({
+        cause: "transport_recovery",
+        details: expect.objectContaining({
+          outcome: "interrupted",
+          loop: "one_shot_fast",
+          toolReplay: false,
+          completedToolCallIds: "",
+        }),
+      }),
+    }),
+  }), { durable: true });
+});
+
+test("an aborted transport fault does not hand off to the standard loop", async () => {
+  const f = fixture([]);
+  const controller = new AbortController();
+  const error = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  const callProvider = vi.fn(async () => {
+    controller.abort(new Error("cancelled"));
+    throw error;
+  });
+  const run = async () => {
+    for await (const _ of runMinimalTurn(f.session, {} as TurnContext,
+      [{ role: "user", content: "x" }], "", controller.signal, undefined,
+      transportBoundary(callProvider))) {}
+  };
+  await expect(run()).rejects.toThrow(/ECONNRESET/);
+  expect(callProvider).toHaveBeenCalledOnce();
+  expect(f.provider.chatStream).not.toHaveBeenCalled();
+  expect(f.execCommand).not.toHaveBeenCalled();
+  expect(f.session.emit).not.toHaveBeenCalledWith(expect.objectContaining({
+    msg: expect.objectContaining({
+      payload: expect.objectContaining({ cause: "transport_recovery" }),
+    }),
+  }), expect.anything());
+});
+
 
 test("every advertised name including tool discovery uses full registry dispatch", async () => {
   const names = ["system.searchTools", "exec_command", "write_stdin", "apply_patch", "mcp.example.lookup", "spawn_agent"];
