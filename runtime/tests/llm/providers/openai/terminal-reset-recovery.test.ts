@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { createServer } from "node:http";
 
 import { runAdmittedModelCall } from "../../../../src/budget/admitted-model-call.js";
 import type { ProviderHttpStreamChunk, ProviderHttpStreamResponse } from "../../../../src/llm/client-session.js";
@@ -20,6 +21,11 @@ const frame = (delta: object, finishReason?: string, usage?: object) =>
 const reportedUsage = { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 };
 const reset = () => Object.assign(new TypeError("terminated"), {
   cause: Object.assign(new Error("synthetic socket closed"), { code: "UND_ERR_SOCKET" }),
+});
+const contentLengthMismatch = () => Object.assign(new TypeError("terminated"), {
+  cause: Object.assign(new Error("Response body length does not match content-length header"), {
+    name: "ResponseContentLengthMismatchError", code: "UND_ERR_RES_CONTENT_LENGTH_MISMATCH",
+  }),
 });
 
 // No prefetch: every frame is delivered before the following read fails.
@@ -123,6 +129,34 @@ for (const name of ["deepseek", "openai-compatible"] as const) {
       expect(probe.fetchImpl).toHaveBeenCalledOnce();
     });
 
+    test("preserves completion after a typed HTTP body-length mismatch", async () => {
+      const probe = setup([frame({ content: "Finished." }, "stop", reportedUsage)], contentLengthMismatch());
+      await expect(probe.invoke()).resolves.toMatchObject({ content: "Finished.", finishReason: "stop",
+        usage: { availability: "reported", provenance: "provider" },
+      });
+      expect(probe.fetchImpl).toHaveBeenCalledOnce();
+    });
+
+    test.each(["HTTP 503", "timeout"] as const)("keeps %s authoritative over a nested body-length mismatch", async kind => {
+      const error = kind === "HTTP 503"
+        ? Object.assign(new Error("synthetic server rejection"), { status: 503, cause: contentLengthMismatch() })
+        : Object.assign(new Error("synthetic read failure"), { code: "ETIMEDOUT", cause: contentLengthMismatch() });
+      const probe = setup([frame({ content: "Finished." }, "stop")], error);
+      const failure = await probe.invoke().catch(error => error);
+      if (kind === "HTTP 503") {
+        expect(failure).toBeInstanceOf(LLMServerError);
+        expect(failure).toMatchObject({ providerName: name, statusCode: 503 });
+      } else {
+        // The existing compatible network mapper exposes timeout diagnostics
+        // as a provider error; neither outer classification permits recovery.
+        expect(failure).toBeInstanceOf(LLMProviderError);
+        expect(failure).toMatchObject({ providerName: name, code: "LLM_PROVIDER_ERROR" });
+        expect(failure.message).toContain("openai_category=request_timeout");
+      }
+      expect(probe.chunks.some(chunk => chunk.done)).toBe(false);
+      expect(probe.fetchImpl).toHaveBeenCalledOnce();
+    });
+
     test("retains authoritative usage received in a separate post-finish trailer", async () => {
       const probe = setup([frame({ content: "Finished." }, "stop"),
         `data: ${JSON.stringify({ choices: [], usage: reportedUsage })}\n\n`]);
@@ -165,10 +199,10 @@ for (const name of ["deepseek", "openai-compatible"] as const) {
       expect(probe.fetchImpl).toHaveBeenCalledOnce();
     });
 
-    test("keeps a reset before finish as failure and publishes no executable tools", async () => {
+    test.each(["socket reset", "body-length mismatch"] as const)("keeps %s before finish as failure and publishes no tools", async kind => {
       const probe = setup([frame({ tool_calls: [{ index: 0, id: "effect-1", type: "function",
         function: { name: "write_once", arguments: "{}" },
-      }] })]);
+      }] })], kind === "socket reset" ? reset() : contentLengthMismatch());
       const failure = await probe.invoke().catch(error => error);
       expect(failure).toBeInstanceOf(LLMProviderError);
       expect(failure).toMatchObject({ code: "LLM_PROVIDER_ERROR", providerName: name });
@@ -271,3 +305,53 @@ for (const name of ["deepseek", "openai-compatible"] as const) {
     });
   });
 }
+
+describe("DeepSeek native HTTP body truncation", () => {
+  test.each([false, true])("handles mismatched Content-Length with the default transport (finished=%s)", async finished => {
+    let requests = 0;
+    const body = frame({ content: "Finished." }, finished ? "stop" : undefined);
+    const server = createServer((request, response) => {
+      requests++;
+      request.resume();
+      request.on("end", () => {
+        response.writeHead(200, { "content-type": "text/event-stream", connection: "close",
+          "content-length": Buffer.byteLength(body) + 100,
+        });
+        // A complete SSE frame arrives, but HTTP EOF cannot satisfy the
+        // advertised length. This exercises the real Undici error shape.
+        response.write(body);
+        setTimeout(() => response.end(), 150);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing loopback port");
+      const provider = new DeepSeekProvider({ model: "deepseek-v4-pro", apiKey: "synthetic-test",
+        baseURL: `http://127.0.0.1:${address.port}/v1`,
+      });
+      const chunks: Parameters<StreamProgressCallback>[0][] = [];
+      const call = provider.chatStream(messages, chunk => chunks.push(chunk), {
+        singleWireAttempt: true, timeoutMs: 5_000,
+      });
+      if (finished) {
+        await expect(call).resolves.toMatchObject({ content: "Finished.", finishReason: "stop",
+          usage: { availability: "unknown", provenance: "synthetic" },
+        });
+        expect(chunks.filter(chunk => chunk.done)).toHaveLength(1);
+      } else {
+        const failure = await call.catch(error => error);
+        expect(failure).toBeInstanceOf(LLMProviderError);
+        expect(failure).toMatchObject({ cause: { cause: { code: "UND_ERR_RES_CONTENT_LENGTH_MISMATCH" } } });
+        expect(chunks.some(chunk => chunk.done)).toBe(false);
+      }
+      expect(requests).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+});

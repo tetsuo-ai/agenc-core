@@ -2285,8 +2285,11 @@ export class OpenAIProvider implements LLMProvider {
           // A completed generation survives a lost connection just as it
           // survives clean EOF. Cancellation and non-transport failures still
           // win, and the normal terminal/tool validation below still runs.
+          const transportFailure = transportFailureOf(error);
+          const recoverableReadFailure = transportFailure?.category === "connection_lost" ||
+            (transportFailure === undefined && errorCode(error) === "UND_ERR_RES_CONTENT_LENGTH_MISMATCH");
           if (!sawFinishReason || options?.signal?.aborted || isAbortLikeError(error) ||
-              transportFailureOf(error)?.category !== "connection_lost") return false;
+              !recoverableReadFailure) return false;
           recoveredReadFailure = true;
           return true;
         },
