@@ -155,7 +155,11 @@ for (const name of ["deepseek", "openai-compatible"] as const) {
         expect(failure).toBe(error);
       } else {
         expect(failure).toBeInstanceOf(LLMProviderError);
-        expect(failure.cause).toBe(error);
+        // The existing compatibility network mapper preserves the message
+        // and classification, but does not attach the original cause.
+        expect(failure).toMatchObject({ code: "LLM_PROVIDER_ERROR", providerName: name });
+        expect(failure.message).toContain(error.message);
+        expect(failure.message).toContain("openai_category=network_error");
       }
       expect(probe.chunks.some(chunk => chunk.done)).toBe(false);
       expect(probe.fetchImpl).toHaveBeenCalledOnce();
@@ -224,10 +228,18 @@ for (const name of ["deepseek", "openai-compatible"] as const) {
       expect(probe.fetchImpl).toHaveBeenCalledOnce();
     });
 
-    test("retains argument validation instead of publishing an incomplete finished tool", async () => {
-      const probe = setup([frame({ tool_calls: [{ index: 0, id: "effect-1", type: "function",
-        function: { name: "write_once", arguments: "{" },
-      }] }, "tool_calls")]);
+    test.each(["clean EOF", "reset"] as const)("retains invalid-argument recovery at %s without publishing the tool", async ending => {
+      // A solitary "{" is repaired to {} by existing argument normalization.
+      // This established invalid-JSON fixture must instead enter recovery.
+      const body = frame({ tool_calls: [{ index: 0, id: "effect-1", type: "function",
+        function: { name: "write_once", arguments: "not-json" },
+      }] }, "tool_calls");
+      const probe = setup([body]);
+      if (ending === "clean EOF") {
+        probe.fetchImpl.mockResolvedValue(new Response(body, {
+          headers: { "content-type": "text/event-stream" },
+        }));
+      }
       await expect(probe.invoke()).resolves.toMatchObject({ toolCalls: [],
         toolCallRecovery: { source: "native", reason: "invalid_arguments", toolName: "write_once" },
       });
