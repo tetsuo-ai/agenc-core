@@ -310,6 +310,9 @@ function collectCompactableToolResultPositions(
   const positions: CompactableResultPosition[] = [];
   for (const message of messages) {
     if (isStandaloneCompactableResult(message, compactableIds)) {
+      // Whole-result clearing is safe only for text. Keep mixed payloads
+      // intact so compaction cannot erase images, documents or resource links.
+      if (!isTextOnlyResult(message.message?.content ?? message.content)) continue;
       positions.push({
         toolUseId: message.toolCallId!,
         chars: messageText(message).length,
@@ -320,6 +323,7 @@ function collectCompactableToolResultPositions(
       if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") {
         continue;
       }
+      if (!isTextOnlyResult(block.content)) continue;
       if (compactableIds.size === 0 || compactableIds.has(block.tool_use_id)) {
         positions.push({
           toolUseId: block.tool_use_id,
@@ -329,6 +333,12 @@ function collectCompactableToolResultPositions(
     }
   }
   return positions;
+}
+
+function isTextOnlyResult(content: unknown): boolean {
+  return typeof content === "string" ||
+    (Array.isArray(content) && content.every((part) =>
+      isRecord(part) && part.type === "text" && typeof part.text === "string"));
 }
 
 /**

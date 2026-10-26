@@ -506,6 +506,68 @@ describe("blockRepeatedFailingCall", () => {
       expect(failureSignature(EPERM_BODY("0.2630"))).toContain("exit_code=1");
       expect(failureSignature(EPERM_BODY("0.2630"))).toContain("tokens=212");
     });
+
+    describe("runtime footer normalization boundaries", () => {
+      test.each(["process_id", "session_id", "wall_time"])(
+        "preserves changing %s in application errors, with and without a runtime footer",
+        (field) => {
+          const { session } = mkSessionStub();
+          for (const withFooter of [false, true]) {
+            const failures = [10, 11, 12].map((value, i) => {
+              const body = `Worker failed: ${field}=${value}${field === "wall_time" ? "s" : ""}`;
+              const content = withFooter
+                ? `${body}\n\n[exec exit_code=1 wall_time=0.${i + 1}000s tokens=4 session_id=${100 + i}]`
+                : body;
+              expect(failureSignature(content)).toContain(body);
+              return completed(call("exec_command", npmStart(), `e-${i}`), content, true);
+            });
+            const retry = call("exec_command", npmStart(), "e-3");
+            const state = mkState(failures);
+            expect(identicalFailureRun(state, retry)).toEqual({
+              count: 1,
+              lastError: failures[2]!.content,
+            });
+            expect(blockRepeatedFailingCall(state, session, retry)).toBeNull();
+          }
+        },
+      );
+
+      test.each([
+        "Diagnostic [exec exit_code=1 wall_time=0.1000s session_id=10]",
+        "Diagnostic\n[exec exit_code=1 wall_time=0.1000s session_id=10]",
+        "Diagnostic\n\n[exec exit_code=1 wall_time=0.1000s session_id=10]\nMore output",
+        "Diagnostic\n\n[application wall_time=0.1000s session_id=10]",
+        '{"error":"process_id=10 session_id=10 wall_time=0.1000s"}',
+      ])("does not normalize application text outside a terminal runtime footer: %s", (content) => {
+        expect(failureSignature(content)).toBe(content);
+      });
+
+      test.each([
+        ["exec", "exit_code=1 tokens=4"],
+        ["mcp", ""],
+        ["code_mode", "status=error cell_id=cell-1"],
+      ])("normalizes runtime timing in a terminal %s footer only", (kind, fields) => {
+        const footer = (wallTime: string) =>
+          `[${kind} ${fields ? `${fields} ` : ""}wall_time=${wallTime}s]`;
+        for (const prefix of ["", "Worker process_id=10 failed\n\n"]) {
+          expect(failureSignature(`${prefix}${footer("0.1000")}`)).toBe(
+            failureSignature(`${prefix}${footer("0.2000")}`),
+          );
+        }
+      });
+
+      test.each([
+        ["exit_code=1", "exit_code=2"],
+        ["timed_out=true", "timed_out=false"],
+        ["yielded=true", "signal_terminated=true"],
+        ["tokens=4", "tokens=5"],
+        ["reason=process_id=10", "reason=process_id=11"],
+      ])("preserves semantic footer differences: %s versus %s", (first, second) => {
+        expect(failureSignature(`Failed\n\n[exec ${first} wall_time=0.1000s]`)).not.toBe(
+          failureSignature(`Failed\n\n[exec ${second} wall_time=0.2000s]`),
+        );
+      });
+    });
   });
 
   test("the refusal's turn stop is worded like the behavioral backstop", () => {
