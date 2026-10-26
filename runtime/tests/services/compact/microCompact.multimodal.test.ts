@@ -75,6 +75,27 @@ describe("microcompact preserves non-text tool content", () => {
     expect(result.messages).toHaveLength(9);
   });
 
+  test("a mixed latest read still supersedes old text and retains marker positions", async () => {
+    const latest: RuntimeMessage = {
+      role: "tool", toolName: "FileRead", toolCallId: "latest-read",
+      content: [{ type: "text", text: largeText }, attachments[0]],
+    };
+    const result = await microcompactMessages([
+      { role: "assistant", content: "", toolCalls: [
+        ...["old-read", "latest-read"].map(id => ({
+          id, name: "FileRead", arguments: JSON.stringify({ file_path: "/same/file" }),
+        })),
+        ...pressureTail().map(message => ({ id: message.toolCallId!, name: "exec_command", arguments: "{}" })),
+      ] },
+      { role: "tool", toolName: "FileRead", toolCallId: "old-read", content: largeText },
+      latest,
+      ...pressureTail(),
+    ]);
+    expect(result.messages[1]?.content).toMatch(/^\[microcompact:1\]/);
+    expect(result.messages[2]).toBe(latest);
+    expect(result.messages[3]?.content).toMatch(/^\[microcompact:3\]/);
+  });
+
   test.each([
     { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
     { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQK" } },
