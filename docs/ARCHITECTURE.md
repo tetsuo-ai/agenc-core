@@ -490,6 +490,17 @@ and sent back, so the next thinking-on call is accepted.
 Operator runbook:
 [daemon.md](reference/daemon.md#max-output-tokens-recovery).
 
+### Interrupted requests as stopped
+
+A user-cancelled turn (`TurnAbortReason` `interrupted`) persists one
+assistant boundary after tools drain:
+`[The user stopped this response before it finished. Do not continue the previous request unless the user asks you to.]`
+`replaced`, `review_ended`, `daemon_shutdown`, and `deadline_reached`
+do not. There is no env or `config.toml` override.
+
+Operator runbook:
+[daemon.md](reference/daemon.md#interrupted-requests-as-stopped).
+
 ## LLM / providers
 
 Default provider is **`grok`** (xAI). Model defaults are dual-sourced:

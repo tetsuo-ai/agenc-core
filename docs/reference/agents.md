@@ -663,6 +663,10 @@ for the boundary and compatibility contract.
 
 ## Turn abort containment
 
+A user stop (`interrupted`) also persists a durable assistant boundary
+in that session's model history, including child sessions:
+[daemon.md](daemon.md#interrupted-requests-as-stopped).
+
 A session's `abortController` is **one-shot for the session lifetime**.
 Burning it on a child interrupt or a mid-turn tool abort left every later
 turn born aborted: the session stayed listed as live and silently dropped

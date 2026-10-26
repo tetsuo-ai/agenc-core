@@ -1087,6 +1087,9 @@ A permission-blocked routine names the mode that refused it; there is no
 `config.toml` override for those strings:
 [agents.md](agents.md#permission-blocked-explanation).
 
+A user-stop history marker has no `config.toml` override:
+[daemon.md](daemon.md#interrupted-requests-as-stopped).
+
 ## Remote control owner switch
 
 `remote_control` is a home/managed-only table. `remote_control.enabled` is a
