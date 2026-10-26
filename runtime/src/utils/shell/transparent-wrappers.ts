@@ -211,6 +211,34 @@ const WRAPPER_PROGRAMS: readonly (readonly [string, CommandWrapper])[] = [
     long: { ctty: "c", fork: "f", wait: "w", ...GNU_STANDARD_OPTIONS },
     inspects: "hV",
   }],
+  ["unshare", {
+    // Namespace shorts take an optional bind file only when it is attached
+    // (`-mfile` / `--mount=file`). A following word is the program, so
+    // `unshare -m /bin/rm` still peels to rm.
+    short: "m::u::i::n::p::U::C::T::frcR:w:S:G:hV",
+    long: {
+      mount: "m::", uts: "u::", ipc: "i::", net: "n::", pid: "p::",
+      user: "U::", cgroup: "C::", time: "T::", fork: "f",
+      "map-user": ":", "map-group": ":", "map-root-user": "r",
+      "map-current-user": "c", "map-auto": "", "map-users": ":",
+      "map-groups": ":", "kill-child": "::", "mount-proc": "::",
+      propagation: ":", setgroups: ":", "keep-caps": "",
+      root: "R:", wd: "w:", setuid: "S:", setgid: "G:",
+      monotonic: ":", boottime: ":", ...GNU_STANDARD_OPTIONS,
+    },
+    inspects: "hV",
+  }],
+  ["nsenter", {
+    short: "at:m::u::i::n::p::C::U::T::S::G::r::w::W:eFZhV",
+    long: {
+      all: "a", target: "t:", mount: "m::", uts: "u::", ipc: "i::",
+      net: "n::", pid: "p::", cgroup: "C::", user: "U::", time: "T::",
+      setuid: "S::", setgid: "G::", "preserve-credentials": "",
+      root: "r::", wd: "w::", wdns: "W:", env: "e", "no-fork": "F",
+      "follow-context": "Z", ...GNU_STANDARD_OPTIONS,
+    },
+    inspects: "hV",
+  }],
   ["busybox", { short: "", long: GNU_STANDARD_OPTIONS }],
   ["toybox", { short: "", long: GNU_STANDARD_OPTIONS }],
   ["watch", {

@@ -6,7 +6,8 @@ import { matchedDangerousShellCommandLabel } from "../../src/permissions/dangero
 const examples: Record<string, string> = {
   setarch: "setarch x86_64 -R", linux32: "linux32", linux64: "linux64", eatmydata: "eatmydata", catchsegv: "catchsegv",
   nice: "nice -n 5", ionice: "ionice -c3", chrt: "chrt -f 1", taskset: "taskset -c 0",
-  setsid: "setsid -f", timeout: "timeout 5", stdbuf: "stdbuf -oL", env: "env FOO=bar",
+  setsid: "setsid -f", unshare: "unshare -Ur", nsenter: "nsenter -t 1",
+  timeout: "timeout 5", stdbuf: "stdbuf -oL", env: "env FOO=bar",
   nohup: "nohup", busybox: "busybox", toybox: "toybox", watch: "watch -n1", time: "time -p",
   xargs: "xargs -0", command: "command", exec: "exec", sudo: "sudo -u root", builtin: "builtin",
   noglob: "noglob", nocorrect: "nocorrect", "-": "-", doas: "doas -u root", chronic: "chronic", unbuffer: "unbuffer",
@@ -43,7 +44,10 @@ it.each(wrappers)("%s keeps inert text inert", wrapper => {
 
 it.each([
   "ionice --class=idle -- tee ~/.bashrc", "chrt --other 0 -- tee ~/.bashrc",
-  "taskset --cpu-list 0 -- tee ~/.bashrc", "busybox sh -c 'tee ~/.bashrc'",
+  "taskset --cpu-list 0 -- tee ~/.bashrc", "unshare -- tee ~/.bashrc",
+  "unshare -Ur -- tee ~/.bashrc", "unshare --mount --propagation private -- tee ~/.bashrc",
+  "nsenter -- tee ~/.bashrc", "nsenter -t 1 -- tee ~/.bashrc",
+  "busybox sh -c 'tee ~/.bashrc'",
   "watch --exec sh -c 'tee ~/.bashrc'", "watch --differences=permanent -n .5 'tee ~/.bashrc'",
   "env -S \"sh -c 'tee ~/.bashrc'\"", "env -C /repo/.git tee config", "env -- FOO=bar tee ~/.bashrc",
   "env -S \"-C /repo/.git tee config\"",
@@ -54,6 +58,7 @@ it.each([
 
 it.each([
   "ionice --help rm -rf /", "taskset -p 1", "chrt --max", "busybox --help rm -rf /",
+  "unshare --help rm -rf /", "nsenter --version rm -rf /",
   "command -v rm", "timeout --help rm -rf /", "watch --version rm -rf /",
 ])("does not invent an executed command for %s", command => {
   expect(classify(command).blocked).toBe(false);
