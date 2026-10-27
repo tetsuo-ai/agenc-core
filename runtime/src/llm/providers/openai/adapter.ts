@@ -42,11 +42,13 @@ import {
   markLLMPreGenerationRejection,
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
+import { transportFailureOf } from "../../transport-failure.js";
 import { resolveQwenCurrentModel } from "../../registry/qwen-current-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
   isInitialProviderHttpRejection,
+  type ProviderHttpStreamChunk,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
@@ -2253,6 +2255,8 @@ export class OpenAIProvider implements LLMProvider {
       let unterminatedFragmentNamesToolCalls = false;
       const rawFinishReasons = new Set<string>();
       let usage: Record<string, unknown> = {};
+      let sawTerminalUsage = false;
+      let recoveredReadFailure = false;
       let servedServiceTier: unknown;
       // Gateway reasoning items (OpenRouter, Venice) and Venice's per-call charge.
       const reasoningDetails = streamCapabilityHints.replaysReasoningDetails === true
@@ -2276,6 +2280,18 @@ export class OpenAIProvider implements LLMProvider {
         (fragment) => {
           endedWithUnterminatedEvent = true;
           unterminatedFragmentNamesToolCalls = fragment.includes('"tool_calls"');
+        },
+        (error) => {
+          // A completed generation survives a lost connection just as it
+          // survives clean EOF. Cancellation and non-transport failures still
+          // win, and the normal terminal/tool validation below still runs.
+          const transportFailure = transportFailureOf(error);
+          const recoverableReadFailure = transportFailure?.category === "connection_lost" ||
+            (transportFailure === undefined && errorCode(error) === "UND_ERR_RES_CONTENT_LENGTH_MISMATCH");
+          if (!sawFinishReason || options?.signal?.aborted || isAbortLikeError(error) ||
+              !recoverableReadFailure) return false;
+          recoveredReadFailure = true;
+          return true;
         },
       )) {
         const chunk = event.data;
@@ -2333,6 +2349,11 @@ export class OpenAIProvider implements LLMProvider {
         const choices = Array.isArray(chunk.choices)
           ? (chunk.choices as Array<Record<string, unknown>>)
           : [];
+        const hasTerminalChoice = sawFinishReason ||
+          choices.some(choice => typeof choice.finish_reason === "string");
+        if (chunk.usage && typeof chunk.usage === "object") {
+          sawTerminalUsage = hasTerminalChoice;
+        }
         if (this.name === "kimi") {
           const nestedUsage = choices.find((choice) =>
             choice.usage &&
@@ -2347,6 +2368,7 @@ export class OpenAIProvider implements LLMProvider {
               ...usage,
               ...(nestedUsage as Record<string, unknown>),
             };
+            sawTerminalUsage = hasTerminalChoice;
           }
         }
         for (const choice of choices) {
@@ -2701,6 +2723,11 @@ export class OpenAIProvider implements LLMProvider {
           : {}),
       });
       const finalFields = {
+        // Interim counters are useful observations, but a reset can lose the
+        // final usage trailer. Never settle the reservation from those counts.
+        ...(recoveredReadFailure && !sawTerminalUsage ? { usage: {
+          ...parsed.usage, availability: "unknown" as const, provenance: "synthetic" as const,
+        } } : {}),
         ...(toolCallRecovery === undefined ? {} : { toolCallRecovery }),
         ...(reasoningContent.length > 0
           ? {
@@ -2722,21 +2749,56 @@ export class OpenAIProvider implements LLMProvider {
     response: ProviderHttpStreamResponse,
     onDone?: () => void,
     onUnterminatedEnd?: (fragment: string) => void,
+    recoverReadFailure?: (error: unknown) => boolean,
   ): AsyncGenerator<OpenAISseEvent> {
     const decoder = new TextDecoder();
     let buffer = "";
-    for await (const chunk of response) {
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const parsed = parseSSEFrames(buffer, this.name);
-      buffer = parsed.remaining;
-      const batch = decodeOpenAISseEventBatch(
-        parsed.frames,
-        this.name,
-      );
-      for (const event of batch.events) yield event;
-      if (batch.done) {
-        onDone?.();
-        return;
+    const iterator = response[Symbol.asyncIterator]();
+    let iteratorSettled = false;
+    let primaryFailure = false;
+    try {
+      for (;;) {
+        let next: IteratorResult<ProviderHttpStreamChunk>;
+        try {
+          next = await iterator.next();
+        } catch (error) {
+          // Like for-await, a rejected next() does not close the iterator.
+          // The transport owns cleanup of its failed read.
+          iteratorSettled = true;
+          // Catch only the wire read: parser, provider-event and consumer
+          // callback errors must never become successful completions.
+          if (recoverReadFailure?.(error) === true) break;
+          throw error;
+        }
+        if (next.done) {
+          iteratorSettled = true;
+          break;
+        }
+        buffer += decoder.decode(next.value.value, { stream: true });
+        const parsed = parseSSEFrames(buffer, this.name);
+        buffer = parsed.remaining;
+        const batch = decodeOpenAISseEventBatch(
+          parsed.frames,
+          this.name,
+        );
+        for (const event of batch.events) yield event;
+        if (batch.done) {
+          onDone?.();
+          return;
+        }
+      }
+    } catch (error) {
+      primaryFailure = true;
+      throw error;
+    } finally {
+      if (!iteratorSettled) {
+        if (primaryFailure) {
+          // AsyncIteratorClose must not replace a parser failure with a
+          // secondary close failure. Early successful exit still reports it.
+          try { await iterator.return?.(); } catch { /* Preserve the primary error. */ }
+        } else {
+          await iterator.return?.();
+        }
       }
     }
 

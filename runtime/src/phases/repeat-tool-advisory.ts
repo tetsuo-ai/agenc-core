@@ -164,19 +164,27 @@ function canonicalCallKey(call: LLMToolCall): string {
  * only in that wall time. Used for comparison only; the model is always
  * shown the raw error.
  */
-const VOLATILE_RESULT_PATTERNS: readonly RegExp[] = [
-  /\bwall_time=\d+(?:\.\d+)?s/g,
-  /\bsession_id=\d+/g,
-  /\bprocess_id=\d+/g,
-];
+const VOLATILE_RESULT_FIELDS =
+  /(^| )(?:wall_time=\d+(?:\.\d+)?s|session_id=\d+|process_id=\d+)(?= |$)/g;
 
-/** Comparison form of a failing result: volatile runtime values elided. */
+/**
+ * Runtime formatters put their compact footer at the end, separated from
+ * output by a blank line (or alone when there is no output). Require that
+ * framing so application diagnostics containing the same field names stay
+ * meaningful. Unknown or incomplete footer formats are compared verbatim.
+ * The final lookahead requires the actual end, unlike `$`, which also
+ * accepts a position before a trailing newline.
+ */
+const RUNTIME_RESULT_FOOTER =
+  /((?:^|\n\n)\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?![\s\S])/u;
+
+/** Elide volatile fields only in the final runtime footer, never the body. */
 export function failureSignature(content: string): string {
-  let signature = content;
-  for (const pattern of VOLATILE_RESULT_PATTERNS) {
-    signature = signature.replace(pattern, "");
-  }
-  return signature;
+  return content.replace(
+    RUNTIME_RESULT_FOOTER,
+    (_footer, prefix: string, fields: string, suffix: string) =>
+      `${prefix}${fields.replace(VOLATILE_RESULT_FIELDS, "$1")}${suffix}`,
+  );
 }
 
 function completedRecordKey(record: CompletedToolResultRecord): string {

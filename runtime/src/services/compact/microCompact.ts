@@ -76,7 +76,7 @@ function standaloneKey(message: RuntimeMessage, index: number): string {
 
 interface CompactableResultPosition {
   readonly toolUseId: string;
-  /** Length of the result text as the model would see it. */
+  /** Eligible text pressure; mixed results contribute zero and cannot be cleared. */
   readonly chars: number;
 }
 
@@ -310,9 +310,12 @@ function collectCompactableToolResultPositions(
   const positions: CompactableResultPosition[] = [];
   for (const message of messages) {
     if (isStandaloneCompactableResult(message, compactableIds)) {
+      // Keep mixed positions for path recency and stable marker numbering,
+      // but never clear their images, documents or resource links.
       positions.push({
         toolUseId: message.toolCallId!,
-        chars: messageText(message).length,
+        chars: isTextOnlyResult(message.message?.content ?? message.content)
+          ? messageText(message).length : 0,
       });
       continue;
     }
@@ -323,12 +326,18 @@ function collectCompactableToolResultPositions(
       if (compactableIds.size === 0 || compactableIds.has(block.tool_use_id)) {
         positions.push({
           toolUseId: block.tool_use_id,
-          chars: stringifyContent(block.content ?? "").length,
+          chars: isTextOnlyResult(block.content) ? stringifyContent(block.content).length : 0,
         });
       }
     }
   }
   return positions;
+}
+
+function isTextOnlyResult(content: unknown): boolean {
+  return typeof content === "string" ||
+    (Array.isArray(content) && content.every((part) =>
+      isRecord(part) && part.type === "text" && typeof part.text === "string"));
 }
 
 /**
