@@ -193,17 +193,32 @@ Legacy `system.*` utilities (not the primary edit surface):
 Background processes and services. `exec_command` stops every process a
 command leaves behind when the command returns (a trailing `&`, `nohup`,
 `setsid`, a daemon that forks) and says so in the result, on a line after the
-footer: `[note: this command left processes running ... detach: true]`. A
-process kept alive with `yield_time_ms` has a `session_id`, lives for the
-session, and is stopped by `closeAll` when the session ends. `detach: true`
+footer: `[note: this command left processes running ... detach: true]`. The
+first such note of a session also says that nothing is left to stop and how to
+check a server: wait for its port or log line in a bounded loop instead of a
+fixed sleep, then make the requests and `kill $!` in the same command. Later
+notes in that session are one line. A command that waited a fixed time for a
+program it started without leaving it running (`server & sleep 1; curl ...;
+kill $pid`, `timeout 2 node server.js`) gets the same server guidance once per
+session. If such a check is still running when it yields, the note gives the
+guidance without saying that nothing needs a later kill: its `session_id`
+needs `kill_process` or a poll. In Light sessions on abliteration.ai's
+`abliterated-model-large-v2`, the `exec_command` description gives this
+guidance on every request, with a warning never to run `wait` on a server, so
+the notes leave it out. A process kept alive with `yield_time_ms` has a
+`session_id`, lives for the session, and is stopped by `closeAll` when the
+session ends; a Light session loads `write_stdin` and `kill_process` when a
+command yields one. `detach: true`
 starts a service AgenC never stops: its own session, stdout and stderr in a
 log file under the session temp root, an early-exit wait of `yield_time_ms`
 (default 2 s) so a daemon that rejects its config still reports the error,
-then `running=true pid=<pid> detached=true log=<path>` in the footer. It needs
-the `danger-full-access` sandbox (`--dangerously-bypass-approvals-and-sandbox`
-or `sandbox_mode = "danger-full-access"`): a detached process escapes every
-containment a sandbox lease relies on, so under a sandbox the tool refuses it
-and points at `yield_time_ms`. It cannot be combined with `tty`, and
+then `running=true pid=<pid> detached=true log=<path>` in the footer. It runs
+only outside the sandbox: either the session already uses `danger-full-access`,
+or the user approves this launch with `sandbox_permissions: "require_escalated"`.
+The approval shows why the command needs to leave the sandbox. Ordinary command
+approval does not grant that extra permission. There is no need to disable the
+sandbox for the entire session. Inside the sandbox, use a foreground command
+with `yield_time_ms`. It cannot be combined with `tty`, and
 `kill_process` does not know detached processes; stop one with `kill <pid>`.
 A detached service is not a managed session handle: it does not appear in
 `list_processes`, and `kill_process all: true` does not reach it.
@@ -221,6 +236,18 @@ Set `sandbox.persistent_session = false` to use
 it for every command.
 
 #### Recovering background work
+
+With bubblewrap, Linux sandbox commands have a private PID namespace. `ps`, `pgrep`, and `pidof`
+inside it cannot see a server launched outside it, even if its saved PID is
+still alive. The managed inventory also does not survive a daemon restart and
+excludes detached services. Before starting another server after reconnecting,
+check its known URL using the same sandbox permissions used for its launch.
+A refused sandbox loopback connection or an empty process list does not prove
+the host server stopped. A check outside the sandbox can require its own
+approval. Empty `write_stdin` polls read an already-approved process's output
+without a new escalation; sending input still requires the launch's compatible
+sandbox profile and normal input approval. Ownership and lifetime checks apply
+to both.
 
 Recovery from hung or leftover work goes through the identities the manager
 already owns, not through the process table. Every yielded `exec_command`
@@ -286,7 +313,7 @@ deliberately never suppressed or reported as a successful cleanup.
 | `system.symbolDefinition` | Deferred |
 | `system.symbolReferences` | Deferred |
 | `LSP` | Language-server diagnostics / definition / references / symbols |
-| `WebSearch` | Web search (provider-native Grok path when available, else configured endpoint / DuckDuckGo) |
+| `WebSearch` | Web search (provider-native Grok path when available; in a DeepSeek session DeepSeek's Search API, see [deepseek-direct.md](../providers/deepseek-direct.md#web-search); else configured endpoint / DuckDuckGo) |
 | `XSearch` | Live X/Twitter search through an independent direct-xAI backend. Any tool-capable reasoning provider may invoke it when xAI credentials exist and `[providers.grok] x_search = true` |
 | `web_fetch` | Fetch URL → text/markdown |
 
@@ -507,8 +534,32 @@ Source of truth: `runtime/src/permissions/types.ts` (and
 | `dontAsk` | Deny rather than prompt when an ask would be required |
 | `auto` | Classifier-assisted auto decisions |
 
-`bypassPermissions` is restricted. It skips approval prompts down to the deny
-floor, but it does not disable the OS sandbox and it does not skip tools
+`/permissions add` and `/permissions remove` update the daemon's live rule set
+before reporting success. An edit before the first message creates a session
+without starting a model turn. Use `--persist user` to retain a rule in
+`config.toml` for new sessions; `/permissions export` displays the current
+rules. Persisted add/remove operations also refresh the live rule sources before
+reporting success, without selecting a different model or effort. A matching
+deny wins over allow rules in every mode, including bypass.
+Shell deny and ask rules with command content are checked before any approval
+prompt, including exact commands, wildcard/prefix patterns, compound commands
+and shell wrappers. Transparent launchers such as `env`, `command`, `nice`,
+`nohup`, `timeout` and `sudo` are checked against the command they launch.
+An approval cannot override a matching deny. With command-specific shell
+restrictions, opaque syntax, unknown launcher options, script files and dynamic
+`xargs` input fail closed; use a literal, inspectable command instead.
+Commands exceeding the bounded rule-check limit are also refused. This
+restriction parsing never grants a command. Saved rules remain visible after restart and resume;
+live mode changes preserve the rule projection.
+Legacy `Bash` deny and ask rules restrict the canonical shell tool family
+(`exec_command`, `system.bash`, and process continuation tools). Legacy `Bash`
+allow rules remain invalid; use canonical tool names for grants.
+
+`bypassPermissions` is restricted. For file paths it skips ordinary workspace
+boundary prompts; explicit deny rules still deny, and content-specific ask
+rules, protected writes and malformed or ambiguous path safety checks still
+require a person. With no approval resolver those requests are refused.
+It does not disable the OS sandbox and it does not skip tools
 that set `requiresUserInteraction()` — see
 [Interactive tool prompts](#interactive-tool-prompts). `/permissions mode
 bypassPermissions` refuses the transition until the operator runs
@@ -543,32 +594,50 @@ The SDK mirrors the split: `createSession({ bypassApprovals: true })` sends
 `permissionMode: "bypassPermissions"` and leaves the sandbox on, while
 `dangerouslyBypassApprovalsAndSandbox: true` remains the no-sandbox option.
 
-The shell write policy follows the same split. It refuses shell commands that
-write workspace files outside the generated roots (`build`, `dist`, `logs`,
-`.cache`, `tmp`, `coverage`; use Edit or Write), that remove or move files
-outside the workspace, the system temp directory, or a directory added with
-`--add-dir`, that remove protected paths (the workspace root, `/`, the home,
-`.git`, `.agenc`, `.agents`, the AgenC home, shell and git config files), and
-commands whose write targets it cannot determine (variables, globs, command
-substitution). Removals inside the workspace or an added directory run
-without a prompt in `bypassPermissions`, `acceptEdits` and `auto`, and after
-approval otherwise. When approvals are bypassed **and** no sandbox applies
-(`--dangerously-bypass-approvals-and-sandbox`, or `bypassPermissions` on a
-host that cannot sandbox) nothing but this policy would gate a shell mutation,
-so the two guards that only route a mutation to a prompt or the sandbox are
-lifted: undeterminable targets run, and removals outside the workspace are
-allowed. Workspace content writes still belong to Edit and Write, and the
-protected paths stay refused. `--bypass-approvals` alone keeps every guard;
-the sandbox is the boundary there. `exec_command`'s `workdir` follows the
-same rule: the workspace, a directory added with `--add-dir`, or anywhere
-under the full bypass. The policy is evaluated with the session's mode and
-sandbox at preflight as well as at execution (the dispatcher attaches a
-provisional runtime context before a tool's `preflight`), so the two phases
-decide alike.
+When the OS sandbox refuses a command (a server's bind, a lookup with the
+network off, or git writing protected `.git` metadata such as `config`,
+`worktrees` or `modules`), `exec_command` and `write_stdin` add one `[sandbox]`
+line worded for how the session answers a retry with
+`sandbox_permissions: "require_escalated"`: `bypassPermissions` in a
+workspace-write sandbox runs it without a card; a mode with approvals asks the
+user on a card (the git line asks for no `prefix_rule`, so the approval covers
+that command only); where nobody can grant it (a scheduled routine, a read-only
+delegation child, a `-p` run outside bypass, the `never` policy, a worktree
+child for git) the line says so and names what the user can do instead. The git
+line offers the retry only for a git operation the user asked for and never
+suggests writing `.git` files directly. When a line offers the retry, the next
+request presents `exec_command`'s full schema, so Light and deferred standard
+sessions, whose lean schema hides the escalation fields, have them
+(`runtime/src/tools/system/exec-sandbox-denial.ts`).
+
+The shell write policy permits workspace content writes in `bypassPermissions`,
+`acceptEdits` and `auto`, and after approval otherwise. Default mode presents
+an approval card for a shell edit rather than rejecting an edit the user can
+approve. Literal shell mutation targets are tracked for file-history restore,
+including newly created files; dynamic targets may not be fully tracked.
+Read operands, globs, pipes and redirects to `/dev/null` do not count as writes.
+Read-only substitutions such as `$(pwd)` run without a write approval. Embedded
+literal writes are classified, including protected targets. Opaque substitutions
+retain their unknown-write classification and require edit permission or an
+approval; preflight leaves that decision to the permission path. The OS sandbox
+continues to enforce outside-workspace boundaries in restricted modes.
+
+Protected writes and removals remain refused, including `.git`, `.agenc`,
+`.agents`, the AgenC home, shell and git config files and dangerous root
+removals. Outside-workspace deletion guards and the sandbox remain unchanged.
+Only the combined approvals-and-sandbox bypass lifts the existing guards for
+undeterminable targets and outside removals. `exec_command`'s `workdir` keeps
+its existing workspace/additional-directory checks.
+
+Calls in a model tool batch settle independently. A failed shell call does not
+cancel other calls; the model receives every result before deciding what to do
+next. Compact TUI errors appear once on the failed tool row, with protocol
+JSON decoded to a readable reason. Expanded transcript mode retains details.
 
 A refusal names only the editing tools the session has, read from the
 session's own tool registry, and prefers the ones in the model's tool list:
-an OpenAI Light session, which lists apply_patch, is pointed at apply_patch.
+a GPT-family Light session (OpenAI, or a GPT model through OpenRouter or
+Venice), which lists apply_patch, is pointed at apply_patch.
 When the session's editing tools are not listed yet, the refusal names them
 and says that `system.searchTools` with `select:` loads them. A session with
 none of Edit, Write, MultiEdit or apply_patch (the read-only `verification`,
@@ -607,14 +676,24 @@ prompt into an allow; it lifts only the working-directory prompt. This holds
 for rules from every source, so a managed `permissions.ask` entry still
 prompts when user settings allow the same path.
 
-`auto` mode is the exception: path validation reports the `ask`, but the
-auto-mode pipeline, not the user, then decides it. A tool on the auto-mode
-safe allowlist (`FileRead`, `Grep`, `Glob`) is approved by that allowlist, so
-an allowlisted read such as `FileRead(./.env)` runs without a prompt even
-though an `ask` rule matches it. A write `ask` in `auto` goes to the auto-mode
-classifier, which can approve it. In `auto` mode a content-specific `ask` rule
-does not force a confirmation; use a `deny` rule for a path that must never be
-read or written without the user.
+`auto` also preserves content-specific asks before its safe-tool allowlist,
+acceptEdits simulation and classifier. An explicit path ask therefore requires
+confirmation in every mode. Protected file writes (including IDE control
+directories and shell startup files) cannot be approved by the classifier.
+
+Retired `.agenc/commands` and `.agents/commands` files, and structural
+`.agenc/worktrees` paths, are ordinary editable paths. These exceptions do not
+exempt protected descendants or symlink targets; live skill directories still
+require approval.
+
+Relative path rules are anchored at their source: project and local settings
+use the project root; user settings use the active AgenC home (`AGENC_HOME`,
+or the platform default); flag and managed settings use the directory holding
+their configuration file; CLI, command and session rules use the current
+workspace. A leading `./` is normalized. Identical relative text in different
+sources keeps each source's root. Exact paths, `~/` paths, recursive `/**`
+and wildcard patterns retain their meaning; bare wildcards such as `**` and
+`*.ts` remain unanchored, while `./**` explicitly names the source root.
 
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).
@@ -655,7 +734,7 @@ and the decision recorded for audit keep their original spelling.
 
 | Mode | Intent |
 | --- | --- |
-| `unattended` | Background agents with no attached client; policy allow/deny/pause |
+| `unattended` | Background agents with no attached client; policy allow/deny/pause. A scheduled routine that would ask a person ends as `failed` with a fixed mode-specific `run.error`: [agents.md](agents.md#permission-blocked-explanation) |
 | `bubble` | Nested/child contexts that bubble denials to the parent |
 
 The daemon permission overlay classifies low / medium / destructive requests.
@@ -706,6 +785,37 @@ model is told to proceed and not re-ask the same questions.
 | Picker still appears under bypass or an allowlist | Expected. The tool needs a user answer, not a permission grant. |
 | `User did not provide answers.` with `confirmed_no_effect` | The call ran without a TUI-recorded `__callId` answer. Use the picker or skip; do not inject `answers` in the model payload. |
 | Hook allowed `AskUserQuestion` but the picker still opened | Expected. Only a hook/evaluator **deny** short-circuits the prompt. |
+
+### Running a refused call without the sandbox
+
+Approving a call (its permission card, a session grant, extra sandbox
+permissions, an exec-policy prompt) lets it run inside the sandbox only. When
+the sandbox then refuses the call, it is never rerun without the sandbox on
+that approval. Under the policies that escalate (`untrusted`, which a
+permission card uses, `on_failure`, and `granular` with `sandbox_approval`),
+the orchestrator asks a separate question after the refusal: the card is
+titled "approval to run without the sandbox", like the other approval cards,
+its summary asks "run without the sandbox?", and its reason names the tool,
+quotes the refusal and says that the sandbox's limits on files and network will
+not apply.
+Approve runs the call once more with the sandbox off; deny keeps it refused and
+stops the turn. The request carries `run_without_sandbox` in its `permissions`
+and `sandbox_permissions: "require_escalated"` in its input, so hooks, the
+guardian and session grants see a request to leave the sandbox, and a session
+grant of the call never answers it (`runtime/src/tools/orchestrator.ts`,
+`runtime/src/sandbox/escalation/sandboxing.ts`).
+
+The refusal goes back to the model instead, with no question, when the policy
+does not escalate (`never`, `on_request`, `granular` without
+`sandbox_approval`), in a routine run, for a tool that opts out
+(`escalateOnFailure: false`), for a tool whose own card collects its input,
+in a worktree or read-only delegation child, and when the refused attempt
+already ran without the sandbox (an approved `require_escalated` request, an
+exec-policy rule, `danger-full-access`): such a refusal names a path that stays
+protected with the sandbox off. The model's explicit way out is unchanged:
+`sandbox_permissions: "require_escalated"` with a `justification`, asked as
+one card before the call runs, or granted without a card under
+`bypassPermissions`.
 
 ### Mobile session-wide approval
 
@@ -763,7 +873,7 @@ OS-level confinement for shell execution lives in `runtime/src/sandbox/`:
 | --- | --- |
 | Linux | Primary: system `bwrap` via the Node helper `agenc-linux-sandbox`. Fallback: `agenc-landlock-run` when the probe reports Landlock fully enforced. `engine/landlock.ts` only serializes helper flags; kernel Landlock is the C binary. |
 | macOS | In-tree Seatbelt (`engine/seatbelt.ts`, `engine/policies/*.sbpl`) via `/usr/bin/sandbox-exec`. No AgenC native binary. |
-| Windows | Restricted-token isolation is not implemented (`windows_restricted_token_unimplemented`). Restricted modes fail closed. Use WSL2, `external_sandbox`, or `--dangerously-bypass-approvals-and-sandbox` / `danger-full-access`. |
+| Windows | Restricted-token isolation is not implemented (`windows_restricted_token_unimplemented`). Restricted modes fail closed. The TUI asks once before the first session whether to continue without a sandbox; continuing saves `sandbox_mode = "danger-full-access"` in the user `config.toml` and keeps approvals. Otherwise use WSL2, `external_sandbox`, or `--dangerously-bypass-approvals-and-sandbox` / `danger-full-access`. |
 
 Native helpers:
 
@@ -781,6 +891,24 @@ hosted native lanes in
 `AGENC_DISABLE_LANDLOCK_FALLBACK=1` restores bwrap-or-die. `agenc doctor`
 warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
 `[sandbox].allow_gpu` is the macOS Metal opt-in ([config.md](config.md)).
+
+For a local dev server, set this in your AgenC home `config.toml` and start a
+new session:
+
+```toml
+[sandbox.network]
+allowLocalBinding = true
+```
+
+On Linux this requires bubblewrap. Start the server and run curl in the same
+shell command: the listener is inside that command's private loopback network
+namespace. A separate `exec_command` cannot reach it; `write_stdin` can send a
+curl command to an existing interactive shell in that namespace. Host services
+and external networking remain blocked. With the default setting, a refused
+Python or Node server includes one line explaining this opt-in. This private
+loopback is useful for sandboxed tests; the host browser cannot reach it. For
+a preview in the user's browser, request one approved escalated server launch
+and give the local URL, keeping the session's sandbox default in place.
 
 ### Home workspace vs helper containment
 
@@ -808,6 +936,78 @@ Do not carve `~/.agenc` out of a home workspace to make that layout work.
 The Landlock fallback cannot express a read-only carve-out inside a writable
 root, and home-as-workspace would also grant the agent write access to the
 entire home directory.
+
+### AgenC home under writable sandbox roots
+
+A different layout: `AGENC_HOME` itself sits **under** a writable sandbox
+ancestor. CI and tests often put home under `TMPDIR`; a workspace that is a
+parent of home has the same shape. That ambient grant must not make config,
+cookies, or plugin storage writable to a confined child.
+
+`protectAgencHomeUnderWritableRoot`
+(`runtime/src/sandbox/agenc-home-protection.ts`) adds the canonical home to
+`reservedReadOnlyPaths` through `protectDesktopAuthority`. Detection walks
+`getWritableRootsWithCwd` on the **granted** profile (`grantedProfile`), so a
+per-command extra write root that contains home still reserves it without
+widening the base profile. `sandboxAgencHome` canonicalizes the bound
+session home (`configStore.homeContext.path`) and prefers it over the
+environment, including symlink aliases.
+
+The reservation applies only when
+`sandboxModeRequiresPlatformIsolation` is true (`read_only` /
+`workspace_write`):
+
+| Surface | When |
+| --- | --- |
+| `permissionProfileForRuntimeContext` | File-tool runtime check |
+| `SandboxExecutionBroker.#protectProfile` | Every confined spawn |
+| Per-command `additionalPermissions` | Re-check after a later grant introduces a containing root |
+
+`danger-full-access` and `external_sandbox` skip platform isolation; the
+reservation is not applied. Explicit unsandboxed modes remain operator
+trust. There is no env or `config.toml` override.
+
+A separately authorized child, such as a plugin's private data directory
+that does not contain home, keeps that narrower write grant. The rest of
+home stays unwritable.
+
+**Host vs sandbox.** Sandboxed children cannot write home. `Write` / `Edit`
+and `extractMemories` may still persist the owning session's plan file and
+the durable memory roots (`$AGENC_HOME/memory/`, the project memory
+directory) on the **host** through `agencHomeCarveOutAllowsWrite`. The
+memory roots are the ones the session's memory prompt names, resolved from
+the session's ConfigStore and working directory
+(`sessionDurableMemoryWriteRoots`), never from the daemon process, whose own
+working directory would key another project's memory directory. That
+check uses the original unprotected profile so an operator deny, a
+reserved path already on the profile, or an SDK/cowork memory-path
+override still wins. Shell redirects never reach it
+(`shellAccess === null`). `config.toml` and the rest of home stay
+blocked. Unrestricted and `external_sandbox` policies never open through
+the carve-out.
+
+The file tools' permission checks (`FileRead`, `Write`, `Edit`,
+`MultiEdit`, `NotebookEdit`, `apply_patch`, and read-only delegation) take
+the same directories from the session (`sessionDurableMemoryDirectories`), so
+a project memory file and a global one are treated alike: either is allowed
+without a card unless an ask rule names it, and a deny rule wins. A cowork
+override is readable but gets no write allowance, and with the session's auto
+memory off neither directory is special. A caller without a session keeps the
+process-wide directories. The file tools' own confinement
+(`resolveToolAllowedPaths`, which is what lets `Glob` and `Grep` search the
+memory directories) takes the directories of the session whose turn runs the
+tool, a worktree child's write confinement takes only the directories its
+session may write, and background memory extraction checks its directory with
+the runtime sandbox's own question (`isSessionDurableMemoryWritePath`).
+
+**Landlock vs bubblewrap.** Bubblewrap can express the reservation:
+`--ro-bind` home after `--bind` of the writable ancestor. Landlock cannot
+subtract a child from a writable root, so the spawn fails closed as
+`[sandbox_policy_unexpressible]` with
+`reserved Desktop authority paths require non-overridable read-only carve-outs; bubblewrap is required`.
+Restore bubblewrap; do not treat this as the `.git` / `.agenc`
+unexpressible case, and do not reinstall the helper. Distinct from
+[home-as-workspace helper containment](#home-workspace-vs-helper-containment).
 
 ### Linux launcher argv contract
 
@@ -896,8 +1096,9 @@ Docker sandbox driver and SSH remote exec targets remain roadmap items
 | `[sandbox_required_unavailable]` + helper "outside the writable workspace" after a stock Linux install | The workspace is `$HOME` (or contains it). Open a project directory. Do not reinstall. |
 | `[sandbox_landlock_fallback]` from `agenc doctor` | Bubblewrap is unusable; Linux is ready only via Landlock. On Ubuntu 24.04+ install the AppArmor profile in [install.md](../install.md). Otherwise restore `bwrap` or accept the fallback limits. |
 | `[sandbox_policy_unexpressible]` on shell or workspace-write stdio MCP | Landlock cannot keep `.git` / `.agenc` read-only inside a writable project. Restore bubblewrap, use `sandbox_mode = "read-only"`, or choose `danger-full-access`. Plugin-declared MCP servers keep a tighter, Landlock-expressible profile. `Grep` / `Glob` / `Orient` use a narrowed read-only child and usually keep working. |
+| `[sandbox_policy_unexpressible]` + `reserved Desktop authority paths require non-overridable read-only carve-outs` | `AGENC_HOME` sits under a writable workspace or session temp ancestor. Landlock cannot keep that home read-only. Restore bubblewrap, or move `AGENC_HOME` off the writable root. Do not reinstall the helper. Distinct from home-as-workspace helper containment. See [AgenC home under writable sandbox roots](#agenc-home-under-writable-sandbox-roots). |
 | `/proc` or `/sys` reads fail with `EACCES` on Landlock fallback | Expected. The fallback never grants those roots, including under full-disk-read. Restore bubblewrap for a private procfs, or avoid `/proc`-dependent commands. |
-| Windows restricted-mode spawn refused | Native restricted-token isolation is unimplemented. Use WSL2, `external_sandbox`, or the deliberate danger-mode escape hatch. |
+| Windows restricted-mode spawn refused | Native restricted-token isolation is unimplemented. Start the TUI once and choose Continue on the "No sandbox on Windows" card (it saves `sandbox_mode = "danger-full-access"`), or use WSL2, `external_sandbox`, or the deliberate danger-mode escape hatch. A project or profile that sets a restricted `sandbox_mode` keeps failing closed. |
 
 ## Pre-execute guards
 

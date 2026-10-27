@@ -100,7 +100,7 @@ describe("headless Kimi model discovery CLI", () => {
           { id: "kimi-k3" },
           { id: " KIMI-K3 " },
           { id: "not-supported" },
-          { id: KIMI_CHAT_MODELS[1] },
+          ...KIMI_CHAT_MODELS.map((id) => ({ id })),
         ],
       }),
     }));
@@ -117,6 +117,8 @@ describe("headless Kimi model discovery CLI", () => {
       ok: true,
       models: [
         "kimi-k3",
+        "kimi-k3.1-pro",
+        "kimi-k3.1-pro-highspeed",
         "kimi-k2.7-code",
         "kimi-k2.7-code-highspeed",
         "kimi-k2.6",

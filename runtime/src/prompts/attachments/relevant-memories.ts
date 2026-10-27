@@ -25,8 +25,10 @@ import {
   throwIfMemoryRecallAborted,
 } from "../../memory/recall-contract.js";
 import type { LLMMessage } from "../../llm/types.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 import type { RelevantMemoriesAttachment } from "./types.js";
+import { relevantMemoryFingerprint } from "./relevant-memory-fingerprint.js";
 
 const MAX_MEMORY_LINES = 200;
 const MAX_MEMORY_BYTES = 4_096;
@@ -40,7 +42,6 @@ export const relevantMemoriesProducer: AttachmentProducer = async (
   trackingState,
 ) => {
   throwIfMemoryRecallAborted(opts.signal);
-  if (!isAutoMemoryEnabled()) return [];
   if (trackingState.memoryMode === "disabled") return [];
   if (trackingState.surfacedRelevantMemoryBytes >= MAX_SESSION_MEMORY_BYTES) {
     return [];
@@ -49,12 +50,20 @@ export const relevantMemoriesProducer: AttachmentProducer = async (
   const query = opts.userInput?.trim() ?? "";
   const mode = selectRecallMode(query, opts.subagentDepth, trackingState);
   if (mode === null) return [];
-  // The attachment lives only in the current request's projection
-  // (`messagesForQuery`), never in durable history, so a memory surfaced on
-  // one turn is gone from the model's context on the next. Dedup therefore
-  // scopes to one request: a memory that matches again is shown again.
+  // The retention ledger projects earlier attachments before producers run.
+  // Keep exact versions already in that context; changed versions and context
+  // removed by compaction must still be eligible for fresh recall.
+  const retained = new Set(opts.messages.flatMap((message) =>
+    message.role === "user" && message.runtimeOnly?.mergeBoundary === "user_context"
+      ? message.runtimeOnly.relevantMemoryFingerprints ?? []
+      : [],
+  ));
   trackingState.surfacedRelevantMemoryPaths.clear();
-  const memoryDirs = durableMemorySearchDirs(opts.agencHome);
+  const memoryDirs = durableMemorySearchDirs(
+    opts.agencHome,
+    opts.sessionKey,
+    opts.cwd,
+  );
   if (memoryDirs.length === 0) return [];
 
   const selected = await findRelevantMemories({
@@ -79,11 +88,12 @@ export const relevantMemoriesProducer: AttachmentProducer = async (
 
   const remainingBytes =
     MAX_SESSION_MEMORY_BYTES - trackingState.surfacedRelevantMemoryBytes;
-  const memories = await readMemoriesForAttachment(
+  const candidates = await readMemoriesForAttachment(
     selected.slice(0, MAX_RELEVANT_MEMORIES),
     opts.signal,
     remainingBytes,
   );
+  const memories = candidates.filter((memory) => !retained.has(relevantMemoryFingerprint(memory)));
   for (const memory of memories) {
     trackingState.surfacedRelevantMemoryPaths.add(memory.path);
     trackingState.surfacedRelevantMemoryBytes += Buffer.byteLength(
@@ -130,25 +140,30 @@ function selectRecallMode(
 }
 
 /**
- * The two durable roots recall searches. They come from the shared memory
- * path resolvers, so recall looks exactly where the memory prompt tells the
- * model to write and where the extraction child writes (including remote
- * bases, trusted overrides and worktree-shared canonical git roots) instead
- * of rebuilding a repository-local `.agenc/memory` path from the cwd.
+ * The two durable roots recall searches. A live session names them the same
+ * way the memory prompt, extraction child, permission checks and sandbox do
+ * (`sessionDurableMemoryDirectoriesOf`): from the session's ConfigStore and
+ * cwd, not from process-wide `getProjectMemoryPath()`. A daemon serves many
+ * projects from its own working directory; searching the process project
+ * would inject that other project's memories into this request.
+ *
+ * Without a session owner the shared resolvers stay the fallback, including
+ * trusted overrides when the request home matches the ambient base. A
+ * different home still builds both roots from the request home so recall
+ * does not read another home's memories.
  */
-function durableMemorySearchDirs(agencHome: string | undefined): string[] {
+function durableMemorySearchDirs(
+  agencHome: string | undefined,
+  sessionKey: object,
+  cwd: string,
+): string[] {
   if (agencHome === undefined || agencHome.trim().length === 0) return [];
+  const sessionDirectories = sessionDurableMemoryDirectoriesOf(sessionKey, cwd);
+  if (sessionDirectories !== undefined) {
+    return Array.from(new Set(sessionDirectories.roots.map(normalizeDirectory)));
+  }
+  if (!isAutoMemoryEnabled()) return [];
   if (oneShotFastModeActive()) return getMemorySearchPathsForHome(agencHome);
-  // The shared resolvers read the ambient memory base. When the request names
-  // that same base they are the right answer, because they also carry the
-  // trusted overrides (a Cowork path override, an `autoMemoryDirectory`
-  // setting, a remote root) that a plain join would drop.
-  //
-  // When the request names a different home, the ambient answer is the wrong
-  // one and searching it anyway would read another home's memories into this
-  // request. Build both roots from the home the request gave, through the
-  // same formula the writers use, so recall still lands where the extraction
-  // child and the memory prompt point.
   if (normalizeDirectory(agencHome) === normalizeDirectory(getMemoryBaseDir())) {
     return Array.from(
       new Set([

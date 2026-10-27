@@ -1,3 +1,4 @@
+import { PendingEffectReviews } from "../../session/pending-effect-reviews.js";
 /**
  * Rollout journal scans: transcript reconstruction, transcript boundaries,
  * persisted submissions and run epochs. Split out of
@@ -6,7 +7,9 @@
 
 import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
-import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
+import { isHiddenGoalContinuation } from "../../session/hidden-goal-history.js";
+import { classifyTurnTerminal, createTurnFailedEvent, turnTerminalResult, type TurnTerminal } from "../../contracts/turn-terminal.js";
+import { isStreamAttemptDiscard } from "../../contracts/stream-attempt-boundary.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
 import { persistDisplayArtifactBytes } from "../../session/display-artifact-store.js";
 import { isAdmissionUsageSummary } from "../../session/usage-summary.js";
@@ -39,6 +42,14 @@ function historyEpochFromRollout(
     runId,
     latestTranscriptBoundary(items)?.id ?? "initial",
   );
+}
+
+/**
+ * True when the user cleared the conversation, or a reset replaced its
+ * transcript, at any point in this rollout.
+ */
+function rolloutHasTranscriptReset(items: readonly RolloutItem[]): boolean {
+  return latestTranscriptBoundary(items) !== undefined;
 }
 
 interface TranscriptBoundary {
@@ -166,10 +177,7 @@ function messageTerminalFromEvent(
   expectedTurnId: string | undefined,
 ): AgenCBackgroundAgentMessageTerminal | undefined {
   const terminal = classifyTurnTerminal(event, { expectedTurnId, legacyJournal: true });
-  return terminal === undefined ? undefined : {
-    code: terminal.code,
-    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
-  };
+  return terminal === undefined ? undefined : turnTerminalResult(terminal);
 }
 
 interface MutableTranscriptV2Message extends JsonObject {
@@ -177,6 +185,9 @@ interface MutableTranscriptV2Message extends JsonObject {
   commitEventId: string;
   role: "user" | "assistant";
   text: string;
+  acceptedAt?: string;
+  partial?: "streaming" | "interrupted";
+  partialTruncated?: boolean;
   turnId?: string;
   clientMessageId?: string;
   committedSequence: number;
@@ -329,7 +340,8 @@ function transcriptNoticesFromRollout(
     if (terminal.outcome === "errored") {
       notices.push({
         eventId, committedSequence, type: "turn_failed",
-        payload: { turnId, code: terminal.failureCode, message: terminal.message ?? "" },
+        payload: { ...createTurnFailedEvent({ ...terminal, turnId: turnId!, code: terminal.failureCode,
+          message: terminal.message ?? "" }).payload },
       });
     } else if (terminal.outcome === "aborted") {
       notices.push({
@@ -355,6 +367,10 @@ export function sessionTranscriptV2FromRollout(
   artifactSessionDir?: string,
   options: { readonly includeCompleteMessages?: boolean; readonly publishTextArtifact?: (bytes: Buffer) => string } = {},
 ): SessionTranscriptV2Result {
+  const reviews = new PendingEffectReviews();
+  for (const item of items) {
+    if (item.type === "event_msg") reviews.apply(item.payload);
+  }
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
   const boundaryId = boundary?.id ?? "initial";
@@ -399,6 +415,43 @@ export function sessionTranscriptV2FromRollout(
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
   const attachmentEvents: SessionTranscriptV2Event[] = [];
+  // The journal already contains sanitized display deltas. Rebuild only the
+  // uncommitted segment, without creating a response_item or changing fsync
+  // guarantees. Bound retained UTF-8 bytes even if a provider never commits.
+  const partialByteCap = 64 * 1024;
+  let partialText = "";
+  let partialBytes = 0;
+  let partialTruncated = false;
+  let partialEvent: Event | undefined;
+  let partialSequence: number | undefined;
+  const clearPartial = (): void => {
+    partialText = "";
+    partialBytes = 0;
+    partialTruncated = false;
+    partialEvent = undefined;
+  };
+  const retainPartial = (status: "streaming" | "interrupted"): void => {
+    if (partialEvent === undefined || currentTurnId === undefined || partialText.length === 0) {
+      clearPartial();
+      return;
+    }
+    const ordinal = assistantOrdinals.get(currentTurnId) ?? 0;
+    messages.push({
+      messageId: status === "streaming" ? assistantMessageId(currentTurnId, ordinal)
+        : `partial:${currentTurnId}:${canonicalEventId(partialEvent)}`,
+      commitEventId: canonicalEventId(partialEvent),
+      role: "assistant",
+      text: partialText,
+      turnId: currentTurnId,
+      ...(currentClientMessageId !== undefined ? { clientMessageId: currentClientMessageId } : {}),
+      // For a partial this is the last included delta's replay watermark,
+      // rather than a claim that the assistant response was committed.
+      committedSequence: partialEvent.seq!,
+      partial: status,
+      ...(partialTruncated ? { partialTruncated: true } : {}),
+    });
+    clearPartial();
+  };
 
   if (boundary?.kind === "replaced") {
     const replacement = reconstructFromRollout(
@@ -409,6 +462,10 @@ export function sessionTranscriptV2FromRollout(
     let ordinal = 0;
     for (const item of replacement) {
       if (item.role !== "user" && item.role !== "assistant") continue;
+      // Synthetic compaction rows are model context, not rewindable user
+      // prompts. Keep snapshot ordinals aligned with the daemon history.
+      if (item.compactionHistory !== undefined) continue;
+      if (isHiddenGoalContinuation(item)) continue;
       const text = responseItemDisplayText(item.content);
       if (text.length === 0) continue;
       const messageId = `replacement:${boundary.id}:${ordinal}`;
@@ -440,6 +497,8 @@ export function sessionTranscriptV2FromRollout(
   for (let index = transcriptStartIndex; index < legacyEndIndex; index += 1) {
     const item = items[index]!;
     if (item.type !== "response_item") continue;
+    if (item.payload.compactionHistory !== undefined) continue;
+    if (isHiddenGoalContinuation(item.payload)) continue;
     if (item.payload.role !== "user" && item.payload.role !== "assistant") {
       continue;
     }
@@ -498,11 +557,14 @@ export function sessionTranscriptV2FromRollout(
       if (text.length === 0) continue;
       const commitEventId = canonicalEventId(event);
       const clientMessageId = event.msg.payload.messageId;
+      const acceptedAt = event.msg.payload.acceptedAt;
       messages.push({
         messageId: clientMessageId ?? `message:${commitEventId}`,
+        canonicalUserMessageId: event.id,
         commitEventId,
         role: "user",
         text,
+        ...(typeof acceptedAt === "string" && Number.isFinite(Date.parse(acceptedAt)) ? { acceptedAt } : {}),
         ...(clientMessageId !== undefined ? { clientMessageId } : {}),
         committedSequence: sequence,
       });
@@ -511,9 +573,19 @@ export function sessionTranscriptV2FromRollout(
       continue;
     }
     if (event.msg.type === "turn_started") {
+      retainPartial("interrupted");
+      partialSequence = undefined;
       currentTurnId = event.msg.payload.turnId;
       if (pendingUserIndex !== undefined) {
-        messages[pendingUserIndex]!.turnId = currentTurnId;
+        const user = messages[pendingUserIndex]!;
+        user.turnId = currentTurnId;
+        // Older/initial submissions predate acceptedAt. Their first durable
+        // turn start is the closest retained timestamp, never the attach time.
+        const startedAt = event.msg.payload.startedAt;
+        if (user.acceptedAt === undefined && typeof startedAt === "number" &&
+            Number.isFinite(new Date(startedAt).getTime())) {
+          user.acceptedAt = new Date(startedAt).toISOString();
+        }
         pendingUserIndex = undefined;
       }
       currentClientMessageId = pendingClientMessageId;
@@ -551,7 +623,45 @@ export function sessionTranscriptV2FromRollout(
       }
       continue;
     }
+    if (isStreamAttemptDiscard(event.msg)) {
+      // The explicit discard and the legacy reconnect notice both abandon
+      // the provisional segment. Keep the boundary even before fresh deltas
+      // arrive so replay cannot resurrect the discarded attempt.
+      clearPartial();
+      if (currentTurnId !== undefined) partialSequence = sequence;
+      continue;
+    }
+    if (event.msg.type === "agent_message_delta") {
+      if (currentTurnId === undefined) continue;
+      partialEvent = event;
+      partialSequence = sequence;
+      const delta = event.msg.payload.delta;
+      const remaining = partialByteCap - partialBytes;
+      if (!partialTruncated) {
+        // Avoid splitting a multibyte character at the byte cap, and avoid
+        // allocating an unbounded Buffer for an oversized single delta.
+        const candidate = delta.slice(0, remaining);
+        let prefix = "";
+        let bytes = 0;
+        for (const character of candidate) {
+          const size = Buffer.byteLength(character, "utf8");
+          if (bytes + size > remaining) break;
+          prefix += character;
+          bytes += size;
+        }
+        // slice can split a surrogate pair at the UTF-16 limit.
+        if (/[\uD800-\uDBFF]$/u.test(prefix)) {
+          prefix = prefix.slice(0, -1);
+          bytes = Buffer.byteLength(prefix, "utf8");
+        }
+        partialText += prefix;
+        partialBytes += bytes;
+        partialTruncated = prefix.length < delta.length;
+      }
+      continue;
+    }
     if (event.msg.type === "agent_message") {
+      clearPartial();
       const commitEventId = canonicalEventId(event);
       const correlationId = currentTurnId ?? commitEventId;
       const ordinal = assistantOrdinals.get(correlationId) ?? 0;
@@ -585,6 +695,7 @@ export function sessionTranscriptV2FromRollout(
         continue;
       }
       if (currentTurnId !== undefined && openTurn !== undefined) {
+        retainPartial("interrupted");
         turnResults.push(
           closedTurnResult(currentTurnId, sequence, terminal, openTurn),
         );
@@ -592,8 +703,12 @@ export function sessionTranscriptV2FromRollout(
       currentTurnId = undefined;
       currentClientMessageId = undefined;
       openTurn = undefined;
+      partialSequence = undefined;
     }
   }
+
+  retainPartial(currentTurnId !== undefined && currentTurnId === activeTurn?.turnId
+    ? "streaming" : "interrupted");
 
   const liveTurn =
     activeTurn === undefined ||
@@ -604,13 +719,18 @@ export function sessionTranscriptV2FromRollout(
       : { turnId: activeTurn.turnId, clientMessageId: currentClientMessageId };
   const snapshot: SessionTranscriptV2Result = {
     schemaVersion: 2,
+    pendingEffectReviews: reviews.reviews,
     sessionId,
     runId,
     historyEpoch: historyEpochForBoundary(runId, boundaryId),
     asOfSequence,
     messages,
     events: [...transcriptNoticesFromRollout(items, boundaryIndex, runId), ...attachmentEvents].sort((a, b) => a.committedSequence - b.committedSequence),
-    ...(liveTurn !== undefined ? { activeTurn: liveTurn } : {}),
+    ...(liveTurn !== undefined ? { activeTurn: {
+      ...liveTurn,
+      ...(currentTurnId === liveTurn.turnId && partialSequence !== undefined
+        ? { partialSequence } : {}),
+    } } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
     ...(planMode !== undefined
       ? {
@@ -764,6 +884,7 @@ function currentRunEpochFromRollout(
 
 export {
   historyEpochFromRollout,
+  rolloutHasTranscriptReset,
   findPersistedMessageSubmission,
   currentRunEpochFromRollout,
 };

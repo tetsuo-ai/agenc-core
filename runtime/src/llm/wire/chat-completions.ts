@@ -5,7 +5,7 @@ import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
  * @module
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isKnownEmptyProviderReasoning } from "../types.js";
 import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import type {
@@ -59,11 +59,17 @@ import {
   buildCerebrasStructuredOutputTextFormat,
 } from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
+import {
+  decodeReasoningDetailsReplay,
+  encodeReasoningDetailsReplay,
+} from "./reasoning-details.js";
+import { normalizePromptCacheKey } from "../prompt-cache-key.js";
 import { applyZaiImageInputContract } from "./zai-contract.js";
 import { applyQwenKimiImageInputContract } from "./qwen-contract.js";
 import {
   applyKimiImageInputContract,
   assertKimiRequestPayloadSize,
+  kimiCacheWriteUsage,
 } from "./kimi-contract.js";
 import {
   LLMContextWindowExceededError,
@@ -309,6 +315,7 @@ function toChatCompletionsMessages(
   acceptsDirectImageInput?: boolean,
   sessionTailAfterSetup = false,
   usesThinkingContentBlocks = false,
+  replaysReasoningDetails = false,
 ): Array<Record<string, unknown>> {
   // The caller passes the exact normalized sequence used to derive the
   // reasoning replay plan. Keeping a single projection prevents boundary or
@@ -400,6 +407,16 @@ function toChatCompletionsMessages(
       ? message.providerReasoningContent
       : undefined;
   };
+  // Structured reasoning items go back as `reasoning_details`, unchanged;
+  // anything else as the provider's reasoning text field.
+  const replayedReasoningFields = (
+    reasoning: string | undefined,
+  ): Record<string, unknown> => {
+    if (reasoning === undefined) return {};
+    const details = replaysReasoningDetails ? decodeReasoningDetailsReplay(reasoning) : undefined;
+    if (details !== undefined) return { reasoning_details: details };
+    return usesThinkingContentBlocks ? {} : { [reasoningContentField]: reasoning };
+  };
   const assistantContent = (content: unknown, reasoning: string | undefined): unknown =>
     usesThinkingContentBlocks && reasoning !== undefined
       ? [
@@ -424,9 +441,7 @@ function toChatCompletionsMessages(
       wireMessages.push({
         role: "assistant",
         content: assistantContent(messageTextContent(message.content), providerReasoningContent),
-        ...(!usesThinkingContentBlocks && providerReasoningContent !== undefined
-          ? { [reasoningContentField]: providerReasoningContent }
-          : {}),
+        ...replayedReasoningFields(providerReasoningContent),
         tool_calls: message.toolCalls.map((toolCall) => ({
           id: toolCall.id,
           type: "function",
@@ -448,10 +463,7 @@ function toChatCompletionsMessages(
       content: message.role === "assistant"
         ? assistantContent(toOpenAIMessageContent(message.content), providerReasoningContent)
         : toOpenAIMessageContent(message.content),
-      ...(!usesThinkingContentBlocks && message.role === "assistant" &&
-      providerReasoningContent !== undefined
-        ? { [reasoningContentField]: providerReasoningContent }
-        : {}),
+      ...(message.role === "assistant" ? replayedReasoningFields(providerReasoningContent) : {}),
     });
   }
   if (sessionTail !== undefined) {
@@ -561,6 +573,20 @@ function projectRuntimeContextIntoToolResults(
   return projected;
 }
 
+/**
+ * A cache key shared by every request that starts with the same model and
+ * leading system message (`promptCacheKeyScope: "prefix"`). No session or
+ * user identity enters it.
+ */
+function prefixCacheKey(
+  model: string,
+  messages: ReadonlyArray<Record<string, unknown>>,
+): string | undefined {
+  const head = messages[0]?.role === "system" ? messages[0].content : undefined;
+  if (typeof head !== "string" || head.length === 0) return undefined;
+  return "agenc-" + createHash("sha256").update(model).update("\0").update(head).digest("hex").slice(0, 40);
+}
+
 export function buildChatCompletionsRequest(
   input: ChatCompletionsRequestOptions,
 ): Record<string, unknown> {
@@ -610,6 +636,11 @@ export function buildChatCompletionsRequest(
   const preparedMessages = prepareMessagesForWire(
     input.messages,
     input.options,
+    input.tools.length > 0 && input.options?.disableThinkingForRecovery !== true &&
+      input.providerCapabilityHints?.replaysReasoningContent === true &&
+      input.providerCapabilityHints.preservesReasoningOnlyMessages === true
+      ? { preserveReasoningOnlyFor: input.providerCapabilityHints.reasoningContentProvenance }
+      : undefined,
   );
   const normalizedMessages = input.providerCapabilityHints?.runtimeContextInToolResults
     ? projectRuntimeContextIntoToolResults(preparedMessages)
@@ -666,11 +697,30 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.sharesPromptPrefixAcrossSessions === true &&
         input.sharedPrefixTail !== false,
       input.providerCapabilityHints?.usesThinkingContentBlocks === true,
+      input.providerCapabilityHints?.replaysReasoningDetails === true,
     ),
     [maxTokenField]: maxTokens,
   };
+  const cacheKeyFields = input.providerCapabilityHints?.promptCacheKeyFields ?? [];
+  const promptCacheKey = cacheKeyFields.length === 0
+    ? undefined
+    : input.providerCapabilityHints?.promptCacheKeyScope === "prefix"
+      ? prefixCacheKey(input.model, body.messages as Array<Record<string, unknown>>) ??
+        input.options?.promptCacheKey?.trim()
+      : input.options?.promptCacheKey?.trim();
+  if (promptCacheKey) {
+    for (const field of cacheKeyFields) {
+      body[field] = normalizePromptCacheKey(promptCacheKey);
+    }
+  }
 
   const requestedToolChoice = input.options?.toolChoice;
+  if (input.providerCapabilityHints?.acceptsImplicitCacheTtl && input.options?.promptCacheTtl) {
+    if (!["5m", "1h"].includes(input.options.promptCacheTtl)) {
+      throw new RangeError("Kimi prompt cache TTL must be 5m or 1h");
+    }
+    body.prompt_cache_options = { mode: "implicit", ttl: input.options.promptCacheTtl };
+  }
   const disablesThinkingForForcedToolChoice =
     input.providerCapabilityHints?.disablesThinkingForForcedToolChoice === true &&
     requestedToolChoice !== undefined &&
@@ -801,8 +851,12 @@ export function buildChatCompletionsRequest(
   // adapter-populated; an undefined `acceptsX` flag preserves the
   // pre-hint behavior of "include if caller supplied a value", so
   // unmigrated callers don't regress.
+  const reasoningEffort = input.options?.reasoningEffort ??
+    (input.options?.disableThinkingForRecovery === true
+      ? undefined
+      : input.providerCapabilityHints?.defaultReasoningEffort);
   if (
-    input.options?.reasoningEffort !== undefined &&
+    reasoningEffort !== undefined &&
     !disablesThinkingForForcedToolChoice &&
     input.providerCapabilityHints?.acceptsReasoningEffort !== false &&
     // Providers with per-model effort enums (NVIDIA NIM) reject or
@@ -811,13 +865,13 @@ export function buildChatCompletionsRequest(
     (input.providerCapabilityHints?.reasoningEffortAllowedValues ===
       undefined ||
       input.providerCapabilityHints.reasoningEffortAllowedValues.has(
-        input.options.reasoningEffort,
+        reasoningEffort,
       ))
   ) {
     if (input.providerCapabilityHints?.reasoningEffortEnvelope === "openrouter") {
-      body.reasoning = { effort: input.options.reasoningEffort };
+      body.reasoning = { effort: reasoningEffort };
     } else {
-      body.reasoning_effort = input.options.reasoningEffort;
+      body.reasoning_effort = reasoningEffort;
     }
   }
   if (
@@ -845,6 +899,7 @@ export function buildChatCompletionsRequest(
       };
     }
   }
+  applyPromptCacheControl(body, input.providerCapabilityHints?.promptCacheControl);
   if (input.providerCapabilityHints?.imageInputContract === "cerebras_v2") {
     assertCerebrasRequestPayloadSize(body);
   } else if (
@@ -855,8 +910,52 @@ export function buildChatCompletionsRequest(
   return body;
 }
 
+/**
+ * Mark the request for prompt caching where the provider caches only on
+ * request. A top-level marker follows the conversation on its own; otherwise
+ * the leading system prompt gets the one marker.
+ */
+function applyPromptCacheControl(
+  body: Record<string, unknown>,
+  mode: ChatCompletionsCapabilityHints["promptCacheControl"],
+): void {
+  if (mode === "top_level") {
+    body.cache_control = { type: "ephemeral" };
+    return;
+  }
+  if (mode !== "system_prompt" || !Array.isArray(body.messages)) return;
+  const first = (body.messages as Array<Record<string, unknown>>)[0];
+  if (first?.role === "system") markLastTextPartForCache(first);
+}
+
+function markLastTextPartForCache(message: Record<string, unknown>): void {
+  const marker = { type: "ephemeral" };
+  if (typeof message.content === "string") {
+    if (message.content.length > 0) {
+      message.content = [{ type: "text", text: message.content, cache_control: marker }];
+    }
+    return;
+  }
+  if (!Array.isArray(message.content)) return;
+  const parts = message.content as unknown[];
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text") {
+      parts[index] = { ...(part as Record<string, unknown>), cache_control: marker };
+      return;
+    }
+  }
+}
+
+/**
+ * Request metadata for diagnostics and the context-window fit. A caller that
+ * already holds the admission-grade input count passes it as
+ * `accountedPromptTokens`; the whole-request wire estimate, which that count
+ * replaces, is then not serialized at all.
+ */
 export function collectChatCompletionsRequestMetadata(
   request: Record<string, unknown>,
+  accountedPromptTokens?: number,
 ): ChatCompletionsRequestMetadata {
   const messages = Array.isArray(request.messages)
     ? (request.messages as Array<Record<string, unknown>>)
@@ -867,10 +966,13 @@ export function collectChatCompletionsRequestMetadata(
   const roleSequence = messages.map((message) =>
     typeof message.role === "string" ? message.role : "unknown",
   );
-  const serializedPrompt = JSON.stringify({
-    messages: request.messages ?? [],
-    tools: request.tools ?? [],
-  });
+  const estimatedPromptTokens = accountedPromptTokens ?? estimateUtf8TokenUnits(
+    JSON.stringify({
+      messages: request.messages ?? [],
+      tools: request.tools ?? [],
+    }),
+    1,
+  );
   const maxTokens =
     positiveInteger(request.max_tokens as number | undefined) ??
     positiveInteger(request.max_completion_tokens as number | undefined);
@@ -887,7 +989,7 @@ export function collectChatCompletionsRequestMetadata(
     // Admission-grade calls replace this diagnostic wire estimate with the
     // complete TokenAccountingService result. Direct adapter callers still
     // get a UTF-8-aware conservative byte ceiling rather than UTF-16 chars/4.
-    estimatedPromptTokens: estimateUtf8TokenUnits(serializedPrompt, 1),
+    estimatedPromptTokens,
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(maxTokenField !== undefined ? { maxTokenField } : {}),
     toolsAttached: tools.length > 0,
@@ -895,15 +997,89 @@ export function collectChatCompletionsRequestMetadata(
   };
 }
 
+/**
+ * What the provider charged for one call: `usage.cost`, in USD. With the
+ * user's own provider key (`is_byok`) it is only OpenRouter's fee, and the
+ * provider bills the key `cost_details.upstream_inference_cost` on top.
+ * Without both parts the charge is unknown.
+ * https://openrouter.ai/docs/use-cases/usage-accounting
+ */
+function chargedUsd(usage: Record<string, unknown>): number | undefined {
+  const cost = usage.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return undefined;
+  if (usage.is_byok !== true) return cost;
+  const details = usage.cost_details;
+  const upstream = details !== null && typeof details === "object" && !Array.isArray(details)
+    ? (details as Record<string, unknown>).upstream_inference_cost
+    : undefined;
+  return typeof upstream === "number" && Number.isFinite(upstream) && upstream > 0
+    ? cost + upstream
+    : undefined;
+}
+
+/**
+ * Venice's per-call charge: the top-level `cost` object, split by billing
+ * currency. DIEM credit is priced 1:1 with USD (every model_spec.pricing row
+ * lists the same usd and diem rates), so the charge is their sum.
+ */
+function topLevelChargedUsd(cost: unknown): number | undefined {
+  if (cost === null || typeof cost !== "object" || Array.isArray(cost)) return undefined;
+  const parts = [(cost as Record<string, unknown>).usd, (cost as Record<string, unknown>).diem]
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
+  return parts.length > 0 ? parts.reduce((sum, value) => sum + value, 0) : undefined;
+}
+
+/**
+ * Tool-call ids the conversation already holds. Some providers number calls
+ * per response (Venice's Kimi returns "FileRead:0", "FileRead:1" every time),
+ * so a later response repeats an id that is already in history.
+ */
+function historyToolCallIds(messages: readonly LLMMessage[]): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    for (const call of message.toolCalls ?? []) ids.add(call.id);
+    if (message.toolCallId !== undefined) ids.add(message.toolCallId);
+  }
+  return ids;
+}
+
+/** Kimi-style ids that count calls within one response ("FileRead:0", "functions.FileRead:1"). */
+const PER_RESPONSE_TOOL_CALL_ID = /^(?:functions\.)?[A-Za-z0-9_.-]+:\d+$/u;
+
+/**
+ * Give a call an id of its own when its id is one the conversation may already
+ * hold: an id the request history contains, or a per-response counter, which
+ * repeats on every later response (compaction can drop the earlier one from the
+ * request while the session still remembers it). The durable tool-pair store
+ * refuses a repeated id, and a session that hits it can take no more turns.
+ * Every other id is kept as the provider sent it.
+ */
+function renameRepeatedToolCallId(
+  id: string,
+  used: ReadonlySet<string>,
+  responseNonce: () => string,
+): string {
+  if (!used.has(id) && !PER_RESPONSE_TOOL_CALL_ID.test(id)) return id;
+  return "call_" + createHash("sha256")
+    .update(responseNonce()).update("\0").update(id)
+    .digest("hex").slice(0, 32);
+}
+
 export function parseChatCompletionsResponse(
   model: string,
   response: Record<string, unknown>,
   request: ChatCompletionsRequestOptions,
   reconstruction?: {
-    readonly discardedReasoningContent: boolean;
-    readonly conflictingReasoningModel: boolean;
+    readonly discardedReasoningContent?: boolean;
+    readonly conflictingReasoningModel?: boolean;
+    readonly responseHeaders?: Headers;
   },
 ): LLMResponse {
+  let historyIds: ReadonlySet<string> | undefined;
+  const usedToolCallIds = (): ReadonlySet<string> =>
+    (historyIds ??= historyToolCallIds(request.messages));
+  let nonce: string | undefined;
+  const responseNonce = (): string => (nonce ??= randomUUID());
   // Keep hashed aliases request-scoped. Meta's auto-only compatibility
   // contract strips the complete tool catalog when callers select `none`;
   // using the unfiltered input catalog here would let an unadvertised hashed
@@ -981,7 +1157,7 @@ export function parseChatCompletionsResponse(
         ? decodeMcpToolNameFromWire(call.function.name, advertisedToolNames) : "";
       if (!name || name.length > 256) return [];
       const rawId = typeof call.id === "string" && call.id.length > 0 ? call.id : `incomplete-${index}`;
-      const id = request.toolCallIdNamespace === undefined ? rawId
+      const id = request.toolCallIdNamespace === undefined ? renameRepeatedToolCallId(rawId, usedToolCallIds(), responseNonce)
         : "call_" + createHash("sha256").update(request.toolCallIdNamespace).update("\0").update(rawId).digest("hex").slice(0, 32);
       return [{ id, name }];
     }) : [];
@@ -1028,8 +1204,13 @@ export function parseChatCompletionsResponse(
   // Some routed providers restart at call_0 for every response. Keep canonical
   // history globally unique while preserving IDs across retries of one attempt.
   // Validate the original response first so duplicate IDs within it still fail.
-  const toolCalls = request.toolCallIdNamespace === undefined ? wireToolCalls :
-    wireToolCalls.map(call => ({...call,id:"call_" + createHash("sha256")
+  // Other providers keep their ids unless one repeats an id the history holds.
+  const toolCalls = request.toolCallIdNamespace === undefined
+    ? wireToolCalls.map(call => {
+      const id = renameRepeatedToolCallId(call.id, usedToolCallIds(), responseNonce);
+      return id === call.id ? call : { ...call, id };
+    })
+    : wireToolCalls.map(call => ({...call,id:"call_" + createHash("sha256")
       .update(request.toolCallIdNamespace!).update("\0").update(call.id)
       .digest("hex").slice(0,32)}));
   const reasoningContentField =
@@ -1060,6 +1241,13 @@ export function parseChatCompletionsResponse(
           isKnownEmptyProviderReasoning("", request.providerCapabilityHints.reasoningContentProvenance)
         ? ""
         : undefined;
+  // Gateways that return structured reasoning items get those back on the
+  // next request (reasoning-details.ts); the text stays the thinking display.
+  const reasoningDetailsReplay =
+    request.providerCapabilityHints?.replaysReasoningDetails === true
+      ? encodeReasoningDetailsReplay(message.reasoning_details)
+      : undefined;
+  const replayedProviderReasoning = reasoningDetailsReplay ?? providerReasoningContent;
   const rawContent =
     typeof message.content === "string"
       ? message.content
@@ -1096,13 +1284,21 @@ export function parseChatCompletionsResponse(
   const isKimiResponse =
     request.providerCapabilityHints?.reasoningContentProvenance?.provider ===
       "kimi";
+  const cacheWrites = isKimiResponse
+    ? kimiCacheWriteUsage(promptDetails.cache_write_tokens, reconstruction?.responseHeaders)
+    : {};
   // Diagnostics rebuild and serialize the request. The short loop consumes
   // them at its terminal boundary; keep an immutable message-list snapshot.
   const metricsRequest = oneShotFastModeActive()
     ? { ...request, messages: [...request.messages] } : request;
   let metrics: LLMResponse["requestMetrics"];
   const requestMetrics = (): NonNullable<LLMResponse["requestMetrics"]> => metrics ??= withEndpointMarkers(
-    withSerializedMetrics(collectRequestMetrics(prepareMessagesForWire(metricsRequest.messages), metricsRequest.tools),
+    withSerializedMetrics(collectRequestMetrics(prepareMessagesForWire(metricsRequest.messages, metricsRequest.options,
+      metricsRequest.tools.length > 0 && metricsRequest.options?.disableThinkingForRecovery !== true &&
+        metricsRequest.providerCapabilityHints?.preservesReasoningOnlyMessages === true &&
+        metricsRequest.providerCapabilityHints.replaysReasoningContent === true
+        ? { preserveReasoningOnlyFor: metricsRequest.providerCapabilityHints.reasoningContentProvenance }
+        : undefined), metricsRequest.tools),
       buildChatCompletionsRequest(metricsRequest), metricsRequest.options), "/chat/completions", response);
   if (!oneShotFastModeActive()) requestMetrics();
 
@@ -1128,9 +1324,9 @@ export function parseChatCompletionsResponse(
           ]),
         }
       : {}),
-    ...(providerReasoningContent !== undefined
+    ...(replayedProviderReasoning !== undefined
       ? {
-          providerReasoningContent,
+          providerReasoningContent: replayedProviderReasoning,
           ...(request.providerCapabilityHints?.reasoningContentProvenance !==
           undefined
             ? {
@@ -1150,18 +1346,20 @@ export function parseChatCompletionsResponse(
         promptDetails.cached_tokens ??
         (isKimiResponse ? usageRecord.cached_tokens : undefined),
       reasoningOutputTokens: completionDetails.reasoning_tokens,
-      // Unlike Responses' input_tokens_details.cache_write_tokens, Chat
-      // Completions has no field for prompt-cache writes: a real cache write
-      // is folded into prompt_tokens with no way to tell it apart from
-      // ordinary input. Flag it so budget reconciliation
-      // (admitted-model-call.ts) does not under-price it as ordinary input on
-      // models that bill cache writes above the input rate.
-      cacheWritesUnreported: true,
+      // Moonshot reports writes separately inside total prompt tokens. Older
+      // responses and other Chat endpoints may still omit this breakdown.
+      ...cacheWrites,
+      cacheWritesUnreported: cacheWrites.cacheCreationInputTokens === undefined,
       // Only providers documented to take service_tier report the tier that
       // served the request; Fast mode bills at its own rates.
       ...(request.providerCapabilityHints?.acceptsServiceTier === true
         ? { speed: openAiServedSpeed(response.service_tier) }
         : {}),
+      ...(request.providerCapabilityHints?.reportsUsageCost === true
+        ? { providerCostUsd: chargedUsd(usageRecord) }
+        : request.providerCapabilityHints?.reportsTopLevelCost === true
+          ? { providerCostUsd: topLevelChargedUsd(response.cost) }
+          : {}),
     }),
     model:
       typeof response.model === "string" ? response.model : model,

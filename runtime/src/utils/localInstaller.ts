@@ -136,7 +136,7 @@ export async function installOrUpdateAgenCPackage(
     const result = await execFileNoThrowWithCwd(
       'npm',
       ['install', `${MACRO.PACKAGE_URL}@${versionSpec}`],
-      { cwd: getLocalInstallDir(), maxBuffer: 1000000 },
+      { cwd: getLocalInstallDir(), maxBuffer: 1000000, background: true },
     )
 
     if (result.code !== 0) {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   closeSync,
   constants as fsConstants,
@@ -28,6 +29,8 @@ import {
   readAndValidateSchemaVersionFd,
   resolveCanonicalSessionCwd,
 } from "../session/session-store.js";
+import { canonicalRolloutHoldsNoInput } from "../session/rollout-input.js";
+import type { SessionMetaLine } from "../session/event-log.js";
 import { projectStorageKey } from "../utils/project-storage-key.js";
 import {
   DEFAULT_MAX_STARTUP_RECOVERY_MS,
@@ -102,12 +105,15 @@ function resumeSourceRemainedStable(path: string, fd: number, before: BigIntStat
     realpathSync(path) === path;
 }
 
-/**
- * Daemon replacement drains the previous writer before publishing readiness.
- * Freeze its final append without authorizing a replacement or rewritten past.
- * The caller must still reprove this full descriptor immediately before RPC.
- */
-export function reproveResumeSessionAfterDaemonReady(
+/** An append landed between resolving and reading the source: worth another look. */
+class ResumeSourceStillGrowing extends Error {}
+
+/** A live writer leaves gaps between appends; this is how long a reproof looks for one. */
+const APPEND_REPROOF_WINDOW_MS = 2_000;
+const APPEND_REPROOF_RETRY_MS = 20;
+const APPEND_REPROOF_SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+function reproveAppendOnce(
   expected: ResolvedResumeSession,
   agencHome: string,
 ): ResolvedResumeSession {
@@ -115,6 +121,10 @@ export function reproveResumeSessionAfterDaemonReady(
     `canonical resume source for ${expected.sessionId} changed during authorization`,
   );
   const observed = resolveResumeSessionId(expected.cwd, expected.sessionId, agencHome);
+  if (observed.kind === "search_incomplete" && observed.reason === "source_unavailable") {
+    // Resolution refuses a source that changes while it is read; an append does that too.
+    throw new ResumeSourceStillGrowing();
+  }
   if (observed.kind !== "ok" || !sameResumeSourceIdentity(expected, observed)) {
     throw changed();
   }
@@ -131,18 +141,56 @@ export function reproveResumeSessionAfterDaemonReady(
   try {
     fd = openSync(observed.rolloutPath, fsConstants.O_RDONLY | noFollow);
     const before = fstatSync(fd, { bigint: true });
+    const sameFile = before.isFile() && before.nlink === 1n && hasSupportedFileIdentity(before) &&
+      before.dev.toString(10) === observed.sourceDev && before.ino.toString(10) === observed.sourceIno;
+    if (sameFile && before.size > BigInt(sourceBytes)) throw new ResumeSourceStillGrowing();
     if (!statMatchesResumeSource(before, observed)) throw changed();
     const digests = readResumeSourceDigests(fd, sourceBytes, prefixBytes);
-    if (!resumeSourceRemainedStable(observed.rolloutPath, fd, before) ||
-        digests.prefixSha256 !== expected.sourceSha256 ||
+    if (digests.prefixSha256 !== expected.sourceSha256 ||
         digests.sourceSha256 !== observed.sourceSha256) throw changed();
+    if (!resumeSourceRemainedStable(observed.rolloutPath, fd, before)) {
+      const after = fstatSync(fd, { bigint: true });
+      if (after.dev === before.dev && after.ino === before.ino && after.nlink === 1n &&
+          after.size > before.size) throw new ResumeSourceStillGrowing();
+      throw changed();
+    }
     return observed;
-  } catch {
+  } catch (error) {
+    if (error instanceof ResumeSourceStillGrowing) throw error;
     throw changed();
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
 }
+
+/**
+ * The descriptor again, allowing only appends since `expected` was resolved: the same source and
+ * workspace identity and the same bytes up to the old size. A live daemon keeps appending to the
+ * session it runs (a terminal closed mid-reply), and a daemon replacement drains the previous
+ * writer before publishing readiness; neither authorizes a replacement or a rewritten past. An
+ * append that lands while the source is read only retries, for at most APPEND_REPROOF_WINDOW_MS.
+ * Before a cold resume the caller still reproves the exact descriptor immediately before RPC.
+ */
+export function reproveResumeSessionAllowingAppend(
+  expected: ResolvedResumeSession,
+  agencHome: string,
+): ResolvedResumeSession {
+  const deadline = Date.now() + APPEND_REPROOF_WINDOW_MS;
+  for (;;) {
+    try {
+      return reproveAppendOnce(expected, agencHome);
+    } catch (error) {
+      if (!(error instanceof ResumeSourceStillGrowing)) throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(`canonical resume source for ${expected.sessionId} changed during authorization`);
+      }
+      Atomics.wait(APPEND_REPROOF_SLEEP_CELL, 0, 0, APPEND_REPROOF_RETRY_MS);
+    }
+  }
+}
+
+/** After daemon readiness the same rule applies: appends only. */
+export const reproveResumeSessionAfterDaemonReady = reproveResumeSessionAllowingAppend;
 
 export type ResumeSessionResolution =
   | ({ readonly kind: "ok" } & ResolvedResumeSession)
@@ -166,6 +214,27 @@ export type ResumeSessionResolution =
         | "identity_unavailable"
         | "time_limit";
     };
+
+/**
+ * Startup restore may append while the first search is reading. Before a
+ * descriptor has been selected or authorized, repeat the complete search
+ * within the same bounded window used for append reproof. Every attempt
+ * still requires stable metadata, source identity and a complete hash.
+ * Reproof after selection must keep using the descriptor-bound checks.
+ */
+export async function resolveInitialResumeSession(
+  resolveSession: () => ResumeSessionResolution,
+  signal?: AbortSignal,
+): Promise<ResumeSessionResolution> {
+  const deadline = Date.now() + APPEND_REPROOF_WINDOW_MS;
+  for (;;) {
+    const result = resolveSession();
+    if (result.kind !== "search_incomplete" || result.reason !== "source_unavailable" ||
+        signal?.aborted || Date.now() >= deadline) return result;
+    await delay(Math.min(APPEND_REPROOF_RETRY_MS, Math.max(0, deadline - Date.now())));
+    if (signal?.aborted) return result;
+  }
+}
 
 interface ResumeCandidate extends Omit<ResolvedResumeSession, "sourceSha256"> {
   readonly mtimeNs: bigint;
@@ -248,11 +317,27 @@ function boundedEntries(
   return entries;
 }
 
+/**
+ * A session the user started in the TUI: the only kind the daemon resumes
+ * (agent.create in app-server/agent-lifecycle.ts). Sub-agents, hook agents and
+ * review delegates (memory extraction among them) keep their own rollouts in
+ * the same project, and right after a turn they are newer than the user's.
+ * Older roots predate `source` and say only `agenc-cli`.
+ */
+function isTopLevelInteractiveSession(meta: SessionMetaLine): boolean {
+  if (meta.originator === "agenc-cli") {
+    return meta.source === "interactive-root" || meta.source === undefined;
+  }
+  return meta.source === "interactive-root-reviewed-rollback" &&
+    /^c2-reviewed-rollback:[a-f0-9]{64}$/u.test(meta.originator);
+}
+
 function candidateFromPath(
   sessionId: string,
   rolloutPath: string,
   mtimeNs: bigint,
   budget: SearchBudget,
+  topLevelOnly = false,
 ): ResumeCandidate | null {
   if (!isSafeSessionIdSegment(sessionId)) return null;
   if (Date.now() >= budget.deadlineMs) {
@@ -300,6 +385,12 @@ function candidateFromPath(
         return null;
       }
       meta = readAndValidateSchemaVersionFd(fd);
+      if (topLevelOnly && meta !== null && !isTopLevelInteractiveSession(meta)) {
+        // Not a session --continue can open. Skip it before the stability
+        // checks: its owner may still be appending to it (a memory extraction
+        // that runs after the user's last turn), which is no reason to fail.
+        return null;
+      }
       resumeSessionTestHooks.afterCandidateMetadataRead?.(rolloutPath);
       const observed = lstatSync(rolloutPath, { bigint: true });
       if (
@@ -503,6 +594,7 @@ function candidateUnderProjectDir(
   projectDir: string,
   sessionId: string,
   budget: SearchBudget,
+  topLevelOnly = false,
 ): ResumeCandidate | null {
   const sessionDir = join(projectDir, "sessions", sessionId);
   const discoveredFiles = boundedEntries(
@@ -546,12 +638,13 @@ function candidateUnderProjectDir(
   const selected = candidates[0];
   return selected === undefined
     ? null
-    : candidateFromPath(sessionId, selected.path, selected.mtimeNs, budget);
+    : candidateFromPath(sessionId, selected.path, selected.mtimeNs, budget, topLevelOnly);
 }
 
 function candidatesUnderProjectDir(
   projectDir: string,
   budget: SearchBudget,
+  topLevelOnly = false,
 ): readonly ResumeCandidate[] {
   const sessions = boundedEntries(
     join(projectDir, "sessions"),
@@ -563,7 +656,7 @@ function candidatesUnderProjectDir(
   for (const entry of sessions) {
     if (budget.incompleteReason !== undefined) break;
     if (!entry.directory || !isSafeSessionIdSegment(entry.name)) continue;
-    const candidate = candidateUnderProjectDir(projectDir, entry.name, budget);
+    const candidate = candidateUnderProjectDir(projectDir, entry.name, budget, topLevelOnly);
     if (candidate !== null) candidates.push(candidate);
   }
   return candidates;
@@ -586,9 +679,10 @@ function projectCandidatesCrossSlug(
   cwd: string,
   agencHome: string,
   budget: SearchBudget,
+  topLevelOnly = false,
 ): readonly ResumeCandidate[] {
   const candidates = localProjectDirs(cwd, agencHome).flatMap((projectDir) =>
-    candidatesUnderProjectDir(projectDir, budget),
+    candidatesUnderProjectDir(projectDir, budget, topLevelOnly),
   );
   const byPath = new Map<string, ResumeCandidate>();
   for (const candidate of candidates)
@@ -721,9 +815,16 @@ export function resolveLatestSessionId(
   agencHome: string,
 ): ResumeSessionResolution {
   const search = budget(agencHome);
-  const latest = projectCandidatesCrossSlug(cwd, agencHome, search)[0];
+  // --continue means the user's own conversation, never a background agent's.
+  const candidates = projectCandidatesCrossSlug(cwd, agencHome, search, true);
   const stopped = incomplete("--continue", search);
   if (stopped !== undefined) return stopped;
+  // A session that records no input is one a TUI provisioned and could not
+  // retire (it crashed or was killed before its first prompt). Continue the
+  // newest session someone used instead.
+  const latest = candidates.find(
+    (candidate) => !canonicalRolloutHoldsNoInput(candidate.rolloutPath),
+  );
   if (latest === undefined) return { kind: "none" };
   const descriptor = sealCandidate(latest, search);
   return descriptor === null

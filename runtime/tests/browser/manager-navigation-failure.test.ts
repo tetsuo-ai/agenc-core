@@ -266,6 +266,29 @@ describe("tab ids a model fills in", () => {
     expect(await manager.listTabs()).toMatchObject([{ id: 1, active: true }]);
   });
 
+  it("opens the first page when the model names tab 1 before any tab exists", async () => {
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    const { tool, call } = browserTool(manager);
+    const harness = bindAdmittedToolHarness({ workspaceRoot: process.cwd(), label: "browser-tab-one" });
+    const dispatch = (callId: string, args: Record<string, unknown>) => {
+      const prepared = call(args);
+      return runAdmittedToolCall({
+        session: harness.session, tool, args: prepared,
+        turnId: "turn-browser-tab-one", callId,
+        invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return tool.execute(prepared); },
+      });
+    };
+    // Every first Browser call in the post-release browser checks since 0.19.6 passed tab_id 1.
+    const first = await dispatch("first-navigate-tab-one", { action: "navigate", url: "https://example.com/", tab_id: 1 });
+    expect(first.isError, String(first.content)).not.toBe(true);
+    expect(first.content).toContain("Navigated to https://example.com/");
+    expect(await manager.listTabs()).toMatchObject([{ id: 1, active: true }]);
+    const again = await dispatch("second-navigate-tab-one", { action: "navigate", url: "https://example.com/", tab_id: 1 });
+    expect(again.isError, String(again.content)).not.toBe(true);
+    expect(await manager.listTabs()).toMatchObject([{ id: 1, active: true }]);
+    expect(harness.events.filter((event) => event.msg.type === "effect_unknown_outcome")).toHaveLength(0);
+  });
+
   it("refuses an unknown tab id with no effect so the next call still runs", async () => {
     const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
     const { tool, call } = browserTool(manager);

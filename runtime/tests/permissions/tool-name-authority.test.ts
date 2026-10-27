@@ -3,6 +3,8 @@ import { describe, expect, test } from "vitest";
 import { validatePermissionsConfig } from "../../src/config/schema.js";
 import {
   matchRule,
+  getRuleByContentsForTool,
+  applyPermissionRulesToPermissionContext,
   toolNamesInPermissionRiskFamily,
 } from "../../src/permissions/rules.js";
 import { AgentTool } from "../../src/tools/AgentTool/AgentTool.js";
@@ -15,6 +17,7 @@ import { formatAgenCPermissionsCliHelpText } from "../../src/permissions/permiss
 import { isRemovedLiveToolName } from "../../src/permissions/tool-names.js";
 import { validatePermissionRule } from "../../src/utils/settings/permissionValidation.js";
 import { getValidationTip } from "../../src/utils/settings/validationTips.js";
+import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 
 /** Pull `Tool(...)` examples out of quoted help/tip text. Skip the schema placeholder. */
 function extractQuotedPermissionRules(text: string): string[] {
@@ -54,13 +57,18 @@ const REMOVED_NAMES = [
 ] as const;
 
 describe("live tool-name authority", () => {
-  test.each(REMOVED_NAMES)("permission surfaces reject removed name %s", (name) => {
+  test.each(REMOVED_NAMES)("grant surfaces reject removed name %s", (name) => {
     expect(isRemovedLiveToolName(name)).toBe(true);
     expect(permissionRuleValueFromString(`${name}(value)`).toolName).toBe(name);
     expect(validatePermissionRule(name)).toMatchObject({ valid: false });
-    expect(() => validatePermissionsConfig({ deny: [name] })).toThrow(
+    expect(() => validatePermissionsConfig({ allow: [name] })).toThrow(
       `removed tool name '${name}'`,
     );
+    if (name !== "Bash") {
+      expect(() => validatePermissionsConfig({ deny: [name] })).toThrow(
+        `removed tool name '${name}'`,
+      );
+    }
   });
 
   test("canonical lowercase and dotted permission names remain valid", () => {
@@ -100,7 +108,24 @@ describe("live tool-name authority", () => {
         ruleValue: { toolName: "Bash" },
       },
       { name: "system.bash" },
-    )).toBe(false);
+    )).toBe(true);
+  });
+
+  test("legacy Bash restrictions cover shell tools without reviving allow grants", () => {
+    expect(validatePermissionsConfig({ deny: ["Bash"], ask: ["Bash(git status)"] }))
+      .toMatchObject({ deny: ["Bash"], ask: ["Bash(git status)"] });
+    for (const name of ["exec_command", "system.bash", "write_stdin", "kill_process"]) {
+      for (const behavior of ["allow", "deny", "ask"] as const) {
+        expect(matchRule({
+          source: "userSettings", ruleBehavior: behavior, ruleValue: { toolName: "Bash" },
+        }, { name })).toBe(behavior !== "allow");
+      }
+    }
+    const ctx = applyPermissionRulesToPermissionContext(createEmptyToolPermissionContext(), [{
+      source: "userSettings", ruleBehavior: "deny",
+      ruleValue: { toolName: "Bash", ruleContent: "rm *" },
+    }]);
+    expect(getRuleByContentsForTool(ctx, "exec_command", "deny").has("rm *")).toBe(true);
   });
 
   test("hooks and built-in catalogs do not accept retired task names", () => {

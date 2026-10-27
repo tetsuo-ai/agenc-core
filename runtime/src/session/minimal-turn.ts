@@ -24,9 +24,42 @@ import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
 import { buildPrompt, builtTools } from "./run-turn-sampling-request.js";
 import { llmMessageToDurableResponseItem } from "./message-history-conversion.js";
+import { isTransientProviderError } from "../recovery/api-errors.js";
+import { transportFailureOf } from "../llm/transport-failure.js";
+import { deadlineRemainingMs, runDeadlineOf } from "./run-deadline.js";
 
 const UNKNOWN_USAGE = { promptTokens: 0, completionTokens: 0, totalTokens: 0,
   availability: "unknown" as const, provenance: "synthetic" as const };
+
+/**
+ * This loop has no reconnect ladder of its own. A request that failed in
+ * transport (a stream cut before its terminal event, a 5xx, a dropped or
+ * refused connection) returned nothing this loop could have dispatched: tools
+ * run only after a complete response. The canonical loop owns retries,
+ * provider-outage waits and the run deadline, so the turn continues there and
+ * samples the same history again instead of ending on the first fault.
+ */
+function isFastPathTransportHandoff(error: unknown, signal: AbortSignal): boolean {
+  return !signal.aborted && isTransientProviderError(error);
+}
+
+function emitFastPathTransportHandoff(
+  session: Session,
+  ctx: TurnContext,
+  error: unknown,
+  completedToolCallIds: readonly string[],
+): void {
+  const failure = transportFailureOf(error);
+  const deadline = runDeadlineOf(session);
+  session.emit({ id: session.nextInternalSubId(), msg: { type: "warning", payload: {
+    cause: "transport_recovery", turnId: ctx.subId,
+    message: "Model transport recovery: interrupted; retrying through the standard turn loop.",
+    details: { outcome: "interrupted", category: failure?.category ?? "transient", status: failure?.status ?? null,
+      attempts: 1, elapsedMs: 0,
+      remainingDeadlineMs: deadline ? Math.max(0, deadlineRemainingMs(deadline)) : null,
+      completedToolCallIds: completedToolCallIds.join(","), toolReplay: false, loop: "one_shot_fast" },
+  } } }, { durable: true });
+}
 
 export async function* runMinimalTurn(
   session: Session,
@@ -40,7 +73,9 @@ export async function* runMinimalTurn(
     requiresResponse: (response: LLMResponse) => boolean;
     completedTool: (result: CompletedToolResultRecord) => void;
   },
-): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage; recoveryResponse?: LLMResponse; canonicalResponse?: LLMResponse }> {
+): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage; recoveryResponse?: LLMResponse; canonicalResponse?: LLMResponse;
+  /** The model call this loop handed over after a transport fault; it must be sampled again. */
+  transportFailure?: { readonly error: unknown } }> {
   // The initial options bound eligibility before any preparation work.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
   let options = buildProviderOptions(request, ctx, signal, session);
@@ -53,6 +88,7 @@ export async function* runMinimalTurn(
   let usage: LLMUsage = UNKNOWN_USAGE;
   let lastResponseUsage: LLMUsage | undefined;
   const tracker = createTurnDiffTracker();
+  const completedToolCallIds: string[] = [];
   yield { type: "turn_start", turnIndex: 0 };
   try {
     for (;;) {
@@ -80,9 +116,20 @@ export async function* runMinimalTurn(
         }
       }
       const input = prepared?.request.input.slice() ?? messages;
-      const response = canonicalBoundary
-        ? await canonicalBoundary.callProvider(input, options, prepared?.samplingContext ?? ctx)
-        : await session.services.provider.chatStream(input, () => {}, options);
+      let response: LLMResponse;
+      try {
+        response = canonicalBoundary
+          ? await canonicalBoundary.callProvider(input, options, prepared?.samplingContext ?? ctx)
+          : await session.services.provider.chatStream(input, () => {}, options);
+      } catch (error) {
+        if (canonicalBoundary === undefined || !isFastPathTransportHandoff(error, signal)) throw error;
+        // The failed attempt published nothing to this loop's history, so the
+        // canonical loop resumes from the last complete response or tool result.
+        // Tools run only after a complete response: none of this attempt's ran.
+        handoff = true;
+        emitFastPathTransportHandoff(session, ctx, error, completedToolCallIds);
+        return { reason: "continue_normal", modelCalls, usage, lastResponseUsage, transportFailure: { error } };
+      }
       modelCalls++;
       responses.push(response);
       if (response.error) throw response.error;
@@ -139,7 +186,7 @@ export async function* runMinimalTurn(
           const result = await session.services.registry.dispatch(call, {
             prepareArguments: (args, selectedTool) => {
               tool = selectedTool;
-              const projected = filesystemRootsForDispatch(call.name, stripModelSuppliedAgenCInternalArgs(args), {
+              const projected = filesystemRootsForDispatch(selectedTool.name, stripModelSuppliedAgenCInternalArgs(args), {
                 approvalResolved: false, sandboxMode: ctx.sandboxPolicy.value, session,
               });
               const authority = sessionDispatchAuthority(session, session.services.configStore?.homeContext.path, true);
@@ -156,7 +203,7 @@ export async function* runMinimalTurn(
                 // for current permission mode, protected roots and ownership.
                 // Attach the canonical context without rebuilding preflight.
                 attachPreflightRuntimeContext(tool, projected, {
-                  session, turn: ctx, tracker, callId: call.id, toolName: parseToolName(call.name),
+                  session, turn: ctx, tracker, callId: call.id, toolName: parseToolName(selectedTool.name),
                   payload: { kind: "function", arguments: call.arguments }, source: "direct",
                 }, { approvalPolicy: ctx.approvalPolicy.value, sandboxMode: ctx.sandboxPolicy.value });
               }
@@ -181,6 +228,7 @@ export async function* runMinimalTurn(
         observations.push({ type: "tool_call_completed", payload: {
           callId: call.id, toolName: call.name, result: content, isError, ...(metadata ? { metadata } : {}), durationMs: validationOnly ? 0 : elapsed,
         } });
+        completedToolCallIds.push(call.id);
         canonicalBoundary?.completedTool({ callId: call.id, toolName: call.name,
           arguments: call.arguments, content, isError, ...(metadata ? { metadata } : {}) });
         messages.push(modelMessage ?? { role: "tool", toolName: call.name, toolCallId: call.id, content });

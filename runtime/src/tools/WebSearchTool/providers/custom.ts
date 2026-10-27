@@ -26,7 +26,7 @@
  * 6. Audit log on first custom search (one-time warning)
  */
 
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 import type { ProviderEnvironment } from '../../../llm/provider-options.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
@@ -284,7 +284,7 @@ export function isPrivateHostname(hostname: string): boolean {
  * Validate the target URL against security guardrails.
  * Throws on violation.
  */
-function validateUrl(urlString: string): void {
+function validateUrl(urlString: string, environment: ProviderEnvironment): void {
   let parsed: URL
   try {
     parsed = new URL(urlString)
@@ -294,7 +294,7 @@ function validateUrl(urlString: string): void {
 
   // 2. HTTPS-only (unless explicitly opted out)
   const allowHttp =
-    getSelectedProviderEnvironment().WEB_CUSTOM_ALLOW_HTTP === 'true'
+    environment.WEB_CUSTOM_ALLOW_HTTP === 'true'
   if (!allowHttp && parsed.protocol !== 'https:') {
     throw new Error(
       `Custom search URL must use https:// (got ${parsed.protocol}). ` +
@@ -304,7 +304,7 @@ function validateUrl(urlString: string): void {
 
   // 3. Private network check (unless explicitly opted out)
   const allowPrivate =
-    getSelectedProviderEnvironment().WEB_CUSTOM_ALLOW_PRIVATE === 'true'
+    environment.WEB_CUSTOM_ALLOW_PRIVATE === 'true'
   if (!allowPrivate && isPrivateHostname(parsed.hostname)) {
     throw new Error(
       `Custom search URL targets a private/reserved address (${parsed.hostname}). ` +
@@ -318,9 +318,9 @@ function validateUrl(urlString: string): void {
  * Validate that user-supplied headers are in the safe allowlist,
  * unless WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS=true.
  */
-function validateHeaderName(name: string): boolean {
+function validateHeaderName(name: string, environment: ProviderEnvironment): boolean {
   const allowArbitrary =
-    getSelectedProviderEnvironment().WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS ===
+    environment.WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS ===
     'true'
   if (allowArbitrary) return true
   return SAFE_HEADER_NAMES.has(name.toLowerCase())
@@ -346,8 +346,7 @@ function auditLogCustomSearch(url: string): void {
 // Auth — preset overrides for built-in providers
 // ---------------------------------------------------------------------------
 
-export function buildAuthHeadersForPreset(preset?: ProviderPreset): Record<string, string> {
-  const environment = getSelectedProviderEnvironment()
+export function buildAuthHeadersForPreset(preset?: ProviderPreset, environment = getSelectedProviderEnvironment()): Record<string, string> {
   const apiKey = environment.WEB_KEY
   if (!apiKey) return {}
 
@@ -366,7 +365,7 @@ export function buildAuthHeadersForPreset(preset?: ProviderPreset): Record<strin
 // Request construction
 // ---------------------------------------------------------------------------
 
-function resolveConfig(): {
+function resolveConfig(environment: ProviderEnvironment): {
   urlTemplate: string
   queryParam: string
   method: string
@@ -374,7 +373,6 @@ function resolveConfig(): {
   responseAdapter?: (data: unknown) => SearchHit[]
   preset?: ProviderPreset
 } {
-  const environment = getSelectedProviderEnvironment()
   const providerName = environment.WEB_PROVIDER
   const preset = providerName ? BUILT_IN_PROVIDERS[providerName] : undefined
 
@@ -391,8 +389,8 @@ function resolveConfig(): {
   }
 }
 
-function parseExtraParams(): Record<string, string> {
-  const raw = getSelectedProviderEnvironment().WEB_PARAMS
+function parseExtraParams(environment: ProviderEnvironment): Record<string, string> {
+  const raw = environment.WEB_PARAMS
   if (!raw) return {}
   try {
     const obj = JSON.parse(raw)
@@ -413,8 +411,8 @@ function parseExtraParams(): Record<string, string> {
   return {}
 }
 
-function buildRequest(query: string) {
-  const config = resolveConfig()
+function buildRequest(query: string, environment: ProviderEnvironment) {
+  const config = resolveConfig(environment)
   const method = config.method.toUpperCase()
 
   // --- URL ---
@@ -423,7 +421,7 @@ function buildRequest(query: string) {
   const url = new URL(templateWithQuery)
 
   // Merge extra static params
-  for (const [k, v] of Object.entries(parseExtraParams())) {
+  for (const [k, v] of Object.entries(parseExtraParams(environment))) {
     url.searchParams.set(k, v)
   }
 
@@ -435,16 +433,15 @@ function buildRequest(query: string) {
   const urlString = url.toString()
 
   // --- Security validation ---
-  validateUrl(urlString)
+  validateUrl(urlString, environment)
   auditLogCustomSearch(urlString)
 
   // --- Headers ---
   const headers: Record<string, string> = {
-    ...buildAuthHeadersForPreset(config.preset),
+    ...buildAuthHeadersForPreset(config.preset, environment),
   }
 
   // Merge WEB_HEADERS with allowlist enforcement
-  const environment = getSelectedProviderEnvironment()
   const rawExtra = environment.WEB_HEADERS
   if (rawExtra) {
     for (const pair of rawExtra.split(';')) {
@@ -453,7 +450,7 @@ function buildRequest(query: string) {
         const k = pair.slice(0, i).trim()
         const v = pair.slice(i + 1).trim()
         if (k) {
-          if (!validateHeaderName(k)) {
+          if (!validateHeaderName(k, environment)) {
             throw new Error(
               `Header "${k}" is not in the safe allowlist. ` +
               `Allowed: ${[...SAFE_HEADER_NAMES].join(', ')}. ` +
@@ -568,6 +565,7 @@ async function fetchWithRetry(
     try {
       const res = await fetch(url, {
         ...init,
+        redirect: 'error',
         signal: combined,
         ...getProxyFetchOptions({ environment }),
       })
@@ -607,8 +605,7 @@ async function fetchWithRetry(
 export const customProvider: SearchProvider = {
   name: 'custom',
 
-  isConfigured() {
-    const environment = getSelectedProviderEnvironment()
+  isConfigured(environment = getSelectedProviderEnvironment()) {
     return Boolean(
       environment.WEB_SEARCH_API ||
         environment.WEB_PROVIDER ||
@@ -616,10 +613,10 @@ export const customProvider: SearchProvider = {
     )
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
-    const { url, init, config } = buildRequest(input.query)
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
+    const { url, init, config } = buildRequest(input.query, environment)
     const raw = await fetchWithRetry(url, init, environment, signal)
 
     const hits = config.responseAdapter

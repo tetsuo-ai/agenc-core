@@ -96,12 +96,14 @@ describe("PromptInput utils", () => {
   });
 
   test("clamps prompt input columns to the editable area", () => {
+    // Borderless band: margin 2 + padding 1 on each side, plus "❯ ".
     expect(clampPromptTextInputColumns(0)).toBe(0);
-    expect(clampPromptTextInputColumns(3)).toBe(0);
-    expect(clampPromptTextInputColumns(4)).toBe(0);
-    expect(clampPromptTextInputColumns(5)).toBe(0);
-    expect(clampPromptTextInputColumns(10)).toBe(5);
-    expect(clampPromptTextInputColumns(80)).toBe(75);
+    expect(clampPromptTextInputColumns(8)).toBe(0);
+    expect(clampPromptTextInputColumns(10)).toBe(2);
+    expect(clampPromptTextInputColumns(80)).toBe(72);
+    // Swarm banner rows have no band around the text, only "❯ ".
+    expect(clampPromptTextInputColumns(80, "banner")).toBe(78);
+    expect(clampPromptTextInputColumns(1, "banner")).toBe(0);
   });
 
   test("limits paste reference rows to one or two lines", () => {

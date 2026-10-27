@@ -16,12 +16,12 @@ vi.mock("../../utils/effort.js", () => ({
   getDisplayedEffortLevelForContext: (_model: string, effortValue: string | undefined) =>
     effortValue ?? "medium",
   modelSupportsEffortForContext: (model: string) => model !== "basic-model",
-  getModelDefaultReasoningEffortForContext: (model: string) =>
-    model === "no-reasoning-default"
-      ? "none"
-      : model === "unknown-default"
-        ? undefined
-        : "medium",
+  getSessionEffortLabelForContext: (model: string, effortValue: string | undefined) =>
+    effortValue === "none" || (effortValue === undefined && model === "no-reasoning-default")
+      ? "effort off"
+      : effortValue === undefined && model === "unknown-default"
+        ? null
+        : `${effortValue ?? "medium"} effort`,
 }));
 
 describe("EffortIndicator", () => {

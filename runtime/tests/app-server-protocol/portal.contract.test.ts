@@ -187,6 +187,15 @@ describe("AgenC portal protocol contract", () => {
         objective: "Start without optional metadata",
       }).params,
     ).not.toHaveProperty("metadata");
+    expect(
+      createAgenCPortalAgentCreateRequest({
+        objective: "Restricted task",
+        toolPolicy: { enabledTools: ["FileRead"], frozenPermissionMode: true },
+      }).params,
+    ).toMatchObject({ toolPolicy: { enabledTools: ["FileRead"], frozenPermissionMode: true } });
+    expect(
+      createAgenCPortalAgentCreateRequest({ objective: "Unrestricted task" }).params,
+    ).not.toHaveProperty("toolPolicy");
     expect(createAgenCPortalSessionAttachRequest("session-1")).toEqual({
       jsonrpc: "2.0",
       id: "session.attach",

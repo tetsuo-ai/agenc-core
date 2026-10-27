@@ -1,6 +1,7 @@
 import React from 'react'
 
 import type { CostReport } from '../../../commands/cost.js'
+import { unpricedCallDescription } from '../../../commands/cost.js'
 import { formatTokenCount, formatUsdCost } from '../../../session/cost.js'
 import { Box, useInput } from '../../ink.js'
 import ThemedText from '../design-system/ThemedText.js'
@@ -54,7 +55,7 @@ export function CostUsageModal({
 
   const totalCost =
     report.totalCostUsd !== undefined
-      ? `${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}${report.hasUnknownCost ? ' *' : ''}`
+      ? `${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}`
       : 'unknown'
   const tokenDetail =
     report.inputTokens !== undefined || report.outputTokens !== undefined
@@ -69,7 +70,7 @@ export function CostUsageModal({
       title="cost"
       status={
         report.totalCostUsd !== undefined
-          ? `session ${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}`
+          ? `session ${totalCost}`
           : 'cost tracking unavailable'
       }
       minHeight={18}
@@ -82,7 +83,19 @@ export function CostUsageModal({
         </Box>
         <Row label="tokens" value={tokenDetail} labelColor="inactive" />
         {report.hasUnknownCost ? (
-          <ThemedText color="muted3">* some model pricing unknown, so cost is approximate</ThemedText>
+          <Box flexDirection="column">
+            <ThemedText color="text2">Unpriced calls (excluded from the known cost):</ThemedText>
+            {(report.unpricedCalls ?? []).map(call => (
+              <ThemedText key={call.reservationId} color="text2">
+                {`${unpricedCallDescription(call)} · run ${call.runId}`}
+              </ThemedText>
+            ))}
+            {(report.unpricedCallCount ?? 0) > (report.unpricedCalls?.length ?? 0) ? (
+              <ThemedText color="text2">{`Showing ${report.unpricedCalls?.length ?? 0} of ${report.unpricedCallCount} unpriced calls.`}</ThemedText>
+            ) : !report.unpricedCalls?.length ? (
+              <ThemedText color="text2">Call details unavailable for this older session.</ThemedText>
+            ) : null}
+          </Box>
         ) : null}
       </Box>
 
@@ -94,7 +107,7 @@ export function CostUsageModal({
             <Row
               key={`model-${i}`}
               label={m.label}
-              value={`${formatUsdCost(m.costUsd)}${m.costEstimated ? ' est.' : ''}`}
+              value={`${m.hasUnknownCost ? '≥' : ''}${formatUsdCost(m.costUsd)}${m.costEstimated ? ' est.' : ''}`}
               detail={`${formatTokenCount(m.inputTokens)} in · ${formatTokenCount(m.outputTokens)} out`}
             />
           ))}
@@ -113,7 +126,7 @@ export function CostUsageModal({
               label={a.label}
               value={
                 a.costUsd !== undefined
-                  ? `${formatUsdCost(a.costUsd)}${a.costEstimated ? ' est.' : ''}`
+                  ? `${a.hasUnknownCost ? '≥' : ''}${formatUsdCost(a.costUsd)}${a.costEstimated ? ' est.' : ''}`
                   : a.estimatedCostUsd !== undefined
                   ? `${formatUsdCost(a.estimatedCostUsd)} est.`
                   : 'unknown'

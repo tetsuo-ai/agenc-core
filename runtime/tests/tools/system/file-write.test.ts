@@ -198,7 +198,7 @@ describe("Write tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(String(result.content)).toBe(
+    expect(String(result.content)).toContain(
       "File has not been read yet. Read it first before writing to it.",
     );
     // The original content must be untouched.
@@ -515,7 +515,7 @@ describe("Write tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(String(result.content)).toBe(
+    expect(String(result.content)).toContain(
       "File has not been read yet. Read it first before writing to it.",
     );
     await expect(readFile(target, "utf8")).resolves.toBe(

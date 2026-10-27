@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { parse as parsePath } from "node:path";
 
+import { readLocalByokCredential } from "../auth/native-credentials.js";
 import { ConfigStore } from "../config/store.js";
 import {
   resolveAgencHome,
@@ -29,13 +30,19 @@ import {
 } from "../permissions/trust/trust-sources.js";
 import type { TrustLocation } from "../permissions/trust/TrustDialog.js";
 import { setSessionTrustAccepted } from "../bootstrap/state.js";
+import {
+  resolveStartupSandboxBypass,
+  type StartupSandboxBypass,
+  type StartupSandboxBypassOptions,
+} from "./bypass-approvals.js";
 
 export interface ProjectTrustPromptOptions {
   readonly workspaceRoot: string;
   readonly review?: ProjectTrustReview;
   readonly location?: TrustLocation;
   readonly bypassPermissionsRequested?: boolean;
-  readonly bypassSandboxRequested?: boolean;
+  /** Commands in this run have no OS sandbox; the card must not claim one. */
+  readonly sandboxOff?: boolean;
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
   readonly stderr?: NodeJS.WriteStream;
@@ -71,6 +78,14 @@ export interface ProjectTrustPreflightOptions {
   readonly allowPrompt?: boolean;
   readonly renderPrompt?: (opts: ProjectTrustPromptOptions) => Promise<boolean>;
   readonly markSessionTrusted?: () => Promise<void>;
+  /**
+   * How this startup already resolved `--bypass-approvals`. Without it the
+   * preflight resolves the flag itself, and only when it is about to prompt.
+   */
+  readonly sandboxBypass?: StartupSandboxBypass;
+  /** Injectable host for the sandbox resolution (tests). */
+  readonly platform?: NodeJS.Platform;
+  readonly sandboxProbe?: StartupSandboxBypassOptions["probe"];
 }
 
 export interface ProjectTrustPreflightResult {
@@ -112,7 +127,7 @@ function headlessRefusalDetail(
   if (location === "root") {
     return "agenc: it is the root of the disk; run agenc there in a terminal to confirm\n";
   }
-  return "";
+  return "agenc: run agenc here in a terminal with the same bypass flags to confirm trust, or rerun without bypass flags\n";
 }
 
 export async function runProjectTrustPreflightForTui(
@@ -150,6 +165,12 @@ export async function runProjectTrustPreflightForTui(
   const profileName = resolvedStartupProfileName(startupCliFlags, env);
   const startup = resolveCanonicalStartupSelection({
     config,
+    env,
+    metadata: {
+      catalogHome: configStore.homeContext.path,
+      readSavedApiKey: provider => readLocalByokCredential(configStore.homeContext, provider)?.apiKey,
+    },
+    ...(startupCliFlags.model !== undefined ? { explicitModel: startupCliFlags.model } : {}),
     ...(profileName !== undefined ? { profileName } : {}),
   });
   // ConfigStore's repository discovery is the sole project-root authority.
@@ -184,6 +205,7 @@ export async function runProjectTrustPreflightForTui(
   const review = await reviewProjectTrust({
     projectRoot,
     config: configStore.current(),
+    agencHome,
   });
   const digestAfter = projectConfigDigestSync(projectRoot);
   const location = sensitiveTrustLocation(projectRoot, env);
@@ -222,6 +244,20 @@ export async function runProjectTrustPreflightForTui(
     return { accepted: false, projectRoot, prompted: false };
   }
 
+  // The note on the card must match what this run does. On a host without a
+  // sandbox (Windows), --bypass-approvals drops it, and a config can select
+  // danger-full-access on any host.
+  const sandboxOff =
+    bypassSandboxRequested ||
+    config.sandbox_mode === "danger-full-access" ||
+    (startupCliFlags.bypassApprovals === true &&
+      (options.sandboxBypass ??
+        resolveStartupSandboxBypass(startupCliFlags, {
+          cwd: projectRoot,
+          env,
+          ...(options.platform !== undefined ? { platform: options.platform } : {}),
+          ...(options.sandboxProbe !== undefined ? { probe: options.sandboxProbe } : {}),
+        })).dangerouslyBypassApprovalsAndSandbox);
   const renderProjectTrustPrompt =
     options.renderPrompt ?? (await loadProjectTrustPrompt());
   const accepted = await renderProjectTrustPrompt({
@@ -229,7 +265,7 @@ export async function runProjectTrustPreflightForTui(
     review,
     ...(location !== undefined ? { location } : {}),
     bypassPermissionsRequested,
-    bypassSandboxRequested,
+    sandboxOff,
     stdin,
     stdout,
     stderr: stderr as NodeJS.WriteStream,

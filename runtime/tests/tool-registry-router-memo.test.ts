@@ -103,3 +103,20 @@ test("fast presentation cache refreshes on discovery and live catalog changes", 
     expect(registry.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
   });
 });
+
+test("fast presentation cache follows plan mode", async () => {
+  const { withOneShotFastMode } = await import("../src/one-shot-fast-mode.js");
+  let mode = "bypassPermissions";
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", requireAdmission: false, lightMode: true,
+    getSession: () => ({ services: { permissionModeRegistry: { current: () => ({ mode }) } } }) as never });
+  const names = () => registry.toLLMTools().map(tool => tool.function.name);
+  await withOneShotFastMode(async () => {
+    const first = registry.toLLMTools();
+    expect(registry.toLLMTools()).toBe(first);
+    expect(names()).not.toContain("ExitPlanMode");
+    mode = "plan";
+    expect(names()).toEqual(expect.arrayContaining(["AskUserQuestion", "ExitPlanMode"]));
+    mode = "bypassPermissions";
+    expect(names()).not.toContain("ExitPlanMode");
+  });
+});

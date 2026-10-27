@@ -604,6 +604,9 @@ function parseEditablePath(key: string): readonly string[] {
 }
 
 function assertEditableConfigPath(segments: readonly string[]): void {
+  if (segments[0] === "remote_control") {
+    throw new Error("Remote control configuration is owner-only; edit [remote_control] directly in home config.toml outside the agent.");
+  }
   if (
     segments[0] === CANONICAL_CONFIG_VERSION_KEY ||
     segments[0] === "configVersion"

@@ -180,7 +180,7 @@ async function mergeUntrackedIntoNormalizedCache(
   const sig = pathListSignature(allPaths)
   if (sig === loadedMergedSignature) {
     logForDebugging(
-      `[FileIndex] skipped index rebuild — merged paths unchanged`,
+      `[FileIndex] skipped index rebuild: merged paths unchanged`,
     )
     return
   }
@@ -567,7 +567,7 @@ export async function getPathsForSuggestions(): Promise<FileIndex> {
       loadedMergedSignature = null
     } else {
       logForDebugging(
-        `[FileIndex] skipped index rebuild — tracked paths unchanged`,
+        `[FileIndex] skipped index rebuild: tracked paths unchanged`,
       )
     }
     trackedCacheReadyForUntrackedMerge = true

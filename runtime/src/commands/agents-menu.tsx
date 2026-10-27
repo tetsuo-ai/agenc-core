@@ -295,7 +295,7 @@ function cycleSource(source: SettingSource, direction: 1 | -1): SettingSource {
   return CREATE_SOURCES[nextIndex] ?? "projectSettings";
 }
 
-function formFields(form: AgentForm, mode: "create" | "edit"): readonly FormField[] {
+export function formFields(form: AgentForm, mode: "create" | "edit"): readonly FormField[] {
   const rows: FormField[] = [];
   rows.push({
     key: "source",
@@ -332,9 +332,11 @@ function formFields(form: AgentForm, mode: "create" | "edit"): readonly FormFiel
   rows.push({
     key: "model",
     label: "model",
-    value: form.model,
-    editable: true,
-    detail: "blank inherits the session model",
+    value: form.source === "projectSettings" ? "inherit" : form.model,
+    editable: form.source !== "projectSettings",
+    detail: form.source === "projectSettings"
+      ? "Project roles inherit the session model. Use a user role for a model override."
+      : "blank inherits the session model",
   });
   rows.push({
     key: "systemPrompt",
@@ -353,7 +355,7 @@ function formFields(form: AgentForm, mode: "create" | "edit"): readonly FormFiel
   return rows;
 }
 
-function validationFor(
+export function validationFor(
   form: AgentForm,
   allAgents: readonly AgentDefinition[],
   tools: Tools,
@@ -361,6 +363,9 @@ function validationFor(
 ): { readonly errors: readonly string[]; readonly warnings: readonly string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  if (form.source === "projectSettings" && modelValue(form.model) !== undefined) {
+    errors.push("Project roles inherit the session model. Use a user role for a model override.");
+  }
   const trimmedName = form.agentType.trim();
   const typeError = validateAgentTypeValue(trimmedName);
   if (typeError) errors.push(typeError);
@@ -1097,10 +1102,10 @@ function AgentsMenuModal({
     }
     if (selectedField.key === "source" && selectedField.editable) {
       if (input === " " || key.rightArrow || key.leftArrow) {
-        setForm(current => ({
-          ...current,
-          source: cycleSource(current.source, key.leftArrow ? -1 : 1),
-        }));
+        setForm(current => {
+          const source = cycleSource(current.source, key.leftArrow ? -1 : 1);
+          return { ...current, source, model: source === "projectSettings" ? "" : current.model };
+        });
       }
       return;
     }

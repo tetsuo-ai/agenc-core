@@ -3,20 +3,11 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync,
 import { join } from "node:path";
 import { DISPLAY_BINARY_LIMIT, DISPLAY_FILE_LIMIT, DISPLAY_JSON_LIMIT, peekDisplayArtifactBytes, releaseDisplayArtifactBytes, type DisplayAttachment } from "../mcp-client/display-attachments.js";
 
+import { syncDirectorySync as fsyncDirectory } from "../utils/durable-atomic-file.js";
+
 const ARTIFACT_DIRECTORY = "display-artifacts";
 const ID = /^[a-f0-9]{64}$/u;
 export const DISPLAY_ARTIFACT_CHUNK_BYTES = 512 * 1024;
-
-function fsyncDirectory(path: string): void {
-  const fd = openSync(path, "r");
-  try {
-    try { fsyncSync(fd); }
-    catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (process.platform !== "win32" || !["EBADF", "EISDIR", "EINVAL", "ENOTSUP", "EPERM"].includes(code ?? "")) throw error;
-    }
-  } finally { closeSync(fd); }
-}
 
 /** Session scoped, immutable, content addressed bytes. The caller supplies a
  * session directory from the durable session store, never from MCP or RPC. */

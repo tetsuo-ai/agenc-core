@@ -17,6 +17,7 @@ import {
   isAvailableEffortLevel,
   getSessionEffortLabelForContext,
   nativeEffortLabel,
+  modelOffersEffortOffForContext,
   modelSupportsEffortForContext,
   effortValueToReasoningEffort,
   reasoningEffortToEffortLevel,
@@ -24,6 +25,7 @@ import {
 } from "../utils/effort.js";
 import { readSessionSelection } from "../session/provider-model-selection.js";
 import { remoteAuthContextFromCommandContext } from "./config-context.js";
+import { ensureLiveModelCatalog } from "./live-model-catalog.js";
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -60,7 +62,7 @@ async function applyEffortChoice(
   ctx: SlashCommandContext,
   model: string,
   providerAuthContext: ProviderAuthContext,
-  choice: AvailableEffortLevel | "default",
+  choice: AvailableEffortLevel | "default" | "none",
 ): Promise<{ readonly ok: boolean; readonly message: string }> {
   const available = getAvailableEffortLevelsForContext(model, providerAuthContext);
   // Saving reloads the config store, and the app-state subscription mirrors
@@ -70,7 +72,9 @@ async function applyEffortChoice(
     reasoning_effort:
       choice === "default"
         ? undefined
-        : effortValueToReasoningEffort(choice, available),
+        : choice === "none"
+          ? "none"
+          : effortValueToReasoningEffort(choice, available),
   });
   if (saved.error !== null) {
     return { ok: false, message: `Could not save effort: ${saved.error.message}` };
@@ -98,7 +102,9 @@ async function applyEffortChoice(
   const defaultEffort = getModelDefaultReasoningEffortForContext(model, providerAuthContext);
   const liveEffort = choice === "default"
     ? null
-    : effortValueToReasoningEffort(choice, available);
+    : choice === "none"
+      ? "none"
+      : effortValueToReasoningEffort(choice, available);
   const applyDaemonConfig = asRecord(ctx.session)?.applyDaemonConfig;
   const keepsCurrentEffort = {
     ok: true,
@@ -152,6 +158,7 @@ async function applyEffortChoice(
       message: `Effort follows the ${model} default${defaultEffort !== undefined ? ` (${nativeEffortLabel(defaultEffort)})` : ""}.`,
     };
   }
+  if (choice === "none") return { ok: true, message: `Thinking off for ${model}.` };
   return {
     ok: true,
     message: `${effortLevelToSymbol(choice)} ${convertEffortValueToLevel(choice)} effort for ${model}.`,
@@ -166,10 +173,11 @@ function effortMenuSnapshot(
   const levels = getAvailableEffortLevelsForContext(model, providerAuthContext);
   const explicit = currentEffortValue(ctx) ??
     reasoningEffortToEffortLevel(getSettingsForSource("userSettings")?.reasoning_effort);
-  const current =
-    typeof explicit === "string" && (levels as readonly string[]).includes(explicit)
-      ? explicit
-      : "default";
+  const effective = getSessionEffortLabelForContext(model, explicit as never, providerAuthContext);
+  const offersOff = modelOffersEffortOffForContext(model, providerAuthContext);
+  const current = offersOff && explicit === "none"
+    ? "none"
+    : levels.find(level => effective === `${level} effort`) ?? "default";
   const modelDefault = getModelDefaultReasoningEffortForContext(model, providerAuthContext);
   const rows: EffortMenuRow[] = [
     {
@@ -180,6 +188,9 @@ function effortMenuSnapshot(
         : "follows the model",
       current: current === "default",
     },
+    ...(offersOff
+      ? [{ choice: "none", label: "Off", detail: modelDefault === "none" ? "model default" : "", current: current === "none" }]
+      : []),
     ...levels.map((level): EffortMenuRow => ({
       choice: level,
       label: getEffortLevelLabel(level),
@@ -222,6 +233,9 @@ export const effortCommand: SlashCommand = {
         provider: sessionSelection.provider,
       });
       const arg = ctx.argsRaw.trim().toLowerCase();
+      // Venice, Ollama Cloud and OpenRouter publish each model's levels with
+      // their live lists; read them before judging what this model takes.
+      await ensureLiveModelCatalog(ctx, sessionSelection.provider, model);
 
       if (!modelSupportsEffortForContext(model, providerAuthContext)) {
         return arg === ""
@@ -234,6 +248,12 @@ export const effortCommand: SlashCommand = {
         if (
           typeof ctx.appState?.setToolJSX === "function" &&
           (await import("./effort-menu.js")).openEffortMenu(ctx, snapshot, async (choice) => {
+            // Enter on the current effective row only closes the picker.
+            // In particular, it must not rewrite an unsupported saved choice
+            // or pin a session that currently follows the model default.
+            if (choice === snapshot.rows[snapshot.activeIndex]?.choice) {
+              return { message: "Effort unchanged.", shouldClose: true };
+            }
             // The picker applies from a key press, after the dispatcher's
             // settings scope ended; bind this invocation's store again.
             const apply = () =>
@@ -241,7 +261,7 @@ export const effortCommand: SlashCommand = {
                 ctx,
                 model,
                 providerAuthContext,
-                choice as AvailableEffortLevel | "default",
+                choice as AvailableEffortLevel | "default" | "none",
               );
             const outcome = ctx.configStore === undefined
               ? await apply()
@@ -291,10 +311,21 @@ export const effortCommand: SlashCommand = {
         model,
         providerAuthContext,
       );
+      // Thinking off, for the models that list it (Ollama Cloud, Venice).
+      const offersOff = modelOffersEffortOffForContext(model, providerAuthContext);
+      if (arg === "off" || arg === "none") {
+        if (!offersOff) {
+          return { kind: "error", message: `${model} cannot turn thinking off. Available: ${available.join(", ")}.` };
+        }
+        const outcome = await applyEffortChoice(ctx, model, providerAuthContext, "none");
+        return outcome.ok
+          ? { kind: "text", text: outcome.message }
+          : { kind: "error", message: outcome.message };
+      }
       if (!isAvailableEffortLevel(arg)) {
         return {
           kind: "error",
-          message: `Usage: /effort <${available.join(", ")}>, or /effort default.`,
+          message: `Usage: /effort <${[...available, ...(offersOff ? ["off"] : [])].join(", ")}>, or /effort default.`,
         };
       }
       const level: AvailableEffortLevel = arg;

@@ -2788,6 +2788,43 @@ describe("AgenC background agent lifecycle", () => {
     } finally { promote.mockRestore(); }
   });
 
+  it.each([
+    ["an omitted mode takes a Light daemon default", undefined, true, true],
+    ["an omitted mode takes a standard daemon default", undefined, false, false],
+    ["an explicit standard choice wins over a Light default", false, true, false],
+    ["an explicit Light choice wins over a standard default", true, false, true],
+  ])("agent.create settles a new agent's mode: %s", async (_label, requested, daemonDefault, expected) => {
+    const starts: AgenCBackgroundAgentStartParams[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async (params) => {
+        starts.push(params);
+        return { agentId: "agent_mode", startedAt: "2026-05-01T12:00:00.500Z", status: "running" };
+      },
+    };
+    const defaultLightMode = vi.fn(() => daemonDefault);
+    const agents = new AgenCDaemonAgentManager({
+      runner,
+      sessionManager: new AgenCDaemonSessionManager({ createSessionId: sequence(["session_mode"]) }),
+      defaultLightMode,
+    });
+    const created = await createTestAgent(agents, {
+      cwd: process.cwd(),
+      objective: "work",
+      runtimeOptions: {
+        ...TEST_AGENT_RUNTIME_OPTIONS,
+        ...(requested !== undefined ? { lightMode: requested } : {}),
+      },
+    });
+    // The settled value is what the session runs with and what is recorded,
+    // so a restart or a resume restores it without asking the default again.
+    expect(starts[0]?.runtimeOptions?.lightMode).toBe(expected);
+    expect(created.metadata).toMatchObject({
+      lightMode: expected,
+      runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode: expected },
+    });
+    expect(defaultLightMode).toHaveBeenCalledTimes(requested === undefined ? 1 : 0);
+  });
+
   it.each([false, true])("agent.create persists actual Light mode (%s), ignoring caller metadata", async (lightMode) => {
     const selectedRuntimeOptions = { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode };
     const sessions = new AgenCDaemonSessionManager({
@@ -3427,11 +3464,15 @@ describe("AgenC background agent lifecycle", () => {
       expect(listed?.metadata?.recovered).toBe(true);
       expect(listed?.metadata?.lightMode).toBe(lightMode);
       const restoreAgent = vi.fn(async () => true);
+      const defaultLightMode = vi.fn(() => true);
       const agents = new AgenCDaemonAgentManager({
         // The first project has the same ID but the opposite profile. Resume
         // must use the project bound by its validated canonical rollout.
         threadStore: resumeStore, sessionManager: sessions,
         runner: { ...noLiveAgentRunner(sessionId), restoreAgent },
+        // A Light daemon default never reaches a resume: a session recorded
+        // without a mode (before Light became the default) stays standard.
+        defaultLightMode,
       });
       await expect(createTestAgent(agents, {
         resumeSessionId: sessionId, resumeRolloutPath: fixture.rolloutPath,
@@ -3441,6 +3482,7 @@ describe("AgenC background agent lifecycle", () => {
       expect(restoreAgent).toHaveBeenCalledWith(expect.objectContaining({
         runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode: lightMode === true },
       }));
+      expect(defaultLightMode).not.toHaveBeenCalled();
     } finally {
       resumeStore.close();
       threadStore.close();
@@ -6013,6 +6055,7 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
       }),
     ).resolves.toMatchObject({
       agentId: "agent_image",
@@ -6030,6 +6073,7 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
       }),
     ]);
     await expect(sessions.getSession("session_image")).resolves.toMatchObject({
@@ -6744,7 +6788,7 @@ describe("AgenC background agent lifecycle", () => {
     const effect = repository.getEffectBySessionCall(params.sessionId, params.toolCallId);
     if (effect === undefined) return { kind: "not_found" as const };
     repository.resolveEffectReview({ runId: effect.runId, stepId: effect.stepId, resolution: params.resolution, eventId: `${effect.stepId}:review` });
-    resolveUnknownOutcomeEffect(driver, { sessionId: params.sessionId, toolCallId: params.toolCallId });
+    if (params.resolution.workflowStatus !== "pending") resolveUnknownOutcomeEffect(driver, { sessionId: params.sessionId, toolCallId: params.toolCallId });
     return { kind: "resolved" as const, durable: false as const, resolution: params.resolution };
   };
 
@@ -6820,6 +6864,44 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("routes parent reviews to descendants, refuses unrelated owners, and requires a session for duplicate call ids (#2607)", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_parent_child_review";
+    const agentId = "conv-parent-child-review";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    const now = "2026-10-19T00:00:00.000Z";
+    try {
+      const effects = await seedUnknownEffectSession(driver, sessions, { cwd, agentId, callId: "call_root", toolName: "Browser" });
+      for (const id of ["child-a", "grandchild-b", "unrelated"]) {
+        effects.ensureInitialEpoch({ runId: id, openedAt: now });
+        effects.beginEffect({ runId: id, epoch: 1, sessionId: id, stepId: "tool:child", callId: "same-call", toolName: "Browser",
+          recoveryCategory: "interactive", intentDigest: "d".repeat(64), eventId: "intent", eventSequence: 1, intentAt: now });
+        effects.markEffectUnknown({ runId: id, stepId: "tool:child", eventId: "unknown", eventSequence: 2, reason: "acknowledgement_lost", observedAt: now });
+      }
+      const review = vi.fn(async (_owner: string, params: ResolveDurableEffectReviewOptions) => projectLiveReview(driver, params));
+      const runner = { effectReviewSessionIds: () => [agentId, "child-a", "grandchild-b"], resolveLiveEffectReview: review } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      const request = { sessionId: daemonSessionId, toolCallId: "same-call", disposition: "confirmed_no_effect", attestation: "operator" } as const;
+      await expect(agents.resolveSessionToolCall(request)).rejects.toThrow("multiple owning sessions");
+      await expect(agents.resolveSessionToolCall({ ...request, effectSessionId: "unrelated" })).rejects.toThrow("not owned by parent");
+      expect(review).not.toHaveBeenCalled();
+      await expect(agents.resolveSessionToolCall({ ...request, effectSessionId: "grandchild-b", disposition: "remains_unknown" }))
+        .resolves.toMatchObject({ remaining: 3 });
+      expect(effects.getEffect("grandchild-b", "tool:child")?.reviewStatus).toBe("pending");
+      await expect(agents.resolveSessionToolCall({ ...request, effectSessionId: "grandchild-b" }))
+        .resolves.toMatchObject({ resolved: [{ toolCallId: "same-call", toolName: "Browser" }], remaining: 2 });
+      expect(review.mock.calls.at(-1)).toMatchObject([agentId, { sessionId: "grandchild-b", resolution: { evidenceRef: "operator-attestation:grandchild-b:same-call" } }]);
+      expect(effects.getEffect("child-a", "tool:child")?.reviewStatus).toBe("pending");
+      expect(effects.getEffect("unrelated", "tool:child")?.reviewStatus).toBe("pending");
+      // A unique child call can be addressed with the original /resolve form.
+      await expect(agents.resolveSessionToolCall({ ...request, toolCallId: "call_root" }))
+        .resolves.toMatchObject({ remaining: 1 });
+    } finally {
+      driver.close(); restoreEnv(); rmSync(home, { recursive: true, force: true }); rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("records an operator attestation when /resolve carries a disposition without an evidence file", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const daemonSessionId = "session_desktop_attest";
@@ -6859,6 +6941,32 @@ describe("AgenC background agent lifecycle", () => {
       restoreEnv();
       rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the live session blocked after repeated operator remains_unknown reviews, then accepts a final review", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => "session_keep_blocked" });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId: "conv-keep-blocked", callId: "call_hang", toolName: "Browser",
+      });
+      const runner = { resolveLiveEffectReview: vi.fn(async (_owner: string, params: ResolveDurableEffectReviewOptions) => projectLiveReview(driver, params)) } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      for (let i = 0; i < 2; i++) {
+        await expect(agents.resolveSessionToolCall({ sessionId: "session_keep_blocked", toolCallId: "call_hang",
+          disposition: "remains_unknown", attestation: "operator", reviewer: `operator-${i}`,
+        })).resolves.toMatchObject({ remaining: 1 });
+        expect(effects.getEffect("conv-keep-blocked", "tool:turn:call_hang")).toMatchObject({
+          reviewStatus: "pending", review: { disposition: "remains_unknown", actorKind: "operator", actorId: `operator-${i}` },
+        });
+      }
+      await expect(agents.resolveSessionToolCall({ sessionId: "session_keep_blocked", toolCallId: "call_hang",
+        disposition: "confirmed_no_effect", attestation: "operator",
+      })).resolves.toMatchObject({ remaining: 0 });
+    } finally {
+      driver.close(); restoreEnv(); rmSync(home, { recursive: true, force: true }); rmSync(cwd, { recursive: true, force: true });
     }
   });
 
@@ -9428,4 +9536,42 @@ describe("retainedCreatedAtMatchesRollout (#1750)", () => {
       false,
     );
   });
+});
+
+it("preserves CLI task budgets through RPC validation, runner startup, and durable metadata", async () => {
+  const startAgent = vi.fn(async () => ({ agentId: "budget-agent", startedAt: "2026-05-01T12:00:00.500Z", status: "running" as const }));
+  const manager = new AgenCDaemonAgentManager({ runner: { startAgent } });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager });
+  const connection = dispatcher.createConnection();
+  await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "initialize",
+    params: { protocolVersion: "1.0.0", clientName: "budget-contract-test" } });
+  for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+    for (const value of [-1, 1.5, "100", Number.MAX_SAFE_INTEGER + 1, null]) {
+      const rejected = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 2,
+        method: "agent.create", params: { cwd: process.cwd(), objective: "finish", runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS, [key]: value } });
+      expect(rejected).toMatchObject({ error: { code: -32602, message: `agent.create param '${key}' must be a non-negative safe integer` } });
+      expect(startAgent).not.toHaveBeenCalled();
+    }
+  }
+  const created = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 3,
+    method: "agent.create", params: { cwd: process.cwd(), objective: "finish", runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS, taskTokenBudget: 219000, taskMaxCalls: 17 } });
+  expect(created).toMatchObject({ result: { agentId: "budget-agent" } });
+  expect(startAgent).toHaveBeenCalledWith(expect.objectContaining({
+    taskTokenBudget: 219000, taskMaxCalls: 17,
+    metadata: expect.objectContaining({ taskTokenBudget: 219000, taskMaxCalls: 17 }),
+  }));
+});
+
+it("persists explicit zero budgets through agent creation for later restore", async () => {
+  const startAgent = vi.fn(async () => ({ agentId: "budget-off-agent", startedAt: "2026-05-01T12:00:00.500Z", status: "running" as const }));
+  const manager = new AgenCDaemonAgentManager({ runner: { startAgent } });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager });
+  const connection = dispatcher.createConnection();
+  await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "initialize", params: { protocolVersion: "1.0.0", clientName: "budget-test" } });
+  const created = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 2, method: "agent.create", params: {
+    cwd: process.cwd(), objective: "finish", runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS, taskTokenBudget: 0, taskMaxCalls: 0,
+  } });
+  expect(created).toMatchObject({ result: { agentId: "budget-off-agent" } });
+  expect(startAgent).toHaveBeenCalledWith(expect.objectContaining({ taskTokenBudget: 0, taskMaxCalls: 0,
+    metadata: expect.objectContaining({ taskTokenBudget: 0, taskMaxCalls: 0 }) }));
 });

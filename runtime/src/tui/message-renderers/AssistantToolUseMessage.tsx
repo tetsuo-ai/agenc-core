@@ -1,3 +1,4 @@
+import { abbreviateHomePaths } from "../../utils/home-path-display.js";
 import React from 'react';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
@@ -25,6 +26,7 @@ import { buildEditDiffPreview } from '../edit-diff-preview.js';
 import { isFixedRerunSuccess } from './fixedRerunLink.js';
 import { AURA_LIFECYCLE_GLYPHS } from '../../utils/theme.js';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
+import { summarizeToolError } from '../tool-error-text.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -288,19 +290,20 @@ export function AssistantToolUseMessage({
   // result body is suppressed in tool-result-routing.ts so the diff appears
   // exactly once. A FAILED row renders no diff (the inline failure reason wins);
   // a still-running/queued row also waits until it resolves.
+  const fileMutation = lookups.toolResultByToolUseID?.get(param.id)?.fileMutation;
   const editDiffDetail =
     (param.name === "Edit" ||
       param.name === "MultiEdit" ||
       param.name === "Write") &&
     isResolved &&
     toolState !== "failed"
-      ? renderEditDiffPreview(param.name, input.data)
+      ? renderEditDiffPreview(param.name, input.data, fileMutation)
       : null;
   // A finished edit says what it changed on the step's result line
   // ("└ +4 -0"); the colored rows follow underneath.
   const editStats =
     editDiffDetail !== null && rowResult === undefined
-      ? editDiffStats(param.name, input.data)
+      ? editDiffStats(param.name, input.data, fileMutation)
       : undefined;
   const detail = extraDetail || editDiffDetail || toolUseTag || progressDetail || queuedDetail
     ? (
@@ -340,10 +343,11 @@ const EDIT_STEP_MAX_CHANGED_LINES = 8;
 export function renderEditDiffPreview(
   toolName: string,
   input: unknown,
+  fileMutation?: unknown,
 ): React.ReactNode {
   let preview: ReturnType<typeof buildEditDiffPreview>;
   try {
-    preview = buildEditDiffPreview(toolName, input);
+    preview = buildEditDiffPreview(toolName, input, fileMutation);
   } catch (error) {
     logError(
       new Error(`Error building edit diff preview for ${toolName}: ${error}`),
@@ -376,7 +380,7 @@ export function renderEditDiffPreview(
   // Distinguish a first write from an edit in the header so the two no longer
   // look identical. A Write produces a brand-new file (all additions, old
   // content empty) → CREATE; Edit/MultiEdit change an existing file → EDIT.
-  const op = toolName === "Write" ? "CREATE" : "EDIT";
+  const op = toolName === "Write" && (fileMutation as { operation?: string } | undefined)?.operation !== "write" ? "CREATE" : "EDIT";
   return (
     <DiffInline
       file={preview.file.length > 0 ? preview.file : "file"}
@@ -388,9 +392,9 @@ export function renderEditDiffPreview(
   );
 }
 
-function editDiffStats(toolName: string, input: unknown): string | undefined {
+function editDiffStats(toolName: string, input: unknown, fileMutation?: unknown): string | undefined {
   try {
-    return buildEditDiffPreview(toolName, input)?.stats;
+    return buildEditDiffPreview(toolName, input, fileMutation)?.stats;
   } catch {
     return undefined;
   }
@@ -452,10 +456,16 @@ function rawToolResultContent(
   for (const block of content) {
     if (
       block?.type === 'tool_result' &&
-      block.tool_use_id === toolUseId &&
-      typeof block.content === 'string'
+      block.tool_use_id === toolUseId
     ) {
-      return block.content;
+      if (typeof block.content === 'string') return block.content;
+      if (Array.isArray(block.content)) {
+        return block.content
+          .filter((part): part is { type: 'text'; text: string } =>
+            part?.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text)
+          .join('\n');
+      }
     }
   }
   return null;
@@ -473,16 +483,11 @@ function failedToolRowReason(
   rawResult: string | null,
 ): string | undefined {
   if (rawResult === null) return undefined;
+  rawResult = abbreviateHomePaths(rawResult);
   if (kind === 'edit') {
     return summarizeFileEditError(rawResult) ?? undefined;
   }
-  const errorText = extractTag(rawResult, 'tool_use_error') ?? rawResult;
-  const cleaned = errorText.replace(/<\/?error>/g, '').trim();
-  const firstLine = cleaned
-    .split('\n')
-    .map(line => line.trim())
-    .find(line => line.length > 0);
-  return firstLine ? firstLineOf(firstLine) : undefined;
+  return firstLineOf(summarizeToolError(rawResult));
 }
 
 function selectPermissionMode(state: {

@@ -16,6 +16,9 @@
  *     attached they surface its typed VERB_NOT_ENABLED error instead of
  *     doing anything on-chain. No wallet reads, no signing, no spend.
  *
+ * A session created with a `toolPolicy` has none of these commands: they
+ * refuse before any config is read or process is spawned.
+ *
  * Marketplace-derived text is untrusted: it is sanitized before
  * rendering and never influences command construction.
  */
@@ -28,6 +31,10 @@ import type {
   TaskDetail,
 } from "../protocol/index.js";
 import { createProtocolTransport, isValidTaskPda } from "../protocol/index.js";
+import {
+  PROTOCOL_COMMANDS_REFUSAL_MESSAGE,
+  sessionToolPolicyAllowsProtocolCommands,
+} from "../permissions/session-tool-policy.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -241,6 +248,19 @@ function protocolCommand(verb: ProtocolVerb): SlashCommand {
     pluginInfo: PROTOCOL_PLUGIN,
     execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
       safeExecute(async () => {
+        // A session with a toolPolicy has a fixed tool surface and handles
+        // untrusted content. These commands run a local binary, so they are
+        // refused before anything is built, configured or spawned.
+        if (
+          !sessionToolPolicyAllowsProtocolCommands(
+            ctx.session?.services?.registry?.toolPolicy,
+          )
+        ) {
+          return {
+            kind: "error",
+            message: `AgenC protocol · ${verb}: ${PROTOCOL_COMMANDS_REFUSAL_MESSAGE}`,
+          };
+        }
         // Revert-safe default: without an explicit enabled
         // marketplace-cli transport, behavior is EXACTLY the historical
         // stub text for every verb.

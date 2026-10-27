@@ -229,7 +229,7 @@ describe("AutoUpdater wave200 coverage", () => {
         "cd ~/.agenc/local && npm update @tetsuo-ai/agenc",
       );
       expect(harness.intervalDelay).toBe(1_800_000);
-      expect(harness.getLatestVersion).toHaveBeenCalledWith("stable");
+      expect(harness.getLatestVersion).toHaveBeenCalledWith("stable", { background: true });
       expect(harness.getMaxVersion).toHaveBeenCalledOnce();
       expect(harness.shouldSkipVersion).toHaveBeenCalledWith("2.0.0");
       expect(harness.removeInstalledSymlink).toHaveBeenCalledOnce();

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 import type { ToolCatalogEntry } from "../types.js";
 import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
-import { createToolSearchTool } from "./tool-search.js";
-import { SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./coding-common.js";
+import { catalogSummary, createToolSearchTool } from "./tool-search.js";
+import { SESSION_ADVERTISED_TOOL_NAMES_ARG, SESSION_TOOL_CATALOG_SCOPE_ARG } from "./coding-common.js";
 
 function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
   return {
@@ -26,6 +26,74 @@ function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
 }
 
 describe("system.searchTools", () => {
+  const searchEntry = (name: string, description: string): ToolCatalogEntry => ({
+    ...deferredCatalogEntry(name), description,
+    metadata: { ...deferredCatalogEntry(name).metadata, keywords: [] },
+  });
+  const searchCatalog = [
+    searchEntry("WebSearch", "Search the web for current information and sources."),
+    searchEntry("web_fetch", "Fetch a web page from a URL."),
+    searchEntry("ReadFile", "Read a file from disk."),
+    searchEntry("Skill", "Load a skill and its instructions."),
+    searchEntry("mcp.inventory.lookup_stock", "Retrieve inventory count and warehouse for a part."),
+  ];
+  function searchFixture(catalog = searchCatalog) {
+    return createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => catalog, onDiscoverTools: () => {} });
+  }
+
+  test("ranks partial matches for a combined web search and fetch query", async () => {
+    const payload = JSON.parse((await searchFixture().execute({ query: "web search fetch url" })).content);
+    expect(payload.results.slice(0, 2).map((entry: { name: string }) => entry.name)).toEqual(["web_fetch", "WebSearch"]);
+    expect(payload.loaded).toEqual([]);
+    expect(payload.results.every((entry: { selected: boolean }) => !entry.selected)).toBe(true);
+  });
+
+  test.each([
+    ["internet lookup", "WebSearch"],
+    ["download webpage", "web_fetch"],
+    ["read_file", "ReadFile"],
+    ["skills instructions", "Skill"],
+    ["inventory stock warehouse unavailableword", "mcp.inventory.lookup_stock"],
+  ])("finds %s using names, descriptions and related terms", async (query, name) => {
+    const payload = JSON.parse((await searchFixture().execute({ query })).content);
+    expect(payload.results[0]?.name).toBe(name);
+  });
+
+  test("prefers exact identities and full coverage, then limits searches to the best five", async () => {
+    const catalog = [searchEntry("lookup", "Inspect something"),
+      searchEntry("lookup_stock", "Inventory warehouse"),
+      ...Array.from({ length: 20 }, (_, i) => searchEntry(`misc.${i}`, "lookup unrelated"))];
+    const tool = searchFixture(catalog);
+    const payload = JSON.parse((await tool.execute({ query: "lookup" })).content);
+    expect(payload.results).toHaveLength(5);
+    expect(payload.results[0].name).toBe("lookup");
+    const full = JSON.parse((await tool.execute({ query: "inventory warehouse" })).content);
+    expect(full.results[0].name).toBe("lookup_stock");
+    expect(JSON.parse((await tool.execute({ query: "lookup", maxResults: 12 })).content).results).toHaveLength(5);
+    expect(JSON.parse((await tool.execute({ query: "lookup", maxResults: 2 })).content).results).toHaveLength(2);
+    expect(JSON.parse((await tool.execute({ maxResults: 12 })).content).results).toHaveLength(12);
+    expect(JSON.parse((await tool.execute({})).content).results).toHaveLength(22);
+    expect(JSON.parse((await tool.execute({ query: "unmatchablezzzz" })).content).results).toEqual([]);
+  });
+
+  test("partial matching respects catalog scope, hidden and exact family/source/profile filters", async () => {
+    const hidden = { ...searchCatalog[0]!, metadata: { ...searchCatalog[0]!.metadata, hiddenByDefault: true } };
+    const tool = searchFixture([hidden, ...searchCatalog.slice(1)]);
+    for (const filter of [
+      { [SESSION_TOOL_CATALOG_SCOPE_ARG]: ["Skill"] }, { family: "absent" },
+      { source: "absent" }, { profile: "absent" },
+      { advertisedOnly: true, [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["Skill"] },
+    ]) {
+      const payload = JSON.parse((await tool.execute({ query: "web search missing", ...filter })).content);
+      expect(payload.results).toEqual([]);
+    }
+    expect(JSON.parse((await tool.execute({ query: "web search missing" })).content).results
+      .some((entry: { name: string }) => entry.name === "WebSearch")).toBe(false);
+    expect(JSON.parse((await tool.execute({ query: "web search missing", includeHidden: true })).content).results
+      .some((entry: { name: string }) => entry.name === "WebSearch")).toBe(true);
+  });
+
   test("is side-effecting because selected tools update advertised session state", () => {
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],
@@ -85,6 +153,20 @@ describe("system.searchTools", () => {
     expect(discovered).toEqual([[selectedName]]);
     expect(result.content.length).toBeLessThan(2_000);
     expect(result.content).not.toContain("unrelated.tool");
+  });
+
+  test("a select string lists several tools separated by commas, as select: in a query does", async () => {
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => [deferredCatalogEntry("system.deepTool"), deferredCatalogEntry("system.other")],
+      onDiscoverTools: names => discovered.push([...names]),
+    });
+    const payload = JSON.parse((await tool.execute({ select: "system.deepTool, system.other" })).content);
+    expect(payload.loaded).toEqual(["system.deepTool", "system.other"]);
+    expect(discovered).toEqual([["system.deepTool", "system.other"]]);
+    const byQuery = JSON.parse((await tool.execute({ query: "select:system.deepTool,system.other" })).content);
+    expect(byQuery.loaded).toEqual(payload.loaded);
   });
 
   test("deduplicates canonical selection aliases and reports missing identities without browsing", async () => {
@@ -356,5 +438,75 @@ describe("system.searchTools", () => {
       name: "system.deep<neutralized-system-reminder-tag> Tool",
       selected: true,
     });
+  });
+});
+
+describe("system.searchTools compact results (Light)", () => {
+  const long = "Spawns an agent to work on the specified task.\n\nNOTE ON AGENT-PATH NAMES: `/root`-prefixed names below refer to the internal AGENT-TREE NAMESPACE. " + "Long contract text. ".repeat(80);
+  const entry = (name: string, description: string, deferred = true): ToolCatalogEntry => ({
+    ...deferredCatalogEntry(name), description,
+    metadata: { ...deferredCatalogEntry(name).metadata, deferred, keywords: ["agent", "spawn"] },
+  });
+  const catalog = [
+    entry("spawn_agent", long),
+    entry("TaskCreate", "Create a durable AgenC task on the project task board. New tasks start pending and unowned; assign AgenC agents with TaskUpdate owner."),
+    entry("FileRead", "FileRead first. A whole-file read authorizes edits; Edit and Write fail if their change did not land.", false),
+    entry("mcp.agent-hub.spawn", "Spawn a remote agent."),
+  ];
+  function compact(onDiscoverTools: (names: readonly string[]) => void = () => {}) {
+    return createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => catalog, onDiscoverTools, compactResults: true });
+  }
+
+  test("a query returns names and short summaries without catalog metadata", async () => {
+    const result = await compact().execute({ query: "spawn agent task",
+      [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["FileRead", "system.searchTools"] });
+    const payload = JSON.parse(result.content);
+    const spawn = payload.results.find((item: { name: string }) => item.name === "spawn_agent");
+    expect(spawn).toEqual({ name: "spawn_agent", description: "Spawns an agent to work on the specified task." });
+    expect(payload.hint).toContain("select:<name>");
+    expect(payload).not.toHaveProperty("totalCatalogSize");
+    expect(payload).not.toHaveProperty("loaded");
+    expect(result.content).not.toContain("metadata");
+    expect(result.content).not.toContain("loadHint");
+    expect(result.content).not.toContain("Long contract text");
+    // The same search with full results is several times larger.
+    const full = await createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => catalog, onDiscoverTools: () => {} }).execute({ query: "spawn agent task",
+      [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["FileRead", "system.searchTools"] });
+    expect(result.content.length * 4).toBeLessThan(full.content.length);
+  });
+
+  test("listed and just-loaded tools return only their names, since their schemas carry the description", async () => {
+    const discovered: string[][] = [];
+    const payload = JSON.parse((await compact(names => discovered.push([...names])).execute({
+      select: "TaskCreate", query: "read file", [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["FileRead"],
+    })).content);
+    expect(discovered).toEqual([["TaskCreate"]]);
+    expect(payload.loaded).toEqual(["TaskCreate"]);
+    expect(payload.results).toContainEqual({ name: "TaskCreate", loaded: true });
+    expect(payload.results).toContainEqual({ name: "FileRead", listed: true });
+    expect(payload).not.toHaveProperty("hint");
+  });
+
+  test("missing selections and MCP use hints survive the compact form", async () => {
+    const payload = JSON.parse((await compact().execute({ select: ["nope", "mcp.agent-hub.spawn"] })).content);
+    expect(payload.missingSelections).toEqual(["nope"]);
+    expect(payload.results[0]).toMatchObject({ name: "mcp.agent-hub.spawn", loaded: true });
+    expect(payload.results[0].useHint).toContain("mcp__agent-hub__spawn");
+    const searched = JSON.parse((await compact().execute({ query: "agent-hub" })).content);
+    const mcp = searched.results.find((item: { name: string }) => item.name === "mcp.agent-hub.spawn");
+    expect(mcp.description).toBe("Spawn a remote agent.");
+    expect(mcp.useHint).toContain("not loaded yet");
+  });
+
+  test("summaries keep at least one full sentence and stay short", () => {
+    expect(catalogSummary("Short. Second sentence carries the rest of the meaning here. Third.")).toBe(
+      "Short. Second sentence carries the rest of the meaning here.");
+    expect(catalogSummary("No sentence end at all")).toBe("No sentence end at all");
+    const summary = catalogSummary(`${"word ".repeat(60)}end.`);
+    expect(summary.length).toBeLessThanOrEqual(160);
+    expect(summary.endsWith("...")).toBe(true);
+    expect(catalogSummary("Line one\n\nwith   spaces.   Next.")).toBe("Line one with spaces. Next.");
   });
 });

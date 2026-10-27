@@ -614,6 +614,8 @@ export class VerifiedChangeWorkflowController {
   readonly #providerWaits = new Map<string, { stepId: string; scope: ProviderWaitScope }>();
   /** One bounded observation per stopped run; never an alternative terminal authority. */
   readonly #runtimeFailures = new Map<string, RunWorkflowRuntimeFailure>();
+  /** Exact fsynced terminal append awaiting its rebuildable SQLite projection. */
+  readonly #pendingTerminalWrites = new Map<string, Parameters<StateRunDurabilityRepository["recordTerminalResult"]>[0]>();
   readonly #continuationRequests = new Map<string, { digest: string; promise: Promise<WorkflowStartResult> }>();
 
   constructor(deps: VerifiedChangeWorkflowControllerDeps) {
@@ -833,6 +835,7 @@ export class VerifiedChangeWorkflowController {
 
   #releaseRepository(runId: string): void {
     this.#runtimeFailures.delete(runId);
+    this.#pendingTerminalWrites.delete(runId);
     for (const [key, owner] of this.#repositoryOwners) {
       if (owner === runId) this.#repositoryOwners.delete(key);
     }
@@ -933,8 +936,19 @@ export class VerifiedChangeWorkflowController {
     const failure = this.#runtimeFailures.get(runId);
     if (failure === undefined) return undefined;
     try {
-      if (this.#deps.durability({ runId }).getCurrentTerminalResult(runId) !== undefined) {
-        this.#runtimeFailures.delete(runId);
+      const repo = this.#deps.durability({ runId });
+      const pending = this.#pendingTerminalWrites.get(runId);
+      if (repo.getCurrentTerminalResult(runId) !== undefined) {
+        this.#releaseRepository(runId);
+        return undefined;
+      }
+      if (pending !== undefined && repo.currentEpoch(runId)?.epoch === pending.epoch) {
+        // The writer may still hold its lease while shutdown drains. Retry the
+        // exact journal identity, never synthesize or append another terminal.
+        repo.recordTerminalResult(pending);
+      }
+      if (repo.getCurrentTerminalResult(runId) !== undefined) {
+        this.#releaseRepository(runId);
         return undefined;
       }
     } catch {
@@ -1221,6 +1235,7 @@ export class VerifiedChangeWorkflowController {
             : readWorkflowStepEvidence(planEffect).child?.finalMessage;
       }
       this.#runtimeFailures.delete(runId);
+      this.#pendingTerminalWrites.delete(runId);
       const pipeline = this.#continue(ctx);
       this.#active.set(runId, pipeline);
       return true;
@@ -2977,7 +2992,9 @@ export class VerifiedChangeWorkflowController {
           finishedAt,
         },
       };
+      this.#pendingTerminalWrites.set(ctx.runId, terminalWrite);
       ctx.repo.recordTerminalResult(terminalWrite);
+      this.#pendingTerminalWrites.delete(ctx.runId);
       ctx.terminalized = true;
     } catch (error) {
       if (error instanceof M5WorkflowFailpointError) throw error;
@@ -2989,6 +3006,7 @@ export class VerifiedChangeWorkflowController {
         // cannot later encounter a conflicting terminal event or timestamp.
         try {
           ctx.repo.recordTerminalResult(terminalWrite);
+          this.#pendingTerminalWrites.delete(ctx.runId);
           ctx.terminalized = true;
         } catch (retryError) {
           this.#deps.warn(`workflow ${ctx.runId} terminal projection retry failed: ${errorMessage(retryError)}`);

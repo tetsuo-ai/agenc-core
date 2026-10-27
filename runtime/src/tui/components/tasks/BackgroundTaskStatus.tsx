@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useMemo, useState } from 'react';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
+import { useFullscreenMode } from '../../context/fullscreenModeContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
@@ -80,6 +81,7 @@ export function BackgroundTaskStatus({
   isLeaderIdle = false,
   onOpenDialog,
 }: Props): React.ReactNode {
+  const isFullscreen = useFullscreenMode();
   const setAppState = useSetAppState();
   const { columns } = useTerminalSize();
   const glyphs = selectAgenCTuiGlyphs();
@@ -89,8 +91,8 @@ export function BackgroundTaskStatus({
   const expandedView = useAppState(s => s.expandedView);
   const showSpinnerTree = expandedView === 'teammates';
   const footerTasks = useMemo(
-    () => (Object.values(tasks) as TaskState[]).filter(isFooterTask),
-    [tasks],
+    () => (Object.values(tasks) as TaskState[]).filter(isFooterTask).filter(task => !isFullscreen || task.type !== 'local_bash'),
+    [tasks, isFullscreen],
   );
   const teammateEntries = useMemo(
     () => footerTasks.filter(isTeammateTask).sort(sortTeammatesByName),
@@ -236,7 +238,7 @@ function SummaryPill({
   children,
 }: SummaryPillProps): React.ReactNode {
   const [hover, setHover] = useState(false);
-  const label = <Text color="background" inverse={selected || hover}>{children}</Text>;
+  const label = <Text color="text" inverse={selected || hover}>{children}</Text>;
 
   if (!onClick) {
     return label;

@@ -1,3 +1,4 @@
+import { sideEffectFreeTool } from "../side-effect-free.js";
 /**
  * `Glob` — AgenC-owned file-pattern search tool.
  *
@@ -145,12 +146,7 @@ export const DEFAULT_GLOB_EXCLUDE_GLOBS: ReadonlyArray<string> = Object.freeze([
   "**/*.lock",
 ]);
 
-const GLOB_DESCRIPTION = `- Fast file pattern matching tool that works with any codebase size
-- Supports glob patterns like "**/*.js" or "src/**/*.ts"
-- Returns matching file paths sorted by modification time
-- Use this tool when you need to find files by name patterns
-- By default skips generated/build/vendored dirs (node_modules, target, dist, build, .localnet, .git, lockfiles); pass includeIgnored: true to search those too
-- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the spawn_agent tool instead`;
+const GLOB_DESCRIPTION = `Find files by name with a glob pattern such as "**/*.js" or "src/**/*.ts"; paths come back newest first. Skips gitignored and generated, build or vendored directories (node_modules, target, dist, build, .localnet, .git, lockfiles) unless includeIgnored is true.`;
 
 interface GlobToolInput extends ToolExecutionInjectedArgs {
   readonly pattern?: unknown;
@@ -1320,7 +1316,7 @@ export function createGlobTool(
       ? config.__testAfterRootIgnoreSnapshot
       : undefined;
 
-  return {
+  return sideEffectFreeTool({
     name: GLOB_TOOL_NAME,
     description: GLOB_DESCRIPTION,
     metadata: {
@@ -1341,17 +1337,15 @@ export function createGlobTool(
       properties: {
         pattern: {
           type: "string",
-          description: "The glob pattern to match files against.",
+          description: "Glob pattern.",
         },
         path: {
           type: "string",
-          description:
-            "Optional. Directory to search in. Defaults to the workspace root.",
+          description: "Directory to search; defaults to the workspace root.",
         },
         includeIgnored: {
           type: "boolean",
-          description:
-            "Optional. When true, search gitignored and build/vendored output too (node_modules, target, dist, build, .localnet, lockfiles). Defaults to false: the walk respects .gitignore and skips generated/build dirs so it never enumerates large artifacts.",
+          description: "Include gitignored and build or vendored files (default false).",
         },
       },
       required: ["pattern"],
@@ -1614,7 +1608,7 @@ export function createGlobTool(
         }
       }
     },
-  };
+  });
 }
 
 export const __INTERNAL = {

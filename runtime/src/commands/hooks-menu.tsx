@@ -17,6 +17,7 @@ import { KeyHint, MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
+import type { HooksSnapshot } from "./hooks.js";
 
 type Done = (
   result?: string,
@@ -56,6 +57,49 @@ type HookEditField = {
   readonly editable: boolean;
   readonly detail: string;
 };
+
+const HOOK_DESCRIPTIONS: Readonly<Record<HookEventName, string>> = {
+  PreToolUse: "runs your commands before the agent uses a tool.",
+  PostToolUse: "runs your commands after a tool finishes successfully.",
+  PostToolUseFailure: "runs your commands when a tool fails.",
+  PermissionRequest: "runs your commands when the agent asks for permission.",
+  UserPromptSubmit: "runs your commands when you send a message.",
+  SessionStart: "runs your commands when a conversation starts or resumes.",
+  SubagentStop: "runs your commands when a helper agent finishes.",
+  SessionEnd: "runs your commands when a conversation ends.",
+  Notification: "runs your commands when the agent needs your attention.",
+  Stop: "runs your commands when the agent finishes an answer.",
+  StopFailure: "runs your commands when an answer fails to complete.",
+  PreCompact: "runs your commands before older messages are summarized.",
+  PostCompact: "runs your commands after older messages are summarized.",
+};
+
+function DaemonHooksMenu({ snapshot, close }: { readonly snapshot: HooksSnapshot; readonly close: () => void }): React.ReactNode {
+  const [index, setIndex] = React.useState(0);
+  useInput((input, key) => {
+    if (key.escape || input === "q") close();
+    else if (key.upArrow || input === "k") setIndex(value => previousMenuIndex(value, HOOK_EVENT_NAMES.length));
+    else if (key.downArrow || input === "j") setIndex(value => nextMenuIndex(value, HOOK_EVENT_NAMES.length));
+  });
+  const event = HOOK_EVENT_NAMES[index]!;
+  const configured = snapshot.hooks.filter(hook => hook.event === event);
+  return <MenuModal title="hooks" summary={snapshot.executionSuppressed ? "disabled" : "enabled"}
+    columns={[25, 38]} headers={["when", "commands"]} items={HOOK_EVENT_NAMES} activeIndex={index}
+    renderRow={name => [
+      <ThemedText key="event" color="text2">{name}</ThemedText>,
+      <ThemedText key="commands" color="text2" wrap="truncate-end">{snapshot.hooks.filter(hook => hook.event === name).map(hook => hook.command.command).join("; ") || "none configured"}</ThemedText>,
+    ]}
+    detail={<Box flexDirection="column">
+      <ThemedText color="text2" wrap="wrap">{HOOK_DESCRIPTIONS[event]}</ThemedText>
+      {configured.length > 0 ? <ThemedText color="text2" wrap="wrap">{configured.map(hook => hook.command.command).join("; ")}</ThemedText> : null}
+    </Box>}
+    footer={[{ keyName: "↑↓", label: "choose" }, { keyName: "esc", label: "close" }]}
+    hint="/hooks show · enable · disable · /config edit" />;
+}
+
+export function openDaemonHooksMenu(ctx: SlashCommandContext, snapshot: HooksSnapshot): boolean {
+  return openLocalJsxCommand(ctx, close => <DaemonHooksMenu snapshot={snapshot} close={close} />);
+}
 
 function hookEventSummary(event: HookEventName): {
   readonly matcher: string;
@@ -786,6 +830,7 @@ function HooksMenuView({
         headers={["on", "event", "matcher", "enabled", "command", "source"]}
         items={hookRowsForEvent}
         activeIndex={hookIndex}
+        detail={<ThemedText color="text2" wrap="wrap">{HOOK_DESCRIPTIONS[mode.event]}</ThemedText>}
         renderRow={(hook, _index, active) => {
           const realHook = selectedHooks.length > 0 ? hook : undefined;
           const diag = realHook ? latestForHook(realHook, diagnostics) : undefined;
@@ -842,13 +887,13 @@ function HooksMenuView({
   return (
     <MenuModal
       title="hooks"
-      count={`${runtime.listHooks().length}`}
       summary={runtime.isHardSuppressed() ? "suppressed (--bare)" : runtime.isDisabled() ? "disabled" : issues.length === 0 ? "validation ok" : `${issues.length} issue(s)`}
       headerRight="enter event · x toggle · r reload"
       columns={[3, 22, 18, 46, 30]}
       headers={["on", "event", "matcher", "command", "source"]}
       items={rows}
       activeIndex={activeIndex}
+      detail={<ThemedText color="text2" wrap="wrap">{selected ? HOOK_DESCRIPTIONS[selected.event] : "choose when your commands should run."}</ThemedText>}
       renderRow={(row, _index, active) => {
         const color = statusColor(row.status);
         return [

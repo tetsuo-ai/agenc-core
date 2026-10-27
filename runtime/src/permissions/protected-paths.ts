@@ -1,12 +1,13 @@
 /**
- * Protected-path classifier for system file-tool permission checks.
+ * Shared protected-path classifier for file and shell mutation checks.
  *
- * Mirrors the Bash/PowerShell lists in `utils/permissions/filesystem.ts`
+ * Owns the lists also used by `utils/permissions/filesystem.ts`
  * (`.git` / `.vscode` / `.idea` / `.agenc`, shell rc files, Windows 8.3 /
  * trailing-dot / device-name / ADS spellings) so Write/Edit/notebook/
  * apply-patch cannot auto-allow paths the shell pipeline would ask about.
  */
 
+import { isRemoteControlAuthorityPath } from "../sandbox/remote-control-protection.js";
 import { getPlatform } from "../utils/platform.js";
 import { containsVulnerableUncPath } from "../utils/shell/readOnlyCommandValidation.js";
 
@@ -37,19 +38,14 @@ export const DANGEROUS_DIRECTORIES = [
   ".agents",
 ] as const;
 
-/**
- * The roots the reduced classifier already protected before this list was
- * applied to system writes. Broadening the list must not quietly lower the
- * authority these need: they stay explicit-user-only, while the directories
- * added alongside them follow the new classifier policy.
- */
-const EXPLICIT_APPROVAL_ONLY_DIRECTORIES = new Set([
-  ".git",
-  ".agenc",
-  ".agents",
-]);
-
-const AGENC_ORDINARY_CHILDREN = new Set(["commands", "worktrees"]);
+// Retired command files have no runtime authority. Worktrees under .agenc
+// are structural. These exceptions apply only to their immediate parent;
+// protected descendants and resolved symlink targets are checked separately.
+const ORDINARY_DIRECTORY_CHILDREN: ReadonlyMap<string, ReadonlySet<string>> =
+  new Map([
+    [".agenc", new Set(["commands", "worktrees"])],
+    [".agents", new Set(["commands"])],
+  ]);
 
 /**
  * Normalizes a path for case-insensitive comparison.
@@ -95,11 +91,23 @@ export function hasSuspiciousWindowsPathPattern(path: string): boolean {
     return true;
   }
 
-  if (/[.\s]+$/.test(path)) {
+  // Windows strips dots/spaces from every component, not just the filename.
+  // Ordinary traversal components are handled by path resolution instead.
+  if (
+    pathSegments(path).some(
+      (part) => part !== "." && part !== ".." && /[.\s]+$/.test(part),
+    )
+  ) {
     return true;
   }
 
-  if (/\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(path)) {
+  if (
+    pathSegments(path).some(
+      (part) =>
+        /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part) ||
+        /\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(part),
+    )
+  ) {
     return true;
   }
 
@@ -116,8 +124,8 @@ export function hasSuspiciousWindowsPathPattern(path: string): boolean {
 
 /**
  * Check if a file path is dangerous to auto-edit without explicit permission.
- * Covers `.git` / `.vscode` / `.idea` / `.agenc` (except retired
- * `commands`/`worktrees` children) and well-known shell/git config files.
+ * Covers `.git` / `.vscode` / `.idea` / `.agenc` / `.agents`, with narrow
+ * exceptions for retired commands and .agenc worktrees, plus shell/git files.
  * Case-insensitive so mixed-case segments cannot skip the list.
  */
 export function isDangerousFilePathToAutoEdit(path: string): boolean {
@@ -136,14 +144,14 @@ export function isDangerousFilePathToAutoEdit(path: string): boolean {
         continue;
       }
 
-      if (dir === ".agenc") {
-        const nextSegment = segments[i + 1];
-        if (
-          nextSegment &&
-          AGENC_ORDINARY_CHILDREN.has(normalizeCaseForComparison(nextSegment))
-        ) {
-          break;
-        }
+      const nextSegment = segments[i + 1];
+      if (
+        nextSegment &&
+        ORDINARY_DIRECTORY_CHILDREN.get(dir)?.has(
+          normalizeCaseForComparison(nextSegment),
+        )
+      ) {
+        break;
       }
 
       return true;
@@ -173,29 +181,15 @@ export type ProtectedPathSafetyResult =
       readonly classifierApprovable: boolean;
     };
 
-/**
- * Shared write-safety classification: suspicious Windows spellings first
- * (bypass-immune), then the dangerous-file/directory list.
- *
- * Callers that need extra session-dependent checks (live AgenC config
- * paths) should run those between the two loops rather than forking this
- * list.
- */
-/**
- * True when the path sits under one of the originally protected roots, which
- * a classifier may not approve on the user's behalf.
- */
-function requiresExplicitApproval(path: string): boolean {
-  return pathSegments(path).some((segment) =>
-    EXPLICIT_APPROVAL_ONLY_DIRECTORIES.has(normalizeCaseForComparison(segment)),
-  );
-}
-
+/** Sensitive mutations require a person, including in auto and bypass modes. */
 export function checkProtectedPathSafety(
   path: string,
   pathsToCheck: readonly string[],
 ): ProtectedPathSafetyResult {
   for (const pathToCheck of pathsToCheck) {
+    if (isRemoteControlAuthorityPath(pathToCheck)) {
+      return { safe: false, message: "Remote control configuration is owner-only; edit it outside the agent.", classifierApprovable: false };
+    }
     if (hasSuspiciousWindowsPathPattern(pathToCheck)) {
       return {
         safe: false,
@@ -207,23 +201,11 @@ export function checkProtectedPathSafety(
     }
   }
 
-  // Every candidate, not the first match. pathsToCheck carries the path as
-  // written and its canonical target, so a `.vscode` symlink into `.git` would
-  // otherwise be judged by the weaker alias inspected first and never reach the
-  // root it actually points at. Take the strongest restriction any candidate
-  // implies.
-  let dangerous = false;
-  let explicitApprovalOnly = false;
-  for (const pathToCheck of pathsToCheck) {
-    if (!isDangerousFilePathToAutoEdit(pathToCheck)) continue;
-    dangerous = true;
-    if (requiresExplicitApproval(pathToCheck)) explicitApprovalOnly = true;
-  }
-  if (dangerous) {
+  if (pathsToCheck.some(isDangerousFilePathToAutoEdit)) {
     return {
       safe: false,
       message: `AgenC requested permissions to edit ${path} which is a sensitive file.`,
-      classifierApprovable: !explicitApprovalOnly,
+      classifierApprovable: false,
     };
   }
 

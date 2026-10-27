@@ -13,7 +13,7 @@ import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 afterEach(() => vi.restoreAllMocks());
 
 describe("live permission instructions", () => {
-  test("replaces plan guidance and required tool choice after an in-turn exit", async () => {
+  test("replaces plan guidance after an approved in-turn exit", async () => {
     const requests: { messages: readonly LLMMessage[]; options: LLMChatOptions | undefined }[] = [];
     const provider = mkProvider();
     const registry = {
@@ -48,7 +48,7 @@ describe("live permission instructions", () => {
     expect(session.permissionModeRegistry.current().mode).toBe("acceptEdits");
     expect(requests).toHaveLength(2);
     expect(requests[0]?.options?.systemPrompt).toContain("# Permission Mode: plan");
-    expect(requests[0]?.options?.toolChoice).toBe("required");
+    expect(requests[0]?.options?.toolChoice).toBeUndefined();
     expect(requests[1]?.options?.systemPrompt).toContain("# Permission Mode: acceptEdits");
     expect(requests[1]?.options?.systemPrompt).not.toContain("# Permission Mode: plan");
     expect(requests[1]?.options?.toolChoice).not.toBe("required");

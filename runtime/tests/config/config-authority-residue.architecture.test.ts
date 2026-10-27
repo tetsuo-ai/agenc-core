@@ -55,6 +55,9 @@ const retainedSecureStorageTerminologyPatterns = new Map<string, RegExp>([
   ["fixtures/hermetic-env-contract.json", /AGENC_WALLET_VAULT_PASSPHRASE/u],
   ["helpers/hermetic-env.mjs", /AGENC_WALLET_VAULT_PASSPHRASE/u],
   ["hermetic-test-discovery.test.ts", /AGENC_WALLET_VAULT_PASSPHRASE/u],
+  // Same live secret name: the kit adapter must drop it from the binary's
+  // environment, and this suite checks that it does.
+  ["protocol/marketplace-cli.test.ts", /AGENC_WALLET_VAULT_PASSPHRASE/u],
   [
     "secrets/sanitizer-wallet-c1.test.ts",
     /vault passphrase|vault-passphrase|AGENC_WALLET_VAULT_PASSPHRASE/iu,

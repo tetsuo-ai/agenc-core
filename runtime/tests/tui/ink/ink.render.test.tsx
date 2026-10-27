@@ -1,4 +1,6 @@
 import { PassThrough } from 'node:stream'
+import { closeSync, openSync } from 'node:fs'
+import { ReadStream } from 'node:tty'
 
 import chalk from 'chalk'
 import React from 'react'
@@ -595,20 +597,69 @@ describe('Ink instance rendering paths', () => {
   test('suspends and resumes stdin listeners and raw mode around external TUI handoff', async () => {
     const harness = await createHarness({ stdinIsRaw: true })
     const readableListener = vi.fn()
+    const dataListener = vi.fn()
 
     try {
       harness.stdin.on('readable', readableListener)
+      harness.stdin.on('data', dataListener)
       expect(harness.stdin.listenerCount('readable')).toBe(1)
 
+      harness.stdin.resume()
       harness.instance.suspendStdin()
+      expect(harness.stdin.isPaused()).toBe(true)
       expect(harness.stdin.listenerCount('readable')).toBe(0)
+      expect(harness.stdin.listenerCount('data')).toBe(0)
+      harness.stdin.write('editor keys')
+      await sleep(20)
+      expect(dataListener).not.toHaveBeenCalled()
+      expect(harness.stdin.read()?.toString()).toBe('editor keys')
       expect(harness.rawModes).toEqual([false])
 
       harness.instance.resumeStdin()
       expect(harness.stdin.listeners('readable')).toContain(readableListener)
+      expect(harness.stdin.listeners('data')).toContain(dataListener)
       expect(harness.rawModes).toEqual([false, true])
     } finally {
       await harness.dispose()
+    }
+  })
+
+  test.skipIf(process.platform === 'win32')('stops the native TTY reader when readable mode is already paused', async () => {
+    const fd = openSync('/dev/ptmx', 'r+')
+    const stdin = new ReadStream(fd) as ReadStream & { _handle: { reading: boolean } }
+    const streams = createTestStreams({ stdoutIsTTY: false })
+    const root = await createRoot({
+      stdin,
+      stdout: streams.stdout as unknown as NodeJS.WriteStream,
+      stderr: streams.stderr as unknown as NodeJS.WriteStream,
+      patchConsole: false,
+    })
+    const instance = getInkInstance(streams.stdout)
+    const listener = () => {}
+    try {
+      stdin.setRawMode(true)
+      stdin.on('readable', listener)
+      stdin.read(0)
+      await sleep(20)
+      // A readable listener pauses flowing delivery, but libuv still reads.
+      expect(stdin.isPaused()).toBe(true)
+      expect(stdin._handle.reading).toBe(true)
+      instance.suspendStdin()
+      await sleep(20)
+      expect(stdin._handle.reading).toBe(false)
+      expect(stdin.listenerCount('readable')).toBe(0)
+      instance.resumeStdin()
+      await sleep(20)
+      expect(stdin._handle.reading).toBe(true)
+      expect(stdin.isRaw).toBe(true)
+      expect(stdin.listeners('readable')).toContain(listener)
+    } finally {
+      root.unmount()
+      stdin.destroy()
+      streams.stdin.end()
+      streams.stdout.end()
+      streams.stderr.end()
+      try { closeSync(fd) } catch { /* TTY handle may already close its fd. */ }
     }
   })
 

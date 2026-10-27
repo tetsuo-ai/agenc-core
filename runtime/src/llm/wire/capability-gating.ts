@@ -1,3 +1,4 @@
+import { isKimiK3Model } from "../registry/kimi-models.js";
 import { resolveNvidiaCurrentModel } from "../registry/nvidia-current-models.js";
 /**
  * Per-provider capability gating for chat-completions wire fields.
@@ -35,6 +36,7 @@ import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
 import { resolveQwenCurrentModel } from "../registry/qwen-current-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL } from "../registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel } from "../registry/deepseek-models.js";
+import { gatewayFamilyDefaultEffort, gatewayModelFamily } from "../model-family.js";
 
 export interface ChatCompletionsCapabilityHints {
   /**
@@ -52,6 +54,13 @@ export interface ChatCompletionsCapabilityHints {
    * accept flag alone would forward values the destination rejects.
    */
   readonly reasoningEffortAllowedValues?: ReadonlySet<string>;
+  /**
+   * Effort sent when the session sets none. A DeepSeek model runs at high on
+   * DeepSeek's own API by default; gateways default it differently (Ollama
+   * Cloud serves V4 Pro at low, some OpenRouter hosts do not reason unless
+   * asked), so the gateway gets DeepSeek's default explicitly.
+   */
+  readonly defaultReasoningEffort?: string;
   /** OpenRouter accepts its own nested reasoning envelope. */
   readonly reasoningEffortEnvelope?: "openrouter";
   /**
@@ -90,9 +99,21 @@ export interface ChatCompletionsCapabilityHints {
    * The provider caches prompt prefixes per account, across sessions, with no
    * cache key. The wire moves the per-session tail of the system prompt after
    * the setup reminders so the head, tools and stable reminders are one prefix
-   * sessions share (`AGENC_SHARED_PREFIX_TAIL=0` turns this off).
+   * sessions share (`AGENC_SHARED_PREFIX_TAIL=0` turns this off). A DeepSeek
+   * model through a gateway gets the same layout, so it sees the prompt it
+   * sees on DeepSeek's own API.
    */
   readonly sharesPromptPrefixAcrossSessions?: boolean;
+  /**
+   * Ask for prompt caching where the provider caches only on request.
+   * `top_level` adds one `cache_control` marker that the provider moves to the
+   * end of the conversation (Claude through OpenRouter). `system_prompt` marks
+   * the system prompt, so its tokens and the tools are read from cache on
+   * every later call (Gemini through OpenRouter; in live probes a marker on
+   * the newest message was not reused by the next request).
+   */
+  readonly promptCacheControl?: "top_level" | "system_prompt";
+  readonly acceptsImplicitCacheTtl?: boolean;
   /** Explain encoded function aliases when instructions use canonical names. */
   readonly includeToolNameAliases?: boolean;
   /**
@@ -101,6 +122,15 @@ export interface ChatCompletionsCapabilityHints {
    * unchanged before the corresponding tool results are submitted.
    */
   readonly replaysReasoningContent?: boolean;
+  /**
+   * Replay the provider's structured `reasoning_details` array (OpenRouter,
+   * Venice) unchanged instead of a reasoning text field. GPT models return
+   * their reasoning only as encrypted items there; replaying the summary text
+   * would not restore it. Requires `replaysReasoningContent`.
+   */
+  readonly replaysReasoningDetails?: boolean;
+  /** Opt-in native DeepSeek retention of empty-visible assistant reasoning. */
+  readonly preservesReasoningOnlyMessages?: boolean;
   /** Provider-specific assistant reasoning field used for parse and replay. */
   readonly reasoningContentField?: "reasoning_content" | "reasoning";
   /** Older compatible runtimes may emit the legacy name while replay uses canonical. */
@@ -200,6 +230,43 @@ export interface ChatCompletionsCapabilityHints {
    * field and tear down the stream on encounter.
    */
   readonly acceptsStreamUsage?: boolean;
+  /**
+   * The response's `usage.cost` is what the provider charged for the call
+   * in USD (OpenRouter reports it on every response, streamed or not).
+   * https://openrouter.ai/docs/use-cases/usage-accounting
+   */
+  readonly reportsUsageCost?: boolean;
+  /**
+   * Venice reports each call's charge as a top-level `cost` object
+   * (`{usd, diem}`) beside `usage`, streamed or not.
+   * https://docs.venice.ai/api-reference/endpoint/chat/completions
+   */
+  readonly reportsTopLevelCost?: boolean;
+  /**
+   * Request fields that carry the session's prompt-cache key. OpenRouter keeps
+   * requests with one `prompt_cache_key` on the host that served their first
+   * cache hit (its prompt cache lives on that host); Venice routes
+   * `prompt_cache_key` to a warm server. OpenRouter's `session_id` is not
+   * used: it pins a session to whichever host served its first request,
+   * whether that host caches or not.
+   * https://openrouter.ai/docs/features/prompt-caching
+   * https://docs.venice.ai/overview/guides/prompt-caching
+   */
+  readonly promptCacheKeyFields?: readonly ("session_id" | "prompt_cache_key")[];
+  /**
+   * What the cache key groups. `conversation` (default) is the session's own
+   * key. `prefix` groups every request with the same model and leading system
+   * message, as DeepSeek's own API shares one account-wide prefix cache across
+   * sessions: a new session then lands where that prefix is already cached
+   * instead of on a cold host or server.
+   */
+  readonly promptCacheKeyScope?: "conversation" | "prefix";
+  /**
+   * Request headers that repeat the body's `prompt_cache_key`. abliteration.ai
+   * routes by `x-abliteration-session-id` when it and the body key are both
+   * present (docs.abliteration.ai/capabilities/prompt-caching).
+   */
+  readonly promptCacheKeyHeaders?: readonly "x-abliteration-session-id"[];
   /**
    * If `true`, tool JSON schemas are rewritten to the subset
    * llama.cpp's json-schema-to-grammar compiles. Grammar-constrained
@@ -333,6 +400,22 @@ export function filterToolsForLocalProfile<
 }
 
 /**
+ * DeepSeek's default effort (high) for a gateway route that accepts it, as
+ * gatewayFamilyDefaultEffort decides: on Ollama Cloud and Venice, which send
+ * `none` for Off, and elsewhere only where the route offers no `none` level,
+ * since there an unset effort cannot be a deliberate opt-out.
+ */
+function deepSeekGatewayDefaultEffort(
+  slug: string,
+  model: string | undefined,
+): { readonly defaultReasoningEffort?: string } {
+  const levels = resolveReasoningEffort({ provider: slug, model }).chatLevels;
+  return levels !== undefined && gatewayFamilyDefaultEffort(slug, model, levels) !== undefined
+    ? { defaultReasoningEffort: "high" }
+    : {};
+}
+
+/**
  * Resolve the capability hints for a given provider slug + model.
  * Each adapter calls this when building a chat-completions request so
  * the wire layer can strip fields the destination provider rejects.
@@ -346,6 +429,11 @@ export function chatCompletionsCapabilityHintsForProvider(
   const isManagedDeepSeek = options.managedGateway === true &&
     slug === "openrouter" && isAgenCDeepSeekModel(model);
   const isNativeDeepSeek = slug === "deepseek" && isNativeDeepSeekModel(model);
+  // A gateway serving DeepSeek or GPT by its id gets that family's request
+  // shape where the gateway documents the equivalent field (model-family.ts).
+  // The managed AgenC route keeps its own reviewed contract.
+  const gatewayFamily = options.managedGateway === true ? undefined : gatewayModelFamily(slug, model);
+  const deepSeekDefaultEffort = gatewayFamily === "deepseek" ? deepSeekGatewayDefaultEffort(slug, model) : {};
   const normalizedModel = model?.trim().toLowerCase() ?? "";
   const reasoningContentProvenance =
     slug.length > 0 && normalizedModel.length > 0
@@ -360,7 +448,7 @@ export function chatCompletionsCapabilityHintsForProvider(
   const isMinimax = slug === "minimax";
   const isMinimaxM3 =
     isMinimax && /(?:^|[/:])minimax-m3(?:$|[-_.:])/i.test(model ?? "");
-  const isKimiK3 = isKimi && normalizedModel === "kimi-k3";
+  const isKimiK3 = isKimi && isKimiK3Model(model);
   const isKimiK27 =
     isKimi && /^kimi-k2\.7-code(?:-highspeed)?$/u.test(normalizedModel);
   const isKimiK26 = isKimi && normalizedModel === "kimi-k2.6";
@@ -428,8 +516,57 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
+    // The managed gateway prices calls itself; OpenRouter's charge to the
+    // gateway is not what the user pays.
     ...(slug === "openrouter" && options.managedGateway !== true
-      ? { reasoningEffortEnvelope: "openrouter" as const }
+      ? {
+          reasoningEffortEnvelope: "openrouter" as const,
+          reportsUsageCost: true,
+          // Claude and Gemini cache through OpenRouter only when the request
+          // asks: without a marker every call paid full input price.
+          ...(/^~?anthropic\//u.test(normalizedModel)
+            ? { promptCacheControl: "top_level" as const }
+            : /^~?google\/gemini/u.test(normalizedModel)
+              ? { promptCacheControl: "system_prompt" as const }
+              : {}),
+          // OpenRouter returns reasoning as `reasoning` (and structured
+          // `reasoning_details`); `reasoning_content` is its accepted alias.
+          reasoningContentField: "reasoning" as const,
+          reasoningContentFallbackField: "reasoning_content" as const,
+          // Reasoning replay is a gateway contract across all model families.
+          // Prefer the original structured items, with plaintext as a fallback.
+          replaysReasoningContent: true,
+          replaysReasoningDetails: true,
+          // A model whose OpenRouter row lists image input sees images that
+          // tools return (a screenshot, a PNG read with FileRead), relayed as
+          // a user image the way the other routed providers do; a text-only
+          // model gets a note that the image was left out.
+          toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+          ...(gatewayFamily === "deepseek" ? {
+            // DeepSeek's own API: reasoning goes back on later requests, the
+            // session tail follows the setup reminders, no
+            // parallel_tool_calls field is sent (the model emits several
+            // calls on its own), and sessions share the cached prefix: one
+            // prompt_cache_key per model and leading system message.
+            acceptsParallelToolCalls: false,
+            sharesPromptPrefixAcrossSessions: true,
+            promptCacheKeyFields: ["prompt_cache_key"] as const,
+            promptCacheKeyScope: "prefix" as const,
+            ...deepSeekDefaultEffort,
+          } : {}),
+          ...(gatewayFamily === "kimi" ? { sharesPromptPrefixAcrossSessions: true } : {}),
+          ...(gatewayFamily === "openai" ? {
+            // OpenAI's own API replays the encrypted reasoning items; through
+            // OpenRouter they arrive in reasoning_details. The cache key is
+            // the session's own, as on OpenAI's API, which separates cache
+            // reuse by key.
+            promptCacheKeyFields: ["prompt_cache_key"] as const,
+          } : {}),
+          // OpenRouter's routing contract is narrower than the upstream API.
+          // Sending this unadvertised optional control excludes GPT endpoints
+          // under require_parameters. Omission leaves their parallel default.
+          acceptsParallelToolCalls: false,
+        }
       : {}),
     ...(slug === "openai" ? { gatesTemperatureOnOpenAiReasoning: true } : {}),
     ...(slug === "mistral" ? {
@@ -452,6 +589,41 @@ export function chatCompletionsCapabilityHintsForProvider(
         reasoningContentField: "reasoning_content" as const,
       } : {}),
     } : {}),
+    ...(slug === "venice" ? {
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+      acceptsParallelToolCalls: false,
+      replaysReasoningContent: true,
+      reasoningContentField: "reasoning_content" as const,
+      omitsToolControlsWithoutTools: true,
+      reportsTopLevelCost: true,
+      promptCacheKeyFields: ["prompt_cache_key"] as const,
+      ...(gatewayFamily === "deepseek"
+        ? { sharesPromptPrefixAcrossSessions: true, promptCacheKeyScope: "prefix" as const, ...deepSeekDefaultEffort }
+        : {}),
+      // GPT's reasoning comes back encrypted in reasoning_details; the
+      // reasoning_content text is only its summary.
+      ...(gatewayFamily === "openai" ? { replaysReasoningDetails: true } : {}),
+    } : {}),
+    ...(slug === "abliteration" ? {
+      // Image input follows the model catalog, including Large Flash.
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+      // Chat Completions rejects an empty `tools` array and a tool choice
+      // without tools.
+      omitsToolControlsWithoutTools: true,
+      // The live API sends the trace as `reasoning` (stream deltas and
+      // messages, checked 2026-10-22); the docs name it `reasoning_content`.
+      // Either is shown as thinking. Neither is sent back.
+      reasoningContentField: "reasoning" as const,
+      reasoningContentFallbackField: "reasoning_content" as const,
+      // A stable key per session routes its requests to a server that holds
+      // the cached prefix (docs.abliteration.ai/capabilities/prompt-caching).
+      // The session header carries the same key; with both present the
+      // header is the routing hint the provider reads.
+      promptCacheKeyFields: ["prompt_cache_key"] as const,
+      promptCacheKeyHeaders: ["x-abliteration-session-id"] as const,
+    } : {}),
     ...(slug === "groq" ? {
       acceptsDirectImageInput: acceptsToolResultImages,
       toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
@@ -466,7 +638,11 @@ export function chatCompletionsCapabilityHintsForProvider(
       reasoningContentFallbackField: "reasoning_content" as const,
       acceptsParallelToolCalls: false,
       omitsToolControlsWithoutTools: true,
-      includeToolNameAliases: true,
+      // DeepSeek models get the prompt DeepSeek's own API gets: the shared
+      // prefix layout and no alias block (they call encoded names natively).
+      ...(gatewayFamily === "deepseek"
+        ? { sharesPromptPrefixAcrossSessions: true, ...deepSeekDefaultEffort }
+        : { includeToolNameAliases: true }),
     } : {}),
     ...(isNativeDeepSeek ? {
       acceptsToolChoice: false,
@@ -538,6 +714,12 @@ export function chatCompletionsCapabilityHintsForProvider(
     ...(supportsZaiToolStreaming ? { streamsToolCalls: true } : {}),
     ...(isKnownKimiModel
       ? {
+          // Moonshot caches stable prefixes automatically with a 5m TTL.
+          sharesPromptPrefixAcrossSessions: true,
+          // Session routing hint, not a cache object or server conversation.
+          // https://platform.kimi.ai/docs/api/chat
+          promptCacheKeyFields: ["prompt_cache_key"] as const,
+          acceptsImplicitCacheTtl: isKimiK3,
           acceptsDirectImageInput: true,
           acceptsParallelToolCalls: false,
           maxToolDefinitions: 128,

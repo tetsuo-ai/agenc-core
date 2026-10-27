@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
@@ -380,7 +380,7 @@ let harness: Harness;
 let seenOverrides: Readonly<Record<string, string>> | undefined;
 let seenPolicies: (WorkflowRunSessionPolicy | undefined)[];
 
-function makeHarness(): Harness {
+function makeHarness(options: { readonly defaultLightMode?: () => boolean } = {}): Harness {
   const home = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-home-"));
   const repoDir = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-repo-"));
   const nonGitDir = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-plain-"));
@@ -423,6 +423,9 @@ function makeHarness(): Harness {
         recorded.push(run);
       },
       warn: (message) => warnings.push(message),
+      ...(options.defaultLightMode !== undefined
+        ? { defaultLightMode: options.defaultLightMode }
+        : {}),
     }),
   });
   return {
@@ -622,6 +625,36 @@ describe("daemon dispatcher — run.start", () => {
     await harness.controller.awaitRun(standard.result!.runId);
     const standardSpec = (harness.repo.getEffect(standard.result!.runId, "workflow.intake")!.evidence as { spec: WorkflowSpec }).spec;
     expect(standardSpec.lightMode).toBeUndefined();
+  });
+
+  it("gives a new Goal without lightMode the daemon default; explicit values and continuations keep theirs", async () => {
+    harness.cleanup();
+    const defaultLightMode = vi.fn(() => true);
+    harness = makeHarness({ defaultLightMode });
+    const defaulted = await dispatchRunStart(startParams());
+    expect(defaulted.error).toBeUndefined();
+    expect(defaulted.result?.lightMode).toBe(true);
+    expect(seenPolicies[0]?.lightMode).toBe(true);
+    await harness.controller.awaitRun(defaulted.result!.runId);
+    const defaultedSpec = (harness.repo.getEffect(defaulted.result!.runId, "workflow.intake")!.evidence as { spec: WorkflowSpec }).spec;
+    expect(defaultedSpec.lightMode).toBe(true);
+    expect(harness.recorded[0]?.metadata?.lightMode).toBe(true);
+
+    const standard = await dispatchRunStart(startParams({ lightMode: false }));
+    expect(standard.result?.lightMode).toBe(false);
+    expect(seenPolicies[1]?.lightMode).toBe(false);
+    await harness.controller.awaitRun(standard.result!.runId);
+
+    // A continuation keeps its source Goal's mode; the default is for new Goals.
+    const inherited = await dispatchRunStart(startParams({
+      continuation: { sourceRunId: standard.result!.runId, requestId: "standard-inherit" },
+      maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z",
+    }));
+    expect(inherited.error).toBeUndefined();
+    expect(inherited.result?.lightMode).toBe(false);
+    expect(seenPolicies[2]?.lightMode).toBe(false);
+    await harness.controller.awaitRun(inherited.result!.runId);
+    expect(defaultLightMode).toHaveBeenCalledOnce();
   });
 
   it("rejects a non-boolean Light mode before opening a run", async () => {

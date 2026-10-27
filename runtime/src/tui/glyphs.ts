@@ -14,6 +14,8 @@ export interface AgenCTuiGlyphs {
   readonly modalDivider: string;
   readonly mcpResource: string;
   readonly pointer: string;
+  /** Marks the selected row of the slash and mention suggestion list. */
+  readonly pointerSmall: string;
   readonly promptBypass: string;
   readonly responseGutter: string;
   readonly redactedThinkingPrefix: string;
@@ -52,6 +54,7 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   modalDivider: "-",
   mcpResource: "*",
   pointer: ">",
+  pointerSmall: ">",
   promptBypass: ">",
   responseGutter: "|_",
   redactedThinkingPrefix: "*",
@@ -90,6 +93,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   modalDivider: "▔",
   mcpResource: "◇",
   pointer: figures.pointer,
+  pointerSmall: figures.pointerSmall,
   promptBypass: "▶",
   responseGutter: "└",
   redactedThinkingPrefix: "✻",

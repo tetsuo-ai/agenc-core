@@ -171,6 +171,7 @@ describe("daemon exit diagnostics", () => {
       proc: proc as never,
       now: () => "2026-09-06T02:33:20.000Z",
       exit,
+      memoryEvidence: () => ({ rssBytes: 4096, heapUsedBytes: 1024, maxRssKb: 8, cgroup: { oom_kill: 1 } }),
     });
 
     proc.emit("SIGTERM", "SIGTERM");
@@ -190,6 +191,10 @@ describe("daemon exit diagnostics", () => {
 
     proc.emit("exit", 1);
     expect(writes.at(-1)).toContain("process exit code=1");
+    expect(writes.some(line => line.includes('"signal":"SIGTERM"') && line.includes('"rssBytes":4096'))).toBe(true);
+    expect(writes.some(line => line.includes('"code":1') && line.includes('"oom_kill":1'))).toBe(true);
+    proc.emit("uncaughtException", new Error("Authorization: Bearer synthetic-test-token-123456789"));
+    expect(writes.at(-1)).not.toContain("synthetic-test-token-123456789");
 
     dispose();
     expect(proc.listenerCount("exit")).toBe(0);

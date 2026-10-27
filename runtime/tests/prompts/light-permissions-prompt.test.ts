@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  COMPACT_BYPASS_AUTONOMY_NOTE,
   LIGHT_APPROVAL_BYPASS_ESCALATION,
+  LIGHT_APPROVAL_NEVER,
   LIGHT_APPROVAL_ON_REQUEST,
+  LIGHT_BYPASS_AUTONOMY_NOTE,
   ROUTINE_NO_APPROVER_NOTE,
   getPermissionsSection,
 } from "../../src/prompts/permissions-prompt.js";
@@ -55,7 +58,7 @@ describe("Light permission section", () => {
 
   test("workspace-write keeps where commands may write", () => {
     expect(section("acceptEdits", "workspace_write", false, true)).toBe([
-      "Permission mode: acceptEdits. Sandbox workspace-write: commands may read files and edit files in cwd and writable_roots; editing files elsewhere requires approval. Network access is restricted.",
+      "Permission mode: acceptEdits. Sandbox workspace-write: commands read anywhere and edit only in cwd and writable_roots unless approved. Network access is restricted.",
       "Approval policy on-failure: commands run in the sandbox; a command that fails there is escalated for user approval to run again without it.",
     ].join("\n"));
   });
@@ -90,8 +93,10 @@ describe("Light permission section", () => {
     const light = section("bypassPermissions", "danger_full_access", true, true)!;
     expect(light).toContain("do not provide sandbox_permissions; such commands are rejected");
     expect(light).toContain("Tool calls are pre-approved");
-    expect(light).toContain("destructive, irreversible, shared-system or externally visible actions need the user's explicit request");
-    expect(light).toContain("ask one question with AskUserQuestion");
+    // The action rules the note points at list the actions that still need the user's request.
+    expect(light).toContain("the action rules above still apply.");
+    expect(light).toContain("Ask one question (AskUserQuestion) only if the task is genuinely ambiguous, else make reasonable assumptions");
+    expect(light).toContain("when the work is done and verified, stop and report");
     expect(light).not.toContain("Executing actions with care");
     expect(section("default", "workspace_write", false, true)).not.toContain("pre-approved");
   });
@@ -102,10 +107,11 @@ describe("Light permission section", () => {
   test("bypass in a workspace-write sandbox says a request to leave it is granted, and for what", () => {
     const light = section("bypassPermissions", "workspace_write", false, true)!;
     expect(light).toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
-    expect(light).toContain("Approval policy never: bypass mode grants a request to leave the sandbox without asking.");
-    expect(light).toContain("only for GUI apps (open, xdg-open, osascript) or blocked network");
+    expect(light).toContain("Approval policy never: bypass mode grants leaving the sandbox without asking");
+    expect(light).toContain("only for GUI apps (open, xdg-open, osascript), blocked network or one retry of a requested operation the sandbox refused on a protected path such as .git");
     expect(light).toContain("sandbox_permissions \"require_escalated\" and a one-line justification");
-    expect(light).toContain("Keep file changes inside the workspace");
+    expect(light).toContain("Keep file changes in the workspace");
+    expect(light).toContain("never write protected files or work around the sandbox another way");
     expect(light).not.toContain("such commands are rejected");
     expect(light).toContain("Tool calls are pre-approved");
   });
@@ -189,6 +195,71 @@ describe("Light permission section", () => {
       expect(request.baseInstructions).toBe(`STABLE_BASE\n\n${expected}`);
       expect(request.baseInstructions.includes("# Escalation Requests")).toBe(!lightMode);
       expect(request.baseInstructions.includes("Permission mode: default.")).toBe(lightMode);
+    }
+  });
+});
+
+// A standard session with compact tool wording (ToolRegistry.compactPresentation)
+// gets the same short texts; its head names the action rules' section.
+describe("compact standard permission section", () => {
+  function compact(mode: PermissionMode, sandboxPolicy: SandboxPolicy, network = false): string | null {
+    return getPermissionsSection(
+      createEmptyToolPermissionContext({ mode }),
+      { sandboxPolicy, networkSandboxPolicy: { enabled: network } },
+      { compact: true },
+    );
+  }
+
+  test.each(MODES)("%s uses Light's texts", (mode) => {
+    for (const [sandboxPolicy] of SANDBOXES) {
+      const text = compact(mode, sandboxPolicy)!;
+      const light = section(mode, sandboxPolicy, false, true)!;
+      expect(text.replace(COMPACT_BYPASS_AUTONOMY_NOTE, LIGHT_BYPASS_AUTONOMY_NOTE)).toBe(light);
+      expect(text).not.toContain("# Escalation Requests");
+    }
+  });
+
+  test("on-request keeps every escalation rule", () => {
+    expect(compact("default", "workspace_write")).toContain(LIGHT_APPROVAL_ON_REQUEST);
+  });
+
+  test("bypass names the standard head's section for the action rules", () => {
+    const text = compact("bypassPermissions", "danger_full_access")!;
+    expect(text).toContain(LIGHT_APPROVAL_NEVER);
+    expect(text).toContain("the rules in 'Executing actions with care' still apply");
+    expect(text).not.toContain("the action rules above");
+    expect(compact("bypassPermissions", "workspace_write")).toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
+  });
+
+  test("bypass carries what the auto-mode reminder it replaces adds to the standard head", () => {
+    // The auto-mode reminder is skipped when this note is present (session/permission-instructions.ts),
+    // so its assumptions sentence and its secrets rule live here; the head's action rules already
+    // cover its destructive, shared-system and posting rules.
+    expect(COMPACT_BYPASS_AUTONOMY_NOTE).toContain("else make reasonable assumptions");
+    expect(COMPACT_BYPASS_AUTONOMY_NOTE).toContain("never share a secret unless the user authorized that secret and its destination");
+    expect(compact("bypassPermissions", "workspace_write")).toContain(COMPACT_BYPASS_AUTONOMY_NOTE);
+    for (const mode of ["default", "acceptEdits", "plan"] as const) {
+      expect(compact(mode, "workspace_write")).not.toContain(COMPACT_BYPASS_AUTONOMY_NOTE);
+    }
+  });
+
+  test("Light wins when both are set", () => {
+    const both = getPermissionsSection(
+      createEmptyToolPermissionContext({ mode: "bypassPermissions" }),
+      { sandboxPolicy: "danger_full_access", networkSandboxPolicy: { enabled: false } },
+      { light: true, compact: true },
+    );
+    expect(both).toContain("the action rules above still apply");
+  });
+
+  test("deferred per-request instructions follow the registry's compact presentation", () => {
+    const context = { ...mkCtx({ permissionMode: "default" }), permissionInstructionsDeferred: true };
+    const ctx = createEmptyToolPermissionContext({ mode: "default" });
+    for (const compactPresentation of [true, false]) {
+      const session = { services: { runtimeOptions: {}, registry: { compactPresentation } } } as never;
+      const text = getSessionPermissionInstructions(session, context, ctx);
+      expect(text.includes(LIGHT_APPROVAL_ON_REQUEST)).toBe(compactPresentation);
+      expect(text.includes("# Escalation Requests")).toBe(!compactPresentation);
     }
   });
 });

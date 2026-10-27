@@ -2,9 +2,10 @@
  * agenc-core#2263: the `# Session-specific guidance` block must ride the
  * cached static head, not the volatile tail.
  *
- * The tail is the LAST input item of every request, so it always sits after
- * the history the previous request ended with — the provider's cached prefix
- * stops before it and its bytes are re-read on every call. Guidance is a pure
+ * The tail is the first input item and changes whenever any of its sections
+ * does (the turn's timestamp, permission mode, project instructions), which
+ * rewrites everything after the instructions; the static head is the part
+ * every session shares. Guidance is a pure
  * function of `enabledTools` (and `agentsEnabled`, itself
  * `enabledTools.has("spawn_agent")`), the same input that already decides
  * `# Using your tools` inside the cached head, so nothing about it needs to
@@ -136,9 +137,9 @@ describe("session guidance rides the cached prefix", () => {
     for (const request of [request1, request2]) {
       const input = JSON.stringify(request.input);
       expect(input).not.toContain(GUIDANCE_HEADING);
-      // The dynamic tail is still the final item, just smaller.
+      // The dynamic tail is still its own leading item, just smaller.
       expect(
-        JSON.stringify((request.input as unknown[]).at(-1)),
+        JSON.stringify((request.input as unknown[])[0]),
       ).toContain("# Environment");
     }
   });

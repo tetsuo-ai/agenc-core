@@ -1,6 +1,35 @@
 import { Buffer } from "node:buffer";
 
-import type { LLMMessage } from "../types.js";
+import type { LLMMessage, LLMUsage } from "../types.js";
+
+/**
+ * Writes are a subset of prompt_tokens, never an extra input charge. The
+ * first write locks the TTL, so use response headers, not the requested TTL.
+ * No cache objects, breakpoints, manual refresh or numeric block minimum are
+ * documented: Moonshot performs implicit prefix matching and renews on hits.
+ * https://platform.kimi.ai/docs/guide/context-caching
+ */
+export function kimiCacheWriteUsage(
+  reportedWrites: unknown,
+  headers?: Headers,
+): Pick<LLMUsage, "cacheCreationInputTokens" | "cacheCreation1hInputTokens"> {
+  const count = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  const headerCount = (name: string): number | undefined => {
+    const value = headers?.get(name);
+    return value !== undefined && value !== null && /^\d+$/u.test(value)
+      ? count(Number(value)) : undefined;
+  };
+  const fiveMinutes = headerCount("Msh-Usage-Cache-Write-Tokens-5m");
+  const oneHour = headerCount("Msh-Usage-Cache-Write-Tokens-1h");
+  const total = count(reportedWrites) ??
+    (fiveMinutes !== undefined && oneHour !== undefined ? fiveMinutes + oneHour : undefined);
+  return {
+    ...(total !== undefined ? { cacheCreationInputTokens: total } : {}),
+    ...(total !== undefined && oneHour !== undefined
+      ? { cacheCreation1hInputTokens: Math.min(total, oneHour) } : {}),
+  };
+}
 
 const MAX_KIMI_REQUEST_PAYLOAD_BYTES = 100_000_000;
 const KIMI_INLINE_IMAGE =

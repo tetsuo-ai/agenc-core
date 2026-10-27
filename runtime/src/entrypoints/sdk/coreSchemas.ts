@@ -1652,7 +1652,7 @@ const SDKSessionStateChangedMessageSchema = lazySchema(() =>
       session_id: z.string(),
     })
     .describe(
-      "Mirrors notifySessionStateChanged. 'idle' fires after heldBackResult flushes and the bg-agent do-while exits — authoritative turn-over signal.",
+      "Mirrors notifySessionStateChanged. 'idle' fires after heldBackResult flushes and the bg-agent do-while exits: authoritative turn-over signal.",
     ),
 )
 

@@ -6,12 +6,14 @@ export const REASONING_NO_PROGRESS_MS = 180_000;
 export const STREAM_RETRY_WINDOW_MS = 30 * 60_000;
 export const STREAM_STALL_RETRY_BUDGET_MS = 15 * 60_000;
 
-export type StreamProgressStop = "stream_loop" | "stream_no_progress" | "stream_retry_budget";
+export type StreamProgressStop = "stream_loop" | "stream_no_progress" | "stream_retry_budget" | "stream_degenerate";
 
 export class StreamProgressError extends Error {
   constructor(readonly provider: string, readonly reason: StreamProgressStop) {
     const name = provider === "grok" ? "Grok" : "The model";
-    super(reason === "stream_loop"
+    super(reason === "stream_degenerate"
+      ? "Stopped degenerate model output; partial output is unreliable. Retry or switch model."
+      : reason === "stream_loop"
       ? `${name} got stuck repeating itself. Try again or switch model.`
       : reason === "stream_retry_budget"
         ? `${name} could not recover from a stalled response. Try again or switch model.`

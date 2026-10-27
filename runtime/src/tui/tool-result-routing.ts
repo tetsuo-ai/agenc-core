@@ -42,6 +42,8 @@ export const FILE_READ_TOOL_NAME_FOR_DISPATCH = "FileRead";
 export const FILE_WRITE_TOOL_NAME_FOR_DISPATCH = "Write";
 export const GREP_TOOL_NAME_FOR_DISPATCH = "Grep";
 export const GLOB_TOOL_NAME_FOR_DISPATCH = "Glob";
+/** `runtime/src/bin/model-facing-tools.ts`; its result is a JSON object. */
+export const WEB_SEARCH_TOOL_NAME_FOR_DISPATCH = "WebSearch";
 
 /** Where the TUI should send a tool result for rendering. */
 export type ToolResultDispatchTarget =
@@ -51,6 +53,7 @@ export type ToolResultDispatchTarget =
   | "file-write-view"
   | "grep-matches-view"
   | "glob-paths-view"
+  | "web-search-view"
   | "tool-error-view"
   | "suppress"
   | "generic";
@@ -245,6 +248,13 @@ export function pickToolResultDispatch(
       return "suppress";
     }
   }
+  // WebSearch: say how many results came from which search, not the JSON.
+  if (
+    toolName === WEB_SEARCH_TOOL_NAME_FOR_DISPATCH &&
+    summarizeWebSearchResult(joinedContent) !== undefined
+  ) {
+    return "web-search-view";
+  }
   // TodoWrite success: the boilerplate "Todos have been modified successfully…"
   // body is noise — the todo state is shown from the tool-use INPUT on the call
   // row. Suppress it the same way Edit/Write success bodies are. A failed
@@ -282,6 +292,74 @@ function isStructuredTextBlock(
     item.type === "text" &&
     typeof item.text === "string"
   );
+}
+
+/** What a WebSearch result row shows: the backend and the sources it found. */
+export interface WebSearchResultSummary {
+  /** The search that produced the results, e.g. "DeepSeek search". */
+  readonly source: string;
+  readonly results: readonly { readonly title: string; readonly url: string }[];
+  /** Why DeepSeek's search was not used, when the result fell back. */
+  readonly deepseekFallback?: string;
+}
+
+const WEB_SEARCH_SOURCE_LABELS: Readonly<Record<string, string>> = {
+  tavily: "Tavily",
+  exa: "Exa",
+  you: "You.com",
+  jina: "Jina",
+  bing: "Bing",
+  mojeek: "Mojeek",
+  linkup: "Linkup",
+  firecrawl: "Firecrawl",
+  custom: "Custom search",
+  deepseek_search: "DeepSeek search",
+  grok_web_search: "Grok web search",
+  "ollama-cloud_web_search": "Ollama web search",
+  openrouter_web_search: "OpenRouter web search",
+  venice_web_search: "Venice web search",
+  duckduckgo_html: "DuckDuckGo",
+  duckduckgo_instant_answer: "DuckDuckGo",
+};
+
+function webSearchSourceLabel(source: string): string {
+  const known = WEB_SEARCH_SOURCE_LABELS[source];
+  if (known !== undefined) return known;
+  try {
+    // A configured endpoint reports its URL; its host names it well enough.
+    return new URL(source).host || source;
+  } catch {
+    return source;
+  }
+}
+
+/** Parse the live WebSearch tool's JSON result; undefined for anything else. */
+export function summarizeWebSearchResult(
+  content: string,
+): WebSearchResultSummary | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || typeof parsed.source !== "string" || !Array.isArray(parsed.results)) {
+    return undefined;
+  }
+  const results = parsed.results.flatMap((entry) => {
+    if (!isRecord(entry) || typeof entry.url !== "string" || entry.url.length === 0) return [];
+    const title = typeof entry.title === "string" && entry.title.trim().length > 0
+      ? entry.title.trim()
+      : entry.url;
+    return [{ title, url: entry.url }];
+  });
+  return {
+    source: webSearchSourceLabel(parsed.source),
+    results,
+    ...(typeof parsed.deepseek_search_fallback === "string"
+      ? { deepseekFallback: parsed.deepseek_search_fallback }
+      : {}),
+  };
 }
 
 export function resultTextForTuiTool(value: unknown): string {

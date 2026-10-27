@@ -48,6 +48,25 @@ describe("captured uncapped model admission", () => {
   } finally { f.close(); }
  });
 
+ it("persists call-only reservations before dispatch and enforces the retained cap", async () => {
+  const f = fixture();
+  const capped = f.kernel.bindClient({ cwd: f.cwd,
+   scope: { runId: "root", sessionId: "root", autonomous: false, maxModelCalls: 1 } });
+  try {
+   await f.fast(async () => {
+    // The original client has no cap in memory; the durable allocation does.
+    const lease = await f.client.acquire(f.request("one"));
+    expect(f.rows()).toHaveLength(1);
+    f.client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    f.client.holdUnknown(lease.reservation.reservationId, "missing_provider_usage");
+    f.client.acknowledgeCompletion(lease.reservation.reservationId);
+    await expect(capped.acquire(f.request("two"))).rejects.toThrow("model_call_budget_exceeded");
+    await expect(f.client.acquire(f.request("three"))).rejects.toThrow("model_call_budget_exceeded");
+    expect(f.rows()).toHaveLength(1);
+   });
+  } finally { capped.release?.(); f.close(); }
+ });
+
  it("keeps exposed grant identities and policy immutable until the final batch", async () => {
   const f = fixture();
   try {

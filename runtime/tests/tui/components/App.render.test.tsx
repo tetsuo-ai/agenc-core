@@ -31,7 +31,14 @@ import {
   dismissLedgerVerification,
   getLedgerVerificationSnapshot,
 } from "../../services/Ledger/ledgerVerification.js";
+import { codingLedgerPrompts } from "../../services/Ledger/ledgerPromptCases.js";
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
+
+// Keep shell smoke frames independent of the checkout and async git redraws.
+// The live chrome and subprocess have dedicated GitStatusChrome and git-status suites.
+vi.mock("../../../src/tui/git-status.js", () => ({
+  probeGitStatus: vi.fn(async () => null),
+}));
 
 if (process.versions.bun !== undefined) {
   test("App render suite requires Vitest module mocks", () => {
@@ -103,6 +110,7 @@ const providerProbe = {
     ((next: SetStateAction<Record<string, unknown>>) => void) | null,
   globalKeybindingProps: [] as Array<Record<string, unknown>>,
   cancelRequestProps: [] as Array<Record<string, unknown>>,
+  askUserQuestionProps: [] as Array<Record<string, unknown>>,
   exitFlowProps: [] as Array<Record<string, unknown>>,
   costThresholdDialogProps: [] as Array<Record<string, unknown>>,
   messageProps: [] as Array<Record<string, unknown>>,
@@ -225,6 +233,17 @@ vi.mock("../context/stats.js", async () => {
 vi.mock("../state/onChangeAppState.js", () => ({
   onChangeAppState: providerProbe.onChangeAppState,
 }));
+
+vi.mock("./AskUserQuestionOverlay.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./AskUserQuestionOverlay.js")>();
+  return {
+    ...original,
+    AskUserQuestionOverlay: (props: React.ComponentProps<typeof original.AskUserQuestionOverlay>) => {
+      providerProbe.askUserQuestionProps.push(props as unknown as Record<string, unknown>);
+      return React.createElement(original.AskUserQuestionOverlay, props);
+    },
+  };
+});
 
 vi.mock("../ink.js", async () => {
   const React = await import("react");
@@ -540,18 +559,10 @@ vi.mock("./Messages.js", async () => {
 
 vi.mock("./MessageSelector.js", async () => {
   const React = await import("react");
+  const filters = await import("../../../src/tui/components/message-selector-filter.js");
   return {
-    selectableUserMessagesFilter: (message: {
-      type?: unknown;
-      message?: { content?: unknown };
-    }) => {
-      const content = message.message?.content;
-      return (
-        message.type === "user" &&
-        typeof content === "string" &&
-        content.trim().length > 0
-      );
-    },
+    selectableUserMessagesFilter: filters.selectableUserMessagesFilter,
+    selectableMessageOrdinal: filters.selectableMessageOrdinal,
     MessageSelector: (props: Record<string, unknown>) => {
       providerProbe.messageSelectorProps.push(props);
       const messages = props.messages as readonly unknown[];
@@ -571,7 +582,7 @@ vi.mock("./Message.js", async () => {
       React.createElement(
         "ink-text",
         null,
-        `queued-message:${String(props.message ?? "")}`,
+        `queued-message:${JSON.stringify(props.message ?? "")}`,
       ),
   };
 });
@@ -816,6 +827,7 @@ function resetShellSurfaceProbe(): void {
   apiKeyVerificationProbe.contexts.length = 0;
   providerProbe.costSummaryGetters.length = 0;
   providerProbe.cancelRequestProps.length = 0;
+  providerProbe.askUserQuestionProps.length = 0;
   providerProbe.exitFlowProps.length = 0;
   providerProbe.costThresholdDialogProps.length = 0;
   providerProbe.messageSelectorProps.length = 0;
@@ -1262,6 +1274,41 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("refreshes the skill picker when a project skill is created", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { skillChangeDetector } = await import("../../skills/change-detector.js");
+    resetShellSurfaceProbe();
+    commandDiscoveryProbe.mockResolvedValue([]);
+    const session = createSession();
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      await vi.waitFor(() => expect(commandDiscoveryProbe).toHaveBeenCalled());
+      commandDiscoveryProbe.mockResolvedValue([{ name: "created-live", type: "prompt", loadedFrom: "skills", userInvocable: true }]);
+      skillChangeDetector.notify({ changedPaths: ["/workspace/.agenc/skills/created-live/SKILL.md"] });
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.commands).toContainEqual(expect.objectContaining({ name: "created-live" })));
+    });
+  });
+
+  test.each([true, false])("loads edited skill metadata before invocation without config reload: invocable %s", async invocable => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const previous = vi.fn(async () => [{ type: "text", text: "OLD_SKILL_BODY" }]);
+    const edited = vi.fn(async () => [{ type: "text", text: "EDITED_SKILL_BODY" }]);
+    const skill = { name: "editable-live", type: "prompt", loadedFrom: "skills", userInvocable: true,
+      progressMessage: "Loading", contentLength: 1, getPromptForCommand: previous };
+    commandDiscoveryProbe.mockResolvedValue([skill]);
+    const session = { ...createSession(), submit: vi.fn(async () => {}) };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.commands).toContainEqual(expect.objectContaining({ name: "editable-live" })));
+      // An immediate edit can precede the watcher's debounced notification.
+      commandDiscoveryProbe.mockResolvedValue([{ ...skill, userInvocable: invocable, getPromptForCommand: edited }]);
+      await providerProbe.promptSubmits.at(-1)!("$editable-live", helpers);
+      expect(edited).toHaveBeenCalledTimes(invocable ? 1 : 0);
+      expect(previous).not.toHaveBeenCalled();
+      expect(session.submit).toHaveBeenCalledTimes(invocable ? 1 : 0);
+    });
+  });
+
   test.each(["failure", "pending", "removed"] as const)(
     "invalidates dynamic command display and execution after a %s reload",
     async (outcome) => {
@@ -1429,6 +1476,22 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("keeps render health metrics out of the normal conversation", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const metrics = vi.fn(() => ({ averageFps: 380.8, low1PctFps: 11, sampleCount: 100 }));
+    await withRenderedApp(<AgenCTuiApp session={createSession()} isInteractive={false}
+      getFpsMetrics={metrics} />, async ({ output }) => {
+      await vi.waitFor(() => expect(providerProbe.promptProps.length).toBeGreaterThan(0));
+      expect(metrics).toHaveBeenCalled();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(stripAnsi(output()).replace(/\s/gu, "")).not.toContain("Renderhealth:");
+      const handlers = providerProbe.globalKeybindingProps.at(-1)!;
+      (handlers.setScreen as (next: "transcript") => void)("transcript");
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Renderhealth:average380.8FPS"));
+    });
+  });
+
   test("formats render health warnings only for sustained low FPS", async () => {
     const { formatRenderHealthWarning } = await import("./App.js");
 
@@ -1522,6 +1585,20 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     } finally {
       dismissLedgerVerification();
     }
+  });
+
+  test.each(codingLedgerPrompts)("submits coding prompt without reading Ledger status: %s", async (prompt) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = { ...createSession(), submit: vi.fn(async () => {}) } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      await providerProbe.promptSubmits.at(-1)!(prompt, {
+        clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn(),
+      });
+      expect(session.submit).toHaveBeenCalled();
+      expect(ledgerStatusProbe.refresh).not.toHaveBeenCalled();
+      expect(getLedgerVerificationSnapshot().phase).toBe("idle");
+    });
   });
 
   test("parses MCP primitive field edge cases", async () => {
@@ -2176,6 +2253,115 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     });
   });
 
+  test("keeps every prompt visible behind effect review and sends them in order after the final review", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    fullscreenProbe.fullscreen = true;
+    const subscribers = new Set<(event: unknown) => void>();
+    const publish = (event: unknown) => { for (const cb of subscribers) cb(event); };
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [{ type: "effect_reviews_snapshot", payload: { reviews: [
+        { callId: "call-browser", toolName: "Browser", description: "navigate http://127.0.0.1:4173", error: "Chrome crashed at launch" },
+        { callId: "call-second", toolName: "Bash", description: "write file", error: "Unknown outcome" },
+      ] } }],
+      subscribeToEvents: (cb: (event: unknown) => void) => { subscribers.add(cb); return () => { subscribers.delete(cb); }; },
+      submit: vi.fn(async (value: string) => {
+        publish({ type: "turn_started", payload: { turnId: value } });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        publish({ type: "turn_complete", payload: { turnId: value, lastAgentMessage: `Done ${value}` } });
+      }),
+      resolveDaemonToolCall: vi.fn(async () => ({ sessionId: "conversation-app-smoke", resolved: [], remaining: 1 })),
+    };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    try { await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Chromecrashedatlaunch"));
+      expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Browsernavigatehttp://127.0.0.1:4173");
+      expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("1Ithadnoeffect");
+      expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("2Ittookeffect");
+      expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("3Keepblocked");
+      await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)("/resolve call-browser remains_unknown", helpers);
+      expect(session.resolveDaemonToolCall).toHaveBeenCalledWith({ toolCallId: "call-browser", disposition: "remains_unknown", attestation: "operator" });
+      for (const prompt of ["OPEN IT IN CHROME", "run", "runeun", "so"]) {
+        await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)(prompt, helpers);
+      }
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain('"text":"so"'));
+      expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("OPENITINCHROME");
+      expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("reviewneeded·promptswaitfortooloutcomereview");
+      expect(session.submit).not.toHaveBeenCalled();
+      publish({ type: "effect_review_resolved", payload: { callId: "call-browser", resolution: { workflowStatus: "pending", disposition: "remains_unknown" } } });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(session.submit).not.toHaveBeenCalled();
+      publish({ type: "effect_review_resolved", payload: { callId: "call-browser", resolution: { workflowStatus: "resolved" } } });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(session.submit).not.toHaveBeenCalled();
+      publish({ type: "effect_review_resolved", payload: { callId: "call-second", resolution: { workflowStatus: "resolved" } } });
+      await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(4));
+      expect(session.submit.mock.calls.map(call => call[0])).toEqual(["OPEN IT IN CHROME", "run", "runeun", "so"]);
+    }); } finally { fullscreenProbe.fullscreen = false; }
+  });
+
+  test.each([true, false])("queues a prompt when review becomes pending during daemon admission (event delivered: %s)", async (eventDelivered) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    fullscreenProbe.fullscreen = true;
+    const subscribers = new Set<(event: unknown) => void>();
+    const publish = (event: unknown) => { for (const cb of subscribers) cb(event); };
+    let attempts = 0;
+    const session = {
+      ...createSession(),
+      subscribeToEvents: (cb: (event: unknown) => void) => { subscribers.add(cb); return () => { subscribers.delete(cb); }; },
+      resolveDaemonToolCall: vi.fn(async () => ({ sessionId: "conversation-app-smoke", resolved: [], remaining: 0 })),
+      submit: vi.fn(async (_value: string) => {
+        if (++attempts === 1) {
+          publish({ type: "tool_call_started", payload: { callId: "call-race", toolName: "Browser", args: "navigate local preview" } });
+          if (eventDelivered) publish({ type: "effect_unknown_outcome", payload: { callId: "call-race", toolName: "Browser", recoveryCategory: "interactive", requiresReview: true, reason: "Chrome crashed" } });
+          throw new Error("run conversation-app-smoke requires effect review before model execution. Run /resolve call-race <disposition>.");
+        }
+        publish({ type: "turn_complete", payload: { turnId: "race-turn", lastAgentMessage: "Done" } });
+      }),
+    };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    try { await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
+      await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)("keep this prompt", helpers);
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain('"text":"keepthisprompt"'));
+      expect(session.submit).toHaveBeenCalledTimes(1);
+      publish(eventDelivered
+        ? { type: "effect_review_resolved", payload: { callId: "call-race", resolution: { workflowStatus: "resolved" } } }
+        : { type: "effect_review_acknowledged", payload: { callId: "call-race", remaining: 0 } });
+      await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(2));
+      expect(session.submit.mock.calls.map(call => call[0])).toEqual(["keep this prompt", "keep this prompt"]);
+    }); } finally { fullscreenProbe.fullscreen = false; }
+  });
+
+  test("keeps a daemon startup rejection visible and retries the restored draft", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const failure = "Cannot start daemon session: protected directory chain permits untrusted mutation: /private/home. Fix the cause, run agenc daemon start in another shell, then press Enter to retry.";
+    const session = {
+      ...createSession(),
+      submit: vi.fn(async (_message: string, _options?: unknown) => {
+        if (session.submit.mock.calls.length <= 2) throw new Error(failure);
+      }),
+    };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const send = () => (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, submitHelpers: typeof helpers) => Promise<void>)("retry after repair", helpers);
+      await send();
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "retry after repair", draftRestoreRevision: 1, isLoading: false }));
+      await new Promise(resolve => setTimeout(resolve, 3200));
+      // Inspect the live tool surface after the old three-second timeout.
+      const surface = providerProbe.messageProps.at(-1)?.toolJSX as { jsx?: React.ReactElement<{ children: React.ReactElement<{ children: string }> }> } | null;
+      expect(surface?.jsx?.props.children.props.children).toContain("agenc daemon start");
+      await send();
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "retry after repair", draftRestoreRevision: 2, isLoading: false }));
+      await send();
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", isLoading: false }));
+      expect(session.submit).toHaveBeenCalledTimes(3);
+      expect(session.submit.mock.calls[2]).toEqual(session.submit.mock.calls[0]);
+    });
+  });
+
   test("restores a rejected draft without resetting the cursor, also when a busy retry is refused", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     resetShellSurfaceProbe();
@@ -2802,11 +2988,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         overrideMessage: "Running tools",
       }),
     );
-    expect(providerProbe.messageProps.at(-1)).toEqual(
-      expect.objectContaining({
-        streamingText: "I will inspect that now.",
-      }),
-    );
+    expect(providerProbe.messageProps.at(-1)?.streamingText).toBeNull();
+    expect(JSON.stringify(providerProbe.messageProps.at(-1)?.messages)).toContain("I will inspect that now.");
   });
 
   test("keeps spinner visible while assistant text is streaming", async () => {
@@ -3113,7 +3296,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("refreshes MCP clients and tools when same-metadata objects are replaced", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    let notifySessionEvent: (() => void) | undefined;
+    // Real session notifications fan out to MCP, compaction and other views.
+    // Keeping only the last subscriber makes unrelated new views hide updates.
+    const sessionEventListeners = new Set<() => void>();
     let generation = 0;
     const firstClient = {
       name: "files",
@@ -3150,8 +3335,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const session = {
       ...createSession(),
       subscribeToEvents: vi.fn((callback: () => void) => {
-        notifySessionEvent = callback;
-        return () => {};
+        sessionEventListeners.add(callback);
+        return () => { sessionEventListeners.delete(callback); };
       }),
       listMcpClients: vi.fn(() => clientGenerations[generation]),
       listMcpTools: vi.fn(() => toolGenerations[generation]),
@@ -3179,7 +3364,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(context.options.tools).toContain(firstTool);
 
         generation = 1;
-        notifySessionEvent?.();
+        for (const listener of [...sessionEventListeners]) listener();
         await new Promise((resolve) => setTimeout(resolve, 25));
 
         promptProps = providerProbe.promptProps.at(-1)!;
@@ -3416,6 +3601,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           }),
         );
 
+        const selectorModal = providerProbe.fullscreenLayoutProps.at(-1)?.modal;
+        expect(selectorModal).toBeDefined();
         const selectorProps = providerProbe.messageSelectorProps.at(-1)!;
         await (
           selectorProps.onRestoreMessage as (message: unknown) => Promise<void>
@@ -3869,7 +4056,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect.objectContaining({
           apiKeyStatus: "valid",
           onboardingInput: expect.objectContaining({
-            placeholder: "Enter keeps dark",
+            placeholder: "Enter keeps olive",
             allowEmptySubmit: true,
           }),
         }),
@@ -3902,7 +4089,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
-  test("routes realtime composer commands before ordinary session submit", async () => {
+  test.each([false, true])("routes realtime composer commands before ordinary session submit (pasted=%s)", async (pasted) => {
     const { AgenCTuiApp } = await import("./App.js");
     const realtime = createRealtimeControls();
     const submit = vi.fn(async () => {});
@@ -3924,7 +4111,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         const onSubmit = providerProbe.promptSubmits.at(-1);
         expect(onSubmit).toBeDefined();
 
-        await onSubmit!("/realtime webrtc", helpers);
+        if (pasted) {
+          (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)({ 1: { id: 1, type: "text", content: "/realtime webrtc" } });
+          await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toHaveProperty("1"));
+        }
+        await providerProbe.promptSubmits.at(-1)!(pasted ? "[Pasted text #1]" : "/realtime webrtc", helpers);
 
         expect(realtime.start).toHaveBeenCalledWith({ transport: "webrtc" });
         expect(submit).not.toHaveBeenCalled();
@@ -4165,6 +4356,34 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("keeps a compaction outcome visible until the next prompt", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { compactCommand } = await import("../../commands/session-compact-commands.js");
+    const execute = vi.spyOn(compactCommand, "execute").mockImplementation(async () => ({
+      kind: "error", message: "Compaction did not shrink. Compaction attempt ID: attempt-57",
+    }));
+    const submit = vi.fn(async () => {});
+    const session = { ...createSession(), submit } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    resetShellSurfaceProbe();
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+        vi.useFakeTimers();
+        try {
+          await providerProbe.promptSubmits.at(-1)!("/compact", helpers);
+          await vi.advanceTimersByTimeAsync(4_050);
+          expect(providerProbe.messageProps.at(-1)?.toolJSX).toMatchObject({
+            jsx: { props: { children: { props: { children: "Error: Compaction did not shrink. Compaction attempt ID: attempt-57" } } } },
+          });
+          await providerProbe.promptSubmits.at(-1)!("hello again", helpers);
+          await vi.advanceTimersByTimeAsync(50);
+          expect(providerProbe.messageProps.at(-1)?.toolJSX).toBeNull();
+          expect(submit).toHaveBeenCalledOnce();
+        } finally { vi.useRealTimers(); }
+      });
+    } finally { execute.mockRestore(); }
+  });
+
   test("keeps the canonical model menu open after a prior transient result expires", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const dispatcher = await import("../../commands/dispatcher.js");
@@ -4259,6 +4478,21 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     } finally {
       dispatchSpy.mockRestore();
     }
+  });
+
+  test("lets a local task modal own Escape instead of the turn cancel handler", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const dispatcher = await import("../../commands/dispatcher.js");
+    const spy = vi.spyOn(dispatcher, "dispatchSlashCommand").mockImplementationOnce(async (_parsed, ctx) => {
+      ctx.appState?.setToolJSX?.({ isLocalJSXCommand: true, shouldHidePromptInput: true, jsx: React.createElement("ink-text", null, "task detail") });
+      return { result: { kind: "skip" }, command: { name: "tasks" } } as never;
+    });
+    try {
+      await withRenderedApp(<AgenCTuiApp session={createSession()} isInteractive={false} />, async () => {
+        await providerProbe.promptSubmits.at(-1)!("/tasks", { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() });
+        await vi.waitFor(() => expect(providerProbe.cancelRequestProps.at(-1)?.isLocalJSXCommand).toBe(true));
+      });
+    } finally { spy.mockRestore(); }
   });
 
   test("hides the main composer while the /agents wizard owns input", async () => {
@@ -4409,6 +4643,121 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test.each([
+    { display: "[Pasted text #1 +3 lines]", expected: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation", mode: "parallel" },
+    { display: "Build these independent items:\n[Pasted text #2 +1 lines]\n[Pasted text #1]\nFinish with tests.", expected: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation\nFinish with tests.", mode: "parallel" },
+    { display: "[Pasted text #1] Do not delegate.", expected: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation Do not delegate.", mode: "sequential" },
+  ])("submits expanded paste text for routing while retaining compact history: $display", async ({ display, expected, mode }) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { routeSwarmTask } = await import("../../agents/swarm-routing.js");
+    const pastes = display.includes("#2") ? {
+      1: { id: 1, type: "text", content: "3. documentation" },
+      2: { id: 2, type: "text", content: "1. a /health route\n2. a /version route" },
+    } : {
+      1: { id: 1, type: "text", content: "Build these independent items:\n1. a /health route\n2. a /version route\n3. documentation" },
+    };
+    const submit = vi.fn(async (_value: string, _options?: unknown) => {});
+    const enqueueIdleInput = vi.fn(() => 1);
+    const session = { ...createSession(), submit, enqueueIdleInput };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(pastes);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes));
+      await providerProbe.promptSubmits.at(-1)!(display, helpers);
+      expect(submit).toHaveBeenCalledWith(expected, expect.objectContaining({ displayUserMessage: display }));
+      expect(routeSwarmTask(submit.mock.calls[0]![0]).mode).toBe(mode);
+      expect(enqueueIdleInput).not.toHaveBeenCalled();
+      expect(providerProbe.historyEntries).toContainEqual({ display, pastedContents: pastes });
+    });
+  });
+
+  test("expands a pasted skill invocation and its arguments before command dispatch", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const getPromptForCommand = vi.fn(async () => [{ type: "text", text: "loaded skill" }]);
+    mockTuiCommandList.push({ name: "reviewer", type: "prompt", loadedFrom: "skills", progressMessage: "Loading reviewer", contentLength: 1, getPromptForCommand });
+    const session = { ...createSession(), submit: vi.fn(async () => {}), enqueueIdleInput: vi.fn(() => 1) };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const pastes = { 1: { id: 1, type: "text", content: "$reviewer audit this and its tests" } };
+      (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(pastes);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes));
+      await providerProbe.promptSubmits.at(-1)!("[Pasted text #1 +1 lines]", helpers);
+      expect(getPromptForCommand).toHaveBeenCalledWith("audit this and its tests", expect.anything());
+      expect(session.submit).toHaveBeenCalledWith("", expect.objectContaining({ displayUserMessage: "[Pasted text #1 +1 lines]" }));
+    });
+  });
+
+  test("retries the expanded paste exactly once with images and restores the compact draft", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const submit = vi.fn(async (_value: string, _options?: unknown) => {
+      if (submit.mock.calls.length === 1) throw new Error("response dropped");
+    });
+    const admission = vi.fn(() => ({ token: "paste-admission" }));
+    const rollback = vi.fn(() => true);
+    const session = { ...createSession(), submit, enqueueIdleInputBatchOwned: admission, rollbackIdleInputAdmission: rollback };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    const pastes = {
+      1: { id: 1, type: "text", content: "literal [Pasted text #2]\nsecond line" },
+      2: { id: 2, type: "text", content: "last" },
+      3: { id: 3, type: "image", content: "aW1hZ2U=", mediaType: "image/png" },
+    };
+    const display = "Start [Pasted text #1 +1 lines] then [Pasted text #2] [Image #3]";
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(pastes);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes));
+      await providerProbe.promptSubmits.at(-1)!(display, helpers);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.input).toBe(display));
+      expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(pastes);
+      await providerProbe.promptSubmits.at(-1)!(display, helpers);
+      expect(submit).toHaveBeenCalledTimes(2);
+      expect(submit.mock.calls[0]).toEqual(submit.mock.calls[1]);
+      expect(submit.mock.calls[0]![0]).toBe("Start literal [Pasted text #2]\nsecond line then last [Image #3]");
+      expect(admission.mock.calls).toEqual([
+        [[{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,aW1hZ2U=" } }] }], { workspaceView: "agent" }],
+        [[{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,aW1hZ2U=" } }] }], { workspaceView: "agent" }],
+      ]);
+    });
+  });
+
+  test("expands only a queued item's captured pastes and preserves the current draft", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { enqueue, getSoleActiveCommandQueueOwnerForTesting, resetCommandQueueForTesting } = await import("../../utils/messageQueueManager.js");
+    const submit = vi.fn(async () => {});
+    const session = { ...createSession(), submit };
+    resetCommandQueueForTesting();
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+        const draft = "unsent [Pasted text #1]";
+        const draftPastes = { 1: { id: 1, type: "text", content: "private new draft" } };
+        (providerProbe.promptProps.at(-1)!.onInputChange as (value: string) => void)(draft);
+        (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(draftPastes);
+        await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.input).toBe(draft));
+        enqueue({ value: "queued [Pasted text #1]", preExpansionValue: "queued [Pasted text #1]", mode: "prompt", queueOwner: getSoleActiveCommandQueueOwnerForTesting(), pastedContents: { 1: { id: 1, type: "text", content: "first\nsecond" } } });
+        await vi.waitFor(() => expect(submit).toHaveBeenCalledWith("queued first\nsecond", expect.objectContaining({ displayUserMessage: "queued [Pasted text #1]" })));
+        expect(providerProbe.promptProps.at(-1)!.input).toBe(draft);
+        expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(draftPastes);
+      });
+    } finally { resetCommandQueueForTesting(); }
+  });
+
+  test("drops pasted attachments after a successful clear before the next model turn", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = { ...createSession(), clearDaemonSession: vi.fn(async () => {}) };
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const props = providerProbe.promptProps.at(-1)!;
+      (props.setPastedContents as (value: unknown) => void)({ 1: { id: 1, type: "text", content: "private stale paste" } });
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.pastedContents).toHaveProperty("1"));
+      const before = providerProbe.promptProps.at(-1)?.draftRestoreRevision as number;
+      await providerProbe.promptSubmits.at(-1)!("/clear", helpers);
+      await vi.waitFor(() => {
+        expect(providerProbe.promptProps.at(-1)?.pastedContents).toEqual({});
+        expect(providerProbe.promptProps.at(-1)?.draftRestoreRevision).toBeGreaterThan(before);
+      });
+      expect(session.clearDaemonSession).toHaveBeenCalledOnce();
+    });
+  });
+
   test("keeps suspected-paste confirmation in front of the daemon shell bridge", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const executeShellCommand = vi.fn();
@@ -4443,6 +4792,29 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         ]);
       },
     );
+  });
+
+  test.each(["turn cancel", "card Escape"])("the first %s answers Stop here and dismisses the budget checkpoint", async (path) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const cancelActiveTurn = vi.fn(async () => undefined);
+    const session = { ...createSession(), activeTurn: { unsafePeek: () => ({ turnId: "budget-turn" }) }, cancelActiveTurn };
+    await withRenderedApp(<AgenCTuiApp session={session as never} isInteractive={false} />, async () => {
+      let answer: unknown;
+      const response = session.services.requestUserInputResolver!.request({
+        turnId: "budget-turn", requestId: "budget-request", callId: "task-budget-checkpoint-test",
+        questions: [{ id: "task_budget", header: "Task budget", question: "Continue?", isOther: false, isSecret: false,
+          options: [{ label: "Continue", description: "More room" }, { label: "Remove the limit for this task", description: "No cap" }, { label: "Stop here", description: "Keep findings" }] }],
+      });
+      void response.then(value => { answer = value; });
+      await new Promise(resolve => setTimeout(resolve, 40));
+      const handler = path === "turn cancel"
+        ? providerProbe.cancelRequestProps.at(-1)?.onCancel
+        : providerProbe.askUserQuestionProps.at(-1)?.onSkip;
+      (handler as () => void)();
+      await vi.waitFor(() => expect(answer).toEqual({ answers: { task_budget: { answers: ["Stop here"] } } }));
+      expect(cancelActiveTurn).not.toHaveBeenCalled();
+      await response;
+    });
   });
 
   test("aborts an active bridged shell command on Escape without cancelling a model turn", async () => {
@@ -4861,6 +5233,126 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       finishSubmission();
       resetCommandQueueForTesting();
     }
+  });
+
+  test.each([
+    ["completed", "turn_complete", { lastAgentMessage: "Done" }],
+    ["failed", "turn_failed", { code: "fixture_failed", message: "fixture failure" }],
+    ["interrupted", "turn_aborted", { reason: "interrupted" }],
+    ["approval denied", "turn_aborted", { reason: "approval_denied" }],
+    ["compaction refused", "turn_failed", { code: "compact_failed", message: "cannot shrink" }],
+  ] as const)("drains the next queued prompt after %s even when the previous stream RPC stays pending", async (_kind, terminalType, terminalPayload) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { createDaemonTuiSessionFixture } = await import("../../helpers/daemon-tui-session.js");
+    const { notificationFromDaemonEvent } = await import("../../app-server/background-agent-runner/daemon-events.js");
+    const { enqueue, getCommandQueueSnapshot, getSoleActiveCommandQueueOwnerForTesting, resetCommandQueueForTesting } =
+      await import("../../utils/messageQueueManager.js");
+    const sessionId = "attached-queue-session";
+    const agentId = "attached-queue-agent";
+    const turnId = "attached-queue-turn";
+    const listeners = new Set<(event: Record<string, unknown>) => void>();
+    let finishSubmission!: () => void;
+    const submission = new Promise<void>((resolve) => { finishSubmission = resolve; });
+    const request = vi.fn(async (method: string, _params: unknown) => {
+      if (method === "message.stream") await submission;
+      return {};
+    });
+    const session = createDaemonTuiSessionFixture({
+      baseSession: createSession(), sessionId, conversationId: agentId, clientId: "attached-queue-client",
+      client: {
+        request,
+        subscribeToSessionEvents: (_id: string, listener: (event: Record<string, unknown>) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      } as never,
+      transcriptSnapshot: {
+        schemaVersion: 2, sessionId, runId: agentId, historyEpoch: "initial",
+        asOfSequence: 10, messages: [], activeTurn: { turnId },
+      },
+    });
+    resetShellSurfaceProbe();
+    resetCommandQueueForTesting();
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+        enqueue({
+          value: "continue the workflow", mode: "prompt",
+          queueOwner: getSoleActiveCommandQueueOwnerForTesting(),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(getCommandQueueSnapshot()).toHaveLength(1);
+        expect(request.mock.calls.filter(([method]) => method === "message.stream")).toHaveLength(0);
+        const terminal = notificationFromDaemonEvent(sessionId, agentId, {
+          id: "event:11", eventId: "event:11", sequence: 11,
+          type: "turn_complete", payload: { turnId, lastAgentMessage: "Done" },
+        });
+        for (const listener of listeners) listener(terminal);
+        await vi.waitFor(() => {
+          expect(request.mock.calls.filter(([method]) => method === "message.stream")).toHaveLength(1);
+          expect(getCommandQueueSnapshot()).toHaveLength(0);
+        });
+
+        const firstParams = request.mock.calls.find(([method]) => method === "message.stream")![1] as { clientMessageId: string };
+        enqueue({ value: "the next queued prompt", mode: "prompt", queueOwner: getSoleActiveCommandQueueOwnerForTesting() });
+        const started = notificationFromDaemonEvent(sessionId, agentId, {
+          id: "event:12", eventId: "event:12", sequence: 12,
+          clientMessageId: firstParams.clientMessageId,
+          type: "turn_started", payload: { turnId: "queued-active-turn" },
+        });
+        for (const listener of listeners) listener(started);
+        await new Promise(resolve => setTimeout(resolve, 30));
+        if (_kind === "completed") {
+          // Later submissions must not subscribe again to the bounded history.
+          for (let index = 0; index < 1001; index++) {
+            const delta = notificationFromDaemonEvent(sessionId, agentId, {
+              id: `long-event:${index}`, eventId: `long-event:${index}`, sequence: 13 + index,
+              clientMessageId: firstParams.clientMessageId,
+              type: "agent_message_delta", payload: { delta: "x" },
+            });
+            for (const listener of listeners) listener(delta);
+          }
+        }
+        const ended = notificationFromDaemonEvent(sessionId, agentId, {
+          id: "event:13", eventId: "event:13", sequence: 13,
+          clientMessageId: firstParams.clientMessageId,
+          type: terminalType, payload: { turnId: "queued-active-turn", ...terminalPayload },
+        });
+        for (const listener of listeners) listener(ended);
+        await vi.waitFor(() => {
+          expect(request.mock.calls.filter(([method]) => method === "message.stream")).toHaveLength(2);
+          expect(getCommandQueueSnapshot()).toHaveLength(0);
+        });
+        finishSubmission();
+      });
+    } finally {
+      finishSubmission();
+      resetCommandQueueForTesting();
+    }
+  });
+
+  test("auto-drains only queued content and preserves the live composer draft and attachments", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { enqueue, getSoleActiveCommandQueueOwnerForTesting, resetCommandQueueForTesting } =
+      await import("../../utils/messageQueueManager.js");
+    const submit = vi.fn(async () => {});
+    const admission = vi.fn(() => ({ token: "queued-admission" }));
+    const session = { ...createSession(), submit, enqueueIdleInputBatchOwned: admission };
+    const draft = "unsent draft with cursor still inside";
+    const attachment = { 9: { id: 9, type: "text", content: "private unsent attachment" } };
+    resetCommandQueueForTesting();
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session as any} isInteractive={false} />, async () => {
+        (providerProbe.promptProps.at(-1)!.onInputChange as (value: string) => void)(draft);
+        (providerProbe.promptProps.at(-1)!.setPastedContents as (value: unknown) => void)(attachment);
+        await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)!.input).toBe(draft));
+        enqueue({ value: "queued prompt only", mode: "prompt", queueOwner: getSoleActiveCommandQueueOwnerForTesting() });
+        await vi.waitFor(() => expect(submit).toHaveBeenCalled());
+        expect(submit).toHaveBeenCalledWith("queued prompt only", expect.anything());
+        expect(admission).not.toHaveBeenCalled();
+        expect(providerProbe.promptProps.at(-1)!.input).toBe(draft);
+        expect(providerProbe.promptProps.at(-1)!.pastedContents).toEqual(attachment);
+      });
+    } finally { resetCommandQueueForTesting(); }
   });
 
   test("queues slash command prompt results for next-turn drain", async () => {

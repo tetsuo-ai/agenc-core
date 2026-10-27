@@ -23,6 +23,8 @@ import {
   readFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { acquireCanonicalCompactionLease, withCanonicalBackgroundWork } from "./canonical-background-work.js";
+import { EffectReviewRequiredError } from "./effect-review-gate.js";
 import {
   basename,
   dirname,
@@ -38,6 +40,7 @@ import {
   withAtomicArtifactObservationSync,
 } from "../durability/atomic-artifact.js";
 import { withPinnedOfflineRolloutLease } from "../durability/offline-rollout.js";
+import type { TurnDurabilityRelease } from "../durability/turn-durability.js";
 import { readSubagentTaskReceipts, type RecoveredChildTaskReceipt } from "./subagent-receipt-recovery.js";
 import {
   AgentIdExistsError,
@@ -60,6 +63,7 @@ import {
   SessionStoreFlushScheduler,
   type AppendOptions,
   type CompactionIndexSnapshot,
+  type RolloutCommitNotice,
   type SessionStoreOpts,
 } from "./session-store.js";
 import {
@@ -94,7 +98,10 @@ import {
   type DurableCheckpointUpgradeFailure,
 } from "./durable-checkpoint-upgrade.js";
 import { StateToolPairProjection } from "../state/tool-pair-projection.js";
-import { DURABLE_ROLLOUT_SCHEMA_VERSION } from "./durable-checkpoint-reader.js";
+import {
+  DURABLE_ROLLOUT_SCHEMA_VERSION,
+  computeCheckpointPrefixHashV4,
+} from "./durable-checkpoint-reader.js";
 import {
   StreamingToolPairValidator,
   validateToolPairSequence,
@@ -104,7 +111,7 @@ import {
   type ToolPairProjection,
   type ToolPairValidationOutcome,
 } from "./tool-pair-validator.js";
-import { formatIdentityForLog } from "./tool-result-integrity.js";
+import { deterministicToolResultId, formatIdentityForLog, verifyToolResultIntegrity } from "./tool-result-integrity.js";
 import {
   CompactionPinQuotaError,
   CompactionRetentionRepository,
@@ -115,6 +122,7 @@ import {
   COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
+  MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME,
   COMPACTION_RECONCILIATION_PAGE_SIZE,
   COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
   COMPACTION_PRUNE_RECORDS_PER_PAGE,
@@ -310,7 +318,6 @@ export interface ThreadSpawnEdgeRecord {
 }
 
 const THREAD_SPAWN_EDGE_SNAPSHOT_VERSION = 1;
-const activeCompactionLeases = new Map<string, symbol>();
 
 function rolloutItemsContainTerminal(
   items: readonly RolloutItem[],
@@ -733,6 +740,35 @@ function reviewedRollbackTargetOriginator(
   )}`;
 }
 
+function reviewedRollbackTargetHistory(
+  rollback: CompactionRollbackCommittedV1,
+): CompactionProjectionMessageV1[] {
+  return rollback.source_history.map((source) => {
+    const message = cloneProjectionMessage(source);
+    const integrity = message.toolResultIntegrity;
+    if (integrity === undefined) return message;
+    if (message.role !== "tool" || message.toolCallId === undefined) {
+      throw new CompactionTransactionError("commit_failed", "rollback source has misplaced tool-result integrity");
+    }
+    const verified = verifyToolResultIntegrity({
+      integrity,
+      expectedRunId: rollback.source_session_id,
+      toolCallId: message.toolCallId,
+      content: message.content,
+    });
+    if (verified.status !== "valid") {
+      throw new CompactionTransactionError("commit_failed", "rollback source tool-result integrity could not be verified");
+    }
+    // The durable rollback authorizes this copy into a distinct run. Preserve
+    // both body digests and representation; only its run-scoped identity changes.
+    return { ...message, toolResultIntegrity: {
+      ...verified.integrity,
+      runId: rollback.target_session_id,
+      resultId: deterministicToolResultId(rollback.target_session_id, message.toolCallId),
+    } };
+  });
+}
+
 function assertCompactionItemFitsCanonicalLine(item: RolloutItem): void {
   const encodedBytes =
     Buffer.byteLength(serializeRolloutItem(item), "utf8") - 1;
@@ -782,6 +818,10 @@ export class RolloutStore {
   private readonly canonicalScanner = new CanonicalRolloutScanner();
   private readonly durablyCommittedCompactionsAwaitingReconstruction =
     new Set<string>();
+  private readonly compactionOwnership = new Map<string, {
+    readonly release: () => void;
+    committed: boolean;
+  }>();
   private readonly compactionSourcePayloadBundles = new Map<
     string,
     CompactionSourcePayloadBundlesV1
@@ -1018,7 +1058,7 @@ export class RolloutStore {
    * writer lock prevents another process/store from owning the same rollout;
    * this lease serializes independent in-process contexts on that writer.
    */
-  acquireCompactionLease(attemptId: string): CompactionTransactionLease {
+  acquireCompactionLease(attemptId: string, signal?: AbortSignal): CompactionTransactionLease | Promise<CompactionTransactionLease> {
     if (attemptId.trim().length === 0) {
       throw new CompactionTransactionError(
         "pin_failed",
@@ -1026,24 +1066,27 @@ export class RolloutStore {
       );
     }
     const key = `${resolve(this.rolloutPath)}#epoch:${this.runEpoch}`;
-    if (activeCompactionLeases.has(key)) {
-      throw new CompactionTransactionError(
+    const acquired = acquireCanonicalCompactionLease(key, () => new CompactionTransactionError(
         "intent_failed",
         "compaction already in progress",
-      );
-    }
-    const owner = Symbol(attemptId);
-    activeCompactionLeases.set(key, owner);
-    let released = false;
-    return {
-      release: () => {
-        if (released) return;
-        released = true;
-        if (activeCompactionLeases.get(key) === owner) {
-          activeCompactionLeases.delete(key);
-        }
-      },
+      ), signal);
+    const bind = (lease: CompactionTransactionLease): CompactionTransactionLease => {
+      const ownership = { release: () => { lease.release(); }, committed: false };
+      this.compactionOwnership.set(attemptId, ownership);
+      return { release: () => {
+        if (this.compactionOwnership.get(attemptId) !== ownership) return;
+        // The transaction returns before its caller publishes replacement
+        // history and the forced checkpoint. Keep memory readers behind both.
+        if (ownership.committed || this.durablyCommittedCompactionsAwaitingReconstruction.has(attemptId)) return;
+        this.compactionOwnership.delete(attemptId);
+        ownership.release();
+      } };
     };
+    return acquired instanceof Promise ? acquired.then(bind) : bind(acquired);
+  }
+
+  withCanonicalBackgroundWork<T>(work: () => T | Promise<T>): Promise<T> {
+    return withCanonicalBackgroundWork(`${resolve(this.rolloutPath)}#epoch:${this.runEpoch}`, work);
   }
   /** Bind the exact canonical records that currently project active history. */
   prepareSource(
@@ -1351,6 +1394,9 @@ export class RolloutStore {
   }
 
   commit(input: CompactionCommitInputV1): CompactionCommittedV1 {
+    if (input.accounting.savings_policy === "manual_proportional" && input.intent.automatic) {
+      throw new CompactionTransactionError("commit_failed", "manual proportional savings require a manual compaction intent");
+    }
     const commitBundles = input.payload_bundles;
     if (commitBundles === undefined) {
       throw new CompactionTransactionError(
@@ -1381,7 +1427,8 @@ export class RolloutStore {
     this.assertCompactionCommitFresh(input.intent);
     const committed: CompactionCommittedV1 = {
       format_version: COMPACTION_EVENT_FORMAT_VERSION,
-      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      minimum_reader_runtime: input.accounting.savings_policy === "manual_proportional"
+        ? MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME : COMPACTION_MINIMUM_READER_RUNTIME,
       attempt_id: input.intent.attempt_id,
       recorded_at_ms: input.committed_at_ms,
       committed_at_ms: input.committed_at_ms,
@@ -1455,6 +1502,22 @@ export class RolloutStore {
       committed.replacement_history as readonly ToolPairMessage[],
       "transactional compaction commit",
     );
+    // Publishing an in-turn replacement immediately forces a checkpoint.
+    // Validate that exact consumer before the sole durable commit point;
+    // a producer/reader mismatch must not poison already-committed work.
+    // The strict reader retains and authenticates failed-tool metadata.
+    try {
+      computeCheckpointPrefixHashV4(
+        committed.replacement_history as readonly ResponseItem[],
+        committed.replacement_history.length,
+      );
+    } catch (error) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction replacement cannot be checkpointed; history was not changed",
+        { cause: error },
+      );
+    }
     try {
       this.appendCompactionPayloadBundles(
         [
@@ -1494,6 +1557,8 @@ export class RolloutStore {
         cause: error,
       });
     }
+    const ownership = this.compactionOwnership.get(committed.attempt_id);
+    if (ownership !== undefined) ownership.committed = true;
     return committed;
   }
 
@@ -1639,6 +1704,7 @@ export class RolloutStore {
 
   markCleanupComplete(attemptId: string): void {
     this.compactionRetentionRepo.markCleanupComplete(attemptId);
+    this.releaseCompactionOwnership(attemptId);
   }
 
   markCleanupPending(attemptId: string, reason: unknown): void {
@@ -1660,6 +1726,14 @@ export class RolloutStore {
       event.recorded_at_ms,
       reason,
     );
+    this.releaseCompactionOwnership(attemptId);
+  }
+
+  private releaseCompactionOwnership(attemptId: string): void {
+    const ownership = this.compactionOwnership.get(attemptId);
+    if (ownership === undefined) return;
+    this.compactionOwnership.delete(attemptId);
+    ownership.release();
   }
 
   /** Explicit operator extension; the durable minimum can never shrink. */
@@ -1922,6 +1996,29 @@ export class RolloutStore {
   private materializeReviewedRollbackTarget(
     rollback: CompactionRollbackCommittedV1,
   ): void {
+    // A completed branch owns its own writer and may have advanced. Check its
+    // authenticated contiguous initial projection without taking its lease.
+    // Later metadata and branch work do not belong to this source's prefix.
+    // Recovery only
+    // needs exclusive access when that original materialization is incomplete.
+    const target = this.reviewedRollbackTargetStore(rollback);
+    if (existsSync(target.rolloutPath)) {
+      const items = target.readAll();
+      const metadata = items[0];
+      const targetHistory = reviewedRollbackTargetHistory(rollback);
+      const prefix = items.slice(1, targetHistory.length + 1);
+      if (
+        metadata?.type === "session_meta" &&
+        metadata.payload.sessionId === rollback.target_session_id &&
+        metadata.payload.originator === reviewedRollbackTargetOriginator(rollback) &&
+        prefix.length === targetHistory.length &&
+        prefix.every((item, index) => item.type === "response_item" && (
+          canonicalizeSourceJson(item.payload) === canonicalizeSourceJson(targetHistory[index]) ||
+          // Older authorized copies retain the source run's tool receipt.
+          canonicalizeSourceJson(item.payload) === canonicalizeSourceJson(rollback.source_history[index])
+        ))
+      ) return;
+    }
     const reservation = this.reserveReviewedRollbackTarget(rollback);
     try {
       this.completeReviewedRollbackTarget(rollback, reservation);
@@ -1930,9 +2027,9 @@ export class RolloutStore {
     }
   }
 
-  private reserveReviewedRollbackTarget(
+  private reviewedRollbackTargetStore(
     rollback: CompactionRollbackCommittedV1,
-  ): ReviewedRollbackTargetReservation {
+  ): SessionStore {
     if (
       rollback.rollback_mode !== "reviewed_branch" ||
       rollback.target_session_id === this.sessionId
@@ -1966,6 +2063,13 @@ export class RolloutStore {
         "reviewed rollback target resolves outside the project session root",
       );
     }
+    return target;
+  }
+
+  private reserveReviewedRollbackTarget(
+    rollback: CompactionRollbackCommittedV1,
+  ): ReviewedRollbackTargetReservation {
+    const target = this.reviewedRollbackTargetStore(rollback);
     const reservation = { target, opened: false };
     try {
       target.acquireExclusiveReservation();
@@ -1986,11 +2090,42 @@ export class RolloutStore {
     const target = reservation.target;
     const lineageOriginator = reviewedRollbackTargetOriginator(rollback);
     if (!reservation.opened) {
+      const sourceMeta = this.store.readAll().find((item) => item.type === "session_meta");
+      const interactiveSource = sourceMeta?.type === "session_meta" &&
+        ((sourceMeta.payload.originator === "agenc-cli" &&
+          sourceMeta.payload.source === "interactive-root") ||
+         (/^c2-reviewed-rollback:[a-f0-9]{64}$/u.test(sourceMeta.payload.originator) &&
+          sourceMeta.payload.source === "interactive-root-reviewed-rollback"));
+      // Branches have no agent_runs row until their first interactive resume.
+      // Copy only the source's presentation profile, not its runtime options
+      // (which include permission/sandbox inputs). Older roots retain this
+      // profile in the exact project-local run row instead of session_meta.
+      let sourceLightMode = sourceMeta?.type === "session_meta"
+        ? sourceMeta.payload.lightMode : undefined;
+      if (interactiveSource) {
+        const row = this.stateDriver.prepareState<[string], { metadata_json: string | null }>(
+          "SELECT metadata_json FROM agent_runs WHERE id = ?",
+        ).get(rollback.source_session_id);
+        if (row?.metadata_json != null) {
+          const metadata: unknown = JSON.parse(row.metadata_json);
+          if (isRecord(metadata) && isRecord(metadata.runtimeOptions) &&
+              metadata.runtimeOptions.lightMode !== undefined) {
+            if (typeof metadata.runtimeOptions.lightMode !== "boolean") {
+              throw new CompactionTransactionError("commit_failed", "source has invalid persisted Light mode");
+            }
+            sourceLightMode = metadata.runtimeOptions.lightMode;
+          }
+        }
+      }
       target.open({
         sessionId: rollback.target_session_id,
         timestamp: new Date(rollback.recorded_at_ms).toISOString(),
         cwd: this.store.cwd,
         originator: lineageOriginator,
+        ...(interactiveSource ? {
+          source: "interactive-root-reviewed-rollback",
+          ...(sourceLightMode !== undefined ? { lightMode: sourceLightMode } : {}),
+        } : {}),
         agencVersion: this.store.agencVersion,
       });
       reservation.opened = true;
@@ -2023,12 +2158,13 @@ export class RolloutStore {
     const projected = existing.flatMap((item) =>
       item.type === "response_item" ? [item.payload] : [],
     );
+    const targetHistory = reviewedRollbackTargetHistory(rollback);
     if (
-      projected.length > rollback.source_history.length ||
+      projected.length > targetHistory.length ||
       projected.some(
         (message, index) =>
           canonicalizeSourceJson(message) !==
-          canonicalizeSourceJson(rollback.source_history[index]),
+          canonicalizeSourceJson(targetHistory[index]),
       )
     ) {
       throw new CompactionTransactionError(
@@ -2044,18 +2180,19 @@ export class RolloutStore {
   ): void {
     this.openAndValidateReviewedRollbackTarget(rollback, reservation);
     const target = reservation.target;
+    const targetHistory = reviewedRollbackTargetHistory(rollback);
     const projected = target
       .readAll()
       .flatMap((item) => (item.type === "response_item" ? [item.payload] : []));
     for (
       let index = projected.length;
-      index < rollback.source_history.length;
+      index < targetHistory.length;
       index += 1
     ) {
       target.appendRollout(
         {
           type: "response_item",
-          payload: cloneProjectionMessage(rollback.source_history[index]!),
+          payload: targetHistory[index]!,
         },
         { durable: true },
       );
@@ -2065,7 +2202,7 @@ export class RolloutStore {
       .flatMap((item) => (item.type === "response_item" ? [item.payload] : []));
     if (
       canonicalizeSourceJson(materialized) !==
-      canonicalizeSourceJson(rollback.source_history)
+      canonicalizeSourceJson(targetHistory)
     ) {
       throw new CompactionTransactionError(
         "commit_failed",
@@ -3232,7 +3369,29 @@ export class RolloutStore {
 
   assertModelExecutionAllowed(): void {
     if (this.rootReviewGateActive && this.hasPendingEffectReviews()) {
-      throw new Error(`run ${this.sessionId} requires effect review before model execution`);
+      let callIds: string[] = [];
+      try {
+        callIds = this.stateDriver.prepareState<[string, string], { readonly call_id: string }>(
+          `SELECT call_id FROM run_effects
+           WHERE session_id = ? AND review_status = 'pending'
+             AND recovery_category IN ('side-effecting', 'interactive')
+           UNION SELECT tool_call_id AS call_id FROM in_flight_tool_calls
+           WHERE session_id = ? AND status = 'poisoned'
+           LIMIT 8`,
+        ).all(this.sessionId, this.sessionId).map(row => row.call_id);
+      } catch {
+        // Failed recovery details must not lift the gate.
+      }
+      const review = callIds.length > 0
+        ? callIds.map(id => `/resolve ${id} <disposition> --session ${this.sessionId}`).join("; ")
+        : "/resolve <tool-call-id> <disposition>";
+      throw new EffectReviewRequiredError(
+        `run ${this.sessionId} requires effect review before model execution. ` +
+        `The owning session is ${this.sessionId}; its attached parent can also review this call. ` +
+        `Inspect the interrupted tool outcome, then run ${review}. ` +
+        "Choose confirmed_committed if it took effect, confirmed_no_effect if you verified no effect, " +
+        "or remains_unknown to keep execution blocked.",
+      );
     }
   }
 
@@ -3387,6 +3546,10 @@ export class RolloutStore {
     return {
       projection: new StateToolPairProjection(this.stateDriver, {
         discardOnTerminal,
+        // Exact pairing is reconstructed from canonical response items on
+        // every open. Committing the index does not acknowledge an effect;
+        // the journal's existing sync boundaries still own that guarantee.
+        rebuildable: true,
       }),
       projectionId: `checkpoint:${identity}`,
       sourceKey: `rollout:${checkpointProjectionIdentity(this.rolloutPath, "source")}`,
@@ -3871,6 +4034,11 @@ export class RolloutStore {
     this.store.syncCanonicalTail();
   }
 
+  /** Turn-scoped durability; see {@link SessionStore.deferSyncsForTurn}. */
+  deferSyncsForTurn(): TurnDurabilityRelease {
+    return this.store.deferSyncsForTurn();
+  }
+
   /** @internal Test seam for write-success/fsync-failure recovery. */
   setFsyncImplForTest(impl: (fd: number) => void): void {
     this.store.setFsyncImplForTest(impl);
@@ -3881,7 +4049,7 @@ export class RolloutStore {
    * `FileThreadStore` uses this to keep `thread_rollout_items` current.
    */
   setOnRolloutCommitted(
-    listener: ((rolloutPath: string) => void) | undefined,
+    listener: ((rolloutPath: string, commit: RolloutCommitNotice) => void) | undefined,
   ): void {
     this.store.setOnRolloutCommitted(listener);
   }
@@ -3917,7 +4085,7 @@ export class RolloutStore {
     if (this.runDurabilityRepo.getTerminalResult(runId, epoch) !== undefined) {
       return true;
     }
-    if (rolloutItemsContainTerminal(this.store.readAll(), runId, epoch)) {
+    if (this.store.hasTerminalRun(runId, epoch)) {
       return true;
     }
 

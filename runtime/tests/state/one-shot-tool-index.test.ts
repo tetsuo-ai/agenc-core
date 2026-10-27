@@ -71,7 +71,7 @@ describe("one-shot observer tool index transactions", () => {
     r.store.close(); expect(() => assertOneShotRecoverable(r.store.rolloutPath)).not.toThrow();
     expect(row(reader)?.status).toBe("completed");
   });
-  it.each(["full", "promoted", "foreign-scope", "foreign-driver", "foreign-project", "unbound", "wrong-owner"])("keeps FULL writes for %s", mode => {
+  it.each(["full", "promoted", "foreign-scope", "foreign-driver", "foreign-project", "unbound", "wrong-owner"])("keeps FULL start and completion writes for %s", mode => {
     const r = setup(mode !== "full"); let d = r.driver;
     if (mode === "promoted") promoteOneShotRun("run");
     if (mode === "foreign-driver") { d = openStateDatabases({ cwd: r.cwd, agencHome: r.home, durabilityRunId: "other" }); cleanup.push(() => d.close()); }
@@ -80,7 +80,9 @@ describe("one-shot observer tool index transactions", () => {
     if (mode === "wrong-owner") d.prepareState("UPDATE session_agent_links SET agent_id = 'other'").run();
     const levels = watchLevels(d); const run = () => { start(p); progress(p); complete(p); };
     if (mode === "foreign-scope") withOneShotWriteScope(d.projectDir, "other", run); else run();
-    expect(levels).toEqual([2, 2, 2]); expect(row(d)?.status).toBe("completed");
+    // Output-only progress is observational in every scope; start and completion stay FULL.
+    expect(levels).toEqual([2, 1, 2]); expect(row(d)?.status).toBe("completed");
+    expect(d.state.pragma("synchronous", { simple: true })).toBe(2);
   });
   it("retains committed start and completion if the later snapshot fails", () => {
     const r = setup(), p = policyFor(r.driver, r.home);

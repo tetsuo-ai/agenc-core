@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/runtime",
-  "version": "0.18.0",
+  "version": "0.19.19",
   "private": true,
   "description": "AgenC lean coding CLI",
   "type": "module",
@@ -34,6 +34,7 @@
   ],
   "scripts": {
     "postinstall": "node bin/prepare-peer-credentials.mjs",
+    "build:linux-broker:portable": "node scripts/build-portable-linux-broker.mjs",
     "build": "node scripts/check-launcher-preflight.mjs --check && node scripts/sync-shipped-plugins.mjs && node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",
     "generate:fresh-state-schema": "node --import tsx scripts/generate-fresh-state-schema.ts",
     "daemon": "node bin/agenc daemon start --foreground",
@@ -122,7 +123,7 @@
   },
   "overrides": {
     "rollup": "^4.59.0",
-    "undici": "^8.5.0"
+    "undici": "8.12.3"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "0.3.0",
@@ -175,7 +176,7 @@
     "strip-ansi": "^7.2.0",
     "tar": "7.5.19",
     "turndown": "^7.2.4",
-    "undici": "^8.5.0",
+    "undici": "8.12.3",
     "usehooks-ts": "^3.1.1",
     "vscode-jsonrpc": "9.0.0",
     "wrap-ansi": "^10.0.0",

@@ -198,7 +198,7 @@ export class BrowserPage {
     const backendId = this.#refToBackendId.get(ref);
     if (backendId === undefined) {
       throw new BrowserActionError(
-        `unknown ref "${ref}" — take a snapshot first, then use a ref from it`,
+        `unknown ref "${ref}": take a snapshot first, then use a ref from it`,
       );
     }
     return backendId;
@@ -308,7 +308,7 @@ export class BrowserPage {
     const named = NAMED_KEYS[key];
     if (named === undefined) {
       throw new BrowserActionError(
-        `unsupported key "${key}" — supported: ${Object.keys(NAMED_KEYS).join(", ")}`,
+        `unsupported key "${key}": supported: ${Object.keys(NAMED_KEYS).join(", ")}`,
       );
     }
     const base = {

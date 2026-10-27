@@ -98,6 +98,27 @@ describe("daemon native worker inventory projection", () => {
     } finally { f.close(); }
   });
 
+  it("does not resurrect cancelled workers when their interrupted inventory is refreshed", async () => {
+    const f = fixture([{ ...worker, status: "running" }]);
+    try {
+      await drainMicrotasks(20);
+      expect(f.task().status).toBe("running");
+      const cancelled = { type: "collab_agent_status", payload: { threadId: worker.agentId, status: "killed" } };
+      f.emit(cancelled);
+      syncCollabAgentEventToAppState(cancelled, f.setState as never);
+      expect(f.task().status).toBe("killed");
+      f.read.mockResolvedValue(snapshot([{ ...worker, status: "interrupted" }]));
+      await vi.advanceTimersByTimeAsync(250);
+      expect(f.task().status).toBe("killed");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(f.task().status).toBe("killed");
+      // A genuinely new assignment can still use the same worker.
+      f.read.mockResolvedValue(snapshot([{ ...worker, status: "running" }]));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(f.task().status).toBe("running");
+    } finally { f.close(); }
+  });
+
   it.each(["unmount", "replace"])("ignores an old poll after %s and preserves unrelated tasks", async mode => {
     const f = fixture();
     await drainMicrotasks(20);

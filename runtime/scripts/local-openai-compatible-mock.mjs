@@ -46,17 +46,34 @@ const TRANSCRIPT_CLOSE_PATTERN = /^<\/transcript>\s*$/u;
  * like a model would: act on the newest user message, not on stale triggers or
  * the closing frame itself.
  */
+function userMessageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part?.text === "string" ? part.text : ""))
+      .join(" ");
+  }
+  return null;
+}
+
+/**
+ * A user-role message that only carries a system reminder, such as the notice
+ * that tool search loaded a deferred tool. It is not the user's prompt and
+ * does not start a new turn.
+ */
+function isSystemReminderMessage(message) {
+  if (message?.role !== "user") return false;
+  const text = userMessageText(message)?.trim() ?? "";
+  return text.startsWith("<system-reminder>") && text.endsWith("</system-reminder>");
+}
+
 export function userPromptFromMessages(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.role !== "user") continue;
-    const content = message.content;
-    if (typeof content === "string") return newestCompactedUserMessage(content);
-    if (Array.isArray(content)) {
-      return newestCompactedUserMessage(content
-        .map((part) => (typeof part?.text === "string" ? part.text : ""))
-        .join(" "));
-    }
+    if (message?.role !== "user" || isSystemReminderMessage(message)) continue;
+    const text = userMessageText(message);
+    if (text !== null) return newestCompactedUserMessage(text);
   }
   return "";
 }
@@ -79,17 +96,30 @@ function newestCompactedUserMessage(content) {
   return newest ?? content;
 }
 
-function toolResultCount(messages) {
+function currentTurnMessages(messages) {
   let latestUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "user") {
+    if (messages[index]?.role === "user" && !isSystemReminderMessage(messages[index])) {
       latestUserIndex = index;
       break;
     }
   }
-  return messages
-    .slice(latestUserIndex + 1)
-    .filter((message) => message?.role === "tool").length;
+  return messages.slice(latestUserIndex + 1);
+}
+
+function toolResultCount(messages) {
+  return currentTurnMessages(messages).filter(
+    (message) => message?.role === "tool",
+  ).length;
+}
+
+/** Names of the tools the assistant already called in the current turn. */
+function calledToolNames(messages) {
+  return currentTurnMessages(messages).flatMap((message) =>
+    message?.role === "assistant" && Array.isArray(message.tool_calls)
+      ? message.tool_calls.map((call) => call?.function?.name ?? "")
+      : [],
+  );
 }
 
 function completionForPrompt(prompt) {
@@ -125,6 +155,33 @@ function selectTool(tools, preferred, fallbackPattern) {
     if (found) return found;
   }
   return candidates[0];
+}
+
+// The wire name escapes the dot, for example tool2__system_x2esearchTools.
+const TOOL_SEARCH_NAME = /searchTools$/u;
+
+/**
+ * Call the tool a prompt names, as a model would. A Light session lists only
+ * a few tools and loads the rest through system.searchTools, so when the named
+ * tool is missing the mock first selects it there, then calls it on the next
+ * request. Any other request keeps the old pick of the closest listed tool.
+ */
+function namedToolCall(tools, messages, names, fallbackPattern, args) {
+  const candidates = Array.isArray(tools) ? tools : [];
+  const called = calledToolNames(messages);
+  const named = candidates.find((tool) => names.includes(toolName(tool)));
+  if (named !== undefined) {
+    return called.includes(toolName(named)) ? null : { tool: named, args };
+  }
+  const search = candidates.find((tool) => TOOL_SEARCH_NAME.test(toolName(tool)));
+  if (search !== undefined) {
+    return called.some((name) => TOOL_SEARCH_NAME.test(name))
+      ? null
+      : { tool: search, args: { select: names[0] } };
+  }
+  return called.length === 0
+    ? { tool: selectTool(tools, names, fallbackPattern), args }
+    : null;
 }
 
 function toolArgumentsFor(tool, args) {
@@ -252,7 +309,17 @@ function nextEditToolCall(tools, prompt, completedTools) {
   return null;
 }
 
-function nextSingleToolCall(tools, prompt, completedTools) {
+function nextSingleToolCall(tools, messages, prompt, completedTools) {
+  const grepArgs = grepArgsFromPrompt(prompt);
+  if (grepArgs) {
+    return namedToolCall(tools, messages, ["Grep"], /grep/i, grepArgs);
+  }
+
+  const globArgs = globArgsFromPrompt(prompt);
+  if (globArgs) {
+    return namedToolCall(tools, messages, ["Glob"], /glob/i, globArgs);
+  }
+
   if (completedTools) return null;
 
   const command = shellCommandFromPrompt(prompt);
@@ -266,19 +333,6 @@ function nextSingleToolCall(tools, prompt, completedTools) {
       tool: selectTool(tools, ["FileRead", "Read"], /read/i),
       args: readArgs,
     };
-  }
-
-  const grepArgs = grepArgsFromPrompt(prompt);
-  if (grepArgs) {
-    return {
-      tool: selectTool(tools, ["Grep"], /grep|search/i),
-      args: grepArgs,
-    };
-  }
-
-  const globArgs = globArgsFromPrompt(prompt);
-  if (globArgs) {
-    return { tool: selectTool(tools, ["Glob"], /glob/i), args: globArgs };
   }
 
   const writeArgs = writeArgsFromPrompt(prompt);
@@ -297,7 +351,7 @@ function nextToolCall(body, messages, prompt, completedTools) {
   return (
     nextPipelineToolCall(tools, prompt, completedTools) ??
     nextEditToolCall(tools, prompt, completedTools) ??
-    nextSingleToolCall(tools, prompt, completedTools)
+    nextSingleToolCall(tools, messages, prompt, completedTools)
   );
 }
 

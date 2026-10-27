@@ -13,9 +13,7 @@ export function worktreeMutationPermissions(
   repoRoot: string,
   writablePaths: readonly string[] = [],
 ): AdditionalPermissionProfile {
-  const resolvedRepoRoot = resolve(repoRoot);
-  const canonicalRoot = findCanonicalGitRoot(resolvedRepoRoot) ?? resolvedRepoRoot;
-  const metadataRoot = resolveGitMetadataRoot(canonicalRoot);
+  const metadataRoot = worktreeMutationMetadataRoot(repoRoot);
   const entries = [metadataRoot, ...writablePaths.map((entry) => resolve(entry))]
     .filter((entry, index, all) => all.indexOf(entry) === index)
     .map((path) => ({
@@ -23,6 +21,14 @@ export function worktreeMutationPermissions(
       access: "write" as const,
     }));
   return { fileSystem: { entries } };
+}
+
+/** The Git metadata directory a worktree mutation of `repoRoot` may write. */
+export function worktreeMutationMetadataRoot(repoRoot: string): string {
+  const resolvedRepoRoot = resolve(repoRoot);
+  return resolveGitMetadataRoot(
+    findCanonicalGitRoot(resolvedRepoRoot) ?? resolvedRepoRoot,
+  );
 }
 
 export function resolveGitMetadataRoot(canonicalRoot: string): string {

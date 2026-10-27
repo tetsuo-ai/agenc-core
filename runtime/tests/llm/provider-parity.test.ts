@@ -27,6 +27,8 @@ import {
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
+import { VeniceProvider } from "./providers/venice/index.js";
+import { AbliterationProvider } from "./providers/abliteration/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { GitHubProvider } from "./providers/github/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
@@ -38,7 +40,6 @@ import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js
 import { OpenAIProvider } from "./providers/openai/adapter.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { OllamaCloudProvider } from "./providers/ollama-cloud/index.js";
-import { AgenCProvider } from "./providers/agenc/index.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -143,6 +144,8 @@ const CHAT_COMPLETIONS_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "lmstudio",
   "openai-compatible",
   "openrouter",
+  "venice",
+  "abliteration",
   "groq",
   "deepseek",
   "meta",
@@ -799,6 +802,45 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
       }),
   },
   {
+    provider: "venice",
+    model: "zai-org-glm-5-2",
+    apiKey: "venice-test",
+    env: { VENICE_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new VeniceProvider({
+            apiKey: "venice-test",
+            model: "zai-org-glm-5-2",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl: (input, init) => String(input).endsWith("/models")
+              ? Promise.resolve(new Response("{}", { status: 503 }))
+              : fetchImpl(input, init),
+          }),
+        payload: buildChatCompletionsPayload("zai-org-glm-5-2", parityCase),
+      }),
+  },
+  {
+    provider: "abliteration",
+    model: "abliterated-model-large-v2",
+    apiKey: "abliteration-test",
+    env: { ABLIT_KEY: undefined, ABLITERATION_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new AbliterationProvider({
+            apiKey: "abliteration-test",
+            model: "abliterated-model-large-v2",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            // The model list is not part of the captured chat requests.
+            fetchImpl: (input, init) => String(input).endsWith("/models")
+              ? Promise.resolve(new Response("{}", { status: 503 }))
+              : fetchImpl(input, init),
+          }),
+        payload: buildChatCompletionsPayload("abliterated-model-large-v2", parityCase),
+      }),
+  },
+  {
     provider: "groq",
     model: "llama-3.3-70b-versatile",
     apiKey: "groq-test",
@@ -1102,30 +1144,6 @@ const MATRIX_PROVIDERS: readonly ProviderParityEntry[] = [
     }),
   },
   {
-    provider: "agenc", model: "grok-4-fast", env: {},
-    createHarness: (parityCase) => {
-      const delegate = createResponsesHarness({
-        providerFactory: () => new GrokProvider({
-          apiKey: "managed-test", model: "grok-4-fast",
-          tools: parityCase.tools ? [...parityCase.tools] : [],
-        }),
-        payload: buildResponsesApiPayload("grok-4-fast", parityCase),
-      });
-      return {
-        requests: delegate.requests,
-        provider: new AgenCProvider({
-          model: "grok-4-fast", tools: parityCase.tools ? [...parityCase.tools] : [],
-          sessionId: "session-matrix" as any,
-          authBackend: {
-            inferAgencModel: () => ({ provider: "grok", model: "grok-4-fast" }),
-            vendKey: () => ({ kind: "api-key", provider: "grok", sessionId: "session-matrix", apiKey: "managed-test" }),
-          } as any,
-          providerFactory: () => delegate.provider,
-        }),
-      };
-    },
-  },
-  {
     provider: "grok", model: "grok-4.7", env: {},
     createHarness: (parityCase) => createResponsesHarness({
       providerFactory: () => new GrokProvider({ apiKey: "xai-test", model: "grok-4.7", tools: parityCase.tools ? [...parityCase.tools] : [] }),
@@ -1377,6 +1395,9 @@ describe("provider parity", () => {
         expect(response.model).toBe(entry.model);
         expect(response.usage).toEqual({
           ...BASE_USAGE,
+          ...(entry.provider === "anthropic"
+            ? { cacheInputExcludedFromPrompt: true }
+            : {}),
           ...(CHAT_COMPLETIONS_PROVIDERS.has(entry.provider)
             ? { cacheWritesUnreported: true }
             : {}),

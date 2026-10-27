@@ -25,6 +25,11 @@ export function setPendingResumeSessionId(sessionId: string): void {
   pendingResumeSessionId = sessionId;
 }
 
+/** Whether teardown is handing stdin to a replacement TUI rather than a shell. */
+export function hasPendingResumeSession(): boolean {
+  return pendingResumeSessionId !== null;
+}
+
 /** Clear any previously staged resume so a plain exit cannot inherit it. */
 export function clearPendingResumeSessionId(): void {
   pendingResumeSessionId = null;

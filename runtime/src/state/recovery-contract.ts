@@ -69,6 +69,13 @@ export const DEFAULT_MAX_STARTUP_RECOVERY_MS = 30_000;
 
 /** Hard override ceilings. No caller or test may raise a run above these. */
 export const HARD_MAX_RECOVERY_LINE_BYTES = 4_194_304;
+/**
+ * Old resume writers duplicated their transcript in session_configured.
+ * Only that fully validated legacy envelope may consume the existing 64 MiB
+ * default source budget as one record. New writers omit the duplicate.
+ */
+export const MAX_RECOVERY_LEGACY_SESSION_CONFIGURED_BYTES =
+  DEFAULT_MAX_RECOVERY_SOURCE_BYTES;
 export const HARD_MAX_RECOVERY_SOURCE_BYTES = 1_073_741_824;
 export const HARD_MAX_RECOVERY_EVENTS = 2_000_000;
 export const HARD_MAX_RECOVERY_SCAN_MILLISECONDS = 300_000;

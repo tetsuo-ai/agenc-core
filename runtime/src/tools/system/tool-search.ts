@@ -17,12 +17,27 @@ import {
 } from "./coding-common.js";
 
 function splitSearchTokens(query: string): readonly string[] {
-  return query
+  return [...new Set(query
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLowerCase()
-    .split(/[^a-z0-9_.-]+/)
+    .split(/[^a-z0-9]+/)
     .map((token) => token.trim())
-    .filter((token) => token.length > 0);
+    .filter((token) => token.length > 0))];
 }
+
+// Small vocabulary bridges, applied to both names and catalog descriptions.
+// Keep explicit identities and filters literal; these only rank search results.
+const RELATED_SEARCH_TERMS: readonly (readonly string[])[] = [
+  ["web", "internet", "online"],
+  ["search", "find", "lookup"],
+  ["fetch", "retrieve", "download"],
+  ["page", "webpage"],
+  ["file", "files", "filesystem"],
+  ["directory", "directories", "folder", "folders"],
+  ["skill", "skills"],
+];
+const SEARCH_STOP_WORDS = new Set(["a", "an", "and", "or", "the", "to", "for", "of", "with", "using"]);
+type CatalogSearchScore = readonly [priority: number, matches: number, direct: number, name: number];
 
 function parseToolSearchQuery(rawQuery?: string): {
   readonly query?: string;
@@ -49,8 +64,12 @@ function parseToolSearchQuery(rawQuery?: string): {
   };
 }
 
-function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
-  if (!query) return 10;
+function scoreCatalogEntry(
+  entry: ToolCatalogEntry,
+  query: string | undefined,
+  tokens: readonly string[],
+): CatalogSearchScore | undefined {
+  if (!query) return [10, 0, 0, 0];
   const lowered = query.toLowerCase();
   const entryName = entry.name.toLowerCase();
   const family = entry.metadata.family.toLowerCase();
@@ -58,28 +77,34 @@ function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
   const keywords = entry.metadata.keywords?.map((keyword) => keyword.toLowerCase()) ?? [];
   const haystack = [
     entryName,
+    splitSearchTokens(entry.name).join(" "),
     entry.description.toLowerCase(),
     family,
     source,
     ...keywords,
     ...(entry.metadata.preferredProfiles?.map((profile) => profile.toLowerCase()) ?? []),
   ];
-  if (entryName === lowered) return 0;
-  if (entryName.startsWith(lowered)) return 1;
-  if (keywords.some((keyword) => keyword === lowered)) return 2;
-  if (family === lowered || source === lowered) return 3;
-  const tokens = splitSearchTokens(query);
-  if (tokens.length > 0 && tokens.every((token) => haystack.some((part) => part.includes(token)))) {
-    return 4;
+  if (entryName === lowered) return [0, 0, 0, 0];
+  if (entryName.startsWith(lowered)) return [1, 0, 0, 0];
+  if (keywords.some((keyword) => keyword === lowered)) return [2, 0, 0, 0];
+  if (family === lowered || source === lowered) return [3, 0, 0, 0];
+  const words = new Set(haystack.flatMap(splitSearchTokens));
+  let matches = 0;
+  let direct = 0;
+  let name = 0;
+  for (const token of tokens) {
+    if (haystack.some((part) => part.includes(token))) {
+      matches++;
+      direct++;
+      if (entryName.includes(token)) name++;
+    } else {
+      const related = RELATED_SEARCH_TERMS.find((terms) => terms.includes(token));
+      if (related?.some((term) => words.has(term))) matches++;
+    }
   }
-  if (entry.description.toLowerCase().includes(lowered)) return 5;
-  if (keywords.some((keyword) => keyword.includes(lowered))) return 6;
-  return 99;
-}
-
-function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string): boolean {
-  if (!query) return true;
-  return scoreCatalogEntry(entry, query) < 99;
+  // Coverage wins, then literal matches, then matches in the tool's identity.
+  // A mixed-intent query can find several useful tools without matching every word.
+  return matches > 0 ? [4, matches, direct, name] : undefined;
 }
 
 function mcpUseHint(toolName: string, available: boolean): string | undefined {
@@ -127,13 +152,41 @@ function modelFacingToolSearchMetadata(
   };
 }
 
+const SUMMARY_MAX_CHARS = 160;
+const SUMMARY_MIN_CHARS = 40;
+
+/**
+ * The opening sentences of a catalog description, at least SUMMARY_MIN_CHARS
+ * and at most SUMMARY_MAX_CHARS long: enough to decide whether to load the
+ * tool. Loading it sends the full description with its schema.
+ */
+export function catalogSummary(description: string): string {
+  const flat = description.replace(/\s+/g, " ").trim();
+  const boundary = /[.!?](?=\s|$)/g;
+  let end = flat.length;
+  for (let match = boundary.exec(flat); match !== null; match = boundary.exec(flat)) {
+    if (match.index + 1 >= SUMMARY_MIN_CHARS) {
+      end = match.index + 1;
+      break;
+    }
+  }
+  const summary = flat.slice(0, end);
+  if (summary.length <= SUMMARY_MAX_CHARS) return summary;
+  const cut = summary.lastIndexOf(" ", SUMMARY_MAX_CHARS - 3);
+  return `${summary.slice(0, cut > 0 ? cut : SUMMARY_MAX_CHARS - 3)}...`;
+}
+
+const COMPACT_LOAD_HINT = "Load an unlisted tool with select:<name> before calling it.";
+
 function normalizeSelections(args: Record<string, unknown>): readonly string[] {
   const parsedQuery = parseToolSearchQuery(toOptionalString(args.query));
   return [
     ...parsedQuery.selections,
+    // A string may list several names separated by commas, as select: in a
+    // query does; Light presents select as a string (tools/light-presentation.ts).
     ...(
       typeof args.select === "string"
-        ? [args.select]
+        ? args.select.split(",")
         : Array.isArray(args.select)
           ? args.select.filter((entry): entry is string => typeof entry === "string")
           : []
@@ -176,7 +229,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
   return {
     name: SYSTEM_SEARCH_TOOLS_NAME,
     description:
-      "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema. Selection alone returns only selected tools or scoped name suggestions; use query or filters to search further.",
+      "Find and load tools that are not in your function list. select (or select:<tool_name> in query) loads a tool's schema by its exact name; query and the filters search the catalog by name, family, source, keyword or profile.",
     metadata: {
       ...codingToolMetadata(SYSTEM_SEARCH_TOOLS_NAME, false, ["coding", "general", "operator"]),
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
@@ -188,16 +241,14 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       properties: {
         query: {
           type: "string",
-          description:
-            "Search terms. May include AgenC-style select:<tool_name> to load an exact deferred tool.",
+          description: "Search terms; may include select:<tool_name>.",
         },
         select: {
           anyOf: [
             { type: "string" },
             { type: "array", items: { type: "string" } },
           ],
-          description:
-            "Exact tool name or names to load. Equivalent to query token select:<tool_name>.",
+          description: "Exact tool name or names to load.",
         },
         family: { type: "string" },
         source: { type: "string" },
@@ -219,6 +270,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
         .filter((entry) => scope === undefined || scope.has(entry.name));
       const parsedQuery = parseToolSearchQuery(toOptionalString(args.query));
       const query = parsedQuery.query;
+      const searchTokens = splitSearchTokens(query ?? "").filter((token) => !SEARCH_STOP_WORDS.has(token));
       const explicitSelections = normalizeSelections(args);
       const selectedEntries = explicitSelections
         .map((name) => resolveSelection(name, catalog))
@@ -263,15 +315,19 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           ) {
             return false;
           }
-          return matchesCatalogQuery(entry, query);
+          return true;
         })
+        .map((entry) => ({ entry, score: scoreCatalogEntry(entry, query, searchTokens) }))
+        .filter((match): match is { entry: ToolCatalogEntry; score: CatalogSearchScore } => match.score !== undefined)
         .sort((left, right) => {
-          const leftScore = scoreCatalogEntry(left, query);
-          const rightScore = scoreCatalogEntry(right, query);
-          if (leftScore !== rightScore) return leftScore - rightScore;
-          return left.name.localeCompare(right.name);
+          return left.score[0] - right.score[0] ||
+            right.score[1] - left.score[1] || right.score[2] - left.score[2] ||
+            right.score[3] - left.score[3] || left.entry.name.localeCompare(right.entry.name);
         })
-        .slice(0, normalizePositiveInteger(args.maxResults, 50, MAX_RESULTS));
+        // Query results are a shortlist, even when a model asks for a large
+        // maxResults. Filter-only and empty queries still browse the catalog.
+        .slice(0, normalizePositiveInteger(args.maxResults, query ? 5 : 50, query ? 5 : MAX_RESULTS))
+        .map(({ entry }) => entry);
       const results = [
         ...selectedEntries,
         ...matchedResults,
@@ -282,6 +338,34 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       const loaded = selectedEntries.map((entry) => entry.name);
       if (loaded.length > 0) {
         config.onDiscoverTools?.(loaded);
+      }
+
+      if (config.compactResults === true) {
+        // Name and summary for a tool still to load; listed and just-loaded
+        // tools send their own schema and description, so only the name.
+        let loadable = false;
+        const entries = results.map((entry) => {
+          const selected = selectedEntries.some((candidate) => candidate.name === entry.name);
+          const advertised = advertisedToolNames?.has(entry.name) ?? false;
+          const ready = selected || advertised;
+          if (!ready && (advertisedToolNames !== undefined || entry.metadata.deferred)) loadable = true;
+          const useHint = mcpUseHint(entry.name, ready);
+          return {
+            name: modelFacingToolSearchText(entry.name),
+            ...(selected ? { loaded: true } : advertised ? { listed: true } : {
+              description: modelFacingToolSearchText(catalogSummary(entry.description)),
+            }),
+            ...(useHint !== undefined ? { useHint: modelFacingToolSearchText(useHint) } : {}),
+          };
+        });
+        return okResult({
+          ...(loaded.length > 0 ? { loaded: loaded.map(modelFacingToolSearchText) } : {}),
+          ...(missingSelections.length > 0
+            ? { missingSelections: missingSelections.map(modelFacingToolSearchText) }
+            : {}),
+          results: entries,
+          ...(loadable ? { hint: COMPACT_LOAD_HINT } : {}),
+        });
       }
 
       return okResult({

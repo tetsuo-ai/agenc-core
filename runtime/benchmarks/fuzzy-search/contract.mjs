@@ -592,7 +592,7 @@ function validateEnvironment(environment) {
 
   requireObject(environment.runtime, "report.environment.runtime");
   if (
-    environment.runtime.node !== "v26.5.0" ||
+    environment.runtime.node !== "v26.12.1" ||
     environment.runtime.npm !== "11.17.0"
   ) {
     throw new TypeError(

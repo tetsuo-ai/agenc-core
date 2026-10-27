@@ -34,6 +34,7 @@ import type {
 } from "../../types/textInputTypes";
 import { isStoppableLocalAgentStatus } from "../components/spinner/agentActivity.js";
 import { registerUrgentCancelInputHandler } from "../urgentCancelInput.js";
+import { DOUBLE_PRESS_TIMEOUT_MS } from "./useDoublePress.js";
 import {
   clearCommandQueue,
   enqueuePendingNotification,
@@ -267,16 +268,42 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const urgentInterruptRef = useRef(handleInterrupt);
   const urgentEscapeActiveRef = useRef(isEscapeActive);
   const urgentCtrlCActiveRef = useRef(isCtrlCActive);
+  const urgentActiveTurnRef = useRef(hasActiveTurnToCancel);
+  const urgentContextActiveRef = useRef(isContextActive);
+  const lastInterruptPressRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     urgentCancelRef.current = handleCancel;
     urgentInterruptRef.current = handleInterrupt;
     urgentEscapeActiveRef.current = isEscapeActive;
     urgentCtrlCActiveRef.current = isCtrlCActive;
-  }, [handleCancel, handleInterrupt, isEscapeActive, isCtrlCActive]);
+    urgentActiveTurnRef.current = hasActiveTurnToCancel;
+    urgentContextActiveRef.current = isContextActive;
+  }, [handleCancel, handleInterrupt, isEscapeActive, isCtrlCActive, hasActiveTurnToCancel, isContextActive]);
 
   useLayoutEffect(() => {
     return registerUrgentCancelInputHandler((input, key) => {
+      // Cancellation may finish between repeated Escape or Ctrl+C presses. Keep the
+      // rest of that burst out of idle draft clearing until a quiet interval
+      // or another key signals a new editing gesture.
+      const isCtrlC = input === "c" && key.ctrl;
+      if ((!key.escape && !isCtrlC) || !urgentContextActiveRef.current) {
+        lastInterruptPressRef.current = null;
+      } else {
+        const now = Date.now();
+        const interruptsTurn = urgentActiveTurnRef.current &&
+          (key.escape ? urgentEscapeActiveRef.current : urgentCtrlCActiveRef.current);
+        const continuesInterrupt = lastInterruptPressRef.current !== null &&
+          now - lastInterruptPressRef.current <= DOUBLE_PRESS_TIMEOUT_MS;
+        if (interruptsTurn || continuesInterrupt) {
+          lastInterruptPressRef.current = now;
+          if (interruptsTurn) {
+            if (key.escape) urgentCancelRef.current();
+            else urgentInterruptRef.current();
+          }
+          return true;
+        }
+      }
       if (key.escape && urgentEscapeActiveRef.current) {
         urgentCancelRef.current();
         return true;

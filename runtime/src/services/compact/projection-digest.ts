@@ -24,6 +24,7 @@ export function canonicalCompactionProjectionMessages(
     ...(message.toolResultIntegrity !== undefined
       ? { tool_result_integrity: message.toolResultIntegrity }
       : {}),
+    ...(message.toolResultIsError === true ? { tool_result_is_error: true } : {}),
     ...(message.agentInvocation !== undefined
       ? { agent_invocation: message.agentInvocation }
       : {}),

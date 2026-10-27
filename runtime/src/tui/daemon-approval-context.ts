@@ -1,4 +1,5 @@
 import type { JsonObject } from "../app-server/protocol/index.js";
+import { permissionsRunWithoutSandbox } from "../sandbox/escalation/approvals.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import { isRecord } from "../utils/record.js";
 
@@ -50,6 +51,11 @@ export function buildDaemonApprovalCtx(
     turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
     ...(typeof payload.reason === "string"
       ? { retryReason: payload.reason }
+      : {}),
+    // The request asks to run a refused call without the sandbox; the card
+    // must say so even where its reason text does not fit.
+    ...(permissionsRunWithoutSandbox(payload.permissions)
+      ? { runsWithoutSandbox: true }
       : {}),
     ...(typeof payload.planContent === "string"
       ? { planContent: payload.planContent }

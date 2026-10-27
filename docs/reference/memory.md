@@ -102,6 +102,18 @@ returns two pieces that the system prompt assembler places separately:
 loader creates both memory directories so the model can write to them
 without checking first. The block is about 700 tokens in total.
 
+An interactive session (Light or standard) whose global and project
+`MEMORY.md` indexes are both empty when its prompt is assembled leaves both
+pieces out of its fixed prefix. The rules and directories arrive once, as a
+reminder before the first user message that asks about memory or states
+something worth remembering (`prompts/attachments/memory-on-request.ts`: a
+request to remember, recall or forget, the user's role, a preference or
+standing instruction, a team convention or a pointer to an external system),
+and stay in place for the rest of the session. A message that only describes
+the user in passing ("I'm new to this repo") does not bring them. Runs without
+a human (`agenc -p`, scheduled routines) keep the rules in the prefix; the
+compact and coordinator heads carry no memory rules.
+
 Each live turn also appends the global and project `MEMORY.md` indexes to
 the instruction envelope (`prompts/live-instructions.ts`), truncated by
 `truncateEntrypointContent` and framed as untrusted
@@ -110,11 +122,17 @@ base prompt.
 
 The file tools (`FileRead`, `Glob`, `Grep`, `Write`, `Edit`, `MultiEdit`)
 admit both memory roots regardless of the workspace boundary
-(`resolveToolAllowedPaths` folds in `getDurableMemoryRoots()`), so the model
-can read and write where the prompt points. Only those two directories are
-admitted: sibling state under `$AGENC_HOME` such as
+(`resolveToolAllowedPaths`), so the model can read, search and write where the
+prompt points. The roots are those of the session whose turn runs the tool
+(`sessionDurableMemoryDirectories`): a daemon runs in its own working
+directory, so the process-wide project directory (`getDurableMemoryRoots()`,
+used only outside a session's turn) would name the daemon's project. With the
+session's auto memory off no memory root is admitted. Only those two
+directories are admitted: sibling state under `$AGENC_HOME` such as
 `projects/<slug>/sessions/`, `config.toml` or `auth.json` stays denied, and
-memory writes through these tools are screened by `checkMemorySecrets`.
+memory writes through these tools are screened by `checkMemorySecrets`. A
+worktree child may write the memory directories its session may write and
+nothing else outside its worktree.
 
 ---
 
@@ -162,7 +180,16 @@ The extraction child (`services/extractMemories`) forks the full history on
 every third eligible terminating turn by default (`DEFAULT_MIN_ELIGIBLE_TURNS`),
 sees only the file read/write tools (`MEMORY_EXTRACTION_TOOL_ALLOWLIST`) inside
 the memory directory, and never blocks a turn: in-flight runs are drained at
-session shutdown. Every gate that stops a run and every failed run emits a
+session shutdown. `Write` / `extractMemories` may persist those durable
+memory roots on the host even when `AGENC_HOME` is reserved read-only for
+sandboxed children; operator denies and shell redirects still win. Before it
+starts a child, extraction checks that the sandbox will admit its writes with
+the same question the runtime sandbox asks (`isSessionDurableMemoryWritePath`,
+the session's own memory directories), so it runs in daemon sessions as in
+direct runs; a cowork override or an operator deny on the directory stops it
+there (`memory directory is not writable under the current sandbox`). See
+[AgenC home under writable sandbox roots](tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots).
+Every gate that stops a run and every failed run emits a
 `warning` event with cause `memory_extraction_skipped` or
 `memory_extraction_failed` (session log only; not shown in the transcript).
 The same run may also propose a draft skill; those outcomes use cause
@@ -368,3 +395,20 @@ repo state.
 - `AGENC.md`
 
 See [cli.md](cli.md) · persona/onboarding [onboarding.md](../onboarding.md).
+
+### Saving and forgetting during a session
+
+To forget a saved memory, use `apply_patch` with a `*** Delete File: <path>`
+hunk to delete its topic file. If the tool is not listed, load it with
+`system.searchTools` and `query: "select:apply_patch"`. Then use `Edit` to remove its line from that
+memory directory's `MEMORY.md`. These file tools use the session's memory
+permissions; an explicit deny still takes precedence. Memory changes do not
+require a separate sandbox escape approval.
+
+Shell commands see the session's memory directories as read-only, including
+trusted custom directories inside an otherwise writable workspace. Use the
+file tools for memory updates. Each agent must read an existing memory file
+itself before replacing it; another agent's read or write does not authorize a
+blind overwrite. This protects foreground saves from stale background
+extraction writes. Automatic recall searches the same session-owned memory
+directories used by the prompt and file tools.

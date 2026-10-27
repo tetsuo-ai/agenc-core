@@ -214,7 +214,7 @@ def _candidate_metadata(
         "sourceCommit": identity["sha"],
         "sha256": hashlib.sha256(archive_payload).hexdigest(),
         "bytes": len(archive_payload),
-        "nodeVersion": "v26.5.0",
+        "nodeVersion": "v26.12.1",
         "nodeMajor": 26,
         "nodeModuleAbi": "147",
         "releaseCandidate": {

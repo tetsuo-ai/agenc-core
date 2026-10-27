@@ -133,6 +133,10 @@ describe("compact service", () => {
     expect(JSON.parse(String(postInput.compact_summary))).toEqual({
       facts: [],
       kind: "agenc_compaction_context_v2",
+      history_reference: {
+        description: expect.stringContaining("Exact tool results, including MCP results, remain in this JSONL session history."),
+        path: expect.stringMatching(/\.jsonl$/u),
+      },
       narrative: "Bounded summary.",
       open_actions: [],
       trust: "untrusted_historical_data",
@@ -559,7 +563,11 @@ function validProvider(gate?: Promise<void>): CompactHarness["provider"] {
       supportsMaxOutputTokens: true,
     }),
     chat,
-    chatStream: chat,
+    chatStream: (async (messages, onChunk, options) => {
+      const response = await Reflect.apply(chat, undefined, [messages, options]) as LLMResponse;
+      onChunk({ content: response.content, done: true });
+      return response;
+    }) satisfies LLMProvider["chatStream"],
     healthCheck: async () => true,
     tokenCountCapability: {
       capabilityVersion: "compact-test-v1",

@@ -126,7 +126,7 @@ describe("startup status notice definitions", () => {
     mocks.pluginInstalled = true;
   });
 
-  it("uses an AgenC account notice id for subscriber token conflicts", async () => {
+  it("does not show an AgenC account model notice for subscribers", async () => {
     mocks.subscriber = true;
     mocks.authTokenSource = {
       source: "ANTHROPIC_AUTH_TOKEN",
@@ -136,10 +136,8 @@ describe("startup status notice definitions", () => {
     const { getActiveNotices } = await import("./statusNoticeDefinitions.js");
     const ids = getActiveNotices(baseContext()).map((notice) => notice.id);
 
-    expect(ids).toContain("agenc-account-external-token");
-    expect(ids.filter((id) => id.endsWith("-external-token"))).toEqual([
-      "agenc-account-external-token",
-    ]);
+    expect(ids).not.toContain("agenc-account-external-token");
+    expect(ids.filter((id) => id.endsWith("-external-token"))).toEqual([]);
     expect(mocks.credentialHomes).toEqual([]);
     expect(mocks.providerAuthContexts.length).toBeGreaterThan(0);
     expect(
@@ -241,6 +239,24 @@ describe("startup status notice definitions", () => {
 
     expect(notice).toBeDefined();
     expect(collectText(notice?.render(context))).toContain("agenc daemon start");
+  });
+
+  it("does not double the period after an autostart failure that ends with one", async () => {
+    const context = {
+      ...baseContext(),
+      daemonStatus: {
+        autostartDisabled: false,
+        autostartFailure: "grok provider requires credentials. Set XAI_API_KEY or GROK_API_KEY.",
+      },
+    };
+
+    const { getActiveNotices } = await import("./statusNoticeDefinitions.js");
+    const notice = getActiveNotices(context).find((candidate) => candidate.id === "daemon-autostart-failed");
+
+    expect(collectText(notice?.render(context))).toBe(
+      "AgenC daemon autostart failed: grok provider requires credentials. Set XAI_API_KEY or GROK_API_KEY. " +
+        "Fix the cause, run agenc daemon start in another shell, then press Enter to retry.",
+    );
   });
 
   it("keeps the JetBrains notice on marketplace text without a hard-coded docs URL", async () => {

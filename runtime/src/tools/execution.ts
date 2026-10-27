@@ -1,3 +1,4 @@
+import { toolStage } from "./stage-timing.js";
 /**
  * Tool execution — the central gate between the model's tool_use
  * blocks and the actual `Tool.execute()` call.
@@ -59,6 +60,7 @@
  * @module
  */
 
+import { MIN_TOOL_RESULT_BYTES, resolveOffloadThresholdBytes } from "./result-visibility.js";
 import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
 import { invocationForArgs, stringifyToolArgsWithBigInt } from "./execution-invocation.js";
 import { beginExecutingToolCall } from "../session/executing-tool-calls.js";
@@ -104,9 +106,9 @@ import {
   signSessionId,
 } from "./system/filesystem.js";
 import {
-  runPostToolUseFailureHooks,
-  runPostToolUseHooks,
-  runPreToolUseHooks,
+  runPostToolUseFailureHooks as untimed_runPostToolUseFailureHooks,
+  runPostToolUseHooks as untimed_runPostToolUseHooks,
+  runPreToolUseHooks as untimed_runPreToolUseHooks,
   type HookAttachmentKind,
   type HookPermissionResult,
   type HookTimingRecord,
@@ -129,6 +131,10 @@ import { approvalResponseKey } from "../permissions/approval-response-key.js";
 // it bricks the whole tools/ test surface. The canonical strings are
 // authored once here and mirrored by the UI surface (T7 wires the
 // real messages.ts import when the runtime graph lands).
+const runPostToolUseFailureHooks: typeof untimed_runPostToolUseFailureHooks = (...args) => toolStage("hooks", () => untimed_runPostToolUseFailureHooks(...args));
+const runPostToolUseHooks: typeof untimed_runPostToolUseHooks = (...args) => toolStage("hooks", () => untimed_runPostToolUseHooks(...args));
+const runPreToolUseHooks: typeof untimed_runPreToolUseHooks = (...args) => toolStage("hooks", () => untimed_runPreToolUseHooks(...args));
+
 const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   "[Request interrupted by user for tool use]";
 const CANCEL_MESSAGE =
@@ -173,7 +179,7 @@ import {
   DEFAULT_BYTES_PER_TOKEN,
   detectContentType,
 } from "../llm/token-estimation.js";
-import { enforceRuntimeSandboxAttempt } from "./runtimes/sandboxing.js";
+import { enforceRuntimeSandboxAttempt, remoteControlWriteRefusal } from "./runtimes/sandboxing.js";
 import {
   createTransactionGuardContext,
   evaluateToolInvocationTransactionGuard,
@@ -210,7 +216,7 @@ export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
  * window we never starve tools below ~16 KB (~4-8K tokens), so small
  * configs can still read meaningful output.
  */
-export const MIN_TOOL_RESULT_BYTES = 16_000;
+export { MIN_TOOL_RESULT_BYTES, resolveOffloadThresholdBytes } from "./result-visibility.js";
 
 /**
  * Fraction of the model's context window a single tool result may
@@ -247,22 +253,6 @@ export const LARGE_CONTEXT_WINDOW_TOKENS = 200_000;
  * while still carrying the path plus actionable head and tail slices.
  */
 const OFFLOAD_REFERENCE_MAX_BYTES = 4_000;
-
-/**
- * Optional inline-size threshold for the offload, in bytes
- * (`AGENC_TOOL_RESULT_OFFLOAD_BYTES`). When set and lower than the
- * model-aware cap, results above it are offloaded even though they would
- * have fit inline: the full output is persisted either way, so the only
- * effect is how much of the context window one tool result may occupy.
- * Unset or invalid keeps today's behavior (offload only above the cap).
- */
-export function resolveOffloadThresholdBytes(): number | undefined {
-  const raw = process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
-  return parsed;
-}
 
 function resolveSingleResultWindowFraction(): number {
   const raw = process.env.AGENC_MAX_TOOL_RESULT_WINDOW_FRACTION;
@@ -529,14 +519,14 @@ function buildOffloadReferenceMessage(args: {
   // the truncation marker ("narrow the query"/"offset+limit"/"search").
   const header =
     `[full output (~${formatFileSize(originalBytes)} / ~${originalTokens} tokens) ` +
-    `saved to ${filepath} — read that file (or a byte/line range with ` +
+    `saved to ${filepath}: read that file (or a byte/line range with ` +
     `offset+limit) to see more, or narrow your query / run a more specific ` +
     `search. Head and tail preview follows:]\n`;
   // The tail routinely carries the verdict — a test run's summary line, an
   // exit status, the actual error — so the preview keeps BOTH ends and
   // marks the omitted middle, instead of hoping the head was the useful
   // part.
-  const middle = `\n[… middle omitted — full output at ${filepath}]\n`;
+  const middle = `\n[… middle omitted: full output at ${filepath}]\n`;
   const headerBytes = Buffer.byteLength(header, "utf8");
   const middleBytes = Buffer.byteLength(middle, "utf8");
   const room = Math.max(0, maxBytes - headerBytes - middleBytes);
@@ -1033,6 +1023,13 @@ export function validateToolPreflight(
         });
       }
       options.onValidatedArgs?.();
+      const ownerRefusal = remoteControlWriteRefusal(tool, args, readToolRuntimeContext(args));
+      if (ownerRefusal !== undefined) {
+        return {
+          ...validationErrorToolResult(`tool:${tool.name}:remote_control_owner_only`, `<tool_use_error>${ownerRefusal}</tool_use_error>`),
+          metadata: { preflightCode: "remote_control_owner_only" },
+        };
+      }
       const failure = tool.preflight?.(args);
       if (failure !== undefined && failure !== null) {
         message = failure.message;
@@ -1336,6 +1333,7 @@ export async function runToolUse(
     const message = `invalid JSON arguments for tool ${toolNameDisplay(invocation.toolName)}`;
     if (opts.eventLog) {
       emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
         cause: "invalid_args",
         message,
       });
@@ -1363,6 +1361,7 @@ export async function runToolUse(
   if (initialPreflight !== null) {
     if (opts.eventLog) {
       emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
         cause: "schema_validation_failed",
         message: initialPreflight.content,
       });
@@ -1447,6 +1446,7 @@ export async function runToolUse(
       });
       if (opts.eventLog) {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: "pre_hook_denied",
           message,
         });
@@ -1541,6 +1541,7 @@ export async function runToolUse(
         }
         if (opts.eventLog) {
           emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
             cause:
               permissionDecision.source === "pre-tool-use-hook"
                 ? "permission_denied:hook"
@@ -1567,6 +1568,7 @@ export async function runToolUse(
           });
           if (opts.eventLog) {
             emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
               cause:
                 permissionDecision.source === "pre-tool-use-hook"
                   ? "permission_denied:hook_ask_without_prompt"
@@ -1616,6 +1618,7 @@ export async function runToolUse(
         const message = err instanceof Error ? err.message : String(err);
         if (opts.eventLog) {
           emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
             cause: "aborted",
             message,
           });
@@ -1629,6 +1632,7 @@ export async function runToolUse(
       const message = err instanceof Error ? err.message : String(err);
       if (opts.eventLog) {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: "permission_evaluator_threw",
           message,
         });
@@ -1706,6 +1710,7 @@ export async function runToolUse(
           : "Permission denied");
       if (opts.eventLog) {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: `permission_denied:${approval.source}`,
           message,
         });
@@ -1749,7 +1754,7 @@ export async function runToolUse(
         if (cause === "stale_modal_decision") {
           emitWarningEvent(opts.eventLog, subId, cause, message);
         } else {
-          emitErrorEvent(opts.eventLog, subId, { cause, message });
+          emitErrorEvent(opts.eventLog, subId, { callId: invocation.callId, cause, message });
         }
       }
       return errorOutput({
@@ -1804,6 +1809,7 @@ export async function runToolUse(
         );
       } else {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: `transaction_guard:${decision.code ?? decision.verdict}`,
           message,
         });
@@ -2030,22 +2036,26 @@ export async function runToolUse(
         cls === "shell_interrupted"
       ) {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: cls === "timeout" ? "tool_timeout" : "aborted",
           message,
           streamError: cls === "timeout",
         });
       } else if (cls === "mcp_auth") {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: "mcp_auth_required",
           message,
         });
       } else if (cls === "mcp_tool_call") {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: "mcp_tool_call_failed",
           message,
         });
       } else {
         emitErrorEvent(opts.eventLog, subId, {
+          callId: invocation.callId,
           cause: `tool_threw:${cls}`,
           message,
         });
@@ -2266,7 +2276,7 @@ export async function runToolUse(
     const finishExecuting = beginExecutingToolCall(invocation.session, invocation.callId, effectiveSignal);
     let result: Awaited<ReturnType<typeof tool.execute>>;
     try {
-      result = await tool.execute(argsForTool);
+      result = await toolStage("execution", () => tool.execute(argsForTool));
     } finally {
       finishExecuting();
     }
@@ -2297,7 +2307,7 @@ export async function runToolUse(
         : {}),
     });
     rawExecutionSettled = true;
-    dispatch = await finishPhysicalSuccess(rawDispatch, effectiveSignal);
+    dispatch = await toolStage("result_sealing", () => finishPhysicalSuccess(rawDispatch, effectiveSignal));
     cleanupModeSub();
   } catch (err) {
     const pending = readPendingPhysicalSettlement<ToolDispatchResult>(err);

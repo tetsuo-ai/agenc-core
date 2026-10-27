@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
+import { permissionModePlainDescription, permissionModePlainLabel } from '../../../permissions/mode-display.js'
 import { AURA_PLAN_GLYPHS, supportsRowTints, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useQueuedMessage } from '../../context/QueuedMessageContext.js'
 import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../../context/contentWidthContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import Box from '../../ink/components/Box.js'
+import Link from '../../ink/components/Link.js'
 import wrapText from '../../ink/wrap-text.js'
 import { TerminalWriteContext } from '../../ink/useTerminalNotification.js'
 import ThemedBox from '../design-system/ThemedBox.js'
@@ -250,11 +252,7 @@ const userFacingModeOrder: readonly PermissionMode[] = [
   'bypassPermissions',
 ]
 
-/**
- * The modes the switcher displays, in display order. The digit-pick handler
- * in PromptInput indexes into this same list, so display and picking can
- * never drift apart.
- */
+/** The modes the switcher displays, in display order. */
 export function visibleUserFacingModes(
   bypassAvailable: boolean,
   autoAvailable: boolean,
@@ -266,26 +264,6 @@ export function visibleUserFacingModes(
   )
 }
 
-function modeDescription(mode: PermissionMode): string {
-  switch (mode) {
-    case 'default':
-      return 'standard · ask for ambiguous tools'
-    case 'acceptEdits':
-      return 'auto-accept file edits in this session'
-    case 'plan':
-      return 'read-only · propose plans, never execute'
-    case 'auto':
-      return 'auto-approve everything allowlisted'
-    case 'bypassPermissions':
-      return 'DANGER · all approvals bypassed'
-    case 'dontAsk':
-      return 'internal prompt suppression mode'
-    case 'unattended':
-      return 'background-agent unattended mode'
-    case 'bubble':
-      return 'nested-agent permission bubbling'
-  }
-}
 
 export function ModeSwitcher({
   currentMode,
@@ -311,16 +289,16 @@ export function ModeSwitcher({
       >
       <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={1} gap={2}>
         <Box width={16} flexShrink={0}>
-          <ThemedText color="agenc" wrap="truncate-end">permission mode</ThemedText>
+          <ThemedText color="agenc" wrap="truncate-end">permissions</ThemedText>
         </Box>
         <Box width={22} flexShrink={0}>
-          <ThemedText color="inactive" wrap="truncate-end">{`current · ${currentMode}`}</ThemedText>
+          <ThemedText color="inactive" wrap="truncate-end">{`now · ${permissionModePlainLabel(currentMode)}`}</ThemedText>
         </Box>
         <Box flexGrow={1} />
-        <ThemedText color="inactive" wrap="truncate-end">{`1–${modes.length} pick · ⇧⇥ cycle · esc`}</ThemedText>
+        <ThemedText color="inactive" wrap="truncate-end">esc close</ThemedText>
       </ThemedBox>
       <Box flexDirection="column">
-        {modes.map((mode, index) => {
+        {modes.map(mode => {
           const chrome = modeChrome[mode]
           const active = mode === currentMode
           const spacerAfter = spacious ? (active ? 2 : mode === 'plan' ? 1 : 0) : 0
@@ -334,16 +312,13 @@ export function ModeSwitcher({
               paddingX={1}
               gap={1}
             >
-              <Box width={4} flexShrink={0}>
-                <ThemedText color="muted3">{`[${index + 1}]`}</ThemedText>
-              </Box>
               <Box width={24} flexShrink={0}>
                 <ThemedText color={chrome.fg} bold={active} wrap="truncate-end">
-                  {`${mode}${active ? ' · current' : ''}`}
+                  {permissionModePlainLabel(mode)}
                 </ThemedText>
               </Box>
               <ThemedText color={active ? 'text2' : 'subtle'} wrap="truncate-end">
-                {modeDescription(mode)}
+                {permissionModePlainDescription(mode)}
               </ThemedText>
             </ThemedBox>
             {spacerAfter > 0 ? <Box minHeight={spacerAfter} /> : null}
@@ -352,7 +327,7 @@ export function ModeSwitcher({
         })}
       </Box>
       <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1}>
-        <ThemedText color="inactive">shift+tab cycles forward · /permissions for full rule table</ThemedText>
+        <ThemedText color="inactive">shift+tab or option+m: next mode · /permissions: all settings</ThemedText>
       </ThemedBox>
       </ThemedBox>
     </Box>
@@ -410,7 +385,7 @@ export function TuiHeader({
             <ThemedText color="lineSoft">│</ThemedText>
             <ThemedText color="inactive">task </ThemedText>
             <ThemedText color="subtle" wrap="truncate-middle">
-              {taskPda ?? '—'}
+              {taskPda ?? 'n/a'}
             </ThemedText>
           </>
         ) : null}
@@ -734,9 +709,9 @@ export function ChatBody({
   )
 }
 
-// The transcript surface (ActiveWorkSurface) adds paddingX={1} around the
-// welcome panel, so reserve 2 columns from the reported content width to avoid
-// overflowing the pane.
+// Isolated welcome panels reserve a column on either side. In the app,
+// ContentWidthProvider already accounts for the transcript padding; do not
+// subtract a second inset from that width.
 const WELCOME_INSET = 2
 
 function useWelcomeAvailableWidth(): number {
@@ -745,10 +720,8 @@ function useWelcomeAvailableWidth(): number {
   const { columns: terminalColumns } = useTerminalSize()
   // `TerminalFrameColumnsContext` intentionally defaults to 120 for isolated
   // primitives, but a real 44/80-col Ink viewport can be narrower than that.
-  // Clamp the fallback to the physical terminal so the brand row switches to
-  // its stacked compact form before Yoga starts wrapping the logo itself.
-  const available = contentWidth ?? Math.min(frameColumns, terminalColumns)
-  return Math.max(1, available - WELCOME_INSET)
+  // Clamp the fallback to the physical terminal before fitting the mark.
+  return Math.max(1, contentWidth ?? (Math.min(frameColumns, terminalColumns) - WELCOME_INSET))
 }
 
 // Portable fallback for terminals without a graphics protocol. These Braille
@@ -783,6 +756,10 @@ const KITTY_PLACEHOLDER_DIACRITICS = [
   '\u0351',
   '\u0352',
   '\u0357',
+  '\u035b',
+  '\u0363',
+  '\u0364',
+  '\u0365',
 ] as const
 
 export function supportsKittyGraphics(
@@ -813,7 +790,7 @@ export function kittyLogoPlaceholderRows(
     columns > KITTY_PLACEHOLDER_DIACRITICS.length ||
     rows > KITTY_PLACEHOLDER_DIACRITICS.length
   ) {
-    throw new RangeError('Kitty logo grid must be between 1 and 16 cells')
+    throw new RangeError(`Kitty logo grid must be between 1 and ${KITTY_PLACEHOLDER_DIACRITICS.length} cells`)
   }
 
   return Array.from({ length: rows }, (_, row) =>
@@ -897,7 +874,9 @@ function AgencLogoMark({ compact = false }: { readonly compact?: boolean }): Rea
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => (
-        <ThemedText key={index} color="text">
+        // Brand purple (the accent token, like the prompt glyph) in bold: braille
+        // dots are thin in most terminal fonts, so color keeps the mark readable.
+        <ThemedText key={index} color="accent" bold>
           {line}
         </ThemedText>
       ))}
@@ -907,9 +886,9 @@ function AgencLogoMark({ compact = false }: { readonly compact?: boolean }): Rea
 
 // One line of keys for the cold start. Each fact appears once on the screen:
 // the folder, model and mode live in the status line under the prompt, so the
-// welcome carries only the name, the version and these keys. Segments are
-// ordered by teaching value and whole segments drop on narrow panes instead of
-// ellipsizing mid-word.
+// welcome carries only the name, the version, these keys and the repository
+// address. Segments are ordered by teaching value and whole segments drop on
+// narrow panes instead of ellipsizing mid-word.
 const WELCOME_HINT_SEGMENTS = [
   { keyName: '/', label: 'commands' },
   { keyName: '@', label: 'attach files' },
@@ -956,11 +935,47 @@ function WelcomeHintLine(): React.ReactNode {
   )
 }
 
+// The address under the keys. The label drops the scheme so it reads as an
+// address; the OSC 8 target carries the full URL.
+const AGENC_REPO_URL = 'https://github.com/tetsuo-ai/agenc-core'
+const AGENC_REPO_LABEL = 'github.com/tetsuo-ai/agenc-core'
+
+// Link emits OSC 8 when the terminal supports hyperlinks and prints the same
+// label plainly otherwise, which most terminals still detect as a link.
+function WelcomeRepoLink(): React.ReactNode {
+  return (
+    <Link url={AGENC_REPO_URL}>
+      <ThemedText color="inactive">{AGENC_REPO_LABEL}</ThemedText>
+    </Link>
+  )
+}
+
+// Reserve ten rows outside the mark: name + gap (2), transcript top
+// padding (1), and prompt/footer chrome including a wrapped placeholder (7).
+// Hints cost another gap and row; drop them before shrinking the brand mark.
+// The repository address costs one more gap and row and drops before the
+// hints. It only shows at its full width: a wrapped or cut address is worse
+// than none.
+export function welcomeColdPanelLayout(availableWidth: number, terminalRows: number): {
+  readonly compactLogo: boolean
+  readonly showHint: boolean
+  readonly showRepoLink: boolean
+} {
+  const fullWidth = Math.max(...AGENC_LOGO_MARK_LINES.map(line => stringWidth(line)))
+  const compactLogo = availableWidth < fullWidth || terminalRows < AGENC_LOGO_MARK_LINES.length + 10
+  const logoRows = compactLogo ? AGENC_LOGO_MARK_COMPACT_LINES.length : AGENC_LOGO_MARK_LINES.length
+  return {
+    compactLogo,
+    showHint: terminalRows >= logoRows + 12,
+    showRepoLink:
+      terminalRows >= logoRows + 14 && availableWidth >= stringWidth(AGENC_REPO_LABEL),
+  }
+}
+
 export function WelcomeColdPanel(): React.ReactNode {
   const availableWidth = useWelcomeAvailableWidth()
   const { rows: terminalRows } = useTerminalSize()
-  const compactLogo = availableWidth < 96 || terminalRows < 20
-  const showHint = terminalRows >= 16
+  const { compactLogo, showHint, showRepoLink } = welcomeColdPanelLayout(availableWidth, terminalRows)
 
   return (
     <Box
@@ -977,6 +992,7 @@ export function WelcomeColdPanel(): React.ReactNode {
         <ThemedText color="inactive">{` ${VERSION}`}</ThemedText>
       </Box>
       {showHint ? <WelcomeHintLine /> : null}
+      {showRepoLink ? <WelcomeRepoLink /> : null}
     </Box>
   )
 }
@@ -1100,7 +1116,7 @@ export function Msg({
           </Box>
         ) : null}
         <ContentWidthProvider width={contentWidth}>
-          <Content color={role === 'user' ? 'text' : 'text2'}>{children}</Content>
+          <Content color={role === 'user' || role === 'agenc' ? 'text' : 'text2'}>{children}</Content>
         </ContentWidthProvider>
       </Box>
     </Box>
@@ -1134,10 +1150,10 @@ export function ResultLine({
   return (
     <Box flexDirection="row" paddingLeft={2}>
       <Box flexShrink={0}>
-        <ThemedText color="subtle">{'└ '}</ThemedText>
+        <ThemedText color="text3">{'└ '}</ThemedText>
       </Box>
       <Box flexShrink={1} minWidth={0}>
-        <ThemedText color={failed ? 'stepFail' : 'inactive'} wrap="truncate-end">
+        <ThemedText color={failed ? 'stepFail' : 'text3'} wrap="truncate-end">
           {children}
         </ThemedText>
       </Box>
@@ -1244,11 +1260,11 @@ function ToolResultLines({
   readonly state: ToolState
   readonly children: string | ReactNode
 }): React.ReactNode {
-  const color: ThemeColor = state === 'failed' ? 'stepFail' : 'inactive'
+  const color: ThemeColor = state === 'failed' ? 'stepFail' : 'text3'
   if (typeof children !== 'string') {
     return (
       <Box flexDirection="row" paddingLeft={2} gap={1}>
-        <ThemedText color="subtle">└</ThemedText>
+        <ThemedText color="text3">└</ThemedText>
         <Box flexDirection="column" flexGrow={1}>
           {children}
         </Box>
@@ -1258,7 +1274,7 @@ function ToolResultLines({
   const lines = children.split('\n')
   return (
     <Box flexDirection="row" paddingLeft={2} gap={1}>
-      <ThemedText color="subtle">└</ThemedText>
+      <ThemedText color="text3">└</ThemedText>
       <Box flexDirection="column" flexGrow={1}>
         {lines.map((line, index) => (
           <ThemedText key={index} color={color} wrap="wrap">
@@ -1558,6 +1574,7 @@ export function approvalDiffPreviewBudget(
 export function ApprovalCard({
   risk,
   title,
+  summary,
   command,
   commandIsShell = true,
   facts,
@@ -1568,9 +1585,16 @@ export function ApprovalCard({
   typedConfirmationValue = '',
   typedConfirmationTarget = 'yes',
   selectedIndex,
+  typingWaiting = false,
+  draftText,
+  draftFocused = false,
+  sessionScope = 'allow in this session',
+  cancelLabel = 'cancel',
 }: {
   readonly risk: 'low' | 'high'
   readonly title: string
+  /** Replaces the risk summary row, for a card whose question the risk tier does not say. */
+  readonly summary?: string
   readonly command: string
   /**
    * Whether `command` is an actual SHELL command (Run/Bash) that should carry
@@ -1594,12 +1618,17 @@ export function ApprovalCard({
   readonly typedConfirmationTarget?: string
   /** Selected row of the action picker (0 approve-once, 1 session, 2 deny). */
   readonly selectedIndex?: number
+  readonly typingWaiting?: boolean
+  readonly draftText?: string
+  readonly draftFocused?: boolean
+  readonly sessionScope?: string
+  readonly cancelLabel?: string
 }): React.ReactNode {
   const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
   const primaryFact = facts[0]?.value ?? title
   // The action picker below owns the "1/2/3 + confirm" affordance — keep the
   // summary line to identity only (no repeated confirm text, no `{}` inputs).
-  const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact}`
+  const approvalSummary = summary ?? `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact}`
   // The approval popup is rendered into a fixed-height slot (the layout
   // overlay row, or the modal context). Without a height cap the body grows
   // past the popup's own bottom border and bleeds onto the footer below it.
@@ -1619,6 +1648,9 @@ export function ApprovalCard({
   // are summary, command, facts, the action legend and the confirm row (5). The
   // note is the one optional row — drop it before it can push the action out.
   const popupBodyRows = popupMaxHeight - 6
+  // Three short rows keep every decision visible when the terminal leaves
+  // too little room for the summary, descriptions and keyboard legend.
+  const compactActions = !requireTypedConfirmation && popupBodyRows < 6
   const showNote = note !== undefined && note.length > 0 && popupBodyRows >= 6
   // When the slot is extremely tight, drop the secondary facts grid so the
   // primary action legend + confirm row are never the ones clipped away.
@@ -1628,7 +1660,7 @@ export function ApprovalCard({
   // lines it may show) so the same decision is unit-testable without the
   // renderer; see `approvalDiffPreviewBudget`.
   const budget = approvalDiffPreviewBudget(
-    popupBodyRows,
+    popupBodyRows - (draftText !== undefined && (draftText.length > 0 || draftFocused) ? 2 : 0),
     diffPreview?.lines.length ?? 0,
   )
   const showPreview = diffPreview !== undefined && budget.showPreview
@@ -1655,9 +1687,11 @@ export function ApprovalCard({
     <Popup
       title={title}
       headerRight={
-        requireTypedConfirmation
-          ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
-          : 'esc to close'
+        draftFocused
+          ? 'tab review approval'
+          : requireTypedConfirmation
+            ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
+            : `esc ${cancelLabel}`
       }
       status={requestId === undefined ? undefined : `req ${requestId}`}
       accentColor={variantColor[variant]}
@@ -1668,19 +1702,40 @@ export function ApprovalCard({
       footer={
         // Only real affordances go here — there is no `e` handler, so the old
         // `e edit command` hint sent users to a dead key.
-        requireTypedConfirmation
-          ? [{ keyName: 'type', label: 'confirmation required' }]
-          : []
+        draftFocused
+          ? [{ keyName: 'tab', label: 'review approval' }]
+          : requireTypedConfirmation
+            ? [{ keyName: 'type', label: 'confirmation required' }]
+            : []
       }
     >
       <Box flexDirection="column" paddingX={1} flexShrink={0}>
-        <ThemedText color="text2" wrap="truncate-end">
-          {approvalSummary}
-        </ThemedText>
+        {draftText !== undefined && (draftText.length > 0 || draftFocused) ? (
+          <>
+            <ThemedText color="text2" wrap="truncate-end">{`Draft saved: ${draftText || '(empty)'}`}</ThemedText>
+            <ThemedText color="inactive" wrap="truncate-end">
+              {draftFocused ? 'Typing stays in your draft. Enter keeps it. Tab reviews approval. Esc stops the turn.' : 'Your draft will return to the input after approval.'}
+            </ThemedText>
+          </>
+        ) : null}
+        {typingWaiting && !draftFocused && !compactActions ? (
+          <ThemedText color="text2" wrap="truncate-end">
+            {requireTypedConfirmation
+              ? `Card is waiting. Type ${typedConfirmationTarget}, then press Enter after a pause.`
+              : 'Card is waiting. Press 1, 2 or 3.'}
+          </ThemedText>
+        ) : null}
+        {!compactActions ? (
+          <ThemedText color="text2" wrap="truncate-end">
+            {approvalSummary}
+          </ThemedText>
+        ) : null}
         {requireTypedConfirmation ? (
           <Box flexDirection="column" flexShrink={0}>
             <ThemedText color="inactive" wrap="truncate-end">
-              type '{typedConfirmationTarget}' to approve · esc cancel
+              {draftFocused
+                ? `Press Tab to review this approval · esc ${cancelLabel}`
+                : `type '${typedConfirmationTarget}' to approve · pause, then Enter · esc ${cancelLabel}`}
             </ThemedText>
             <Box flexDirection="row" gap={1}>
               <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
@@ -1710,15 +1765,17 @@ export function ApprovalCard({
               const selected = index === (selectedIndex ?? 0)
               const marker = selected ? '❯ ' : '  '
               const rowText = `${marker}${index + 1}  ${action.label}`
-              const detailText = `  ${action.suffix}`
+              const detailText = compactActions
+                ? (index === 2 ? ` · esc ${cancelLabel}` : '')
+                : `  ${index === 1 ? sessionScope : action.suffix}`
               return (
                 <Box key={action.label}>
                   {selected ? (
-                    <ThemedText color="agenc" bold={true}>
+                    <ThemedText color="agenc" bold={true} wrap="truncate-end">
                       {`${rowText}${detailText}`}
                     </ThemedText>
                   ) : (
-                    <ThemedText color="text2">
+                    <ThemedText color="text2" wrap="truncate-end">
                       {rowText}
                       <ThemedText color="inactive">{detailText}</ThemedText>
                     </ThemedText>
@@ -1728,10 +1785,10 @@ export function ApprovalCard({
             })}
           </ThemedBox>
         )}
-        {!requireTypedConfirmation ? (
+        {!requireTypedConfirmation && !compactActions ? (
           <Box marginTop={1} marginBottom={1} flexShrink={0}>
             <ThemedText color="inactive" wrap="truncate-end">
-              1·2·3 choose   ↑↓ move   ⏎ confirm   esc cancel{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
+              1·2·3 choose   ↑↓ move   ⏎ confirm   esc {cancelLabel}{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
             </ThemedText>
           </Box>
         ) : null}
@@ -1747,7 +1804,8 @@ export function ApprovalCard({
           // the file, so this line is redundant and omitted (the `showPreview`
           // branch above); only surface the bare path when no diff is rendered.
           // Empty/`{}` inputs (EnterPlanMode and friends) render no line at all.
-          <ThemedText color="text2" wrap="truncate-end">
+          // A long path loses its middle, never its file name.
+          <ThemedText color="text2" wrap="truncate-middle">
             {command}
           </ThemedText>
         )}
@@ -1790,7 +1848,7 @@ export function ApprovalCard({
           </Box>
         ) : null}
         {showNote ? (
-          <ThemedText color="inactive" wrap="truncate-end">
+          <ThemedText color="inactive" wrap="wrap">
             note · {note}
           </ThemedText>
         ) : null}
@@ -1891,6 +1949,7 @@ export function MenuModal<T>({
   activeIndex = 0,
   renderRow,
   preview,
+  detail,
   previewWidth,
   footer,
   hint,
@@ -1900,6 +1959,9 @@ export function MenuModal<T>({
   modalMinHeight,
   rowMinHeight = 1,
   closeHint,
+  lead,
+  pinnedCount = 0,
+  activeRowColor = 'agencWash',
 }: {
   readonly title: string
   readonly count?: string
@@ -1911,6 +1973,8 @@ export function MenuModal<T>({
   readonly activeIndex?: number
   readonly renderRow: (item: T, index: number, active: boolean) => readonly ReactNode[]
   readonly preview?: ReactNode
+  /** Plain description of the highlighted item, shown under the list. */
+  readonly detail?: ReactNode
   readonly previewWidth?: `${number}%`
   readonly footer: readonly { readonly keyName: string; readonly label: string }[]
   readonly hint?: string
@@ -1921,6 +1985,16 @@ export function MenuModal<T>({
   readonly rowMinHeight?: number
   /** What Esc does, top right. Defaults to the popup's "esc to close". */
   readonly closeHint?: string
+  /** One line above the column headers, lined up with the first column, such as a search field. */
+  readonly lead?: ReactNode
+  /**
+   * How many items at the end of the list stay on screen under the rows that
+   * scroll, such as actions after a long list. A terminal too short to show
+   * them and one scrolling row scrolls every item instead.
+   */
+  readonly pinnedCount?: number
+  /** Background of the highlighted row. */
+  readonly activeRowColor?: ThemeColor
 }): React.ReactNode {
   const resolvedPreviewWidth = previewWidth ?? '40%'
   const resolvedListWidth = preview
@@ -1931,22 +2005,35 @@ export function MenuModal<T>({
     ? Math.max(1, Math.trunc(viewport.rows))
     : 24
   const rowHeight = Math.max(1, rowMinHeight)
-  const chromeRows = (omitTopBorder ? 1 : 2) + 3
+  // Rows the list cannot use: the popup's top and bottom border, its title and
+  // the rule under it, the column headers, and the footer with the rule above
+  // it. Leave room for the description below the list on short terminals.
+  const chromeRows = (omitTopBorder ? 6 : 7) + (detail ? 4 : 0) + (lead ? 1 : 0)
   const maxVisibleItems = Math.max(
     1,
     Math.floor(Math.max(1, viewportRows - chromeRows) / rowHeight),
   )
-  const visibleCount = Math.min(items.length, maxVisibleItems)
+  const pinned =
+    pinnedCount > 0 && pinnedCount < items.length && pinnedCount < maxVisibleItems
+      ? pinnedCount
+      : 0
+  const scrolling = items.length - pinned
+  const visibleCount = Math.min(scrolling, maxVisibleItems - pinned)
   const clampedActiveIndex = Math.max(0, Math.min(activeIndex, Math.max(0, items.length - 1)))
+  // On a pinned item the scrolling rows show their end, next to it.
+  const anchorIndex = Math.min(clampedActiveIndex, scrolling - 1)
   const windowStart = Math.min(
-    Math.max(0, clampedActiveIndex - Math.floor(visibleCount / 2)),
-    Math.max(0, items.length - visibleCount),
+    Math.max(0, anchorIndex - Math.floor(visibleCount / 2)),
+    Math.max(0, scrolling - visibleCount),
   )
-  const visibleItems = items.slice(windowStart, windowStart + visibleCount)
-  const windowEnd = windowStart + visibleItems.length
+  const windowEnd = windowStart + visibleCount
+  const visibleIndexes = [
+    ...Array.from({ length: visibleCount }, (_, offset) => windowStart + offset),
+    ...Array.from({ length: pinned }, (_, offset) => scrolling + offset),
+  ]
   const scrollStatus =
-    items.length > visibleItems.length
-      ? `scroll ${windowStart + 1}-${windowEnd}/${items.length}`
+    scrolling > visibleCount
+      ? `scroll ${windowStart + 1}-${windowEnd}/${scrolling}`
       : undefined
   const constrainedMinHeight =
     modalMinHeight === undefined ? undefined : Math.min(modalMinHeight, viewportRows)
@@ -1971,23 +2058,33 @@ export function MenuModal<T>({
           width={resolvedListWidth}
           overflow="hidden"
         >
-          <Box flexDirection="row" paddingX={paddingX} gap={columnGap}>
+          {lead ? (
+            <Box flexDirection="row" paddingX={paddingX} gap={columnGap} flexShrink={0}>
+              <Box width={2} flexShrink={0} />
+              {lead}
+            </Box>
+          ) : null}
+          {/* The column headers stay put while a long list scrolls. */}
+          <Box flexDirection="row" paddingX={paddingX} gap={columnGap} flexShrink={0}>
             <Box width={2} flexShrink={0} />
             {headers.map((header, index) => (
-              <ThemedText key={`${index}-${header}`} color="inactive" wrap="truncate-end">
-                {header.padEnd(columns[index] ?? header.length, ' ')}
-              </ThemedText>
+              // Same fixed cell as the rows below, so headers line up with their
+              // column and never shrink into a stray ellipsis.
+              <Box key={`${index}-${header}`} width={columns[index]} flexShrink={0} overflow="hidden">
+                <ThemedText color="inactive" wrap="truncate-end">
+                  {header}
+                </ThemedText>
+              </Box>
             ))}
           </Box>
-          {visibleItems.map((item, visibleIndex) => {
-            const index = windowStart + visibleIndex
+          {visibleIndexes.map(index => {
             const active = index === clampedActiveIndex
-            const cells = renderRow(item, index, active)
+            const cells = renderRow(items[index] as T, index, active)
             return (
               <ThemedBox
                 key={index}
                 flexDirection="row"
-                backgroundColor={active ? 'agencWash' : undefined}
+                backgroundColor={active ? activeRowColor : undefined}
                 paddingX={paddingX}
                 gap={columnGap}
                 minHeight={rowMinHeight}
@@ -2003,6 +2100,13 @@ export function MenuModal<T>({
               </ThemedBox>
             )
           })}
+          {detail ? (
+            <Box flexDirection="column" paddingX={paddingX} marginTop={1} flexShrink={0}>
+              <Box paddingLeft={2 + columnGap} flexDirection="column">
+                {detail}
+              </Box>
+            </Box>
+          ) : null}
         </Box>
         {preview ? (
           <ThemedBox

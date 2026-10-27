@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { itOnDarwin } from '../helpers/platform-registration.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { checkReadOnlyConstraints } from '../../src/tools/BashTool/readOnlyValidation.js'
@@ -69,7 +70,7 @@ describe('macOS diagnostic commands', () => {
     expect(behavior('pmset -g batt')).not.toBe('allow')
   })
 
-  it.skipIf(process.platform !== 'darwin')('collects real macOS diagnostics with the admitted bounded invocations', async () => {
+  itOnDarwin('collects real macOS diagnostics with the admitted bounded invocations', async () => {
     const exec = promisify(execFile)
     for (const [program, args, output] of [
       ['/usr/bin/sw_vers', [], /ProductVersion/],

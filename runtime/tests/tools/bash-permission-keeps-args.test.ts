@@ -171,10 +171,10 @@ describe("system.bash permission keeps the model's fields", () => {
   describe("a cwd override does not move the workspace write guard", () => {
     const escape = () => ({ command: "printf hi > ../README.md", cwd: sub });
 
-    test("preflight blocks a parent-directory workspace write", () => {
+    test("preflight defers an inside-workspace parent-directory write to permissions", () => {
       const tool = createBashTool({ cwd: workspace, unrestricted: true });
       const failure = tool.preflight?.(escape());
-      expect(failure?.message ?? "").toContain("shell_workspace_");
+      expect(failure).toBeNull();
     });
 
     test("execute blocks a parent-directory workspace write", async () => {
@@ -186,14 +186,14 @@ describe("system.bash permission keeps the model's fields", () => {
       expect(await readFile(join(workspace, "README.md"), "utf8")).toBe("original\n");
     });
 
-    test("the router blocks it in bypassPermissions mode", async () => {
+    test("the router permits the inside-workspace write in bypassPermissions mode", async () => {
       await writeFile(join(workspace, "README.md"), "original\n");
       const fixture = dispatchFixture({ mode: "bypassPermissions", isBypassPermissionsModeAvailable: true });
       const result = await fixture.dispatch(escape());
-      expect(result.isError).toBe(true);
-      expect(String(result.content)).toContain("shell_workspace_");
-      expect(fixture.execute).not.toHaveBeenCalled();
-      expect(await readFile(join(workspace, "README.md"), "utf8")).toBe("original\n");
+      expect(result.isError).not.toBe(true);
+      expect(fixture.execute).toHaveBeenCalledOnce();
+      expect(fixture.resolver.request).not.toHaveBeenCalled();
+      expect(await readFile(join(workspace, "README.md"), "utf8")).toBe("hi");
     });
   });
 });

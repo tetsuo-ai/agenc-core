@@ -13,6 +13,7 @@ import {
   REJECT_MESSAGE,
 } from '../../../src/utils/messages.js'
 import { Text } from '../../../src/tui/ink.js'
+import { AssistantToolUseMessage } from '../../../src/tui/message-renderers/AssistantToolUseMessage.js'
 import {
   formatOrphanToolResultContent,
   UserToolResultMessage,
@@ -200,6 +201,7 @@ describe('UserToolResultMessage swarm-083 coverage', () => {
         safeParse: (output: unknown) => ({ success: true, data: output }),
       },
       userFacingName: () => 'SwarmArrayControlTool',
+      renderToolUseMessage: () => 'array control',
       renderToolUseRejectedMessage,
       renderToolUseErrorMessage,
       renderToolResultMessage,
@@ -218,6 +220,7 @@ describe('UserToolResultMessage swarm-083 coverage', () => {
               }
           >,
       isError = false,
+      verbose = false,
     ) =>
       renderToString(
         <UserToolResultMessage
@@ -231,7 +234,7 @@ describe('UserToolResultMessage swarm-083 coverage', () => {
           lookups={createLookups(toolUse)}
           progressMessagesForMessage={[]}
           tools={tools}
-          verbose={false}
+          verbose={verbose}
           width={72}
         />,
         { columns: 120, rows: 10 },
@@ -250,9 +253,29 @@ describe('UserToolResultMessage swarm-083 coverage', () => {
       render([{ type: 'text', text: INTERRUPT_MESSAGE_FOR_TOOL_USE }]),
     ).resolves.toContain('array rejected runtime/src/array-control.ts')
     await expect(render(undefined)).resolves.toContain('array success')
-    await expect(render([{ type: 'json', value: 2 }], true)).resolves.toContain(
+    expect((await render([{ type: 'json', value: 2 }], true)).trim()).toBe('')
+    expect(renderToolUseErrorMessage).not.toHaveBeenCalled()
+    await expect(render([{ type: 'json', value: 2 }], true, true)).resolves.toContain(
       'array error',
     )
+
+    const errorText = JSON.stringify({ tool_use_id: toolUse.id, is_error: true,
+      content: '<tool_use_error>TF6_PARENT_ERROR</tool_use_error>' })
+    const errorMessage = { type: 'user', message: { role: 'user', content: [{
+      type: 'tool_result', tool_use_id: toolUse.id, content: errorText, is_error: true,
+    }] } } as never
+    const parentLookups = { ...createLookups(toolUse) as object,
+      resolvedToolUseIDs: new Set([toolUse.id]), erroredToolUseIDs: new Set([toolUse.id]),
+      toolResultByToolUseID: new Map([[toolUse.id, errorMessage]]),
+    } as never
+    const parent = await renderToString(<AssistantToolUseMessage
+      param={{ type: 'tool_use', ...toolUse }} addMargin={false} tools={tools}
+      commands={[]} verbose={false} inProgressToolUseIDs={new Set()}
+      progressMessagesForMessage={[]} shouldAnimate={false} shouldShowDot={false}
+      lookups={parentLookups} />, { columns: 120, rows: 10 })
+    expect(parent.split('TF6_PARENT_ERROR').length - 1).toBe(1)
+    expect(parent).not.toContain('"tool_use_id"')
+    expect(parent).not.toContain('"is_error"')
 
     expect(renderToolUseRejectedMessage).toHaveBeenCalledTimes(2)
     expect(renderToolUseErrorMessage).toHaveBeenCalledTimes(1)

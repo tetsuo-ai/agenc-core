@@ -78,7 +78,6 @@ const assistant = (text: string) => ({
 });
 const call = (id: string, path: string) => ({
   type: "function_call",
-  id: `fc_${id}`,
   call_id: `call_${id}`,
   name: "read",
   arguments: JSON.stringify({ path }),
@@ -224,6 +223,62 @@ describe("OpenAI Responses encrypted reasoning replay", () => {
     expect(build(first, { store: false }).include).toEqual([
       "reasoning.encrypted_content",
     ]);
+  });
+
+  test("keeps Luna max encrypted replay without forcing automatic summaries", () => {
+    const request = build([{ role: "user", content: "hi" }], {
+      model: "gpt-6-luna",
+      maxOutputTokens: 8192,
+      options: { reasoningEffort: "max" },
+    });
+
+    expect(request.reasoning).toEqual({ effort: "max" });
+    expect(request.include).toEqual(["reasoning.encrypted_content"]);
+    expect(request.max_output_tokens).toBe(8192);
+    expect(request.store).toBe(false);
+  });
+
+  test("replaces the Luna metadata summary default while retaining explicit disable", () => {
+    expect(build(toolTurn(), {
+      options: { reasoningEffort: "max", reasoningSummary: "none", reasoningSummaryIsDefault: true },
+    }).reasoning).toEqual({ effort: "max", summary: "auto" });
+    for (const overrides of [{ reasoningReplayProvider: undefined }, { store: true }]) {
+      expect(build(toolTurn(), {
+        ...overrides,
+        options: { reasoningEffort: "max", reasoningSummary: "none", reasoningSummaryIsDefault: true },
+      }).reasoning).toEqual({ effort: "max" });
+    }
+  });
+
+  test.each(["none", "concise", "detailed", "auto"] as const)(
+    "preserves the explicit %s summary choice during replay",
+    (reasoningSummary) => {
+      const request = build(toolTurn(), {
+        options: { reasoningEffort: "max", reasoningSummary },
+      });
+      expect(request.reasoning).toEqual({
+        effort: "max",
+        ...(reasoningSummary === "none" ? {} : { summary: reasoningSummary }),
+      });
+    },
+  );
+
+  test("does not default summaries with replay off, storage on, or reasoning disabled", () => {
+    const messages: LLMMessage[] = [{ role: "user", content: "hi" }];
+    for (const overrides of [
+      { reasoningReplayProvider: undefined, options: { reasoningEffort: "max" as const } },
+      { store: true, options: { reasoningEffort: "max" as const } },
+      { options: { reasoningEffort: "none" as const } },
+      { model: "gpt-5.4" },
+    ]) {
+      expect(build(messages, overrides).reasoning).toEqual(
+        overrides.options ? { effort: overrides.options.reasoningEffort } : undefined,
+      );
+    }
+  });
+
+  test("requests automatic summaries when the model default already enables reasoning", () => {
+    expect(build([{ role: "user", content: "hi" }]).reasoning).toEqual({ summary: "auto" });
   });
 
   test("leaves the wire unchanged when replay is off or the request is stored", () => {

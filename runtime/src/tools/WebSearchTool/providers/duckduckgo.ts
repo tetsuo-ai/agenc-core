@@ -8,7 +8,7 @@ const DDG_ANOMALY_HINT =
   'DuckDuckGo scraping is rate-limited from this network. ' +
   'Configure a search backend with one of: ' +
   'FIRECRAWL_API_KEY, TAVILY_API_KEY, EXA_API_KEY, YOU_API_KEY, ' +
-  'JINA_API_KEY, BING_API_KEY, MOJEEK_API_KEY, LINKUP_API_KEY — ' +
+  'JINA_API_KEY, BING_API_KEY, MOJEEK_API_KEY, LINKUP_API_KEY, ' +
   'or use an provider / Vertex / Foundry provider for native web search.'
 
 const MAX_RETRIES = 3

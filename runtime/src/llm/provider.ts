@@ -5,15 +5,11 @@
  */
 
 import { observeEndpointMetadataFailures } from "./endpoint-metadata-cache.js";
-import { concurrentChatFetch } from "./providers/concurrent-chat-fetch.js";
+
 import { LLMMissingCredentialsError } from "./errors.js";
-import type {
-  AuthBackend,
-  AuthSubscriptionTier,
-  AuthVendedCredential,
-} from "../auth/backend.js";
+
 import { normalizeProviderIdentity } from "../provider-identity.js";
-import { AgenCProvider } from "./providers/agenc/index.js";
+
 import { GrokProvider } from "./providers/grok/adapter.js";
 import {
   GrokAcpProvider,
@@ -23,10 +19,8 @@ import type { GrokProviderConfig } from "./providers/grok/types.js";
 import { OllamaProvider } from "./providers/ollama/adapter.js";
 import type { OllamaProviderConfig } from "./providers/ollama/types.js";
 import type {
-  LLMChatOptions,
   LLMProvider,
   LLMProviderConfig,
-  LLMProviderExecutionProfile,
   LLMTool,
 } from "./types.js";
 import { OpenAIProvider } from "./providers/openai/adapter.js";
@@ -49,6 +43,8 @@ import {
 } from "./providers/bedrock/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
+import { VeniceProvider } from "./providers/venice/index.js";
+import { AbliterationProvider } from "./providers/abliteration/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
@@ -149,7 +145,10 @@ export type ProviderRuntimeExtra = Partial<
   readonly gemini?: GeminiRuntimeOptions;
   /** Grok-only opt-in for streaming previous_response_id continuation. */
   readonly incrementalContinuation?: boolean;
-  /** OpenRouter: route only to zero-data-retention endpoints (`provider.zdr`). */
+  /**
+   * OpenRouter: route only to zero-data-retention endpoints (`provider.zdr`).
+   * Set by default (provider-request.ts); the managed route never sends it.
+   */
   readonly zeroDataRetention?: boolean;
   readonly grokAcp?: {
     readonly binaryPath?: string;
@@ -225,6 +224,9 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "contextWindowTokens",
   "parallelToolCalls",
   "incrementalContinuation",
+  // A child or reviewer rebuilt from a session's provider keeps its OpenRouter
+  // zero data retention instead of dropping it.
+  "zeroDataRetention",
   "visionModel",
   "webSearch",
   "searchMode",
@@ -330,39 +332,6 @@ export function readProviderFactoryOptions(
     ...(configuredTools !== undefined ? { tools: [...configuredTools] } : {}),
     ...(extra ? { extra } : {}),
   };
-}
-
-export function normalizeManagedGatewayModel(
-  provider: ProviderName | string,
-  model: string,
-): string {
-  const trimmed = model.trim();
-  const normalizedProvider = resolveBuiltInProviderSlug(provider);
-  if (trimmed.length === 0) return trimmed;
-  if (normalizedProvider === "openrouter") {
-    return trimmed.startsWith("openrouter/")
-      ? trimmed
-      : `openrouter/${trimmed}`;
-  }
-  if (trimmed.includes("/")) return trimmed;
-  switch (normalizedProvider) {
-    case "grok":
-      return `xai/${trimmed}`;
-    case "openai":
-      return `openai/${trimmed}`;
-    case "anthropic":
-      return `anthropic/${trimmed}`;
-    case "gemini":
-      return `gemini/${trimmed}`;
-    case "groq":
-      return `groq/${trimmed}`;
-    case "deepseek":
-      return `deepseek/${trimmed}`;
-    case "mistral":
-      return `mistral/${trimmed}`;
-    default:
-      return trimmed;
-  }
 }
 
 function markFactoryProvider<T extends LLMProvider>(
@@ -482,447 +451,10 @@ function requireFactoryApiKey(
   const apiKey = resolveFactoryApiKey(opts, explicitApiKey);
   if (apiKey === undefined) {
     throw new Error(
-      `${provider} provider requires apiKey: pass apiKey or authBackend/sessionId in factory options`,
+      `${provider} provider requires apiKey: pass your own apiKey in factory options`,
     );
   }
   return apiKey;
-}
-
-const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
-  "grok",
-  "openai",
-  "anthropic",
-  "openai-compatible",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "amazon-bedrock",
-]);
-const DEFAULT_AUTH_VENDED_DELEGATE_TTL_MS = 5 * 60 * 1000;
-
-interface AuthVendedDelegate {
-  readonly instance: LLMProvider;
-  readonly expiresAtMs: number;
-}
-
-interface AuthVendedProviderCapabilities {
-  readonly prewarmStartup?: true;
-  readonly storedResponses?: true;
-}
-
-class AuthVendedProvider implements LLMProvider {
-  readonly name: string;
-  readonly config: {
-    readonly model: string;
-    readonly baseURL?: string;
-  };
-  readonly prewarmStartup?: LLMProvider["prewarmStartup"];
-  readonly retrieveStoredResponse?: LLMProvider["retrieveStoredResponse"];
-  readonly deleteStoredResponse?: LLMProvider["deleteStoredResponse"];
-  readonly #provider: ProviderName;
-  readonly #opts: ProviderFactoryOptions;
-  readonly #authBackend: AuthBackend;
-  readonly #sessionId: string;
-  #delegate: AuthVendedDelegate | undefined;
-  #delegatePromise: Promise<AuthVendedDelegate> | undefined;
-
-  constructor(params: {
-    readonly provider: ProviderName;
-    readonly opts: ProviderFactoryOptions;
-    readonly authBackend: AuthBackend;
-    readonly sessionId: string;
-  }) {
-    this.name = params.provider;
-    this.#provider = params.provider;
-    this.#opts = stripConcreteProviderAuthOptions(params.opts);
-    this.#authBackend = params.authBackend;
-    this.#sessionId = params.sessionId;
-    this.config = {
-      model: this.#opts.model ?? defaultModelFor(params.provider),
-      ...(this.#opts.baseURL !== undefined
-        ? { baseURL: this.#opts.baseURL }
-        : {}),
-    };
-    const capabilities = authVendedProviderCapabilities(params.provider);
-    if (capabilities.prewarmStartup) {
-      this.prewarmStartup = async (startupParams) =>
-        (await this.delegate()).instance.prewarmStartup?.(startupParams);
-    }
-    if (capabilities.storedResponses) {
-      this.retrieveStoredResponse = async (responseId) => {
-        const delegate = (await this.delegate()).instance;
-        if (!delegate.retrieveStoredResponse) {
-          throw new Error(
-            `${this.name} provider does not support stored responses`,
-          );
-        }
-        return delegate.retrieveStoredResponse(responseId);
-      };
-      this.deleteStoredResponse = async (responseId) => {
-        const delegate = (await this.delegate()).instance;
-        if (!delegate.deleteStoredResponse) {
-          throw new Error(
-            `${this.name} provider does not support stored responses`,
-          );
-        }
-        return delegate.deleteStoredResponse(responseId);
-      };
-    }
-  }
-
-  async chat(
-    messages: Parameters<LLMProvider["chat"]>[0],
-    options?: Parameters<LLMProvider["chat"]>[1],
-  ): ReturnType<LLMProvider["chat"]> {
-    return (await this.delegate()).instance.chat(messages, options);
-  }
-
-  async chatStream(
-    messages: Parameters<LLMProvider["chatStream"]>[0],
-    onChunk: Parameters<LLMProvider["chatStream"]>[1],
-    options?: Parameters<LLMProvider["chatStream"]>[2],
-  ): ReturnType<LLMProvider["chatStream"]> {
-    return (await this.delegate()).instance.chatStream(
-      messages,
-      onChunk,
-      options,
-    );
-  }
-
-  async healthCheck(): Promise<boolean> {
-    return (await this.delegate()).instance.healthCheck();
-  }
-
-  async getExecutionProfile(
-    options?: LLMChatOptions,
-  ): Promise<LLMProviderExecutionProfile> {
-    const { instance: delegate } = await this.delegate();
-    const profile = await delegate.getExecutionProfile?.(options);
-    return (
-      profile ?? {
-        provider: this.#provider,
-        model: this.config.model,
-        usageReporting: "unavailable",
-        supportsMaxOutputTokens: false,
-      }
-    );
-  }
-
-  private async delegate(): Promise<AuthVendedDelegate> {
-    if (
-      this.#delegate !== undefined &&
-      this.#delegate.expiresAtMs > Date.now()
-    ) {
-      return this.#delegate;
-    }
-    this.#delegatePromise ??= this.createDelegate()
-      .then((delegate) => {
-        this.#delegate = delegate;
-        return delegate;
-      })
-      .catch((error) => {
-        this.#delegate = undefined;
-        throw error;
-      })
-      .finally(() => {
-        this.#delegatePromise = undefined;
-      });
-    return this.#delegatePromise;
-  }
-
-  private async createDelegate(): Promise<AuthVendedDelegate> {
-    const vended = await this.#authBackend.vendKey(
-      this.#provider,
-      this.#sessionId,
-    );
-    if (vended.provider !== this.#provider) {
-      throw new Error(
-        `${this.#provider} provider AuthBackend.vendKey() returned provider "${vended.provider}"`,
-      );
-    }
-    if (vended.sessionId !== this.#sessionId) {
-      throw new Error(
-        `${this.#provider} provider AuthBackend.vendKey() returned session "${vended.sessionId}"`,
-      );
-    }
-    const options = cloneProviderFactoryOptions(this.#opts);
-    const credentialOptions = resolveAuthVendedProviderCredentialOptions(
-      this.#provider,
-      options.extra,
-      vended,
-    );
-    const baseURL = firstNonEmpty(options.baseURL, vended.baseUrl);
-    if (options.extra?.canonicalEndpointRequired === true) {
-      const canonical = defaultBaseURLFor(this.#provider);
-      const isCanonical = (value: string | undefined): boolean => {
-        if (value === undefined) return true;
-        try {
-          return new URL(value).href.replace(/\/+$/u, "") ===
-            new URL(canonical).href.replace(/\/+$/u, "");
-        } catch {
-          return false;
-        }
-      };
-      const vendedRegionalEndpoint = this.#provider === "amazon-bedrock"
-        ? resolveBuiltInProviderRegionalEndpoint(
-            this.#provider,
-            firstNonEmpty(
-              vended.kind === "aws-sigv4" ? vended.region : undefined,
-              readString(options.extra, "region"),
-            ),
-          )?.baseURL
-        : undefined;
-      if (!isCanonical(options.baseURL) || !isCanonical(vended.baseUrl) ||
-          !isCanonical(vendedRegionalEndpoint)) {
-        throw new Error(
-          `${this.#provider} managed child key vending returned a noncanonical endpoint; ` +
-          `cross-provider sub-agents require the default endpoint`,
-        );
-      }
-    }
-    const model =
-      baseURL !== undefined && options.model !== undefined
-        ? normalizeManagedGatewayModel(this.#provider, options.model)
-        : options.model;
-    return {
-      instance: createProvider(this.#provider, {
-        ...options,
-        ...(model !== undefined ? { model } : {}),
-        ...credentialOptions,
-        ...(baseURL !== undefined ? { baseURL } : {}),
-      }),
-      expiresAtMs:
-        parseAuthVendedExpiresAtMs(vended.expiresAt) ??
-        Date.now() + DEFAULT_AUTH_VENDED_DELEGATE_TTL_MS,
-    };
-  }
-}
-
-function authVendedProviderCapabilities(
-  provider: ProviderName,
-): AuthVendedProviderCapabilities {
-  switch (provider) {
-    case "grok":
-      return { prewarmStartup: true, storedResponses: true };
-    case "openai":
-    case "lmstudio":
-    case "openai-compatible":
-    case "openrouter":
-    case "groq":
-    case "deepseek":
-      return { storedResponses: true };
-    default:
-      return {};
-  }
-}
-
-function parseAuthVendedExpiresAtMs(
-  expiresAt: string | undefined,
-): number | undefined {
-  if (expiresAt === undefined) return undefined;
-  const parsed = Date.parse(expiresAt);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function hasConcreteProviderCredentialInput(
-  provider: ProviderName,
-  opts: ProviderFactoryOptions,
-): boolean {
-  return provider === "amazon-bedrock"
-    ? ["accessKeyId", "secretAccessKey", "sessionToken"].some(
-        (field) => firstNonEmpty(readString(opts.extra, field)) !== undefined,
-      )
-    : firstNonEmpty(opts.apiKey, opts.authToken) !== undefined;
-}
-
-function stripConcreteProviderAuthExtra(
-  extra: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!extra) return undefined;
-  const stripped = Object.fromEntries(
-    Object.entries(extra)
-      .filter(
-        ([key]) =>
-          key !== "authBackend" &&
-          key !== "sessionId" &&
-          key !== "subscriptionTier",
-      )
-      .map(([key, value]) => [key, cloneExtraValue(value)]),
-  );
-  return Object.keys(stripped).length > 0 ? stripped : undefined;
-}
-
-function stripConcreteProviderAuthOptions(
-  opts: ProviderFactoryOptions,
-): ProviderFactoryOptions {
-  const extra = stripConcreteProviderAuthExtra(opts.extra);
-  return {
-    ...(opts.credentialHome !== undefined
-      ? { credentialHome: opts.credentialHome }
-      : {}),
-    ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
-    ...(opts.authToken !== undefined ? { authToken: opts.authToken } : {}),
-    ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
-    ...(opts.model !== undefined ? { model: opts.model } : {}),
-    ...(opts.tools ? { tools: [...opts.tools] } : {}),
-    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-    ...(extra !== undefined ? { extra } : {}),
-  };
-}
-
-function authVendedProviderFactoryOptions(params: {
-  readonly provider: ProviderName;
-  readonly opts: ProviderFactoryOptions;
-  readonly authBackend: AuthBackend;
-  readonly sessionId: string;
-}): ProviderFactoryOptions {
-  const stripped = stripConcreteProviderAuthOptions(params.opts);
-  return {
-    ...stripped,
-    model: resolveAuthVendedProviderModel(params.provider, stripped.model),
-    extra: {
-      ...(stripped.extra ?? {}),
-      authBackend: params.authBackend,
-      sessionId: params.sessionId,
-    },
-  };
-}
-
-function resolveAuthVendedProviderModel(
-  provider: ProviderName,
-  explicitModel: string | undefined,
-): string {
-  return firstNonEmpty(explicitModel) ?? defaultModelFor(provider);
-}
-
-function resolveAuthVendedProviderCredentialOptions(
-  provider: ProviderName,
-  extra: Record<string, unknown> | undefined,
-  vended: AuthVendedCredential,
-): Pick<ProviderFactoryOptions, "apiKey" | "extra"> {
-  if (provider !== "amazon-bedrock") {
-    if (vended.kind !== "api-key") {
-      throw new Error(
-        `${provider} provider AuthBackend.vendKey() returned ${vended.kind} credentials; expected api-key`,
-      );
-    }
-    const apiKey = firstNonEmpty(vended.apiKey);
-    if (apiKey === undefined) {
-      throw new Error(
-        `${provider} provider AuthBackend.vendKey() returned an empty API key`,
-      );
-    }
-    return {
-      apiKey,
-      ...(extra !== undefined ? { extra } : {}),
-    };
-  }
-  if (vended.kind !== "aws-sigv4") {
-    throw new Error(
-      "amazon-bedrock provider AuthBackend.vendKey() returned api-key credentials; expected aws-sigv4",
-    );
-  }
-  const accessKeyId = firstNonEmpty(vended.accessKeyId);
-  const secretAccessKey = firstNonEmpty(vended.secretAccessKey);
-  if (accessKeyId === undefined || secretAccessKey === undefined) {
-    throw new Error(
-      "amazon-bedrock provider AuthBackend.vendKey() returned incomplete AWS SigV4 credentials",
-    );
-  }
-  const nonCredentialExtra = extra
-    ? Object.fromEntries(
-        Object.entries(extra)
-          .filter(
-            ([key]) =>
-              key !== "accessKeyId" &&
-              key !== "secretAccessKey" &&
-              key !== "sessionToken" &&
-              key !== "region",
-          )
-          .map(([key, value]) => [key, cloneExtraValue(value)]),
-      )
-    : {};
-  const sessionToken = firstNonEmpty(vended.sessionToken);
-  const region = firstNonEmpty(vended.region, readString(extra, "region"));
-  return {
-    extra: {
-      ...nonCredentialExtra,
-      accessKeyId,
-      secretAccessKey,
-      ...(sessionToken !== undefined ? { sessionToken } : {}),
-      ...(region !== undefined ? { region } : {}),
-    },
-  };
-}
-
-function createAuthVendedProviderIfNeeded(
-  provider: ProviderName,
-  opts: ProviderFactoryOptions,
-): LLMProvider | undefined {
-  if (!AUTH_VENDED_PROVIDER_NAMES.has(provider)) return undefined;
-  if (providerTargetsLocalEndpoint(provider, opts)) return undefined;
-  if (hasConcreteProviderCredentialInput(provider, opts)) {
-    return undefined;
-  }
-  if (hasFactoryOAuthAccessToken(opts)) return undefined;
-  const authBackend = readAuthBackendExtra(opts.extra);
-  if (authBackend === undefined) return undefined;
-  const sessionId = firstNonEmpty(readString(opts.extra, "sessionId"));
-  if (sessionId === undefined) {
-    throw new Error(
-      `${provider} provider requires sessionId in factory options extra to vend a provider key`,
-    );
-  }
-  const factoryOptions = authVendedProviderFactoryOptions({
-    provider,
-    opts,
-    authBackend,
-    sessionId,
-  });
-  return markFactoryProvider(
-    new AuthVendedProvider({
-      provider,
-      opts: factoryOptions,
-      authBackend,
-      sessionId,
-    }),
-    {
-      provider,
-      options: factoryOptions,
-    },
-  );
-}
-
-function providerTargetsLocalEndpoint(
-  provider: ProviderName,
-  opts: ProviderFactoryOptions,
-): boolean {
-  if (provider === "lmstudio" || provider === "ollama") return true;
-  if (provider !== "openai-compatible") return false;
-  return isLocalBaseURL(
-    normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("openai-compatible"),
-  );
-}
-
-function isLocalBaseURL(baseURL: string | undefined): boolean {
-  if (baseURL === undefined) return false;
-  try {
-    const hostname = new URL(baseURL).hostname.toLowerCase();
-    return (
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "::1" ||
-      hostname.endsWith(".local")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function hasFactoryOAuthAccessToken(opts: ProviderFactoryOptions): boolean {
-  if (readString(opts.extra, "authMode") !== "oauth") return false;
-  const oauth = readRecord(opts.extra, "oauth");
-  return firstNonEmpty(readString(oauth, "accessToken")) !== undefined;
 }
 
 function normalizeBaseURL(baseURL: string | undefined): string | undefined {
@@ -1279,56 +811,6 @@ function readRuntimeExtra(
   };
 }
 
-function readAuthBackendExtra(
-  extra: Record<string, unknown> | undefined,
-): AuthBackend | undefined {
-  const value = extra?.authBackend;
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Partial<Record<keyof AuthBackend, unknown>>;
-  return typeof candidate.login === "function" &&
-    typeof candidate.logout === "function" &&
-    typeof candidate.whoami === "function" &&
-    typeof candidate.vendKey === "function" &&
-    typeof candidate.inferAgencModel === "function" &&
-    typeof candidate.getSubscriptionTier === "function"
-    ? (value as AuthBackend)
-    : undefined;
-}
-
-function readAuthSubscriptionTierExtra(
-  extra: Record<string, unknown> | undefined,
-): AuthSubscriptionTier | undefined {
-  const value = readString(extra, "subscriptionTier");
-  switch (value) {
-    case "free":
-    case "pro":
-    case "team":
-    case "enterprise":
-      return value;
-    case "c4e":
-      return "enterprise";
-    default:
-      return undefined;
-  }
-}
-
-function stripAgenCProviderRuntimeExtra(
-  extra: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!extra) return undefined;
-  const stripped = Object.fromEntries(
-    Object.entries(extra)
-      .filter(
-        ([key]) =>
-          key !== "authBackend" &&
-          key !== "sessionId" &&
-          key !== "subscriptionTier",
-      )
-      .map(([key, value]) => [key, cloneExtraValue(value)]),
-  );
-  return Object.keys(stripped).length > 0 ? stripped : undefined;
-}
-
 function buildCommonConfig(
   extra: ProviderRuntimeExtra,
 ): Omit<LLMProviderConfig, "model" | "tools" | "timeoutMs"> {
@@ -1371,6 +853,8 @@ function buildOpenAICompatibleProvider(
     | "lmstudio"
     | "openai-compatible"
     | "openrouter"
+    | "venice"
+    | "abliteration"
     | "groq"
     | "deepseek"
     | "meta"
@@ -1472,69 +956,6 @@ function buildOpenAICompatibleProvider(
   });
 }
 
-function buildManagedGatewayProvider(
-  provider: Exclude<ProviderName, "agenc">,
-  opts: ProviderFactoryOptions,
-  extra: ProviderRuntimeExtra,
-): LLMProvider {
-  const apiKey = requireFactoryApiKey(provider, opts);
-  const baseURL = normalizeBaseURL(opts.baseURL);
-  if (baseURL === undefined) {
-    throw new Error(
-      `${provider} managed gateway provider requires baseURL from AuthBackend.vendKey()`,
-    );
-  }
-  const model = normalizeManagedGatewayModel(
-    provider,
-    requireModel(provider, opts.model, defaultModelFor(provider)),
-  );
-  const cfg: OpenAIProviderConfig = {
-    ...buildCommonConfig(extra),
-    apiKey,
-    baseURL,
-    model,
-    providerName: provider,
-    apiKeyEnvLabel: "AgenC subscription",
-    managedRequestId: true,
-    tools: opts.tools ? [...opts.tools] : undefined,
-    useResponsesApi: false,
-    ...(extra.contextWindowTokens !== undefined
-      ? { contextWindowTokens: extra.contextWindowTokens }
-      : {}),
-    ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
-    ...(extra.fetchImpl
-      ? { fetchImpl: extra.fetchImpl }
-      : provider === "openrouter" && model.startsWith("openrouter/deepseek/") && typeof Bun === "undefined"
-        ? { fetchImpl: concurrentChatFetch() }
-        : {}),
-    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-  };
-  const providerInstance = new OpenAIProvider(cfg);
-  return markFactoryProvider(providerInstance, {
-    provider,
-    options: {
-      ...(opts.credentialHome !== undefined
-        ? { credentialHome: opts.credentialHome }
-        : {}),
-      apiKey,
-      baseURL,
-      model,
-      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-      ...(readProviderRuntimeExtra({
-        ...(cfg as unknown as Record<string, unknown>),
-        managedGateway: true,
-      })
-        ? {
-            extra: readProviderRuntimeExtra({
-              ...(cfg as unknown as Record<string, unknown>),
-              managedGateway: true,
-            }),
-          }
-        : {}),
-    },
-  });
-}
-
 export function createProvider(
   name: ProviderName,
   opts: ProviderFactoryOptions,
@@ -1552,73 +973,19 @@ export function createProvider(
       `${name} provider does not accept the authToken factory option`,
     );
   }
-  const authVendedProvider = createAuthVendedProviderIfNeeded(name, opts);
-  if (authVendedProvider !== undefined) return authVendedProvider;
   const extra = readRuntimeExtra(opts.extra);
-  if (extra.managedGateway === true && name !== "agenc") {
-    return buildManagedGatewayProvider(name, opts, extra);
+  const retiredAccountEndpoint = (() => {
+    try {
+      const host = new URL(opts.baseURL ?? "").hostname.toLowerCase();
+      return ["id.agenc.ag", "llm.agenc.tech", "us.agenc.tech"].includes(host);
+    } catch { return false; }
+  })();
+  if (retiredAccountEndpoint || extra.managedGateway === true || extra.managedCredential === true) {
+    throw new Error("AgenC accounts no longer provide models.");
   }
   switch (name) {
-    case "agenc": {
-      const authBackend = readAuthBackendExtra(opts.extra);
-      if (authBackend === undefined) {
-        throw new Error(
-          "agenc provider requires authBackend in factory options extra",
-        );
-      }
-      const sessionId = firstNonEmpty(readString(opts.extra, "sessionId"));
-      if (sessionId === undefined) {
-        throw new Error(
-          "agenc provider requires sessionId in factory options extra",
-        );
-      }
-      const model = requireModel("agenc", opts.model, defaultModelFor("agenc"));
-      const providerExtra = stripAgenCProviderRuntimeExtra(opts.extra);
-      const provider = markFactoryProvider(
-        new AgenCProvider({
-          ...buildCommonConfig(extra),
-          authBackend,
-          sessionId,
-          ...(readAuthSubscriptionTierExtra(opts.extra) !== undefined
-            ? { subscriptionTier: readAuthSubscriptionTierExtra(opts.extra) }
-            : {}),
-          model,
-          tools: opts.tools ? [...opts.tools] : undefined,
-          ...(opts.timeoutMs !== undefined
-            ? { timeoutMs: opts.timeoutMs }
-            : {}),
-          providerFactory: (concreteProvider, providerOptions) =>
-            createProvider(concreteProvider, providerOptions),
-          ...(opts.baseURL !== undefined || providerExtra !== undefined
-            ? {
-                providerOptions: {
-                  ...(opts.baseURL !== undefined
-                    ? { baseURL: opts.baseURL }
-                    : {}),
-                  ...(providerExtra !== undefined
-                    ? { extra: providerExtra }
-                    : {}),
-                },
-              }
-            : {}),
-        }),
-        {
-          provider: "agenc",
-          options: {
-            ...(opts.credentialHome !== undefined
-              ? { credentialHome: opts.credentialHome }
-              : {}),
-            ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
-            model,
-            ...(opts.timeoutMs !== undefined
-              ? { timeoutMs: opts.timeoutMs }
-              : {}),
-            ...(providerExtra !== undefined ? { extra: providerExtra } : {}),
-          },
-        },
-      );
-      return provider;
-    }
+    case "agenc":
+      throw new Error("AgenC accounts no longer provide models. Choose a provider with your own credentials or a local server.");
     case "grok": {
       const grokRequestedModel = opts.model?.trim() || undefined;
       if (isGrokComposerModel(grokRequestedModel)) {
@@ -2017,6 +1384,18 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: OpenRouterProvider,
+      });
+    case "venice":
+      return buildOpenAICompatibleProvider("venice", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: VeniceProvider,
+      });
+    case "abliteration":
+      return buildOpenAICompatibleProvider("abliteration", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: AbliterationProvider,
       });
     case "groq":
       return buildOpenAICompatibleProvider("groq", opts, {

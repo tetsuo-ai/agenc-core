@@ -217,16 +217,16 @@ describe("FullscreenLayout render branches", () => {
     {
       rows: 1,
       includes: ["budget bottom"],
-      excludes: ["budget scrollable", "agenc · orchestrator", "default mode"],
+      excludes: ["budget scrollable", "agenc · orchestrator", "asks first"],
     },
     {
       rows: 4,
       includes: ["budget scrollable", "budget bottom"],
-      excludes: ["agenc · orchestrator", "default mode"],
+      excludes: ["agenc · orchestrator", "asks first"],
     },
     {
       rows: 5,
-      includes: ["budget scrollable", "budget bottom", "default mode"],
+      includes: ["budget scrollable", "budget bottom", "asks first"],
       excludes: ["agenc · orchestrator"],
     },
   ])(

@@ -1,7 +1,15 @@
 import type { LLMUsage } from "../llm/types.js";
 
+/** The charge known for these tokens: none were used, or the provider reported it. */
+function knownCharge(usage: LLMUsage): number | undefined {
+  return usage.providerCostUsd ??
+    (usage.promptTokens === 0 && usage.completionTokens === 0 && usage.totalTokens === 0 ? 0 : undefined);
+}
+
 export function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
   if (!next) return acc;
+  const accCharge = knownCharge(acc);
+  const nextCharge = knownCharge(next);
   return {
     promptTokens: acc.promptTokens + (next.promptTokens ?? 0),
     completionTokens: acc.completionTokens + (next.completionTokens ?? 0),
@@ -18,6 +26,10 @@ export function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMU
       (acc.reasoningOutputTokens ?? 0) + (next.reasoningOutputTokens ?? 0),
     webSearchRequests:
       (acc.webSearchRequests ?? 0) + (next.webSearchRequests ?? 0),
+    // A sum is only the turn's charge when every call in it was reported.
+    ...(accCharge !== undefined && nextCharge !== undefined &&
+      (acc.providerCostUsd !== undefined || next.providerCostUsd !== undefined)
+      ? { providerCostUsd: accCharge + nextCharge }
+      : {}),
   };
 }
-

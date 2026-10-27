@@ -15,6 +15,9 @@
  *   4. Mutating verbs stay owner-gated even with a transport attached.
  */
 
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { protocolCommands } from "../../src/commands/protocol.js";
@@ -212,14 +215,20 @@ describe("/claim transport wiring — enabled marketplace-cli adapter", () => {
     // The command path resolves via process.env as a fallback source;
     // strip any ambient AGENC_MARKETPLACE_CLI so a real installed kit
     // binary on the host can never be picked up by this test.
+    // The installer's own ~/.agenc/bin is also a resolution source, so point
+    // HOME at an empty directory too.
     const savedEnvCli = process.env.AGENC_MARKETPLACE_CLI;
+    const savedHome = process.env.HOME;
     delete process.env.AGENC_MARKETPLACE_CLI;
+    process.env.HOME = mkdtempSync(join(tmpdir(), "agenc-protocol-nohome-"));
     try {
       await runMissingBinaryCase();
     } finally {
       if (savedEnvCli !== undefined) {
         process.env.AGENC_MARKETPLACE_CLI = savedEnvCli;
       }
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
     }
   });
 
@@ -231,7 +240,6 @@ describe("/claim transport wiring — enabled marketplace-cli adapter", () => {
           adapter: "marketplace-cli",
           cli_path: "/nonexistent/agenc-marketplace",
         }),
-        // cwd without a node_modules/.bin fallback
         cwd: "/",
       }),
     );

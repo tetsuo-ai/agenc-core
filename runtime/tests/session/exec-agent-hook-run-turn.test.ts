@@ -1,3 +1,4 @@
+import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -630,8 +631,9 @@ describe("execAgentHook run-turn integration", () => {
         finishReason: "tool_calls",
       },
     ]);
+    installPreparedCompactionPressure(provider, request => request.messages.some(message => message.role === "assistant") ? 1_001 : 100);
     const parent = createParentSession(provider);
-    Object.assign(parent.modelInfo, { autoCompactTokenLimit: 1 });
+    Object.assign(parent.modelInfo, { autoCompactTokenLimit: 1_000 });
     setCurrentRuntimeSession(parent);
     setAutoCompactImplForTests(
       vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false })),
@@ -657,7 +659,7 @@ describe("execAgentHook run-turn integration", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
     expect(result.outcome).toBe("non_blocking_error");
     expect(result.message?.attachment.stderr).toContain(
-      "mid_turn_compact_skipped",
+      "The conversation is too large for the next reply. Run /compact to retry, or start a new conversation with /clear.",
     );
   });
 
@@ -1517,8 +1519,9 @@ describe("execAgentHook run-turn integration", () => {
         finishReason: "tool_calls",
       },
     ]);
+    installPreparedCompactionPressure(provider, request => request.messages.some(message => message.role === "assistant") ? 1_001 : 100);
     const parent = createParentSession(provider);
-    Object.assign(parent.modelInfo, { autoCompactTokenLimit: 1 });
+    Object.assign(parent.modelInfo, { autoCompactTokenLimit: 1_000 });
     setAutoCompactImplForTests(
       vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false })),
     );
@@ -1551,7 +1554,7 @@ describe("execAgentHook run-turn integration", () => {
             content: [
               expect.objectContaining({
                 type: "text",
-                text: expect.stringContaining("mid_turn_compact_skipped"),
+                text: expect.stringContaining("The conversation is too large for the next reply. Run /compact to retry, or start a new conversation with /clear."),
               }),
             ],
           }),

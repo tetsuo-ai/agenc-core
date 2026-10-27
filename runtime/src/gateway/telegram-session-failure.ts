@@ -11,17 +11,14 @@ export function telegramSessionFailure(error: unknown): { code: string; diagnost
     const provider = error.providerName;
     const label = provider === "anthropic" ? "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
       : providerCredentialEnvironmentLabel(provider);
-    const hint = resolveBuiltInProviderInfo(provider)?.onboarding.supportsManagedKeyAccess
-      ? " or sign in and enable auth.managedKeys.enabled" : "";
     return { code: "TELEGRAM_PROVIDER_CREDENTIAL_MISSING",
-      diagnostic: `${provider} authentication failed (HTTP 401): ${provider} provider requires credentials. Set ${label}${hint}.`,
+      diagnostic: `${provider} authentication failed (HTTP 401): ${provider} provider requires credentials. Set ${label}.`,
       reply: `No credential for ${provider} is available to Telegram agents. Open AgenC, connect that provider in Settings, then stop and start this Telegram agent.` };
   }
   const provider = /^(?:([a-z0-9-]+) authentication failed \(HTTP 401\): )?([a-z0-9-]+) provider requires credentials\. Set /u.exec(message)?.[2];
   const info = provider ? resolveBuiltInProviderInfo(provider) : undefined;
   if (info) {
-    const hint = info.onboarding.supportsManagedKeyAccess ? " or sign in and enable auth.managedKeys.enabled" : "";
-    const reason = `${provider} provider requires credentials. Set ${providerCredentialEnvironmentLabel(provider!)}${hint}.`;
+    const reason = `${provider} provider requires credentials. Set ${providerCredentialEnvironmentLabel(provider!)}.`;
     if (message === reason || message === `${provider} authentication failed (HTTP 401): ${reason}`) {
       return { code: "TELEGRAM_PROVIDER_CREDENTIAL_MISSING", diagnostic: message,
         reply: `No credential for ${provider} is available to Telegram agents. Open AgenC, connect that provider in Settings, then stop and start this Telegram agent.` };

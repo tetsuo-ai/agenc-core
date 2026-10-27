@@ -1,9 +1,27 @@
-import { useEffect, useLayoutEffect } from 'react'
-import { useEventCallback } from 'usehooks-ts'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { InputEvent, Key } from '../events/input-event.js'
 import { useStdin } from '../components/StdinContext.js'
 
 type Handler = (input: string, key: Key, event: InputEvent) => void
+
+/**
+ * A stable function that always calls the latest `callback`. The ref is synced
+ * in a layout effect, so it is current as soon as React commits, before the
+ * next stdin read is dispatched. useEventCallback from usehooks-ts syncs with
+ * useEffect when `window` is undefined, as it is in Node. After a commit that
+ * did not come from a key, such as state set after an await, that left the
+ * previous render's handler in place until a later scheduler turn, and a key
+ * read in between ran it.
+ */
+function useLatestCallback<Args extends unknown[], Result>(
+  callback: (...args: Args) => Result,
+): (...args: Args) => Result {
+  const callbackRef = useRef(callback)
+  useLayoutEffect(() => {
+    callbackRef.current = callback
+  })
+  return useCallback((...args: Args) => callbackRef.current(...args), [])
+}
 
 type Options = {
   /**
@@ -63,10 +81,10 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
   // listener array is stable. If isActive were in the effect's deps, the
   // listener would re-append on false→true, moving it behind listeners
   // that registered while it was inactive — breaking
-  // stopImmediatePropagation() ordering. useEventCallback keeps the
+  // stopImmediatePropagation() ordering. useLatestCallback keeps the
   // reference stable while reading latest isActive/inputHandler from
   // closure (it syncs via useLayoutEffect, so it's compiler-safe).
-  const handleData = useEventCallback((event: InputEvent) => {
+  const handleData = useLatestCallback((event: InputEvent) => {
     if (options.isActive === false) {
       return
     }

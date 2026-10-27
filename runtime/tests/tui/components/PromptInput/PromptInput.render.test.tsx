@@ -9,10 +9,12 @@ import {
 } from "../../../utils/messageQueueManager.js";
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
+vi.mock("../../prompt-editor.js", () => ({ editPromptDraft: vi.fn(async () => "edited draft") }));
+
 const harness = vi.hoisted(() => {
   const appState = {
     coordinatorTaskIndex: -1,
-    effortValue: undefined,
+    effortValue: undefined as string | undefined,
     expandedView: "transcript",
     footerSelection: null as null | "tasks" | "teams",
     isBriefOnly: false,
@@ -46,6 +48,10 @@ const harness = vi.hoisted(() => {
     baseProps: undefined as undefined | Record<string, unknown>,
     clearBuffer: vi.fn(),
     keybindings: {} as Record<string, () => unknown>,
+    inputCaptures: new Set<{
+      handler: (input: string, key: Record<string, boolean>) => boolean
+      options?: { context?: string; isActive?: boolean }
+    }>(),
     inputHandlers: [] as Array<{
       handler: (
         input: string,
@@ -159,7 +165,9 @@ const harness = vi.hoisted(() => {
       harness.baseProps = undefined;
       harness.keybindings = {};
       harness.inputHandlers = [];
+      harness.inputCaptures.clear();
       appState.coordinatorTaskIndex = -1;
+      appState.effortValue = undefined;
       appState.footerSelection = null;
       appState.promptSuggestion = {
         acceptedAt: 0,
@@ -315,7 +323,8 @@ vi.mock("../../hooks/useArrowKeyHistory.js", () => ({
   },
 }));
 
-vi.mock("../../hooks/useDoublePress.js", () => ({
+vi.mock("../../hooks/useDoublePress.js", async (importOriginal) => ({
+  ...await importOriginal<Record<string, unknown>>(),
   useDoublePress: (_single: () => void, doublePress: () => void) => doublePress,
 }));
 
@@ -399,7 +408,17 @@ vi.mock("../../keybindings/shortcutFormat.js", () => ({
   getShortcutDisplay: () => "ctrl+v",
 }));
 
-vi.mock("../../keybindings/useKeybinding.js", () => ({
+vi.mock("../../keybindings/useKeybinding.js", async () => {
+  const { useLayoutEffect } = await import("react")
+  return ({
+  useInputCapture: (handler: (input: string, key: Record<string, boolean>) => boolean, options?: { context?: string; isActive?: boolean }) => {
+    useLayoutEffect(() => {
+      if (options?.isActive === false) return
+      const registration = { handler, options }
+      harness.inputCaptures.add(registration)
+      return () => { harness.inputCaptures.delete(registration) }
+    }, [handler, options?.context, options?.isActive])
+  },
   useKeybinding: (
     action: string,
     handler: () => unknown,
@@ -423,7 +442,8 @@ vi.mock("../../keybindings/useKeybinding.js", () => ({
     }
     Object.assign(harness.keybindings, handlers);
   },
-}));
+})
+});
 
 vi.mock("../../glyphs.js", () => ({
   selectAgenCTuiGlyphs: () => ({ horizontal: "-" }),
@@ -490,7 +510,7 @@ vi.mock("../../../utils/debug.js", () => ({
 }));
 
 vi.mock("../../../utils/directMemberMessage.js", () => ({
-  parseDirectMemberMessage: () => harness.directMessage,
+  parseDirectMemberMessage: vi.fn(() => harness.directMessage),
   sendDirectMemberMessage: vi.fn(() => harness.directMessageResult),
 }));
 
@@ -637,7 +657,7 @@ vi.mock("../CoordinatorAgentStatus.js", () => ({
 }));
 
 vi.mock("../EffortIndicator.js", () => ({
-  getEffortNotificationText: () => undefined,
+  getEffortNotificationText: (value: string | undefined) => value === undefined ? undefined : `${value} · /effort`,
 }));
 
 vi.mock("../FullscreenLayout.js", () => ({
@@ -693,9 +713,7 @@ vi.mock("../teams/TeamsDialog.js", () => ({
 }));
 
 vi.mock("../v2/primitives.js", async (importOriginal) => {
-  // The real visibleUserFacingModes is the contract the digit-pick handler
-  // indexes into; mocking it would let display and picking drift apart in
-  // exactly the way sharing this helper is meant to prevent.
+  // Keep the real module and stub only the switcher's rendering.
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, ModeSwitcher: () => null };
 });
@@ -752,7 +770,7 @@ vi.mock("./useSwarmBanner.js", () => ({
 }));
 
 import { createRoot } from "../../ink/root.js";
-import { sendDirectMemberMessage } from "../../../utils/directMemberMessage.js";
+import { parseDirectMemberMessage, sendDirectMemberMessage } from "../../../utils/directMemberMessage.js";
 import { getImageFromClipboard } from "../../../utils/imagePaste.js";
 import { cacheImagePath, storeImage } from "../../../utils/imageStore.js";
 import { logError } from "../../../utils/log.js";
@@ -941,6 +959,34 @@ describe("PromptInput render surface", () => {
     vi.mocked(logError).mockClear();
   });
 
+  test("replaces the effort notification immediately when canonical effort changes", async () => {
+    harness.appState.effortValue = "max";
+    const rendered = await renderPromptInput();
+    try {
+      expect(harness.addNotification).not.toHaveBeenCalled();
+      harness.appState.effortValue = "high";
+      rerenderPromptInput(rendered, { input: "changed" });
+      await vi.waitFor(() => expect(harness.addNotification).toHaveBeenCalledWith(expect.objectContaining({ key: "effort-level", text: "high · /effort" })));
+      expect(harness.removeNotification).toHaveBeenCalledWith("effort-level");
+      expect(harness.removeNotification.mock.invocationCallOrder.at(-1)).toBeLessThan(harness.addNotification.mock.invocationCallOrder.at(-1)!);
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("registers the configured external editor action for the normal composer", async () => {
+    const onInputChange = vi.fn();
+    const rendered = await renderPromptInput({ input: "draft", onInputChange });
+    try {
+      await waitForPromptInputProps();
+      expect(harness.keybindings["chat:externalEditor"]).toBeTypeOf("function");
+      await harness.keybindings["chat:externalEditor"]();
+      const { editPromptDraft } = await import("../../prompt-editor.js");
+      expect(editPromptDraft).toHaveBeenCalledWith("draft");
+      expect(onInputChange).toHaveBeenLastCalledWith("edited draft");
+    } finally { await rendered.dispose(); }
+  });
+
   test("does not register the retired fast-mode keybinding", async () => {
     const rendered = await renderPromptInput();
 
@@ -962,7 +1008,8 @@ describe("PromptInput render surface", () => {
       expect(baseProps.placeholder).toBe("Type a prompt");
       expect(baseProps.focus).toBe(true);
       expect(baseProps.showCursor).toBe(true);
-      expect(baseProps.columns).toBe(95);
+      // 100 columns less the borderless band (margin 2 + padding 1 per side) and "❯ ".
+      expect(baseProps.columns).toBe(92);
       expect(baseProps.multiline).toBe(true);
       expect(baseProps.disableCursorMovementForUpDownKeys).toBe(false);
     } finally {
@@ -1007,6 +1054,23 @@ describe("PromptInput render surface", () => {
       expect(onInputChange).toHaveBeenCalledWith(
         expect.stringContaining("[Pasted text"),
       );
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("normalizes CRLF once when storing a multiline paste", async () => {
+    let contents: Record<number, { content: string }> = {};
+    const setPastedContents = vi.fn((next: unknown) => {
+      contents = typeof next === "function" ? next(contents) : next as typeof contents;
+    });
+    const rendered = await renderPromptInput({ input: "", setPastedContents });
+    const first = "alpha".repeat(10);
+    const last = "omega".repeat(10);
+    try {
+      const props = await waitForPromptInputProps();
+      (props.onPaste as (value: string) => void)(`${first}\r\n${last}`);
+      expect(Object.values(contents).map(item => item.content)).toEqual([`${first}\n${last}`]);
     } finally {
       await rendered.dispose();
     }
@@ -1143,6 +1207,56 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test("retains the intercepted submit gesture until a pending paste updates the draft", async () => {
+    const onSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({ input: "", onSubmit });
+    try {
+      const props = await waitForPromptInputProps();
+      (props.onIsPastingChange as (value: boolean) => void)(true);
+      const gesture = harness.keybindingRegistrations.find(item => item.action === "chat:submit")?.handler as () => void;
+      gesture();
+      gesture();
+      expect(onSubmit).not.toHaveBeenCalled();
+      (props.onPaste as (value: string) => void)("fresh draft");
+      (props.onIsPastingChange as (value: boolean) => void)(false);
+      await vi.waitFor(() => expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+        "fresh draft", expect.anything(), undefined, expect.anything(),
+      ));
+    } finally { await rendered.dispose(); }
+  });
+
+  test("replays pasted backslash plus Enter as a newline gesture", async () => {
+    const onSubmit = vi.fn(async () => {});
+    const onInputChange = vi.fn();
+    const rendered = await renderPromptInput({ input: "", onSubmit, onInputChange });
+    try {
+      const props = await waitForPromptInputProps();
+      (props.onIsPastingChange as (value: boolean) => void)(true);
+      const gesture = harness.keybindingRegistrations.find(item => item.action === "chat:submit")?.handler as () => void;
+      gesture();
+      (props.onPaste as (value: string) => void)("text\\");
+      (props.onIsPastingChange as (value: boolean) => void)(false);
+      await vi.waitFor(() => expect(onInputChange).toHaveBeenLastCalledWith("text\n"));
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally { await rendered.dispose(); }
+  });
+
+  test("preserves the live draft cursor across an approval overlay unmount", async () => {
+    const input = "unsent draft stays editable";
+    const composerCursorRef = { current: null as { input: string; offset: number } | null };
+    const first = await renderPromptInput({ input, composerCursorRef });
+    try {
+      (harness.baseProps?.onChangeCursorOffset as (offset: number) => void)(7);
+      await vi.waitFor(() => expect(composerCursorRef.current).toEqual({ input, offset: 7 }));
+    } finally { await first.dispose(); }
+    const restored = await renderPromptInput({ input, composerCursorRef });
+    try {
+      expect(harness.baseProps?.cursorOffset).toBe(7);
+      rerenderPromptInput(restored, { input: "a different draft" });
+      await vi.waitFor(() => expect(harness.baseProps?.cursorOffset).toBe("a different draft".length));
+    } finally { await restored.dispose(); }
+  });
+
   test("puts the cursor after a draft restored in the same commit as the submit clear", async () => {
     const draft = "and again";
     const onInputChange = vi.fn();
@@ -1251,6 +1365,20 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test("lets backslash Enter reach the multiline editor instead of submitting a turn", async () => {
+    const onSubmit = vi.fn(async () => {});
+    const onInputChange = vi.fn();
+    const rendered = await renderPromptInput({ input: "draft\\", onSubmit, onInputChange });
+    try {
+      await waitForPromptInputProps();
+      const submit = harness.keybindingRegistrations.find(entry => entry.action === "chat:submit");
+      expect(submit).toBeDefined();
+      (submit!.handler as () => unknown)();
+      expect(onInputChange).toHaveBeenLastCalledWith("draft\n");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally { await rendered.dispose(); }
+  });
+
   test("handles mode cycle, image paste miss, and empty prompt submission guards", async () => {
     const onSubmit = vi.fn(async () => {});
     const setToolPermissionContext = vi.fn();
@@ -1324,24 +1452,15 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("requests a permission mode by digit without projecting it early", async () => {
+  test("digits typed while the mode switcher is open never change the mode", async () => {
+    // Shift+tab leaves the switcher up for a few seconds. A prompt that starts
+    // with a digit typed in that window used to switch the permission mode,
+    // up to "never asks", while the digit still reached the prompt.
     const setToolPermissionContext = vi.fn();
     const rendered = await renderPromptInput({ setToolPermissionContext });
 
     try {
       await waitForPromptInputProps();
-
-      // Digits do nothing until the switcher is open.
-      const beforeOpen = harness.inputHandlers.filter(
-        (entry) => entry.options?.isActive === true,
-      );
-      for (const entry of beforeOpen) {
-        entry.handler("3", {});
-      }
-      expect(setToolPermissionContext).not.toHaveBeenCalled();
-
-      // Shift+tab opens the switcher toast; wait for the re-render that
-      // arms the digit handler.
       const handlersBefore = harness.inputHandlers.length;
       harness.keybindings["chat:cycleMode"]?.();
       await waitForInputHandlerCount(handlersBefore + 1);
@@ -1352,42 +1471,55 @@ describe("PromptInput render surface", () => {
         .filter((entry) => entry.options?.isActive === true);
       expect(active.length).toBeGreaterThan(0);
       for (const entry of active) {
-        // [3] is 'plan' in the visible-mode order with both gates available.
-        entry.handler("3", {});
+        for (const digit of ["1", "2", "3", "4", "5", "9"]) entry.handler(digit, {});
       }
 
-      expect(setToolPermissionContext).toHaveBeenCalledWith(
-        expect.objectContaining({ mode: "plan" }),
-      );
-      expect(harness.appState.toolPermissionContext.mode).toBe("default");
+      expect(setToolPermissionContext).not.toHaveBeenCalled();
     } finally {
       await rendered.dispose();
     }
   });
 
-  test("ignores digits outside the visible mode range and refuses auto when its gate is off", async () => {
-    harness.autoModeGateEnabled = false;
+  test("option+m on macOS changes the mode from an empty prompt and types inside text", async () => {
+    // macOS terminals send "µ" for option+m unless Option is set as Meta, and
+    // keyboard software can take shift+tab, which left no working mode key.
+    harness.platform = "macos";
+    harness.nextPermissionMode = "acceptEdits";
     const setToolPermissionContext = vi.fn();
-    const rendered = await renderPromptInput({ setToolPermissionContext });
+    const onInputChange = vi.fn();
+    const rendered = await renderPromptInput({ setToolPermissionContext, onInputChange, input: "" });
 
     try {
-      await waitForPromptInputProps();
-      const handlersBefore = harness.inputHandlers.length;
-      harness.keybindings["chat:cycleMode"]?.();
-      await waitForInputHandlerCount(handlersBefore + 1);
+      const baseProps = await waitForPromptInputProps();
       setToolPermissionContext.mockClear();
 
-      const active = harness.inputHandlers
-        .slice(handlersBefore)
-        .filter((entry) => entry.options?.isActive === true);
-      for (const entry of active) {
-        entry.handler("9", {});
-        // [4] is 'auto'; the live gate is off, so it must be refused rather
-        // than throwing out of the input handler.
-        entry.handler("4", {});
-      }
+      (baseProps.onChange as (value: string) => void)("µ");
+      expect(setToolPermissionContext).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "acceptEdits" }),
+      );
+      expect(onInputChange).not.toHaveBeenCalledWith("µ");
 
+      setToolPermissionContext.mockClear();
+      (baseProps.onChange as (value: string) => void)("300µs");
       expect(setToolPermissionContext).not.toHaveBeenCalled();
+      expect(onInputChange).toHaveBeenCalledWith("300µs");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("option+m text stays text off macOS", async () => {
+    harness.platform = "linux";
+    const setToolPermissionContext = vi.fn();
+    const onInputChange = vi.fn();
+    const rendered = await renderPromptInput({ setToolPermissionContext, onInputChange, input: "" });
+
+    try {
+      const baseProps = await waitForPromptInputProps();
+      setToolPermissionContext.mockClear();
+      (baseProps.onChange as (value: string) => void)("µ");
+      expect(setToolPermissionContext).not.toHaveBeenCalled();
+      expect(onInputChange).toHaveBeenCalledWith("µ");
     } finally {
       await rendered.dispose();
     }
@@ -1961,6 +2093,36 @@ describe("PromptInput render surface", () => {
     } finally {
       await rendered.dispose();
     }
+  });
+
+  test("removes restored pasted text when its placeholder is deleted before the next submit", async () => {
+    const pastedContents = createPastedContentsState({ 1: { id: 1, type: "text", content: "x".repeat(5000) } });
+    const onSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({ input: "[Pasted text #1]", pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents, onSubmit });
+    try {
+      await sleep(25);
+      expect(pastedContents.current[1]?.content).toHaveLength(5000);
+      harness.baseProps = undefined;
+      rendered.root.render(<PromptInput {...(basePromptInputProps({ input: "hello", pastedContents: pastedContents.current,
+        setPastedContents: pastedContents.setPastedContents, onSubmit }) as never)} />);
+      const inputProps = await waitForPromptInputProps();
+      await sleep(25);
+      expect(pastedContents.current).toEqual({});
+      await (inputProps.onSubmit as (input: string) => Promise<void>)("hello");
+      expect(onSubmit).toHaveBeenCalledWith("hello", expect.anything(), undefined,
+        expect.objectContaining({ pastedContentsOverride: {} }));
+    } finally { await rendered.dispose(); }
+  });
+
+  test.each(["!", "!python3 --version"])("returns the normalized shell edit to the text input: %s", async (value) => {
+    const onModeChange = vi.fn();
+    const rendered = await renderPromptInput({ onModeChange });
+    try {
+      const change = harness.baseProps!.onChange as (value: string) => unknown;
+      expect(change(value)).toEqual({ value: value.slice(1), offset: value.length - 1 });
+      expect(onModeChange).toHaveBeenCalledWith("bash");
+    } finally { await rendered.dispose(); }
   });
 
   test("executes bash-mode input locally and emits transcript events", async () => {
@@ -2568,6 +2730,41 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test("expands pasted prompt text before submitting to the viewed agent", async () => {
+    const task = { id: "worker" };
+    harness.activeAgent = { type: "local_agent", task };
+    const onAgentSubmit = vi.fn(async () => {});
+    const pastedContents = createPastedContentsState({ 1: { id: 1, type: "text", content: "first line\nsecond line" } });
+    const rendered = await renderPromptInput({ input: "Please [Pasted text #1 +1 lines]", onAgentSubmit, pastedContents: pastedContents.current, setPastedContents: pastedContents.setPastedContents });
+    try {
+      const props = await waitForPromptInputProps();
+      await (props.onSubmit as (value: string) => Promise<void>)("Please [Pasted text #1 +1 lines]");
+      expect(onAgentSubmit).toHaveBeenCalledWith("Please first line\nsecond line", task, expect.anything());
+    } finally { await rendered.dispose(); }
+  });
+
+  test("recognizes a fully pasted direct message without expanding quoted refs twice", async () => {
+    harness.isAgentSwarmsEnabled = true;
+    harness.directMessageResult = { recipientName: "teammate", success: true };
+    harness.appState.teamContext = { teamName: "alpha", teammates: { teammate: { name: "teammate" } } };
+    vi.mocked(parseDirectMemberMessage)
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({ recipientName: "teammate", message: "review literal [Pasted text #5]\nand tests" });
+    const pastedContents = createPastedContentsState({
+      4: { id: 4, type: "text", content: "@teammate review literal [Pasted text #5]\nand tests" },
+      5: { id: 5, type: "text", content: "must not replace quoted ref" },
+    });
+    const onSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({ input: "[Pasted text #4 +1 lines]", onSubmit, pastedContents: pastedContents.current, setPastedContents: pastedContents.setPastedContents });
+    try {
+      const props = await waitForPromptInputProps();
+      await (props.onSubmit as (value: string) => Promise<void>)("[Pasted text #4 +1 lines]");
+      expect(parseDirectMemberMessage).toHaveBeenCalledWith("@teammate review literal [Pasted text #5]\nand tests");
+      expect(sendDirectMemberMessage).toHaveBeenCalledWith("teammate", "review literal [Pasted text #5]\nand tests", expect.anything(), expect.any(Function));
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally { await rendered.dispose(); }
+  });
+
   test("warns for macOS option-key characters with native CSIu terminal guidance", async () => {
     harness.platform = "macos";
     harness.isMacosOptionChar = true;
@@ -2742,6 +2939,24 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test("keeps typing and first prompt submission active while the mode toast is shown", async () => {
+    harness.nextPermissionMode = "plan";
+    const onSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({ input: "first cold prompt", onSubmit });
+    try {
+      await waitForPromptInputProps();
+      harness.keybindings["chat:cycleMode"]?.();
+      await sleep(50);
+      expect(harness.baseProps?.focus).toBe(true);
+      const registration = harness.keybindingRegistrations.find(item => item.action === "chat:submit");
+      expect(registration).toBeDefined();
+      (registration!.handler as () => void)();
+      await vi.waitFor(() => expect(onSubmit).toHaveBeenCalledWith("first cold prompt", expect.anything(), undefined, expect.objectContaining({ mode: "prompt" })));
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("keeps mode cycling active while its temporary overlays are shown", async () => {
     harness.features.TRANSCRIPT_CLASSIFIER = true;
     harness.hasAutoModeOptIn = false;
@@ -2878,3 +3093,23 @@ describe("PromptInput render surface", () => {
     }
   });
 });
+
+ test("captures mode-toast Ctrl+C once before composer editing and disposes the capture", async () => {
+   harness.reset();
+   harness.nextPermissionMode = "acceptEdits";
+   const onChange = vi.fn();
+   const rendered = await renderPromptInput({ input: "KEEP_DRAFT_é😀", onChange });
+   try {
+     await waitForPromptInputProps();
+     const capture = [...harness.inputCaptures].at(-1)!;
+     expect(capture.options?.context).toBe("Chat");
+     expect(capture.handler("c", { ctrl: true })).toBe(false);
+     harness.keybindings["chat:cycleMode"]?.();
+     // Same stdin batch, before another render: the live toast ref owns this.
+     expect(capture.handler("hello", {})).toBe(false);
+     expect(capture.handler("c", { ctrl: true })).toBe(true);
+     expect(capture.handler("c", { ctrl: true })).toBe(false);
+     expect(onChange).not.toHaveBeenCalled();
+   } finally { await rendered.dispose(); }
+   expect(harness.inputCaptures.size).toBe(0);
+ });

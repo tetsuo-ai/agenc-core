@@ -66,7 +66,7 @@ describe("bash AST security parser", () => {
     expect(parseForSecurityFromAst("echo hi", PARSE_ABORTED)).toEqual({
       kind: "too-complex",
       reason:
-        "Parser aborted (timeout or resource limit) \u2014 possible adversarial input",
+        "Parser aborted (timeout or resource limit): possible adversarial input",
       nodeType: "PARSE_ABORT",
     });
   });

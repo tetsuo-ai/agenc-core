@@ -265,6 +265,26 @@ describe("auto memory child tool policy", () => {
       ).toMatchObject({ behavior: "deny" });
     });
 
+    it("confines and canonicalizes the batch Edit path and scans its new text", () => {
+      const edits = [{ oldText: "a", newText: "b" }];
+      expect(
+        policy()({ name: "Edit" }, { path: "notes.md", edits }),
+      ).toMatchObject({
+        behavior: "allow",
+        updatedInput: {
+          path: "/tmp/project-memory/notes.md",
+          edits,
+          __agencSessionAllowedRoots: ["/tmp/project-memory/"],
+        },
+      });
+      expect(
+        policy()({ name: "Edit" }, { path: "/tmp/global-memory/user.md", edits }),
+      ).toMatchObject({ behavior: "deny", metadata: { reason: "write_outside_memory" } });
+      expect(
+        policy()({ name: "Edit" }, { path: "notes.md", edits: [{ oldText: "a", newText: `key ghp_${"A".repeat(36)}` }] }),
+      ).toMatchObject({ behavior: "deny", metadata: { reason: "secret_in_memory_write" } });
+    });
+
     it("without a shared root the policy is unchanged", () => {
       expect(
         createAutoMemoryToolPolicy("/tmp/project-memory/")(

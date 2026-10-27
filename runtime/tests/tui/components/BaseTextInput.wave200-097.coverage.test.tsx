@@ -33,10 +33,15 @@ vi.mock("../../utils/terminalBackground.js", () => ({
 vi.mock("../hooks/usePasteHandler.js", () => ({
   usePasteHandler: ({
     onInput,
+    onIsPastingChange,
   }: {
     onInput: (input: string, key: { return?: boolean }) => void;
+    onIsPastingChange?: (value: boolean) => void;
   }) => {
     pasteHarness.onInput = onInput;
+    React.useEffect(() => {
+      onIsPastingChange?.(pasteHarness.isPasting);
+    }, [onIsPastingChange, pasteHarness.isPasting]);
     return {
       isPasting: pasteHarness.isPasting,
       wrappedOnInput: vi.fn(),

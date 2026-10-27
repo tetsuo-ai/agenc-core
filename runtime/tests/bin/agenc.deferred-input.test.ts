@@ -5,6 +5,8 @@ import {
   __wrapDaemonTuiSessionWithPromptPreparationForTest,
   sessionConfigurationFromAgenCConfig,
 } from "./agenc-main.js";
+import { configCommand } from "../../src/commands/config.js";
+import type { Session } from "../../src/session/session.js";
 import { ConfigStore } from "../config/store.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -73,6 +75,7 @@ async function createDeferredInputSession(
     readonly baseSession?: unknown;
     readonly configStore?: ConfigStore;
     readonly deps?: unknown;
+    readonly permissionMode?: "default" | "bypassPermissions";
     readonly preparePrompt?: (
       params: Readonly<{ message: string }>,
     ) => Promise<string | null>;
@@ -85,6 +88,9 @@ async function createDeferredInputSession(
     env: {},
     cwd: process.cwd(),
     clientId: "deferred-input-test",
+    ...(options.permissionMode !== undefined
+      ? { permissionMode: options.permissionMode }
+      : {}),
     ...(options.preparePrompt !== undefined
       ? { preparePrompt: options.preparePrompt }
       : {}),
@@ -208,6 +214,7 @@ function daemonHarness(
     readonly method: string;
     readonly params: Record<string, unknown> | undefined;
   }> = [];
+  const sessionRules: Record<string, string[]> = { allow: [], deny: [], ask: [] };
   const client = {
     request: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       requests.push({ method, params });
@@ -234,6 +241,22 @@ function daemonHarness(
           );
         }
         return {};
+      }
+      if (method === "session.permissions.mutateRule") {
+        const behavior = String(params?.behavior);
+        const rule = String(params?.rule);
+        const bucket = sessionRules[behavior]!;
+        const index = bucket.indexOf(rule);
+        const applied = params?.operation === "add" ? index < 0 : index >= 0;
+        if (applied) {
+          if (params?.operation === "add") bucket.push(rule);
+          else bucket.splice(index, 1);
+        }
+        return {
+          ...params,
+          applied,
+          sessionRules: { allow: [...sessionRules.allow!], deny: [...sessionRules.deny!], ask: [...sessionRules.ask!] },
+        };
       }
       if (method === "session.shell.execute") {
         if (options.rejectShellExecute === true) {
@@ -336,6 +359,202 @@ function daemonHarness(
 }
 
 describe("deferred daemon input ownership", () => {
+  it("preserves expanded human text separately from paste display on cold first submit", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps, preparePrompt: async ({ message }) => message });
+    const text = "Build these independent items:\n1. health\n2. version";
+    await session.submit(text, { displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: text });
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(expect.objectContaining({
+      initialContent: text, initialDisplayUserMessage: "[Pasted text #1 +2 lines]", initialUserPromptText: text,
+    }));
+  });
+
+  it("waits for an in-flight cold startup before committing a permission mode", async () => {
+    const harness = daemonHarness();
+    let releaseStartup!: () => void;
+    const startupGate = new Promise<void>(resolve => { releaseStartup = resolve; });
+    harness.startPromptAgent.mockImplementationOnce(async () => {
+      await startupGate;
+      return { agentId: "agent-1" };
+    });
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession, deps: harness.deps,
+      preparePrompt: async ({ message }) => message,
+    });
+    const controls = session as typeof session & Pick<
+      import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession,
+      "mutateDaemonPermissionRule" | "setDaemonPermissionMode"
+    >;
+    const ruleChange = controls.mutateDaemonPermissionRule!({
+      operation: "add", behavior: "allow", rule: "exec_command",
+    });
+    await vi.waitFor(() => expect(harness.startPromptAgent).toHaveBeenCalledOnce());
+    const modeChange = controls.setDaemonPermissionMode!("plan");
+    let settled = false;
+    void modeChange.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      const registry = (session.services as unknown as {
+        permissionModeRegistry: PermissionModeRegistry;
+      }).permissionModeRegistry;
+      expect(registry.current().mode).toBe("default");
+      releaseStartup();
+      // This harness has no canonical successor for a mode RPC. The adapter
+      // must attempt the live RPC and reject, rather than claim staged success.
+      const results = await Promise.allSettled([ruleChange, modeChange]);
+      expect(results[1]!.status).toBe("rejected");
+      expect(harness.requests.some(({ method }) => method === "session.setPermissionMode")).toBe(true);
+    } finally {
+      releaseStartup();
+      await Promise.allSettled([ruleChange, modeChange]);
+    }
+  });
+
+  it.each(["default", "plan", "acceptEdits"])(
+    "uses a pre-first-task %s choice instead of startup bypass",
+    async (mode) => {
+      const harness = daemonHarness();
+      const session = await createDeferredInputSession({
+        baseSession: harness.baseSession,
+        deps: harness.deps,
+        permissionMode: "bypassPermissions",
+        preparePrompt: async ({ message }) => message,
+      });
+      const controls = session as typeof session & Pick<
+        import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession,
+        "setDaemonPermissionMode"
+      >;
+      await controls.setDaemonPermissionMode!(mode);
+      expect(harness.startPromptAgent).not.toHaveBeenCalled();
+      await session.submit("first task after choosing a mode");
+      expect(harness.startPromptAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ permissionMode: mode }),
+      );
+    },
+  );
+
+  it("keeps startup bypass when the user has not changed the mode", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession,
+      deps: harness.deps,
+      permissionMode: "bypassPermissions",
+      preparePrompt: async ({ message }) => message,
+    });
+    await session.submit("first task with the startup mode");
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "bypassPermissions" }),
+    );
+  });
+
+  it("does not stage a cold mode whose registry publication was rejected", async () => {
+    const harness = daemonHarness();
+    const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const session = await createDeferredInputSession({
+      baseSession: { ...harness.baseSession, services: { permissionModeRegistry: registry } },
+      deps: harness.deps,
+      permissionMode: "default",
+      preparePrompt: async ({ message }) => message,
+    });
+    vi.spyOn(registry, "update").mockRejectedValueOnce(new Error("mode publication rejected"));
+    const controls = session as typeof session & Pick<
+      import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession,
+      "setDaemonPermissionMode"
+    >;
+    await expect(controls.setDaemonPermissionMode!("acceptEdits"))
+      .rejects.toThrow("mode publication rejected");
+    expect(registry.current().mode).toBe("default");
+    await session.submit("first task after a rejected mode change");
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "default" }),
+    );
+  });
+
+  it("stages a first-run key without starting an agent and forwards later key replacements", async () => {
+    const harness = daemonHarness();
+    const preparePrompt = vi.fn(async ({ message }: { message: string }) => message);
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps, preparePrompt });
+    const keyed = session as typeof session & { useSessionProviderKey(provider: string, key: string): Promise<void> };
+    await keyed.useSessionProviderKey("deepseek", "cold-placeholder");
+    expect(harness.startPromptAgent).not.toHaveBeenCalled();
+    await session.submit("first prompt");
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(expect.objectContaining({ env: expect.objectContaining({ DEEPSEEK_API_KEY: "cold-placeholder" }) }));
+    expect(preparePrompt).toHaveBeenCalledWith(expect.objectContaining({ env: {} }));
+    await keyed.useSessionProviderKey("deepseek", "live-placeholder");
+    expect(harness.requests).toContainEqual({ method: "session.setProviderKey", params: { sessionId: "session-1", provider: "deepseek", apiKey: "live-placeholder" } });
+  });
+
+  it("commits cold and live rule edits through daemon authority before submitting", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession, deps: harness.deps,
+      preparePrompt: async ({ message }) => message,
+    });
+    const controls = session as typeof session & Pick<
+      import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession,
+      "mutateDaemonPermissionRule"
+    >;
+    await controls.mutateDaemonPermissionRule!({ operation: "add", behavior: "deny", rule: "exec_command" });
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(expect.objectContaining({ deferInitialTurn: true }));
+    expect(harness.requests.some(({ method }) => method === "message.stream")).toBe(false);
+    expect(harness.requests.at(-1)).toEqual({
+      method: "session.permissions.mutateRule",
+      params: { sessionId: "session-1", operation: "add", behavior: "deny", rule: "exec_command" },
+    });
+    await session.submit("try the denied tool");
+    await controls.mutateDaemonPermissionRule!({ operation: "add", behavior: "deny", rule: "Bash" });
+    await controls.mutateDaemonPermissionRule!({ operation: "remove", behavior: "deny", rule: "exec_command" });
+    expect(harness.startPromptAgent).toHaveBeenCalledTimes(1);
+    const registry = (session.services as unknown as { permissionModeRegistry: PermissionModeRegistry }).permissionModeRegistry;
+    expect(registry.current().alwaysDenyRules.session).toEqual(["Bash"]);
+  });
+
+  it("forwards rewind preview and both restore actions to canonical daemon history", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps, preparePrompt: async ({ message }) => message });
+    await session.submit("attach");
+    const controls = session as typeof session & Pick<import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession, "rewindConversationToMessage" | "previewFileRewind" | "rewindFilesToMessage">;
+    for (const [name, method] of [["previewFileRewind", "session.previewFileRewind"], ["rewindFilesToMessage", "session.rewindFilesToMessage"], ["rewindConversationToMessage", "session.rewindConversationToMessage"]] as const) {
+      expect(controls[name]).toBeTypeOf("function");
+      await controls[name]!({ messageOrdinal: 2 });
+      expect(harness.client.request).toHaveBeenLastCalledWith(method, { sessionId: "session-1", messageOrdinal: 2 });
+    }
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+  });
+
+  it("reloads cold config without requiring session MCP authority", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps });
+    const result = await configCommand.execute({ session: session as unknown as Session, cwd: process.cwd(), home: process.cwd(), argsRaw: "reload" });
+    expect(result).toMatchObject({ kind: "text", text: expect.stringContaining("MCP refresh staged") });
+    expect(harness.requests).toContainEqual({ method: "daemon.reload", params: {} });
+    expect(harness.startPromptAgent).not.toHaveBeenCalled();
+    expect(harness.requests.some(entry => entry.method.startsWith("session.mcp"))).toBe(false);
+  });
+
+  it("forwards compaction rollback once without replaying a failed mutation", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps, preparePrompt: async ({ message }) => message });
+    await session.submit("attach");
+    const controls = session as typeof session & Pick<import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession, "rollbackCompaction">;
+    expect(controls.rollbackCompaction).toBeTypeOf("function");
+    harness.client.request.mockImplementationOnce(async () => { throw new Error("ambiguous rollback"); });
+    await expect(controls.rollbackCompaction!({ attemptId: "attempt-1", reviewedBranchTargetSessionId: "reviewed-branch" })).rejects.toThrow("ambiguous rollback");
+    expect(harness.client.request).toHaveBeenLastCalledWith("session.rollbackCompaction", { sessionId: "session-1", attemptId: "attempt-1", reviewedBranchTargetSessionId: "reviewed-branch" });
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+  });
+
+  it("forwards compaction retention to the attached canonical session", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps, preparePrompt: async ({ message }) => message });
+    await session.submit("attach");
+    const controls = session as typeof session & Pick<import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession, "extendCompactionRollbackRetention">;
+    expect(controls.extendCompactionRollbackRetention).toBeTypeOf("function");
+    await controls.extendCompactionRollbackRetention!({ attemptId: "attempt-1", extendedUntilMs: 2000000000000 });
+    expect(harness.requests).toContainEqual({ method: "session.extendCompactionRollbackRetention", params: { sessionId: "session-1", attemptId: "attempt-1", extendedUntilMs: 2000000000000 } });
+  });
+
   it("keeps cold status-line rendering unavailable without creating an agent or control client", async () => {
     const harness = daemonHarness();
     const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps });
@@ -949,5 +1168,24 @@ describe("deferred daemon input ownership", () => {
       queuedText("new-session attachment"),
     ]);
     expect(session.rollbackIdleInputAdmission(afterRollback.token)).toBe(true);
+  });
+});
+
+
+describe("daemon startup failure recovery", () => {
+  it("names the cause and daemon start command, then retries creation on the next Enter", async () => {
+    const harness = daemonHarness();
+    const original = harness.deps.startPromptAgent;
+    const startPromptAgent = vi.fn(original)
+      .mockRejectedValueOnce(new Error("protected directory chain permits untrusted mutation: /private/home; remove group/world write access before retrying"));
+    const session = await createDeferredInputSession({
+      deps: { ...harness.deps, startPromptAgent },
+      preparePrompt: async ({ message }) => message,
+    });
+    const failed = session.submit("pong");
+    await expect(failed).rejects.toThrow("untrusted mutation");
+    await expect(failed).rejects.toThrow("agenc daemon start");
+    await expect(session.submit("pong")).resolves.toBeUndefined();
+    expect(startPromptAgent).toHaveBeenCalledTimes(2);
   });
 });

@@ -86,9 +86,9 @@ describe('PromptInputHelpMenu optional shortcuts coverage', () => {
       await sleep()
 
       const text = stripAnsi(output)
-      expect(text).toContain('ctrl + shift + o for verbose output')
+      expect(text).toMatch(/ctrl\+shift\+o\s+show details/)
       expect(text).not.toContain('toggle fast mode')
-      expect(text).toContain('/keybindings to customize')
+      expect(text).toContain('/keybindings to change these keys')
     } finally {
       root.unmount()
       stdin.end()

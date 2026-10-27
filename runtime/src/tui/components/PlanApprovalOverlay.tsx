@@ -3,6 +3,8 @@ import { useCallback, useState } from "react";
 import { Box, Text, useInput } from "../ink.js";
 import { Markdown } from "./markdown/Markdown.js";
 import { getDisplayPath } from "../../utils/file.js";
+import { useApprovalTypingGuard } from "../hooks/useApprovalTypingGuard.js";
+import { useInputCapture } from "../keybindings/useKeybinding.js";
 
 export interface PlanApprovalOverlayProps {
   readonly planContent?: string;
@@ -56,6 +58,8 @@ export function PlanApprovalOverlay({
   // Clamp the preview so the options stay visible; ctrl+o toggles the full
   // plan — the same expand idiom the transcript uses.
   const [expanded, setExpanded] = useState(false);
+  const { waiting: typingWaiting, blockTyping } = useApprovalTypingGuard();
+  useInputCapture(blockTyping, { context: "Modal" });
 
   const confirm = useCallback(
     (index: number): void => {
@@ -73,6 +77,7 @@ export function PlanApprovalOverlay({
   );
 
   useInput((input, key, event) => {
+    if (blockTyping(input, key, event)) return;
     if (key.ctrl && input === "o") {
       event.stopImmediatePropagation();
       setExpanded((value) => !value);
@@ -124,6 +129,7 @@ export function PlanApprovalOverlay({
 
   return (
     <Box flexDirection="column" gap={0}>
+      {typingWaiting ? <Text color="text2">Card is waiting. Press 1, 2 or 3.</Text> : null}
       <Box flexShrink={0}>
         <Text color="planMode" bold={true}>
           plan ready for review

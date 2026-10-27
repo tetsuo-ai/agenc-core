@@ -465,8 +465,8 @@ describe("configCommand — reload", () => {
         join(tmp, "config.toml"),
         `config_version = 2
 
-[auth.managedKeys]
-enabled = "yes"
+[auth]
+backend = "invalid"
         `,
       );
       const store = new ConfigStore({ home: tmp, env: {} });
@@ -474,7 +474,7 @@ enabled = "yes"
         stubCtx({ configStore: store, argsRaw: "reload", home: tmp }),
       );
       if (r.kind !== "error") throw new Error(`expected error, got ${r.kind}`);
-      expect(r.message).toContain("Invalid auth.managedKeys.enabled");
+      expect(r.message).toContain("Invalid auth.backend");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

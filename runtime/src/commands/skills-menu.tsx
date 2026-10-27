@@ -6,7 +6,7 @@ import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
-import type { SkillsSnapshot } from "./skills.js";
+import { skillDisplaySource, type SkillsSnapshot } from "./skills.js";
 
 type SkillSnapshot = SkillsSnapshot["availableSkills"][number];
 type SkillRowStatus = "invoked" | "available" | "model-only" | "hidden";
@@ -90,7 +90,7 @@ function skillRows(snapshot: SkillsSnapshot): readonly SkillRow[] {
     return {
       skill,
       name: `$${getInvocableSkillName(skill)}`,
-      source: sanitizeSkillDisplayText(skill.loadedFrom ?? skill.scope ?? "local"),
+      source: sanitizeSkillDisplayText(skillDisplaySource(skill) ?? "local"),
       status,
       detail: skill.description ? compactText(skill.description) : "(no description)",
     };
@@ -135,13 +135,13 @@ function SkillsMenuView({
   return (
     <MenuModal
       title="skills"
-      count={`${rows.length}`}
       summary={`${snapshot.invokedSkills.length} invoked`}
       headerRight={`${snapshot.effectiveSkillRoots.length} roots`}
       columns={[3, 12, 30, 16, 52]}
       headers={["", "status", "skill", "source", "description"]}
       items={displayRows}
       activeIndex={activeIndex}
+      detail={<ThemedText color="text2" wrap="wrap">{selected ? `${selected.name}: ${selected.detail}` : "no skills available."}</ThemedText>}
       renderRow={(row, _index, active) => {
         const color = statusColor(row.status);
         return [

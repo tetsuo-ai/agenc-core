@@ -1,17 +1,16 @@
 # AgenC in 5 minutes (your agent in 15)
 
-**Current version in tree: 0.18.0.** Standalone and npm installations resolve
+**Current version in tree: 0.19.19.** Standalone and npm installations resolve
 the same reviewed immutable runtime contract.
 
-Prerequisites: `tar` and a way to reach a model — BYOK
-(xAI / OpenAI / Anthropic / OpenRouter / …), a local Ollama or LM Studio
-endpoint, or an AgenC login for managed OpenRouter (including free hosted
-`:free` routes). The standalone installer supplies its own verified Node 26.5.0
-runtime; npm and SDK installs require host Node **>=26.5 <27**. Seventeen built-in
-providers are supported.
+Prerequisites: `tar` and access to a model through your own provider key,
+provider sign-in, or local Ollama, LM Studio, or compatible server. OpenRouter
+free models also require your own OpenRouter key. The standalone installer
+supplies its own verified Node 26.12.1 runtime; npm and SDK installs require
+host Node **>=26.5 <27**.
 
 Related: [INDEX](INDEX.md) · [install](install.md) · [onboarding](onboarding.md) ·
-[gateway](gateway.md) · [managed OpenRouter](managed-openrouter.md) ·
+[gateway](gateway.md) · [OpenRouter setup](managed-openrouter.md) ·
 [remote control](remote-control.md) · [VPS](deploy/vps.md).
 
 ## 1. Install
@@ -35,7 +34,7 @@ First-run wizard order:
 1. **preflight**
 2. **theme**
 3. **provider**
-4. **model access** — AgenC account, X / xAI sign-in, provider API key, or
+4. **model access**: provider sign-in, provider API key, local server, or
    configure later
 5. **connection-test**
 6. **security**
@@ -48,12 +47,11 @@ agenc onboard --status
 agenc onboard --reset    # show the wizard again on next interactive start
 ```
 
-The wizard launches both account flows directly; no slash command is needed.
-An AgenC account provides hosted models (including the free-model catalog for
-free accounts). X / xAI sign-in uses Grok through an eligible subscription.
-Provider BYOK keys are live-verified before the wizard asks permission to save
-them. Details: [managed-openrouter.md](managed-openrouter.md) and
-[grok-oauth.md](grok-oauth.md).
+The wizard offers provider sign-in and API keys directly. AgenC account sign-in
+is separate and does not provide models. X / xAI sign-in uses the user's own
+provider subscription. Provider keys are live-verified before the wizard asks
+permission to save them. OpenRouter free models also require your own OpenRouter
+key. Details: [providers.md](reference/providers.md) and [grok-oauth.md](grok-oauth.md).
 
 ## 3. Check your posture
 
@@ -134,6 +132,6 @@ Coming from another assistant?
 
 ## Not shipped (do not expect these yet)
 
-Signal, WhatsApp, and email channels are not in 0.18.0.
+Signal, WhatsApp, and email channels are not in 0.19.19.
 Telegram, Discord, Slack, WebChat, and stdio **are** shipped via
 `agenc gateway`.

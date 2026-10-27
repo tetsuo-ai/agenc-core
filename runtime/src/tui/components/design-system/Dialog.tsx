@@ -57,7 +57,10 @@ export function Dialog(t0: DialogProps): React.ReactNode {
   const isCancelActive = t2 === undefined ? true : t2;
   const terminalSize = React.useContext(TerminalSizeContext);
   const bodyMaxHeight = getDialogBodyMaxHeight(terminalSize?.rows ?? DEFAULT_DIALOG_ROWS, !hideInputGuide);
-  const exitState = useExitOnCtrlCDWithKeybindings(undefined, undefined, isCancelActive);
+  const exitState = useExitOnCtrlCDWithKeybindings(onCancel, () => {
+    onCancel();
+    return true;
+  }, isCancelActive);
   let t3;
   if ($[0] !== isCancelActive) {
     t3 = {

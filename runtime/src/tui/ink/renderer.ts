@@ -97,7 +97,7 @@ export default function createRenderer(
     const height = options.altScreen ? terminalRows : yogaHeight
     if (options.altScreen && yogaHeight > terminalRows) {
       logForDebugging(
-        `alt-screen: yoga height ${yogaHeight} > terminalRows ${terminalRows} — ` +
+        `alt-screen: yoga height ${yogaHeight} > terminalRows ${terminalRows}: ` +
           `something is rendering outside <AlternateScreen>. Overflow clipped.`,
         { level: 'warn' },
       )

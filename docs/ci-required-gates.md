@@ -65,7 +65,7 @@ A value that looks like a Git option, such as `--relative=runtime`, fails
 before any test selection.
 
 The hosted job is `pr-fast` / `affected-tests` on `ubuntu-24.04` with Node
-26.5.0, npm 11.17.0, a 15-minute timeout, and `fetch-depth: 0`. It first
+26.12.1, npm 11.17.0, a 15-minute timeout, and `fetch-depth: 0`. It first
 requires `git cat-file -e "${BASE_SHA}^{commit}"` and
 `git diff --check "$BASE_SHA"...HEAD`, then runs
 `npm run test:fast -- --base "$BASE_SHA"`. Workflow `paths-ignore` uses the
@@ -329,7 +329,7 @@ The repository command is:
 npm run check:required-gates
 ```
 
-It requires Linux, Node.js 26.5.0, npm 11.17.0, a clean checkout, and an exact
+It requires Linux, Node.js 26.12.1, npm 11.17.0, a clean checkout, and an exact
 lowercase 40-character commit. In this optional design, the authoritative
 deployment runs each gate in its own transient systemd cgroup.
 
@@ -526,7 +526,7 @@ work starts.
 
 Install root-owned Git, systemd 255, `systemd-run`, `systemd-creds`, util-linux
 `setpriv`, Docker Engine rootless extras/CLI, `cc`, `c++`, `make`, and Python 3. Install Node
-26.5.0 and npm 11.17.0 at `/opt/agenc-local-gatekeeper/node`; the same immutable
+26.12.1 and npm 11.17.0 at `/opt/agenc-local-gatekeeper/node`; the same immutable
 prefix must contain `include/node/node.h`. The gate accepts only the fixed
 compiler/interpreter paths `/usr/bin/cc`, `/usr/bin/c++`, `/usr/bin/make`, and
 `/usr/bin/python3`.
@@ -626,7 +626,7 @@ docker=(sudo -u agenc-gate-docker env \
   DOCKER_CONFIG=/nonexistent /usr/bin/docker \
   --host unix:///run/user/993/docker.sock)
 "${docker[@]}" pull "$image"
-"${docker[@]}" image tag "$image" node:26.5.0-bookworm
+"${docker[@]}" image tag "$image" node:26.12.1-bookworm
 "${docker[@]}" image inspect "$image"
 "${docker[@]}" system df --format '{{json .}}'
 "${docker[@]}" network ls --no-trunc --format '{{json .}}'

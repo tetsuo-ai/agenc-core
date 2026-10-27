@@ -4,11 +4,7 @@ import { feature } from 'bun:bundle';
 import { type ReactNode, useEffect, useMemo } from 'react';
 import { type Notification, useNotifications } from '../../context/notifications.js';
 import { type AppState, useAppState } from '../../state/AppState.js';
-import {
-  hasEntitledRemoteAuthSessionSync,
-  hasRemoteAuthSessionSync,
-  remoteAuthSessionSubscriptionTierSync,
-} from '../../../auth/session-state.js';
+
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
@@ -21,11 +17,9 @@ import type { Message } from '../../../types/message.js';
 import type { ProviderAuthReadContext } from '../../../utils/auth.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { getExternalEditor } from '../../../utils/editor.js';
-import { getIsRemoteMode } from '../../../bootstrap/state.js';
 import { setEnvHookNotifier } from '../../../utils/hooks/cwdChangedHooks.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';
 import { getMessagesAfterCompactBoundary } from '../../../utils/messages.js';
-import { isRegistryOwnedNonAnthropicModel, usesAnthropicAccountFlow } from '../../../utils/model/providers.js';
 import { tokenCountFromLastAPIResponse } from '../../../utils/tokens.js';
 import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -130,11 +124,6 @@ export function Notifications(t0: Props) {
   useEffect(t5, t6);
   const shouldShowIdeSelection = ideStatus === "connected" && (ideSelection?.filePath || ideSelection?.text && ideSelection.lineCount > 0);
   const shouldShowAutoUpdater = !shouldShowIdeSelection || isAutoUpdating || autoUpdaterResult?.status !== "success";
-  const hasRemoteAuthSession = hasRemoteAuthSessionSync(remoteAuthSessionContext);
-  const remoteSubscriptionTier = remoteAuthSessionSubscriptionTierSync(remoteAuthSessionContext);
-  const hasRemoteManagedKeys = hasEntitledRemoteAuthSessionSync(remoteAuthSessionContext);
-  const usesAccountFlow = usesAnthropicAccountFlow(remoteAuthSessionContext.provider);
-  const shouldShowRemoteAuthPlan = usesAccountFlow && !isRegistryOwnedNonAnthropicModel(mainLoopModel) && hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing');
   let t8;
   if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
     t8 = getExternalEditor();
@@ -171,7 +160,7 @@ export function Notifications(t0: Props) {
   }
   useEffect(t9, t10);
   const t11 = isNarrow ? "flex-start" : "flex-end";
-  const t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} providerEnvironment={remoteAuthSessionContext.environment} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} hasRemoteAuthSession={hasRemoteAuthSession} remoteSubscriptionTier={remoteSubscriptionTier} hasRemoteManagedKeys={hasRemoteManagedKeys} shouldShowRemoteAuthPlan={shouldShowRemoteAuthPlan} usesAccountFlow={usesAccountFlow} />;
+  const t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} providerEnvironment={remoteAuthSessionContext.environment} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} />;
   let t14;
   if ($[31] !== t11 || $[32] !== t13) {
     t14 = <TuiErrorBoundary><Box flexDirection="column" alignItems={t11} flexShrink={0} overflowX="hidden">{t13}</Box></TuiErrorBoundary>;
@@ -205,11 +194,6 @@ function NotificationContent({
   isShowingCompactMessage,
   onAutoUpdaterResult,
   onChangeIsUpdating,
-  hasRemoteAuthSession,
-  remoteSubscriptionTier,
-  hasRemoteManagedKeys,
-  shouldShowRemoteAuthPlan,
-  usesAccountFlow
 }: {
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
@@ -229,11 +213,6 @@ function NotificationContent({
   isShowingCompactMessage: boolean;
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void;
   onChangeIsUpdating: (isUpdating: boolean) => void;
-  hasRemoteAuthSession: boolean;
-  remoteSubscriptionTier: string | undefined;
-  hasRemoteManagedKeys: boolean;
-  shouldShowRemoteAuthPlan: boolean;
-  usesAccountFlow: boolean;
 }): ReactNode {
   const isBriefOnly = feature('KAIROS') || feature('KAIROS_BRIEF') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
@@ -246,16 +225,6 @@ function NotificationContent({
           </Text> : <Text color={notifications.current.color} dimColor={!notifications.current.color} wrap={notifications.current.wrap === true ? "wrap" : "truncate"}>
             {notifications.current.text}
           </Text>)}
-      {usesAccountFlow && !isRegistryOwnedNonAnthropicModel(mainLoopModel) && !hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
-          <Text color="error" wrap="truncate">
-            {getIsRemoteMode() ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
-          </Text>
-        </Box>}
-      {shouldShowRemoteAuthPlan && <Box>
-          <Text color={hasRemoteManagedKeys ? "success" : "warning"} wrap="truncate">
-            {remoteAuthPlanNotice(remoteSubscriptionTier, hasRemoteManagedKeys)}
-          </Text>
-        </Box>}
       {debug && <Box>
           <Text color="warning" wrap="truncate">
             Debug mode
@@ -271,15 +240,4 @@ function NotificationContent({
       <MemoryUsageIndicator />
       <SandboxPromptFooterHint />
     </>;
-}
-
-function remoteAuthPlanNotice(
-  tier: string | undefined,
-  hasManagedKeys: boolean,
-): string {
-  const label = tier ?? "unknown";
-  if (hasManagedKeys) {
-    return `AgenC ${label} plan · managed model keys available`;
-  }
-  return `AgenC ${label} plan · upgrade at https://id.agenc.ag/pricing or add a BYOK key`;
 }

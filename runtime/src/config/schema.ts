@@ -1,3 +1,5 @@
+import { DEFAULT_TASK_TOKEN_BUDGET, TASK_BUDGET_LEVELS, type TaskBudgetLevel } from "./task-budget.js";
+import { DEFAULT_MODEL_VERBOSITY } from "./runtime-defaults.js";
 // T10 Group D — AgenC config schema.
 //
 // Merges AgenC config surfaces, profile selection, and runtime additions
@@ -40,7 +42,7 @@ import {
 import {
   parseRuleString,
 } from "../permissions/rules.js";
-import { isRemovedLiveToolName } from "../permissions/tool-names.js";
+import { isRemovedLiveToolName, permissionRuleToolName } from "../permissions/tool-names.js";
 import {
   bindingCommandError,
   isKeybindingContextName,
@@ -158,13 +160,15 @@ export interface ShellEnvironmentPolicy {
 }
 
 export interface ToolsConfig {
+  /** Live WebSearch adapter selection; WEB_SEARCH_PROVIDER wins. Keys stay in env. */
+  readonly web_search_provider?: string;
   /**
-   * Search backend for the WebSearch tool on providers without native
-   * web search. `AGENC_WEB_SEARCH_ENDPOINT` env wins over this value.
+   * Search backend URL after session-native search. With an explicitly named
+   * provider, overrides its endpoint. `AGENC_WEB_SEARCH_ENDPOINT` env wins.
    */
   readonly web_search_endpoint?: string;
   /**
-   * Response format of `web_search_endpoint`:
+   * Response format of `web_search_endpoint` in auto mode:
    * duckduckgo (instant-answer JSON, default) | searxng | brave | json.
    * `AGENC_WEB_SEARCH_KIND` env wins. Brave API keys come from
    * `AGENC_WEB_SEARCH_API_KEY` (secrets never live in config.toml).
@@ -295,8 +299,15 @@ export interface DurableTurnsConfig {
 export interface CompletionGateConfig {
   /** `auto` (default): only non-interactive sessions such as `agenc -p`. */
   readonly mode?: "auto" | "always" | "never";
-  /** Verification prompts per turn; default 3, at most 10. */
+  /** Verification prompts per turn; default and hard cap 3. */
   readonly max_rounds?: number;
+  /**
+   * Turns whose caller requires the exact final answer (`--output-format
+   * json` or `stream-json`, `exactOutput` on a turn or session). `skip`
+   * (default): no completion check for these turns. `verify`: the check runs
+   * as internal work and the turn still ends with the model's own answer.
+   */
+  readonly exact_output?: "verify" | "skip";
 }
 
 /**
@@ -423,8 +434,10 @@ export interface MarketplaceCliProtocolConfig {
   readonly adapter: ProtocolAdapterKind;
   /**
    * Trusted local path override for the `agenc-marketplace` binary.
-   * Resolution order: this value → `AGENC_MARKETPLACE_CLI` env →
-   * `node_modules/.bin/agenc-marketplace`. `npx` is never used.
+   * Resolution order: this value → `AGENC_MARKETPLACE_CLI` env → the
+   * installer's own `~/.agenc/bin/agenc-marketplace` (owned by the current
+   * user, not world-writable). The working directory is never searched and
+   * `npx` is never used.
    */
   readonly cli_path?: string;
 }
@@ -556,6 +569,7 @@ export const TUI_THEME_SETTINGS = Object.freeze([
   "dark-daltonized",
   "light-ansi",
   "dark-ansi",
+  "olive",
 ] as const);
 
 export type TuiThemeSetting = (typeof TUI_THEME_SETTINGS)[number];
@@ -577,6 +591,7 @@ export interface TuiConfig {
   readonly copyOnSelect?: boolean;
   readonly flickerFreeMode?: boolean;
   readonly prStatusFooterEnabled?: boolean;
+  readonly gitStatusEnabled?: boolean;
   readonly keybindings?: readonly TuiKeybindingConfig[];
 }
 
@@ -652,11 +667,12 @@ export interface ProviderConfig {
   readonly default_model?: string;
   /**
    * Request-level zero data retention. Accepted only under
-   * `providers.openrouter`: every request carries `provider.zdr = true`, so
-   * OpenRouter routes only to endpoints with a zero-data-retention policy
-   * and a model without one is refused instead of silently falling back.
-   * Other providers control retention per account, project or team on their
-   * own console and reject this field (see docs/reference/providers.md).
+   * `providers.openrouter`, and on by default there: every request carries
+   * `provider.zdr = true`, so OpenRouter routes only to endpoints with a
+   * zero-data-retention policy and a model without one is refused instead of
+   * silently falling back. `false` turns it off. Other providers control
+   * retention per account, project or team on their own console and reject
+   * this field (see docs/reference/providers.md).
    */
   readonly zero_data_retention?: boolean;
   readonly context_window_tokens?: number;
@@ -669,8 +685,13 @@ export interface ProviderConfig {
   readonly timeout_ms?: number;
   readonly capability_overrides?: ProviderCapabilityOverrides;
   readonly fallback?: ProviderFallbackConfig;
-  /** Grok-only native capabilities. Rejected on every other provider table. */
+  /**
+   * Native web search. Grok: the server-side web_search tool. DeepSeek: the
+   * Search API behind WebSearch (unset is auto, see
+   * llm/providers/deepseek/web-search.ts). Rejected on every other table.
+   */
   readonly web_search?: boolean;
+  /** Grok-only native capabilities. Rejected on every other provider table. */
   readonly x_search?: boolean;
   readonly code_execution?: boolean;
   readonly enable_image_search?: boolean;
@@ -741,13 +762,8 @@ export type GrokCapabilityConfig = Pick<
 
 export type AuthBackendConfigKind = "local" | "remote";
 
-export interface AuthManagedKeysConfig {
-  readonly enabled?: boolean;
-}
-
 export interface AuthConfig {
   readonly backend?: AuthBackendConfigKind;
-  readonly managedKeys?: AuthManagedKeysConfig;
 }
 
 export interface LspServerConfigInput {
@@ -838,7 +854,11 @@ export interface BrowserConfig {
   readonly allow_private_network?: boolean;
   /** Dedicated profile dir; defaults beneath the canonical AgenC home. */
   readonly profile_dir?: string;
-  /** Pass Chromium `--no-sandbox` (default false; needed in some containers). */
+  /**
+   * Pass Chromium `--no-sandbox` outside AgenC's sandbox (default false;
+   * needed in some containers). Inside AgenC's sandbox Chromium's own sandbox
+   * cannot start, so the browser always runs with it off there.
+   */
   readonly no_sandbox?: boolean;
   /** Navigation timeout in ms (default 30000). */
   readonly navigation_timeout_ms?: number;
@@ -898,6 +918,8 @@ export interface AgenCConfig {
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly xaa_idp?: XaaIdpConfig;
   readonly daemon?: DaemonConfig;
+  /** Owner-only phone/browser relay capability. No environment or project authority. */
+  readonly remote_control?: { readonly enabled?: boolean };
   readonly gateway?: GatewayConfig;
   readonly protocol?: ProtocolConfig;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
@@ -975,13 +997,43 @@ export interface AgenCConfig {
   readonly completion_gate?: CompletionGateConfig;
   readonly goal?: GoalConfig;
   readonly compaction?: CompactionConfig;
+  /** Stop disordered short-vocabulary model streams; false opts out. */
+  readonly stream_degenerate_guard?: boolean;
+  /**
+   * Mode for new sessions that did not choose one. Unset or true: Light.
+   * false: standard. `--light` and `--standard` override it; resumed sessions
+   * keep the mode they started with.
+   */
+  readonly light_mode?: boolean;
+  /**
+   * Load rarely needed built-in tools through system.searchTools instead of
+   * sending them with every request. Unset: on for standard sessions, off for
+   * Light. The session's AGENC_DEFER_RARE_TOOLS overrides it.
+   */
+  readonly defer_rare_tools?: boolean;
+  /** Manual web tools and guidance. AGENC_WEB_SEARCH overrides this setting. */
+  readonly web_search?: "auto" | "on";
+  /**
+   * Use the lean static head of the system prompt. Unset: on for OpenAI and
+   * Grok. The session's AGENC_LEAN_SYSTEM_PROMPT overrides it.
+   */
+  readonly lean_system_prompt?: boolean;
   readonly stream_watchdog_timeout_ms?: number;
+  /** Warn after this long without a model delta; zero disables the warning. */
+  readonly stream_quiet_warning_ms?: number;
   readonly provider_outage_wait_ms?: number;
   readonly provider_outage_retry_ms?: number;
   readonly max_output_tokens?: number;
   readonly capped_default_max_output_tokens?: boolean;
   readonly max_turns?: number;
   readonly max_budget_usd?: number;
+  /** Per-session task allocation including reasoning. Zero explicitly disables it. */
+  readonly task_token_budget?: number;
+  /** Named allocation; higher config layers replace lower numeric/level choices. */
+  readonly budget_level?: TaskBudgetLevel;
+  readonly task_max_calls?: number;
+  /** Experimental signed host-check registration; never raises task_token_budget. */
+  readonly experimental_task_budget_progress?: string;
   readonly autonomous_mode?: boolean;
   /**
    * Coordinator mode: the main session orchestrates work through
@@ -1054,6 +1106,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "mcp_servers",
   "xaa_idp",
   "daemon",
+  "remote_control",
   "gateway",
   "protocol",
   "lsp_servers",
@@ -1117,13 +1170,23 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "pluginTrustMessage",
   "agent",
   "agents",
+  "stream_degenerate_guard",
+  "light_mode",
+  "defer_rare_tools",
+  "web_search",
+  "lean_system_prompt",
   "stream_watchdog_timeout_ms",
+  "stream_quiet_warning_ms",
   "provider_outage_wait_ms",
   "provider_outage_retry_ms",
   "max_output_tokens",
   "capped_default_max_output_tokens",
   "max_turns",
   "max_budget_usd",
+  "task_token_budget",
+  "budget_level",
+  "task_max_calls",
+  "experimental_task_budget_progress",
   "autonomous_mode",
   "coordinator_mode",
   "transaction_guard",
@@ -1138,14 +1201,12 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Default session stream-idle deadline. xAI streams reasoning deltas
- * continuously (11,478 thinking deltas in one reviewed session), so ten
- * minutes of complete provider silence is a dead socket or a stalled stream,
- * not thinking. The watchdog warns at half this value and the resulting
- * `stream_idle` abort is retryable through the reconnect ladder. Operators
- * set `stream_watchdog_timeout_ms = 0` to disable it.
+ * Default byte-idle deadline. Allow twenty minutes without any network bytes;
+ * keepalives and reasoning frames reset it regardless of visible output.
+ * The resulting `stream_idle` abort uses the reconnect ladder. Zero disables
+ * it. The independent soft warning defaults to ten minutes without a delta.
  */
-export const DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS = 600_000;
+export const DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS = 1_200_000;
 /** Total time a turn keeps waiting for a provider outage to end (30 min). */
 export const DEFAULT_PROVIDER_OUTAGE_WAIT_MS = 1_800_000;
 /** First slow-retry delay after the reconnect ladder is spent (30 s). */
@@ -1156,6 +1217,7 @@ export function defaultConfig(): AgenCConfig {
     configVersion: 2,
     model: DEFAULT_BUILT_IN_PROVIDER_SELECTION.model,
     model_provider: DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider,
+    ...(DEFAULT_MODEL_VERBOSITY !== undefined ? { model_verbosity: DEFAULT_MODEL_VERBOSITY } : {}),
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
     reasoning_effort: "medium" as ReasoningEffort,
@@ -1164,9 +1226,6 @@ export function defaultConfig(): AgenCConfig {
     agent_max_depth: 1,
     auth: Object.freeze({
       backend: "remote",
-      managedKeys: Object.freeze({
-        enabled: true,
-      }) as AuthManagedKeysConfig,
     }) as AuthConfig,
     plugins: Object.freeze({
       enabled: false,
@@ -1178,6 +1237,7 @@ export function defaultConfig(): AgenCConfig {
         transport: "stdio",
       }) as McpServerModeConfig,
     }) as McpConfig,
+    remote_control: Object.freeze({ enabled: false }),
     daemon: Object.freeze({
       autostart: true,
     }) as DaemonConfig,
@@ -1200,17 +1260,20 @@ export function defaultConfig(): AgenCConfig {
       "pyproject.toml",
     ]) as readonly string[],
     project_doc_max_bytes: 32_768,
-    // Ten-minute stream-idle deadline by default (see
+    stream_degenerate_guard: true,
+    // Twenty-minute byte-idle deadline by default (see
     // DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS). A half-open socket or a stalled
     // provider stream otherwise hangs the turn until the user cancels;
     // `0` disables the deadline for operators who need unbounded silence.
     stream_watchdog_timeout_ms: DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS,
+    stream_quiet_warning_ms: 600_000,
     // A provider that is down for minutes is not the turn's fault (#2212).
     // Once the fast reconnect ladder is spent, the turn waits with a slow
     // backoff (30 s doubling to 5 min) and tries again for up to this long;
     // `0` ends the turn as soon as the ladder is exhausted.
     provider_outage_wait_ms: DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
     provider_outage_retry_ms: DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
+    task_token_budget: DEFAULT_TASK_TOKEN_BUDGET,
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
     // want a runaway-loop backstop can set `max_turns` (or its documented env
@@ -1219,12 +1282,15 @@ export function defaultConfig(): AgenCConfig {
     // `autoUpdates` is intentionally not defaulted. An absent operator setting
     // means enabled; every consumer reads the effective ConfigStore snapshot.
     tui: Object.freeze({
-      theme: "dark",
+      // Owner choice for 0.19: olive, cream and wine. "dark" stays the
+      // classic black and purple theme for anyone who picks it.
+      theme: "olive",
       showTurnDuration: true,
       terminalProgressBarEnabled: true,
       copyOnSelect: true,
       flickerFreeMode: true,
       prStatusFooterEnabled: true,
+      gitStatusEnabled: true,
     }) as TuiConfig,
     ideConnector: Object.freeze({
       autoInstallExtension: true,
@@ -1326,6 +1392,16 @@ export function mergeConfigs(
     base as Record<string, unknown>,
     override as Record<string, unknown>,
   ) as AgenCConfig;
+  // Treat the level and numeric cap as one selection across config layers.
+  // A numeric value wins when both are supplied in the same layer (including 0).
+  if (override.task_token_budget !== undefined) {
+    const level = override.budget_level;
+    return deepFreeze({ ...merged, budget_level:
+      level !== undefined && TASK_BUDGET_LEVELS[level] === override.task_token_budget ? level : undefined });
+  }
+  if (override.budget_level !== undefined) {
+    return deepFreeze({ ...merged, task_token_budget: TASK_BUDGET_LEVELS[override.budget_level] });
+  }
   return deepFreeze(merged);
 }
 
@@ -1578,8 +1654,7 @@ function optionalHttpStatusArray(
   return Object.freeze(out);
 }
 
-const AUTH_KEYS: ReadonlySet<string> = new Set(["backend", "managedKeys"]);
-const AUTH_MANAGED_KEYS: ReadonlySet<string> = new Set(["enabled"]);
+const AUTH_KEYS: ReadonlySet<string> = new Set(["backend", "managedKeys", "managed_keys"]);
 
 export function validateAuthConfig(raw: unknown): AuthConfig | undefined {
   if (raw === undefined) return undefined;
@@ -1602,27 +1677,6 @@ export function validateAuthConfig(raw: unknown): AuthConfig | undefined {
       );
     }
     out.backend = record.backend;
-  }
-  if (record.managedKeys !== undefined) {
-    const managedKeys = requirePlainObject(
-      record.managedKeys,
-      "managedKeys",
-      (field, detail) => new InvalidAuthConfigError(field, detail),
-    );
-    rejectUnknownFields(
-      managedKeys,
-      AUTH_MANAGED_KEYS,
-      (field, detail) => new InvalidAuthConfigError(field, detail),
-      "managedKeys",
-    );
-    const enabled = optionalBoolean(
-      managedKeys.enabled,
-      "managedKeys.enabled",
-      (field, detail) => new InvalidAuthConfigError(field, detail),
-    );
-    out.managedKeys = Object.freeze({
-      ...(enabled !== undefined ? { enabled } : {}),
-    }) as AuthManagedKeysConfig;
   }
   return Object.freeze(out as AuthConfig);
 }
@@ -1653,6 +1707,9 @@ const REQUEST_LEVEL_ZERO_DATA_RETENTION_PROVIDERS: ReadonlySet<string> = new Set
   "openrouter",
 ]);
 
+/** The one provider besides Grok whose table takes `web_search`. */
+const DEEPSEEK_WEB_SEARCH_PROVIDER = "deepseek";
+
 const GROK_CAPABILITY_BOOLEAN_KEYS = Object.freeze([
   "web_search",
   "x_search",
@@ -1672,6 +1729,24 @@ function validateGrokCapabilities(
     "remote_mcp",
     "incremental_continuation",
   ] as const;
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidProviderConfigError(field, detail);
+  // DeepSeek's Search API backs WebSearch for deepseek sessions, so
+  // providers.deepseek takes web_search; the other fields stay Grok-only.
+  if (providerId === DEEPSEEK_WEB_SEARCH_PROVIDER) {
+    if (capabilityKeys.some(key => key !== "web_search" && record[key] !== undefined)) {
+      throw new InvalidProviderConfigError(
+        providerId,
+        "Grok capability fields are allowed only under providers.grok; providers.deepseek accepts only web_search",
+      );
+    }
+    const webSearch = optionalBoolean(
+      record.web_search,
+      fieldPath(providerId, "web_search"),
+      makeError,
+    );
+    return webSearch === undefined ? {} : { web_search: webSearch };
+  }
   if (
     providerId !== "grok" &&
     capabilityKeys.some(key => record[key] !== undefined)
@@ -1683,8 +1758,6 @@ function validateGrokCapabilities(
   }
   if (providerId !== "grok") return {};
 
-  const makeError: InvalidConfigFactory = (field, detail) =>
-    new InvalidProviderConfigError(field, detail);
   const out: Record<string, unknown> = {};
   for (const key of GROK_CAPABILITY_BOOLEAN_KEYS) {
     const value = optionalBoolean(
@@ -3902,6 +3975,7 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
       "copyOnSelect",
       "flickerFreeMode",
       "prStatusFooterEnabled",
+      "gitStatusEnabled",
       "keybindings",
     ]),
     (field, detail) => new InvalidTuiConfigError(field, detail),
@@ -3923,6 +3997,7 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
     "copyOnSelect",
     "flickerFreeMode",
     "prStatusFooterEnabled",
+    "gitStatusEnabled",
   ] as const) {
     if (raw[key] !== undefined) {
       if (typeof raw[key] !== "boolean") {
@@ -4072,7 +4147,7 @@ function validatePermissionRuleArray(
   if (rules === undefined) return undefined;
   for (const rule of rules) {
     const toolName = parseRuleString(rule)?.toolName ?? rule;
-    if (isRemovedLiveToolName(toolName)) {
+    if (isRemovedLiveToolName(permissionRuleToolName(toolName, field))) {
       throw new InvalidPermissionsConfigError(
         field,
         `removed tool name '${toolName}'; run agenc config migrate`,

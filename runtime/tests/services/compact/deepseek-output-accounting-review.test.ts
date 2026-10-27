@@ -58,8 +58,11 @@ describe("independent DeepSeek compaction accounting review", () => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const wire = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(wire.max_tokens).toBe(8_192);
-      return new Response(JSON.stringify(response(usage)), {
-        status: 200, headers: { "content-type": "application/json" },
+      expect(wire.stream).toBe(true);
+      const contentChunk = { model, choices: [{ index: 0, delta: { role: "assistant", content: body }, finish_reason: null }] };
+      const finalChunk = { model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(usage ? { usage } : {}) };
+      return new Response(`data: ${JSON.stringify(contentChunk)}\n\ndata: ${JSON.stringify(finalChunk)}\n\ndata: [DONE]\n\n`, {
+        status: 200, headers: { "content-type": "text/event-stream" },
       });
     });
     const provider = new DeepSeekProvider({ apiKey: "offline-fixture", model, fetchImpl });

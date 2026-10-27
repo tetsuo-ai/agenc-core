@@ -120,13 +120,15 @@ export function WorkflowPermissionsPanel({
   }
   const firstVisible = Math.max(0, index - 9);
   return <MenuModal
-    title="Workflow approvals"
+    title="workflow approvals"
     summary={display(ownerRunId)}
-    count={String(requests.length)}
     columns={[30, 35, 35]}
     headers={["TOOL", "CHILD", "REQUEST"]}
     items={requests.slice(firstVisible, firstVisible + 10)}
     activeIndex={index - firstVisible}
+    detail={<ThemedText color="text2" wrap="wrap">{requests[index]
+      ? `${requests[index]!.toolName}: an agent is waiting for your permission. Press enter to review; closing leaves it waiting.`
+      : "review requests here before an agent continues. Closing never approves a request."}</ThemedText>}
     renderRow={(pending) => [display(pending.toolName), display(pending.sessionId), display(pending.requestId)]}
     footer={[{ keyName: "enter", label: "review" }, { keyName: "esc", label: "close without deciding" }]}
     hint={busy ? "Sending decision..." : notice}

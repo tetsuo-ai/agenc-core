@@ -56,13 +56,14 @@ function withTimeout<T>(
 // A minimal `liveToolDispatch` whose ONLY load-bearing reach for these tests is
 // `options.session.services.toolLatencyStore`. The deadline path never consults
 // the router for a tool that lives in the executor registry (resolveModelToolName
-// returns the name unchanged), so a no-op router suffices.
+// returns the name unchanged), while alias resolution still reads getSpecs.
 function liveDispatchWithStore(store: ToolLatencyStore | undefined): {
   router: never;
   options: never;
 } {
   return {
     router: {
+      getSpecs: () => [],
       findSpec: () => undefined,
       dispatchModelToolCall: async () => ({ content: "", isError: false }),
       toolSupportsParallel: () => true,

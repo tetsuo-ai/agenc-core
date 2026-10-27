@@ -18,8 +18,9 @@ import {
   COMPACTION_PAYLOAD_FORMAT_VERSION,
   MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
   MAX_COMPACTION_PAYLOAD_CHUNKS,
-  MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS,
   MIN_COMPACTION_RELATIVE_TOKEN_SAVINGS,
+  MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME,
+  minimumCompactionTokenSavings,
   type CompactionCleanupPendingV1,
   type CompactionCommittedV1,
   type CompactionFailedV1,
@@ -62,8 +63,8 @@ import {
 import { gte as semverGte } from "../utils/semver.js";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
-/** First runtime capability that can safely read transactional C2 events. */
-const COMPACTION_READER_RUNTIME_CAPABILITY = "0.14.0" as const;
+/** Latest transactional compaction capability supported by this reader. */
+export const COMPACTION_READER_RUNTIME_CAPABILITY = MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME;
 const COMPACTION_EVENT_TYPES = Object.freeze([
   "compaction_intent",
   "compaction_payload_chunk",
@@ -233,7 +234,7 @@ export function readCompactionPersistedCommittedV1(
     throw malformed("cleanup_state is unsupported");
   }
   const accounting = readAccounting(record.accounting);
-  assertCompactionShrink(accounting);
+  assertCompactionShrink(accounting, base.minimum_reader_runtime);
   return {
     ...base,
     committed_at_ms: committedAtMs,
@@ -547,7 +548,7 @@ function readCommit(value: unknown): CompactionCommittedV1 {
   ) {
     throw malformed("committed summary does not bind its trusted wrapper fields");
   }
-  assertCompactionShrink(accounting);
+  assertCompactionShrink(accounting, base.minimum_reader_runtime);
   if (!Array.isArray(record.replacement_history)) {
     throw malformed("replacement_history must be an array");
   }
@@ -940,7 +941,12 @@ function readManifestSelectedHistoryIndexes(
 
 function assertCompactionShrink(
   accounting: CompactionCommittedV1["accounting"],
+  minimumReaderRuntime: string,
 ): void {
+  const manualProportional = accounting.savings_policy === "manual_proportional";
+  if (manualProportional && !semverGte(minimumReaderRuntime, MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME)) {
+    throw malformed("manual proportional compaction requires its reader capability");
+  }
   const savings = accounting.source_tokens - accounting.candidate_tokens;
   const relativeSavings = accounting.source_tokens === 0
     ? 0
@@ -948,7 +954,7 @@ function assertCompactionShrink(
   if (
     accounting.candidate_tokens + accounting.reserved_output_tokens >
       accounting.context_window_tokens ||
-    savings < MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS ||
+    savings < minimumCompactionTokenSavings(accounting.source_tokens, !manualProportional) ||
     relativeSavings < MIN_COMPACTION_RELATIVE_TOKEN_SAVINGS
   ) {
     throw malformed("committed accounting does not prove a bounded shrink");
@@ -1361,11 +1367,15 @@ function readPersistedSource(
 }
 
 function readAccounting(value: unknown): CompactionCommittedV1["accounting"] {
-  const record = exact(value, [
+  const record = exactOptional(value, [
     "accounting_ref", "source_tokens", "candidate_tokens",
     "context_window_tokens", "reserved_output_tokens", "source", "confidence",
-  ]);
+  ], ["savings_policy"], "compaction accounting");
+  if (record.savings_policy !== undefined && record.savings_policy !== "manual_proportional") {
+    throw malformed("unsupported compaction savings policy");
+  }
   return {
+    ...(record.savings_policy === "manual_proportional" ? { savings_policy: "manual_proportional" as const } : {}),
     accounting_ref: digest(record.accounting_ref, "accounting_ref"),
     source_tokens: integer(record.source_tokens, "source_tokens", 0),
     candidate_tokens: integer(record.candidate_tokens, "candidate_tokens", 0),
@@ -1385,7 +1395,7 @@ function readProjectionMessage(
     ["role", "content"],
     [
       "toolCalls", "toolCallId", "toolName", "id", "phase", "endTurn",
-      "toolResultIntegrity", "agentInvocation",
+      "toolResultIntegrity", "toolResultIsError", "agentInvocation",
       "compactionHistory", "providerReasoning",
     ],
     "replacement-history message",
@@ -1393,6 +1403,10 @@ function readProjectionMessage(
   const role = text(record.role, "role");
   if (!["system", "developer", "user", "assistant", "tool"].includes(role)) {
     throw malformed("replacement-history role is unsupported");
+  }
+  if (record.toolResultIsError !== undefined &&
+      (record.toolResultIsError !== true || role !== "tool")) {
+    throw malformed("tool-result failure marker requires a failed tool result");
   }
   const content = readProjectionContent(record.content);
   const toolCalls = record.toolCalls === undefined
@@ -1436,6 +1450,7 @@ function readProjectionMessage(
   const result: CompactionProjectionMessageV1 = {
     role: role as CompactionProjectionMessageV1["role"],
     content,
+    ...(record.toolResultIsError === true ? { toolResultIsError: true as const } : {}),
     ...(toolCalls !== undefined ? { toolCalls } : {}),
     ...(toolCallId !== undefined ? { toolCallId } : {}),
     ...(toolName !== undefined ? { toolName } : {}),

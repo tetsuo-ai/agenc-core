@@ -30,6 +30,9 @@ if (!Object.prototype.hasOwnProperty.call(globalThis, originalEnvironmentKey)) {
 }
 process.env.NODE_ENV ??= "production";
 
+// Replace visible argv on supported platforms, preserving process.argv for parsing.
+try { process.title = "agenc"; } catch { /* platform may not support it */ }
+
 // Before the implementation graph loads, so V8 reuses its compiled code
 // (see compile-cache.ts). It imports only Node built-ins.
 await import("./compile-cache.js").then((cache) => cache.enableAgenCCompileCache());

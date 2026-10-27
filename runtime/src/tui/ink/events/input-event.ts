@@ -194,13 +194,16 @@ export class InputEvent extends Event {
   readonly keypress: ParsedKey
   readonly key: Key
   readonly input: string
+  /** Bounded stdin typing preview, including Enter when batched with text. */
+  readonly textInBatch?: string
 
-  constructor(keypress: ParsedKey) {
+  constructor(keypress: ParsedKey, textInBatch?: string) {
     super()
     const [key, input] = parseKey(keypress)
 
     this.keypress = keypress
     this.key = key
     this.input = input
+    this.textInBatch = textInBatch
   }
 }

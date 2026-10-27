@@ -20,7 +20,9 @@ import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.j
 import { renderUntrustedWorkspaceData } from "../untrusted-workspace-content.js";
 import { formatContextPressureReminder } from "../../utils/messages.js";
 import { sanitizeSystemReminderContent } from "./system-reminder-sanitizer.js";
+import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS } from "../product-help.js";
 import type { Attachment } from "./types.js";
+import { relevantMemoryFingerprint } from "./relevant-memory-fingerprint.js";
 
 /**
  * Convert a list of attachments into the corresponding `LLMMessage[]`,
@@ -49,7 +51,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     }
     case "relevant_memories": {
       if (attachment.memories.length === 0) return null;
-      return userContextMessage(renderRelevantMemoriesAttachment(attachment));
+      return {
+        ...userContextMessage(renderRelevantMemoriesAttachment(attachment)),
+        runtimeOnly: {
+          mergeBoundary: "user_context",
+          relevantMemoryFingerprints: attachment.memories.map(relevantMemoryFingerprint),
+        },
+      };
     }
     case "plan_mode": {
       // Plan-mode prose for the per-turn pulse. The producer gates
@@ -106,6 +114,12 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       return userContextMessage(
         `<system-reminder>\n${content}\n</system-reminder>`,
       );
+    }
+    case "product_help": {
+      return userContextMessage(wrapSystemReminder(PRODUCT_HELP[attachment.topic]));
+    }
+    case "memory_on_request": {
+      return userContextMessage(wrapSystemReminder(sanitizeSystemReminderContent(attachment.content)));
     }
     case "output_style": {
       const style = sanitizeSystemReminderContent(attachment.style);
@@ -326,13 +340,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "skill_listing": {
       const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER} ${SKILL_LOADING_GUIDANCE}\n\n${content}`),
+        wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER} ${skillLoadingGuidance(content, attachment.skillToolListed === true)}\n\n${content}`),
       );
     }
     case "skill_relevance": {
       const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER} ${SKILL_LOADING_GUIDANCE}\n\n${content}`),
+        wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER} ${skillLoadingGuidance(content, attachment.skillToolListed === true)}\n\n${content}`),
       );
     }
     case "instruction_update": {
@@ -353,6 +367,12 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
   }
 }
 
+/** Text of each `product_help` topic (prompts/attachments/product-help.ts). */
+const PRODUCT_HELP: Readonly<Record<Extract<Attachment, { kind: "product_help" }>["topic"], string>> = {
+  undo: AGENC_UNDO_PATHS,
+  instructions: AGENC_INSTRUCTION_FILE,
+};
+
 /** Opening sentences of the `instruction_update` reminder. */
 export const INSTRUCTION_UPDATE_WORKSPACE_HEADER =
   "The workspace instructions changed since this session started. This version replaces the one at the start of the prompt:";
@@ -372,7 +392,22 @@ export const SKILL_LISTING_REMINDER_HEADER =
   "The following skills are available for use with the Skill tool.";
 
 const SKILL_LOADING_GUIDANCE =
-  "If a skill fits, use Skill when it is callable. Otherwise, if system.searchTools is callable, find and select Skill there, then wait for its schema before invoking it. Never call a listed skill name as a tool or invent an unavailable call. A [plugin: id] label identifies the plugin that provides that skill. An @plugin-id mention selects that plugin; use its listed skill names, which may differ from the plugin name. Discover its MCP tools separately with system.searchTools when callable; an empty tool search does not mean its listed skills are unavailable.";
+  "If a skill fits, use Skill when it is callable. Otherwise, if system.searchTools is callable, find and select Skill there, then wait for its schema before invoking it. Never call a listed skill name as a tool or invent an unavailable call.";
+
+/** The same rule when the request that carries the listing lists the Skill tool itself. */
+const SKILL_LISTED_GUIDANCE =
+  "If a skill fits, use Skill. Never call a listed skill name as a tool or invent an unavailable call.";
+
+/** Only a listing that names plugin skills needs the plugin rules. */
+const PLUGIN_SKILL_GUIDANCE =
+  "A [plugin: id] label identifies the plugin that provides that skill. An @plugin-id mention selects that plugin; use its listed skill names, which may differ from the plugin name. Discover its MCP tools separately with system.searchTools when callable; an empty tool search does not mean its listed skills are unavailable.";
+
+function skillLoadingGuidance(content: string, skillToolListed = false): string {
+  const guidance = skillToolListed ? SKILL_LISTED_GUIDANCE : SKILL_LOADING_GUIDANCE;
+  return content.includes("[plugin:")
+    ? `${guidance} ${PLUGIN_SKILL_GUIDANCE}`
+    : guidance;
+}
 
 function permissionModeMessage(
   permissionModeReminder: NonNullable<LLMMessage["runtimeOnly"]>["permissionModeReminder"],
@@ -717,12 +752,14 @@ function planModeBody(
   planExists: boolean,
 ): string {
   if (variant === "sparse") {
-    return `Plan mode is active. Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${planFilePath}). Follow the planning workflow: explore codebase, ask the user clarifying questions when needed, and write to the plan incrementally. End turns with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). Never ask about plan approval via text or AskUserQuestion.`;
+    return `Plan mode is active. Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${planFilePath}). Follow the planning workflow: explore codebase, ask the user clarifying questions when needed, and write to the plan incrementally. For implementation planning, end with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). If the request only needs an answer or no changes are needed, answer directly and remain in plan mode; do not create a plan or request approval just to finish. Never ask about plan approval via text or AskUserQuestion.`;
   }
   const planLine = planExists
     ? `A plan file already exists at ${planFilePath}. You can read it and make incremental edits using the Edit tool.`
     : `No plan file exists yet. You should create your plan at ${planFilePath} using the Write tool.`;
   return `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+
+For a request that only needs an answer, explanation, acknowledgement, or a conclusion that no changes are needed, answer directly and remain in plan mode. Skip the planning workflow below and do not call ExitPlanMode merely to finish. A direct answer grants no execution authority.
 
 ## Plan File Info:
 ${planLine}
@@ -764,7 +801,7 @@ Goal: Write your final plan to the plan file (the only file you can edit).
 
 ### Phase 5: Call ExitPlanMode
 At the very end of your turn, once you have asked the user questions and are happy with your final plan file, you should call ExitPlanMode to indicate to the user that you are done planning.
-This is critical - your turn should only end with either using AskUserQuestion OR calling ExitPlanMode. Do not stop unless it's for these 2 reasons.
+For implementation planning, finish with AskUserQuestion for unresolved requirements or ExitPlanMode for plan approval. Direct answers and no-change conclusions may end without a tool call; remain in plan mode.
 
 **Important:** Use AskUserQuestion ONLY to clarify requirements or choose between approaches. Use ExitPlanMode to request plan approval. Do NOT ask about plan approval in any other way - no text questions, no AskUserQuestion. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar MUST use ExitPlanMode.
 
@@ -780,7 +817,7 @@ function planModeReentryBody(
     : `No plan file exists yet. Create your plan at ${planFilePath}.`;
   return `## Re-entering plan mode
 
-You are returning to plan mode after having previously exited it. ${planLine}
+You are returning to plan mode after having previously exited it. If the request only needs a direct answer or no changes are needed, answer and remain in plan mode without revising a plan or calling ExitPlanMode. For implementation planning: ${planLine}
 
 **Before proceeding with any new planning, you should:**
 1. Read the existing plan file to understand what was previously planned.
@@ -817,12 +854,5 @@ function autoModeBody(variant: "full" | "sparse" | "light" | "light-print"): str
   }
   return `## Auto Mode Active
 
-Auto mode is active. The user chose continuous, autonomous execution. You should:
-
-1. **Execute immediately** -- Start implementing right away. Make reasonable assumptions and proceed on low-risk work.
-2. **Minimize interruptions** -- Prefer making reasonable assumptions over asking questions for routine decisions.
-3. **Prefer action over planning** -- Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.
-4. **Expect course corrections** -- The user may provide suggestions or course corrections at any point; treat those as normal input.
-5. **Do not take overly destructive actions** -- Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.
-6. **Avoid data exfiltration** -- Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.`;
+Auto mode is active: the user chose autonomous execution. Start right away, make reasonable assumptions instead of asking routine questions, and do not enter plan mode unless asked. Treat course corrections as normal input. Destructive actions and changes to shared or production systems still need explicit user confirmation: ask and wait, or choose a safer method. Avoid data exfiltration: post to chat platforms or tickets only when the user directed it, and never share secrets unless the user authorized that secret and its destination.`;
 }

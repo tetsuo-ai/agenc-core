@@ -12,6 +12,10 @@ type SharedDoublePressState = {
 
 const sharedDoublePressState = new Map<string, SharedDoublePressState>()
 
+export function clearSharedDoublePressState(key: string): void {
+  sharedDoublePressState.delete(key)
+}
+
 export function useDoublePress(
   setPending: (pending: boolean) => void,
   onDoublePress: () => void,

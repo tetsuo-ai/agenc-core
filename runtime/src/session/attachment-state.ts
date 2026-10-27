@@ -134,10 +134,9 @@ export interface AttachmentTrackingState {
    */
   sessionStartMemoryRecallChecked: boolean;
   /**
-   * Paths of learned memory files surfaced by `relevant_memories` in the
-   * current request. The producer clears it at the start of every run:
-   * attachments never enter durable history, so a memory must be surfaced
-   * again on every request it matches.
+   * Paths selected for fresh recall in the current request. Cleared at the
+   * start of every producer run; retained attachment fingerprints separately
+   * identify memory versions already present in the projected context.
    */
   surfacedRelevantMemoryPaths: Set<string>;
   /**

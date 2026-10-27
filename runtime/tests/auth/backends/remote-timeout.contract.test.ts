@@ -3,7 +3,7 @@ import { RemoteAuthBackend } from "../../../src/auth/backends/remote.js";
 
 describe("remote authentication request deadlines", () => {
   it.each(["headers", "body"] as const)(
-    "aborts model routing while waiting for response %s",
+    "aborts account tier lookup while waiting for response %s",
     async (stage) => {
       const controller = new AbortController();
       const timeout = vi
@@ -41,12 +41,7 @@ describe("remote authentication request deadlines", () => {
         fetchImpl,
       });
       const outcome = backend
-        .inferAgencModel({
-          provider: "agenc",
-          requestedModel: "agenc:fast",
-          sessionId: "timeout-test",
-          subscriptionTier: "pro",
-        })
+        .getSubscriptionTier()
         .then(
           () => ({ error: undefined }),
           (error: unknown) => ({ error }),

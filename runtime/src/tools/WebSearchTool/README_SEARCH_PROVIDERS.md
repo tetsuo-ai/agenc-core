@@ -3,6 +3,92 @@
 AgenC supports multiple search backends through a provider adapter system in
 `runtime/src/tools/WebSearchTool/providers/`.
 
+## Manual web search
+
+In `/model`, select **Web search** and press Enter to switch between **Auto**
+(the default) and **On**. The same row appears on each provider's model page
+in `/providers`. On the DeepSeek page, its detail also shows the DeepSeek
+Search setting after the provider environment override. Changes apply to the
+current conversation and are saved for future sessions. The footer shows a monochrome `Web` marker while On.
+
+Set the top-level preference in `config.toml`:
+
+```toml
+web_search = "on" # "auto" preserves normal tool discovery
+```
+
+The session environment overrides this preference:
+
+```bash
+export AGENC_WEB_SEARCH=on # or auto
+```
+
+On advertises `WebSearch` and `web_fetch` from the first request in Light and
+standard sessions. It adds one short system instruction to search with
+`WebSearch` and read pages with `web_fetch`, instead of shell curl or wget.
+Auto adds no tools or prompt text. Explicit tool restrictions and approvals
+still apply. Tools already discovered in a conversation remain available
+when switching back to Auto.
+
+For a DeepSeek session, On also enables DeepSeek Search, including on the
+session's configured proxy host. It has the same effect as
+`[providers.deepseek] web_search = true`. The existing
+`AGENC_DEEPSEEK_WEB_SEARCH` override still wins: `0` disables DeepSeek Search
+even when manual web search is On; `1` enables it even when manual search is
+Auto. Auto otherwise leaves the provider's existing configuration intact.
+Other providers keep their existing native, configured-backend and DuckDuckGo
+selection and fallback behavior.
+
+## Live agent WebSearch
+
+The daemon's model-facing `WebSearch` now uses these same HTTP adapters.
+It tries Grok native search, then DeepSeek Search when enabled for a DeepSeek
+session, then the configured search backend, then DuckDuckGo HTML and instant
+answers. DeepSeek's auto setting leaves an explicit search endpoint in charge;
+`AGENC_DEEPSEEK_WEB_SEARCH=1` puts DeepSeek first even with that endpoint.
+
+`WEB_SEARCH_PROVIDER` selects the backend after the session-native steps. Its
+config equivalent is `[tools_config] web_search_provider`; the environment wins.
+In `auto`, an explicit `AGENC_WEB_SEARCH_ENDPOINT` (or
+`tools_config.web_search_endpoint`) keeps priority. Otherwise the configured
+API keys select Firecrawl, Tavily, Exa, You, Jina, Bing, Mojeek, then Linkup.
+Failures and empty/filtered results fall through to the next provider, then DDG.
+Explicit provider names fail on errors or missing keys without switching to DDG;
+`ddg` selects the keyless fallback and `native` requires a session-native backend.
+
+The existing `AGENC_WEB_SEARCH_ENDPOINT` / `tools_config.web_search_endpoint`
+can override the request URL of an explicitly named provider, using that
+provider's authentication, method and response format. Only point it at a
+trusted endpoint: it receives the provider key. `AGENC_WEB_SEARCH_KIND` /
+`web_search_endpoint_kind` applies only to the generic endpoint in `auto` mode.
+With `custom`, the endpoint overrides `WEB_SEARCH_API`, and the `WEB_*` custom
+settings and guardrails below still apply. Custom presets remain explicit-only.
+
+For example, with `EXA_API_KEY` in the session environment:
+
+```toml
+[tools_config]
+web_search_provider = "exa"
+# Optional trusted proxy or self-hosted equivalent:
+# web_search_endpoint = "https://search.example/exa"
+```
+
+API keys stay in the session environment; they are not read from config.toml.
+Each live adapter request has a 30-second limit and honors cancellation.
+Redirects are rejected to keep credentials at the configured host. The live
+result uses the same title/URL/snippet schema and expandable TUI source list as
+DeepSeek. Named/custom providers have no billing receipt, so their admission
+estimate is unpriced (`null`), like a generic endpoint; AgenC does not count
+these external charges as zero or invent a dollar price. DeepSeek-only searches
+retain their exact receipt accounting.
+
+## Shared adapters and legacy TUI selection
+
+The remaining examples also describe the legacy TUI-local tool. Its `native`
+mode uses the firstParty / Vertex / Foundry path, its `ddg` adapter uses
+`duck-duck-scrape`, and it does not read `tools_config` or `AGENC_WEB_SEARCH_*`.
+The live daemon tool uses the chain and configuration described above.
+
 ## Selection model (read this first)
 
 `WEB_SEARCH_PROVIDER` chooses **how** backends are selected:
@@ -10,8 +96,8 @@ AgenC supports multiple search backends through a provider adapter system in
 | Mode | Behavior |
 |---|---|
 | `auto` (default) | Try **configured** first-party providers in priority order; fall through on failure |
-| `firecrawl` / `tavily` / `exa` / `you` / `jina` / `bing` / `mojeek` / `linkup` / `ddg` | That provider only — throws on failure |
-| `custom` | Custom HTTP / `WEB_PROVIDER` preset only — throws on failure. **Not in the auto chain** |
+| `firecrawl` / `tavily` / `exa` / `you` / `jina` / `bing` / `mojeek` / `linkup` / `ddg` | That provider only: throws on failure |
+| `custom` | Custom HTTP / `WEB_PROVIDER` preset only: throws on failure. **Not in the auto chain** |
 | `native` | Provider-native web search only (requires firstParty / Vertex / Foundry provider) |
 
 **Auto chain (only):**
@@ -34,7 +120,7 @@ always available).
 
 | Provider | Mode / env | Auth | Method | In auto chain? |
 |---|---|---|---|---|
-| Firecrawl | `FIRECRAWL_API_KEY` | Internal SDK | SDK | yes |
+| Firecrawl | `FIRECRAWL_API_KEY` | `Authorization: Bearer` | POST | yes |
 | Tavily | `TAVILY_API_KEY` | `Authorization: Bearer` | POST | yes |
 | Exa | `EXA_API_KEY` | `x-api-key` | POST | yes |
 | You.com | `YOU_API_KEY` | `X-API-Key` | GET | yes |
@@ -42,9 +128,9 @@ always available).
 | Bing | `BING_API_KEY` | `Ocp-Apim-Subscription-Key` | GET | yes |
 | Mojeek | `MOJEEK_API_KEY` | `Authorization: Bearer` (optional) | GET | yes |
 | Linkup | `LINKUP_API_KEY` | `Authorization: Bearer` | POST | yes |
-| DuckDuckGo | *(no key)* | — | SDK | yes (last) |
+| DuckDuckGo | *(no key)* |: | SDK | yes (last) |
 | Custom HTTP | `WEB_SEARCH_PROVIDER=custom` + `WEB_SEARCH_API` / `WEB_URL_TEMPLATE` | Configurable | GET/POST | **no** |
-| SearXNG preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=searxng` | — | GET | **no** |
+| SearXNG preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=searxng` |: | GET | **no** |
 | Google CSE preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=google` | `Authorization: Bearer` | GET | **no** |
 | Brave preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=brave` | `X-Subscription-Token` | GET | **no** |
 | SerpAPI preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=serpapi` | `Authorization: Bearer` | GET | **no** |
@@ -54,7 +140,7 @@ always available).
 ### Auto-chain providers (recommended)
 
 ```bash
-# Tavily (fast, RAG-ready) — participates in auto when the key is set
+# Tavily (fast, RAG-ready): participates in auto when the key is set
 export TAVILY_API_KEY=tvly-your-key
 
 # Exa (neural / semantic)
@@ -63,7 +149,7 @@ export EXA_API_KEY=your-exa-key
 # Bing
 export BING_API_KEY=your-bing-key
 
-# Firecrawl / You.com / Jina / Mojeek / Linkup — same pattern: set their *_API_KEY
+# Firecrawl / You.com / Jina / Mojeek / Linkup: same pattern: set their *_API_KEY
 # DuckDuckGo needs no key and is the auto fallback when nothing else is configured
 
 # Fail loudly if Tavily is down (don't fall through)
@@ -542,7 +628,7 @@ connection reset). A hard "anomaly in the request" block surfaces an actionable
 error listing the API-key env vars to configure instead.
 
 The first-party direct providers (Tavily, Exa, You.com, Jina, Bing, Mojeek,
-Linkup, Firecrawl) do a single request with no internal retry — in `auto` mode
+Linkup, Firecrawl) do a single request with no internal retry: in `auto` mode
 the chain itself falls through to the next provider on failure.
 
 ## Custom provider security guardrails
@@ -556,7 +642,7 @@ The custom provider enforces the following guardrails by default:
 | Header allowlist | ✅ | `WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS=true` |
 | Max POST body | 300 KB | `WEB_CUSTOM_MAX_BODY_KB=<kb>` |
 | Request timeout | 120s | `WEB_CUSTOM_TIMEOUT_SEC=<seconds>` |
-| Audit log (one-time warning) | ✅ | — |
+| Audit log (one-time warning) | ✅ |: |
 
 ### Self-hosted SearXNG example
 
@@ -597,10 +683,10 @@ export const myProvider: SearchProvider = {
 }
 ```
 
-2. Register in `providers/index.ts` — add the import, push onto `ALL_PROVIDERS`
+2. Register in `providers/index.ts`: add the import, push onto `ALL_PROVIDERS`
    **only if** it should participate in the auto chain, and add a named entry
    to `PROVIDER_BY_NAME` for explicit `WEB_SEARCH_PROVIDER=<name>` mode.
 
 Custom / preset adapters that must never become the silent default belong
 behind `WEB_SEARCH_PROVIDER=custom` only (like Brave/Google/SearXNG/SerpAPI
-today) — do not add them to `ALL_PROVIDERS`.
+today), do not add them to `ALL_PROVIDERS`.

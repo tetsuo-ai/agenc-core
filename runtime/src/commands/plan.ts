@@ -171,7 +171,10 @@ async function maybeOpenPlanDashboard(
       planText: params.planText,
     }),
     {
-      onPlanTextChange: async nextPlanText => {
+      onPlanTextChange: async (nextPlanText, previousPlanText) => {
+        if ((getPlan(fileCtx) ?? "") !== previousPlanText) {
+          throw new Error("The plan changed while this panel was open. Reopen /plan before editing.");
+        }
         await writePlan(fileCtx, nextPlanText);
       },
     },

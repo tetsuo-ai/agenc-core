@@ -58,7 +58,7 @@ test("real fast command dispatch leaves plan authority unresolved", async () => 
   const ctx = mkCtx({ cwd: "/tmp", permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" } });
   const loop = runMinimalTurn(session, ctx, [{ role: "user", content: "run" }], "", new AbortController().signal);
   for (;;) {
-    const next = await withOneShotFastMode(() => loop.next());
+    const next = await withOneShotFastMode(() => loop.next(), String(session.conversationId));
     if (next.done) { expect(next.value.reason).toBe("completed"); break; }
   }
   expect(calls).toBe(2);

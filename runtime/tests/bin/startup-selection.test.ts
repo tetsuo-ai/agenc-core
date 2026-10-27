@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
 import { ConfigStore } from "../config/store.js";
@@ -15,6 +15,7 @@ import {
 describe("resolveCanonicalStartupSelection", () => {
   it("reads the canonical top-level model without provider fallback", () => {
     const resolved = resolveCanonicalStartupSelection({
+      env: {},
       config: {
         ...defaultConfig(),
         model: "grok-build-0.1",
@@ -29,6 +30,7 @@ describe("resolveCanonicalStartupSelection", () => {
 
   it("reads the complete built-in default pair", () => {
     const resolved = resolveCanonicalStartupSelection({
+      env: {},
       config: defaultConfig(),
     });
 
@@ -39,6 +41,7 @@ describe("resolveCanonicalStartupSelection", () => {
   it("does not infer a missing half of the canonical pair", () => {
     expect(() =>
       resolveCanonicalStartupSelection({
+        env: {},
         config: { model: "gpt-5" },
       })
     ).toThrow(/must contain a provider\/model pair/u);
@@ -47,6 +50,7 @@ describe("resolveCanonicalStartupSelection", () => {
   it("rejects a startup model denied by managed availableModels policy", () => {
     expect(() =>
       resolveCanonicalStartupSelection({
+        env: {},
         config: {
           ...defaultConfig(),
           model_provider: "openai",
@@ -59,6 +63,7 @@ describe("resolveCanonicalStartupSelection", () => {
 
   it("accepts and provider-localizes an allowed qualified GitHub model", () => {
     const resolved = resolveCanonicalStartupSelection({
+      env: {},
       config: {
         ...defaultConfig(),
         model_provider: "github",
@@ -94,6 +99,25 @@ describe("readStartupCliFlags --permission-mode validation", () => {
     expect(readStartupCliFlags(["node", "agenc", "--light", "explain"])).not.toHaveProperty("simpleMode");
     expect(readStartupCliFlags(["node", "agenc", "--", "--light"])).not.toHaveProperty("lightMode");
     expect(readStartupCliFlags(["node", "agenc", "explain", "--light"])).not.toHaveProperty("lightMode");
+  });
+
+  it("parses --standard as an explicit standard choice, only before the prompt", () => {
+    expect(readStartupCliFlags(["node", "agenc", "--standard", "explain"])).toEqual({ lightMode: false });
+    expect(readStartupCliFlags(["node", "agenc", "-p", "--standard", "explain"])).toEqual({ lightMode: false });
+    expect(readStartupCliFlags(["node", "agenc", "--", "--standard"])).not.toHaveProperty("lightMode");
+    expect(readStartupCliFlags(["node", "agenc", "explain", "--standard"])).not.toHaveProperty("lightMode");
+  });
+
+  it("leaves the mode unset without a flag, so config and the Light default decide", () => {
+    expect(readStartupCliFlags(["node", "agenc"])).not.toHaveProperty("lightMode");
+    expect(readStartupCliFlags(["node", "agenc", "-p", "explain"])).not.toHaveProperty("lightMode");
+  });
+
+  it("rejects --light together with --standard", () => {
+    expect(() => readStartupCliFlags(["node", "agenc", "--light", "--standard", "explain"]))
+      .toThrow("Use either --light or --standard, not both");
+    expect(() => readStartupCliFlags(["node", "agenc", "--standard", "-p", "--light"]))
+      .toThrow("Use either --light or --standard, not both");
   });
 
   it("parses --bare only in the startup option region", () => {
@@ -413,6 +437,7 @@ describe("canonical startup ConfigStore layers", () => {
 
       const first = await store.reload();
       const selection = resolveCanonicalStartupSelection({
+        env,
         config: first,
         profileName: cli.profile,
       });
@@ -452,5 +477,73 @@ describe("canonical startup ConfigStore layers", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("startup catalog admission", () => {
+  it("rejects a mistyped launch model with a suggestion", () => {
+    expect(() => resolveCanonicalStartupSelection({ env: {}, explicitModel: "deepseek-flsh", config: {
+      ...defaultConfig(), model_provider: "deepseek", model: "deepseek-flsh",
+    } })).toThrow(/did you mean 'deepseek-flash'/u);
+  });
+
+  it("accepts custom launch models on an open endpoint", () => {
+    expect(resolveCanonicalStartupSelection({ env: {}, explicitModel: "private-model", config: {
+      ...defaultConfig(), model_provider: "openai-compatible", model: "private-model",
+    } })).toMatchObject({ provider: "openai-compatible", model: "private-model" });
+  });
+
+  it("accepts a live Venice model the bundled snapshot lacks (--model venice:claude-opus-5-5)", () => {
+    expect(resolveCanonicalStartupSelection({ env: {}, explicitModel: "venice:claude-opus-5-5", config: {
+      ...defaultConfig(), model_provider: "venice", model: "claude-opus-5-5",
+    } })).toMatchObject({ provider: "venice", model: "claude-opus-5-5" });
+  });
+});
+
+
+describe("startup endpoint environment authority", () => {
+  it("accepts a private model at an invocation-only endpoint", () => {
+    vi.stubEnv("OPENAI_BASE_URL", "");
+    try {
+      expect(resolveCanonicalStartupSelection({
+        config: { ...defaultConfig(), model_provider: "openai", model: "private-deployment" },
+        explicitModel: "private-deployment",
+        env: { OPENAI_BASE_URL: "http://localhost:8765/v1" },
+      })).toMatchObject({ provider: "openai", model: "private-deployment" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("refuses fixed-catalog typos when only the process has a custom endpoint", () => {
+    vi.stubEnv("OPENAI_BASE_URL", "http://localhost:8765/v1");
+    try {
+      expect(() => resolveCanonicalStartupSelection({
+        config: { ...defaultConfig(), model_provider: "openai", model: "gpt-5-typo" },
+        explicitModel: "gpt-5-typo",
+        env: {},
+      })).toThrow(/unknown model.*did you mean/u);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+
+describe("saved startup model compatibility", () => {
+  it.each([undefined, "legacy"])("accepts an uncatalogued saved model with profile %s", profileName => {
+    expect(resolveCanonicalStartupSelection({
+      config: { ...defaultConfig(), model_provider: "deepseek", model: "retired-deepseek-model" },
+      env: {},
+      ...(profileName === undefined ? {} : { profileName }),
+    })).toMatchObject({ provider: "deepseek", model: "retired-deepseek-model" });
+  });
+
+  it("still enforces managed policy for a saved model", () => {
+    expect(() => resolveCanonicalStartupSelection({
+      config: { ...defaultConfig(), model_provider: "deepseek", model: "retired-deepseek-model", availableModels: ["deepseek-flash"] },
+      env: {},
+    })).toThrow(/managed availableModels policy/u);
   });
 });

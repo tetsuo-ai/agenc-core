@@ -12,6 +12,7 @@
 import {
   createTokenAccountingRequest,
   estimateTokenAccountingRequest,
+  tokenAccountingService,
   type TokenAccountingResult,
 } from "../../../llm/token-accounting.js";
 import { readProviderFactoryOptions } from "../../../llm/provider.js";
@@ -24,7 +25,14 @@ import type { CompactContext, RuntimeMessage } from "../types.js";
 export function estimateMessagesTokens(
   messages: readonly RuntimeMessage[],
   context?: CompactContext,
-  options: { readonly inputOnly?: boolean } = {},
+  options: {
+    readonly inputOnly?: boolean;
+    /**
+     * The conversation whose provider-usage calibration applies, as at dispatch. Without it the
+     * estimate is the uncalibrated conservative fallback.
+     */
+    readonly calibrationScope?: string;
+  } = {},
 ): number {
   const provider = context?.provider?.name ?? "unknown";
   const model = context?.options?.mainLoopModel ?? "unknown";
@@ -68,10 +76,20 @@ export function estimateMessagesTokens(
     },
     contextWindowTokens: context?.options?.contextWindowTokens,
     reservedOutputTokens: context?.options?.maxOutputTokens,
+    ...(options.calibrationScope
+      ? {
+          calibrationScope: options.calibrationScope,
+          ...(factoryOptions?.baseURL !== undefined
+            ? { endpointIdentity: factoryOptions.baseURL }
+            : {}),
+        }
+      : {}),
   });
   let result: TokenAccountingResult;
   try {
-    result = estimateTokenAccountingRequest(request);
+    result = options.calibrationScope
+      ? tokenAccountingService.estimate(request)
+      : estimateTokenAccountingRequest(request);
   } catch {
     return context?.options?.contextWindowTokens ?? Number.MAX_SAFE_INTEGER;
   }

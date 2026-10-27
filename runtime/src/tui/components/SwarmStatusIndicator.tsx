@@ -6,6 +6,8 @@ import ThemedText from "./design-system/ThemedText.js";
 export type SwarmStatusPresentation = {
   readonly glyph: "◆" | "◇";
   readonly label: string;
+  readonly color: "text" | "accentSoft" | "accent";
+  readonly bold: boolean;
 };
 
 /**
@@ -20,19 +22,21 @@ export function swarmStatusPresentation(
     : 0;
 
   if (count === 0) {
-    return { glyph: "◇", label: "swarm" };
+    return { glyph: "◇", label: "swarm", color: "text", bold: false };
   }
 
   return {
     glyph: "◆",
-    label: `${count} ${count === 1 ? "agent" : "agents"}`,
+    label: `swarm (${count})`,
+    // The monochrome themes keep color for meaning and have no amber, so
+    // the count grows in the brand purple: soft, then full, then bold.
+    color: count >= 3 ? "accent" : "accentSoft",
+    bold: count >= 6,
   };
 }
 
 /**
- * A quiet inline status, intentionally not a filled badge: the old white-on-
- * orange `SWARM` slab dominated the composer chrome and looked disconnected
- * from the surrounding mode/model context.
+ * Activity uses the brand purple, stronger as more helpers work.
  */
 export function SwarmStatusIndicator({
   runningAgents,
@@ -46,11 +50,8 @@ export function SwarmStatusIndicator({
       <ThemedText color="inactive" wrap="truncate-end">
         {" · "}
       </ThemedText>
-      <ThemedText color="agenc" wrap="truncate-end">
-        {presentation.glyph}
-      </ThemedText>
-      <ThemedText color="inactive" wrap="truncate-end">
-        {` ${presentation.label}`}
+      <ThemedText color={presentation.color} bold={presentation.bold} wrap="truncate-end">
+        {presentation.label}
       </ThemedText>
     </Box>
   );

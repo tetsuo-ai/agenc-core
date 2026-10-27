@@ -175,7 +175,6 @@ function DiffMenuView({
   return (
     <MenuModal
       title="diff"
-      count={`${snapshot.files.length}`}
       summary={snapshot.state === "changed" ? `+${totalAdditions} -${totalDeletions}` : snapshot.state}
       headerRight={`${snapshot.untrackedFiles.length} untracked · ↑↓ files · j/k hunks`}
       columns={[3, 12, 10, 64]}

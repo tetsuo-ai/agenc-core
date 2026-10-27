@@ -104,7 +104,7 @@ async function askJudge(input: {
   readonly signal?: AbortSignal;
 }): Promise<GoalJudgeOutput | undefined> {
   const { goal, ctx, session, signal } = input;
-  const { stat, diff } = await activeDeps.diff(ctx.cwd, goal.baseCommit);
+  const { stat, diff } = await activeDeps.diff(ctx.cwd, goal.baseCommit, goal.worktreeBaseline, session.services.configStore?.homeContext.path);
   const userMessage = buildGoalJudgeUserMessage({
     goal,
     verification: input.verification,
@@ -199,6 +199,14 @@ export async function goalGate(
     return true;
   }
 
+  if (goal.worktreeBaseline === undefined) {
+    warn(
+      session,
+      ctx,
+      "goal_worktree_baseline_unavailable",
+      "This goal has no working-tree baseline. Review conservatively checks differences from the starting commit and all untracked files; some may predate the goal.",
+    );
+  }
   const verification = await activeDeps.runVerification({
     commands: goal.verification,
     ctx,
@@ -207,7 +215,7 @@ export async function goalGate(
     ...(signal !== undefined ? { signal } : {}),
   });
   const tamperedPaths = classifyTamperedPaths(
-    await activeDeps.changedPaths(ctx.cwd, goal.baseCommit),
+    await activeDeps.changedPaths(ctx.cwd, goal.baseCommit, goal.worktreeBaseline),
     goal.verification,
   );
   const judge = await askJudge({

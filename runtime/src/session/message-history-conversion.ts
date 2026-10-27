@@ -140,6 +140,9 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
         }
       : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
+    ...(message.runtimeOnly?.toolResultIsError === true
+      ? { toolResultIsError: true as const }
+      : {}),
     ...(message.runtimeOnly?.toolResultIntegrity !== undefined
       ? { toolResultIntegrity: message.runtimeOnly.toolResultIntegrity }
       : {}),
@@ -203,6 +206,15 @@ export function llmMessageToCheckpointResponseItem(
 export function createCheckpointResponseItemProjector(): typeof llmMessageToCheckpointResponseItem {
   const redact = createMemoizedSecretRedactor();
   return withCheckpointProjectionCache((message) => projectCheckpointMessage(message, redact));
+}
+
+/**
+ * The full checkpoint projection with a bounded exact-string redaction memo
+ * and no projection reuse, for a caller that projects each message once.
+ */
+export function createCheckpointMessageProjector(): typeof llmMessageToCheckpointResponseItem {
+  const redact = createMemoizedSecretRedactor();
+  return (message) => projectCheckpointMessage(message, redact);
 }
 
 function projectCheckpointMessage(
@@ -287,12 +299,17 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
     // committed compaction boundary and summary messages.
     ...(item.id !== undefined ||
     item.toolResultIntegrity !== undefined ||
+    item.toolResultIsError === true ||
     item.agentInvocation !== undefined ||
     item.compactionHistory !== undefined
       ? {
           runtimeOnly: {
+            ...(item.toolResultIsError === true
+              ? { toolResultIsError: true as const }
+              : {}),
             ...(item.id !== undefined
-              ? { responseItemId: item.id }
+              ? { responseItemId: item.id,
+                  ...(item.role === "user" ? { userMessageId: item.id } : {}) }
               : {}),
             ...(item.toolResultIntegrity !== undefined
               ? { toolResultIntegrity: item.toolResultIntegrity }

@@ -50,6 +50,13 @@ export interface AutoMemoryPathResult {
   readonly reason?: string;
 }
 
+/**
+ * Where an enabled project memory path came from: the cowork override, the
+ * trusted `autoMemoryDirectory` setting, or the default
+ * `<base>/projects/<key>/memory/`.
+ */
+type AutoMemoryPathSource = "cowork_override" | "setting" | "default";
+
 export type MemoryPathEnv = Readonly<Record<string, string | undefined>>;
 
 export type TrustedAutoMemoryDirectorySource = Extract<
@@ -168,10 +175,10 @@ export function sanitizePathForProjectKey(path: string): string {
   return projectStorageKey(path);
 }
 
-async function readSettings(
+function readSettings(
   source: CanonicalSettingSource,
   opts: ResolveAutoMemoryDirectoryOptions,
-): Promise<AgenCConfig | null> {
+): AgenCConfig | null {
   if (opts.settings) {
     return opts.settings[source] ?? null;
   }
@@ -180,12 +187,12 @@ async function readSettings(
     : getSettingsForSource(source);
 }
 
-async function readAutoMemoryEnabledSetting(
+function readAutoMemoryEnabledSetting(
   opts: ResolveAutoMemoryDirectoryOptions,
-): Promise<boolean | undefined> {
+): boolean | undefined {
   let authoritative: boolean | undefined;
   for (const source of AUTO_MEMORY_ENABLED_AUTHORITY_SOURCES) {
-    const settings = await readSettings(source, opts);
+    const settings = readSettings(source, opts);
     if (typeof settings?.autoMemoryEnabled === "boolean") {
       authoritative = settings.autoMemoryEnabled;
       break;
@@ -194,7 +201,7 @@ async function readAutoMemoryEnabledSetting(
   // Repository content may reduce background activity but cannot enable a
   // model call or override an operator disable.
   for (const source of AUTO_MEMORY_REPOSITORY_SOURCES) {
-    const settings = await readSettings(source, opts);
+    const settings = readSettings(source, opts);
     if (settings?.autoMemoryEnabled === false) {
       return false;
     }
@@ -202,11 +209,11 @@ async function readAutoMemoryEnabledSetting(
   return authoritative;
 }
 
-async function readAutoMemoryDirectorySetting(
+function readAutoMemoryDirectorySetting(
   opts: ResolveAutoMemoryDirectoryOptions,
-): Promise<{ readonly raw?: string; readonly invalid: boolean }> {
+): { readonly raw?: string; readonly invalid: boolean } {
   for (const source of AUTO_MEMORY_DIRECTORY_SOURCES) {
-    const settings = await readSettings(source, opts);
+    const settings = readSettings(source, opts);
     if (!settings || !Object.prototype.hasOwnProperty.call(settings, "autoMemoryDirectory")) {
       continue;
     }
@@ -227,17 +234,36 @@ function resolveProjectRoot(cwd: string): string {
 export async function resolveAutoMemoryDirectory(
   opts: ResolveAutoMemoryDirectoryOptions = {},
 ): Promise<AutoMemoryPathResult> {
+  return resolveAutoMemoryDirectorySync(opts);
+}
+
+/**
+ * `resolveAutoMemoryDirectory` for callers that cannot wait, such as the
+ * runtime sandbox check. Settings are read synchronously either way, so both
+ * entry points resolve the same directory from the same inputs.
+ */
+export function resolveAutoMemoryDirectorySync(
+  opts: ResolveAutoMemoryDirectoryOptions = {},
+): AutoMemoryPathResult {
+  return resolveAutoMemoryDirectoryWithSource(opts).result;
+}
+
+function resolveAutoMemoryDirectoryWithSource(
+  opts: ResolveAutoMemoryDirectoryOptions,
+): { readonly result: AutoMemoryPathResult; readonly source?: AutoMemoryPathSource } {
+  const result = (value: AutoMemoryPathResult, source?: AutoMemoryPathSource) =>
+    source === undefined ? { result: value } : { result: value, source };
   const env = effectiveEnv(opts.env);
   const runtimeOptions = opts.runtimeOptions ?? getActiveAgentRuntimeOptions();
   if (opts.runtimeOptions === undefined ? isBareMode() : opts.runtimeOptions.simpleMode === true) {
-    return { enabled: false, reason: "simple_mode" };
+    return result({ enabled: false, reason: "simple_mode" });
   }
   if (runtimeOptions?.remoteMode && !runtimeOptions.remoteMemoryRoot) {
-    return { enabled: false, reason: "remote_without_memory_dir" };
+    return result({ enabled: false, reason: "remote_without_memory_dir" });
   }
-  const enabledSetting = await readAutoMemoryEnabledSetting(opts);
+  const enabledSetting = readAutoMemoryEnabledSetting(opts);
   if (enabledSetting === false) {
-    return { enabled: false, reason: "disabled_by_settings" };
+    return result({ enabled: false, reason: "disabled_by_settings" });
   }
 
   const homeDir = effectiveHome(opts);
@@ -250,14 +276,14 @@ export async function resolveAutoMemoryDirectory(
       homeDir,
     });
     if (!override) {
-      return { enabled: false, reason: "invalid_memory_path_override" };
+      return result({ enabled: false, reason: "invalid_memory_path_override" });
     }
-    return { enabled: true, path: override };
+    return result({ enabled: true, path: override }, "cowork_override");
   }
 
-  const setting = await readAutoMemoryDirectorySetting(opts);
+  const setting = readAutoMemoryDirectorySetting(opts);
   if (setting.invalid) {
-    return { enabled: false, reason: "invalid_memory_path_setting" };
+    return result({ enabled: false, reason: "invalid_memory_path_setting" });
   }
   if (setting.raw !== undefined) {
     const settingPath = validateAutoMemoryDirectoryPath(setting.raw, {
@@ -265,9 +291,9 @@ export async function resolveAutoMemoryDirectory(
       homeDir,
     });
     if (!settingPath) {
-      return { enabled: false, reason: "invalid_memory_path_setting" };
+      return result({ enabled: false, reason: "invalid_memory_path_setting" });
     }
-    return { enabled: true, path: settingPath };
+    return result({ enabled: true, path: settingPath }, "setting");
   }
 
   const remoteMemoryDir = runtimeOptions?.remoteMemoryRoot;
@@ -279,14 +305,14 @@ export async function resolveAutoMemoryDirectory(
         })
       : normalizeWithTrailingSep(resolveConfigHome(opts));
   if (!baseRoot) {
-    return { enabled: false, reason: "invalid_remote_memory_dir" };
+    return result({ enabled: false, reason: "invalid_remote_memory_dir" });
   }
 
   const projectRoot = resolveProjectRoot(effectiveCwd(opts));
-  return {
+  return result({
     enabled: true,
     path: buildProjectMemoryDirectory(baseRoot, projectRoot),
-  };
+  }, "default");
 }
 
 /**
@@ -300,6 +326,13 @@ export async function resolveAutoMemoryDirectory(
 export async function resolveGlobalMemoryDirectory(
   opts: ResolveAutoMemoryDirectoryOptions = {},
 ): Promise<string | undefined> {
+  return resolveGlobalMemoryDirectorySync(opts);
+}
+
+/** `resolveGlobalMemoryDirectory` for callers that cannot wait. */
+export function resolveGlobalMemoryDirectorySync(
+  opts: ResolveAutoMemoryDirectoryOptions = {},
+): string | undefined {
   const runtimeOptions = opts.runtimeOptions ?? getActiveAgentRuntimeOptions();
   const homeDir = effectiveHome(opts);
   const remoteMemoryDir = runtimeOptions?.remoteMemoryRoot;
@@ -312,6 +345,114 @@ export async function resolveGlobalMemoryDirectory(
       : normalizeWithTrailingSep(resolveConfigHome(opts));
   if (!baseRoot) return undefined;
   return normalizeWithTrailingSep(join(baseRoot, "memory"));
+}
+
+/** The services of a live session that its memory directories are resolved from. */
+export interface LiveSessionMemoryServices {
+  readonly configStore?: ConfigStore;
+  readonly userShell?: { readonly childEnvironment?: MemoryPathEnv };
+  readonly providerEnvironment?: MemoryPathEnv;
+  readonly runtimeOptions?: Partial<AgentRuntimeOptions>;
+}
+
+/**
+ * The memory owner of a live session in `cwd`: the inputs its memory prompt
+ * resolves the memory directories from. A daemon serves sessions of many
+ * projects, so process-wide state (its own working directory, its own home)
+ * can name other directories; everything that must agree with the prompt
+ * (the prompt itself, the runtime sandbox) resolves from this owner instead.
+ * Undefined without a ConfigStore, which is the prompt's authority.
+ */
+export function liveSessionMemoryOwner(
+  services: LiveSessionMemoryServices | undefined,
+  cwd: string,
+): ResolveAutoMemoryDirectoryOptions | undefined {
+  const configStore = services?.configStore;
+  if (configStore === undefined) return undefined;
+  return {
+    cwd,
+    configStore,
+    env: services?.userShell?.childEnvironment ?? services?.providerEnvironment ?? {},
+    runtimeOptions: { remoteMode: false, ...services?.runtimeOptions },
+  };
+}
+
+/** The durable memory directories of a live session, as its memory prompt names them. */
+export interface SessionDurableMemoryDirectories {
+  /** The global root and the project directory; empty when auto memory is off. */
+  readonly roots: readonly string[];
+  /**
+   * False when a cowork override moved the project directory: an override is
+   * readable memory, never a write carve-out (as in `isDurableMemoryWritePath`).
+   */
+  readonly writable: boolean;
+}
+
+/**
+ * The durable memory directories of a live session in `cwd`, resolved from
+ * its memory owner: the ones its memory prompt names. Undefined when the
+ * session has no owner to resolve them from (callers keep the process-wide
+ * roots then). The permission layer and the runtime sandbox both use this, so
+ * a memory file is treated the same way whichever check sees it.
+ */
+export function sessionDurableMemoryDirectories(
+  services: LiveSessionMemoryServices | undefined,
+  cwd: string,
+): SessionDurableMemoryDirectories | undefined {
+  const owner = liveSessionMemoryOwner(services, cwd);
+  if (owner === undefined) return undefined;
+  try {
+    const { result: project, source } = resolveAutoMemoryDirectoryWithSource(owner);
+    if (!project.enabled || project.path === undefined) return { roots: [], writable: false };
+    const global = resolveGlobalMemoryDirectorySync(owner);
+    return {
+      roots: global === undefined ? [project.path] : [global, project.path],
+      writable: source !== "cowork_override",
+    };
+  } catch {
+    return { roots: [], writable: false };
+  }
+}
+
+/**
+ * `sessionDurableMemoryDirectories` for a session object, at its configured
+ * working directory (the one its turns, and so its memory prompt, use), or
+ * `fallbackCwd` when it has none.
+ */
+export function sessionDurableMemoryDirectoriesOf(
+  session: unknown,
+  fallbackCwd: string,
+): SessionDurableMemoryDirectories | undefined {
+  if (typeof session !== "object" || session === null) return undefined;
+  const owner = session as {
+    readonly services?: LiveSessionMemoryServices;
+    readonly sessionConfiguration?: { readonly cwd?: unknown };
+  };
+  let cwd = fallbackCwd;
+  try {
+    const configured = owner.sessionConfiguration?.cwd;
+    if (typeof configured === "string" && configured.length > 0) cwd = configured;
+  } catch {
+    // A session snapshot without readable configuration keeps the fallback.
+  }
+  return sessionDurableMemoryDirectories(owner.services, cwd);
+}
+
+/**
+ * The durable memory directories the file tools of a live session may write
+ * under the workspace sandbox: the global root and the project directory its
+ * memory prompt names. Undefined when the session has no owner to resolve
+ * them from. Empty when auto memory is off, cannot be resolved, or a cowork
+ * override moved the project directory: an override gets no write carve-out,
+ * as in `isDurableMemoryWritePath`.
+ */
+export function sessionDurableMemoryWriteRoots(
+  services: LiveSessionMemoryServices | undefined,
+  cwd: string,
+): readonly string[] | undefined {
+  const directories = sessionDurableMemoryDirectories(services, cwd);
+  if (directories === undefined) return undefined;
+  return directories.writable ? directories.roots : [];
 }
 
 export function isPathInsideMemoryDir(candidate: string, memoryDir: string): boolean {

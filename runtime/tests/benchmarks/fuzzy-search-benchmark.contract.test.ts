@@ -429,7 +429,7 @@ function validReport(sizes: readonly number[], sampleCount: number): any {
       memory: { totalBytes: 1 },
       os: { arch: "test", platform: "test", release: "test" },
       ripgrep: { distribution: "pinned_package", version: "ripgrep test" },
-      runtime: { node: "v26.5.0", npm: "11.17.0", v8: "test" },
+      runtime: { node: "v26.12.1", npm: "11.17.0", v8: "test" },
       sqlite: { compileOptions: ["TEST"], version: "test" },
     },
     points,

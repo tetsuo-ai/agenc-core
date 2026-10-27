@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useApp } from '../ink/components/AppContext.js'
 import { useKeybindings } from '../keybindings/useKeybinding.js'
-import { useDoublePress } from './useDoublePress.js'
+import { clearSharedDoublePressState, useDoublePress } from './useDoublePress.js'
 
 export type ExitState = {
   pending: boolean
@@ -43,7 +43,11 @@ export function useExitOnCtrlCDWithKeybindings(
   )
 
   const handleInterrupt = useCallback(() => {
-    if (onInterrupt?.()) return
+    if (onInterrupt?.()) {
+      clearSharedDoublePressState('app:interrupt')
+      setExitState({ pending: false, keyName: null })
+      return
+    }
     handleCtrlCDoublePress()
   }, [handleCtrlCDoublePress, onInterrupt])
 

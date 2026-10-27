@@ -4,7 +4,6 @@ import { renderToString } from 'src/utils/staticRender.js'
 import {
   PromptInputFooterSuggestions,
   type SuggestionItem,
-  type SuggestionType,
 } from 'src/tui/components/PromptInput/PromptInputFooterSuggestions.js'
 
 vi.mock('bun:bundle', () => ({
@@ -23,18 +22,14 @@ function renderSuggestions(
   suggestions: SuggestionItem[],
   options: {
     columns?: number
-    overlay?: boolean
     rows?: number
     selectedSuggestion?: number
-    suggestionType?: SuggestionType
   } = {},
 ): Promise<string> {
   return renderToString(
     <PromptInputFooterSuggestions
       suggestions={suggestions}
       selectedSuggestion={options.selectedSuggestion ?? 0}
-      overlay={options.overlay}
-      suggestionType={options.suggestionType}
     />,
     {
       columns: options.columns ?? 80,
@@ -49,31 +44,24 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
   })
 
   test.each([
-    ['shell', 'SHELL COMPLETIONS', 'complete'],
-    ['custom-title', 'SESSION TITLES', 'resume'],
-    ['slack-channel', 'SLACK CHANNELS', 'mention'],
-    ['none', 'SUGGESTIONS', 'select'],
-  ] as const)(
-    'renders explicit %s copy in the header and keyboard hint',
-    async (suggestionType, title, acceptVerb) => {
-      const output = await renderSuggestions(
-        [
-          {
-            id: `${suggestionType}-first`,
-            displayText: 'candidate',
-            description: 'Primary candidate',
-          },
-        ],
-        { suggestionType },
-      )
+    'shell-first',
+    'custom-title-first',
+    'slack-channel-first',
+    'none-first',
+  ])('renders %s as a plain row with no picker chrome', async id => {
+    const output = await renderSuggestions([
+      {
+        id,
+        displayText: 'candidate',
+        description: 'Primary candidate',
+      },
+    ])
 
-      expect(output).toContain(title)
-      expect(output).toContain('1 match')
-      expect(output).toContain(`^v navigate - Enter ${acceptVerb}`)
-    },
-  )
+    expect(output).toContain('> candidate  Primary candidate')
+    expect(output).not.toMatch(/match|navigate|Enter|SUGGESTIONS|COMPLETIONS/u)
+  })
 
-  test('infers directory suggestions and uses terminal height for inline overflow', async () => {
+  test('uses terminal height to window inline directory rows', async () => {
     const suggestions: SuggestionItem[] = Array.from(
       { length: 4 },
       (_, index) => ({
@@ -89,15 +77,12 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
       selectedSuggestion: 2,
     })
 
-    expect(output).toContain('DIRECTORIES')
-    expect(output).toContain('4 matches')
-    expect(output).toContain('^v navigate - Enter insert')
-    expect(output).toContain('^ 2 more above')
-    expect(output).toContain('v 1 more below')
     expect(output).toContain('> dir-2')
     expect(output).toContain('Directory number 2')
     expect(output).not.toContain('dir-0')
     expect(output).not.toContain('dir-3')
+    expect(output).not.toContain('more above')
+    expect(output).not.toContain('more below')
   })
 
   test('truncates long file paths and keeps unified rows single-line', async () => {
@@ -121,7 +106,6 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
       },
     )
 
-    expect(output).toContain('FILES & RESOURCES')
     expect(output).toContain('> + ')
     expect(output).toContain(' - Detailed TypeScript')
     expect(output).toContain('  + README.md')
@@ -149,9 +133,6 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
       },
     )
 
-    expect(output).toContain('SUGGESTIONS')
-    expect(output).toContain('2 matches')
-    expect(output).toContain('^v navigate - Enter select')
     expect(output).toContain('[hot] Alpha branch details')
     expect(output).toContain('beta')
     expect(output).not.toContain('> alpha')

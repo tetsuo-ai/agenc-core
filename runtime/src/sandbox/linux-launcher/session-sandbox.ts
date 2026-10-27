@@ -4,11 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { prepareSessionBwrapPlan } from "./direct-bwrap.js";
+import { prepareLinuxSandboxProbeHint } from "./probe-cache.js";
 import { consumeDirectBwrapPlan, registerDirectBwrapPlan } from "../../utils/direct-bwrap-handoff.js";
 import { spawnContainedProcess, terminateProcessTreeAndReport } from "../../utils/supervisedProcess.js";
 import { sessionProcessBoundaries } from "../../utils/session-process-boundary.js";
 import type { ProcessBrokerV3Outcome } from "../../utils/process-broker-protocol-v3.js";
 import { createLogger } from "../../utils/logger.js";
+import { protectedCreateExitCode, startProtectedCreateMonitor } from "./protected-create-monitor.js";
 
 const logger = createLogger("warn", "[sandbox]");
 export interface SessionSandboxAvailability { startupFailed: boolean; }
@@ -70,6 +72,13 @@ export class SessionSandbox {
   private closeTask?: Promise<void>;
   private detachAbort?: () => void;
   private cleanupFailure?: SessionSandboxCleanupError;
+  /** Missing protected paths of the current namespace, watched per command. */
+  private protectedCreateTargets: readonly string[] = [];
+
+  /** Running a command, starting or closing: a new command cannot use it now. */
+  get busy(): boolean {
+    return this.active !== undefined || this.starting || this.closing;
+  }
 
   private watchAbort(signal?: AbortSignal): void {
     this.detachAbort?.();
@@ -93,14 +102,23 @@ export class SessionSandbox {
     this.watchAbort(signal);
     if (!this.server) {
       this.starting = true;
+      // Namespace rebuilds use the same successful, identity-bound probes as
+      // ordinary pipe launches. Policy/mount planning and the real sandbox
+      // remain fresh; a miss keeps the ordinary planner and confinement.
+      const probe = prepareLinuxSandboxProbeHint(input.args, input.cwd, input.env);
       try {
-        const plan = prepareSessionBwrapPlan(input);
-        if (!plan) return undefined;
+        const plan = prepareSessionBwrapPlan(probe ? { ...input, args: probe.args } : input);
+        if (!plan) { probe?.invalidate(); return undefined; }
         const handoff = consumeDirectBwrapPlan(plan);
         try {
           const launch = handoff.sessionSandbox;
-          if (!launch || !handoff.isCurrent()) return undefined;
-          const paths = new Set([input.program, input.args[0]!, launch.program, launch.executable, ...launch.policyPaths]);
+          if (!launch || !handoff.isCurrent()) { probe?.invalidate(); return undefined; }
+          // Missing protected paths are pinned as missing: if one appears from
+          // outside this namespace the next command rebuilds the namespace
+          // (which then protects the existing path) instead of the monitor
+          // removing it.
+          const paths = new Set([input.program, input.args[0]!, launch.program, launch.executable, ...launch.policyPaths,
+            ...launch.protectedCreateTargets]);
           for (let i = 0; i < launch.args.indexOf("--"); i++) {
             if (["--bind", "--ro-bind", "--dev-bind"].includes(launch.args[i]!)) {
               paths.add(launch.args[++i]!); paths.add(launch.args[++i]!);
@@ -109,6 +127,7 @@ export class SessionSandbox {
             }
           }
           this.identities = [...paths].map(file => [file, mountIdentity(file)] as const);
+          this.protectedCreateTargets = [...launch.protectedCreateTargets];
           validateAdmission();
           this.received = Buffer.alloc(0);
           // The native broker is amortized over the session. Its private
@@ -147,6 +166,7 @@ export class SessionSandbox {
           this.key = key;
         } finally { handoff.dispose(); }
       } catch {
+        probe?.invalidate();
         await this.close();
         if (!this.availability.startupFailed && !signal?.aborted) {
           this.availability.startupFailed = true;
@@ -183,9 +203,20 @@ export class SessionSandbox {
     let cleanupError: Error | undefined;
     let resolve!: () => void;
     const settled = new Promise<void>(r => { resolve = r; });
+    // The namespace leaves missing protected paths unmounted; the same
+    // created-path monitor as the per-command launcher watches them from
+    // before this command starts until it is over.
+    const protectedCreates = startProtectedCreateMonitor(this.protectedCreateTargets);
     const finish = (status: number | undefined, residual: boolean, failure?: Error): void => {
       if (this.active?.child !== child) return;
       this.active = undefined;
+      // The executor reports a command only once every process of it is
+      // reaped (or the namespace is gone): the final check cannot miss a
+      // protected path it created. Such a command fails, as in the launcher.
+      const protectedCreateViolation = protectedCreates.stop();
+      if (status !== undefined && (status & 127) === 0) {
+        status = protectedCreateExitCode((status >> 8) & 255, protectedCreateViolation) << 8;
+      }
       cleanupError = failure;
       outcome = status === undefined ? { kind: "unavailable", residual: "unknown" } : {
         kind: "reported", result: (status & 127) === 0

@@ -1307,7 +1307,7 @@ describe("MCPManager", () => {
       await manager.start();
 
       await expect(manager.callTool("srv1", "tool", {})).resolves.toEqual({
-        content: 'MCP server "srv1" lost connection — reconnecting...',
+        content: 'MCP server "srv1" lost connection: reconnecting...',
         isError: true,
       });
       await vi.advanceTimersByTimeAsync(1_000);

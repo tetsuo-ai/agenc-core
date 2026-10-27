@@ -387,16 +387,11 @@ afterEach(() => {
 })
 
 describe('Notifications', () => {
-  test('uses the explicit session authority for every remote auth read', async () => {
+  test('uses session environment for warnings without reading account model authority', async () => {
     const rendered = await renderNotifications()
 
     try {
-      expect(harness.remoteAuthContexts).toHaveLength(3)
-      expect(
-        harness.remoteAuthContexts.every(
-          context => context === TEST_REMOTE_AUTH_SESSION_CONTEXT,
-        ),
-      ).toBe(true)
+      expect(harness.remoteAuthContexts).toEqual([])
       expect(harness.compactWarningEnvironments).toEqual([
         TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       ])
@@ -522,7 +517,7 @@ describe('Notifications', () => {
     }
   })
 
-  test('renders auth failures and compact auto-updater state without editor hints', async () => {
+  test('renders compact auto-updater state without account auth or editor hints', async () => {
     harness.remoteMode = true
     harness.compactWarning = true
     harness.editor = 'vscode'
@@ -534,7 +529,7 @@ describe('Notifications', () => {
     })
 
     try {
-      expect(rendered.output()).toContain('Authentication error · Try again')
+      expect(rendered.output()).not.toContain('Authentication error · Try again')
       expect(rendered.output()).not.toContain('1234 tokens')
       expect(rendered.output()).toContain('AutoUpdater:true:false:false:success')
       expect(harness.removeNotification).toHaveBeenCalledWith(
@@ -545,19 +540,19 @@ describe('Notifications', () => {
     }
   })
 
-  test('renders local missing-auth copy', async () => {
+  test('does not offer account login for missing model credentials', async () => {
     const rendered = await renderNotifications({
       apiKeyStatus: 'missing',
     })
 
     try {
-      expect(rendered.output()).toContain('Not logged in · Run /login')
+      expect(rendered.output()).not.toContain('Not logged in · Run /login')
     } finally {
       await rendered.dispose()
     }
   })
 
-  test('renders remote free-plan upgrade copy when managed keys are unavailable', async () => {
+  test('does not offer account upgrades for model access', async () => {
     harness.remoteAuthSession = true
     harness.remoteSubscriptionTier = 'free'
     const rendered = await renderNotifications({
@@ -565,7 +560,7 @@ describe('Notifications', () => {
     })
 
     try {
-      expect(rendered.output()).toContain(
+      expect(rendered.output()).not.toContain(
         'AgenC free plan · upgrade at https://id.agenc.ag/pricing or add a BYOK key',
       )
       expect(rendered.output()).not.toContain('Not logged in · Run /login')
@@ -574,7 +569,7 @@ describe('Notifications', () => {
     }
   })
 
-  test('renders remote paid-plan managed-key status', async () => {
+  test('does not offer managed keys for a paid account', async () => {
     harness.remoteAuthSession = true
     harness.remoteManagedKeys = true
     harness.remoteSubscriptionTier = 'pro'
@@ -583,7 +578,7 @@ describe('Notifications', () => {
     })
 
     try {
-      expect(rendered.output()).toContain(
+      expect(rendered.output()).not.toContain(
         'AgenC pro plan · managed model keys available',
       )
       expect(rendered.output()).not.toContain('Not logged in · Run /login')

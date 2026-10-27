@@ -5,6 +5,8 @@
  * daemon request setup and the minimal TUI session shell outside `bin/agenc.ts`.
  */
 
+import { readLocalByokCredential } from "../auth/native-credentials.js";
+import { sessionDurableMemoryDirectories } from "../services/extractMemories/memory-paths.js";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
@@ -64,7 +66,8 @@ import {
 import {
   validateAndDedupeAdditionalWorkingDirectoryInputs,
 } from "../contracts/additional-working-directories.js";
-import { canonicalizeBypassPermissionsCwd } from "../permissions/bypass-consent-state.js";
+import { authorizeBypassPermissionsConsent, canonicalizeBypassPermissionsCwd, loadBypassPermissionsConsent } from "../permissions/bypass-consent-state.js";
+import { applyPermissionRulesSnapshot, readPermissionRulesSnapshot } from "../permissions/settings.js";
 import type { SessionConfiguration } from "../session/turn-context.js";
 
 export {
@@ -86,10 +89,14 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
+  /** Expanded human input for first-turn decisions, before skill/hook transforms. */
+  readonly initialUserPromptText?: string;
   readonly metadata?: JsonObject;
   /** See `AgentCreateParams.permissionMode`. Forwarded verbatim. */
   readonly permissionMode?:
@@ -125,6 +132,8 @@ export interface ResumeAgenCDaemonPromptAgentOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
@@ -169,6 +178,12 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.taskTokenBudget !== undefined
+      ? { taskTokenBudget: options.taskTokenBudget }
+      : {}),
+    ...(options.taskMaxCalls !== undefined
+      ? { taskMaxCalls: options.taskMaxCalls }
+      : {}),
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
       : {}),
@@ -178,6 +193,9 @@ export async function startAgenCDaemonPromptAgent(
       : {}),
     ...(options.deferInitialTurn !== undefined
       ? { deferInitialTurn: options.deferInitialTurn }
+      : {}),
+    ...(options.initialUserPromptText !== undefined
+      ? { initialUserPromptText: options.initialUserPromptText }
       : {}),
     ...(options.initialDisplayUserMessage !== undefined
       ? { initialDisplayUserMessage: options.initialDisplayUserMessage }
@@ -217,6 +235,12 @@ export async function resumeAgenCDaemonPromptAgent(
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.taskTokenBudget !== undefined
+      ? { taskTokenBudget: options.taskTokenBudget }
+      : {}),
+    ...(options.taskMaxCalls !== undefined
+      ? { taskMaxCalls: options.taskMaxCalls }
+      : {}),
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
       : {}),
@@ -315,9 +339,13 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   /** Immutable daemon-owned role authority, separate from execution cwd. */
   readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
   readonly model?: string;
+  /** User-typed --model value, separate from a restored selection. */
+  readonly explicitModel?: string;
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   /** Live daemon-owned authority returned by `agent.attach`. */
   readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
   /**
@@ -540,14 +568,30 @@ export type AgenCDaemonOnlyTuiSession = Omit<AgenCBridgeSession, "services"> & {
   };
 };
 
+function daemonTuiRuleSnapshot(configStore: ConfigStore) {
+  const snapshot = readPermissionRulesSnapshot(configStore);
+  // The daemon snapshot owns mode capabilities. Hydrate rule sources without
+  // letting a client-side policy snapshot override those authoritative flags.
+  return { ...snapshot, bypassPermissionsModeDisabled: false, disableAutoMode: false };
+}
+
 /** Apply one canonical daemon settings successor to the client-side TUI shim. */
 export async function applyDaemonTuiRuntimeSettingsAuthority(
   session: AgenCDaemonOnlyTuiSession,
   cwd: string,
   settings: RunRuntimeSettingsSnapshot,
 ): Promise<void> {
-  const permissionContext = daemonTuiPermissionContext(cwd, settings, undefined);
   const registry = session.services.permissionModeRegistry;
+  const current = registry.current();
+  const permissionContext = applyPermissionRulesSnapshot({
+    ...daemonTuiPermissionContext(cwd, settings, undefined),
+    alwaysAllowRules: current.alwaysAllowRules,
+    alwaysDenyRules: current.alwaysDenyRules,
+    alwaysAskRules: current.alwaysAskRules,
+    additionalWorkingDirectories: current.additionalWorkingDirectories,
+    ...(current.strippedDangerousRules !== undefined
+      ? { strippedDangerousRules: current.strippedDangerousRules } : {}),
+  }, daemonTuiRuleSnapshot(session.services.configStore));
   if (typeof registry.update !== "function") {
     throw new Error("daemon TUI session cannot apply live permission settings");
   }
@@ -734,6 +778,12 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     ...(selectedProfile !== undefined && selectedProfile !== null
       ? { profile: selectedProfile }
       : {}),
+    ...(options.taskTokenBudget !== undefined
+      ? { taskTokenBudget: options.taskTokenBudget }
+      : {}),
+    ...(options.taskMaxCalls !== undefined
+      ? { taskMaxCalls: options.taskMaxCalls }
+      : {}),
     ...(options.configPath !== undefined
       ? { configPath: options.configPath }
       : {}),
@@ -752,6 +802,14 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   const profileName = resolvedStartupProfileName(cli, configEnv);
   const startup = resolveCanonicalStartupSelection({
     config: effectiveConfig,
+    env: providerEnvironment,
+    metadata: {
+      catalogHome: configStore.homeContext.path,
+      readSavedApiKey: provider => readLocalByokCredential(configStore.homeContext, provider)?.apiKey,
+    },
+    ...(options.explicitModel !== undefined
+      ? { explicitModel: options.explicitModel }
+      : {}),
     ...(profileName !== undefined ? { profileName } : {}),
   });
   const skillsServices = createLocalSkillsServices({
@@ -769,11 +827,31 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   try {
     await skillsServices.skillsWatcher.start();
     watcherStarted = true;
-    const permissionContext = daemonTuiPermissionContext(
+    let permissionContext = daemonTuiPermissionContext(
       options.cwd,
       runtimeSettings,
       options.permissionMode,
     );
+    // Runtime settings carry modes and capabilities, not rule buckets. A
+    // resumed/attached TUI must still project the saved canonical rules.
+    permissionContext = applyPermissionRulesSnapshot(
+      permissionContext, runtimeSettings === undefined
+        ? readPermissionRulesSnapshot(configStore) : daemonTuiRuleSnapshot(configStore),
+    );
+    if (runtimeSettings === undefined) {
+      // A cold shim has no daemon snapshot yet. Restore only exact workspace
+      // consent, through the same identity validator and source-aware policy
+      // used by runtime initialization. Live attach snapshots stay authoritative.
+      if (permissionContext.bypassPermissionsModeDisabledByPolicy !== true) {
+        try {
+          for (const accepted of loadBypassPermissionsConsent(configStore.stateRepository, options.cwd, { reload: true })) {
+            permissionContext = authorizeBypassPermissionsConsent(permissionContext, accepted);
+          }
+        } catch {
+          // Missing or stale directory identity cannot add bypass authority.
+        }
+      }
+    }
     const selectedProvider = runtimeSettings?.provider ?? startup.provider;
     const selectedModel = runtimeSettings?.model ?? startup.model;
     const configuredSessionConfiguration: DaemonTuiSessionConfiguration = {
@@ -796,8 +874,10 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       // execution policy must follow the attached worktree/session cwd.
       cwd: options.cwd,
       env,
+      sessionMemoryRoots: cwd => sessionDurableMemoryDirectories({ configStore, providerEnvironment: env, runtimeOptions }, cwd)?.roots ?? [],
       sessionTempRoot: runtimeOptions.sessionTempRoot,
       allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
+      allowLocalBinding: effectiveConfig.sandbox?.network?.allowLocalBinding === true,
       persistentSession: effectiveConfig.sandbox?.persistent_session !== false,
     });
     const activeSandboxExecutionBroker = sandboxExecutionBroker;

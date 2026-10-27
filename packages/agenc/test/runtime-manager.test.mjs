@@ -1,6 +1,9 @@
 import { strict as assert } from "node:assert";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer, get as httpGet } from "node:http";
+import https from "node:https";
+import { once } from "node:events";
 import {
   appendFileSync,
   chmodSync,
@@ -11,6 +14,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   statSync,
   rmSync,
@@ -18,10 +22,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir as osTmpdir } from "node:os";
 import { basename, dirname, join, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { after, before, test } from "node:test";
+import { after, before, mock, test } from "node:test";
 import { gzipSync } from "node:zlib";
 
 import {
@@ -39,6 +43,9 @@ import {
   selectArtifact,
 } from "../lib/runtime-manager.mjs";
 import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
+
+// macOS aliases /var to /private/var; expected runtime paths are canonical.
+function tmpdir() { return realpathSync(osTmpdir()); }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LAUNCHER_VERSION = JSON.parse(
@@ -183,7 +190,7 @@ function makeSyntheticArtifact(dir, version, binSource = "#!/usr/bin/env node\nc
     `${JSON.stringify(identity, null, 2)}\n`,
   );
   const artifact = join(dir, `agenc-runtime-${version}-test.tar.gz`);
-  const res = spawnSync("tar", ["-czf", artifact, "-C", tree, "node_modules"]);
+  const res = spawnSync("tar", [...(process.platform === "darwin" ? ["--no-xattrs"] : []), "-czf", artifact, "-C", tree, "node_modules"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   assert.equal(res.status, 0, "tar should succeed");
   const bytes = readFileSync(artifact);
   return { artifact, sha256: sha256(bytes), bytes: bytes.length };
@@ -539,6 +546,7 @@ test("selectArtifact finds the matching platform and errors clearly otherwise", 
       "999",
       {
         ...HOST_RUNTIME,
+        libcFamily: "glibc", glibcVersion: "2.39", glibcxxVersion: "3.4.33", cxxAbiVersion: "1.3.15",
         nodeMajor: 25,
         nodeModuleAbi: "999",
       },
@@ -898,7 +906,8 @@ test("ensureRuntime downloads (file://), verifies sha, extracts, and is idempote
     });
     assert.deepEqual(
       launch,
-      runtimeLaunchPaths(home, version, manifest.artifacts[0]),
+      { ...runtimeLaunchPaths(home, version, manifest.artifacts[0]),
+        ...(process.platform === "darwin" ? { nodeBin: join(home, "bin", "agenc-node") } : {}) },
     );
     assert.equal(existsSync(launch.nodeBin), true);
     if (platformSlug().os === "linux") {
@@ -1355,7 +1364,7 @@ test("durability barrier failures before promotion leave no canonical install", 
 });
 
 test("a parent-directory barrier fault after rename is reported and recoverable", async () => {
-  const work = mkdtempSync(join(tmpdir(), "agenc-durable-parent-fault-"));
+  const work = realpathSync(mkdtempSync(join(tmpdir(), "agenc-durable-parent-fault-")));
   try {
     const version = "9.8.10";
     const built = makeSyntheticArtifact(work, version);
@@ -1397,7 +1406,7 @@ test("a parent-directory barrier fault after rename is reported and recoverable"
 test("ensureRuntime collapses an existing AGENC_HOME symlink onto its canonical target", {
   skip: process.platform === "win32",
 }, async () => {
-  const work = mkdtempSync(join(tmpdir(), "agenc-home-alias-"));
+  const work = realpathSync(mkdtempSync(join(tmpdir(), "agenc-home-alias-")));
   try {
     const version = "9.9.8";
     const built = makeSyntheticArtifact(work, version);
@@ -1476,7 +1485,7 @@ test("ensureRuntime preserves the operation and every cleanup failure in order",
   unlinkSync(join(tree, "node_modules", "@tetsuo-ai", "runtime", "bin", "agenc"));
   const artifactPath = built.artifact;
   assert.equal(
-    spawnSync("tar", ["-czf", artifactPath, "-C", tree, "node_modules"]).status,
+    spawnSync("tar", [...(process.platform === "darwin" ? ["--no-xattrs"] : []), "-czf", artifactPath, "-C", tree, "node_modules"], { env: { ...process.env, COPYFILE_DISABLE: "1" } }).status,
     0,
   );
   const bytes = readFileSync(artifactPath);
@@ -1784,7 +1793,11 @@ test("redirects and headers consume one shared runtime fetch budget", async () =
   let calls = 0;
   let cancellations = 0;
   let signal;
-  const started = performance.now();
+  // Leave room for scheduling jitter between the two redirects and the deadline.
+  const timeoutMs = 600;
+  const redirectDelayMs = 200;
+  let started;
+  let elapsed;
   try {
     const manifest = httpsManifest("7.6.3", "a".repeat(64), 1);
     await assert.rejects(
@@ -1793,12 +1806,25 @@ test("redirects and headers consume one shared runtime fetch budget", async () =
         manifest,
         manifestTrust: "explicitHttps",
         runtimeCompatibility: HOST_RUNTIME,
-        runtimeFetchTimeoutMs: 75,
+        runtimeFetchTimeoutMs: timeoutMs,
         log: () => {},
         async fetchImpl(_requested, options) {
+          // Filesystem and SQLite lock setup are outside the fetch budget.
+          started ??= performance.now();
           signal = options.signal;
           calls += 1;
-          await delay(35);
+          // Stall the third header wait so a fresh budget still reaches the
+          // call/cancellation/abort assertions, but fails the elapsed bound.
+          if (calls === 3) {
+            return new Promise((_resolve, reject) => {
+              signal.addEventListener("abort", () => {
+                // End at fetch rejection, before installer filesystem cleanup.
+                elapsed = performance.now() - started;
+                reject(signal.reason);
+              }, { once: true });
+            });
+          }
+          await delay(redirectDelayMs);
           return {
             status: 302,
             headers: {
@@ -1812,12 +1838,15 @@ test("redirects and headers consume one shared runtime fetch budget", async () =
           };
         },
       }),
-      /runtime artifact response headers timed out after 75 ms total/,
+      /runtime artifact response headers timed out after 600 ms total/,
     );
     assert.equal(calls, 3, "each redirect received a fresh timeout budget");
     assert.equal(cancellations, 2, "completed redirect bodies were not cancelled");
     assert.equal(signal.aborted, true);
-    assert.ok(performance.now() - started < 160, "redirects multiplied the timeout budget");
+    // Shared deadline: 600 ms. Reset per redirect: at least 200 + 200 + 600
+    // = 1000 ms. The 800 ms bound separates them with 200 ms of headroom.
+    assert.ok(elapsed < timeoutMs + redirectDelayMs,
+      `redirects multiplied the timeout budget: ${elapsed} ms`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -1867,7 +1896,7 @@ test("ensureRuntime repairs a stale marker whose runtime bin is missing", async 
 });
 
 test("concurrent runtime installs converge without partial trees", async () => {
-  const work = mkdtempSync(join(tmpdir(), "agenc-concurrent-install-"));
+  const work = realpathSync(mkdtempSync(join(tmpdir(), "agenc-concurrent-install-")));
   try {
     const version = "9.9.9";
     const { artifact, sha256: digest, bytes } = makeSyntheticArtifact(work, version);
@@ -2245,4 +2274,296 @@ test("Windows system tools prove GLOBALROOT identity before using DOS process pa
       `${inheritedKey} must not be backfilled from the caller environment`,
     );
   }
+});
+
+// A real loopback transport keeps deadline regressions independent of GitHub,
+// VPNs, and the speed of the machine running the tests. Only the injected
+// fetch seam translates the already-validated HTTPS URL to loopback HTTP.
+function loopbackFetch(url) {
+  return async (requested, options) => {
+    const response = await fetch(url, options);
+    Object.defineProperty(response, "url", { value: String(requested) });
+    return response;
+  };
+}
+
+async function withThrottledArtifact(bytes, run, { chunkBytes = 64, intervalMs = 5, stall = false } = {}) {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-length": bytes.length });
+    response.flushHeaders();
+    let offset = 0;
+    const timer = setInterval(() => {
+      if (stall) return;
+      response.write(bytes.subarray(offset, offset + chunkBytes));
+      offset += chunkBytes;
+      if (offset >= bytes.length) {
+        clearInterval(timer);
+        response.end();
+      }
+    }, intervalMs);
+    response.on("close", () => clearInterval(timer));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${server.address().port}/runtime.tar.gz`;
+  try {
+    await run(url, () => requests);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolveClose) => server.close(resolveClose));
+  }
+}
+
+test("a progressing loopback download survives multiple stall windows and reports progress", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-slow-loopback-"));
+  try {
+    const version = "7.6.4";
+    const artifact = makeSyntheticArtifact(work, version);
+    const bytes = readFileSync(artifact.artifact);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    const logs = [];
+    await withThrottledArtifact(bytes, async (url) => {
+      const started = performance.now();
+      const bin = await ensureRuntime({
+        env: { AGENC_HOME: join(work, "home") },
+        manifest,
+        manifestTrust: "explicitHttps",
+        runtimeCompatibility: HOST_RUNTIME,
+        runtimeFetchStallTimeoutMs: 80,
+        runtimeFetchProgressIntervalMs: 20,
+        fetchImpl: loopbackFetch(url),
+        log: (message) => logs.push(message),
+      });
+      assert.ok(performance.now() - started > 160, "fixture must cross two stall windows");
+      assert.ok(existsSync(bin));
+      assert.ok(logs.some((message) => /runtime download .*%.*MiB\/s/.test(message)), logs.join("\n"));
+      assert.ok(logs.some((message) => /runtime download 100%/.test(message)));
+    }, { chunkBytes: 32, intervalMs: 10 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("a loopback body stall cleans partial state and a subsequent invocation restarts successfully", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-stall-restart-"));
+  try {
+    const version = "7.6.5";
+    const artifact = makeSyntheticArtifact(work, version);
+    const bytes = readFileSync(artifact.artifact);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    const options = {
+      env: { AGENC_HOME: join(work, "home") }, manifest,
+      manifestTrust: "explicitHttps", runtimeCompatibility: HOST_RUNTIME,
+      runtimeFetchStallTimeoutMs: 60, runtimeFetchTimeoutMs: 250, log: () => {},
+    };
+    await withThrottledArtifact(bytes, async (url) => {
+      await assert.rejects(ensureRuntime({ ...options,
+        fetchImpl: loopbackFetch(url),
+      }), /stalled for 60 ms/);
+    }, { stall: true });
+    const versionDir = dirname(runtimeInstallDir(options.env.AGENC_HOME, version, manifest.artifacts[0]));
+    assert.equal(readdirSync(versionDir).some((entry) => entry.startsWith(".agenc-runtime-")), false);
+    await withThrottledArtifact(bytes, async (url, requests) => {
+      const bin = await ensureRuntime({ ...options,
+        fetchImpl: loopbackFetch(url),
+      });
+      assert.ok(existsSync(bin));
+      assert.equal(requests(), 1);
+    });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("postinstall survives an expired loopback body pipeline without an unhandled rejection", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-postinstall-timeout-"));
+  try {
+    await withThrottledArtifact(Buffer.from("x"), async (url) => {
+      mkdirSync(join(work, "scripts"));
+      mkdirSync(join(work, "lib"));
+      writeFileSync(join(work, "package.json"), '{"type":"module"}');
+      writeFileSync(join(work, "scripts/postinstall.mjs"), readFileSync(join(__dirname, "../scripts/postinstall.mjs")));
+      const manifest = httpsManifest(LAUNCHER_VERSION, "a".repeat(64), 1);
+      writeFileSync(join(work, "lib/runtime-manager.mjs"), `
+        import { ensureRuntimeLaunch as ensure } from ${JSON.stringify(pathToFileURL(join(__dirname, "../lib/runtime-manager.mjs")).href)};
+        export function ensureRuntimeLaunch() {
+          return ensure({ manifest: ${JSON.stringify(manifest)},
+            manifestTrust: "explicitHttps", runtimeCompatibility: ${JSON.stringify(HOST_RUNTIME)},
+            runtimeFetchTimeoutMs: 40, log: () => {},
+            fetchImpl: async (requested, init) => {
+              const response = await fetch(${JSON.stringify(url)}, init);
+              Object.defineProperty(response, "url", { value: String(requested) });
+              const get = response.headers.get.bind(response.headers);
+              response.headers.get = (name) => {
+                if (name === "content-length") {
+                  // Reproduce an already-expired deadline at pipeline startup.
+                  const until = performance.now() + 50;
+                  while (performance.now() < until) {}
+                }
+                return get(name);
+              };
+              return response;
+            },
+          });
+        }
+      `);
+      const child = spawn(process.execPath, [join(work, "scripts/postinstall.mjs")], {
+        env: { ...process.env, AGENC_HOME: join(work, "home"), CI: "false", AGENC_SKIP_POSTINSTALL: "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+      const [code, signal] = await once(child, "exit");
+      assert.equal(signal, null, stderr);
+      assert.equal(code, 0, stderr);
+      assert.match(stderr, /runtime pre-fetch skipped.*fetched on first run/);
+      assert.doesNotMatch(stderr, /AbortError|triggerUncaughtException/);
+    }, { stall: true });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("the overall runtime budget still stops a loopback body that keeps progressing", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-progress-total-bound-"));
+  try {
+    const bytes = Buffer.alloc(1024);
+    const manifest = httpsManifest("7.6.6", sha256(bytes), bytes.length);
+    const home = join(work, "home");
+    await withThrottledArtifact(bytes, async (url) => {
+      await assert.rejects(ensureRuntime({
+        env: { AGENC_HOME: home }, manifest, manifestTrust: "explicitHttps",
+        runtimeCompatibility: HOST_RUNTIME, runtimeFetchTimeoutMs: 100,
+        runtimeFetchStallTimeoutMs: 80, fetchImpl: loopbackFetch(url), log: () => {},
+      }), /timed out after 100 ms total/);
+    }, { chunkBytes: 16, intervalMs: 10 });
+    const versionDir = dirname(runtimeInstallDir(home, manifest.runtimeVersion, manifest.artifacts[0]));
+    assert.equal(readdirSync(versionDir).some((entry) => entry.startsWith(".agenc-runtime-")), false);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("the default runtime transport streams through built-in HTTPS instead of fetch", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-https-transport-"));
+  try {
+    const version = "7.6.7";
+    const artifact = makeSyntheticArtifact(work, version);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    await withThrottledArtifact(readFileSync(artifact.artifact), async (url) => {
+      const fetchMock = mock.method(globalThis, "fetch", () => {
+        throw new Error("the runtime must not use fetch's small HTTP/2 receive windows");
+      });
+      const getMock = mock.method(https, "get", (requested, options, receive) => {
+        assert.equal(String(requested), manifest.artifacts[0].url);
+        assert.equal(options.headers["accept-encoding"], "identity");
+        assert.ok(options.signal instanceof AbortSignal);
+        return httpGet(url, options, receive);
+      });
+      try {
+        const bin = await ensureRuntime({
+          env: { AGENC_HOME: join(work, "home") }, manifest,
+          manifestTrust: "explicitHttps", runtimeCompatibility: HOST_RUNTIME,
+          log: () => {},
+        });
+        assert.ok(existsSync(bin));
+        assert.equal(getMock.mock.callCount(), 1);
+        assert.equal(fetchMock.mock.callCount(), 0);
+      } finally {
+        getMock.mock.restore();
+        fetchMock.mock.restore();
+      }
+    });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("the default HTTPS transport aborts a stalled stream and can restart", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-https-stall-"));
+  try {
+    const version = "7.6.8";
+    const artifact = makeSyntheticArtifact(work, version);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    const options = {
+      env: { AGENC_HOME: join(work, "home") }, manifest, manifestTrust: "explicitHttps",
+      runtimeCompatibility: HOST_RUNTIME, runtimeFetchStallTimeoutMs: 80,
+      runtimeFetchTimeoutMs: 250, log: () => {},
+    };
+    for (const stall of [true, false]) {
+      await withThrottledArtifact(readFileSync(artifact.artifact), async (url) => {
+        let signal;
+        const fetchMock = mock.method(globalThis, "fetch", () => {
+          throw new Error("unexpected fetch transport; this test only allows loopback HTTPS streams");
+        });
+        const getMock = mock.method(https, "get", (_requested, init, receive) => {
+          signal = init.signal;
+          return httpGet(url, init, receive);
+        });
+        try {
+          if (stall) {
+            await assert.rejects(ensureRuntime(options), /stalled for 80 ms/);
+            assert.equal(signal.aborted, true);
+            const versionDir = dirname(runtimeInstallDir(options.env.AGENC_HOME, version, manifest.artifacts[0]));
+            assert.equal(readdirSync(versionDir).some((entry) => entry.startsWith(".agenc-runtime-")), false);
+          } else {
+            assert.ok(existsSync(await ensureRuntime(options)));
+          }
+        } finally {
+          getMock.mock.restore();
+          fetchMock.mock.restore();
+        }
+      }, { stall });
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+
+test("receiving headers refreshes the inactivity window before a delayed first byte", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-header-body-activity-"));
+  try {
+    const version = "7.6.9";
+    const artifact = makeSyntheticArtifact(work, version);
+    const manifest = httpsManifest(version, artifact.sha256, artifact.bytes);
+    await withThrottledArtifact(readFileSync(artifact.artifact), async (url) => {
+      const bin = await ensureRuntime({
+        env: { AGENC_HOME: join(work, "home") }, manifest, manifestTrust: "explicitHttps",
+        runtimeCompatibility: HOST_RUNTIME, runtimeFetchStallTimeoutMs: 100,
+        fetchImpl: async (requested, init) => {
+          await delay(65);
+          return loopbackFetch(url)(requested, init);
+        },
+        log: () => {},
+      });
+      assert.ok(existsSync(bin));
+    }, { chunkBytes: artifact.bytes, intervalMs: 65 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("macOS npm activations keep one Node path and prune only before the previous version", { skip: process.platform !== "darwin" }, async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-npm-retention-"));
+  try {
+    const home = join(work, "home");
+    const launches = [];
+    for (const version of ["0.19.13", "0.19.14", "0.19.15"]) {
+      const built = makeSyntheticArtifact(work, version);
+      const manifest = syntheticManifest(version, built.artifact, built.sha256, built.bytes);
+      launches.push(await ensureLocalRuntimeLaunch({
+        env: { AGENC_HOME: home }, manifest, runtimeCompatibility: HOST_RUNTIME, log: () => {},
+      }));
+    }
+    assert.ok(launches.every((launch) => launch.nodeBin === join(home, "bin/agenc-node")));
+    assert.equal(existsSync(launches[0].runtimeBin), false);
+    assert.equal(existsSync(launches[1].runtimeBin), true);
+    assert.equal(existsSync(launches[2].runtimeBin), true);
+  } finally { rmSync(work, { recursive: true, force: true }); }
 });

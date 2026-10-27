@@ -74,6 +74,9 @@ export const HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS = Object.freeze([
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
   'DEEPSEEK_API_KEY',
+  'VENICE_API_KEY',
+  'ABLIT_KEY',
+  'ABLITERATION_API_KEY',
   'MODEL_API_KEY',
   'QWEN_API_KEY',
   'QWEN_TOKEN_PLAN_API_KEY',
@@ -234,8 +237,13 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_PROVIDER_MANAGED_BY_HOST',
   // opt-in provider wire changes (tests that need one set it explicitly)
   'AGENC_OPENAI_REASONING_REPLAY',
+  'AGENC_DEEPSEEK_REASONING_ONLY_REPLAY',
+  // DeepSeek Search API behind WebSearch (a test that needs it sets it explicitly)
+  'AGENC_DEEPSEEK_WEB_SEARCH',
+  'AGENC_WEB_SEARCH',
   // session request-layout switch (a test that needs it sets it explicitly)
   'AGENC_SHARED_PREFIX_TAIL',
+  'AGENC_KIMI_CACHE_TTL',
   // MCP process injection, mutation, OAuth, and sizing overrides
   'AGENC_MCP_SERVERS',
   'AGENC_MCP_ALLOW_MUTATIONS',
@@ -328,6 +336,7 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'OLLAMA_BASE_URL',
   'LMSTUDIO_BASE_URL',
   'OPENROUTER_BASE_URL',
+  'ABLITERATION_BASE_URL',
   'GROQ_BASE_URL',
   'DEEPSEEK_BASE_URL',
   'META_BASE_URL',

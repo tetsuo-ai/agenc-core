@@ -1,3 +1,4 @@
+import { sessionTaskTokenBudget, taskBudgetLabel } from "../config/task-budget.js";
 /**
  * `/status` — show session/runtime status.
  *
@@ -12,6 +13,7 @@ import { spawn } from "node:child_process";
 
 import { monotonicMs } from "../utils/monotonic.js";
 import type { Session } from "../session/session.js";
+import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 import { isPermissionMode } from "../permissions/types.js";
 import { asRecord } from "../utils/record.js";
 import {
@@ -22,10 +24,20 @@ import {
 } from "./types.js";
 import { readSessionSelection } from "../session/provider-model-selection.js";
 import { createStatusDashboardSnapshot } from "./status-menu-snapshot.js";
+import { capturedProviderEnvironment, readCommandConfig } from "./config-context.js";
+import type { EnvSnapshot } from "../config/env.js";
+import {
+  resolveZeroDataRetentionStatus,
+  type ZeroDataRetentionStatus,
+} from "../llm/zero-data-retention.js";
 
 export interface StatusLine {
   key: string;
   value: string;
+  /** A longer explanation for the dashboard's detail line. */
+  detail?: string;
+  /** How the dashboard marks the row; "info" when unset. */
+  state?: "ok" | "warn" | "info";
 }
 
 interface StatusServices {
@@ -48,6 +60,7 @@ export type GitStatusSummary =
       readonly changedFiles: number;
     }
   | { readonly state: "not-repo"; readonly message: string }
+  | { readonly state: "no-git"; readonly message: string }
   | { readonly state: "error"; readonly message: string };
 
 type GitRunner = (args: readonly string[], cwd: string) => Promise<GitCommandResult>;
@@ -88,6 +101,11 @@ export function summarizeGitStatus(params: {
       /^fatal: not a git repository \(or any /m.test(params.insideWorkTree.stderr)
     ) {
       return { state: "not-repo", message: "Run /status inside a git work tree for branch state." };
+    }
+    // Without git on PATH the spawn itself fails (spawn git ENOENT): that is no repository
+    // state to report, not a broken one.
+    if (params.insideWorkTree.code === -1 && /\bENOENT\b/.test(params.insideWorkTree.stderr)) {
+      return { state: "no-git", message: "Install git to see branch state here." };
     }
     return { state: "error", message: params.insideWorkTree.stderr || "git repository discovery failed" };
   }
@@ -156,6 +174,7 @@ export function collectStatus(
   cwd: string,
   nowMs: number = monotonicMs(),
   snapshot?: StatusSnapshot,
+  sessionUsage?: unknown,
 ): StatusLine[] {
   const lines: StatusLine[] = [];
   // The deferred TUI flow seeds `conversationId` with a synthetic
@@ -197,6 +216,7 @@ export function collectStatus(
   const selection = readSessionSelection(session, { includePending: true });
   lines.push({ key: "Model", value: selection.model });
   lines.push({ key: "Provider", value: selection.provider });
+  lines.push({ key: "Task budget", value: session.config === undefined ? "unavailable" : taskBudgetLabel(sessionTaskTokenBudget(session.config)) });
 
   // Turn count: prefer the daemon snapshot when available (bridge
   // sessions have no local `state.history`), then the in-process
@@ -209,7 +229,13 @@ export function collectStatus(
   // daemon-vended snapshot; then a "n/a" placeholder. The daemon
   // snapshot is what makes /status useful on TUI bridge sessions.
   const bt = (session as unknown as { budgetTracker?: typeof session.budgetTracker }).budgetTracker;
-  if (bt) {
+  const hasSessionUsage = isAdmissionUsageSummary(sessionUsage);
+  if (hasSessionUsage) {
+    // Use the same durable total as /cost and the footer. A daemon's local
+    // counters restart when a saved conversation is rehydrated.
+    lines.push({ key: "Tokens emitted", value: `${sessionUsage.totalTokens} (in: ${sessionUsage.inputTokens}, out: ${sessionUsage.outputTokens})` });
+    lines.push({ key: "Cost (USD)", value: `${sessionUsage.hasUnknownCost ? "≥" : ""}$${sessionUsage.costUsd.toFixed(4)}${sessionUsage.costEstimated ? " est." : ""}` });
+  } else if (bt) {
     const emitted = bt.emitted;
     const remaining = bt.remaining;
     lines.push({ key: "Tokens emitted", value: String(emitted) });
@@ -254,7 +280,7 @@ export function collectStatus(
     services?: StatusServices;
   }).services;
   const costSummary = readCostSummary(services?.costSidecar);
-  if (costSummary !== null) {
+  if (!hasSessionUsage && !lines.some(line => line.key === "Cost (USD)") && costSummary !== null) {
     lines.push({ key: "Cost", value: costSummary });
   }
   const registry = services?.permissionModeRegistry ?? null;
@@ -281,6 +307,45 @@ function readPermissionMode(
   const current = registry?.current?.();
   const record = asRecord(current);
   return isPermissionMode(record?.mode) ? record.mode : "default";
+}
+
+/**
+ * The status line's ZDR badge, explained: whether the provider and model a
+ * call made now would use keep prompts and responses, and why.
+ */
+export function zeroDataRetentionStatusLine(status: ZeroDataRetentionStatus): StatusLine {
+  switch (status.state) {
+    case "zdr":
+      return { key: "Zero data retention", value: "on (green ZDR)", detail: status.reason, state: "ok" };
+    case "retained":
+      return { key: "Zero data retention", value: "data may be kept (red ZDR)", detail: status.reason, state: "warn" };
+    case "unknown":
+      return { key: "Zero data retention", value: "unknown (dim ZDR?)", detail: status.reason, state: "info" };
+  }
+}
+
+function providerEnvironmentOrEmpty(ctx: SlashCommandContext): EnvSnapshot {
+  try {
+    return capturedProviderEnvironment(ctx);
+  } catch {
+    // Without a captured environment only configured addresses count.
+    return {};
+  }
+}
+
+function zeroDataRetentionLineFor(ctx: SlashCommandContext): StatusLine | undefined {
+  try {
+    const selection = readSessionSelection(ctx.session, { includePending: true });
+    const status = resolveZeroDataRetentionStatus({
+      provider: selection.provider,
+      model: selection.model,
+      config: readCommandConfig(ctx) ?? {},
+      env: providerEnvironmentOrEmpty(ctx),
+    });
+    return status === undefined ? undefined : zeroDataRetentionStatusLine(status);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -316,7 +381,14 @@ export const statusCommand: SlashCommand = {
           /* best-effort */
         }
       }
-      const lines = collectStatus(ctx.session, ctx.cwd, undefined, snapshot);
+      const sessionUsage = ctx.appState?.getSessionUsage?.() ??
+        ctx.session.services?.executionAdmission?.getUsageSummary?.();
+      const lines = collectStatus(ctx.session, ctx.cwd, undefined, snapshot, sessionUsage);
+      const zeroDataRetention = zeroDataRetentionLineFor(ctx);
+      if (zeroDataRetention !== undefined) {
+        const provider = lines.findIndex(line => line.key === "Provider");
+        lines.splice(provider >= 0 ? provider + 1 : lines.length, 0, zeroDataRetention);
+      }
       const dashboard = createStatusDashboardSnapshot({
         lines,
         git: await collectGitStatus(ctx.cwd),

@@ -46,6 +46,16 @@ vi.mock('../../../src/tools/AgentTool/runAgent.js', () => ({
 
       if (capture.calls.length === 1) {
         capture.onFirstRun?.()
+        // Completed older work is eligible for summarization. The next
+        // actual tool exchange must remain verbatim for the continuation.
+        yield {
+          type: 'assistant',
+          message: {
+            id: 'teammate-older-work', role: 'assistant', model: 'grok-4.5',
+            content: [{ type: 'text', text: 'Completed implementation context. '.repeat(1_250) }],
+            usage: { input_tokens: 8, output_tokens: 8 },
+          },
+        }
         yield {
           type: 'assistant',
           message: {
@@ -309,9 +319,10 @@ describe('in-process teammate canonical rollout ownership', () => {
       if (committed?.type !== 'compaction_committed') {
         throw new Error('missing compaction commit')
       }
-      expect(committed.payload.summary.body.tool_pairs).toContainEqual(
-        expect.objectContaining({ tool_call_id: 'teammate-tool-1' }),
+      expect(committed.payload.replacement_history).toContainEqual(
+        expect.objectContaining({ role: 'tool', toolCallId: 'teammate-tool-1', content: 'tool-output-'.repeat(2_000) }),
       )
+      expect(committed.payload.summary.body.tool_pairs).toEqual([])
       // The teammate's own requests send the parent session's current
       // effort, and so does its compaction.
       expect(

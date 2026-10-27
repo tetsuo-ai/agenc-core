@@ -1,0 +1,6272 @@
+{
+  "updated": "2026-10-23T20:02:47.681836+00:00",
+  "branch": "feat/kimi-k3-1-followup",
+  "quotaBaseline": [
+    {
+      "run": "before-kimi-k3.1-pro-file-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.719,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-multi-file-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.359,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-debug-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro",
+      "task": "debug",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.149,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-replay-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.14,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-vision-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro",
+      "task": "vision",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.194,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-long-context-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 2.567,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-highspeed-file-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.09,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-highspeed-multi-file-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.151,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-highspeed-debug-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "debug",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.094,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-highspeed-replay-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "replay",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.041,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-highspeed-vision-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "vision",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.072,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3.1-pro-highspeed-long-context-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.552,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3-file-1",
+      "phase": "before",
+      "model": "kimi-k3",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.21,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3-multi-file-1",
+      "phase": "before",
+      "model": "kimi-k3",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.074,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3-debug-1",
+      "phase": "before",
+      "model": "kimi-k3",
+      "task": "debug",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.137,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3-replay-1",
+      "phase": "before",
+      "model": "kimi-k3",
+      "task": "replay",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.242,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3-vision-1",
+      "phase": "before",
+      "model": "kimi-k3",
+      "task": "vision",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.205,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k3-long-context-1",
+      "phase": "before",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 2.122,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-file-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.314,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-multi-file-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.144,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-debug-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code",
+      "task": "debug",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.255,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-replay-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code",
+      "task": "replay",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.094,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-vision-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code",
+      "task": "vision",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.2,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-long-context-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.565,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-highspeed-file-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.088,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-highspeed-multi-file-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.364,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-highspeed-debug-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "debug",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.097,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-highspeed-replay-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "replay",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.147,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-highspeed-vision-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "vision",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.151,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.7-code-highspeed-long-context-1",
+      "phase": "before",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.735,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.6-file-1",
+      "phase": "before",
+      "model": "kimi-k2.6",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.189,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.6-multi-file-1",
+      "phase": "before",
+      "model": "kimi-k2.6",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.418,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.6-debug-1",
+      "phase": "before",
+      "model": "kimi-k2.6",
+      "task": "debug",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.254,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.6-replay-1",
+      "phase": "before",
+      "model": "kimi-k2.6",
+      "task": "replay",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.343,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.6-vision-1",
+      "phase": "before",
+      "model": "kimi-k2.6",
+      "task": "vision",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.134,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "before-kimi-k2.6-long-context-1",
+      "phase": "before",
+      "model": "kimi-k2.6",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.532,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "after-kimi-k3.1-pro-file-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.398,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-file-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.088,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "after-kimi-k3-file-1",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.306,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "after-kimi-k2.7-code-file-1",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.305,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-file-1",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.363,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    },
+    {
+      "run": "after-kimi-k2.6-file-1",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "blocked-funds",
+      "rc": 1,
+      "calls": 1,
+      "input": 0,
+      "output": 0,
+      "cached": 0,
+      "cost": 0,
+      "seconds": 1.192,
+      "reasoningReplays": 0,
+      "balanceBefore": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "balanceAfter": {
+        "available_balance": 0,
+        "voucher_balance": 0,
+        "cash_balance": -0.09476
+      },
+      "behaviorVerified": false
+    }
+  ],
+  "runs": [
+    {
+      "run": "after-kimi-k2.6-debug-20",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "debug",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 9772,
+      "output": 495,
+      "cached": 7168,
+      "cost": 0.00560068,
+      "seconds": 10.487,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-debug-21",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "debug",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7978,
+      "output": 503,
+      "cached": 5632,
+      "cost": 0.00514182,
+      "seconds": 9.499,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-file-20",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 4819,
+      "output": 290,
+      "cached": 2560,
+      "cost": 0.0037156499999999996,
+      "seconds": 6.734,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-file-21",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 4535,
+      "output": 145,
+      "cached": 3072,
+      "cost": 0.00246137,
+      "seconds": 5.232,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-long-context-105",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "long-context",
+      "repeat": 105,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 607958,
+      "output": 2156,
+      "cached": 403456,
+      "cost": 0.26745386,
+      "seconds": 117.938,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 105,
+      "targetTokens": 200000,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-long-context-111",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "long-context",
+      "repeat": 111,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 361256,
+      "output": 2540,
+      "cached": 237568,
+      "cost": 0.16567448,
+      "seconds": 71.078,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 111,
+      "targetTokens": 114526,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-long-context-20",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "long-context",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 298695,
+      "output": 300,
+      "cached": 197632,
+      "cost": 0.12883097,
+      "seconds": 41.151,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-long-context-21",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "long-context",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 2,
+      "input": 199055,
+      "output": 302,
+      "cached": 99328,
+      "cost": 0.11184112999999998,
+      "seconds": 38.119,
+      "reasoningReplays": 1,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-multi-file-20",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "multi-file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7344,
+      "output": 441,
+      "cached": 4096,
+      "cost": 0.005504960000000001,
+      "seconds": 9.446,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-multi-file-21",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "multi-file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7240,
+      "output": 424,
+      "cached": 5120,
+      "cost": 0.0045292,
+      "seconds": 8.562,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-replay-117",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "replay",
+      "repeat": 117,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 51413,
+      "output": 1975,
+      "cached": 32768,
+      "cost": 0.03085563,
+      "seconds": 38.237,
+      "reasoningReplays": 120,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-replay-123",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "replay",
+      "repeat": 123,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 52962,
+      "output": 1686,
+      "cached": 31232,
+      "cost": 0.03238462,
+      "seconds": 36.177,
+      "reasoningReplays": 136,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-replay-20",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "replay",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 54344,
+      "output": 1910,
+      "cached": 36864,
+      "cost": 0.030144240000000003,
+      "seconds": 38.521,
+      "reasoningReplays": 136,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-replay-21",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "replay",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 53508,
+      "output": 2072,
+      "cached": 32768,
+      "cost": 0.03323388,
+      "seconds": 38.77,
+      "reasoningReplays": 120,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-vision-20",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "vision",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5125,
+      "output": 315,
+      "cached": 3878,
+      "cost": 0.00306513,
+      "seconds": 7.63,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.6-vision-21",
+      "phase": "after",
+      "model": "kimi-k2.6",
+      "task": "vision",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5125,
+      "output": 273,
+      "cached": 4281,
+      "cost": 0.00257876,
+      "seconds": 7.615,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-debug-1",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "debug",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 9392,
+      "output": 478,
+      "cached": 7680,
+      "cost": 0.0049976,
+      "seconds": 18.094,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "balanceAfter": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-debug-2",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "debug",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 9635,
+      "output": 399,
+      "cached": 7936,
+      "cost": 0.004717890000000001,
+      "seconds": 16.355,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "balanceAfter": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-debug-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "debug",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 8975,
+      "output": 295,
+      "cached": 7424,
+      "cost": 0.00406401,
+      "seconds": 12.896,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-debug-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "debug",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 9428,
+      "output": 362,
+      "cached": 7680,
+      "cost": 0.0045678,
+      "seconds": 13.44,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-file-1",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 4490,
+      "output": 119,
+      "cached": 2560,
+      "cost": 0.0027958999999999996,
+      "seconds": 7.516,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-file-2",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 2,
+      "input": 2987,
+      "output": 137,
+      "cached": 2560,
+      "cost": 0.00144005,
+      "seconds": 6.609,
+      "reasoningReplays": 1,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "balanceAfter": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-file-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 4521,
+      "output": 142,
+      "cached": 2560,
+      "cost": 0.0029173499999999995,
+      "seconds": 7.212,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-file-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 4532,
+      "output": 123,
+      "cached": 3584,
+      "cost": 0.00207356,
+      "seconds": 6.903,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-debug-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "debug",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 6,
+      "input": 12438,
+      "output": 952,
+      "cached": 10240,
+      "cost": 0.0156834,
+      "seconds": 12.049,
+      "reasoningReplays": 15,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-debug-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "debug",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 10269,
+      "output": 585,
+      "cached": 8704,
+      "cost": 0.010961020000000002,
+      "seconds": 9.292,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-file-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 4523,
+      "output": 137,
+      "cached": 2560,
+      "cost": 0.0057985,
+      "seconds": 4.732,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-file-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 2,
+      "input": 2974,
+      "output": 115,
+      "cached": 2690,
+      "cost": 0.0024818,
+      "seconds": 3.355,
+      "reasoningReplays": 1,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-long-context-104",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "long-context",
+      "repeat": 104,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 610497,
+      "output": 3360,
+      "cached": 405248,
+      "cost": 0.5708473399999999,
+      "seconds": 110.582,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 104,
+      "targetTokens": 200000,
+      "balanceBefore": {
+        "available_balance": 12.58147,
+        "voucher_balance": 0,
+        "cash_balance": 12.58147
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-long-context-110",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "long-context",
+      "repeat": 110,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 2,
+      "input": 264280,
+      "output": 1161,
+      "cached": 131328,
+      "cost": 0.31180144,
+      "seconds": 48.976,
+      "reasoningReplays": 1,
+      "completionWarning": false,
+      "seed": 110,
+      "targetTokens": 130116,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-long-context-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "long-context",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 298810,
+      "output": 361,
+      "cached": 199936,
+      "cost": 0.26672428,
+      "seconds": 34.004,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-long-context-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "long-context",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 298722,
+      "output": 295,
+      "cached": 298240,
+      "cost": 0.11660700000000002,
+      "seconds": 13.521,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-multi-file-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "multi-file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7979,
+      "output": 358,
+      "cached": 6144,
+      "cost": 0.00868522,
+      "seconds": 6.716,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-multi-file-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "multi-file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7027,
+      "output": 301,
+      "cached": 6023,
+      "cost": 0.00660434,
+      "seconds": 6.443,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-replay-116",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "replay",
+      "repeat": 116,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 44145,
+      "output": 1406,
+      "cached": 39168,
+      "cost": 0.03558814,
+      "seconds": 27.65,
+      "reasoningReplays": 120,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-replay-122",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "replay",
+      "repeat": 122,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 43103,
+      "output": 1665,
+      "cached": 37120,
+      "cost": 0.038793299999999996,
+      "seconds": 29.197,
+      "reasoningReplays": 120,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-replay-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "replay",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 43529,
+      "output": 1196,
+      "cached": 38656,
+      "cost": 0.03351598000000001,
+      "seconds": 26.137,
+      "reasoningReplays": 120,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-replay-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "replay",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 43814,
+      "output": 1626,
+      "cached": 38912,
+      "cost": 0.03710835999999999,
+      "seconds": 28.072,
+      "reasoningReplays": 120,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-vision-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "vision",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5121,
+      "output": 249,
+      "cached": 3072,
+      "cost": 0.007052459999999999,
+      "seconds": 6.392,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-highspeed-vision-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code-highspeed",
+      "task": "vision",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5197,
+      "output": 285,
+      "cached": 4096,
+      "cost": 0.0059283800000000005,
+      "seconds": 7.192,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-long-context-103",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "long-context",
+      "repeat": 103,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 606567,
+      "output": 1404,
+      "cached": 403456,
+      "cost": 0.27522809,
+      "seconds": 121.64,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 103,
+      "targetTokens": 200000,
+      "balanceBefore": {
+        "available_balance": 12.58147,
+        "voucher_balance": 0,
+        "cash_balance": 12.58147
+      },
+      "balanceAfter": {
+        "available_balance": 12.58147,
+        "voucher_balance": 0,
+        "cash_balance": 12.58147
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-long-context-109",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "long-context",
+      "repeat": 109,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 432184,
+      "output": 3364,
+      "cached": 286464,
+      "cost": 0.20631816,
+      "seconds": 114.906,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 109,
+      "targetTokens": 140432,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-long-context-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "long-context",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 298986,
+      "output": 412,
+      "cached": 199936,
+      "cost": 0.13373333999999998,
+      "seconds": 47.366,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-long-context-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "long-context",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 298592,
+      "output": 257,
+      "cached": 297984,
+      "cost": 0.058222560000000007,
+      "seconds": 15.312,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-multi-file-1",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 10149,
+      "output": 460,
+      "cached": 8192,
+      "cost": 0.00525563,
+      "seconds": 19.865,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "balanceAfter": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-multi-file-2",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "multi-file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7119,
+      "output": 360,
+      "cached": 5888,
+      "cost": 0.00372817,
+      "seconds": 12.814,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "balanceAfter": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-multi-file-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "multi-file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7205,
+      "output": 363,
+      "cached": 5632,
+      "cost": 0.00401643,
+      "seconds": 12.184,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-multi-file-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "multi-file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 7123,
+      "output": 353,
+      "cached": 5888,
+      "cost": 0.00370397,
+      "seconds": 13.32,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-replay-1",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "replay",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 47898,
+      "output": 1313,
+      "cached": 41472,
+      "cost": 0.019236379999999997,
+      "seconds": 46.619,
+      "reasoningReplays": 136,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "balanceAfter": {
+        "available_balance": 23.27496,
+        "voucher_balance": 4.1370296,
+        "cash_balance": 19.13793
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-replay-115",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "replay",
+      "repeat": 115,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 19,
+      "input": 58235,
+      "output": 1542,
+      "cached": 52224,
+      "cost": 0.02180101,
+      "seconds": 48.506,
+      "reasoningReplays": 171,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-replay-121",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "replay",
+      "repeat": 121,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 52676,
+      "output": 1999,
+      "cached": 46080,
+      "cost": 0.0230174,
+      "seconds": 52.393,
+      "reasoningReplays": 136,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-replay-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "replay",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 60092,
+      "output": 2574,
+      "cached": 54272,
+      "cost": 0.026136680000000002,
+      "seconds": 67.283,
+      "reasoningReplays": 120,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-replay-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "replay",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 18,
+      "input": 66132,
+      "output": 2825,
+      "cached": 59904,
+      "cost": 0.028598360000000003,
+      "seconds": 76.653,
+      "reasoningReplays": 153,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-vision-20",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "vision",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5036,
+      "output": 214,
+      "cached": 4096,
+      "cost": 0.00252724,
+      "seconds": 9.939,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k2.7-code-vision-21",
+      "phase": "after",
+      "model": "kimi-k2.7-code",
+      "task": "vision",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5219,
+      "output": 360,
+      "cached": 4096,
+      "cost": 0.00328509,
+      "seconds": 12.94,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-debug-1",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "debug",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 10941,
+      "output": 509,
+      "cached": 8704,
+      "cost": 0.016957200000000002,
+      "seconds": 15.608,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-debug-2",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "debug",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 11667,
+      "output": 791,
+      "cached": 9728,
+      "cost": 0.0206004,
+      "seconds": 19.202,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-debug-20",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "debug",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 10931,
+      "output": 488,
+      "cached": 8704,
+      "cost": 0.0166122,
+      "seconds": 26.569,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-debug-21",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "debug",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 10933,
+      "output": 537,
+      "cached": 9472,
+      "cost": 0.0152796,
+      "seconds": 25.309,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-file-1",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 2,
+      "input": 3508,
+      "output": 246,
+      "cached": 1536,
+      "cost": 0.0100668,
+      "seconds": 8.952,
+      "reasoningReplays": 1,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-file-2",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5217,
+      "output": 151,
+      "cached": 4608,
+      "cost": 0.0054744,
+      "seconds": 7.55,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-file-20",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5229,
+      "output": 157,
+      "cached": 3072,
+      "cost": 0.0097476,
+      "seconds": 8.602,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-file-21",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5241,
+      "output": 163,
+      "cached": 4608,
+      "cost": 0.0057264,
+      "seconds": 11.452,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-long-context-1",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 299186,
+      "output": 324,
+      "cached": 199936,
+      "cost": 0.3625908,
+      "seconds": 24.812,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-long-context-102",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 102,
+      "solve": false,
+      "status": "failed",
+      "rc": 1,
+      "calls": 2,
+      "input": 1003654,
+      "output": 3115,
+      "cached": 500224,
+      "cost": 1.7070821999999999,
+      "seconds": 147.992,
+      "reasoningReplays": 1,
+      "completionWarning": false,
+      "seed": 102,
+      "targetTokens": 500000,
+      "balanceBefore": {
+        "available_balance": 16.68887,
+        "voucher_balance": 0.84401,
+        "cash_balance": 15.84486
+      },
+      "balanceAfter": {
+        "available_balance": 16.68887,
+        "voucher_balance": 0.84401,
+        "cash_balance": 15.84486
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": false
+    },
+    {
+      "run": "after-kimi-k3-long-context-1020",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 1020,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 1503690,
+      "output": 1625,
+      "cached": 1001728,
+      "cost": 1.8307794,
+      "seconds": 106.05,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 102,
+      "targetTokens": 500000,
+      "balanceBefore": {
+        "available_balance": 12.58147,
+        "voucher_balance": 0,
+        "cash_balance": 12.58147
+      },
+      "balanceAfter": {
+        "available_balance": 12.58147,
+        "voucher_balance": 0,
+        "cash_balance": 12.58147
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-long-context-108",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 108,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 524996,
+      "output": 1233,
+      "cached": 349184,
+      "cost": 0.6506862,
+      "seconds": 48.232,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 108,
+      "targetTokens": 172966,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-long-context-2",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 299100,
+      "output": 301,
+      "cached": 298240,
+      "cost": 0.09656700000000001,
+      "seconds": 27.077,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-long-context-20",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 299182,
+      "output": 341,
+      "cached": 199936,
+      "cost": 0.3628338,
+      "seconds": 30.949,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-long-context-21",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "long-context",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 299100,
+      "output": 315,
+      "cached": 298240,
+      "cost": 0.096777,
+      "seconds": 22.657,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-multi-file-1",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8324,
+      "output": 458,
+      "cached": 6400,
+      "cost": 0.014561999999999999,
+      "seconds": 17.2,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-multi-file-2",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "multi-file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 9057,
+      "output": 810,
+      "cached": 7424,
+      "cost": 0.0192762,
+      "seconds": 20.188,
+      "reasoningReplays": 5,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-multi-file-20",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "multi-file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8386,
+      "output": 506,
+      "cached": 6656,
+      "cost": 0.0147768,
+      "seconds": 16.595,
+      "reasoningReplays": 5,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-multi-file-21",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "multi-file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8366,
+      "output": 481,
+      "cached": 7168,
+      "cost": 0.0129594,
+      "seconds": 17.112,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-replay-1",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "replay",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 51995,
+      "output": 1545,
+      "cached": 46848,
+      "cost": 0.05267039999999999,
+      "seconds": 56.37,
+      "reasoningReplays": 39,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-replay-114",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "replay",
+      "repeat": 114,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 53495,
+      "output": 1688,
+      "cached": 46848,
+      "cost": 0.059315400000000004,
+      "seconds": 66.824,
+      "reasoningReplays": 31,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-replay-120",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "replay",
+      "repeat": 120,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 53889,
+      "output": 1967,
+      "cached": 48896,
+      "cost": 0.059152800000000005,
+      "seconds": 100.375,
+      "reasoningReplays": 47,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-replay-2",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "replay",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 51643,
+      "output": 1605,
+      "cached": 46848,
+      "cost": 0.05251439999999999,
+      "seconds": 58.32,
+      "reasoningReplays": 29,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-replay-20",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "replay",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 18,
+      "input": 69667,
+      "output": 2331,
+      "cached": 62720,
+      "cost": 0.07462200000000001,
+      "seconds": 84.28,
+      "reasoningReplays": 50,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-replay-21",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "replay",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 19,
+      "input": 68105,
+      "output": 2023,
+      "cached": 61952,
+      "cost": 0.0673896,
+      "seconds": 87.871,
+      "reasoningReplays": 37,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-vision-1",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "vision",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5875,
+      "output": 369,
+      "cached": 4441,
+      "cost": 0.0111693,
+      "seconds": 17.881,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-vision-2",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "vision",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5749,
+      "output": 267,
+      "cached": 5042,
+      "cost": 0.0076386,
+      "seconds": 22.549,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-vision-20",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "vision",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5752,
+      "output": 266,
+      "cached": 4441,
+      "cost": 0.009255300000000001,
+      "seconds": 12.092,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3-vision-21",
+      "phase": "after",
+      "model": "kimi-k3",
+      "task": "vision",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5819,
+      "output": 278,
+      "cached": 5042,
+      "cost": 0.0080136,
+      "seconds": 21.363,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "balanceAfter": {
+        "available_balance": 20.80317,
+        "voucher_balance": 2.90115,
+        "cash_balance": 17.90202
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-debug-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "debug",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 11229,
+      "output": 571,
+      "cached": 8960,
+      "cost": 0.012039999999999999,
+      "seconds": 15.422,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-debug-10",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "debug",
+      "repeat": 10,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 11968,
+      "output": 882,
+      "cached": 9472,
+      "cost": 0.015706400000000002,
+      "seconds": 24.238,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "balanceAfter": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-debug-11",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "debug",
+      "repeat": 11,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 12115,
+      "output": 933,
+      "cached": 9984,
+      "cost": 0.0155888,
+      "seconds": 26.553,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "balanceAfter": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-debug-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "debug",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 11284,
+      "output": 622,
+      "cached": 9728,
+      "cost": 0.011277599999999999,
+      "seconds": 16.097,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-debug-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "debug",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 11755,
+      "output": 794,
+      "cached": 9472,
+      "cost": 0.0144004,
+      "seconds": 20.148,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-debug-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "debug",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 11856,
+      "output": 855,
+      "cached": 9984,
+      "cost": 0.0142908,
+      "seconds": 24.326,
+      "reasoningReplays": 9,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-file-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5727,
+      "output": 406,
+      "cached": 4864,
+      "cost": 0.006758800000000001,
+      "seconds": 12.727,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-file-10",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 10,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5873,
+      "output": 485,
+      "cached": 3584,
+      "cost": 0.010144799999999999,
+      "seconds": 20.743,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "balanceAfter": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-file-11",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 11,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5995,
+      "output": 545,
+      "cached": 5120,
+      "cost": 0.008224,
+      "seconds": 17.961,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "balanceAfter": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-file-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5897,
+      "output": 491,
+      "cached": 5120,
+      "cost": 0.007488,
+      "seconds": 13.363,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-file-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5351,
+      "output": 226,
+      "cached": 3328,
+      "cost": 0.0069716000000000005,
+      "seconds": 15.214,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-file-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5365,
+      "output": 231,
+      "cached": 4864,
+      "cost": 0.0042848,
+      "seconds": 12.77,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-debug-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "debug",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 11959,
+      "output": 895,
+      "cached": 9472,
+      "cost": 0.029742400000000002,
+      "seconds": 11.199,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-debug-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "debug",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 12273,
+      "output": 1038,
+      "cached": 10496,
+      "cost": 0.0299672,
+      "seconds": 16.176,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-debug-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "debug",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 12391,
+      "output": 1044,
+      "cached": 9984,
+      "cost": 0.0325048,
+      "seconds": 14.539,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-debug-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "debug",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 5,
+      "input": 12216,
+      "output": 971,
+      "cached": 10496,
+      "cost": 0.0283992,
+      "seconds": 12.668,
+      "reasoningReplays": 10,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "PASS debug\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-file-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5599,
+      "output": 355,
+      "cached": 3328,
+      "cost": 0.0168496,
+      "seconds": 7.772,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-file-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5753,
+      "output": 424,
+      "cached": 4864,
+      "cost": 0.013008800000000001,
+      "seconds": 7.829,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-file-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5713,
+      "output": 404,
+      "cached": 3328,
+      "cost": 0.0182856,
+      "seconds": 9.234,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-file-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 5625,
+      "output": 361,
+      "cached": 4864,
+      "cost": 0.0112368,
+      "seconds": 7.406,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-long-context-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 300125,
+      "output": 830,
+      "cached": 200448,
+      "cost": 0.4553976,
+      "seconds": 18.066,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-long-context-101",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "long-context",
+      "repeat": 101,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 2008333,
+      "output": 3572,
+      "cached": 1504768,
+      "cost": 2.3866536,
+      "seconds": 97.037,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 101,
+      "targetTokens": 500000,
+      "balanceBefore": {
+        "available_balance": 16.68887,
+        "voucher_balance": 0.84401,
+        "cash_balance": 15.84486
+      },
+      "balanceAfter": {
+        "available_balance": 16.68887,
+        "voucher_balance": 0.84401,
+        "cash_balance": 15.84486
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-long-context-107",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "long-context",
+      "repeat": 107,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 683859,
+      "output": 2035,
+      "cached": 454656,
+      "cost": 1.0484432,
+      "seconds": 36.85,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 107,
+      "targetTokens": 225388,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-long-context-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "long-context",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 299660,
+      "output": 567,
+      "cached": 298496,
+      "cost": 0.0756952,
+      "seconds": 12.791,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-long-context-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "long-context",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 399931,
+      "output": 662,
+      "cached": 300288,
+      "cost": 0.47186959999999994,
+      "seconds": 22.298,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-long-context-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "long-context",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 300200,
+      "output": 877,
+      "cached": 298752,
+      "cost": 0.0830824,
+      "seconds": 19.155,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-multi-file-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8844,
+      "output": 731,
+      "cached": 6912,
+      "cost": 0.023730400000000002,
+      "seconds": 9.452,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-multi-file-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "multi-file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8834,
+      "output": 739,
+      "cached": 7424,
+      "cost": 0.0219048,
+      "seconds": 10.569,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-multi-file-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "multi-file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8826,
+      "output": 726,
+      "cached": 6912,
+      "cost": 0.0235584,
+      "seconds": 10.197,
+      "reasoningReplays": 5,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-multi-file-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "multi-file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8608,
+      "output": 575,
+      "cached": 7424,
+      "cost": 0.017720800000000002,
+      "seconds": 9.25,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-replay-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "replay",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 18,
+      "input": 69829,
+      "output": 2946,
+      "cached": 62976,
+      "cost": 0.0989272,
+      "seconds": 44.143,
+      "reasoningReplays": 105,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-replay-113",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "replay",
+      "repeat": 113,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 63075,
+      "output": 2424,
+      "cached": 55552,
+      "cost": 0.08968240000000001,
+      "seconds": 43.399,
+      "reasoningReplays": 88,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-replay-119",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "replay",
+      "repeat": 119,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 61064,
+      "output": 2198,
+      "cached": 55552,
+      "cost": 0.0771184,
+      "seconds": 40.338,
+      "reasoningReplays": 88,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-replay-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "replay",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 65023,
+      "output": 2961,
+      "cached": 58880,
+      "cost": 0.09556799999999999,
+      "seconds": 44.261,
+      "reasoningReplays": 88,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-replay-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "replay",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 65759,
+      "output": 2698,
+      "cached": 59392,
+      "cost": 0.09130640000000001,
+      "seconds": 40.326,
+      "reasoningReplays": 87,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-replay-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "replay",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 67417,
+      "output": 2883,
+      "cached": 60928,
+      "cost": 0.09580160000000001,
+      "seconds": 42.749,
+      "reasoningReplays": 87,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-vision-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "vision",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8801,
+      "output": 662,
+      "cached": 7001,
+      "cost": 0.021840199999999997,
+      "seconds": 12.193,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-vision-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "vision",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 9409,
+      "output": 860,
+      "cached": 8114,
+      "cost": 0.0240028,
+      "seconds": 12.342,
+      "reasoningReplays": 5,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-vision-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "vision",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 6205,
+      "output": 514,
+      "cached": 4697,
+      "cost": 0.0172514,
+      "seconds": 8.758,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-highspeed-vision-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro-highspeed",
+      "task": "vision",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8649,
+      "output": 604,
+      "cached": 7346,
+      "cost": 0.0187612,
+      "seconds": 10.103,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-long-context-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 399890,
+      "output": 614,
+      "cached": 300288,
+      "cost": 0.26540159999999996,
+      "seconds": 24.492,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-long-context-100",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 100,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 2011673,
+      "output": 3595,
+      "cached": 1508096,
+      "cost": 2.3508032,
+      "seconds": 111.845,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 100,
+      "targetTokens": 500000,
+      "balanceBefore": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "balanceAfter": {
+        "available_balance": 20.085379,
+        "voucher_balance": 2.54226,
+        "cash_balance": 17.54312
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-long-context-106",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 106,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 879267,
+      "output": 1944,
+      "cached": 586240,
+      "cost": 1.307958,
+      "seconds": 56.35,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 106,
+      "targetTokens": 290786,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-long-context-112",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 112,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 326917,
+      "output": 1706,
+      "cached": 218368,
+      "cost": 0.4944076,
+      "seconds": 36.232,
+      "reasoningReplays": 3,
+      "completionWarning": false,
+      "seed": 112,
+      "targetTokens": 106242,
+      "balanceBefore": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "balanceAfter": {
+        "available_balance": 10.4755,
+        "voucher_balance": 0,
+        "cash_balance": 10.4755
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-long-context-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 3,
+      "input": 299396,
+      "output": 433,
+      "cached": 298496,
+      "cost": 0.0658292,
+      "seconds": 12.782,
+      "reasoningReplays": 2,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "balanceAfter": {
+        "available_balance": 24.75378,
+        "voucher_balance": 4.87644,
+        "cash_balance": 19.87734
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-long-context-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 400325,
+      "output": 809,
+      "cached": 300544,
+      "cost": 0.26776079999999997,
+      "seconds": 33.666,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-long-context-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "long-context",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 400632,
+      "output": 891,
+      "cached": 399104,
+      "cost": 0.0917868,
+      "seconds": 41.141,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": 98000,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-multi-file-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "multi-file",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8821,
+      "output": 716,
+      "cached": 6912,
+      "cost": 0.0123604,
+      "seconds": 12.79,
+      "reasoningReplays": 5,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-multi-file-10",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "multi-file",
+      "repeat": 10,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8786,
+      "output": 734,
+      "cached": 6912,
+      "cost": 0.012470400000000001,
+      "seconds": 19.687,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "balanceAfter": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-multi-file-11",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "multi-file",
+      "repeat": 11,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8750,
+      "output": 612,
+      "cached": 7424,
+      "cost": 0.0102568,
+      "seconds": 19.011,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "balanceAfter": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-multi-file-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "multi-file",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 9070,
+      "output": 808,
+      "cached": 7424,
+      "cost": 0.0128568,
+      "seconds": 13.508,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-multi-file-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "multi-file",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8833,
+      "output": 749,
+      "cached": 6912,
+      "cost": 0.0127144,
+      "seconds": 20.984,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-multi-file-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "multi-file",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8839,
+      "output": 682,
+      "cached": 7424,
+      "cost": 0.011134799999999999,
+      "seconds": 20.256,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "PASS multi-file\n",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 64771,
+      "output": 2638,
+      "cached": 58368,
+      "cost": 0.05085959999999999,
+      "seconds": 74.161,
+      "reasoningReplays": 87,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-10",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 10,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 68418,
+      "output": 3272,
+      "cached": 60928,
+      "cost": 0.059885600000000004,
+      "seconds": 77.99,
+      "reasoningReplays": 88,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.67258,
+        "voucher_balance": 3.83585,
+        "cash_balance": 18.836731
+      },
+      "balanceAfter": {
+        "available_balance": 22.602839,
+        "voucher_balance": 3.80098,
+        "cash_balance": 18.801859
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-11",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 11,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 16,
+      "input": 66590,
+      "output": 3189,
+      "cached": 60416,
+      "cost": 0.05632120000000001,
+      "seconds": 72.412,
+      "reasoningReplays": 71,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.602839,
+        "voucher_balance": 3.80098,
+        "cash_balance": 18.801859
+      },
+      "balanceAfter": {
+        "available_balance": 22.602839,
+        "voucher_balance": 3.80098,
+        "cash_balance": 18.801859
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-118",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 118,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 19,
+      "input": 79466,
+      "output": 3849,
+      "cached": 71936,
+      "cost": 0.0781772,
+      "seconds": 90.387,
+      "reasoningReplays": 115,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "balanceAfter": {
+        "available_balance": 5.98956,
+        "voucher_balance": 0,
+        "cash_balance": 5.98956
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 66862,
+      "output": 2782,
+      "cached": 60672,
+      "cost": 0.0523344,
+      "seconds": 78.915,
+      "reasoningReplays": 87,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 74146,
+      "output": 3576,
+      "cached": 66560,
+      "cost": 0.06424400000000001,
+      "seconds": 72.779,
+      "reasoningReplays": 88,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 66591,
+      "output": 2767,
+      "cached": 60416,
+      "cost": 0.0521032,
+      "seconds": 82.383,
+      "reasoningReplays": 88,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-30",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 30,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 64775,
+      "output": 2686,
+      "cached": 57088,
+      "cost": 0.0649156,
+      "seconds": 90.162,
+      "reasoningReplays": 88,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-replay-31",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "replay",
+      "repeat": 31,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 17,
+      "input": 69881,
+      "output": 4009,
+      "cached": 62720,
+      "cost": 0.077196,
+      "seconds": 99.238,
+      "reasoningReplays": 86,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "balanceAfter": {
+        "available_balance": 21.92034,
+        "voucher_balance": 3.45973,
+        "cash_balance": 18.46061
+      },
+      "grader": "",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-vision-1",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "vision",
+      "repeat": 1,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8958,
+      "output": 700,
+      "cached": 7001,
+      "cost": 0.0123142,
+      "seconds": 23.595,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-vision-2",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "vision",
+      "repeat": 2,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8618,
+      "output": 589,
+      "cached": 7346,
+      "cost": 0.009903200000000001,
+      "seconds": 20.131,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-vision-20",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "vision",
+      "repeat": 20,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 8695,
+      "output": 662,
+      "cached": 7001,
+      "cost": 0.0114082,
+      "seconds": 40.998,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "after-kimi-k3.1-pro-vision-21",
+      "phase": "after",
+      "model": "kimi-k3.1-pro",
+      "task": "vision",
+      "repeat": 21,
+      "solve": true,
+      "status": "solved",
+      "rc": 0,
+      "calls": 4,
+      "input": 9152,
+      "output": 795,
+      "cached": 7602,
+      "cost": 0.0125704,
+      "seconds": 21.978,
+      "reasoningReplays": 6,
+      "completionWarning": false,
+      "seed": 0,
+      "targetTokens": null,
+      "balanceBefore": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "balanceAfter": {
+        "available_balance": 22.484,
+        "voucher_balance": 3.74156,
+        "cash_balance": 18.74244
+      },
+      "grader": "independent JSON oracle",
+      "behaviorVerified": true
+    },
+    {
+      "run": "before-kimi-k3.1-pro-file-1",
+      "phase": "before",
+      "model": "kimi-k3.1-pro",
+      "task": "file",
+      "repeat": 1,
+      "solve": false,
+      "status": "failed-completion-contract",
+      "rc": 0,
+      "calls": 8,
+      "input": 30857,
+      "output": 6374,
+      "cached": 21248,
+      "cost": 0.0872076,
+      "seconds": 88.17,
+      "reasoningReplays": 22,
+      "balanceBefore": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "balanceAfter": {
+        "available_balance": 24.9991,
+        "voucher_balance": 4.9991,
+        "cash_balance": 20
+      },
+      "grader": "exact bytes",
+      "behaviorVerified": true,
+      "artifactSolve": true,
+      "completionWarning": true
+    }
+  ],
+  "ledger": {
+    "cap": 24,
+    "balanceFloor": 1,
+    "spent": 20.244916724999996,
+    "priorSpend": 0.191416725,
+    "lastBalance": {
+      "available_balance": 4.9456,
+      "voucher_balance": 0,
+      "cash_balance": 4.9456
+    },
+    "usageSpend": 20.014156170000007
+  },
+  "checks": {
+    "typecheck": "TypeScript and test-support typechecks passed with the pinned npm 11.17.0 in the isolated home.",
+    "unit": "304 targeted TypeScript tests passed across 12 files after merging release 0.19.17, including six-model split tool/schema tests and model-family regressions.",
+    "wire": "10 wire capture and budget-ledger tests passed, including append-only calibration and bounded diagnostic retry.",
+    "fixtures": "12 Python fixture, suite budget and legacy price reconstruction tests passed.",
+    "build": "Final build passed after merging release 0.19.17, including launcher preflight, package entrypoints and generated SDK type parity. Built revision: 37cf50406e0b.",
+    "contracts": "Live split tool/schema confirmation passed for all six native models; raw combined-contract failures remain documented.",
+    "stressFix": "The identical K3 seed 102 at 500k tokens passed under repeat 1020 after the preflight fix; both subsequent requests reused the conservative calibration."
+  },
+  "models": [
+    {
+      "id": "kimi-k2.6",
+      "supports_image_in": true,
+      "supports_video_in": true,
+      "supports_reasoning": true,
+      "context_length": 262144,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "tools": {
+        "dynamic_load": false
+      },
+      "limit": {
+        "context": 262144
+      }
+    },
+    {
+      "id": "kimi-k3.1-pro-highspeed",
+      "supports_image_in": true,
+      "supports_video_in": true,
+      "supports_reasoning": true,
+      "context_length": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "tools": {
+        "dynamic_load": true
+      },
+      "limit": {
+        "context": 1048576
+      }
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "supports_image_in": true,
+      "supports_video_in": true,
+      "supports_reasoning": true,
+      "context_length": 262144,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "tools": {
+        "dynamic_load": false
+      },
+      "limit": {
+        "context": 262144
+      }
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "supports_image_in": true,
+      "supports_video_in": true,
+      "supports_reasoning": true,
+      "context_length": 262144,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "tools": {
+        "dynamic_load": false
+      },
+      "limit": {
+        "context": 262144
+      }
+    },
+    {
+      "id": "kimi-k3",
+      "supports_image_in": true,
+      "supports_video_in": true,
+      "supports_reasoning": true,
+      "context_length": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "tools": {
+        "dynamic_load": true
+      },
+      "limit": {
+        "context": 1048576
+      }
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "supports_image_in": true,
+      "supports_video_in": true,
+      "supports_reasoning": true,
+      "context_length": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "tools": {
+        "dynamic_load": true
+      },
+      "limit": {
+        "context": 1048576
+      }
+    }
+  ],
+  "contractProbes": {
+    "schema-tools-contract": [
+      {
+        "model": "kimi-k3.1-pro",
+        "statuses": [
+          200
+        ],
+        "solve": false,
+        "error": {
+          "type": "unexpected-tool-contract"
+        }
+      },
+      {
+        "model": "kimi-k3.1-pro-highspeed",
+        "statuses": [
+          200
+        ],
+        "solve": false,
+        "error": {
+          "type": "unexpected-tool-contract"
+        }
+      },
+      {
+        "model": "kimi-k3",
+        "statuses": [
+          200
+        ],
+        "solve": false,
+        "error": {
+          "type": "unexpected-tool-contract"
+        }
+      },
+      {
+        "model": "kimi-k2.7-code",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": true
+      },
+      {
+        "model": "kimi-k2.7-code-highspeed",
+        "statuses": [
+          200
+        ],
+        "solve": false,
+        "error": {
+          "type": "unexpected-tool-contract"
+        }
+      },
+      {
+        "model": "kimi-k2.6",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": false,
+        "error": {
+          "type": "invalid-schema-content"
+        }
+      }
+    ],
+    "split-schema-tools-contract": [
+      {
+        "model": "kimi-k3.1-pro",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": true
+      },
+      {
+        "model": "kimi-k3.1-pro-highspeed",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": true
+      },
+      {
+        "model": "kimi-k3",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": true
+      },
+      {
+        "model": "kimi-k2.7-code",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": true
+      },
+      {
+        "model": "kimi-k2.7-code-highspeed",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": true
+      },
+      {
+        "model": "kimi-k2.6",
+        "statuses": [
+          200,
+          200
+        ],
+        "solve": true
+      }
+    ]
+  },
+  "requestLedger": "request-ledger.jsonl"
+}

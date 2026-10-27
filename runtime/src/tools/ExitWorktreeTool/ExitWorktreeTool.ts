@@ -186,7 +186,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
       return {
         result: false,
         message:
-          'No-op: there is no active EnterWorktree session to exit. This tool only operates on worktrees created by EnterWorktree in the current session — it will not touch worktrees created manually or in a previous session. No filesystem changes were made.',
+          'No-op: there is no active EnterWorktree session to exit. This tool only operates on worktrees created by EnterWorktree in the current session: it will not touch worktrees created manually or in a previous session. No filesystem changes were made.',
         errorCode: 1,
       }
     }
@@ -202,7 +202,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
       if (summary === null) {
         return {
           result: false,
-          message: `Could not verify worktree state at ${session.worktreePath}. Refusing to remove without explicit confirmation. Re-invoke with discard_changes: true to proceed — or use action: "keep" to preserve the worktree.`,
+          message: `Could not verify worktree state at ${session.worktreePath}. Refusing to remove without explicit confirmation. Re-invoke with discard_changes: true to proceed, or use action: "keep" to preserve the worktree.`,
           errorCode: 3,
         }
       }
@@ -221,7 +221,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
         }
         return {
           result: false,
-          message: `Worktree has ${parts.join(' and ')}. Removing will discard this work permanently. Confirm with the user, then re-invoke with discard_changes: true — or use action: "keep" to preserve the worktree.`,
+          message: `Worktree has ${parts.join(' and ')}. Removing will discard this work permanently. Confirm with the user, then re-invoke with discard_changes: true, or use action: "keep" to preserve the worktree.`,
           errorCode: 2,
         }
       }

@@ -1,5 +1,5 @@
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProviderAuthReadContext } from "../../utils/auth.js";
 import { renderToString } from "../../utils/staticRender.js";
@@ -97,6 +97,8 @@ describe("StatusNotices coverage", () => {
     mocks.subscriber = false;
   });
 
+  afterEach(() => vi.unstubAllEnvs());
+
   it("renders daemon startup guidance and then reuses loaded memory diagnostics", async () => {
     const { StatusNotices } = await import("./StatusNotices.js");
     const daemonDisabledAuthContext = providerAuthContextWithEnvironment({
@@ -135,4 +137,22 @@ describe("StatusNotices coverage", () => {
     expect(memoryOutput).toContain("/memory · open");
     expect(memoryOutput).not.toContain("AgenC daemon autostart is disabled");
   });
+  it("shows the CLI-only autostart failure outside the provider snapshot", async () => {
+    const { setCoreOnlyEnvironmentVariable, userRuntimeEnvironment } = await import("../../../src/utils/runtimeEnvironment.js");
+    vi.stubEnv("AGENC_DAEMON_AUTOSTART_FAILURE", "");
+    const reason = "protected directory chain permits untrusted mutation: /private/home; remove group/world write access before retrying";
+    setCoreOnlyEnvironmentVariable("AGENC_DAEMON_AUTOSTART_FAILURE", reason);
+    const context = providerAuthContextWithEnvironment(userRuntimeEnvironment(process.env));
+    expect(context.environment.AGENC_DAEMON_AUTOSTART_FAILURE).not.toBe(reason);
+    const { StatusNotices } = await import("./StatusNotices.js");
+    const output = await renderToString(
+      <StatusNotices homeContext={context.home} providerAuthContext={context} stateRepository={TEST_RUNTIME_STATE_REPOSITORY} />,
+      120,
+    );
+    expect(output).toContain("daemon autostart failed");
+    expect(output).toContain("untrusted mutation");
+    expect(output).toContain("agenc daemon start");
+  });
+
+
 });

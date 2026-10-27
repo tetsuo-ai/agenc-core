@@ -39,7 +39,8 @@ describe("HelpV2 General", () => {
 
     expect(output).toContain("AgenC understands your codebase");
     expect(output).toContain("Shortcuts");
-    expect(output).toContain("! for bash mode");
-    expect(output).toContain("shift + tab to cycle modes");
+    expect(output).toMatch(/!\s+run a shell command/);
+    expect(output).toContain("shift+tab or alt+m");
+    expect(output).toContain("change mode");
   });
 });

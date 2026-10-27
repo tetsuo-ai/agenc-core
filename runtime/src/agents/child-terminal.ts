@@ -118,7 +118,7 @@ export function classifyChildFailure(provider: string, error: unknown): {
   const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
   const status = statusOf(error);
   if (error instanceof StreamProgressError)
-    return { reason: error.reason === "stream_loop" ? "model_loop" : "no_progress", retryable: false };
+    return { reason: (error.reason === "stream_loop" || error.reason === "stream_degenerate") ? "model_loop" : "no_progress", retryable: false };
   if (error instanceof LLMModelUnavailableError)
     return { reason: "model_unavailable", retryable: false };
   if (error instanceof LLMRateLimitError || status === 429) {

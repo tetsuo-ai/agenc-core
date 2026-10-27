@@ -232,6 +232,16 @@ describe("mcpCommand", () => {
     expect(text.split("\n")).toHaveLength(2);
   });
 
+  it("removes session additions through the command manager", async () => {
+    const removeServer = vi.fn(async serverName => ({ serverName, success: true, toolCount: 0 }));
+    const result = await mcpCommand.execute({ session: { services: { mcpManager: { removeServer } } } as unknown as Session,
+      argsRaw: "remove echo", cwd: "/workspace", home: "/private" });
+    expect(result).toMatchObject({ kind: "text", text: 'MCP server "echo" removed from this session.' });
+    expect(removeServer).toHaveBeenCalledWith("echo");
+    expect(parseMcpArgs("remove").kind).toBe("error");
+    expect(parseMcpArgs("remove echo extra").kind).toBe("error");
+  });
+
   it("reports reconnect, enable, and disable results", async () => {
     const reconnectServer = vi.fn(async (serverName: string) => ({
       serverName,

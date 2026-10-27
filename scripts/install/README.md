@@ -31,3 +31,21 @@ sh -n scripts/install/install.sh
 pwsh -NoLogo -NoProfile -Command \
   "\$null = [scriptblock]::Create((Get-Content -Raw scripts/install/install.ps1))"
 ```
+
+## Windows PATH
+
+`install.ps1` adds the shim folder (`%LOCALAPPDATA%\agenc\bin`, or
+`<AGENC_INSTALL_PREFIX>\bin`) to the user `Path` in `HKCU\Environment` when it
+is not already an entry. It appends the folder once, keeps the existing value
+and its registry type, and never reads or writes the machine `Path`. The
+session that ran the installer gets the folder too. Open a new terminal to use
+`agenc` elsewhere.
+
+Set `AGENC_NO_MODIFY_PATH=1` to leave `Path` unchanged:
+
+```powershell
+$env:AGENC_NO_MODIFY_PATH = "1"; iwr -useb https://get.agenc.ag/install.ps1 | iex
+```
+
+Do not use `setx PATH`. It copies the machine `Path` into the user `Path` and
+cuts the value at 1024 characters.

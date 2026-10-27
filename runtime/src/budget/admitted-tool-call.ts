@@ -1,3 +1,7 @@
+import { toolIsSideEffectFree } from "../tools/side-effect-free.js";
+import { markReadOnlyToolTiming } from "../tools/stage-timing.js";
+import { toolStage } from "../tools/stage-timing.js";
+import { interruptedExecReport } from "../tools/interrupted-exec-report.js";
 import { oneShotFastModeActive, requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 /** Shared M3 boundary for approved tool effects. */
 
@@ -53,6 +57,8 @@ export interface AdmittedToolCallOptions {
   readonly tool: Tool;
   readonly args: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
+  /** Effect-capable post/failure hooks retain the durable boundary. */
+  readonly requireDurable?: boolean;
   /**
    * Suffix appended to the persisted admission stepId for PHYSICAL
    * re-dispatches of the same logical tool call (transient retry, sandbox
@@ -756,8 +762,9 @@ function createDispatchContext(
   };
 }
 
-function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
+function liveIdentity(context: EffectJournalContext, session: Session): LiveEffectIdentity {
   return {
+    sessionId: session.conversationId,
     runId: context.runId,
     stepId: context.stepId,
     callId: context.callId,
@@ -822,7 +829,49 @@ export function flushOneShotEffectJournal(session: Session): void {
 export async function runAdmittedToolCall(
   params: AdmittedToolCallOptions,
 ): Promise<ToolDispatchResult> {
-  if (oneShotFastModeActive() && !requiresAtomicSpendAdmission(params.session)) {
+  return toolStage("admission", () => runAdmittedToolCallTimed({ ...params,
+    invoke: context => toolStage("permission_policy", () => params.invoke(context)),
+  }));
+}
+
+async function runAdmittedToolCallTimed(
+  params: AdmittedToolCallOptions,
+): Promise<ToolDispatchResult> {
+  // Permission, sandbox, protected paths, read proofs, hooks and result
+  // sealing remain in invoke. The completion is still appended canonically.
+  if (params.requireDurable !== true && toolIsSideEffectFree(params.tool)) {
+    assertNoLiveUnknownEffect(params.session, "idempotent");
+    params.session.rolloutStore?.assertToolAdmissionAllowed("idempotent");
+    if (params.session.rolloutStore == null && params.session.services?.admissionRequired !== false) {
+      throw new AdmissionDeniedError("read_transcript_unavailable");
+    }
+    const observation = params.session.services?.executionAdmission?.tryAcquireObservation?.({
+      stepId: `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`,
+      kind: "tool_exec", sessionId: params.session.conversationId, parentScopeId: params.turnId,
+      maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0,
+    }, params.signal);
+    if (observation !== undefined || params.session.services?.admissionRequired === false) {
+      markReadOnlyToolTiming();
+      const dispatch = createDispatchContext(observation?.signal ?? params.signal);
+      try {
+        dispatch.context.signal.throwIfAborted();
+        const result = await params.invoke(dispatch.context);
+        // Like the durable path for an idempotent call, a cancellation that
+        // arrives after the read finished does not discard its result.
+        observation?.release();
+        return result;
+      } catch (error) {
+        // Even an abort-ignoring read keeps live capacity until physically
+        // settled. It needs no durable unknown-effect poison or usage hold.
+        const pending = readPendingPhysicalSettlement(error);
+        if (pending && observation) {
+          void pending.settlement.then(() => observation.release(), () => observation.release());
+        } else observation?.release();
+        throw error;
+      } finally { dispatch.cleanup(); }
+    }
+  }
+  if (oneShotFastModeActive(String(params.session.conversationId)) && !requiresAtomicSpendAdmission(params.session)) {
     const category = recoveryCategory(params.tool);
     assertNoLiveUnknownEffect(params.session, category);
     const startedAt = new Date().toISOString();
@@ -843,6 +892,7 @@ export async function runAdmittedToolCall(
           (result.isError === true && disposition?.disposition !== "confirmed_committed" &&
             disposition?.disposition !== "confirmed_no_effect"))) {
         poisonLiveEffect(params.session, {
+          sessionId: params.session.conversationId,
           runId: params.session.services.executionAdmission?.scope.runId ?? params.session.conversationId,
           stepId: `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`,
           callId: params.callId, toolName: params.tool.name, recoveryCategory: category,
@@ -999,13 +1049,16 @@ export async function runAdmittedToolCall(
 
     hitM4DurabilityFailpoint("before_tool_spawn");
     const result = await params.invoke(dispatch.context);
-    const lateCancellation = cancellationAfterDispatch(
+    let lateCancellation = cancellationAfterDispatch(
       lease?.signal ?? dispatch.context.signal,
     );
     const recordedAt = new Date().toISOString();
     const disposition = validateToolEffectDispositionEvidence(
       result.effectDisposition,
     );
+    if (lateCancellation !== undefined && boundaryCrossed && params.tool.name === "exec_command") {
+      lateCancellation = interruptedExecReport(lateCancellation, result) ?? lateCancellation;
+    }
     let commit: EffectEventCommit;
 
     if (!boundaryCrossed) {
@@ -1023,7 +1076,7 @@ export async function runAdmittedToolCall(
           disposition?.disposition !== "confirmed_committed" &&
           disposition?.disposition !== "confirmed_no_effect"))
     ) {
-      poisonLiveEffect(params.session, liveIdentity(journal));
+      poisonLiveEffect(params.session, liveIdentity(journal, params.session));
       commit = appendEffectUnknownOutcome(params.session, journal, {
         reason:
           disposition?.disposition === "remains_unknown"
@@ -1162,10 +1215,10 @@ export async function runAdmittedToolCall(
         // This synchronous poison is the immediate retry/mutation gate. Durable
         // evidence is deliberately deferred so storage latency cannot replace
         // or delay the typed caller timeout/abort.
-        poisonLiveEffect(params.session, liveIdentity(journal));
+        poisonLiveEffect(params.session, liveIdentity(journal, params.session));
       }
 
-      const identity = liveIdentity(journal);
+      const identity = liveIdentity(journal, params.session);
       const observation = registerEffectSettlementObserver(params.session, {
         identity,
         settlement: pending.settlement,
@@ -1352,7 +1405,7 @@ export async function runAdmittedToolCall(
       effectClosed = true;
       requireEffectProjection(commit);
     } else if (category !== "idempotent") {
-      poisonLiveEffect(params.session, liveIdentity(journal));
+      poisonLiveEffect(params.session, liveIdentity(journal, params.session));
       const commit = appendEffectUnknownOutcome(params.session, journal, {
         reason: dispatch.context.signal.aborted
           ? "tool_cancelled_after_effect_boundary"

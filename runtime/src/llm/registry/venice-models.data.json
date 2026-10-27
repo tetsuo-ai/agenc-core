@@ -1,0 +1,174 @@
+{
+  "data": [
+    {
+      "context_length": 1000000,
+      "created": 1781568000,
+      "id": "zai-org-glm-5-2",
+      "model_spec": {
+        "pricing": {
+          "input": {
+            "usd": 1.4,
+            "diem": 1.4
+          },
+          "cache_input": {
+            "usd": 0.26,
+            "diem": 0.26
+          },
+          "output": {
+            "usd": 4.4,
+            "diem": 4.4
+          }
+        },
+        "availableContextTokens": 1000000,
+        "maxCompletionTokens": 131072,
+        "capabilities": {
+          "optimizedForCode": true,
+          "quantization": "fp8",
+          "supportsAudioInput": false,
+          "supportsFunctionCalling": true,
+          "supportsLogProbs": false,
+          "supportsMultipleImages": false,
+          "supportsReasoning": true,
+          "supportsReasoningEffort": true,
+          "reasoningEffortOptions": [
+            "none",
+            "high",
+            "max"
+          ],
+          "defaultReasoningEffort": "max",
+          "supportsResponseSchema": true,
+          "supportsTeeAttestation": false,
+          "supportsE2EE": false,
+          "supportsVideoInput": false,
+          "supportsVision": false,
+          "supportsWebSearch": true,
+          "supportsXSearch": false
+        },
+        "description": "GLM-5.2 is the next-generation large language model developed by Zhiyuan AI, featuring significantly enhanced reasoning capabilities, improved instruction following, and support for multiple languages. Supports large context windows for processing extensive text and detailed analysis with fast inference speed.",
+        "name": "GLM 5.2",
+        "modelSource": "https://huggingface.co/zai-org/GLM-5.2",
+        "offline": false,
+        "privacy": "private",
+        "traits": [
+          "default",
+          "function_calling_default"
+        ]
+      },
+      "object": "model",
+      "owned_by": "venice.ai",
+      "type": "text"
+    },
+    {
+      "context_length": 256000,
+      "created": 1771977600,
+      "id": "qwen3-5-35b-a3b",
+      "model_spec": {
+        "pricing": {
+          "input": {
+            "usd": 0.15,
+            "diem": 0.15
+          },
+          "cache_input": {
+            "usd": 0.05,
+            "diem": 0.05
+          },
+          "output": {
+            "usd": 1,
+            "diem": 1
+          }
+        },
+        "availableContextTokens": 256000,
+        "maxCompletionTokens": 16384,
+        "capabilities": {
+          "optimizedForCode": true,
+          "quantization": "not-available",
+          "supportsAudioInput": false,
+          "supportsFunctionCalling": true,
+          "supportsLogProbs": true,
+          "supportsMultipleImages": true,
+          "maxImages": 10,
+          "supportsReasoning": true,
+          "supportsReasoningEffort": true,
+          "reasoningEffortOptions": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "defaultReasoningEffort": "low",
+          "supportsResponseSchema": true,
+          "supportsTeeAttestation": false,
+          "supportsE2EE": false,
+          "supportsVideoInput": true,
+          "supportsVision": true,
+          "supportsWebSearch": true,
+          "supportsXSearch": false
+        },
+        "constraints": {
+          "temperature": {
+            "default": 1
+          },
+          "top_p": {
+            "default": 0.95
+          },
+          "repetition_penalty": {
+            "default": 1
+          }
+        },
+        "description": "Qwen 3.5 35B A3B is a highly efficient MoE model with 35B total parameters and only 3B active parameters. It surpasses the larger Qwen3-235B-A22B while being 6.7x smaller, excelling at reasoning, coding, and general knowledge tasks.",
+        "name": "Qwen 3.5 35B A3B",
+        "modelSource": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B",
+        "offline": false,
+        "privacy": "private",
+        "traits": []
+      },
+      "object": "model",
+      "owned_by": "venice.ai",
+      "type": "text"
+    },
+    {
+      "context_length": 128000,
+      "created": 1743897600,
+      "id": "llama-3.3-70b",
+      "model_spec": {
+        "pricing": {
+          "input": {
+            "usd": 0.7,
+            "diem": 0.7
+          },
+          "output": {
+            "usd": 2.8,
+            "diem": 2.8
+          }
+        },
+        "availableContextTokens": 128000,
+        "maxCompletionTokens": 4096,
+        "capabilities": {
+          "optimizedForCode": false,
+          "quantization": "fp8",
+          "supportsAudioInput": false,
+          "supportsFunctionCalling": true,
+          "supportsLogProbs": false,
+          "supportsMultipleImages": false,
+          "supportsReasoning": false,
+          "supportsReasoningEffort": false,
+          "supportsResponseSchema": false,
+          "supportsTeeAttestation": false,
+          "supportsE2EE": false,
+          "supportsVideoInput": false,
+          "supportsVision": false,
+          "supportsWebSearch": true,
+          "supportsXSearch": false
+        },
+        "name": "Llama 3.3 70B",
+        "modelSource": "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct",
+        "offline": false,
+        "privacy": "private",
+        "traits": []
+      },
+      "object": "model",
+      "owned_by": "venice.ai",
+      "type": "text"
+    }
+  ]
+}

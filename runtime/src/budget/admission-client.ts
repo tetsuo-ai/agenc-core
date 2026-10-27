@@ -22,6 +22,7 @@ export interface AdmissionClientScope {
   readonly deadlineAt?: string;
   readonly maxCostUsd?: number;
   readonly maxTokens?: number;
+  readonly maxModelCalls?: number;
   /** Durable assignment identity when a keep-alive worker has a task cap. */
   readonly taskId?: string;
   /** Any run or period allocation imposes a hard monetary ceiling. */
@@ -64,6 +65,12 @@ export interface AdmissionRunCancellationSummary {
 
 export interface ExecutionAdmissionClient {
   readonly scope: AdmissionClientScope;
+  /** Zero-charge observation: live capacity/cancellation, no durable work item.
+   * Undefined falls back to ordinary admission when capacity is unavailable. */
+  tryAcquireObservation?(input: AdmissionAcquireInput, signal?: AbortSignal): {
+    readonly signal: AbortSignal;
+    release(): void;
+  } | undefined;
   /** Release this session's daemon-owned workspace lease after its last child drains. */
   release?(): void;
   /**
@@ -128,6 +135,7 @@ export interface ExecutionAdmissionClient {
     /** Additional cap for this child run, or for taskId when supplied. */
     readonly maxCostUsd?: number;
     readonly maxTokens?: number;
+    readonly maxModelCalls?: number;
     /** Stable assignment identity. Rebinding it preserves spent and held usage. */
     readonly taskId?: string;
   }): ExecutionAdmissionClient;
@@ -148,6 +156,10 @@ export interface ExecutionAdmissionClient {
     readonly limit?: number;
   }): readonly AdmissionJournalEvent[];
   getUsageSummary?(): AdmissionUsageSummary;
+  /** Root task spend, including dispatched attempts whose usage remains unknown. */
+  /** Trusted operator action; changes only the root task token allowance. Zero removes it. */
+  setTaskTokenBudget?(tokens: number): number;
+  getTaskBudgetUsage?(): { readonly tokens: number; readonly calls: number };
   /** This bound run/task's usage only, excluding delegated descendants. */
   getDirectUsageSummary?(): AdmissionUsageSummary;
   /** Snapshot only. Minimum remaining dollars across durable task, ancestor

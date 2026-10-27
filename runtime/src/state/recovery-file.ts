@@ -82,6 +82,7 @@ export interface PinnedCanonicalJournalReplay {
   ): PinnedCanonicalJournalProof;
   /** Final synchronous boundary for the surrounding SQLite transaction. */
   assertPinned(): void;
+  syncSource?(): { readonly dev: string; readonly ino: string };
   /** Transfer an append-capable descriptor for exact SessionStore adoption. */
   openAppendDescriptor(): number;
 }
@@ -541,6 +542,7 @@ function prepareReplay(
             {
               ...strictOptions(source, limits, proof.eventCount),
               trustedSourceSha256: proof.sourceSha256,
+              validatedJsonSource: first,
               retainRecords: false,
               identityPolicy: "trusted_replay",
               onRecord,
@@ -555,6 +557,15 @@ function prepareReplay(
         }
       },
       assertPinned: () => reader.assertSnapshot(snapshot),
+      syncSource: () => {
+        reader.assertSnapshot(snapshot);
+        if (reader.sync === undefined || reader.identity === undefined) {
+          throw new Error("canonical source cannot supply a durability identity");
+        }
+        reader.sync();
+        reader.assertSnapshot(snapshot);
+        return reader.identity();
+      },
       openAppendDescriptor: () => {
         reader.assertSnapshot(snapshot);
         return reader.openAppendDescriptor();

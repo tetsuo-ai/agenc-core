@@ -13,7 +13,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
@@ -54,6 +54,9 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
   const manager = new BrowserManager({
     agencHome: fixtureRoot,
     policy: {
+      ...(process.env.AGENC_BROWSER_EXECUTABLE
+        ? { executablePath: process.env.AGENC_BROWSER_EXECUTABLE }
+        : {}),
       headless: true,
       allowPrivateNetwork: true,
       noSandbox: process.env.AGENC_BROWSER_NO_SANDBOX === "1",
@@ -151,4 +154,30 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
       manager.navigate("http://169.254.169.254/latest/meta-data/"),
     ).rejects.toThrow(/block/i);
   }, 60_000);
+
+  // A snap cannot start inside AgenC's Linux sandbox. Started there it failed
+  // on snap's own flag parsing ("unknown flag `no-sandbox'"); it is refused
+  // before launch instead.
+  const snapChromium = "/snap/bin/chromium";
+  test.runIf(broker.required && process.platform === "linux" && existsSync(snapChromium))(
+    "refuses a snap Chromium inside the sandbox before launch", async () => {
+      const snapManager = new BrowserManager({
+        agencHome: fixtureRoot,
+        policy: {
+          executablePath: snapChromium,
+          headless: true,
+          allowPrivateNetwork: true,
+          noSandbox: false,
+          navigationTimeoutMs: 30_000,
+        },
+        sandboxExecutionBroker: broker,
+      });
+      try {
+        await expect(snapManager.navigate(`${base}/`)).rejects.toThrow(
+          `${snapChromium} is a snap package. Snap packages cannot start inside AgenC's sandbox.`,
+        );
+      } finally {
+        await snapManager.closeAll();
+      }
+    }, 60_000);
 });

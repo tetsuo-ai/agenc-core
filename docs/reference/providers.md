@@ -1,6 +1,6 @@
 # Providers reference
 
-Built-in model providers for AgenC **0.18.0**. Source of truth:
+Built-in model providers for AgenC **0.19.19**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFINITIONS`). Each row owns the display name, defaults,
 ordered credential and endpoint environment ingress names, and first-run
@@ -17,14 +17,14 @@ CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 | Default provider | `grok` (xAI) |
 | Fresh-config session model | `grok-4.6` (`defaultConfig().model`) |
 | Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | `grok-4.6` |
-| Managed OpenRouter paid default | `x-ai/grok-4.5` |
+| OpenRouter default | `x-ai/grok-4.5` |
 | Config keys | `model_provider`, `model` in `config.toml` |
 | Env overrides | `AGENC_PROVIDER`, `AGENC_MODEL` |
 
 Bare interactive startup with a fresh install uses the **config** default
 (`grok-4.6`). When only the direct `grok` provider slug is resolved without an
-explicit model, the registry also uses **`grok-4.6`**. Managed OpenRouter is a
-separate provider route and its paid default remains **`x-ai/grok-4.5`**.
+explicit model, the registry also uses **`grok-4.6`**. OpenRouter uses your own
+key and its default remains **`x-ai/grok-4.5`**.
 
 ## Gemini reasoning effort
 
@@ -128,7 +128,7 @@ token rates, on API-key billing only. See
 `grok-4.5` remains a selectable 500k-context catalog entry with the same input
 modalities and runtime features. Its short-context cached-input rate is
 $0.30 / 1M, versus $0.50 / 1M for Grok 4.6; it supports
-`low`/`medium`/`high` reasoning and is still the managed OpenRouter paid
+`low`/`medium`/`high` reasoning and remains the direct OpenRouter
 default. The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, Grok 4.6, Grok 4.7,
 and the documented 4.20 multi-agent family may receive the provider parameter;
 unknown variants have it stripped instead of inheriting support from a name
@@ -147,7 +147,7 @@ the Grok 4.6 default and capability change.
 they run only through the Grok Build CLI ACP path. See
 [grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
-## Built-in providers (24)
+## Built-in providers (25)
 
 | Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -158,9 +158,11 @@ they run only through the Grok Build CLI ACP path. See
 | `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `LMSTUDIO_BASE_URL` | `local` |
 | `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_API_KEY` | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `local` |
 | `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
+| `venice` | Venice AI | `zai-org-glm-5-2` (offline fallback) | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` | `VENICE_BASE_URL` | `api-key` |
+| `abliteration` | abliteration.ai | `abliterated-model-large-v2` | `https://api.abliteration.ai/v1` | `ABLIT_KEY`, `ABLITERATION_API_KEY` | `ABLITERATION_BASE_URL` | `api-key` |
 | `groq` | Groq | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
-| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
-| `meta` | Meta | `muse-spark-1.3` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
+| `deepseek` | DeepSeek | `deepseek-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
+| `meta` | Meta | `muse-wonder-1.0` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
 | `qwen` | QwenCloud Pay-As-You-Go | `qwen3.8-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` | `DASHSCOPE_BASE_URL`, `QWEN_BASE_URL` | `api-key` |
 | `qwen-token-plan` | QwenCloud Token Plan | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_TOKEN_PLAN_API_KEY` | `QWEN_TOKEN_PLAN_BASE_URL`, `DASHSCOPE_TOKEN_PLAN_BASE_URL` | `api-key` |
 | `ollama-cloud` | Ollama Cloud | `deepseek-v4.1-flash` | `https://ollama.com/v1` | `OLLAMA_API_KEY` | None (fixed Cloud endpoint) | `api-key` |
@@ -170,14 +172,13 @@ they run only through the Grok Build CLI ACP path. See
 | `gemini` | Gemini | `gemini-3.8-flash` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
 | `kimi` | Kimi (Moonshot) | `kimi-k3` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | _(fixed global endpoint)_ | `api-key` |
 | `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
-| `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
+| `nvidia-nim` | NVIDIA NIM | `nvidia/nemotron-3-super-120b-a12b` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
 | `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | `api-key` |
 | `github` | GitHub Copilot | `gpt-5.3-codex` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
 | `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | access: `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`; secret: `AWS_BEDROCK_SECRET_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`; optional session: `AWS_BEDROCK_SESSION_TOKEN`, `AWS_SESSION_TOKEN` | `AWS_BEDROCK_BASE_URL` | `environment` |
-| `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | _(managed auth; no BYOK key alias)_ | `AGENC_BASE_URL` | `managed` |
 
-`openrouter` remains an `api-key` first-run route, but a signed-in AgenC
-subscription can supply its managed key access when that feature is enabled.
+`openrouter` uses your own OpenRouter key, including for free models. AgenC
+accounts do not supply provider credentials or model access.
 
 For current Claude models, limits and thinking behavior, see
 [Anthropic models](./anthropic-models.md).
@@ -197,11 +198,9 @@ stores credential values.
 - **Local BYOK** — explicit provider environment keys are transient inputs;
   keys saved through AgenC live only in the home-scoped native credential
   secure storage. `auth.json` contains non-secret identity/timestamp metadata only.
-- **Remote / managed** — `auth.backend = "remote"` with managed keys
-  (`agenc` provider requires managed auth). The stored bearer is native secure storage
-  state. An explicit constructor token wins over `AGENC_REMOTE_AUTH_TOKEN`,
-  which wins over the stored bearer; explicit overrides are not copied into
-  `auth.json`.
+- **AgenC account**: `auth.backend = "remote"` controls account sign-in only.
+  Account identity, remote access, and desktop sync do not grant model access.
+  The account bearer remains in native secure storage.
 - **OpenAI / ChatGPT OAuth** — `agenc openai-login` stores one home-scoped
   native `openAiOauth` record. While `openai` is selected, that stored sign-in
   wins over `OPENAI_API_KEY`; it never affects `openai-compatible` or another
@@ -274,8 +273,12 @@ consumed by this direct SigV4 provider. Bedrock model discovery and token
 counting receive the same captured credentials explicitly; they do not invoke
 the AWS SDK profile, shared-file, instance-metadata, or web-identity chains.
 
-Meta Model API uses `MODEL_API_KEY` and the OpenAI-compatible
-`/chat/completions` transport. Its LLM catalog includes `muse-spark-1.3`,
+Meta Model API uses `MODEL_API_KEY`, the key variable Meta documents for the
+Model API, sent as a bearer token. Meta's own Muse Code CLI reads
+`META_API_KEY` instead; AgenC does not read that variable. Muse Spark models use
+the OpenAI-compatible `/chat/completions` transport and Muse Wonder uses
+`/responses` (below). The default model is `muse-wonder-1.0`. The LLM
+catalog includes `muse-wonder-1.0`, `muse-spark-1.3`,
 `muse-spark-1.3-contributor`, `muse-spark-1.2`,
 `muse-spark-1.2-contributor`, and `muse-spark-1.1`. The `/models` entries
 `muse-image-1.0` and `muse-voice-transcribe-1.0` are media APIs, so they remain
@@ -297,9 +300,44 @@ request. Streams must include a terminal `finish_reason`; malformed or cut
 streams fail instead of being accepted as completed answers, and tool calls
 require `finish_reason: "tool_calls"` before dispatch. This follows Meta's
 [Chat Completions contract](https://dev.meta.ai/docs/protocols/chat-completions).
-Exact per-token pricing is not published in the authoritative
-provider documentation, so AgenC reports the cost as unknown instead of
-treating its conservative fallback estimate as authoritative.
+Per-token prices for every registered Muse model come from Meta's
+[pricing page](https://dev.meta.ai/docs/pricing-rate-limits).
+
+Muse Wonder (`muse-wonder-1.0`) uses Meta's Responses API. It is the only Meta
+surface that carries the model's reasoning from one turn to the next; Chat
+Completions redacts reasoning for external keys
+([protocols](https://dev.meta.ai/docs/protocols),
+[reasoning](https://dev.meta.ai/docs/reasoning)). Requests are stateless
+(`store: false`) and ask for `reasoning.encrypted_content`. Each encrypted
+reasoning item stays with the assistant message it preceded and goes back on
+later requests to the same provider and model, in the same position as OpenAI
+replay. A model or provider switch drops it. Meta replay is always on for Muse
+Wonder, because the model cannot run without reasoning;
+`AGENC_OPENAI_REASONING_REPLAY` does not apply to it. Assistant text from a turn
+that also called tools goes back with `phase: "commentary"`, as Meta's
+[Responses guide](https://dev.meta.ai/docs/protocols/responses) requires for
+intermediate text before a function call.
+
+Muse Wonder takes `reasoning.effort` values `minimal`, `low`, `medium`, `high`,
+`xhigh`, and `max`. Its catalog default is `high`, which model pickers such as
+Desktop start at; a session that sets no effort uses the global
+`reasoning_effort` default (`medium`). Meta rejects `none`, so AgenC omits it
+and the model reasons at its own default level. An unset reasoning summary requests
+`auto`. Tool choice follows the same `auto`-only rule as Muse Spark, and
+structured output uses `text.format`. The model is registered with a
+1,048,576-token context window. Meta does not publish a separate output limit
+for Muse Wonder, so AgenC keeps the 131,072-token limit Meta documents for
+Muse Spark on the same endpoints. Usage reports cached input tokens and
+reasoning tokens. A stream that ends with an `error` event or `response.failed`
+carrying `server_shutting_down`, `service_overloaded`, `backend_unavailable`,
+or `server_error` is retried like a server error; a 402 billing error is
+terminal ([error handling](https://dev.meta.ai/docs/error-handling)).
+
+Muse Wonder Full is not on the Model API. Meta offers it only inside its Muse
+Code CLI on the Power Usage and Maximum Usage subscription plans, and that
+subscription credential works only in Muse Code, so AgenC does not register it
+([models](https://dev.meta.ai/docs/models),
+[subscriptions](https://dev.meta.ai/docs/muse-code/subscriptions)).
 
 MiniMax keeps AgenC's 131,072-token output reservation while its [API reference](https://platform.minimax.io/docs/api-reference/text-chat-openai)
 sets exact upper limits of 524,288 for M3 and 204,800 for every listed M2 variant.
@@ -458,22 +496,30 @@ curated global catalog is:
 | Model | Context | Default / maximum output | Cached input / input / output per 1M tokens | Reasoning effort (default) |
 | --- | ---: | ---: | ---: | --- |
 | `kimi-k3` | 1,048,576 | 131,072 / 1,048,576 | $0.30 / $3.00 / $15.00 | `low`, `high`, `max` (`max`) |
+| `kimi-k3.1-pro` | 1,048,576 | 131,072 harness default / 1,048,576 context ceiling | $0.20 / $2.00 / $10.00 | `low`, `high`, `max` (`max`) |
+| `kimi-k3.1-pro-highspeed` | 1,048,576 | 131,072 harness default / 1,048,576 context ceiling | $0.20 / $4.00 / $20.00 | `low`, `high`, `max` (`max`) |
 | `kimi-k2.7-code` | 262,144 | 32,768 harness default / not published | $0.19 / $0.95 / $4.00 | provider-controlled |
 | `kimi-k2.7-code-highspeed` | 262,144 | 32,768 harness default / not published | $0.38 / $1.90 / $8.00 | provider-controlled |
 | `kimi-k2.6` | 262,144 | 32,768 harness default / not published | $0.16 / $0.95 / $4.00 | provider-controlled |
 
-All four models receive the normal AgenC function-tool catalog and vision
+The authenticated global `/v1/models` catalog returned these six IDs on
+2026-10-23. The official pricing table now lists both K3.1 variants, and AgenC
+accounts for their input, output, cache hits and write tiers. K3 remains the
+native default. OpenRouter has a separate catalog and endpoint policy; its
+prices and ZDR eligibility are not inferred from the native Moonshot catalog.
+
+All six models receive the normal AgenC function-tool catalog and vision
 history. Requests above Moonshot's 128-tool limit fail locally rather than
 silently clipping tools. K3 accepts `required`; K2.7 and K2.6 normalize that
 unsupported mode to `auto`. Named function choices are incompatible with
-thinking and are normalized for all four. Parallel-tool and fixed sampling
+thinking and are normalized for all six. Parallel-tool and fixed sampling
 controls are omitted, and every model uses
 `max_completion_tokens`.
 The K2.x 64,000-token configurable ceiling is an AgenC safety guard, not a
 published Moonshot model maximum.
 
-K3 and K2.7 always think; AgenC omits the optional `thinking` request field for
-both. K2.6 receives `thinking: { type: "enabled", keep: "all" }`. AgenC keeps
+K3, K3.1 Pro, and K2.7 always think; AgenC omits the optional `thinking` request field for
+these models. K2.6 receives `thinking: { type: "enabled", keep: "all" }`. AgenC keeps
 `reasoning_content` outside visible assistant text and replays every historical
 block only to the exact same Kimi provider/model when the history is intact.
 Authenticated compaction markers describe an already-authoritative projected
@@ -483,19 +529,55 @@ benign adjacent user-context merging does not. Kimi streams
 fail closed on malformed JSON, missing/conflicting terminal reasons, or a
 partial tool call not finalized with `finish_reason=tool_calls`.
 
+
+Moonshot automatically caches repeated prefixes with a five-minute TTL. AgenC
+keeps the stable system head before session-specific context and sends a stable
+session `prompt_cache_key` on native Kimi. K3-family clients can select the
+one-hour tier with `AGENC_KIMI_CACHE_TTL=1h`; `5m` is also accepted. Programmatic
+callers can override this with `LLMChatOptions.promptCacheTtl`. K2 omits the
+unsupported TTL control. No explicit cache objects or IDs are created.
+
+Hits renew the original TTL without a new write charge. The first write locks
+that TTL until expiration, even if a later request asks for a different one.
+AgenC reads cached and written token subsets from usage, including streams, and
+uses Moonshot's numeric write-tier headers to account for the actual TTL.
+Five-minute writes cost the ordinary input rate; one-hour writes cost twice
+that rate. Writes are not double-counted. See
+[context caching](https://platform.kimi.ai/docs/guide/context-caching) and
+[pricing](https://platform.kimi.ai/docs/pricing/chat).
+
+An HTTP 429 with Moonshot's `exceeded_current_quota_error` and insufficient-balance
+evidence stops as a billing refusal; ordinary throttling remains retryable.
+Stop sequences are validated locally: at most five strings, each at most 32
+UTF-8 bytes, as specified by the [Chat API](https://platform.kimi.ai/docs/api/chat).
+
+Native Kimi retains the red retention badge. Moonshot's default policy retains
+input while the account is active. Enterprise ZDR requires server-side approval;
+no request flag enables it. OpenRouter uses its own endpoint eligibility and
+`provider.zdr=true`. See the [privacy policy](https://platform.kimi.ai/docs/agreement/userprivacy)
+and [ZDR policy](https://platform.kimi.ai/docs/guide/zero-data-retention).
+
+Multiple tool calls in a response are accepted and paired with their results;
+the optional `parallel_tool_calls` control stays omitted for routing
+compatibility. Response-local IDs are made unique by the shared wire logic
+from #3220. Light uses Edit/Write for this family on both routes, including
+the OpenRouter latest alias. OpenRouter reasoning is replayed using its own
+`reasoning_details` or `reasoning` contract.
+
 Vision input must be inline base64 or an already-uploaded `ms://` reference;
 public HTTP image URLs and SVG are rejected before network dispatch. Supported
 formats are JPG, PNG, WebP, GIF, BMP, HEIC, and HEIF, and the final request is
-bounded to 100 MB. JSON Schema response format is available on all four
-models. Combining it with tools is enabled only for `kimi-k2.7-code`, whose
-complete tool-call/result/final-JSON loop has been verified; the other three
-remain fail-closed until their combined loop is verified. Kimi supplies no
+bounded to 100 MB. JSON Schema response format follows the family contract. Combining it with tools is enabled only for `kimi-k2.7-code`, whose
+complete tool-call/result/final-JSON loop has been verified; the others
+reject the combined request after live probes skipped tools or returned fenced
+JSON. For those models, complete tool work first, then request the final schema
+with `tools: []`. This split sequence passed for all six models. Kimi supplies no
 native image-generation route, so `ImagineImage` continues to use a separately
 authorized media backend. Sources: [model overview](https://platform.kimi.ai/docs/api/models-overview.md),
 [thinking models](https://platform.kimi.ai/docs/guide/use-thinking-models.md),
 [vision models](https://platform.kimi.ai/docs/guide/use-kimi-vision-model.md),
 [Chat Completions](https://platform.kimi.ai/docs/api/chat.md), and
-[pricing](https://platform.kimi.ai/docs/pricing/chat-k3.md).
+[pricing](https://platform.kimi.ai/docs/pricing/chat).
 
 ## Local context windows
 
@@ -655,11 +737,32 @@ as unresolved session state. `closeDanglingFunctionCalls`
 always pairs. The output text is an interrupted marker, not a fake
 success.
 
-OpenAI requests carry no reasoning items unless
-`AGENC_OPENAI_REASONING_REPLAY` is on (off by default; see
-[env.md](env.md)). With it on, the `openai` provider keeps each encrypted
-reasoning item of a Responses call and replays it on later stateless requests
-to the same provider and model, right before the function calls it led to.
+A `function_call` in history goes back with the item id (`fc_...`) the
+provider issued for it, or with no `id` when this adapter has not seen
+the call (for example after a restart). The id is never derived from the
+call id: the OpenAI backend accepts such an id but serves the request on a
+much slower decode path. Issued ids are kept in a bounded in-memory map
+owned by each adapter and keyed by provider and call id
+(`runtime/src/llm/wire/responses-function-call-ids.ts`).
+
+The `openai` provider enables encrypted reasoning replay by default for
+Responses reasoning calls, on both the platform API and ChatGPT sign-in.
+It keeps each encrypted reasoning item with its assistant message and sends it
+on later stateless requests to the same provider and model, right before the
+function calls it led to, or before its text on a turn without tools. Stored
+requests, non-reasoning models, reasoning effort `none`, and other providers
+using this adapter keep their existing behavior. Switching provider or model
+does not replay mismatched reasoning state.
+
+An unset `reasoning_summary` requests `auto` while replay is enabled, except for
+`gpt-6-luna` on the platform API: summaries stay off by default while encrypted
+reasoning still replays. ChatGPT sign-in and other models keep their existing
+automatic-summary default. Explicit summary choices are preserved, including
+`auto` to request summaries on Luna; `none` disables summaries while encrypted
+reasoning still replays. Set `AGENC_OPENAI_REASONING_REPLAY=0` to disable
+retention and replay, or use `false`, `no` or `off`; see [env.md](env.md).
+The switch is captured with each session, including ChatGPT sign-in sessions.
+Replayed input counts against the task token budget and can increase usage.
 
 `previous_response_id` can only reference a **stored** response. When
 the request snapshot has `store: false` (ChatGPT subscription is always
@@ -667,6 +770,29 @@ stateless), the continuation optimizer keeps `prompt_cache_key` and
 skips the incremental delta. Chaining an unstored id used to reject
 every later request of a subscription conversation once tools or
 history made it an extension.
+
+### OpenAI prompt cache layout
+
+A Responses request on the platform API puts the static head of the system
+prompt in `instructions` and the session tail (workspace, memory directories,
+permission section) in the first input item, ahead of the conversation. Each
+request of a session therefore repeats the previous request byte for byte and
+adds only new history, so GPT-5.6 and later, which write the cache up to the
+last user message or tool output, read all of it back. When the tail changes
+(another permission mode, reloaded project instructions), that request is
+written to the cache again. The ChatGPT subscription backend rejects system
+input items and keeps the tail in `instructions`.
+
+GPT-5.6 and later use `prompt_cache_key` only to separate cache scopes: a
+request reads nothing that a request with another key wrote. On the platform
+API those models get one key per AgenC home: `agenc-` and 32 hex characters
+of a random id generated once and kept in `<AgenC home>/prompt-cache-scope`
+(mode 0600; regenerated only when missing or malformed). A new session then
+reads the instructions, tools and tail that the previous session of the same
+home wrote within the cache lifetime (at least 30 minutes), and separate homes
+keep separate scopes. The id is not sent anywhere else. Older OpenAI models,
+the ChatGPT subscription backend and every other provider keep the
+conversation id as the key.
 
 Under a hard aggregate token or USD cap, admission still requires a
 provider-enforced `max_output_tokens` and authoritative usage. Without
@@ -694,10 +820,15 @@ provider-neutral HTTP client:
 
 - request max retries: **4**
 - stream max retries: **5**
-- stream idle timeout: **unset** (0) at the transport level. The session
-  watchdog owns the idle deadline: `stream_watchdog_timeout_ms` defaults to
-  `600000` (warning at half, retryable `stream_idle` abort at the deadline);
-  set it or `AGENC_STREAM_IDLE_TIMEOUT_MS` to `0` to allow unbounded silence
+- standalone HTTP-client stream idle timeout: **unset** (0). During a session
+  sampling attempt, the watchdog observes raw HTTP bytes before SSE parsing,
+  including keepalive comments and partial frames. `stream_watchdog_timeout_ms`
+  defaults to `1200000` (twenty minutes without bytes, then retryable
+  `stream_idle` through the reconnect ladder). Set it or
+  `AGENC_STREAM_IDLE_TIMEOUT_MS` to `0` to allow unbounded byte silence.
+  Independently, `stream_quiet_warning_ms` / `AGENC_STREAM_QUIET_WARNING_MS`
+  defaults to `600000`: ten minutes without a model delta emits a soft warning
+  on the TUI status, without aborting. Zero disables that warning.
 
 Model-provider streaming uses HTTP/SSE. The daemon, realtime connector, MCP,
 and gateway have separate WebSocket transports; they are not provider
@@ -800,7 +931,7 @@ rejects or silently ignores. An undefined `acceptsX` flag still means
 
 | Field | Who gets it |
 | --- | --- |
-| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh` only. Z.AI GLM-5.3 models and native Kimi K3 for `low`, `high`, and `max` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
+| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh`, plus `max` on standard-tier `muse-spark-1.3` (Muse Wonder uses the Responses wire). Z.AI GLM-5.3 models and native Kimi K3 for `low`, `high`, and `max` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
 | `tool_choice` | Meta and Z.AI accept only `auto`. `required` and named choices are normalized to `auto`; `none` omits both the tools and choice fields. Native Kimi K3 additionally accepts `required`; Kimi K2.7/K2.6 normalize it to `auto`, and all native Kimi models normalize named choices because they are incompatible with thinking. Requests above the Z.AI or Kimi 128-function limit fail locally rather than dropping tools. Cerebras omits tool-choice/parallel controls whenever no tool definitions are attached, as required by API v2. Other compatible providers keep the requested value. |
 | `stop` | Meta rejects stop sequences, so its adapter strips them. Z.AI receives only the first sequence from a caller list. Other compatible providers keep caller-supplied sequences. |
 | `service_tier` | `openai` and `azure-openai`; explicit Cerebras pass-through remains for configured dedicated endpoints, while its shared catalog advertises no selectable tier |
@@ -857,7 +988,7 @@ Grammar-safe tool schemas and the reduced local catalog:
 
 - Tool / provider compatibility (object root, grammar-safe schemas, Gemini native JSON Schema, local catalog): [`../provider-tool-compat.md`](../provider-tool-compat.md)
 - Token admission invariant: [`../design/provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
-- Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
+- OpenRouter setup: [`../managed-openrouter.md`](../managed-openrouter.md)
 - Onboarding: `agenc onboard`
 
 ## Fast mode and service tiers
@@ -896,35 +1027,145 @@ its default tier, so a call without Fast sends none.
 
 ## Zero data retention
 
-Only one built-in provider takes a request-level zero-data-retention control:
-`[providers.openrouter] zero_data_retention = true` adds `provider.zdr = true`
-to every request (OR-ed with the account setting on OpenRouter's side), so
-routing is restricted to endpoints with a zero-data-retention policy and a
-model without one is refused. The desktop shows this as a switch on the
-OpenRouter card. Everywhere else retention is an account, project or team
-setting, so the config field is rejected and the desktop card states the
-provider's policy instead. Verified 2026-09-12 against each provider's
-documentation:
+Zero data retention (ZDR) is on by default wherever a provider's API lets a
+request ask for it. Only OpenRouter has such a control: every request with
+your own OpenRouter key carries `provider.zdr = true`, so OpenRouter routes
+only to endpoints with a zero-data-retention policy (OR-ed with the account
+setting on OpenRouter's side) and refuses a model that has none instead of
+serving it elsewhere. To allow endpoints that may keep data:
 
-| Provider | Default retention | Zero data retention | AgenC |
+```toml
+[providers.openrouter]
+zero_data_retention = false
+```
+
+The managed AgenC route sends no routing block: its gateway pins its own
+(`zdr: true`, `data_collection: "deny"`). Subagents, reviewers and the
+WebSearch tool's OpenRouter search carry the same choice as the session.
+OpenRouter's ZDR covers the model endpoint, not the web plugin's search
+engine.
+
+`/model` and `/providers` read OpenRouter's public list of ZDR endpoints
+(`GET https://openrouter.ai/api/v1/endpoints/zdr`, no key) while ZDR is on.
+A model with no ZDR endpoint stays listed, shows `no ZDR`, and says how to
+use it anyway; Enter refuses it, and so does `/model openrouter:<id>` once the
+list has been read. Router and alias
+ids (`openrouter/auto`, `~vendor/model-latest`) are not checked, and nothing is
+marked while the list cannot be read. If OpenRouter still refuses a model
+(HTTP 404, "No endpoints found matching your data policy"), the turn ends with
+that explanation, no retry, and its admission reservation released at zero.
+
+Measured 2026-10-22 on OpenRouter with the request body AgenC sends (three
+calls of 33K to 49K prompt tokens per model, ZDR on and off): Claude Sonnet
+5.5 moved from Claude Platform on AWS to Google Vertex at the same price;
+DeepSeek V4.1 Flash and GLM-5.3 stayed on the same ZDR endpoints (Relace,
+InferenceNet) with the same cost and a 100% cache share on later calls. ZDR
+cost nothing measurable in cache share, price or first-token time.
+
+Elsewhere retention is a provider policy or an account, project or team
+setting, so the config field is rejected under every other provider table.
+Read on 2026-10-22 from each provider's documentation:
+
+| Provider | What happens to API prompts and responses | ZDR | Status line |
 | --- | --- | --- | --- |
-| OpenRouter | Depends on the upstream endpoint | Per request (`provider.zdr`) and per account (privacy settings) | `zero_data_retention` switch |
-| OpenAI | 30 days for abuse monitoring; Responses state 30 days when `store` is true | Per organization or project, on request and approval; `store` is then forced false | Requests already send `store: false`; ZDR itself is granted by OpenAI |
-| Anthropic | Per the commercial retention policy | Organization-level agreement | Account level |
-| xAI Grok | 30 days encrypted, no training | Team-level in the xAI Console (enterprise); every response carries `x-zero-data-retention: true/false` and ZDR disables the stateful Responses, Files, Collections and Batch APIs | Account level |
-| Google Gemini | Prompts logged for abuse monitoring (paid: 55 days) | Per project, on request | Account level |
-| Groq | No retention of inputs and outputs by default; temporary logs up to 30 days for troubleshooting or abuse | Self-serve in the console Data Controls, globally or per feature | Account level |
-| Mistral | 30-day abuse monitoring window | Organization setting on paid plans, after approval; stateless endpoints only | Account level |
-| Cerebras | Does not retain prompts, requests or responses | Standard policy, nothing to enable | Always on |
-| Ollama Cloud | "Prompt or response data is never logged or trained on"; partners must run zero-data-retention policies | Standard policy, nothing to enable | Always on |
-| DeepSeek | Retained on servers in China while the account exists | None offered | Not available |
-| MiniMax | Purpose- and law-based retention | None documented | Not available |
-| AgenC managed | Requests are routed through the gateway to zero-data-retention endpoints only (`zdr: true`, `data_collection: "deny"`) | Built in | Always on |
-| Local servers (Ollama, LM Studio, OpenAI-compatible) | Nothing leaves the machine unless the endpoint is remote | Not applicable | Local |
+| OpenRouter | Depends on the endpoint; OpenRouter keeps prompts only if the account turned on prompt logging | Per request (`provider.zdr`), on by default | Green; red when off or the model has no ZDR endpoint ([zdr](https://openrouter.ai/docs/guides/features/zdr), [routing](https://openrouter.ai/docs/guides/routing/provider-selection)) |
+| Ollama Cloud | Not stored or logged | Policy | Green ([faq](https://docs.ollama.com/faq)) |
+| Cerebras | Not retained | Policy | Green ([privacy](https://cerebras.ai/privacy-policy)) |
+| abliteration.ai | Processed in memory, never stored | Policy | Green ([data handling](https://abliteration.ai/data-handling)) |
+| AgenC (managed) | Routed only to ZDR endpoints by the gateway | Built in | Green |
+| Venice AI | Private models keep nothing; anonymized models run on third-party hosts | Per model | Green for private models, red for anonymized ([privacy](https://docs.venice.ai/overview/privacy)) |
+| Ollama, LM Studio | Stays on this computer | Local | Green on a loopback address, dim `ZDR?` elsewhere |
+| OpenAI-compatible | Depends on the server, which may be a proxy to a cloud API | Unknown | Dim `ZDR?` |
+| xAI Grok | Kept 30 days for abuse auditing | Team setting in the xAI Console | Red ([security](https://docs.x.ai/developers/faq/security)) |
+| OpenAI | Abuse logs up to 30 days | Approved organization or project; AgenC sends `store: false` | Red ([your data](https://developers.openai.com/api/docs/guides/your-data)) |
+| Anthropic | Up to 30 days, flagged content longer | Organization agreement | Red ([retention](https://platform.claude.com/docs/en/manage-claude/api-and-data-retention)) |
+| Groq | Not kept by default, but may be logged up to 30 days for troubleshooting or abuse | Console Data Controls | Red ([your data](https://console.groq.com/docs/your-data)) |
+| Mistral | 30 days for abuse monitoring | On request | Red ([zdr](https://docs.mistral.ai/admin/monitor-comply/zero-data-retention)) |
+| Meta | Kept as needed for the service | Per organization; AgenC sends `store: false` | Red ([zdr](https://dev.meta.ai/help/policies-and-privacy/zero-data-retention)) |
+| QwenCloud Pay-As-You-Go | Up to 30 days | Enterprise workspaces | Red ([retention](https://www.alibabacloud.com/help/en/model-studio/data-retention-policy)) |
+| QwenCloud Token Plan | Up to 30 days | Not covered by the ZDR program | Red ([faq](https://www.alibabacloud.com/help/en/model-studio/token-plan-faq)) |
+| Kimi (Moonshot) | Kept while the account is active | Enterprise, on request | Red ([zdr](https://platform.kimi.ai/docs/guide/zero-data-retention)) |
+| Amazon Bedrock | May be kept for abuse detection | Account `data_retention_mode: none` | Red ([retention](https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html)) |
+| GitHub Copilot | Upstream models under ZDR; individual plans may train on interactions | Plan setting | Red ([hosting](https://docs.github.com/en/copilot/reference/ai-models/model-hosting)) |
+| Gemini API | Logged for abuse monitoring; the free tier trains on prompts | Only on Vertex AI | Red ([zdr](https://ai.google.dev/gemini-api/docs/zdr)) |
+| Z.AI, Z.AI Coding Plan | No-storage promise covers business customers; cache retention unannounced | None for individuals | Red ([privacy](https://docs.z.ai/legal-agreement/privacy-policy), [faq](https://docs.z.ai/help/faq)) |
+| DeepSeek | Kept while the account exists | None | Red ([privacy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)) |
+| MiniMax | Kept as long as necessary | None | Red ([privacy](https://platform.minimax.io/protocol/privacy-policy)) |
+| NVIDIA NIM | Trial terms let NVIDIA keep and use prompts | None | Red ([trial terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)) |
 
-Kimi, Qwen, Z.AI, Meta, NVIDIA NIM and GitHub Copilot publish no
-zero-data-retention control for their APIs; treat them as retaining data per
-their terms.
+The status line shows `ZDR` after the usage figures: green when the provider
+and model keep nothing (the request-level control is on, the provider's policy
+keeps nothing, or Ollama or LM Studio runs on this computer), red when data may be kept
+(including providers whose ZDR is an account setting AgenC cannot see), and a
+dim `ZDR?` when the requests go to an address whose policy AgenC cannot know:
+an OpenAI-compatible server (even on this computer, since it may forward to a
+cloud API), a local provider pointed at another machine, or a provider that
+would otherwise be green pointed at a custom base URL. `/status` explains the
+current state in one line. The table lives in
+`runtime/src/llm/registry/provider-retention.ts`.
+
+xAI's Responses `store` stays on by default: xAI keeps every request for 30
+days whether or not it is stored, so `store: false` would not change
+retention, and it was the dominant cause of slow Grok turns (see the Grok
+adapter). `AGENC_XAI_STORE=0` turns it off.
+
+## DeepSeek
+
+Select `deepseek` and provide `DEEPSEEK_API_KEY`. The default model is
+`deepseek-flash`; since 2026-10-17 DeepSeek serves DeepSeek-V4.1-Flash-1017
+under that id, so no setting changes. It has a 1M-token context, image input,
+Low/High/Max effort (High by default) and up to 384K output tokens; AgenC asks
+for 64K per call by default. The retired names `deepseek-v4-flash` and
+`deepseek-v4-flash-vision-exp` still reach the same model. `deepseek-v4-pro`
+serves DeepSeek-V4-Pro-0813.
+
+Cost estimates use DeepSeek's peak rates: Flash $0.30 per million input tokens,
+$1.20 per million output tokens and $0.006 per million cached input tokens.
+DeepSeek charges half outside 01:00 to 04:00 and 06:00 to 10:00 UTC on
+weekdays, so real bills can be lower than the estimate.
+
+On OpenRouter the new model has its own id, `deepseek/deepseek-v4.1-flash-1017`;
+`deepseek/deepseek-v4.1-flash` stays on the September build.
+
+### The same model through a gateway
+
+A DeepSeek or GPT model reached through OpenRouter, Ollama Cloud or Venice by its
+id (`deepseek/deepseek-v4.1-flash-1017`, `deepseek-v4.1-flash:1017`,
+`deepseek-v4-1-flash-1017`; `openai/gpt-6-luna`, `openai-gpt-6-luna`) gets the
+behavior AgenC tunes for that model on its own API, where the gateway has an
+equivalent field:
+
+- DeepSeek: Light's task limits and batch Edit, the shared-prefix prompt layout,
+  64k output tokens a call (the route's limit stays the ceiling), High effort
+  when none is set (unless the route offers None), reasoning replayed on later
+  requests, and no `parallel_tool_calls` field.
+- GPT: Light's apply_patch, the lean head in standard mode, parallel tool
+  calls, the personality line, and the encrypted reasoning
+  (`reasoning_details`) replayed unchanged.
+- OpenRouter: a DeepSeek model's requests carry a `prompt_cache_key` that
+  names the model and the leading system message. Once a host returns a cache
+  hit for that key, OpenRouter keeps later requests with it, from any session,
+  on that host, as DeepSeek's own API shares one cache across sessions. A GPT
+  model carries the session's own key, as on OpenAI's own API. No `session_id`
+  is sent: with one, OpenRouter keeps a session on whichever host served its
+  first request, whether that host caches well or not. Reasoning is read from
+  `reasoning`. Costs are the charge OpenRouter reports. Which host serves the
+  first request is still OpenRouter's choice: by default it load-balances by
+  price among the hosts the account allows, and account privacy settings can
+  exclude the model author's own endpoint.
+
+The managed AgenC route and custom OpenAI-compatible endpoints keep their own
+contracts.
+
+In a `deepseek` session on DeepSeek's own API host, the WebSearch tool searches
+through DeepSeek's Search API with the session's key, for both models, at
+$0.75 per 1,000 successful searches; see
+[Direct DeepSeek](../providers/deepseek-direct.md#web-search) for the setting
+and the fallback.
+
+Sources: https://api-docs.deepseek.com/quick_start/pricing/,
+https://api-docs.deepseek.com/news/news261017 and
+https://api-docs.deepseek.com/guides/search
 
 ## Ollama Cloud
 
@@ -934,16 +1175,25 @@ connection; `OLLAMA_BASE_URL` never reroutes the Cloud key. No local Ollama
 installation is required.
 
 The checked-in Cloud metadata comes from Ollama's `/api/tags` and `/api/show`
-on 2026-09-11. Desktop refreshes model IDs from `/v1/models`; an empty successful
-listing stays empty. Unknown additions can use text/tools and native context
+on 2026-10-20, rechecked on 2026-10-21. Runtime discovery refreshes IDs from
+`/api/tags` and capabilities from `/api/show`. Unknown additions can use text/tools and native context
 metadata, but do not inherit unverified image or effort settings from another
 provider. Cloud model IDs retain their tags (for example `gpt-oss:120b`).
 
-DeepSeek V4.1 Flash defaults to Low and supports image input. Reasoning controls
-are model specific; binary thinking models expose None/High, GPT OSS uses
-Low/Medium/High, and non-thinking models have no effort control. The 16k default
-and 32k recovery budget are AgenC output budgets, not advertised Cloud limits.
-Cloud quota and model availability depend on the Ollama account.
+DeepSeek models default to High, as on DeepSeek's own API, and V4.1 Flash
+supports image input. Reasoning controls are model specific; binary thinking
+models expose None/High, GPT OSS uses Low/Medium/High, and non-thinking models
+have no effort control. DeepSeek models reserve 64k output tokens a call with
+DeepSeek's own 393,216 ceiling (Cloud refuses more); for other models the 16k
+default and 32k recovery budget are AgenC output budgets, not advertised Cloud
+limits. Cloud quota and model availability depend on the Ollama account.
+
+An Ollama Cloud session uses its own key for `web_fetch` through Ollama's
+`/api/web_fetch` API. Successful fetches cost $0.001 each (balance-verified
+2026-10-21). URL permission checks and private-address rejection still apply.
+A provider failure falls back to guarded direct fetching and is named in the
+result. Ollama returns page text, title and links; it does not report the
+origin HTTP status or the final redirected URL.
 
 Sources: https://docs.ollama.com/cloud and
 https://docs.ollama.com/api/openai-compatibility.
@@ -961,3 +1211,212 @@ implementation remains unchanged. OpenRouter, Google Cloud and Foundry
 registration are also outside this release. See the
 [Anthropic model reference](anthropic-models.md) for cache prices, thinking,
 tokenizer and migration details.
+
+
+## Venice AI
+
+Select `venice` with `agenc --provider venice` or `/provider venice`.
+Use `VENICE_API_KEY` or save a key in the `/providers` screen. Venice has its
+own BYOK credential record. It never reads `OPENAI_COMPATIBLE_API_KEY` or
+`OPENAI_API_KEY`. `agenc providers` reports missing or present credentials.
+
+Venice uses streaming OpenAI-compatible Chat Completions at
+`https://api.venice.ai/api/v1`. Every request sets
+`venice_parameters.include_venice_system_prompt = false`,
+`enable_web_search = "off"`, `enable_web_scraping = false`,
+`enable_web_citations = false`, and `enable_x_search = false`.
+AgenC supplies the system prompt and tools. Reasoning arrives separately in
+`reasoning_content` and stays out of the visible answer; a GPT model's
+encrypted reasoning arrives in `reasoning_details` and goes back unchanged on
+the next request. Every request carries a `prompt_cache_key`, which Venice uses
+to route to a server holding the cached prefix: for a DeepSeek model it names
+the model and the leading system message (sessions share the prefix, as on
+DeepSeek's own API), for other models it is the session's own key.
+
+Authenticated `GET /models` discovery offers online text models with
+`model_spec.capabilities.supportsFunctionCalling = true`. It uses
+`availableContextTokens` and `maxCompletionTokens` for limits, and maps
+reasoning, supported effort levels, vision, and USD pricing per million
+tokens. Core stores rates per thousand tokens.
+
+Sessions in the same process reuse a successful list for ten minutes, scoped
+to the endpoint, credential and transport. Expired lists refresh in the
+background; failed or malformed refreshes keep the last known limits and
+retry later. They do not reset a known context window to the conservative
+fallback. The TUI loads live effort data when a gateway model is selected,
+so its status line does not depend on opening `/effort` first.
+
+
+Each model's price comes from that list: `input`, `output`, `cache_input`, and
+the `extended` rates above `context_token_threshold` input tokens. Budget
+admission reserves at it. A completed call costs what Venice reports with the
+reply (`cost`, USD plus DIEM credit, which Venice prices 1:1), and the cost
+sidecar and the status line show that charge. Chat Completions reports no cache
+writes, so the `cache_write` price is not used for estimates. A Venice model ID
+never takes another provider's price for the same name. When the list gives a model no price, admission reserves the
+conservative ceiling and the status line says `price unknown`.
+
+The `/providers` and `/model` screens read this list with the key the session
+uses: `VENICE_API_KEY`, a key just entered in the screen, or the saved key.
+They read it again after a key is saved or replaced. When the list cannot be
+read, they show a small bundled catalog and say so. Any ID from the live list
+can be selected, in the screens, with `/model venice:<id>`, or with
+`--model venice:<id>`. An ID that Venice does not list is refused before the
+first request.
+
+The `function_calling_default` trait selects the discovered provider default.
+The offline fallback is `zai-org-glm-5-2`. Explicit model selections and
+`providers.venice.default_model` stay pinned. To pin a selection:
+
+```toml
+model_provider = "venice"
+model = "zai-org-glm-5-2"
+```
+
+Venice documents `model_spec.privacy = "private"` as zero data retention
+infrastructure. Core sets the model's `zeroDataRetention` fact only for that
+value. `anonymized` hides the caller's identity but leaves retention unknown.
+This is model metadata, not an extra request routing preference.
+
+HTTP 401 maps to authentication failure. HTTP 429 maps to rate limiting.
+Venice sends `x-ratelimit-reset-requests` and `x-ratelimit-reset-tokens` as
+Unix timestamps in milliseconds and no `Retry-After` header. The adapter waits
+for the reset of the window that is used up (`x-ratelimit-remaining-* = 0`),
+or for the later reset when neither is, and respects a standard `Retry-After`
+header when Venice sends one. Seconds-precision timestamps and plain delays
+are read too.
+
+Sources: [Chat Completions](https://docs.venice.ai/api-reference/endpoint/chat/completions),
+[models](https://docs.venice.ai/api-reference/endpoint/models/list),
+[pricing](https://docs.venice.ai/overview/pricing),
+[reasoning](https://docs.venice.ai/guides/features/reasoning-models),
+[privacy](https://docs.venice.ai/overview/privacy),
+[errors](https://docs.venice.ai/api-reference/error-codes), and
+[rate limits](https://docs.venice.ai/api-reference/rate-limiting).
+
+
+## abliteration.ai
+
+Select `abliteration` with `agenc --provider abliteration` or
+`/provider abliteration`. Set `ABLIT_KEY`, the name abliteration.ai documents,
+or `ABLITERATION_API_KEY`, or save a key in the `/providers` screen. When both
+variables are set, `ABLIT_KEY` wins. Keys look like `ak_...`. abliteration.ai
+has its own BYOK credential record and never reads another provider's key.
+`ABLITERATION_BASE_URL` replaces the default endpoint,
+`https://api.abliteration.ai/v1`. `agenc providers` and first-run setup list
+the provider with its key names.
+
+AgenC uses streaming OpenAI-compatible Chat Completions with its own system
+prompt and tools. The Responses and Anthropic Messages surfaces are not used.
+
+| Model | Context | Max output | Input | Reasoning modes in `/effort` | AgenC default | Price per 1M tokens (input, cached input, output) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `abliterated-model-large-v2` (default) | 1,000,000 | 999,990 | text | low, high, max | high | $3.00, $0.30, $5.00 |
+| `abliterated-model` | 262,144 | 262,134 | text, image | off, minimal, low, medium, high, xhigh, max | none sent (native depth) | $1.00, $0.10, $3.00 |
+| `abliterated-model-large` | 1,000,000 | 999,990 | text | high, max | high | $3.00, $0.30, $5.00 |
+| `abliterated-model-large-flash` | 1,048,576 | 262,144 | text, image | off, low, high, max | high | $1.00, $0.10, $2.00 |
+
+All four models reason, stream and call tools, including parallel calls.
+AgenC reserves 65,536 output tokens a call for the existing models and 64,000
+for Large Flash through its DeepSeek family behavior. Reasoning and the answer
+share `max_tokens`. The documented maximum stays available to an explicit
+`max_output_tokens` and to max-output recovery.
+
+Large Flash is based on DeepSeek-V4.1-Flash-1017. In Light, it uses DeepSeek's
+batch Edit and task limits. Requests keep abliteration's session cache header
+and `prompt_cache_key`. Both `/model` and `/providers` list the model.
+
+The ZDR badge uses abliteration's existing provider policy for all four models.
+The provider states that it retains no prompt, completion or image content and
+does not use that content for training. Operational and billing metadata are
+retained. See [data handling](https://abliteration.ai/data-handling).
+
+### Reasoning effort
+
+Chat Completions takes `reasoning_effort` with any of `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh` and `max` on every model, and runs it at one
+of the modes the model has:
+
+| Requested | `abliterated-model` | `abliterated-model-large-v2` | `abliterated-model-large` | `abliterated-model-large-flash` |
+| --- | --- | --- | --- | --- |
+| `none` | reasoning off | low, trace hidden | reasoning off | reasoning off |
+| `minimal` | minimal | low | high | low |
+| `low` | low | low | high | low |
+| `medium` | medium | high | high | high |
+| `high` | high | high | high | high |
+| `xhigh` | xhigh | max | max | high |
+| `max` | max | max | max | max |
+| nothing sent | native depth | max | high | high |
+
+`/effort` lists only the modes a model runs, and AgenC sends only those. A
+saved level the model does not list runs at the model's AgenC default; `xhigh`
+and `max` stand in for each other. `/effort off` is offered on
+`abliterated-model` and `abliterated-model-large-flash`. Large v2 cannot turn
+reasoning off.
+
+The provider runs Large v2 at max when a request names no level. AgenC sends
+high instead. Reasoning tokens bill as output at $5 per million, and every
+tool step of an agent turn pays them again. They also delay the first visible
+token. High is the middle of the three modes. Choose max with `/effort max`
+for the hardest tasks.
+
+The reasoning trace is shown as thinking and never as the answer. The live
+API sends it as `reasoning`; the docs name it `reasoning_content`, and AgenC
+reads either. It is not sent back on later requests.
+
+### Prompt caching
+
+Caching is automatic. Each request carries the session's `prompt_cache_key`,
+a stable opaque value per session, in the body and again in the
+`x-abliteration-session-id` header, so related requests reach a server that
+holds the cached prefix. With both present, abliteration.ai routes by the
+header. Streamed requests set `stream_options.include_usage`,
+and the final chunk reports `usage.prompt_tokens_details.cached_tokens`. Cache
+reads bill at 10% of the input rate, with no cache-write premium. The session
+cost and the status line cache share use these counts. Cache hits are best
+effort: in a live session on 2026-10-22, a later Large v2 request read 1,344
+of its 1,452 prompt tokens from cache, while the request right after the
+session's first one missed. The cache belongs to the project and model, so a
+new session can read a prefix an earlier one wrote.
+
+### Images
+
+`abliterated-model` and `abliterated-model-large-flash` take images.
+Large and Large v2 answer 400 to image content, so AgenC refuses an image
+before sending it to them. An image a tool returns, such as a screenshot or
+an image file read, reaches a vision model as a user image after the tool results.
+
+### Model list
+
+With a key, AgenC reads `GET /v1/models` before a session's first request and
+reuses the list for ten minutes. It keeps the models that are available to the
+key's project, not locked, ready, produce text and list `tools`. Their limits,
+image input and prices replace the bundled rows. A model the list leaves out
+is refused before the request, with a message that names it. The bundled rows
+answer when the list cannot be read. The list publishes no effort levels, so a
+model only the live list has runs without an effort control.
+
+### Errors
+
+- 401 is an authentication failure. 402, insufficient credits, is a billing
+  error.
+- 429 is rate limiting, and `Retry-After` is honored. The Free tier allows 4
+  concurrent requests and 60 a minute per key.
+- 403 `policy_violation` means a project policy blocked the request, or the
+  same code ended a streamed reply. The turn ends with a message that says so
+  and names the request ID. It is not retried, since the same input is blocked
+  again.
+- 503 `policy_evaluation_unavailable` means a blocking policy could not be
+  evaluated in time. It is retried like other server errors.
+
+Web search, structured outputs, `policy_ids` and `GET /v1/credits` are not
+used.
+
+Sources: [models](https://docs.abliteration.ai/models),
+[pricing](https://docs.abliteration.ai/pricing),
+[thinking and reasoning effort](https://docs.abliteration.ai/capabilities/thinking),
+[prompt caching](https://docs.abliteration.ai/capabilities/prompt-caching),
+[tool calling](https://docs.abliteration.ai/capabilities/tool-calling/openai-chat-completions),
+[images](https://docs.abliteration.ai/capabilities/images),
+[errors](https://docs.abliteration.ai/api/errors), and
+[rate limits](https://docs.abliteration.ai/api/rate-limits).

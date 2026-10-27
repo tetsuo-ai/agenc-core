@@ -423,6 +423,13 @@ describe("MagicDocs", () => {
     await expect(
       Promise.resolve(policy({ name: "Edit" }, { file_path: "/tmp/other.md" })),
     ).resolves.toMatchObject({ behavior: "deny" });
+    const edits = [{ oldText: "a", newText: "b" }];
+    await expect(
+      Promise.resolve(policy({ name: "Edit" }, { path: "/tmp/doc.md", edits })),
+    ).resolves.toMatchObject({ behavior: "allow" });
+    await expect(
+      Promise.resolve(policy({ name: "Edit" }, { path: "/tmp/other.md", edits })),
+    ).resolves.toMatchObject({ behavior: "deny" });
     await expect(
       Promise.resolve(
         policy({ name: "FileRead" }, { file_path: "/tmp/doc.md" }),

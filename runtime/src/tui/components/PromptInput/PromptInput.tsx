@@ -53,7 +53,7 @@ import {
   type HistoryMode,
   useArrowKeyHistory,
 } from "../../hooks/useArrowKeyHistory.js";
-import { useDoublePress } from "../../hooks/useDoublePress.js";
+import { clearSharedDoublePressState, useDoublePress } from "../../hooks/useDoublePress.js";
 import { useHistorySearch } from "../../hooks/useHistorySearch.js";
 import type { IDESelection } from "../../hooks/useIdeSelection.js";
 import { useInputBuffer } from "../../hooks/useInputBuffer.js";
@@ -67,6 +67,7 @@ import { Box, type ClickEvent, type Key, Text, useInput } from "../../ink.js";
 import { useOptionalKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { getShortcutDisplay } from "../../keybindings/shortcutFormat.js";
 import {
+  useInputCapture,
   useKeybinding,
   useKeybindings,
 } from "../../keybindings/useKeybinding.js";
@@ -144,7 +145,6 @@ import {
 import { logError } from "../../../utils/log.js";
 import {
   getNextPermissionMode,
-  isAutoModeGateEnabled,
   transitionPermissionMode,
 } from "../../../permissions/permission-mode.js";
 import { getPlatform } from "../../../utils/platform.js";
@@ -190,7 +190,7 @@ import { ThinkingToggle } from "../ThinkingToggle.js";
 import { BackgroundTasksPanel } from "../tasks/BackgroundTasksPanel.js";
 import { shouldHideTasksFooter } from "../tasks/taskStatusUtils.js";
 import { TeamsDialog } from "../teams/TeamsDialog.js";
-import { ModeSwitcher, visibleUserFacingModes } from "../v2/primitives.js";
+import { ModeSwitcher } from "../v2/primitives.js";
 import { ConfiguredPromptTextInput } from "./ConfiguredPromptTextInput.js";
 import {
   detectModeEntry,
@@ -211,6 +211,8 @@ import { usePromptInputPlaceholder } from "./usePromptInputPlaceholder.js";
 import { useSwarmBanner } from "./useSwarmBanner.js";
 import {
   clampPromptTextInputColumns,
+  PROMPT_BAND_MARGIN_X,
+  PROMPT_BAND_PADDING_X,
   isNonSpacePrintable,
   pasteReferenceLineThreshold,
 } from "./utils.js";
@@ -480,6 +482,8 @@ type Props = {
     readonly onMoveSelection?: (delta: -1 | 1) => void;
   };
   runtimeStateRepository: RuntimeStateRepository;
+  /** Retain the draft cursor while an approval or elicitation hides the editor. */
+  composerCursorRef?: React.MutableRefObject<{ input: string; offset: number } | null>;
   settingsAuthority: CanonicalSettingsAuthority;
 };
 
@@ -598,6 +602,7 @@ function PromptInput({
   onAutoUpdaterResult,
   autoUpdaterResult,
   input,
+  composerCursorRef,
   onInputChange,
   mode,
   onModeChange,
@@ -642,7 +647,9 @@ function PromptInput({
   // system, so treat them as a modal overlay here to stop navigation keys from
   // leaking into TextInput/footer handlers and stacking a second dialog.
   const upstreamModalOverlayActive =
-    useIsModalOverlayActive() || isLocalJSXCommandActive;
+    // Ledger guidance displays progress without asking for composer input.
+    // Keep typing and /exit available while its dismissal keys remain owned.
+    useIsModalOverlayActive("ledger-verification") || isLocalJSXCommandActive;
   const [isAutoUpdating, setIsAutoUpdating] = useState(false);
   const [exitMessage, setExitMessage] = useState<{
     show: boolean;
@@ -650,7 +657,17 @@ function PromptInput({
   }>({
     show: false,
   });
-  const [cursorOffset, setCursorOffset] = useState<number>(input.length);
+  const [cursorOffset, setCursorOffset] = useState<number>(() => {
+    const saved = composerCursorRef?.current;
+    return saved?.input === input
+      ? Math.max(0, Math.min(input.length, saved.offset))
+      : input.length;
+  });
+  React.useLayoutEffect(() => {
+    if (composerCursorRef !== undefined) {
+      composerCursorRef.current = { input, offset: cursorOffset };
+    }
+  }, [composerCursorRef, input, cursorOffset]);
   // Input-mode changes originate in TextInput and can be submitted before
   // React commits the parent-owned mode prop. Keep that same-tick authority
   // synchronous so a freshly entered ! command cannot reach the model path.
@@ -719,8 +736,8 @@ function PromptInput({
     if (pastedContents === lastPastedContentsPropRef.current) {
       return;
     }
-    lastPastedContentsPropRef.current = pastedContents;
     if (input === lastInternalInputRef.current) {
+      lastPastedContentsPropRef.current = pastedContents;
       pastedContentsRef.current = pastedContents;
     }
   }, [input, pastedContents]);
@@ -903,18 +920,30 @@ function PromptInput({
       setCoordinatorTaskIndex(minCoordinatorIndex);
     }
   }, [coordinatorTaskCount, coordinatorTaskIndex, minCoordinatorIndex]);
-  const [isPasting, setIsPasting] = useState(false);
+  const [isPasting, setIsPastingState] = useState(false);
+  const isPastingRef = useRef(false);
+  const deferredSubmitGestureRef = useRef(false);
+  const setIsPasting = useCallback((next: boolean) => {
+    isPastingRef.current = next;
+    setIsPastingState(next);
+  }, []);
   const [isExternalEditorActive, setIsExternalEditorActive] = useState(false);
+  const externalEditorActiveRef = useRef(false);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showHistoryPicker, setShowHistoryPicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showModeSwitcher, setShowModeSwitcher] = useState(false);
+  const modeSwitcherVisibleRef = useRef(showModeSwitcher);
+  modeSwitcherVisibleRef.current = showModeSwitcher;
+  // Set below, once the mode-cycle handler exists. Returns true when it
+  // changed the mode.
+  const cycleModeFromOptionMRef = useRef<(() => boolean) | null>(null);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
   const [autoModeOptInPreview, setAutoModeOptInPreview] = useState(false);
   const promptModalOverlayActive =
+    isExternalEditorActive ||
     upstreamModalOverlayActive ||
-    showModeSwitcher ||
     showAutoModeOptIn ||
     autoModeOptInPreview ||
     Boolean(showBashesDialog);
@@ -996,11 +1025,14 @@ function PromptInput({
   // Which pills render below the input box. Order here IS the nav order
   // (down/right = forward, up/left = back). The inline AGENT FLEET panel (the
   // `tasks` footer item + its ↓-to-manage entry) was removed, so it is no
-  // longer offered here — background agents still run; only the panel UI is gone.
+  // longer offered here. Shells keep their keyboard entry in the status line.
   const teamsFooterVisible = cachedTeams.length > 0;
+  const shellsFooterVisible = isFullscreen && Object.values(tasks).some(task =>
+    isBackgroundTask(task) && task.type === 'local_bash',
+  );
   const footerItems = useMemo(
-    () => [teamsFooterVisible && "teams"].filter(Boolean) as FooterItem[],
-    [teamsFooterVisible],
+    () => [shellsFooterVisible && "tasks", teamsFooterVisible && "teams"].filter(Boolean) as FooterItem[],
+    [shellsFooterVisible, teamsFooterVisible],
   );
 
   // Effective selection: null if the selected pill stopped rendering (bridge
@@ -1437,7 +1469,20 @@ function PromptInput({
         value === "?"
       ) {
         setHelpOpen((v) => !v);
-        return;
+        return false;
+      }
+      // macOS terminals type "µ" for option+m unless Option is set as Meta.
+      // On an empty prompt it changes the permission mode, like shift+tab
+      // (which some keyboard software takes over); inside text it stays a
+      // character, so "300µs" still types.
+      if (
+        onboardingInput === undefined &&
+        interpretShortcuts &&
+        value === "µ" &&
+        getPlatform() === "macos" &&
+        cycleModeFromOptionMRef.current?.() === true
+      ) {
+        return false;
       }
       setHelpOpen(false);
 
@@ -1466,7 +1511,7 @@ function PromptInput({
         pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
         trackAndSetInput(cleaned);
         setCurrentCursorOffset(cleaned.length);
-        return;
+        return { value: cleaned, offset: cleaned.length };
       }
       const processedValue = value.replaceAll("\t", "    ");
 
@@ -1708,7 +1753,10 @@ function PromptInput({
         submissionMode === "prompt" &&
         isAgentSwarmsEnabled()
       ) {
-        const directMessage = parseDirectMemberMessage(inputParam);
+        const rawDirectMessage = parseDirectMemberMessage(inputParam);
+        const directMessage = rawDirectMessage ?? parseDirectMemberMessage(
+          expandPastedTextRefs(inputParam, pastedContentsRef.current),
+        );
         const directMessageRefs = directMessage
           ? parseReferences(inputParam)
           : [];
@@ -1729,10 +1777,9 @@ function PromptInput({
           !directMessageHasUnsupportedAttachments
         ) {
           const directMessagePastedContents = pastedContentsRef.current;
-          const directMessageText = expandPastedTextRefs(
-            directMessage.message,
-            directMessagePastedContents,
-          );
+          const directMessageText = rawDirectMessage === null
+            ? directMessage.message
+            : expandPastedTextRefs(directMessage.message, directMessagePastedContents);
           // Consume the composer before mailbox I/O so a slow send cannot
           // erase a newer draft on completion.
           trackAndSetInput("");
@@ -1828,7 +1875,7 @@ function PromptInput({
         activeAgent.type !== "leader" &&
         onAgentSubmit
       ) {
-        await onAgentSubmit(submitInput, activeAgent.task, {
+        await onAgentSubmit(expandPastedTextRefs(submitInput, submissionPastedContents), activeAgent.task, {
           setCursorOffset: setCurrentCursorOffset,
           clearBuffer,
           resetHistory,
@@ -2120,17 +2167,19 @@ function PromptInput({
     pendingSpaceAfterPillRef.current = true;
   }
 
-  // Prune images whose [Image #N] placeholder is no longer in the input text.
-  // Covers pill backspace, Ctrl+U, char-by-char deletion — any edit that drops
-  // the ref. onImagePaste batches setPastedContents + insertTextAtCursor in the
-  // same event, so this effect sees the placeholder already present.
+  // Removing a restored text placeholder must remove its payload too, so a
+  // refused paste cannot silently ride along with the next small prompt.
+  // Keep text supplied without a placeholder on its existing attachment path.
+  const previousPasteReferences = useRef<ReadonlySet<number>>(new Set());
   useEffect(() => {
     const referencedIds = new Set(
       parseReferences(lastInternalInputRef.current).map((r) => r.id),
     );
+    const previousReferencedIds = previousPasteReferences.current;
+    previousPasteReferences.current = referencedIds;
     updatePastedContentsAndRef((prev) => {
       const orphaned = Object.values(prev).filter(
-        (c) => c.type === "image" && !referencedIds.has(c.id),
+        (c) => (c.type === "image" || previousReferencedIds.has(c.id)) && !referencedIds.has(c.id),
       );
       if (orphaned.length === 0) return prev;
       const next = {
@@ -2145,7 +2194,7 @@ function PromptInput({
     const currentInput = lastInternalInputRef.current;
     const currentCursorOffset = cursorOffsetRef.current;
     // Clean up pasted text - strip ANSI escape codes and normalize line endings and tabs
-    let text = stripAnsi(rawText).replace(/\r/g, "\n").replaceAll("\t", "    ");
+    let text = stripAnsi(rawText).replace(/\r\n?/g, "\n").replaceAll("\t", "    ");
 
     // Detect file paths from drag-and-drop and convert to @mentions.
     // When files are dragged into the terminal, the terminal sends their
@@ -2398,6 +2447,7 @@ function PromptInput({
 
   // Shows the mode-switcher toast and (re)arms its auto-dismiss timer.
   const showModeSwitcherToast = useCallback(() => {
+    modeSwitcherVisibleRef.current = true;
     setShowModeSwitcher(true);
     if (modeSwitcherTimeoutRef.current) {
       clearTimeout(modeSwitcherTimeoutRef.current);
@@ -2414,12 +2464,29 @@ function PromptInput({
   }, []);
 
   const dismissModeSwitcherToast = useCallback(() => {
+    modeSwitcherVisibleRef.current = false;
     if (modeSwitcherTimeoutRef.current) {
       clearTimeout(modeSwitcherTimeoutRef.current);
       modeSwitcherTimeoutRef.current = null;
     }
     setShowModeSwitcher(false);
   }, []);
+
+  // Consume dismissal before TextInput clears a draft, including successive
+  // keys in one stdin chunk before the toast's render has caught up.
+  useInputCapture(
+    (input, key) => {
+      if (key.escape || (key.ctrl && input === "c")) {
+        deferredSubmitGestureRef.current = false;
+      }
+      if (input !== "c" || !key.ctrl || !modeSwitcherVisibleRef.current) return false;
+      dismissModeSwitcherToast();
+      clearSharedDoublePressState("app:interrupt");
+      setExitMessage({ show: false, key: "Ctrl-C" });
+      return true;
+    },
+    { context: "Chat" },
+  );
 
   const clearAutoModeOptInPreview = useCallback(() => {
     autoModeOptInPendingRef.current = false;
@@ -2618,26 +2685,14 @@ function PromptInput({
     selectPermissionMode,
   ]);
 
-  // Digit picks and esc-dismiss for the mode-switcher toast. Active only
-  // while the toast is visible; digits index into the same visible-mode
-  // order the ModeSwitcher renders, so display and picking cannot drift.
+  // Esc dismisses the mode-switcher toast. Digits are not mode picks: the
+  // toast stays up for a few seconds after shift+tab, and a prompt that
+  // starts with a digit typed in that window switched the permission mode,
+  // up to "never asks", while the digit still reached the prompt. Picking a
+  // mode directly belongs to /permissions.
   useInput(
-    (input, key) => {
-      if (key.escape) {
-        dismissModeSwitcherToast();
-        return;
-      }
-      if (!/^[1-9]$/u.test(input)) return;
-      const modes = visibleUserFacingModes(
-        displayedToolPermissionContext.isBypassPermissionsModeAvailable,
-        displayedToolPermissionContext.isAutoModeAvailable,
-      );
-      const targetMode = modes[Number.parseInt(input, 10) - 1];
-      if (targetMode === undefined) return;
-      // The live gate can lag the startup availability flag; picking auto
-      // without the gate would make transitionPermissionMode throw.
-      if (targetMode === "auto" && !isAutoModeGateEnabled()) return;
-      selectPermissionMode(targetMode);
+    (_input, key) => {
+      if (key.escape) dismissModeSwitcherToast();
     },
     { isActive: showModeSwitcher },
   );
@@ -2725,22 +2780,68 @@ function PromptInput({
   // routing, while Autocomplete's higher-priority Enter binding owns suggestion
   // confirmation whenever the picker is active.
   const keybindingContext = useOptionalKeybindingContext();
+  const submitCurrentInput = useCallback(() => {
+    if (isPastingRef.current) {
+      deferredSubmitGestureRef.current = true;
+      return;
+    }
+    dismissModeSwitcherToast();
+    const currentInput = lastInternalInputRef.current;
+    const offset = cursorOffsetRef.current;
+    if (currentInput[offset - 1] === "\\") {
+      pushToBuffer(currentInput, offset, pastedContentsRef.current);
+      trackAndSetInput(`${currentInput.slice(0, offset - 1)}\n${currentInput.slice(offset)}`);
+      setCurrentCursorOffset(offset);
+      return;
+    }
+    void onSubmit(currentInput);
+  }, [onSubmit, trackAndSetInput, setCurrentCursorOffset, pushToBuffer, dismissModeSwitcherToast]);
+  useEffect(() => {
+    if (isPastingRef.current || !deferredSubmitGestureRef.current || !promptKeyboardActive) return;
+    deferredSubmitGestureRef.current = false;
+    submitCurrentInput();
+  }, [isPasting, input, pastedContents, promptKeyboardActive, submitCurrentInput]);
   useEffect(() => {
     if (!keybindingContext || !promptKeyboardActive) return;
     return keybindingContext.registerHandler({
       action: "chat:submit",
       context: "Chat",
-      handler: () => {
-        void onSubmit(lastInternalInputRef.current);
-      },
+      handler: submitCurrentInput,
     });
-  }, [keybindingContext, promptKeyboardActive, onSubmit]);
+  }, [keybindingContext, promptKeyboardActive, submitCurrentInput]);
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as
   // onHistoryUp/onHistoryDown props to TextInput, so that useTextInput's
   // upOrHistoryUp/downOrHistoryDown can try cursor movement first and only
   // fall through to history when the cursor can't move further.
+  const handleExternalEditor = useCallback(async () => {
+    if (externalEditorActiveRef.current) return;
+    externalEditorActiveRef.current = true;
+    setIsExternalEditorActive(true);
+    try {
+      const { editPromptDraft } = await import("../../prompt-editor.js");
+      const edited = await editPromptDraft(expandPastedTextRefs(
+        lastInternalInputRef.current,
+        pastedContentsRef.current,
+      ));
+      if (edited === null) return;
+      pushToBuffer(lastInternalInputRef.current, cursorOffsetRef.current, pastedContentsRef.current);
+      // Text references have been expanded into the editor's draft. Keep
+      // image references attached and let the normal paste path store text.
+      setPastedContentsAndRef(Object.fromEntries(Object.entries(pastedContentsRef.current)
+        .filter(([, content]) => content.type === "image")));
+      trackAndSetInput("");
+      setCurrentCursorOffset(0);
+      onTextPaste(edited);
+    } catch (error) {
+      addNotification({ key: "external-editor-error", text: `Editor failed: ${error instanceof Error ? error.message : String(error)}`, color: "error", priority: "immediate", timeoutMs: 10_000 });
+    } finally {
+      externalEditorActiveRef.current = false;
+      setIsExternalEditorActive(false);
+    }
+  }, [addNotification, onTextPaste, pushToBuffer, setPastedContentsAndRef, trackAndSetInput, setCurrentCursorOffset]);
+
   const chatHandlers = useMemo(
     () => ({
       "chat:undo": handleUndo,
@@ -2752,6 +2853,7 @@ function PromptInput({
         : { "chat:modelPicker": handleModelPicker }),
       "chat:thinkingToggle": handleThinkingToggle,
       "chat:imagePaste": handleImagePaste,
+      "chat:externalEditor": handleExternalEditor,
     }),
     [
       handleUndo,
@@ -2762,6 +2864,7 @@ function PromptInput({
       onOpenModelMenu,
       handleThinkingToggle,
       handleImagePaste,
+      handleExternalEditor,
     ],
   );
   useKeybindings(chatHandlers, {
@@ -2775,6 +2878,11 @@ function PromptInput({
     context: "Chat",
     isActive: modeCycleKeybindingActive,
   });
+  cycleModeFromOptionMRef.current = () => {
+    if (!modeCycleKeybindingActive) return false;
+    handleCycleMode();
+    return true;
+  };
 
   // Shift+↑ enters message-actions cursor. Separate isActive so ctrl+r search
   // doesn't leave stale isSearchingHistory on cursor-exit remount.
@@ -3112,6 +3220,9 @@ function PromptInput({
       removeNotification("effort-level");
       return;
     }
+    // Same-key notifications are deduplicated. Remove the previous label so
+    // a canonical reload cannot leave its old effort displayed for 12s.
+    removeNotification("effort-level");
     addNotification({
       key: "effort-level",
       text: effortNotificationText,
@@ -3121,7 +3232,10 @@ function PromptInput({
   }, [effortNotificationText, addNotification, removeNotification]);
   const { columns, rows } = useTerminalSize();
   const promptGlyphs = selectAgenCTuiGlyphs();
-  const textInputColumns = clampPromptTextInputColumns(columns);
+  const textInputColumns = clampPromptTextInputColumns(
+    columns,
+    swarmBanner ? "banner" : "band",
+  );
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen TUI.
@@ -3278,7 +3392,7 @@ function PromptInput({
       autoModeOptInDialog)
     : null;
   useSetPromptOverlayDialog(fullscreenPromptDialog);
-  useRegisterOverlay("prompt-overlay-dialog", fullscreenPromptDialog !== null);
+  useRegisterOverlay(modeSwitcherElement !== null ? "mode-switcher-toast" : "prompt-overlay-dialog", fullscreenPromptDialog !== null);
   if (showBashesDialog && !isFullscreen) {
     return backgroundTasksDialogElement;
   }
@@ -3380,7 +3494,7 @@ function PromptInput({
     maxVisibleLines,
     disableCursorMovementForUpDownKeys:
       suggestions.length > 0 || !!footerItemSelected,
-    disableEscapeDoublePress: suggestions.length > 0,
+    disableEscapeDoublePress: suggestions.length > 0 || isLoading,
     cursorOffset,
     onChangeCursorOffset: setCurrentCursorOffset,
     onPaste: onTextPaste,
@@ -3513,8 +3627,8 @@ function PromptInput({
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
-          marginX={2}
-          paddingX={1}
+          marginX={PROMPT_BAND_MARGIN_X}
+          paddingX={PROMPT_BAND_PADDING_X}
           paddingY={1}
           backgroundColor="promptBackground"
           opaque

@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { itOnDarwin } from "../helpers/platform-registration.js";
 
 import {
   MAX_WORKFLOW_ARTIFACT_BYTES,
@@ -165,7 +166,7 @@ function seedIntents(options: {
 }
 
 describe("workflow handoff publication and integrity", () => {
-  it.runIf(process.platform === "darwin")("refuses descriptor-unsafe reads and cleanup without changing bytes", async () => {
+  itOnDarwin("refuses descriptor-unsafe reads and cleanup without changing bytes", async () => {
     const artifactStore = store();
     const artifact = await publish(artifactStore, "darwin-confined", "safe");
     await expectStoreCode(() => artifactStore.read(artifact.artifact_id), "WORKFLOW_HANDOFF_SAFE_IO_UNSUPPORTED");
@@ -670,6 +671,9 @@ describe("workflow handoff reachability, cleanup, quotas, and operator output", 
     await expect(cleanup).resolves.toMatchObject({ removed: 1 });
   });
 
+  // This boundary case performs 257 durable publishes and removals. Keep the
+  // real filesystem/WAL syncs and paging assertions, allowing for disk contention
+  // in the full suite: this is a correctness check, not a latency benchmark.
   itWithDescriptorIo(`uses bounded keyset cleanup pages at 256/257${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     for (let index = 0; index < MAX_WORKFLOW_ARTIFACT_CLEANUP_BATCH + 1; index += 1) {
@@ -691,7 +695,7 @@ describe("workflow handoff reachability, cleanup, quotas, and operator output", 
       removed: 1,
       truncated: false,
     });
-  });
+  }, 120_000);
 
   it("enforces exact per-run and global byte quotas without creating bytes", async () => {
     seedIntents({

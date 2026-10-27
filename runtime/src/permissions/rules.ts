@@ -24,7 +24,14 @@ import {
   type ToolPermissionRulesBySource,
   immutableToolPermissionContext,
 } from "./types.js";
-import { isRemovedLiveToolName } from "./tool-names.js";
+import { isRemovedLiveToolName, permissionRuleToolName } from "./tool-names.js";
+import {
+  MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
+  getFirstWordPrefix,
+  getSimpleCommandPrefix,
+  parseShellCommand,
+} from "../shell-command/parser.js";
+import { shellRestrictionParts } from "./shell-restrictions.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Escape helpers (parens + backslash)
@@ -231,7 +238,9 @@ export function matchRule(
       : `mcp__${tool.mcpInfo.serverName}`
     : tool.name;
 
-  if (toolNamesInPermissionRiskFamily(toolNameForMatch).includes(rule.ruleValue.toolName)) {
+  if (toolNamesInPermissionRiskFamily(toolNameForMatch).includes(
+    permissionRuleToolName(rule.ruleValue.toolName, rule.ruleBehavior),
+  )) {
     return true;
   }
 
@@ -299,19 +308,76 @@ export function toolAlwaysAllowedRule(
 export function getDenyRuleForTool(
   ctx: ToolPermissionContext,
   toolName: string,
-  _toolInput?: Record<string, unknown>,
+  toolInput?: Record<string, unknown>,
 ): PermissionRule | null {
   const tool = toolLikeFromName(toolName);
-  return getDenyRules(ctx).find((r) => matchRule(r, tool)) ?? null;
+  return getDenyRules(ctx).find((r) => matchRule(r, tool)) ??
+    shellContentRuleForInput(ctx, toolName, "deny", toolInput);
 }
 
 export function getAskRuleForTool(
   ctx: ToolPermissionContext,
   toolName: string,
-  _toolInput?: Record<string, unknown>,
+  toolInput?: Record<string, unknown>,
 ): PermissionRule | null {
   const tool = toolLikeFromName(toolName);
-  return getAskRules(ctx).find((r) => matchRule(r, tool)) ?? null;
+  return getAskRules(ctx).find((r) => matchRule(r, tool)) ??
+    shellContentRuleForInput(ctx, toolName, "ask", toolInput);
+}
+
+/** Shell restrictions are a floor before prompts, hooks, modes or grants. */
+function shellContentRuleForInput(
+  ctx: ToolPermissionContext,
+  toolName: string,
+  behavior: "deny" | "ask",
+  input: Record<string, unknown> | undefined,
+): PermissionRule | null {
+  if (!SHELL_TOOL_FAMILY.includes(toolName) || input === undefined) return null;
+  const rules = getRuleByContentsForTool(ctx, toolName, behavior);
+  if (rules.size === 0) return null;
+  // Ignore unused fields: they must not hide the command the tool executes.
+  const command = toolName === "exec_command"
+    ? typeof input.cmd === "string" ? input.cmd : undefined
+    : toolName === "write_stdin"
+      ? typeof input.chars === "string" ? input.chars : undefined
+      : typeof input.command === "string" ? input.command : undefined;
+  if (command === undefined || command.trim().length === 0) return null;
+  // system.bash also accepts direct command/args invocations.
+  const fullCommand = toolName === "system.bash" && Array.isArray(input.args) && input.args.every((arg) => typeof arg === "string")
+    ? [command, ...input.args].join(" ") : command;
+  const pending = [fullCommand.trim()];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const candidate = pending.shift()!;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    // An over-limit command cannot safely escape configured restrictions
+    // through an approval prompt. Refuse rather than guessing it unmatched.
+    if (seen.size > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK) {
+      return rules.values().next().value ?? null;
+    }
+    const matched = findMatchingContentRule(rules, candidate, {
+      prefix: getSimpleCommandPrefix(candidate),
+      firstWord: getFirstWordPrefix(candidate),
+    });
+    if (matched !== null) return matched;
+    const parsed = shellRestrictionParts(candidate);
+    if (parsed.opaque) return rules.values().next().value ?? null;
+    // Match decoded literal words as well as their quoted shell spelling.
+    const words = parseShellCommand(candidate);
+    if (words !== null) {
+      const decoded = words.join(" ");
+      const decodedMatch = findMatchingContentRule(rules, decoded, {
+        prefix: getSimpleCommandPrefix(decoded), firstWord: getFirstWordPrefix(decoded),
+      });
+      if (decodedMatch !== null) return decodedMatch;
+    }
+    pending.push(...parsed.commands);
+    if (pending.length > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK * 2) {
+      return rules.values().next().value ?? null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -325,6 +391,18 @@ export function getRuleByContentsForTool(
   behavior: PermissionBehavior,
 ): Map<string, PermissionRule> {
   const out = new Map<string, PermissionRule>();
+  for (const rule of getContentRulesForTool(ctx, toolName, behavior)) {
+    out.set(rule.ruleValue.ruleContent!, rule);
+  }
+  return out;
+}
+
+/** Keep source identity until consumers have resolved source-relative content. */
+export function getContentRulesForTool(
+  ctx: ToolPermissionContext,
+  toolName: string,
+  behavior: PermissionBehavior,
+): PermissionRule[] {
   let rules: PermissionRule[];
   switch (behavior) {
     case "allow":
@@ -337,16 +415,14 @@ export function getRuleByContentsForTool(
       rules = getAskRules(ctx);
       break;
   }
-  for (const rule of rules) {
-    if (
-      toolNamesInPermissionRiskFamily(toolName).includes(rule.ruleValue.toolName) &&
+  return rules.filter(
+    (rule) =>
+      toolNamesInPermissionRiskFamily(toolName).includes(
+        permissionRuleToolName(rule.ruleValue.toolName, rule.ruleBehavior),
+      ) &&
       rule.ruleValue.ruleContent !== undefined &&
-      rule.ruleBehavior === behavior
-    ) {
-      out.set(rule.ruleValue.ruleContent, rule);
-    }
-  }
-  return out;
+      rule.ruleBehavior === behavior,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────

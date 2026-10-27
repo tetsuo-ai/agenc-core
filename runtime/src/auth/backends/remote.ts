@@ -1,4 +1,5 @@
-import { withPromotionWalletAmounts } from "../promotion-allowance.js";
+import { setTimeout as delay } from "node:timers/promises";
+
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -9,8 +10,6 @@ import type {
   AuthInferAgencModelParams,
   AuthInferredAgencModel,
   AuthLlmUsage,
-  AuthLlmUsageAllowance,
-  AuthLlmUsageStatus,
   AuthLoginParams,
   AuthLoginResult,
   AuthLogoutParams,
@@ -36,27 +35,16 @@ import {
   type RemoteBearerCredential,
 } from "../native-credentials.js";
 import { getProxyFetchOptions } from "../../utils/proxy.js";
-import { normalizePilotAccess } from "../pilot-access.js";
-import { parseAgencModelCatalog } from "../account-access.js";
 
-const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
-  "https://id.agenc.ag/v1/auth/llm-credential" as const;
 const DEFAULT_REMOTE_AUTH_LOGIN_START_URL =
   "https://id.agenc.ag/v1/auth/login/start" as const;
 const DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL =
   "https://id.agenc.ag/v1/auth/login/poll" as const;
 const DEFAULT_REMOTE_AUTH_ME_URL =
   "https://id.agenc.ag/v1/auth/me" as const;
-const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
-  "https://id.agenc.ag/v1/auth/infer-model" as const;
 const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
   "https://id.agenc.ag/v1/auth/subscription-tier" as const;
-const DEFAULT_REMOTE_AUTH_USAGE_URL =
-  "https://id.agenc.ag/v1/auth/llm-usage" as const;
-const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL" as const;
 const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL" as const;
-const REMOTE_AUTH_USAGE_URL_ENV = "AGENC_REMOTE_AUTH_USAGE_URL" as const;
-const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
 const REMOTE_AUTH_LOGIN_START_URL_ENV =
   "AGENC_REMOTE_AUTH_LOGIN_START_URL" as const;
 const REMOTE_AUTH_LOGIN_POLL_URL_ENV =
@@ -65,7 +53,6 @@ const REMOTE_AUTH_ME_URL_ENV = "AGENC_REMOTE_AUTH_ME_URL" as const;
 const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
 const REMOTE_AUTH_STATE_FILENAME = "auth.json" as const;
 const REMOTE_AUTH_STATE_VERSION = 1 as const;
-const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
 const REMOTE_AUTH_REQUEST_TIMEOUT_MS = 30_000;
 const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 5_000;
 const REMOTE_AUTH_STATE_VERIFY_MAX_ATTEMPTS = 3;
@@ -91,26 +78,9 @@ interface RemotePersistedAuthSession {
   readonly credential: RemoteBearerCredential;
 }
 
-export interface RemoteAuthVendKeyRequest {
-  readonly provider: AuthProviderSlug | string;
-  readonly sessionId: AuthSessionId;
-}
-
-export type RemoteAuthKeyVendor = (
-  request: RemoteAuthVendKeyRequest,
-) => AuthVendedCredential | Promise<AuthVendedCredential>;
-
-export type RemoteAuthModelInferer = (
-  request: AuthInferAgencModelParams,
-) => AuthInferredAgencModel | Promise<AuthInferredAgencModel>;
-
 export type RemoteAuthSubscriptionTierResolver = (
   request: AuthSessionRef,
 ) => AuthSubscriptionTier | Promise<AuthSubscriptionTier>;
-
-export type RemoteAuthLlmUsageResolver = (
-  request: AuthSessionRef,
-) => AuthLlmUsage | Promise<AuthLlmUsage>;
 
 export interface RemoteAuthLoginRequest extends AuthSessionRef {}
 
@@ -153,33 +123,19 @@ export interface RemoteAuthBackendOptions {
   readonly agencHome?: string;
   readonly accountSnapshotResolver?: RemoteAuthAccountSnapshotResolver;
   readonly authFilePath?: string;
-  readonly keyVendor?: RemoteAuthKeyVendor;
   readonly loginFlow?: RemoteAuthLoginFlow;
-  readonly modelInferer?: RemoteAuthModelInferer;
+  readonly loginSignal?: AbortSignal;
   readonly onDeviceCode?: RemoteAuthDeviceCodeHandler;
   readonly subscriptionTierResolver?: RemoteAuthSubscriptionTierResolver;
-  readonly llmUsageResolver?: RemoteAuthLlmUsageResolver;
-  readonly endpoint?: string;
   readonly env?: EnvSnapshot;
   readonly fetchImpl?: typeof fetch;
-  readonly keyCacheTtlMs?: number;
   readonly loginPollEndpoint?: string;
   readonly loginStartEndpoint?: string;
-  readonly managedKeysEnabled?: boolean;
   readonly meEndpoint?: string;
-  readonly modelEndpoint?: string;
-  readonly nowMs?: () => number;
   readonly now?: () => Date;
   readonly sleepMs?: (ms: number) => Promise<void>;
   readonly tierEndpoint?: string;
-  readonly usageEndpoint?: string;
-  readonly modelsEndpoint?: string;
   readonly token?: string;
-}
-
-interface CachedRemoteAuthKey {
-  readonly promise: Promise<AuthVendedCredential>;
-  readonly expiresAtMs: number;
 }
 
 export class RemoteAuthBackend implements AuthBackend {
@@ -188,18 +144,11 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly #authFilePath: string;
   readonly #home: HomeContext;
   readonly #accountSnapshotResolver: RemoteAuthAccountSnapshotResolver;
-  readonly #keyVendor: RemoteAuthKeyVendor;
   readonly #loginFlow: RemoteAuthLoginFlow;
-  readonly #modelInferer: RemoteAuthModelInferer;
+  readonly #loginSignal?: AbortSignal;
   readonly #subscriptionTierResolver: RemoteAuthSubscriptionTierResolver;
-  readonly #llmUsageResolver: RemoteAuthLlmUsageResolver;
-  readonly #listAgencModels: () => Promise<readonly AuthAgencModel[]>;
-  readonly #managedKeysEnabled: boolean;
-  readonly #keyCacheTtlMs: number;
   readonly #now: () => Date;
-  readonly #nowMs: () => number;
   readonly #explicitToken: string | undefined;
-  readonly #vendedKeys = new Map<string, CachedRemoteAuthKey>();
 
   constructor(options: RemoteAuthBackendOptions = {}) {
     const ingress = captureSecureStorageIngress(
@@ -216,24 +165,13 @@ export class RemoteAuthBackend implements AuthBackend {
     this.#accountSnapshotResolver =
       scopedOptions.accountSnapshotResolver ??
       createHttpRemoteAuthAccountSnapshotResolver(scopedOptions);
-    this.#keyVendor = scopedOptions.keyVendor ??
-      createHttpRemoteAuthKeyVendor(scopedOptions, this.#home);
+    this.#loginSignal = scopedOptions.loginSignal;
     this.#loginFlow = scopedOptions.loginFlow ??
       createHttpRemoteAuthLoginFlow(scopedOptions);
-    this.#modelInferer =
-      scopedOptions.modelInferer ??
-      createHttpRemoteAuthModelInferer(scopedOptions, this.#home);
     this.#subscriptionTierResolver =
       scopedOptions.subscriptionTierResolver ??
       createHttpRemoteAuthSubscriptionTierResolver(scopedOptions, this.#home);
-    this.#llmUsageResolver =
-      scopedOptions.llmUsageResolver ??
-      createHttpRemoteAuthLlmUsageResolver(scopedOptions, this.#home);
-    this.#listAgencModels = createHttpAgencModelCatalogResolver(scopedOptions, this.#home);
-    this.#managedKeysEnabled = scopedOptions.managedKeysEnabled === true;
-    this.#keyCacheTtlMs = positiveTtlMs(scopedOptions.keyCacheTtlMs);
     this.#now = scopedOptions.now ?? (() => new Date());
-    this.#nowMs = scopedOptions.nowMs ?? (() => Date.now());
     this.#explicitToken = explicitRemoteAuthToken(scopedOptions);
   }
 
@@ -241,14 +179,15 @@ export class RemoteAuthBackend implements AuthBackend {
     return this.#authFilePath;
   }
 
-  get managedKeysEnabled(): boolean { return this.#managedKeysEnabled; }
-
   async login(params: AuthLoginParams = {}): Promise<AuthLoginResult> {
+    this.#loginSignal?.throwIfAborted();
     const result = normalizeRemoteAuthLoginResult(
-      await this.#loginFlow(params),
+      await cancellableLogin(this.#loginFlow(params), this.#loginSignal),
     );
+    this.#loginSignal?.throwIfAborted();
     const createdAt = this.#now().toISOString();
     await withRemoteAuthStateLock(this.#authFilePath, async () => {
+      this.#loginSignal?.throwIfAborted();
       const credentialTransaction = storeRemoteBearerCredential(this.#home, {
         bearerToken: result.token,
         createdAt,
@@ -271,7 +210,6 @@ export class RemoteAuthBackend implements AuthBackend {
           this.#home,
         );
       }
-      this.#vendedKeys.clear();
     });
     return {
       authenticated: true,
@@ -285,7 +223,6 @@ export class RemoteAuthBackend implements AuthBackend {
   async logout(_params: AuthLogoutParams = {}): Promise<AuthLogoutResult> {
     await withRemoteAuthStateLock(this.#authFilePath, async () => {
       await clearRemoteAuthState(this.#authFilePath, this.#home);
-      this.#vendedKeys.clear();
     });
     return { authenticated: false };
   }
@@ -339,7 +276,6 @@ export class RemoteAuthBackend implements AuthBackend {
               this.#home,
               current.credential,
             );
-            this.#vendedKeys.clear();
             return "signed-out";
           }
           await writeRemoteAuthState(this.#authFilePath, {
@@ -366,69 +302,12 @@ export class RemoteAuthBackend implements AuthBackend {
     );
   }
 
-  vendKey(
-    provider: AuthProviderSlug | string,
-    sessionId: AuthSessionId,
-  ): Promise<AuthVendedCredential> {
-    if (!this.#managedKeysEnabled) {
-      return Promise.reject(
-        new Error(
-          "RemoteAuthBackend managed key vending is disabled by auth.managedKeys.enabled",
-        ),
-      );
-    }
-    const cacheKey = remoteProviderKeyCacheKey(provider, sessionId);
-    const now = this.#nowMs();
-    this.pruneExpiredKeys(now);
-    const existing = this.#vendedKeys.get(cacheKey);
-    if (existing !== undefined && existing.expiresAtMs > now) {
-      return existing.promise;
-    }
-    if (existing !== undefined) {
-      this.#vendedKeys.delete(cacheKey);
-    }
-
-    const uncached = this.#requestVendedKey(provider, sessionId).catch((error) => {
-      this.#vendedKeys.delete(cacheKey);
-      throw error;
-    });
-    const cached = uncached.then((key) => {
-      const expiresAtMs = cacheExpiresAtMs(
-        key,
-        this.#nowMs(),
-        this.#keyCacheTtlMs,
-      );
-      const current = this.#vendedKeys.get(cacheKey);
-      if (current?.promise === cached) {
-        this.#vendedKeys.set(cacheKey, {
-          promise: cached,
-          expiresAtMs,
-        });
-      }
-      return key;
-    });
-    this.#vendedKeys.set(cacheKey, {
-      promise: cached,
-      expiresAtMs: now + this.#keyCacheTtlMs,
-    });
-    return cached;
+  async vendKey(_provider: AuthProviderSlug | string, _sessionId: AuthSessionId): Promise<AuthVendedCredential> {
+    throw new Error("AgenC accounts no longer provide models.");
   }
 
-  pruneExpiredKeys(nowMs: number = this.#nowMs()): number {
-    let pruned = 0;
-    for (const [cacheKey, cached] of this.#vendedKeys) {
-      if (cached.expiresAtMs <= nowMs) {
-        this.#vendedKeys.delete(cacheKey);
-        pruned += 1;
-      }
-    }
-    return pruned;
-  }
-
-  async inferAgencModel(
-    params: AuthInferAgencModelParams = {},
-  ): Promise<AuthInferredAgencModel> {
-    return this.#requestInferredModel(params);
+  async inferAgencModel(_params: AuthInferAgencModelParams = {}): Promise<AuthInferredAgencModel> {
+    throw new Error("AgenC accounts no longer provide models.");
   }
 
   async getSubscriptionTier(
@@ -437,83 +316,11 @@ export class RemoteAuthBackend implements AuthBackend {
     return this.#requestSubscriptionTier(params);
   }
 
-  async getLlmUsage(
-    params: AuthSessionRef = {},
-  ): Promise<AuthLlmUsage> {
-    return this.#requestLlmUsage(params);
+  async getLlmUsage(_params: AuthSessionRef = {}): Promise<AuthLlmUsage> {
+    throw new Error("AgenC accounts no longer provide models.");
   }
 
-  async listAgencModels(): Promise<readonly AuthAgencModel[]> {
-    return this.#listAgencModels();
-  }
-
-  async #requestVendedKey(
-    provider: AuthProviderSlug | string,
-    sessionId: AuthSessionId,
-  ): Promise<AuthVendedCredential> {
-    const vended = await this.#keyVendor({ provider, sessionId });
-    if (vended.provider !== provider) {
-      throw new Error(
-        `RemoteAuthBackend key vending response provider mismatch for "${provider}"`,
-      );
-    }
-    if (vended.sessionId !== sessionId) {
-      throw new Error(
-        `RemoteAuthBackend key vending response session mismatch for "${sessionId}"`,
-      );
-    }
-    if (provider === "amazon-bedrock" && vended.kind !== "aws-sigv4") {
-      throw new Error(
-        `RemoteAuthBackend returned api-key credentials for provider "${provider}"; expected aws-sigv4`,
-      );
-    }
-    if (provider !== "amazon-bedrock" && vended.kind !== "api-key") {
-      throw new Error(
-        `RemoteAuthBackend returned aws-sigv4 credentials for provider "${provider}"; expected api-key`,
-      );
-    }
-    if (vended.kind === "api-key") {
-      const apiKey = vended.apiKey.trim();
-      if (apiKey.length === 0) {
-        throw new Error(
-          `RemoteAuthBackend returned an empty managed API key for provider "${provider}" in session "${sessionId}"`,
-        );
-      }
-      return {
-        ...vended,
-        apiKey,
-      };
-    }
-    if (vended.kind === "aws-sigv4") {
-      const accessKeyId = vended.accessKeyId.trim();
-      const secretAccessKey = vended.secretAccessKey.trim();
-      if (accessKeyId.length === 0) {
-        throw new Error(
-          `RemoteAuthBackend returned an empty AWS access key ID for provider "${provider}" in session "${sessionId}"`,
-        );
-      }
-      if (secretAccessKey.length === 0) {
-        throw new Error(
-          `RemoteAuthBackend returned an empty AWS secret access key for provider "${provider}" in session "${sessionId}"`,
-        );
-      }
-      return {
-        ...vended,
-        accessKeyId,
-        secretAccessKey,
-      };
-    }
-    throw new Error(
-      `RemoteAuthBackend returned an unsupported managed credential kind for provider "${provider}" in session "${sessionId}"`,
-    );
-  }
-
-  async #requestInferredModel(
-    params: AuthInferAgencModelParams,
-  ): Promise<AuthInferredAgencModel> {
-    const inferred = await this.#modelInferer(params);
-    return normalizeRemoteAuthModelInference(inferred);
-  }
+  async listAgencModels(): Promise<readonly AuthAgencModel[]> { return []; }
 
   async #requestSubscriptionTier(
     params: AuthSessionRef,
@@ -559,10 +366,6 @@ export class RemoteAuthBackend implements AuthBackend {
     throw new Error(
       "RemoteAuthBackend account changed repeatedly during subscription tier lookup",
     );
-  }
-
-  async #requestLlmUsage(params: AuthSessionRef): Promise<AuthLlmUsage> {
-    return normalizeRemoteAuthLlmUsage(await this.#llmUsageResolver(params));
   }
 }
 
@@ -629,38 +432,16 @@ function createHttpRemoteAuthAccountSnapshotResolver(
   };
 }
 
-function createHttpRemoteAuthKeyVendor(
-  options: RemoteAuthBackendOptions,
-  home: HomeContext,
-): RemoteAuthKeyVendor {
-  const env = options.env ?? process.env;
-  const endpoint =
-    trimNonEmpty(options.endpoint) ??
-    trimNonEmpty(env[REMOTE_AUTH_URL_ENV]) ??
-    DEFAULT_REMOTE_AUTH_KEY_VENDING_URL;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  return async (request) => {
-    if (fetchImpl === undefined) {
-      throw new Error("RemoteAuthBackend requires fetch for remote key vending");
-    }
-    const response = await remoteAuthFetch(fetchImpl, endpoint, {
-      method: "POST",
-      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options, home)),
-      body: JSON.stringify({
-        provider: request.provider,
-        sessionId: request.sessionId,
-      }),
-    }, "key vending", env, options.fetchImpl === undefined);
-    if (!response.ok) {
-      throw new Error(
-        `RemoteAuthBackend key vending failed with HTTP ${response.status}`,
-      );
-    }
-    return parseRemoteAuthVendKeyResponse(
-      await readRemoteAuthJsonResponse(response, "key vending"),
-      request,
-    );
-  };
+function cancellableLogin<T>(work: T | Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return Promise.resolve(work);
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(work).then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 function createHttpRemoteAuthLoginFlow(
@@ -676,13 +457,17 @@ function createHttpRemoteAuthLoginFlow(
     trimNonEmpty(env[REMOTE_AUTH_LOGIN_POLL_URL_ENV]) ??
     DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  const sleep = options.sleepMs ?? sleepMs;
+  const signal = options.loginSignal;
+  const sleep = (ms: number) => options.sleepMs === undefined
+    ? delay(ms, undefined, { signal })
+    : cancellableLogin(options.sleepMs(ms), signal);
   return async (request) => {
     if (fetchImpl === undefined) {
       throw new Error("RemoteAuthBackend requires fetch for remote login");
     }
     const startResponse = await remoteAuthFetch(fetchImpl, startEndpoint, {
       method: "POST",
+      signal,
       headers: remoteAuthJsonHeaders(undefined),
       body: JSON.stringify(compactRemoteAuthLoginRequest(request)),
     }, "login start", env, options.fetchImpl === undefined);
@@ -705,17 +490,20 @@ function createHttpRemoteAuthLoginFlow(
       (started.intervalSeconds ?? 2) * 1000,
     );
     while (Date.now() <= expiresAtMs) {
+      signal?.throwIfAborted();
       let pollResponse: Response;
       try {
         pollResponse = await remoteAuthFetch(fetchImpl, pollEndpoint, {
           method: "POST",
+          signal,
           headers: remoteAuthJsonHeaders(undefined),
           body: JSON.stringify({
             deviceCode: started.deviceCode,
             sessionId: request.sessionId,
           }),
         }, "login poll", env, options.fetchImpl === undefined);
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw error;
         await sleep(intervalMs);
         continue;
       }
@@ -776,36 +564,6 @@ async function notifyRemoteAuthDeviceCode(
   });
 }
 
-function createHttpRemoteAuthModelInferer(
-  options: RemoteAuthBackendOptions,
-  home: HomeContext,
-): RemoteAuthModelInferer {
-  const env = options.env ?? process.env;
-  const endpoint =
-    trimNonEmpty(options.modelEndpoint) ??
-    trimNonEmpty(env[REMOTE_AUTH_MODEL_URL_ENV]) ??
-    DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  return async (request) => {
-    if (fetchImpl === undefined) {
-      throw new Error("RemoteAuthBackend requires fetch for hosted model routing");
-    }
-    const response = await remoteAuthFetch(fetchImpl, endpoint, {
-      method: "POST",
-      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options, home)),
-      body: JSON.stringify(compactRemoteAuthModelRequest(request)),
-    }, "hosted model routing", env, options.fetchImpl === undefined);
-    if (!response.ok) {
-      throw new Error(
-        `RemoteAuthBackend hosted model routing failed with HTTP ${response.status}`,
-      );
-    }
-    return parseRemoteAuthModelInferenceResponse(
-      await readRemoteAuthJsonResponse(response, "hosted model routing"),
-    );
-  };
-}
-
 function createHttpRemoteAuthSubscriptionTierResolver(
   options: RemoteAuthBackendOptions,
   home: HomeContext,
@@ -838,63 +596,6 @@ function createHttpRemoteAuthSubscriptionTierResolver(
     return parseRemoteAuthSubscriptionTierResponse(
       await readRemoteAuthJsonResponse(response, "subscription tier lookup"),
     );
-  };
-}
-
-function createHttpRemoteAuthLlmUsageResolver(
-  options: RemoteAuthBackendOptions,
-  home: HomeContext,
-): RemoteAuthLlmUsageResolver {
-  const env = options.env ?? process.env;
-  const endpoint =
-    trimNonEmpty(options.usageEndpoint) ??
-    trimNonEmpty(env[REMOTE_AUTH_USAGE_URL_ENV]) ??
-    DEFAULT_REMOTE_AUTH_USAGE_URL;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  return async (request) => {
-    if (fetchImpl === undefined) {
-      throw new Error("RemoteAuthBackend requires fetch for remote LLM usage");
-    }
-    const token = await resolveRemoteAuthToken(options, home);
-    if (token === undefined) {
-      return freeLlmUsage();
-    }
-    const response = await remoteAuthFetch(fetchImpl, endpoint, {
-      method: "POST",
-      headers: remoteAuthJsonHeaders(token),
-      body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
-    }, "LLM usage lookup", env, options.fetchImpl === undefined);
-    if (response.status === 401 || response.status === 403) return freeLlmUsage();
-    if (!response.ok) {
-      throw new Error(
-        `RemoteAuthBackend LLM usage lookup failed with HTTP ${response.status}`,
-      );
-    }
-    return parseRemoteAuthLlmUsageResponse(
-      await readRemoteAuthJsonResponse(response, "LLM usage lookup"),
-    );
-  };
-}
-
-function createHttpAgencModelCatalogResolver(
-  options: RemoteAuthBackendOptions,
-  home: HomeContext,
-): () => Promise<readonly AuthAgencModel[]> {
-  const env = options.env ?? process.env;
-  const usageEndpoint = trimNonEmpty(options.usageEndpoint) ??
-    trimNonEmpty(env[REMOTE_AUTH_USAGE_URL_ENV]) ?? DEFAULT_REMOTE_AUTH_USAGE_URL;
-  const endpoint = trimNonEmpty(options.modelsEndpoint) ??
-    new URL("./openrouter/v1/models", usageEndpoint).toString();
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  return async () => {
-    const token = await resolveRemoteAuthToken(options, home);
-    if (token === undefined) return [];
-    if (fetchImpl === undefined) throw new Error("AgenC model discovery requires fetch");
-    const response = await remoteAuthFetch(fetchImpl, endpoint, {
-      method: "GET", headers: remoteAuthJsonHeaders(token), redirect: "error",
-    }, "model catalog", env, options.fetchImpl === undefined);
-    if (!response.ok) throw new Error(`AgenC model discovery failed with HTTP ${response.status}`);
-    return parseAgencModelCatalog(await readRemoteAuthJsonResponse(response, "model catalog"));
   };
 }
 
@@ -953,20 +654,6 @@ function compactRemoteAuthLoginRequest(
   );
 }
 
-function compactRemoteAuthModelRequest(
-  request: AuthInferAgencModelParams,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries({
-      provider: request.provider,
-      requestedModel: request.requestedModel,
-      sessionId: request.sessionId,
-      subscriptionTier: request.subscriptionTier,
-      metadata: request.metadata,
-    }).filter(([, value]) => value !== undefined),
-  );
-}
-
 function compactRemoteAuthSubscriptionTierRequest(
   request: AuthSessionRef,
 ): Record<string, unknown> {
@@ -975,68 +662,6 @@ function compactRemoteAuthSubscriptionTierRequest(
       sessionId: request.sessionId,
     }).filter(([, value]) => value !== undefined),
   );
-}
-
-function parseRemoteAuthVendKeyResponse(
-  value: unknown,
-  request: RemoteAuthVendKeyRequest,
-): AuthVendedCredential {
-  if (!value || typeof value !== "object") {
-    throw new Error("RemoteAuthBackend key vending returned a non-object response");
-  }
-  const record = value as Record<string, unknown>;
-  if (record.provider !== undefined && record.provider !== request.provider) {
-    throw new Error(
-      `RemoteAuthBackend key vending response provider mismatch for "${request.provider}"`,
-    );
-  }
-  if (record.sessionId !== undefined && record.sessionId !== request.sessionId) {
-    throw new Error(
-      `RemoteAuthBackend key vending response session mismatch for "${request.sessionId}"`,
-    );
-  }
-  const baseUrl = readTrimmedString(record.baseUrl ?? record.baseURL);
-  const common = {
-    provider: request.provider,
-    sessionId: request.sessionId,
-    ...(baseUrl !== undefined ? { baseUrl } : {}),
-    ...(typeof record.expiresAt === "string" && record.expiresAt.length > 0
-      ? { expiresAt: record.expiresAt }
-      : {}),
-  };
-  if (request.provider === "amazon-bedrock") {
-    const accessKeyId = readTrimmedString(record.accessKeyId);
-    if (accessKeyId === undefined) {
-      throw new Error(
-        "RemoteAuthBackend key vending response missing accessKeyId",
-      );
-    }
-    const secretAccessKey = readTrimmedString(record.secretAccessKey);
-    if (secretAccessKey === undefined) {
-      throw new Error(
-        "RemoteAuthBackend key vending response missing secretAccessKey",
-      );
-    }
-    const sessionToken = readTrimmedString(record.sessionToken);
-    const region = readTrimmedString(record.region);
-    return {
-      ...common,
-      kind: "aws-sigv4",
-      accessKeyId,
-      secretAccessKey,
-      ...(sessionToken !== undefined ? { sessionToken } : {}),
-      ...(region !== undefined ? { region } : {}),
-    };
-  }
-  const apiKey = readTrimmedString(record.apiKey ?? record.litellmKey);
-  if (apiKey === undefined) {
-    throw new Error("RemoteAuthBackend key vending response missing apiKey");
-  }
-  return {
-    ...common,
-    kind: "api-key",
-    apiKey,
-  };
 }
 
 interface RemoteAuthLoginStartDevice {
@@ -1186,19 +811,6 @@ function normalizeRemoteAuthLoginResult(
   };
 }
 
-function parseRemoteAuthModelInferenceResponse(
-  value: unknown,
-): AuthInferredAgencModel {
-  if (!value || typeof value !== "object") {
-    throw new Error(
-      "RemoteAuthBackend hosted model routing returned a non-object response",
-    );
-  }
-  return normalizeRemoteAuthModelInference(
-    value as Partial<AuthInferredAgencModel>,
-  );
-}
-
 function parseRemoteAuthAccountSnapshotResponse(
   value: unknown,
 ): RemoteAuthAccountSnapshot {
@@ -1290,131 +902,6 @@ function parseRemoteAuthSubscriptionTierResponse(
   return normalizeRequiredSubscriptionTier(rawTier);
 }
 
-function parseRemoteAuthLlmUsageResponse(value: unknown): AuthLlmUsage {
-  if (!value || typeof value !== "object") {
-    throw new Error("RemoteAuthBackend LLM usage lookup returned a non-object response");
-  }
-  return normalizeRemoteAuthLlmUsage(value as Partial<AuthLlmUsage>);
-}
-
-function normalizeRemoteAuthLlmUsage(value: Partial<AuthLlmUsage>): AuthLlmUsage {
-  const subscriptionTier = typeof value.subscriptionTier === "string"
-    ? normalizeSubscriptionTier(value.subscriptionTier)
-    : undefined;
-  if (subscriptionTier === undefined) {
-    throw new Error("RemoteAuthBackend LLM usage response has invalid subscriptionTier");
-  }
-  const allowance = withPromotionWalletAmounts(normalizeRemoteAuthLlmUsageAllowance(value.modelAllowance), value.creditWallet);
-  const pilotAccess = normalizePilotAccess(value.pilotAccess);
-  return {
-    managedModelsEnabled: value.managedModelsEnabled === true,
-    modelAllowance: allowance,
-    subscriptionTier,
-    ...(pilotAccess !== undefined ? { pilotAccess } : {}),
-  };
-}
-
-function normalizeRemoteAuthLlmUsageAllowance(
-  value: unknown,
-): AuthLlmUsageAllowance {
-  if (!value || typeof value !== "object") {
-    throw new Error("RemoteAuthBackend LLM usage response missing modelAllowance");
-  }
-  const record = value as Record<string, unknown>;
-  const status = normalizeLlmUsageStatus(record.status);
-  const allowedModelCount = readFiniteNumber(record.allowedModelCount);
-  const duration = readTrimmedString(record.duration);
-  if (status === undefined || allowedModelCount === undefined || duration === undefined) {
-    throw new Error("RemoteAuthBackend LLM usage response has invalid modelAllowance");
-  }
-  return {
-    allowedModelCount,
-    duration,
-    ...(readFiniteNumber(record.includedUsd) !== undefined
-      ? { includedUsd: readFiniteNumber(record.includedUsd) }
-      : {}),
-    ...(readFiniteNumber(record.percentUsed) !== undefined
-      ? { percentUsed: readFiniteNumber(record.percentUsed) }
-      : {}),
-    ...(readFiniteNumber(record.remainingUsd) !== undefined
-      ? { remainingUsd: readFiniteNumber(record.remainingUsd) }
-      : {}),
-    ...(readTrimmedString(record.resetsAt) !== undefined
-      ? { resetsAt: readTrimmedString(record.resetsAt) }
-      : {}),
-    status,
-    ...(readFiniteNumber(record.usedUsd) !== undefined
-      ? { usedUsd: readFiniteNumber(record.usedUsd) }
-      : {}),
-    ...(readFiniteNumber(record.pendingUsd) !== undefined
-      ? { pendingUsd: readFiniteNumber(record.pendingUsd) }
-      : {}),
-  };
-}
-
-function normalizeLlmUsageStatus(value: unknown): AuthLlmUsageStatus | undefined {
-  if (typeof value !== "string") return undefined;
-  switch (value.trim()) {
-    case "free":
-    case "pending":
-    case "active":
-    case "exhausted":
-    case "unavailable":
-      return value.trim() as AuthLlmUsageStatus;
-    default:
-      return undefined;
-  }
-}
-
-function freeLlmUsage(): AuthLlmUsage {
-  return {
-    managedModelsEnabled: false,
-    modelAllowance: {
-      allowedModelCount: 0,
-      duration: "30d",
-      includedUsd: 0,
-      percentUsed: 0,
-      remainingUsd: 0,
-      status: "free",
-      usedUsd: 0,
-    },
-    subscriptionTier: "free",
-  };
-}
-
-function normalizeRemoteAuthModelInference(
-  value: Partial<AuthInferredAgencModel>,
-): AuthInferredAgencModel {
-  const provider =
-    typeof value.provider === "string" ? trimNonEmpty(value.provider) : undefined;
-  if (provider === undefined) {
-    throw new Error("RemoteAuthBackend hosted model routing response missing provider");
-  }
-  const model =
-    typeof value.model === "string" ? trimNonEmpty(value.model) : undefined;
-  if (model === undefined) {
-    throw new Error("RemoteAuthBackend hosted model routing response missing model");
-  }
-  const subscriptionTier =
-    typeof value.subscriptionTier === "string"
-      ? normalizeSubscriptionTier(value.subscriptionTier)
-      : undefined;
-  if (value.subscriptionTier !== undefined && subscriptionTier === undefined) {
-    throw new Error(
-      "RemoteAuthBackend hosted model routing response has invalid subscriptionTier",
-    );
-  }
-  return {
-    ...value,
-    provider,
-    model,
-    ...(subscriptionTier !== undefined ? { subscriptionTier } : {}),
-    ...(typeof value.reason === "string" && value.reason.trim().length > 0
-      ? { reason: value.reason.trim() }
-      : {}),
-  };
-}
-
 function normalizeSubscriptionTier(
   value: string,
 ): AuthSubscriptionTier | undefined {
@@ -1477,36 +964,6 @@ function parseExpiresAtMs(expiresAt: string | undefined): number | undefined {
   if (expiresAt === undefined) return undefined;
   const parsed = Date.parse(expiresAt);
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-async function sleepMs(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
-function positiveTtlMs(value: number | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : REMOTE_AUTH_KEY_CACHE_TTL_MS;
-}
-
-function cacheExpiresAtMs(
-  key: AuthVendedCredential,
-  nowMs: number,
-  ttlMs: number,
-): number {
-  const ttlExpiresAt = nowMs + ttlMs;
-  if (key.expiresAt === undefined) return ttlExpiresAt;
-  const keyExpiresAt = Date.parse(key.expiresAt);
-  return Number.isFinite(keyExpiresAt)
-    ? Math.min(ttlExpiresAt, keyExpiresAt)
-    : ttlExpiresAt;
-}
-
-function remoteProviderKeyCacheKey(
-  provider: AuthProviderSlug | string,
-  sessionId: AuthSessionId,
-): string {
-  return `${sessionId}\0${provider}`;
 }
 
 function isRemoteAuthDiskState(value: unknown): value is RemoteAuthDiskState {

@@ -1065,6 +1065,11 @@ export function reconstructFromRollout(
               // fsynced after it still belongs to this checkpointed turn.
               if (event.type === "turn_aborted" && event.payload.reason === "daemon_shutdown")
                 continue;
+              // An earlier continuation of this turn starts it again and
+              // pairs these calls before its first checkpoint. Those pairings
+              // are durable history of this checkpoint (#2603).
+              if (event.type === "turn_started" && event.payload.turnId === turnId)
+                continue;
               if (["turn_started", "turn_complete", "turn_aborted", "turn_failed", "history_cleared"]
                 .includes(event.type)) break;
             }
@@ -1175,7 +1180,7 @@ export function reconstructFromRollout(
             type: "warning",
             payload: {
               cause: "orphaned_turn_recovered",
-              message: `turn ${turnId} started but never completed — synthesized process_killed abort (I-48)`,
+              message: `turn ${turnId} started but never completed: synthesized process_killed abort (I-48)`,
             },
           },
         },
@@ -1212,7 +1217,7 @@ export function reconstructFromRollout(
           type: "warning",
           payload: {
             cause: "snapshot_behind_rollout",
-            message: `index.json snapshot seq=${opts.indexSnapshot?.snapshotSequenceNumber ?? "?"} is behind rollout — ignoring snapshot (I-25)`,
+            message: `index.json snapshot seq=${opts.indexSnapshot?.snapshotSequenceNumber ?? "?"} is behind rollout: ignoring snapshot (I-25)`,
           },
         },
       },

@@ -27,6 +27,7 @@ import {
 } from "../session/cost.js";
 import { asRecord } from "../utils/record.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
+import type { UnpricedUsageCall } from "../budget/admission-types.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import {
   safeExecute,
@@ -42,6 +43,7 @@ export interface CostModelRow {
   readonly outputTokens: number;
   readonly costUsd: number;
   readonly costEstimated?: boolean;
+  readonly hasUnknownCost?: boolean;
 }
 
 /** One per-agent row. Tokens are real; cost is an estimate (or unknown). */
@@ -49,6 +51,7 @@ export interface CostAgentRow {
   readonly runId?: string;
   readonly costUsd?: number;
   readonly costEstimated?: boolean;
+  readonly hasUnknownCost?: boolean;
   readonly label: string;
   readonly status: string;
   readonly tokenCount?: number;
@@ -71,6 +74,8 @@ export interface CostReport {
   readonly turns?: number;
   /** True when any model in the session has unknown pricing. */
   readonly hasUnknownCost: boolean;
+  readonly unpricedCalls?: readonly UnpricedUsageCall[];
+  readonly unpricedCallCount?: number;
   readonly models: readonly CostModelRow[];
   readonly agents: readonly CostAgentRow[];
 }
@@ -208,11 +213,14 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,
       hasUnknownCost: usage.hasUnknownCost,
+      ...(usage.unpricedCalls !== undefined ? { unpricedCalls: usage.unpricedCalls } : {}),
+      ...(usage.unpricedCallCount !== undefined ? { unpricedCallCount: usage.unpricedCallCount } : {}),
       models: usage.models.map((model) => ({
         label: model.provider ? `${model.provider}/${model.model}` : model.model,
         inputTokens: model.inputTokens,
         outputTokens: model.outputTokens,
         costUsd: model.costUsd,
+        ...(model.hasUnknownCost ? { hasUnknownCost: true } : {}),
         ...(model.costEstimated ? { costEstimated: true } : {}),
       })),
       agents: usage.agents.map((agent) => {
@@ -223,6 +231,7 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
           status: metadata?.status ?? "recorded",
           tokenCount: agent.totalTokens,
           costUsd: agent.costUsd,
+          ...(agent.hasUnknownCost ? { hasUnknownCost: true } : {}),
           ...(agent.costEstimated ? { costEstimated: true } : {}),
           ...(metadata?.toolUseCount !== undefined ? { toolUseCount: metadata.toolUseCount } : {}),
         };
@@ -257,13 +266,27 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
  * Render a {@link CostReport} as the plain-text fallback (used when the TUI
  * JSX surface isn't available, and as the source the modal re-parses).
  */
+export function unpricedCallDescription(call: UnpricedUsageCall): string {
+  const model = call.provider && call.model ? `${call.provider}/${call.model}` : call.model ?? call.kind;
+  const knownReasons: Readonly<Record<string, string>> = {
+    missing_provider_usage: "provider returned no usage",
+    provider_call_failed_after_dispatch: "provider call failed after dispatch; usage unavailable",
+    reported_usage_cost_unknown: "reported usage has no price",
+    missing_tool_usage: "tool returned no usage",
+  };
+  const reason = call.reason.startsWith("cancelled_after_dispatch:")
+    ? `cancelled after dispatch (${call.reason.slice("cancelled_after_dispatch:".length)}); provider usage unavailable`
+    : (knownReasons[call.reason] ?? call.reason.replaceAll("_", " "));
+  return `${model} · ${call.kind === "model_turn" ? "model call" : call.kind} ${call.stepId} · ${reason}`;
+}
+
 export function formatCostReport(report: CostReport): string {
   const lines: string[] = [];
   if (report.totalCostUsd !== undefined) {
-    const unknown = report.hasUnknownCost ? " (some pricing unknown)" : "";
+    const unknown = report.hasUnknownCost ? "≥" : "";
     const est = report.totalIsEstimated ? " est." : "";
     lines.push(
-      `Session cost: ${formatUsdCost(report.totalCostUsd)}${est}${unknown}`,
+      `Session cost: ${unknown}${formatUsdCost(report.totalCostUsd)}${est}`,
     );
   } else {
     lines.push("Session cost: unknown (cost tracking unavailable)");
@@ -284,7 +307,7 @@ export function formatCostReport(report: CostReport): string {
     lines.push("Models:");
     for (const m of report.models) {
       lines.push(
-        `  ${m.label}: ${formatTokenCount(m.inputTokens)} in, ${formatTokenCount(m.outputTokens)} out (${formatUsdCost(m.costUsd)}${m.costEstimated ? " est." : ""})`,
+        `  ${m.label}: ${formatTokenCount(m.inputTokens)} in, ${formatTokenCount(m.outputTokens)} out (${m.hasUnknownCost ? "≥" : ""}${formatUsdCost(m.costUsd)}${m.costEstimated ? " est." : ""})`,
       );
     }
   }
@@ -295,7 +318,7 @@ export function formatCostReport(report: CostReport): string {
         a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : "tokens unknown";
       const spend =
         a.costUsd !== undefined
-          ? `${formatUsdCost(a.costUsd)}${a.costEstimated ? " est." : ""}`
+          ? `${a.hasUnknownCost ? "≥" : ""}${formatUsdCost(a.costUsd)}${a.costEstimated ? " est." : ""}`
           : a.estimatedCostUsd !== undefined
           ? `${formatUsdCost(a.estimatedCostUsd)} est.`
           : "cost unknown";
@@ -303,6 +326,16 @@ export function formatCostReport(report: CostReport): string {
     }
   } else {
     lines.push("Agents: none active");
+  }
+  if (report.hasUnknownCost) {
+    lines.push("Unpriced calls (excluded from the known cost):");
+    for (const call of report.unpricedCalls ?? []) lines.push(`  ${unpricedCallDescription(call)} · run ${call.runId}`);
+    const shown = report.unpricedCalls?.length ?? 0;
+    if (report.unpricedCallCount !== undefined && report.unpricedCallCount > shown) {
+      lines.push(`  Showing ${shown} of ${report.unpricedCallCount} unpriced calls.`);
+    } else if (shown === 0) {
+      lines.push("  Call details unavailable for this older session.");
+    }
   }
   lines.push("Agent costs use recorded usage when available; estimates are marked est.");
   return lines.join("\n");

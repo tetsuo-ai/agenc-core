@@ -20,6 +20,8 @@ import type { PhaseEvent } from "../phases/events.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import type { Session } from "../session/session.js";
 import { asRecord } from "../utils/record.js";
+import { DEFAULT_TASK_TOKEN_BUDGET } from "../config/task-budget.js";
+import { setSessionTaskTokenBudget } from "../session/task-budget.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -101,6 +103,27 @@ export async function clearSession(session: Session): Promise<void> {
   if (typeof clearable.clearDaemonSession === "function") {
     await clearable.clearDaemonSession();
   } else if (typeof clearable.state?.with === "function") {
+    // A saved budget may be newer than the materialized session's store
+    // snapshot. Resolve it before clearing so invalid configuration leaves
+    // the conversation intact, without publishing unrelated live settings.
+    const configStore = session.services.configStore;
+    let configuredCap: number | undefined;
+    if (session.config !== undefined && configStore?.current !== undefined) {
+      if (typeof configStore.prepareReload === "function") {
+        const prepared = await configStore.prepareReload();
+        try {
+          configuredCap = prepared.config.task_token_budget ?? DEFAULT_TASK_TOKEN_BUDGET;
+        } finally {
+          try {
+            prepared.rollback();
+          } finally {
+            prepared.settle();
+          }
+        }
+      } else {
+        configuredCap = configStore.current().task_token_budget ?? DEFAULT_TASK_TOKEN_BUDGET;
+      }
+    }
     await clearable.state.with((s) => {
       if (Array.isArray(s.history)) {
         // Replace the history array in place so any cached ref the caller
@@ -109,6 +132,11 @@ export async function clearSession(session: Session): Promise<void> {
         s.history.length = 0;
       }
     });
+    // Checkpoint choices apply only to this conversation. Restore the
+    // resolved saved/CLI/project allowance, retaining all spent usage.
+    if (configuredCap !== undefined) {
+      setSessionTaskTokenBudget(session, configuredCap);
+    }
   }
 
   clearSystemPromptSections();

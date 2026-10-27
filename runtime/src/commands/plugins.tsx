@@ -170,7 +170,7 @@ export function createPluginMenuActions(
   };
 }
 
-function pluginMenuActionsFromContext(ctx: SlashCommandContext): PluginMenuActions {
+function pluginOperationOptionsFromContext(ctx: SlashCommandContext): PluginOperationOptions {
   const runtimeOptions = ctx.session.services.runtimeOptions;
   if (runtimeOptions === undefined) {
     throw new Error(
@@ -178,13 +178,17 @@ function pluginMenuActionsFromContext(ctx: SlashCommandContext): PluginMenuActio
     );
   }
   const configStore = requireCommandConfigStore(ctx);
-  return createPluginMenuActions({
+  return {
     agencHome: configStore.agencHome,
     pluginStorageRoot: runtimeOptions.pluginStorageRoot,
     sessionTempRoot: runtimeOptions.sessionTempRoot,
     workspaceRoot: configStore.projectRoot,
     configStore,
-  });
+  };
+}
+
+function pluginMenuActionsFromContext(ctx: SlashCommandContext): PluginMenuActions {
+  return createPluginMenuActions(pluginOperationOptionsFromContext(ctx));
 }
 
 /**
@@ -281,7 +285,17 @@ export const pluginsCommand: SlashCommand = {
   immediate: true,
   execute: (ctx): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const snapshot = readPluginSnapshot(ctx);
+      let snapshot = readPluginSnapshot(ctx);
+      if (snapshot !== null) {
+        const { listInstalledPlugins } = await import("../plugins/cli/pluginOperations.js");
+        const inventory = await listInstalledPlugins(pluginOperationOptionsFromContext(ctx));
+        snapshot = {
+          enabled: inventory.plugins.filter(plugin => plugin.enabled),
+          disabled: inventory.plugins.filter(plugin => !plugin.enabled),
+          errors: inventory.errors.map(message => ({ message })),
+          needsRefresh: snapshot.needsRefresh,
+        };
+      }
       if (snapshot && await openPluginsMenu(ctx, snapshot)) {
         return { kind: "skip" };
       }

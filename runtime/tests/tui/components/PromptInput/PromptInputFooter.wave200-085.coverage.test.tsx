@@ -135,13 +135,12 @@ vi.mock('./PromptInputFooterSuggestions.js', async () => {
   return {
     PromptInputFooterSuggestions: (props: {
       readonly selectedSuggestion: number
-      readonly suggestionType: string
       readonly suggestions: Array<{ displayText: string }>
     }) =>
       ReactModule.createElement(
         Text,
         null,
-        `Suggestions:${props.selectedSuggestion}:${props.suggestionType}:${props.suggestions.map(suggestion => suggestion.displayText).join(',')}`,
+        `Suggestions:${props.selectedSuggestion}:${props.suggestions.map(suggestion => suggestion.displayText).join(',')}`,
       ),
   }
 })
@@ -223,7 +222,7 @@ describe('PromptInputFooter coverage branch render', () => {
       100,
     )
 
-    expect(inlineSuggestions).toContain('Suggestions:0:command:/help')
+    expect(inlineSuggestions).toContain('Suggestions:0:/help')
     expect(inlineSuggestions).not.toContain('Left:')
     expect(harness.overlays.at(-1)).toBeNull()
 
@@ -245,8 +244,8 @@ describe('PromptInputFooter coverage branch render', () => {
       },
     )
 
-    // Fullscreen suggestions render through PromptSuggestionsOverlay. The
-    // ordinary footer intentionally contributes no duplicate status/hint rows.
+    // Fullscreen suggestions render through FullscreenLayout's list under the
+    // prompt. The ordinary footer intentionally contributes no rows.
     expect(fullscreenOutput.trim()).toBe('')
     expect(fullscreenOutput).not.toContain('StatusLine:')
     expect(fullscreenOutput).not.toContain('Left:')

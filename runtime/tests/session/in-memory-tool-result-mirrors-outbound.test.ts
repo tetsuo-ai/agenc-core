@@ -112,7 +112,7 @@ describe("boundInMemoryToolResultContent mirrors the outbound view", () => {
     expect(first?.content).not.toBe(BARE_MARKER);
   });
 
-  test("results before a compaction boundary are cleared, later ones are not", () => {
+  test("a retained exchange before the boundary stays verbatim in memory and outbound", () => {
     const before = historyOfReads(3);
     const boundary = {
       role: "developer",
@@ -138,14 +138,14 @@ describe("boundInMemoryToolResultContent mirrors the outbound view", () => {
           },
     );
     const messages = [...before, boundary, ...after];
-    // The outbound view starts after the boundary and carried everything whole.
-    const cleared = boundAll(messages, outboundOf(after));
+    // A committed replacement can retain an exchange before its marker.
+    // Both sides of that marker remain in the next physical request.
+    const cleared = boundAll(messages, outboundOf(messages));
 
-    // Exactly the three pre-boundary results: never sent again, so free.
-    expect(cleared).toBe(3);
+    expect(cleared).toBe(0);
     for (const message of messages.slice(0, before.length)) {
       if (message.toolCallId === undefined) continue;
-      expect(message.content).toBe(BARE_MARKER);
+      expect(message.content).not.toBe(BARE_MARKER);
     }
     for (const message of messages.slice(before.length + 1)) {
       if (message.toolCallId === undefined) continue;

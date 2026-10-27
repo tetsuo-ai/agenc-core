@@ -86,6 +86,25 @@ export interface GoalVerdict {
   readonly at: string;
 }
 
+export interface GoalFileIdentity {
+  readonly kind: "file" | "symlink";
+  readonly mode: number;
+  readonly sha256: string;
+}
+
+export interface GoalBaselineFile {
+  readonly path: string;
+  /** Null records a tracked file already missing when the goal began. */
+  readonly identity: GoalFileIdentity | null;
+}
+
+export interface GoalWorkingTreeBaseline {
+  /** V2 also retains each non-null identity's bytes in the home content store. */
+  readonly version: 1 | 2;
+  readonly trackedChanges: readonly GoalBaselineFile[];
+  readonly untrackedFiles: readonly GoalBaselineFile[];
+}
+
 export interface SessionGoal {
   readonly id: string;
   readonly objective: string;
@@ -103,6 +122,8 @@ export interface SessionGoal {
   readonly startCostUsd: number;
   /** Commit the tamper check diffs against; absent outside a git repository. */
   readonly baseCommit?: string;
+  /** Durable content identities of pre-existing working-tree changes. */
+  readonly worktreeBaseline?: GoalWorkingTreeBaseline;
   readonly lastVerdict?: GoalVerdict;
   /** Set when status is `paused`: why, in one sentence. */
   readonly pauseReason?: string;
@@ -427,7 +448,9 @@ export function buildGoalContinuationMessage(input: {
   if (input.tamperedPaths.length > 0) {
     lines.push(
       "",
-      "These verification files changed since the goal was set. If a change weakened a check, restore it; the reviewer sees this list:",
+      goal.worktreeBaseline === undefined
+        ? "These verification files differ from the starting commit or are untracked. This older goal has no working-tree baseline, so they may predate the goal. If a change weakened a check, restore it; the reviewer sees this list:"
+        : "These verification files changed since the goal was set. If a change weakened a check, restore it; the reviewer sees this list:",
       ...bulletList(input.tamperedPaths),
     );
   }
@@ -528,12 +551,21 @@ export function buildGoalJudgeUserMessage(input: {
     ),
     ...failureEvidence,
     "",
+    ...(goal.worktreeBaseline === undefined
+      ? ["This goal has no working-tree baseline. The integrity check conservatively includes differences from the starting commit and all untracked files, which may predate the goal."]
+      : []),
     input.tamperedPaths.length > 0
-      ? "Verification files changed since the goal was set (check whether any check was weakened):"
-      : "No test or check files changed since the goal was set.",
+      ? goal.worktreeBaseline === undefined
+        ? "Verification files differing from the starting commit or untracked (check whether any check was weakened):"
+        : "Verification files changed since the goal was set (check whether any check was weakened):"
+      : goal.worktreeBaseline === undefined
+        ? "No test or check files differ from the starting commit or are untracked."
+        : "No test or check files changed since the goal was set.",
     ...bulletList(input.tamperedPaths),
     "",
-    "Diff summary since the goal was set:",
+    goal.worktreeBaseline === undefined
+      ? "Current diff against the starting commit (may include pre-existing changes):"
+      : "Diff against the goal's starting working tree (only changes made after the goal was set):",
     "```",
     neutralizeGoalEnvelopeTags(input.diffStat || "(no changes)"),
     "```",

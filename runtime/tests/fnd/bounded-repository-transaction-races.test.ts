@@ -5,7 +5,6 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -177,8 +176,13 @@ describe("bounded repository transaction races", () => {
           BACKUP_DIRECTORY,
           "0",
         );
-        unlinkSync(backup);
-        writeFileSync(backup, "racer");
+        const original = lstatSync(backup, { bigint: true });
+        const replacement = join(dirname(backup), "replacement");
+        // Allocate while the original inode is still live: unlinking first
+        // permits immediate inode reuse and would not inject a wrong identity.
+        writeFileSync(replacement, "racer", { flag: "wx" });
+        renameSync(replacement, backup);
+        expect(lstatSync(backup, { bigint: true }).ino).not.toBe(original.ino);
       },
     });
     await repository.writeBytes("owned.bin", ORIGINAL_BYTES);

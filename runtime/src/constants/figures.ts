@@ -38,7 +38,7 @@ export const HEAVY_HORIZONTAL = '\u2501' // ━ - heavy box-drawing horizontal
 export const BRIDGE_SPINNER_FRAMES = [
   '\u00b7|\u00b7',
   '\u00b7/\u00b7',
-  '\u00b7\u2014\u00b7',
+  '\u00b7-\u00b7',
   '\u00b7\\\u00b7',
 ]
 export const BRIDGE_READY_INDICATOR = '\u00b7\u2714\ufe0e\u00b7'

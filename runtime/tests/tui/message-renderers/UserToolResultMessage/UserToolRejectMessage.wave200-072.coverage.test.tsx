@@ -115,7 +115,7 @@ describe('UserToolRejectMessage wave200-072 coverage', () => {
     expect(output).toContain('What should AgenC do instead?')
     const normalizedOutput = output.replace(/\s+/g, ' ')
     expect(normalizedOutput).toContain(
-      'delegated runtime/src/example.ts:parsed columns 96 progress 1 style condensed theme dark transcript true verbose true',
+      'delegated runtime/src/example.ts:parsed columns 96 progress 1 style condensed theme olive transcript true verbose true',
     )
     expect(noRendererSafeParse).not.toHaveBeenCalled()
     expect(invalidRenderer).not.toHaveBeenCalled()
@@ -128,7 +128,7 @@ describe('UserToolRejectMessage wave200-072 coverage', () => {
       verbose: true,
       progressMessagesForMessage: [toolProgress],
       style: 'condensed',
-      theme: 'dark',
+      theme: 'olive',
       isTranscriptMode: true,
     })
   })

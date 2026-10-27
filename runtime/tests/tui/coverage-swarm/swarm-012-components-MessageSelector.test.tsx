@@ -533,7 +533,7 @@ describe('MessageSelector coverage-swarm row 012', () => {
     })
 
     try {
-      await waitForOutput(emptyRendered.output, 'The conversation will be forked.')
+      await waitForOutput(emptyRendered.output, 'The conversation goes back to this point. Later messages are removed.')
       expect(emptyRendered.output()).toContain('Restore conversation')
     } finally {
       await emptyRendered.dispose()

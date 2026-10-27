@@ -1,0 +1,12 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { openStateDatabases } from "../../../src/state/sqlite-driver.js";
+import { recordInFlightToolCallStart, recordInFlightToolCallProgress } from "../../../src/state/tool-output-rotation.js";
+const root = process.argv[2]!;
+const cwd = join(root, "cwd"), home = join(root, "home");
+mkdirSync(cwd); mkdirSync(home);
+const driver = openStateDatabases({ cwd, agencHome: home });
+const identity = { sessionId: "session", toolCallId: "call", toolName: "exec_command", recoveryCategory: "side-effecting" as const, agencHome: home };
+recordInFlightToolCallStart(driver, { ...identity, args: { cmd: "write once" }, startedAt: new Date(0).toISOString() });
+recordInFlightToolCallProgress(driver, { ...identity, chunk: "partial\n", observedAt: new Date(1).toISOString() });
+process.kill(process.pid, "SIGKILL");

@@ -10,6 +10,7 @@ import {
 import type { Tool } from "../types.js";
 import {
   isUnifiedExecRuntimeTool,
+  unifiedExecInspectionArgs,
   unifiedExecRuntimeCommand,
 } from "./unified-exec.js";
 import { resolveRuntimePathTarget } from "./paths.js";
@@ -30,7 +31,7 @@ export function analyzeShellRuntimeAccess(
   cwd: string,
 ): ShellRuntimeAccessAnalysis | null {
   if (!isUnifiedExecRuntimeTool(tool)) return null;
-  const runtimeCommand = unifiedExecRuntimeCommand(args, cwd);
+  const runtimeCommand = unifiedExecRuntimeCommand(args, cwd, tool.name);
   const readTargets = new Set<string>([runtimeCommand.cwd]);
   const command = runtimeCommand.command;
   if (command === undefined || command.trim().length === 0) {
@@ -43,7 +44,7 @@ export function analyzeShellRuntimeAccess(
     };
   }
 
-  const inspection = inspectReadOnlyCommand(tool.name, { ...args, ...(tool.name === "exec_command" ? { cmd: command } : { command }) }, cwd, { enforceWorkspaceBoundary: false, allowWorktreeGitInspection: true });
+  const inspection = inspectReadOnlyCommand(tool.name, unifiedExecInspectionArgs(tool.name, args, command), cwd, { enforceWorkspaceBoundary: false, allowWorktreeGitInspection: true });
   const literalStdin = isLiteralCatHereDocument(command);
   const knownReadOnly = inspection.allowed || literalStdin;
   const reads = inspection.allowed

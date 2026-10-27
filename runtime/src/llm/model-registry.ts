@@ -1,3 +1,4 @@
+import { VENICE_MODELS, veniceDefaultModel, type VeniceModel } from "./registry/venice-models.js";
 import { anthropicSupportsFastMode } from "./providers/anthropic/fast-mode.js";
 import {
   buildProviderModelCatalog,
@@ -18,7 +19,8 @@ import {
   type ModelMetadataResolverOptions,
   type ResolvedModelMetadata,
 } from "./model-metadata.js";
-import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
+import { OPENAI_PERSONALITY_MESSAGES, resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
+import { gatewayFamilyDefaultEffort, gatewayModelFamily } from "./model-family.js";
 import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
 import { modelSupportsPersonality } from "../context/personality-spec-instructions.js";
 import {
@@ -56,6 +58,7 @@ export interface ModelRegistryEntry {
   readonly metadata: ResolvedModelMetadata;
   readonly capabilities: ProviderCapabilityRegistryEntry;
   readonly cost: ModelRegistryCostEntry;
+  readonly veniceModel?: VeniceModel;
 }
 
 export interface ModelRegistryOptions {
@@ -74,6 +77,7 @@ function catalogEntryFor(entry: ModelRegistryEntry) {
 function inferReasoningLevels(
   entry: ModelRegistryEntry,
 ): readonly ReasoningEffort[] {
+  if (entry.veniceModel) return entry.veniceModel.supportedReasoningLevels;
   const catalog = catalogEntryFor(entry);
   if (catalog?.supportedReasoningLevels.length) {
     return catalog.supportedReasoningLevels;
@@ -87,6 +91,11 @@ function inferDefaultReasoningLevel(
   entry: ModelRegistryEntry,
   supportedReasoningLevels: readonly ReasoningEffort[],
 ): ReasoningEffort | undefined {
+  // A DeepSeek model reasons at high by default on DeepSeek's own API; the
+  // request sends that default to the gateway too (capability-gating.ts).
+  const familyDefault = gatewayFamilyDefaultEffort(entry.provider, entry.model, supportedReasoningLevels);
+  if (familyDefault !== undefined) return familyDefault;
+  if (entry.veniceModel) return entry.veniceModel.defaultReasoningLevel;
   if (entry.provider === "gemini") return undefined;
   const catalog = catalogEntryFor(entry);
   if (
@@ -156,7 +165,7 @@ function resolveCostEntry(params: {
   );
   return {
     entry: match === null || match.entry.costEstimated ? conservativeModelCost(params.registry) : match.entry,
-    known: match !== null && match.entry.costEstimated !== true,
+    known: match !== null && match.entry.costEstimated !== true && match.entry.catalogEstimate !== true,
     ...(match ? { matchedKey: match.key } : {}),
   };
 }
@@ -187,6 +196,11 @@ export function modelRegistryEntryToModelInfo(
   const serviceTiers = inferServiceTiers(entry);
   const catalog = catalogEntryFor(entry);
   const visibility = catalog?.visibility ?? "list";
+  // A gateway serving a GPT-family model by its id gets the session shape
+  // OpenAI's own API gets: parallel tool calls (OpenRouter's parameter list
+  // omits the field although it forwards it) and the personality instructions.
+  const gptThroughGateway = gatewayModelFamily(entry.provider, entry.model) === "openai";
+  const modelMessages = catalog?.modelMessages ?? (gptThroughGateway ? OPENAI_PERSONALITY_MESSAGES : undefined);
   return {
     slug: entry.model,
     provider: entry.provider,
@@ -218,18 +232,25 @@ export function modelRegistryEntryToModelInfo(
     defaultReasoningSummary: catalog?.defaultReasoningSummary ?? "auto",
     truncationPolicy: "off",
     supportsToolUse: entry.capabilities.supportsToolUse,
-    supportsParallelToolCalls: catalog?.supportsParallelToolCalls ?? false,
-    ...(catalog?.modelMessages !== undefined
-      ? { modelMessages: catalog.modelMessages }
-      : {}),
-    supportsPersonality: modelSupportsPersonality(catalog?.modelMessages),
+    supportsParallelToolCalls: catalog?.supportsParallelToolCalls === true || gptThroughGateway,
+    ...(modelMessages !== undefined ? { modelMessages } : {}),
+    supportsPersonality: modelSupportsPersonality(modelMessages),
     visibility,
     showInPicker: visibility === "list",
+    ...(entry.veniceModel ? {
+      isDefault: entry.veniceModel.functionCallingDefault,
+      supportsImageInput: entry.veniceModel.supportsVision,
+      supportsReasoning: entry.veniceModel.supportsReasoning,
+      ...(entry.veniceModel.privacy === undefined ? {} : { privacy: entry.veniceModel.privacy }),
+      ...(entry.veniceModel.zeroDataRetention === undefined ? {} : { zeroDataRetention: entry.veniceModel.zeroDataRetention }),
+    } : {}),
     usedFallbackModelMetadata: entry.metadata.usedFallbackModelMetadata,
   };
 }
 
 export class ModelRegistry {
+  private sessionCostRegistry?: Record<string, ModelCostEntry>;
+  private veniceModels: readonly VeniceModel[] = VENICE_MODELS;
   private readonly config: AgenCConfig;
   private readonly metadataResolver: ModelMetadataResolver;
   private readonly costRegistry: Readonly<Record<string, ModelCostEntry>>;
@@ -244,6 +265,40 @@ export class ModelRegistry {
     });
   }
 
+  async discoverVeniceModels(): Promise<readonly VeniceModel[]> {
+    this.veniceModels = await this.metadataResolver.discoverVeniceModels(this.config) ?? VENICE_MODELS;
+    if (this.sessionCostRegistry) {
+      for (const key of Object.keys(this.sessionCostRegistry)) {
+        if (key.startsWith("venice:")) delete this.sessionCostRegistry[key];
+      }
+      for (const entry of this.veniceModels) {
+        if (entry.cost) this.sessionCostRegistry[`venice:${entry.model}`] = entry.cost;
+      }
+    }
+    return this.veniceModels;
+  }
+
+  modelCostRegistry(): Readonly<Record<string, ModelCostEntry>> {
+    return this.sessionCostRegistry ??= {
+      ...this.costRegistry,
+      ...Object.fromEntries(this.veniceModels.flatMap(entry => entry.cost ? [[`venice:${entry.model}`, entry.cost]] : [])),
+    };
+  }
+
+  async defaultModelForProvider(provider: string): Promise<string | undefined> {
+    if (provider !== "venice") return undefined;
+    return veniceDefaultModel(await this.discoverVeniceModels());
+  }
+
+  async listEntries(provider?: string): Promise<readonly ModelRegistryEntry[]> {
+    if (provider !== "venice") return this.listEntriesSync();
+    const models = await this.discoverVeniceModels();
+    return [
+      ...this.listEntriesSync().filter(entry => entry.provider !== "venice"),
+      ...await Promise.all(models.map(entry => this.resolve({ provider: "venice", model: entry.model }))),
+    ];
+  }
+
   metadataRevision(params: { readonly provider: string; readonly model: string }): number {
     return this.metadataResolver.cacheRevision({ ...params, config: this.config });
   }
@@ -251,7 +306,8 @@ export class ModelRegistry {
   listEntriesSync(): readonly ModelRegistryEntry[] {
     return Object.freeze(
       Object.entries(this.catalog).flatMap(([provider, models]) =>
-        models.map((model) => this.resolveSync({ provider, model })),
+        (provider === "venice" ? this.veniceModels.map(entry => entry.model) : models)
+          .map((model) => this.resolveSync({ provider, model })),
       ),
     );
   }
@@ -296,6 +352,7 @@ export class ModelRegistry {
   }): Promise<ModelRegistryEntry> {
     const selection = normalizeRegistrySelection(params);
     const capabilityModel = this.capabilityModel(selection);
+    if (selection.provider === "venice") await this.discoverVeniceModels();
     return this.buildEntry({
       ...selection,
       capabilityModel,
@@ -329,7 +386,10 @@ export class ModelRegistry {
   }): ModelRegistryEntry {
     const overrides = readProviderConfig(this.config, params.provider)
       ?.capability_overrides;
+    const veniceModel = params.provider === "venice"
+      ? this.veniceModels.find(entry => entry.model === params.model) : undefined;
     return {
+      ...(veniceModel === undefined ? {} : { veniceModel }),
       provider: params.provider,
       model: params.model,
       ...(params.capabilityModel !== params.model
@@ -339,9 +399,16 @@ export class ModelRegistry {
       capabilities: resolveProviderCapabilityEntry({
         provider: params.provider,
         model: params.capabilityModel,
-        overrides,
+        overrides: { ...(veniceModel ? {
+          supportsToolUse: true,
+          supportsImageInput: veniceModel.supportsVision,
+          acceptsImageHistory: veniceModel.supportsVision,
+          supportsExtendedThinking: veniceModel.supportsReasoning,
+          acceptsReasoningEffort: veniceModel.supportedReasoningLevels.length > 0,
+          supportsStructuredOutput: veniceModel.supportsStructuredOutput,
+        } : {}), ...overrides },
       }),
-      cost: resolveCostEntry({
+      cost: veniceModel?.cost ? { entry: veniceModel.cost, known: true, matchedKey: `venice:${params.model}` } : resolveCostEntry({
         provider: params.provider,
         model: params.model,
         registry: this.costRegistry,

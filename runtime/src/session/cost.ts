@@ -1,3 +1,5 @@
+import { VENICE_MODELS } from "../llm/registry/venice-models.js";
+import { ABLITERATION_MODELS } from "../llm/registry/abliteration-models.js";
 /**
  * Cost sidecar — session cost tracking + formatting.
  *
@@ -30,6 +32,7 @@ import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
 import { OPENROUTER_PRICING } from "../llm/registry/openrouter-pricing.js";
+import { publishedModelCost } from "../llm/registry/published-model-costs.js";
 import {
   AGENC_DEEPSEEK_V41_GENERATION,
   AGENC_DEEPSEEK_V41_MODEL,
@@ -102,6 +105,8 @@ export interface ModelCostEntry {
   readonly localZeroCost?: boolean;
   /** A policy estimate, never a published provider price. */
   readonly costEstimated?: boolean;
+  /** Published catalog rates used until the provider reports the actual charge. */
+  readonly catalogEstimate?: boolean;
 }
 
 export interface CostSummaryProcessLike {
@@ -170,6 +175,135 @@ type OpenAiRateRow = readonly [
   cacheWrite?: number,
 ];
 
+/**
+ * Amazon Bedrock on-demand Standard prices in US East (N. Virginia), per 1M
+ * tokens: input, output, then cache read and cache write where published.
+ * Read 2026-10-17 from https://aws.amazon.com/bedrock/pricing/ and the AWS
+ * Price List API (AmazonBedrock and AmazonBedrockFoundationModels offers for
+ * us-east-1). Models with no in-region invoke there carry the US cross-region
+ * rate, 10% above the global profile. Other regions can differ slightly.
+ * Bedrock reports cache reads and writes apart from input tokens.
+ */
+const BEDROCK_ON_DEMAND_RATES: Readonly<Record<string, readonly number[]>> = Object.freeze({
+  "amazon.nova-2-lite-v1:0": [0.33, 2.75, 0.0825, 0],
+  "amazon.nova-lite-v1:0": [0.06, 0.24, 0.015, 0],
+  "amazon.nova-micro-v1:0": [0.035, 0.14, 0.00875, 0],
+  "amazon.nova-pro-v1:0": [0.8, 3.2, 0.2, 0],
+  "anthropic.claude-sonnet-4-6": [3.3, 16.5, 0.33, 4.125],
+  "deepseek.v3-v1:0": [0.58, 1.68],
+  "deepseek.v3.2": [0.62, 1.85],
+  "google.gemma-3-12b-it": [0.09, 0.29],
+  "google.gemma-3-27b-it": [0.23, 0.38],
+  "google.gemma-3-4b-it": [0.04, 0.08],
+  "meta.llama3-1-70b-instruct-v1:0": [0.72, 0.72],
+  "meta.llama3-1-8b-instruct-v1:0": [0.22, 0.22],
+  "meta.llama4-maverick-17b-instruct-v1:0": [0.24, 0.97],
+  "minimax.minimax-m2.1": [0.3, 1.2],
+  "minimax.minimax-m2.5": [0.3, 1.2],
+  "minimax.minimax-m2": [0.3, 1.2],
+  "mistral.devstral-2-123b": [0.4, 2],
+  "mistral.magistral-small-2509": [0.5, 1.5],
+  "mistral.ministral-3-14b-instruct": [0.2, 0.2],
+  "mistral.ministral-3-8b-instruct": [0.15, 0.15],
+  "mistral.ministral-3-3b-instruct": [0.1, 0.1],
+  "mistral.mistral-large-3-675b-instruct": [0.5, 1.5],
+  "mistral.mistral-large-2402-v1:0": [4, 12],
+  "mistral.mistral-small-2402-v1:0": [1, 3],
+  "mistral.pixtral-large-2502-v1:0": [2, 6],
+  "moonshotai.kimi-k2.5": [0.6, 3],
+  "moonshot.kimi-k2-thinking": [0.6, 2.5],
+  "moonshotai.kimi-k3": [3.3, 16.5, 0.33, 4.125],
+  "nvidia.nemotron-nano-3-30b": [0.06, 0.24],
+  "nvidia.nemotron-super-3-120b": [0.15, 0.65],
+  "nvidia.nemotron-nano-12b-v2": [0.2, 0.6],
+  "nvidia.nemotron-nano-9b-v2": [0.06, 0.23],
+  "openai.gpt-oss-120b-1:0": [0.15, 0.6],
+  "openai.gpt-oss-20b-1:0": [0.07, 0.3],
+  "qwen.qwen3-235b-a22b-2507-v1:0": [0.22, 0.88],
+  "qwen.qwen3-32b-v1:0": [0.15, 0.6],
+  "qwen.qwen3-coder-30b-a3b-v1:0": [0.15, 0.6],
+  "qwen.qwen3-coder-480b-a35b-v1:0": [0.45, 1.8],
+  "qwen.qwen3-coder-next": [0.5, 1.2],
+  "qwen.qwen3-next-80b-a3b": [0.15, 1.2],
+  "qwen.qwen3-vl-235b-a22b": [0.53, 2.66],
+  "writer.palmyra-vision-7b": [0.15, 0.6],
+  "writer.palmyra-x4-v1:0": [2.5, 10],
+  "writer.palmyra-x5-v1:0": [0.6, 6],
+  "xai.grok-4.6": [2.2, 6.6, 0.55],
+  "zai.glm-4.7-flash": [0.07, 0.4],
+  "zai.glm-4.7": [0.6, 2.2],
+  "zai.glm-5": [1, 3.2],
+});
+
+function bedrockCostEntries(): Record<string, ModelCostEntry> {
+  return Object.fromEntries(Object.entries(BEDROCK_ON_DEMAND_RATES).map(([model, [input, output, cacheRead, cacheWrite]]) => [
+    `amazon-bedrock:${model}`,
+    Object.freeze({
+      inputUsdPer1K: input! / 1000,
+      outputUsdPer1K: output! / 1000,
+      ...(cacheRead === undefined ? {} : { cachedInputUsdPer1K: cacheRead / 1000 }),
+      ...(cacheWrite === undefined ? {} : { cacheCreationUsdPer1K: cacheWrite / 1000 }),
+    }),
+  ]));
+}
+
+/**
+ * Calls a flat subscription or a free tier already covers: nothing is billed
+ * per token, so a call's marginal cost is a known $0.
+ */
+const PLAN_INCLUDED: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0, outputUsdPer1K: 0, label: "plan", localZeroCost: true,
+});
+const FREE_TIER: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0, outputUsdPer1K: 0, label: "free", localZeroCost: true,
+});
+
+/**
+ * Ollama Cloud per-token rates (input, cached input, output per 1M), read
+ * 2026-10-20 from https://ollama.com/pricing. Cloud usage bills per token
+ * since 2026-08-31; plan credits pay for it first. The DeepSeek rows are the
+ * peak rate, off-peak costs half. The price list names a family once
+ * (deepseek-v4.1-flash covers its dated :1017 snapshot).
+ */
+const OLLAMA_CLOUD_RATES: Readonly<Record<string, readonly [number, number | undefined, number]>> = Object.freeze({
+  "deepseek-v4.1-flash:1017": [0.3, 0.006, 1.2],
+  "deepseek-v4-pro:0813": [1.32, 0.044, 3.96],
+  "gemma4:31b": [0.14, 0.05, 0.4],
+  "glm-5.2": [1.4, 0.26, 4.4],
+  "glm-5.3": [1.4, 0.26, 4.4],
+  "glm-5.3-flash": [0.15, 0.03, 0.5],
+  "gpt-oss:120b": [0.15, 0.014, 0.6],
+  "gpt-oss:20b": [0.07, 0.035, 0.3],
+  "kimi-k2.6": [0.95, 0.16, 4],
+  "kimi-k2.7-code": [0.95, 0.19, 4],
+  "kimi-k3": [3, 0.3, 15],
+  "minimax-m2.7": [0.3, 0.06, 1.2],
+  "minimax-m3": [0.6, 0.12, 2.4],
+  "minimax-m3.1-flash": [0.15, 0.015, 0.6],
+  "mistral-large-3:675b": [0.5, undefined, 1.5],
+  "mistral-large-4": [0.68, 0.07, 2.09],
+  "muse-spark-open": [1.25, 0.15, 4.25],
+  "nemotron-3-nano:30b": [0.06, undefined, 0.24],
+  "nemotron-3-super": [0.015, 0.015, 0.6],
+  "nemotron-3-ultra": [0.1, 0.1, 3],
+});
+
+function ollamaCloudCostEntries(): Record<string, ModelCostEntry> {
+  return {
+    ...Object.fromEntries(Object.entries(OLLAMA_CLOUD_RATES).map(([model, [input, cached, output]]) => [
+      `ollama-cloud:${model}`,
+      Object.freeze({
+        inputUsdPer1K: input / 1000,
+        outputUsdPer1K: output / 1000,
+        ...(cached === undefined ? {} : { cachedInputUsdPer1K: cached / 1000, cachedInputIncludedInInputTokens: true }),
+      }),
+    ])),
+    // Beam carries Ollama's "free" badge (https://ollama.com/search?c=cloud,
+    // 2026-10-20) and has no row on the price list.
+    "ollama-cloud:beam": FREE_TIER,
+  };
+}
+
 /** Copilot rates are independent of direct-provider fast/search charges.
  * https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
  * Reviewed 2026-09-29. Published long-context billing threshold: 272K inputs.
@@ -178,6 +312,7 @@ function copilotCostAliases(
   model: string,
   [input, output, cachedInput, cacheWrite]: readonly [number, number, number, number],
   longContext?: readonly [number, number, number, number],
+  longContextAboveInputTokens = 272_000,
 ): Readonly<Record<string, ModelCostEntry>> {
   const rates = ([i, o, c, w]: readonly [number, number, number, number]): ModelCostEntry => ({
     inputUsdPer1K: i / 1000, outputUsdPer1K: o / 1000,
@@ -186,7 +321,7 @@ function copilotCostAliases(
   });
   const entry: ModelCostEntry = {
     ...rates([input, output, cachedInput, cacheWrite]),
-    ...(longContext === undefined ? {} : { longContext: { aboveInputTokens: 272_000, rates: rates(longContext) } }),
+    ...(longContext === undefined ? {} : { longContext: { aboveInputTokens: longContextAboveInputTokens, rates: rates(longContext) } }),
   };
   return Object.fromEntries([
     `github:${model}`, `github:copilot:${model}`, `github:github:copilot:${model}`,
@@ -456,7 +591,8 @@ const COST_TIER_DEEPSEEK_V4_PRO: Readonly<ModelCostEntry> = Object.freeze({
   cachedInputIncludedInInputTokens: true,
 });
 
-// Native API estimates use the published peak rates (2026-09-11). Off-peak
+// Native API estimates use the published peak rates (2026-09-11; unchanged for
+// V4.1-Flash-1017 and V4-Pro-0813 on 2026-10-17). Off-peak
 // calls cost half; these estimates are not authoritative managed-credit usage.
 // https://api-docs.deepseek.com/quick_start/pricing/
 const COST_TIER_DEEPSEEK_V41_FLASH_NATIVE: Readonly<ModelCostEntry> = Object.freeze({
@@ -529,11 +665,31 @@ const COST_TIER_ZAI_GLM_53_FLASH: Readonly<ModelCostEntry> = Object.freeze({
   cachedInputIncludedInInputTokens: true,
 });
 
-// Official Moonshot global API prices retrieved 2026-09-05.
-// https://platform.kimi.ai/docs/pricing/chat-k3
-// https://platform.kimi.ai/docs/pricing/chat-k27-code
-// https://platform.kimi.ai/docs/pricing/chat-k26
+// Official Moonshot global API prices rechecked 2026-10-23, including the
+// newly published K3.1 rows: https://platform.kimi.ai/docs/pricing/chat
+const COST_TIER_KIMI_K31_PRO: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.002,
+  outputUsdPer1K: 0.01,
+  cachedInputUsdPer1K: 0.0002,
+  cachedInputIncludedInInputTokens: true,
+  cacheCreationUsdPer1K: 0.002,
+  cacheCreation1hUsdPer1K: 0.004,
+  cacheCreationIncludedInInputTokens: true,
+});
+const COST_TIER_KIMI_K31_PRO_HIGHSPEED: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.004,
+  outputUsdPer1K: 0.02,
+  cachedInputUsdPer1K: 0.0002,
+  cachedInputIncludedInInputTokens: true,
+  cacheCreationUsdPer1K: 0.004,
+  cacheCreation1hUsdPer1K: 0.008,
+  cacheCreationIncludedInInputTokens: true,
+});
 const COST_TIER_KIMI_K3: Readonly<ModelCostEntry> = Object.freeze({
+  // Automatic 5m cache writes are included in prompt_tokens, at the input rate.
+  cacheCreationUsdPer1K: 0.003,
+  cacheCreation1hUsdPer1K: 0.006,
+  cacheCreationIncludedInInputTokens: true,
   inputUsdPer1K: 0.003,
   outputUsdPer1K: 0.015,
   cachedInputUsdPer1K: 0.0003,
@@ -818,6 +974,16 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
         },
       ]),
     )),
+    // Muse Wonder USD/1M: 4.00 input, 0.20 cached input, 20.00 output; no
+    // Contributor mode on the Model API. Verified 2026-10-12:
+    // https://dev.meta.ai/docs/pricing-rate-limits
+    "meta:muse-wonder-1.0": {
+      inputUsdPer1K: 0.004,
+      outputUsdPer1K: 0.02,
+      cachedInputUsdPer1K: 0.0002,
+      cachedInputIncludedInInputTokens: true,
+      webSearchUsdPerRequest: 0.0025,
+    },
     // Ollama peak rate (off-peak is cheaper), verified 2026-09-27:
     // https://www.ollama.com/pricing
     "ollama-cloud:deepseek-v4.1-flash": {
@@ -899,6 +1065,9 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("gpt-5.5-pro", COST_TIER_GPT_5_5_PRO),
     ...openAiCostAliases("gpt-5.3-codex", COST_TIER_GPT_5_3_CODEX),
     ...openAiCostAliases("gpt-5.4", COST_TIER_GPT_5_4),
+    // OpenAI publishes no rate for the auto-review model; its 2026-04-30
+    // alignment post names GPT-5.4 Thinking as the reviewer.
+    ...openAiCostAliases("codex-auto-review", COST_TIER_GPT_5_4),
     ...openAiCostAliases("gpt-5.4-mini", COST_TIER_GPT_5_4_MINI),
     ...openAiCostAliases("gpt-5.4-nano", COST_TIER_GPT_5_4_NANO),
     ...openAiCostAliases("gpt-5.4-pro", COST_TIER_GPT_5_4_PRO),
@@ -979,7 +1148,20 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...copilotCostAliases("gpt-6-sol", [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]),
     ...copilotCostAliases("gpt-6-luna", [0.1, 0.5, 0.01, 0.125], [0.2, 0.75, 0.02, 0.25]),
     ...copilotCostAliases("claude-opus-5.5", [4, 20, 0.2, 5]),
+    // Read 2026-10-17 from the same page. Rows without a cache-write price
+    // bill writes as input. Gemini 3.7 Flash is a promotional rate through
+    // 2026-12-31; Grok 4.6 bills above 200K input at its long-context rate.
+    ...copilotCostAliases("claude-haiku-4.5", [1, 5, 0.1, 1.25]),
+    ...copilotCostAliases("gemini-3.7-flash", [0.75, 3.75, 0.075, 0.75]),
+    ...copilotCostAliases("mai-code-1.1-flash", [0.2, 1.2, 0.02, 0.2]),
+    ...copilotCostAliases("kimi-k3", [3, 15, 0.3, 3]),
+    ...copilotCostAliases("grok-4.6", [2, 6, 0.5, 2], [4, 12, 1, 4], 200_000),
+    // docs.abliteration.ai/pricing, 2026-10-22: cache reads at 10% of input,
+    // no cache-write premium. A key's live list replaces these
+    // (published-model-costs).
+    ...Object.fromEntries(ABLITERATION_MODELS.flatMap(model => model.cost ? [[`abliteration:${model.model}`, model.cost]] : [])),
     // Groq published per-token prices, checked 2026-09-29.
+    ...Object.fromEntries(VENICE_MODELS.flatMap(model => model.cost ? [[`venice:${model.model}`, model.cost]] : [])),
     // https://console.groq.com/docs/models
     // Retired shared Llama and enterprise-preview MiniMax prices are unknown.
     "groq:openai/gpt-oss-120b": { inputUsdPer1K: 0.00015, outputUsdPer1K: 0.0006 },
@@ -1001,7 +1183,12 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "cerebras:qwen-3.8-27b": COST_TIER_CEREBRAS_QWEN_38_27B,
     "cerebras:gemma-4-31b": COST_TIER_CEREBRAS_GEMMA_4_31B,
     // https://docs.z.ai/guides/overview/pricing (2026-09-29).
-    // GLM-5-Turbo has no published rate; keep the unknown-price fallback.
+    // Z.AI's pricing page has no GLM-5-Turbo row; this is the price OpenRouter
+    // lists for z-ai/glm-5-turbo, served by Z.AI (checked 2026-10-17).
+    "zai:glm-5-turbo": {
+      inputUsdPer1K: 0.0012, outputUsdPer1K: 0.004,
+      cachedInputUsdPer1K: 0.00024, cachedInputIncludedInInputTokens: true,
+    },
     "zai:glm-5.2": {
       inputUsdPer1K: 0.0014, outputUsdPer1K: 0.0044,
       cachedInputUsdPer1K: 0.00026, cachedInputIncludedInInputTokens: true,
@@ -1054,6 +1241,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       cachedInputUsdPer1K: 0.00025, cachedInputIncludedInInputTokens: true,
     },
     "kimi:kimi-k3": COST_TIER_KIMI_K3,
+    "kimi:kimi-k3.1-pro": COST_TIER_KIMI_K31_PRO,
+    "kimi:kimi-k3.1-pro-highspeed": COST_TIER_KIMI_K31_PRO_HIGHSPEED,
     "kimi:kimi-k2.7-code": COST_TIER_KIMI_K27_CODE,
     "kimi:kimi-k2.7-code-highspeed": COST_TIER_KIMI_K27_CODE_HIGHSPEED,
     "kimi:kimi-k2.6": COST_TIER_KIMI_K26,
@@ -1086,8 +1275,19 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       return [entry.model, ...entry.aliases].map((model) => [`mistral:${model}`, rates]);
     })),
     "mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
-    "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
+    // NVIDIA's hosted NIM endpoints are free to Developer Program members;
+    // production use is licensed per GPU, never billed per token.
+    // https://docs.api.nvidia.com/nim/docs/product (checked 2026-10-17)
+    "nvidia-nim": FREE_TIER,
     "nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
+    // Flat subscriptions with no per-token overage, checked 2026-10-17:
+    // https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-overview
+    // https://docs.z.ai/devpack/overview
+    "qwen-token-plan": PLAN_INCLUDED,
+    "zai-coding-plan": PLAN_INCLUDED,
+    // Served only through the Grok Build CLI, billed to the user's Grok plan.
+    "grok:grok-composer-2.5-fast": PLAN_INCLUDED,
+    ...ollamaCloudCostEntries(),
     // MiniMax pay-as-you-go (platform.minimax.io/docs/guides/pricing-paygo,
     // 2026-09-29, standard tier, prompts up to 512k): M3 $0.30/$1.20 per M
     // with $0.06 cache reads; M2.7 the same; the other M2 generations read
@@ -1101,7 +1301,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...minimaxCostAliases("MiniMax-M2.1", COST_TIER_MINIMAX_M2),
     ...minimaxCostAliases("MiniMax-M2.1-highspeed", COST_TIER_MINIMAX_M2_HIGHSPEED),
     ...minimaxCostAliases("MiniMax-M2", COST_TIER_MINIMAX_M2),
-    "amazon-bedrock:amazon.nova-pro-v1:0": DEFAULT_UNKNOWN_MODEL_COST,
+    ...bedrockCostEntries(),
     "amazon.nova-pro-v1:0": DEFAULT_UNKNOWN_MODEL_COST,
     "agenc:agenc": DEFAULT_UNKNOWN_MODEL_COST,
     agenc: DEFAULT_UNKNOWN_MODEL_COST,
@@ -1131,7 +1331,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // OpenRouter catalog prices do not bound the endpoint selected by routing.
     // Retain paid rates in the conservative registry ceiling, but never settle
     // them as a known bill or use them directly for admission. Only explicit
-    // free routes with no additional charges are known zero. Response cost wins.
+    // free routes with no additional charges are known zero. The charge
+    // OpenRouter reports with each response (`providerCostUsd`) is the price.
     // https://openrouter.ai/docs/guides/routing/provider-selection
     ...Object.fromEntries(OPENROUTER_PRICING.flatMap((model) => {
       const input = Number(model.pricing.prompt);
@@ -1199,6 +1400,11 @@ export interface ModelUsage {
    * leaves it unset and records such requests as explicit cost instead.
    */
   readonly singleCall?: true;
+  /**
+   * What the provider charged for these tokens in USD (OpenRouter
+   * `usage.cost`). When set it is the cost, and no rate card is consulted.
+   */
+  readonly providerCostUsd?: number;
 }
 
 export interface TokenUsageDelta {
@@ -1213,6 +1419,11 @@ export interface TokenUsageDelta {
   readonly webSearchRequests?: number;
   readonly totalTokens?: number;
   readonly costUsd?: number;
+}
+
+/** A provider's reported charge for one call, when it is a usable amount. */
+function chargedUsd(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function emptyModelUsage(model: string, provider?: string): ModelUsage {
@@ -1291,6 +1502,12 @@ export function conservativeModelCost(registry: Readonly<Record<string, ModelCos
     costEstimated: true, label: "conservative estimate" };
 }
 
+/** Anthropic and Bedrock report cache reads and writes separately from input. */
+export function reportsCacheOutsideInput(provider: string | undefined): boolean {
+  const id = normalizeProviderMetadataIdentity(provider);
+  return id === "anthropic" || id === "bedrock" || id === "amazon-bedrock";
+}
+
 export interface CostResolution {
   readonly costUsd: number;
   readonly known: boolean;
@@ -1303,6 +1520,10 @@ export function computeUsdCostWithResolution(
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): CostResolution {
   const match = resolveModelCostEntry(usage, registry);
+  const charged = usage.providerCostUsd;
+  if (charged !== undefined && Number.isFinite(charged) && charged >= 0) {
+    return { costUsd: charged, known: true, ...(match ? { matchedKey: match.key } : {}) };
+  }
   const standardEntry = match?.entry ?? conservativeModelCost(registry);
   const { rates: selected, documented } = selectCallRates(
     standardEntry,
@@ -1312,10 +1533,8 @@ export function computeUsdCostWithResolution(
   const entry = estimated ? conservativeModelCost(registry) : selected;
   if (estimated) {
     const outputTokens = Math.max(usage.outputTokens, usage.reasoningOutputTokens);
-    // Anthropic and Bedrock report cache reads/writes separately from input.
     // Preserve matched entries' cache semantics when only the call tier is unpriced.
-    const provider = normalizeProviderMetadataIdentity(usage.provider);
-    const separateCacheTokens = provider === "anthropic" || provider === "bedrock" || provider === "amazon-bedrock";
+    const separateCacheTokens = reportsCacheOutsideInput(usage.provider);
     const useProviderCacheSemantics = match === null || standardEntry.costEstimated === true;
     const cacheReadsIncluded = match?.entry.cachedInputIncludedInInputTokens ??
       (useProviderCacheSemantics && !separateCacheTokens);
@@ -1370,16 +1589,18 @@ export function computeUsdCostWithResolution(
     entry.webSearchUsdPerRequest !== undefined
       ? usage.webSearchRequests * entry.webSearchUsdPerRequest
       : 0;
+  const tokenCostUsd = inputCost + outputCost + cachedCost + cacheCreationCost + reasoningCost + webSearchCost;
+  // Ollama's account ledger rounds each request up to $0.00001 (verified
+  // against /api/usage and /api/balance, 2026-10-21). Do this before requests
+  // are accumulated; rounding a session total would lose the per-call charge.
+  // The epsilon removes floating-point dust at an exact billing boundary.
+  const costUsd = tokenCostUsd > 0 && usage.singleCall === true && normalizeProviderMetadataIdentity(usage.provider) === "ollama-cloud"
+    ? Math.ceil(tokenCostUsd * 100_000 - 1e-9) / 100_000
+    : tokenCostUsd;
   return {
-    costUsd:
-      inputCost +
-      outputCost +
-      cachedCost +
-      cacheCreationCost +
-      reasoningCost +
-      webSearchCost,
-    known: match !== null && documented && !estimated,
-    ...(estimated ? { costEstimated: true } : {}),
+    costUsd,
+    known: match !== null && documented && !estimated && !standardEntry.catalogEstimate,
+    ...(estimated || standardEntry.catalogEstimate ? { costEstimated: true } : {}),
     ...(match ? { matchedKey: match.key } : {}),
   };
 }
@@ -1433,6 +1654,14 @@ export function resolveModelCostEntry(
   usage: Pick<ModelUsage, "model" | "provider">,
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): { readonly key: string; readonly entry: ModelCostEntry } | null {
+  // A price published with the provider's live model list (Venice) is the
+  // price of record for that provider's model, whatever registry is passed.
+  const provider = normalizeProviderMetadataIdentity(usage.provider);
+  if (provider !== undefined) {
+    const model = usage.model.startsWith(`${provider}:`) ? usage.model.slice(provider.length + 1) : usage.model;
+    const published = publishedModelCost(provider, model);
+    if (published !== undefined) return { key: `${provider}:${model}`, entry: published };
+  }
   for (const key of costLookupKeys(usage.model, usage.provider, registry)) {
     const entry = registry[key];
     if (entry) return { key, entry };
@@ -1626,7 +1855,11 @@ function costLookupKeys(
   const collapsesToLocalZero = registry[canonical]?.localZeroCost === true;
   const foreignProvider =
     normalizedProvider !== undefined && normalizedProvider !== canonical;
-  if (!(collapsesToLocalZero && foreignProvider)) {
+  // Venice sells many vendors' models at its own published prices: a bare ID
+  // that names another provider's model (deepseek-v4-flash) must not borrow
+  // that provider's price. Without a Venice price the model is unpriced.
+  const ownPricesOnly = normalizedProvider === "venice";
+  if (!(collapsesToLocalZero && foreignProvider) && !ownPricesOnly) {
     keys.push(model);
     if (canonical !== model) keys.push(canonical);
   }
@@ -1789,6 +2022,11 @@ export interface SessionCostModelUsage {
   readonly totalTokens: number;
   readonly turns: number;
   readonly costUsd: number;
+  /**
+   * False when part of `costUsd` is an estimate. Records written before this
+   * field existed leave it out, and restore re-derives it from the registry.
+   */
+  readonly costKnown?: boolean;
 }
 
 export interface CostTotalsFile {
@@ -1849,6 +2087,7 @@ function coerceSessionModelUsage(
     totalTokens: normalizeCounter(row.totalTokens as number | undefined),
     turns: normalizeCounter(row.turns as number | undefined),
     costUsd: normalizeCost(row.costUsd as number | undefined),
+    ...(typeof row.costKnown === "boolean" ? { costKnown: row.costKnown } : {}),
   };
 }
 
@@ -2170,10 +2409,9 @@ export class CostSidecar implements Sidecar {
         this.currentProvider = provider ?? null;
         this.lastUsageKey = key;
         {
-          // A call served in fast mode, or one long enough for per-request
-          // long-context rates, is priced at its own rates and recorded as
-          // explicit cost, so the per-model bucket (priced at standard
-          // rates) never counts its tokens a second time.
+          // Per-request rates and Ollama billing precision are recorded as
+          // explicit call costs. The per-model bucket must not reprice their
+          // combined tokens or count them a second time.
           const callDelta: ModelUsage = {
             model,
             ...(provider !== undefined ? { provider } : {}),
@@ -2188,10 +2426,14 @@ export class CostSidecar implements Sidecar {
             turns: 0,
             singleCall: true,
             ...(msg.payload.speed === "fast" ? { speed: "fast" as const } : {}),
+            ...(chargedUsd(msg.payload.providerCostUsd) !== undefined
+              ? { providerCostUsd: chargedUsd(msg.payload.providerCostUsd) }
+              : {}),
           };
           const standardEntry = resolveModelCostEntry(callDelta, this.registry)?.entry;
           const callCost = computeUsdCostWithResolution(callDelta, this.registry);
           if (
+            callDelta.providerCostUsd !== undefined || provider === "ollama-cloud" ||
             !callCost.known || (callDelta.cacheCreation1hInputTokens ?? 0) > 0 ||
             (standardEntry !== undefined &&
               selectCallRates(standardEntry, callPricingOf(callDelta, standardEntry)).rates !== standardEntry)
@@ -2202,7 +2444,7 @@ export class CostSidecar implements Sidecar {
             this.unknownCostModels.add(key);
           }
         }
-        if (!computeUsdCostWithResolution(usage, this.registry).known) {
+        if (this.registryPricedCostUnknown(key, usage)) {
           this.unknownCostModels.add(key);
         }
         if (this.budgetTracker) {
@@ -2279,6 +2521,7 @@ export class CostSidecar implements Sidecar {
       totalTokens: usage.totalTokens,
       turns: usage.turns,
       costUsd: this.getModelUsageCostUsd(usage),
+      costKnown: !this.unknownCostModels.has(usageKey(usage.model, usage.provider)),
     }));
   }
 
@@ -2456,9 +2699,27 @@ export class CostSidecar implements Sidecar {
       );
     }
 
-    if (!computeUsdCostWithResolution(usage, this.registry).known) {
+    if (this.registryPricedCostUnknown(key, usage)) {
       this.unknownCostModels.add(key);
     }
+  }
+
+  /**
+   * True when the tokens priced from the registry (those without an explicit
+   * or restored cost) have no known price. A model whose every call carried
+   * the provider's charge is fully known even when its rate card is not.
+   */
+  private registryPricedCostUnknown(key: string, usage: ModelUsage): boolean {
+    let rest = usage;
+    const restoredBaseline = this.restoredPerModelBaselines.get(key);
+    if (restoredBaseline !== undefined && this.restoredPerModelCostUsd.has(key)) {
+      rest = subtractModelUsage(rest, restoredBaseline);
+    }
+    const explicitUsage = this.explicitPerModelUsage.get(key);
+    if (explicitUsage !== undefined) rest = subtractModelUsage(rest, explicitUsage);
+    const used = rest.inputTokens + rest.outputTokens + rest.cachedInputTokens +
+      rest.cacheCreationInputTokens + rest.reasoningOutputTokens + rest.webSearchRequests + rest.totalTokens;
+    return used > 0 && !computeUsdCostWithResolution(rest, this.registry).known;
   }
 
   /**
@@ -2847,8 +3108,7 @@ export class CostSidecar implements Sidecar {
       this.perModel.set(key, usage);
       this.restoredPerModelBaselines.set(key, { ...usage });
       this.restoredPerModelCostUsd.set(key, row.costUsd);
-      const resolution = computeUsdCostWithResolution(usage, this.registry);
-      if (!resolution.known) {
+      if (!(row.costKnown ?? computeUsdCostWithResolution(usage, this.registry).known)) {
         this.unknownCostModels.add(key);
       }
       restoredModelCostUsd += row.costUsd;

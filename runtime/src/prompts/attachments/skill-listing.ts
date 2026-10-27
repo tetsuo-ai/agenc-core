@@ -2,6 +2,11 @@ import type { LLMMessage } from "../../llm/types.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 import { SKILL_LISTING_REMINDER_HEADER } from "./messages.js";
 import {
+  SKILL_TOOL_NAME,
+  sessionToolPolicyAllowsBundledSkill,
+  type SessionToolPolicy,
+} from "../../permissions/session-tool-policy.js";
+import {
   buildSkillListingWithinBudget,
   rankSkillsForRequest,
   type SkillListingEntry,
@@ -9,6 +14,13 @@ import {
 
 /** Relevance lines per root-human turn, small enough to keep in the prompt. */
 const RELEVANCE_LIMIT = 12;
+
+/**
+ * Ceiling of a Light session's listing: about a dozen lines at the
+ * 120-character description cap, as many as one relevance reminder names.
+ * Later human turns still get a relevance reminder for skills it left out.
+ */
+export const LIGHT_SKILL_LISTING_MAX_CHARS = 2_000;
 
 function messageCarriesText(message: LLMMessage, needle: string): boolean {
   if (typeof message.content === "string") {
@@ -26,12 +38,24 @@ function messageCarriesText(message: LLMMessage, needle: string): boolean {
  * import with a catch, as in /skills: in tests the build-time MACRO global
  * is absent and registration throws at module load, in which case the
  * listing simply omits them.
+ *
+ * What the listing names is what the session may load: a session with a
+ * toolPolicy is told only about the bundled skills it enabled, and a skill
+ * that is unlisted by default (the kit installer) appears only once the
+ * operator has turned it on in config.
  */
-async function bundledRegistrySkills(): Promise<readonly SkillListingEntry[]> {
+async function bundledRegistrySkills(
+  toolPolicy: SessionToolPolicy | undefined,
+  config: unknown,
+): Promise<readonly SkillListingEntry[]> {
   try {
-    const { getBundledSkills } = await import("../../skills/bundledSkills.js");
+    const { getBundledSkills, isBundledSkillListed } = await import(
+      "../../skills/bundledSkills.js"
+    );
     return getBundledSkills().flatMap((command): SkillListingEntry[] =>
-      command.isEnabled?.() === false
+      command.isEnabled?.() === false ||
+      !sessionToolPolicyAllowsBundledSkill(toolPolicy, command.name) ||
+      !isBundledSkillListed(command.name, config)
         ? []
         : [{
             name: command.name,
@@ -56,12 +80,25 @@ async function bundledRegistrySkills(): Promise<readonly SkillListingEntry[]> {
  * continuations must not drain another batch of matching skills on each sample.
  * An absent listing is restored even after compaction or durable resume, when
  * the in-memory ledger and authoritative root-human provenance may be absent.
+ *
+ * A Light session starts without the Skill tool; system.searchTools loads it,
+ * as the listing's guidance says. Until it is loaded, the listing names only
+ * installed skills (not the bundled ones), within LIGHT_SKILL_LISTING_MAX_CHARS,
+ * and a session without an installed skill gets none.
  */
 export const skillListingProducer: AttachmentProducer = async (opts, tracking) => {
   if (opts.subagentDepth > 0) return [];
-  if (opts.lightMode === true &&
-      !opts.loadedTools.some(tool => tool.function.name === "Skill")) return [];
+  const skillToolListed = opts.loadedTools.some(tool => tool.function.name === "Skill");
+  const lightBeforeSkill = opts.lightMode === true && !skillToolListed;
   if (!opts.skillsManager) return [];
+  // A session whose policy leaves out the Skill tool cannot load anything the
+  // listing would name.
+  if (
+    opts.toolPolicy !== undefined &&
+    !opts.toolPolicy.enabledTools.includes(SKILL_TOOL_NAME)
+  ) {
+    return [];
+  }
   if (opts.signal.aborted) return [];
   const listingPresent = opts.messages.some((message) =>
     messageCarriesText(message, SKILL_LISTING_REMINDER_HEADER),
@@ -82,11 +119,13 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
     (root) => root.droppedCount > 0,
   );
   const known = new Set(skills.map((skill) => skill.name));
-  const bundled = (await bundledRegistrySkills()).filter(
-    (skill) => !known.has(skill.name),
-  );
+  const catalog = lightBeforeSkill
+    ? skills.filter((skill) => skill.loadedFrom !== "bundled" && skill.disableModelInvocation !== true)
+    : [...skills, ...(await bundledRegistrySkills(opts.toolPolicy, opts.config)).filter(
+      (skill) => !known.has(skill.name),
+    )];
   if (opts.signal.aborted) return [];
-  const catalog = [...skills, ...bundled];
+  if (lightBeforeSkill && catalog.length === 0) return [];
   if (listingPresent) {
     // Recheck after awaiting catalog loading: concurrent preparations of one
     // human turn may have claimed its evaluation while this one was waiting.
@@ -100,7 +139,7 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
     );
     if (relevant.lines.length === 0) return [];
     for (const name of relevant.names) tracking.listedSkillNames.add(name);
-    return [{ kind: "skill_relevance", content: relevant.lines.join("\n") }];
+    return [{ kind: "skill_relevance", content: relevant.lines.join("\n"), ...(skillToolListed ? { skillToolListed } : {}) }];
   }
   const { listing, stats, listedNames } = buildSkillListingWithinBudget(
     catalog,
@@ -108,6 +147,7 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
     // What the user just asked for decides which skills get the budget when
     // the installed catalog does not fit.
     opts.userInput,
+    lightBeforeSkill ? LIGHT_SKILL_LISTING_MAX_CHARS : undefined,
   );
   for (const name of listedNames) tracking.listedSkillNames.add(name);
   // What the model was shown is otherwise unrecoverable: the listing is an
@@ -136,6 +176,7 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
     {
       kind: "skill_listing",
       content: listing,
+      ...(skillToolListed ? { skillToolListed } : {}),
     },
   ];
 };

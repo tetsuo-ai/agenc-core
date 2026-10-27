@@ -30,14 +30,11 @@ export default async function (session) {
   await session.waitForPrompt({ timeout: 15_000 });
 
   await session.type("@PL", { perCharMs: 60 });
-  await session.waitFor(/FILES & RESOURCES/u, {
-    timeout: 15_000,
-    label: "files/resources picker",
-  });
   await waitForFrameText(
     session,
-    /❯ \+ PLAN\.md/u,
+    /› \+ PLAN\.md/u,
     "filtered PLAN.md picker selection",
+    15_000,
   );
   await waitForFrameText(
     session,
@@ -53,7 +50,7 @@ export default async function (session) {
     "selected file mention inserted via carriage return",
   );
 
-  if (/FILES & RESOURCES/u.test(session.latestFrame)) {
+  if (/› \+ PLAN\.md/u.test(session.latestFrame)) {
     throw new Error("files/resources picker remained open after carriage-return Enter");
   }
 

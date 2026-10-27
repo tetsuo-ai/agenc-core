@@ -5,11 +5,11 @@ import { renderToString } from '../../../utils/staticRender.js'
 import { VERSION } from '../../../../src/version.js'
 import { WelcomeColdPanel } from './primitives.js'
 
-// The welcome carries only the name, the version and one line of keys. The
-// folder, model and mode live in the status line under the prompt, so the
-// welcome must not repeat them or fall back to placeholders.
+// The welcome carries only the name, the version, one line of keys and the
+// repository address. The folder, model and mode live in the status line under
+// the prompt, so the welcome must not repeat them or fall back to placeholders.
 describe('WelcomeColdPanel facts', () => {
-  it('shows the name, the version and the keys once', async () => {
+  it('shows the name, the version, the keys and the address once', async () => {
     const output = await renderToString(<WelcomeColdPanel />, {
       columns: 120,
       rows: 24,
@@ -21,6 +21,7 @@ describe('WelcomeColdPanel facts', () => {
     expect(output).toContain('@ attach files')
     expect(output).toContain('shift+tab change mode')
     expect(output).toContain('? shortcuts')
+    expect(output.split('github.com/tetsuo-ai/agenc-core')).toHaveLength(2)
   })
 
   it('repeats no status fact and shows no placeholders', async () => {

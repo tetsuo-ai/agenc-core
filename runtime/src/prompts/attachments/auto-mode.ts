@@ -160,6 +160,13 @@ export const autoModeProducer: AttachmentProducer = async (
   if (!isAutoFamilyMode(mode)) {
     return attachments;
   }
+  // A bypass session whose permission instructions carry its head's autonomy
+  // note (Light, or standard with compact tools) already says that tool calls
+  // are pre-approved and that the action rules still apply; the pulse would
+  // repeat them on the user channel.
+  if (opts.autonomyStatedInPermissions === true) {
+    return attachments;
+  }
 
   // Throttle on human turns. First emission in a (re-)entry always fires.
   if (opts.messages.length > 0) {

@@ -68,6 +68,7 @@ import {
 } from "./rules.js";
 import {
   resolveUnattendedPermissionDecision,
+  toolPolicyDenyDecision,
   unattendedAllowDecision,
   unattendedDenyDecision,
   unattendedPauseDecision,
@@ -203,14 +204,14 @@ function dontAskRejectMessage(toolName: string): string {
 }
 
 function autoRejectMessage(toolName: string): string {
-  return `Permission to use ${toolName} was denied — permission prompts are not available in this context.`;
+  return `Permission to use ${toolName} was denied: permission prompts are not available in this context.`;
 }
 
 function buildClassifierUnavailableMessage(
   toolName: string,
   model: string,
 ): string {
-  return `Auto-mode classifier (${model}) is unavailable — ${toolName} requires manual approval.`;
+  return `Auto-mode classifier (${model}) is unavailable: ${toolName} requires manual approval.`;
 }
 
 function buildYoloRejectionMessage(reason: string): string {
@@ -297,10 +298,13 @@ export async function checkRuleBasedPermissions(
     appState.toolPermissionContext.mode === "plan" || sessionReadOnlyDelegation(context.session) !== undefined
   );
 
-  // 1a. Whole-tool deny rule.
+  const ruleInput = typeof input === "object" && input !== null && !Array.isArray(input)
+    ? input as Record<string, unknown> : undefined;
+  // 1a. Whole-tool and shell command deny rules, before any approval path.
   const denyRule = getDenyRuleForTool(
     appState.toolPermissionContext,
     tool.name,
+    ruleInput,
   );
   if (denyRule) {
     return Object.freeze({
@@ -340,6 +344,7 @@ export async function checkRuleBasedPermissions(
   const askRule = getAskRuleForTool(
     appState.toolPermissionContext,
     tool.name,
+    ruleInput,
   );
   if (askRule) {
     const canSandboxAutoAllow =
@@ -936,8 +941,14 @@ async function checkUnattendedPolicy(
   // operator's denylist. Consulting it before the mode-scoped early return
   // closes that bypass. No denylist configured ⇒ resolve never returns "deny",
   // so behavior is unchanged when no operator denylist is set.
+  //
+  // A session tool policy (`agent.create` toolPolicy) rides the same floor: a
+  // tool outside its enabledTools is denied in every mode, even though the
+  // registry already refuses to build it. This is the second of the layers.
   if (unattended.behavior === "deny") {
-    return unattendedDenyDecision(unattended.toolName);
+    return unattended.reason === "tool_policy"
+      ? toolPolicyDenyDecision(unattended.toolName)
+      : unattendedDenyDecision(unattended.toolName);
   }
 
   // A run with nobody attached cannot be asked anything, so `pause` never
@@ -1133,10 +1144,15 @@ async function runAutoClassifierPipeline(
     ? context.toolPermissionContext(appState)
     : appState.toolPermissionContext;
 
-  // 5.1 — non-classifier-approvable safetyCheck: immune to auto.
+  // Explicit content asks are user review boundaries, even for allowlisted
+  // reads and writes a classifier would approve. Modes cannot waive them.
+  // Non-classifier-approvable safety checks have the same requirement.
   if (
-    askResult.decisionReason?.type === "safetyCheck" &&
-    askResult.decisionReason.classifierApprovable === false
+    (askResult.decisionReason?.type === "rule" &&
+      askResult.decisionReason.rule.ruleBehavior === "ask" &&
+      askResult.decisionReason.rule.ruleValue.ruleContent !== undefined) ||
+    (askResult.decisionReason?.type === "safetyCheck" &&
+      askResult.decisionReason.classifierApprovable === false)
   ) {
     if (toolCtx.shouldAvoidPermissionPrompts === true) {
       return {
@@ -1145,7 +1161,7 @@ async function runAutoClassifierPipeline(
         decisionReason: {
           type: "asyncAgent" as const,
           reason:
-            "Safety check requires interactive approval and permission prompts are not available in this context",
+            "Permission check requires interactive approval and permission prompts are not available in this context",
         },
       };
     }
@@ -1250,7 +1266,7 @@ function handleClassifierResult(
         decisionReason: {
           type: "other" as const,
           reason:
-            "Auto mode classifier transcript exceeded context window — falling back to manual approval",
+            "Auto mode classifier transcript exceeded context window: falling back to manual approval",
         },
         suggestions: askResult.suggestions,
         blockedPath: askResult.blockedPath,

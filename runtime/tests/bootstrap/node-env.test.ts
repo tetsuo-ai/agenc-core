@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const runtimeRoot = join(__dirname, "..", "..");
 
 describe("bootstrap/node-env", () => {
+  const originalTitle = process.title;
   const original = process.env.NODE_ENV;
   const snapshotKey = Symbol.for("agenc.originalRuntimeEnvironment");
   const savedSnapshot = Object.getOwnPropertyDescriptor(globalThis, snapshotKey);
@@ -15,6 +16,7 @@ describe("bootstrap/node-env", () => {
   });
 
   afterEach(() => {
+    process.title = originalTitle;
     Reflect.deleteProperty(globalThis, snapshotKey);
     if (savedSnapshot) Object.defineProperty(globalThis, snapshotKey, savedSnapshot);
     if (original === undefined) delete process.env.NODE_ENV;

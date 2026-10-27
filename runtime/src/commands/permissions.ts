@@ -64,6 +64,7 @@ import {
 import {
   addPermissionRulesToConfig,
   deletePermissionRule,
+  applyPermissionRulesSnapshot,
   loadPermissionRulesSnapshot,
   type DiskEnv,
 } from "../permissions/settings.js";
@@ -386,6 +387,27 @@ export function parseRuleArgs(
 // add / remove
 // ---------------------------------------------------------------------------
 
+async function reconcilePersistedRuleChange(
+  registry: PermissionModeRegistry,
+  ctx: SlashCommandContext,
+  env: DiskEnv,
+  operation: DaemonPermissionRuleOperation,
+  behavior: PermissionBehavior,
+  rule: string,
+): Promise<void> {
+  // Persistence happens after the first live mutation. Repeat the idempotent
+  // mutation to hydrate the daemon's saved sources before reporting success.
+  const daemonMutate = daemonPermissionRuleMutationFn(ctx);
+  if (daemonMutate !== null) await daemonMutate({ operation, behavior, rule });
+  const snapshot = await loadPermissionRulesSnapshot(env);
+  await registry.transact((current) => ({
+    next: applyPermissionRulesSnapshot(current, daemonMutate === null ? snapshot : {
+      ...snapshot, bypassPermissionsModeDisabled: false, disableAutoMode: false,
+    }),
+    result: () => undefined,
+  }));
+}
+
 async function addRuleFromCommand(
   argsRaw: string,
   registry: PermissionModeRegistry,
@@ -437,6 +459,9 @@ async function addRuleFromCommand(
         rules: [ruleValue],
         env: persistenceEnv!,
       });
+      if (wrote) {
+        await reconcilePersistedRuleChange(registry, ctx, persistenceEnv!, "add", behavior, display);
+      }
       persistNote = wrote
         ? ` (persisted to ${persistTo})`
         : ` (persist skipped: managed settings or no writable target)`;
@@ -494,6 +519,7 @@ async function removeRuleFromCommand(
       rule,
       env: persistenceEnv!,
     });
+    await reconcilePersistedRuleChange(registry, ctx, persistenceEnv!, "remove", behavior, display);
     persistNote = removed
       ? ` (deleted from ${persistTo})`
       : ` (not found in ${persistTo})`;

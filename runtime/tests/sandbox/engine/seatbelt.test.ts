@@ -1,14 +1,30 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { restrictedFileSystemPolicy, unrestrictedFileSystemPolicy } from "./index.js";
+import {
+  SandboxManager,
+  restrictedFileSystemPolicy,
+  unrestrictedFileSystemPolicy,
+} from "./index.js";
 import {
   MACOS_PATH_TO_SEATBELT_EXECUTABLE,
+  MACOS_SEATBELT_CHROMIUM_BUNDLE_POLICY,
+  MACOS_SEATBELT_CHROMIUM_POLICY,
+  MACOS_SEATBELT_CHROMIUM_TEMP_POLICY,
   MACOS_SEATBELT_GPU_POLICY,
+  chromiumBundleIdentifier,
   createSeatbeltCommandArgs,
+  darwinUserTempDir,
   seatbeltRegexForUnreadableGlob,
 } from "./seatbelt.js";
 
@@ -280,5 +296,174 @@ describe("macOS seatbelt GPU allowance (opt-in)", () => {
     // The GPU opt-in must not widen display-adjacent surfaces.
     expect(policy).not.toContain("WindowServer");
     expect(policy).not.toContain("IOSurfaceRootUserClient");
+  });
+});
+
+describe("macOS seatbelt Chromium launch (Browser tool only)", () => {
+  const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const baseParams = {
+    command: ["/bin/echo", "ok"],
+    fileSystemSandboxPolicy: restrictedFileSystemPolicy(),
+    networkSandboxPolicy: "disabled",
+    sandboxPolicyCwd: "/repo",
+    sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    enforceManagedNetwork: false,
+  } as const;
+  const chromeArgs = (bundleIdentifier: string | undefined): string[] =>
+    createSeatbeltCommandArgs({
+      ...baseParams,
+      command: [CHROME, "--headless=new", "about:blank"],
+      chromiumBrowser: { bundleIdentifier },
+    });
+
+  it("keeps LaunchServices and Chromium's Mach names out of every other profile", () => {
+    const args = createSeatbeltCommandArgs({ ...baseParams });
+    const policy = args[1] ?? "";
+    expect(policy).not.toContain("com.apple.coreservices.launchservicesd");
+    expect(policy).not.toContain("org.chromium.");
+    expect(policy).not.toContain("(local-name-prefix \"\")");
+    expect(args.some((arg) => arg.startsWith("-DCHROMIUM_MACH_NAME_PREFIX="))).toBe(false);
+  });
+
+  it("lets Chromium register with LaunchServices and name its own processes", () => {
+    const args = chromeArgs("com.google.Chrome");
+    const policy = args[1] ?? "";
+    expect(policy).toContain(MACOS_SEATBELT_CHROMIUM_POLICY);
+    expect(policy).toContain('(global-name "com.apple.coreservices.launchservicesd")');
+    expect(policy).toContain('(global-name-prefix "org.chromium.")');
+    expect(policy).toContain(MACOS_SEATBELT_CHROMIUM_BUNDLE_POLICY);
+    expect(args).toContain("-DCHROMIUM_MACH_NAME_PREFIX=com.google.Chrome.");
+    expect(args.slice(args.indexOf("--"))).toEqual([
+      "--", CHROME, "--headless=new", "about:blank",
+    ]);
+  });
+
+  it("keeps the user's data services and the GPU blocked for the browser", () => {
+    const policy = chromeArgs("com.google.Chrome")[1] ?? "";
+    for (const name of [
+      "com.apple.pasteboard",
+      "com.apple.coreservices.appleevents",
+      "com.apple.securityd",
+      "CoreAuthentication",
+      "CoreLocation",
+      "locationd",
+      "com.apple.metadata.mds",
+      "com.apple.bird",
+      "usernoted",
+      "AGXDeviceUserClient",
+      "IOSurfaceRootUserClient",
+      "MTLCompilerService",
+    ]) {
+      expect(policy).not.toContain(name);
+    }
+    expect(policy).not.toMatch(/\(allow mach-lookup\)/u);
+    expect(policy).not.toMatch(/\(allow mach-register\)/u);
+  });
+
+  it("names only org.chromium. processes when the bundle is unknown or malformed", () => {
+    for (const bundleIdentifier of [undefined, "", 'x")) (allow default) (("']) {
+      const args = chromeArgs(bundleIdentifier);
+      expect(args[1]).toContain(MACOS_SEATBELT_CHROMIUM_POLICY);
+      expect(args[1]).not.toContain(MACOS_SEATBELT_CHROMIUM_BUNDLE_POLICY);
+      expect(args.some((arg) => arg.startsWith("-DCHROMIUM_MACH_NAME_PREFIX="))).toBe(false);
+    }
+  });
+
+  it("lets the browser create its process-singleton folder in the per-user temp folder", () => {
+    const args = createSeatbeltCommandArgs({
+      ...baseParams,
+      command: [CHROME],
+      chromiumBrowser: { bundleIdentifier: "com.google.Chrome", userTempDir: "/private/var/folders/ab/xyz/T" },
+    });
+    expect(args[1]).toContain(MACOS_SEATBELT_CHROMIUM_TEMP_POLICY);
+    expect(args).toContain("-DCHROMIUM_USER_TEMP_DIR=/private/var/folders/ab/xyz/T");
+    for (const without of [chromeArgs("com.google.Chrome"), createSeatbeltCommandArgs({ ...baseParams })]) {
+      expect(without[1]).not.toContain(MACOS_SEATBELT_CHROMIUM_TEMP_POLICY);
+      expect(without.some((arg) => arg.startsWith("-DCHROMIUM_USER_TEMP_DIR="))).toBe(false);
+    }
+  });
+
+  it("looks for the per-user temp folder only on macOS", () => {
+    expect(darwinUserTempDir("linux")).toBeUndefined();
+  });
+});
+
+describe("chromiumBundleIdentifier", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "agenc-chromium-bundle-")));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const xmlPlist = (identifier: string): string =>
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n' +
+    "\t<key>CFBundleExecutable</key>\n\t<string>Browser</string>\n" +
+    `\t<key>CFBundleIdentifier</key>\n\t<string>${identifier}</string>\n` +
+    "</dict>\n</plist>\n";
+  function makeApp(name: string, plist?: string): string {
+    const macos = join(dir, `${name}.app`, "Contents", "MacOS");
+    mkdirSync(macos, { recursive: true });
+    if (plist !== undefined) {
+      writeFileSync(join(dir, `${name}.app`, "Contents", "Info.plist"), plist);
+    }
+    const executable = join(macos, name);
+    writeFileSync(executable, "");
+    return executable;
+  }
+
+  it("reads the identifier of the app around the executable", () => {
+    const executable = makeApp("Google Chrome", xmlPlist("com.google.Chrome"));
+    expect(chromiumBundleIdentifier(executable)).toBe("com.google.Chrome");
+  });
+
+  it("follows a symlink to the executable", () => {
+    const executable = makeApp("Chromium", xmlPlist("org.chromium.Chromium"));
+    const link = join(dir, "chromium");
+    symlinkSync(executable, link);
+    expect(chromiumBundleIdentifier(link)).toBe("org.chromium.Chromium");
+  });
+
+  it("has no identifier for a bare binary, a missing plist or a malformed value", () => {
+    const bare = join(dir, "chrome-headless-shell");
+    writeFileSync(bare, "");
+    expect(chromiumBundleIdentifier(bare)).toBeUndefined();
+    expect(chromiumBundleIdentifier(join(dir, "missing"))).toBeUndefined();
+    expect(chromiumBundleIdentifier(makeApp("NoPlist"))).toBeUndefined();
+    expect(chromiumBundleIdentifier(makeApp("Odd", xmlPlist("a b")))).toBeUndefined();
+  });
+
+  it("feeds the identifier into the profile the engine builds", () => {
+    const executable = makeApp("Google Chrome", xmlPlist("com.google.Chrome"));
+    const transform = (chromiumBrowser: boolean): readonly string[] =>
+      new SandboxManager().transform({
+        command: { program: executable, args: ["--headless=new"], cwd: "/repo", env: {} },
+        permissions: {
+          fileSystem: restrictedFileSystemPolicy([
+            { path: { kind: "path", path: "/repo" }, access: "write" },
+          ]),
+          network: "restricted",
+        },
+        sandbox: "macos_seatbelt",
+        platform: "darwin",
+        enforceManagedNetwork: false,
+        sandboxPolicyCwd: "/repo",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+        windowsSandboxLevel: "disabled",
+        windowsSandboxPrivateDesktop: false,
+        ...(chromiumBrowser ? { chromiumBrowser: true } : {}),
+      }).command;
+
+    const browser = transform(true);
+    expect(browser[0]).toBe(MACOS_PATH_TO_SEATBELT_EXECUTABLE);
+    expect(browser.join("\n")).toContain("com.apple.coreservices.launchservicesd");
+    expect(browser).toContain("-DCHROMIUM_MACH_NAME_PREFIX=com.google.Chrome.");
+    if (process.platform === "darwin") {
+      expect(browser).toContain(`-DCHROMIUM_USER_TEMP_DIR=${darwinUserTempDir()}`);
+    }
+    const other = transform(false);
+    expect(other.join("\n")).not.toContain("com.apple.coreservices.launchservicesd");
+    expect(other.some((arg) => arg.startsWith("-DCHROMIUM_MACH_NAME_PREFIX="))).toBe(false);
   });
 });

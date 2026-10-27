@@ -71,11 +71,20 @@ export function resetTerminalBackgroundCacheForTest(): void {
 }
 
 /**
+ * The theme "auto" shows for a terminal background: olive on a dark
+ * terminal, light on a light one. The classic black and purple theme stays
+ * available as "dark".
+ */
+export function autoThemeForBackground(background: TerminalBackground): ThemeName {
+  return background === 'dark' ? 'olive' : 'light'
+}
+
+/**
  * Resolve a ThemeSetting (which may be 'auto') to a concrete ThemeName.
  */
 export function resolveThemeSetting(setting: ThemeSetting): ThemeName {
   if (setting === 'auto') {
-    return getTerminalBackground()
+    return autoThemeForBackground(getTerminalBackground())
   }
   return setting
 }

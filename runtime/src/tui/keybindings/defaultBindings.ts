@@ -74,6 +74,9 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       // the composer (bare backspace still deletes a char as usual).
       "ctrl+x backspace": "chat:dropQueuedInput",
       [MODE_CYCLE_KEY]: "chat:cycleMode",
+      // Second key for keyboards or tools that turn Shift+Tab into spaces.
+      // Terminals send Option+M as meta+m when "Option as Meta" is on.
+      "meta+m": "chat:cycleMode",
       "meta+p": "chat:modelPicker",
       "meta+t": "chat:thinkingToggle",
       enter: "chat:submit",

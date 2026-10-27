@@ -13,7 +13,13 @@ import {
 } from "./ThemeProvider.js";
 
 const mocks = vi.hoisted(() => {
-  const getCanonicalSettingsAuthority = vi.fn(() => ({}));
+  // The provider reads the saved theme from the bound settings store and
+  // follows its reloads.
+  const authority = {
+    current: vi.fn(() => ({ tui: { theme: "auto" } })),
+    subscribe: vi.fn(() => () => {}),
+  };
+  const getCanonicalSettingsAuthority = vi.fn((): typeof authority | null => authority);
   const getExecutionAuthoritySettings = vi.fn(() => ({ tui: { theme: "auto" } }));
   const logError = vi.fn();
   const savedConfigs: unknown[] = [];
@@ -28,6 +34,7 @@ const mocks = vi.hoisted(() => {
   );
 
   return {
+    authority,
     getCanonicalSettingsAuthority,
     getExecutionAuthoritySettings,
     getTerminalBackground,
@@ -48,7 +55,8 @@ vi.mock("../../../utils/settings/settings.js", () => ({
   updateSettingsForSource: mocks.updateSettingsForSource,
 }));
 
-vi.mock("../../../utils/terminalBackground.js", () => ({
+vi.mock("../../../utils/terminalBackground.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   getTerminalBackground: mocks.getTerminalBackground,
 }));
 
@@ -121,8 +129,9 @@ describe("ThemeProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.savedConfigs.length = 0;
-    mocks.getCanonicalSettingsAuthority.mockReturnValue({});
-    mocks.getExecutionAuthoritySettings.mockReturnValue({ tui: { theme: "auto" } });
+    mocks.getCanonicalSettingsAuthority.mockReturnValue(mocks.authority);
+    mocks.authority.current.mockReturnValue({ tui: { theme: "auto" } });
+    mocks.authority.subscribe.mockReturnValue(() => {});
     mocks.getTerminalBackground.mockReturnValue("light");
     mocks.watchTerminalBackground.mockImplementation(
       () => mocks.stopWatchingTerminalBackground,
@@ -162,7 +171,7 @@ describe("ThemeProvider", () => {
         () => snapshots.some(snapshot => snapshot.setting === "dark" && snapshot.theme === "dark"),
         "dark fallback theme was not used",
       );
-      expect(mocks.getExecutionAuthoritySettings).not.toHaveBeenCalled();
+      expect(mocks.authority.current).not.toHaveBeenCalled();
     } finally {
       root.unmount();
       stdin.end();
@@ -207,7 +216,8 @@ describe("ThemeProvider", () => {
         "auto theme did not resolve from the cached system theme",
       );
 
-      expect(mocks.getExecutionAuthoritySettings).toHaveBeenCalledTimes(1);
+      expect(mocks.authority.current).toHaveBeenCalled();
+      expect(mocks.authority.subscribe).toHaveBeenCalledTimes(1);
       expect(mocks.getTerminalBackground).toHaveBeenCalled();
       await waitFor(
         () => mocks.watchTerminalBackground.mock.calls.length > 0,

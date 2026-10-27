@@ -4,6 +4,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { getTaskListId, listTasks } from "../utils/tasks.js";
 import { getSessionId } from "../bootstrap/state.js";
 
 type TodoStatus = "pending" | "in_progress" | "completed";
@@ -109,5 +110,14 @@ export const todosCommand: SlashCommand = {
   userInvocable: true,
   immediate: true,
   execute: (ctx): Promise<SlashCommandResult> =>
-    safeExecute(async () => ({ kind: "text", text: todoListText(readTodoEntries(ctx)) })),
+    safeExecute(async () => {
+      const entries = readTodoEntries(ctx);
+      const tasks = await listTasks(getTaskListId());
+      const rows = parseTodoRows(tasks.map(task => ({ content: task.subject, status: task.status })));
+      const canonicalEntries = rows.length === 0 ? entries : [
+        { agentId: getTaskListId(), isRoot: true, todos: rows },
+        ...(entries ?? []).filter(entry => !entry.isRoot),
+      ];
+      return { kind: "text", text: todoListText(canonicalEntries) };
+    }),
 };

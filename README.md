@@ -1,12 +1,36 @@
 # AgenC Core
 
-> Daemon-backed coding agent: interactive TUI, headless print mode, background
-> agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
-
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
-![version](https://img.shields.io/badge/version-0.18.0-blue)
+![version](https://img.shields.io/badge/version-0.19.19-blue)
 ![node](https://img.shields.io/badge/node-26.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
+
+An open source AI coding agent for your terminal. It works with any model
+provider.
+
+<p align="center">
+  <img src="docs/media/agenc-demo.gif" width="880" alt="AgenC Core in a terminal with DeepSeek V4.1 Flash. It finds two regressions in a checkout service, fixes them, and runs the tests until all four pass, for less than a cent.">
+</p>
+
+```bash
+curl -fsSL https://get.agenc.ag/install.sh | sh
+```
+
+Then run `agenc onboard`. Windows and npm installs are on
+[get.agenc.ag](https://get.agenc.ag), and you can
+[verify the download](https://get.agenc.ag/verify/).
+
+- With DeepSeek V4.1 Flash it scored 76.2% on Terminal-Bench 2.1 for $34. Every
+  entry on the Harbor Hub leaderboard spent at least $134.
+  [Full results](https://get.agenc.ag/terminal-bench/).
+- Bring any model: OpenAI, Anthropic, Grok, Gemini, DeepSeek, OpenRouter and
+  more, or local models through Ollama and LM Studio.
+- Work in the terminal UI, run it headless with `agenc -p` in scripts and CI, or
+  start background agents and follow them from your phone.
+
+<p align="center">
+  <a href="https://get.agenc.ag/terminal-bench/"><img src="docs/media/terminal-bench-2-1-cost.png" width="720" alt="Chart of score against cost on Terminal-Bench 2.1. AgenC Core with DeepSeek V4.1 Flash sits at the top, 76.2% for $34. The leaderboard entries all cost $134 or more."></a>
+</p>
 
 **AgenC Core** is the implementation repository for the `agenc` CLI. A local
 daemon owns agent/session lifecycle, permissions, provider calls, and command
@@ -15,8 +39,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.18.0` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.18.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.19.19` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.19.19` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.3.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -54,8 +78,8 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 - **Durable scheduled prompts** — require Linux directory descriptors and a
   local OS-account home for protected locks. Stop older scheduler/gateway
   processes before upgrading; see [storage and platform requirements](docs/durable-cron-storage.md).
-- **Guided onboarding** — `agenc onboard` includes AgenC account sign-in,
-  X / xAI sign-in for Grok, provider API keys, and local providers without
+- **Guided onboarding**: `agenc onboard` includes X / xAI sign-in for Grok,
+  provider API keys, and local providers without
   requiring slash commands; follow-on acts: `identity`, `channel`, `autonomy`,
   `recap` (personas, channels, budget/heartbeat/webhooks).
 - **Remote control** — pair iOS or Android with `agenc remote on|off|status`;
@@ -88,8 +112,8 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   **medium** and bootstrap copies that onto the session),
   vision, tools, and structured output; **Grok 4.5** and **Grok 4.3** remain
   selectable in the catalog; also
-  openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq,
-  deepseek, meta, gemini, mistral, nvidia-nim, minimax, github,
+  openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq, venice,
+  abliteration, deepseek, meta, gemini, mistral, nvidia-nim, minimax, github,
   amazon-bedrock, agenc.
   See [`docs/reference/providers.md`](docs/reference/providers.md).
 - **Grok OAuth:** sign in with X during onboarding, via `/grok-login`, or `agenc grok-login` for
@@ -103,8 +127,8 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**Current version in tree: 0.18.0.** Runtime and launcher are versioned
-`0.18.0`; the embedding SDK package is `0.3.0`. The public launcher is
+**Current version in tree: 0.19.19.** Runtime and launcher are versioned
+`0.19.19`; the embedding SDK package is `0.3.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository
 is public so npm can issue verifiable provenance. Type-clean: **0**
@@ -118,7 +142,7 @@ Ledger verification, and the independently versioned SDK.
 
 ## Requirements
 
-- Standalone installations carry a private, verified **Node.js 26.5.0** runtime
+- Standalone installations carry a private, verified **Node.js 26.12.1** runtime
   (module ABI 147); no host Node installation is required. Source checkouts,
   the npm launcher, and the SDK require Node.js `>=26.5 <27`; see the
   [supported-host matrix](docs/install.md#supported-hosts).
@@ -219,6 +243,7 @@ Common session flags:
 --no-tui
 --bare
 --light
+--standard
 -c, --continue
 -r, --resume <session-id>
 --profile <name>
@@ -230,9 +255,9 @@ Common session flags:
 --image <file|url|data-url>
 ```
 
-Light mode is experimental and off by default. Use `agenc --light` (or `agenc -p --light "your task"`) for a new session that starts with eight tools for reading, editing, writing, shell execution, polling, file/content search, and tool discovery. It reduces the tool descriptions sent initially; lower total token use, faster completion, and equivalent task performance are not guaranteed.
+New sessions start in Light mode. A Light session starts with five tools: tool search, file read, edit, write and shell. GPT-family models and DeepSeek Flash get `apply_patch` in place of edit and write. Other enabled tools load through `system.searchTools` when a task needs them, and the agent catalog appears once `spawn_agent` is loaded. When skills are installed, a short list names them and the Skill tool loads through tool search. In plan mode the session also gets `AskUserQuestion` and `ExitPlanMode`. If policy disables tool search, the remaining permitted tools stay visible. Light uses a shorter system prompt and shorter tool descriptions, and every call is still validated against the tool's full schema.
 
-Light keeps the standard system instructions and complete parameter documentation. Other enabled tools are discovered through `system.searchTools`; agent and skill catalogs appear when their tools are loaded. If policy disables discovery, the remaining permitted tools stay visible. Project instructions, memory, approvals, sandboxing, hooks, deadlines, and completion checks remain in effect. The mode belongs to the session, survives resume, and is inherited by child agents; changing the default affects new sessions only. Normal remains the default, and `--bare` retains its separate startup behavior.
+To start in standard mode, pass `--standard` (`agenc --standard`, or `agenc -p --standard "your task"`) or set `light_mode = false` in `config.toml`. A flag wins over the config, so `--light` still works and overrides `light_mode = false`. Project instructions, memory, approvals, sandboxing, hooks, deadlines, and completion checks work the same in both modes. The mode belongs to the session: it survives resume, child agents inherit it, and sessions started before Light became the default keep the mode they started with. The status line shows `standard` for a standard session and no label for Light. `--bare` keeps its separate startup behavior.
 
 ### Daemon and agents
 
@@ -265,7 +290,7 @@ AGENC_AUTH_BACKEND=remote agenc login
 agenc remote on
 ```
 
-Managed OpenRouter models: [`docs/managed-openrouter.md`](docs/managed-openrouter.md).
+OpenRouter setup: [`docs/managed-openrouter.md`](docs/managed-openrouter.md).
 VPS deploy: [`docs/deploy/vps.md`](docs/deploy/vps.md).
 
 ## Configuration
@@ -344,7 +369,7 @@ check:e2e-all
 check:unused                # knip (informational)
 ```
 
-The full `npm test` release gate runs on a Linux Docker host in a pinned Node 26.5.0
+The full `npm test` release gate runs on a Linux Docker host in a pinned Node 26.12.1
 image with no external network interface (private loopback only), a recursively
 read-only checkout, private IPC/tmpfs state, and a seccomp/ptrace process-tree
 supervisor. Before repository code executes, both the client and a trusted

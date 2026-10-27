@@ -13,6 +13,7 @@
  */
 
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
@@ -21,6 +22,7 @@ import {
   plainTextErrorToolResult as errorResult,
   validationErrorToolResult,
 } from "../results.js";
+import { unreadFilePreflight } from "../system/read-before-write.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
@@ -138,6 +140,9 @@ function permissionForPatch(
   // here the permission layer asked to approve a patch the tool would then
   // apply anyway (#2131).
   const planFileAuthority = sessionPlanFileAuthority(context.session);
+  // Memory files are judged against the session's own memory directories,
+  // the ones its memory prompt names.
+  const durableMemory = sessionDurableMemoryDirectoriesOf(context.session, cwd);
 
   for (const hunk of hunks) {
     for (const target of pathsForHunk(hunk)) {
@@ -150,6 +155,7 @@ function permissionForPatch(
         operationType: target.operationType,
         extraWorkingDirectories: allowedPaths,
         planFileAuthority,
+        durableMemory,
       });
       if (result.behavior !== "allow") return result;
     }
@@ -185,6 +191,16 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
       },
       required: ["input"],
       additionalProperties: false,
+    },
+    preflight(args) {
+      const patch = asNonEmptyString(args.input);
+      if (!patch) return { code: "invalid_patch", message: "input must be a non-empty string" };
+      try {
+        const hunks = parsePatch(patch).hunks;
+        return unreadFilePreflight(args, hunks.flatMap(hunk => pathsForHunk(hunk).map(target => target.path)), config.cwd, allowedPaths);
+      } catch (error) {
+        return { code: "invalid_patch", message: error instanceof Error ? error.message : String(error) };
+      }
     },
     checkPermissions(input, context) {
       const args = input as ApplyPatchToolInput;

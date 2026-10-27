@@ -78,7 +78,7 @@ const PRIMARY_INPUT: Record<string, PrimaryInput> = {
   },
   Edit: {
     label: 'path',
-    extract: str('file_path')
+    extract: i => str('file_path')(i) ?? (Array.isArray(i.edits) ? str('path')(i) : undefined)
   },
   Write: {
     label: 'path',

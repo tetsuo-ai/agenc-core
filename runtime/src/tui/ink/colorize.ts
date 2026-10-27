@@ -1,6 +1,10 @@
 import chalk from 'chalk'
 import type { Color, TextStyles } from './styles.js'
 
+// Some supports-color versions ignore NO_COLOR in a pty. Enforce the user's
+// preference before any terminal-specific color-depth override or styling.
+if (process.env.NO_COLOR) chalk.level = 0
+
 /**
  * xterm.js-compatible terminals have supported truecolor
  * since 2017, but code-server/Coder containers often don't set

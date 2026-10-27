@@ -4,6 +4,7 @@ import type { LLMMessage } from "../../../src/llm/types.js";
 import {
   applyKimiImageInputContract,
   assertKimiRequestPayloadSize,
+  kimiCacheWriteUsage,
 } from "../../../src/llm/wire/kimi-contract.js";
 
 const CONTRACT_ERROR =
@@ -70,5 +71,24 @@ describe("assertKimiRequestPayloadSize", () => {
     expect(() =>
       assertKimiRequestPayloadSize({ model: "kimi-k2", messages: [] }),
     ).not.toThrow();
+  });
+});
+
+// Cache TTL is locked at first write. The response, not the request, owns billing.
+describe("Kimi cache write accounting", () => {
+  test("uses header totals when the JSON breakdown is absent", () => {
+    expect(kimiCacheWriteUsage(undefined, new Headers({
+      "Msh-Usage-Cache-Write-Tokens-5m": "10", "Msh-Usage-Cache-Write-Tokens-1h": "20",
+    }))).toEqual({ cacheCreationInputTokens: 30, cacheCreation1hInputTokens: 20 });
+  });
+  test("keeps missing writes unknown and rejects invalid counts", () => {
+    expect(kimiCacheWriteUsage(undefined)).toEqual({});
+    for (const value of [-1, NaN, Infinity, 1.5, "30"]) expect(kimiCacheWriteUsage(value)).toEqual({});
+    expect(kimiCacheWriteUsage(30, new Headers({ "Msh-Usage-Cache-Write-Tokens-1h": "NaN" })))
+      .toEqual({ cacheCreationInputTokens: 30 });
+  });
+  test("never lets the TTL subset exceed reported total writes", () => {
+    expect(kimiCacheWriteUsage(10, new Headers({ "Msh-Usage-Cache-Write-Tokens-1h": "20" })))
+      .toEqual({ cacheCreationInputTokens: 10, cacheCreation1hInputTokens: 10 });
   });
 });

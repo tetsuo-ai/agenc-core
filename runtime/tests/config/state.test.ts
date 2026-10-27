@@ -369,6 +369,11 @@ describe('canonical runtime state', () => {
     )
   })
 
+  test('persists one skipped release as an acknowledgement', () => {
+    const state = createCanonicalStateDocument({ global: { skippedUpdateVersion: '0.19.1-test' } });
+    expect(getGlobalRuntimeState(parseCanonicalStateDocument(JSON.stringify(state))).skippedUpdateVersion).toBe('0.19.1-test');
+  })
+
   test('preserves unrelated namespaces while replacing global state', () => {
     const initial = createCanonicalStateDocument({
       daemon: { socketGeneration: 4 },

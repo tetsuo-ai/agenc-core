@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { buildDefaultRegistry } from "../../../src/commands/registry.js";
 import {
   extendCompactionRetentionForOperator,
+  compactionCannotShrinkDisplay,
   rollbackCompactionForOperator,
 } from "../../../src/services/compact/operator.js";
+import { CompactionCannotReduceError } from "../../../src/services/compact/transaction-types.js";
 
 function operatorStore() {
   return {
@@ -20,6 +22,15 @@ function operatorStore() {
 }
 
 describe("compaction operator surface", () => {
+  it("formats only typed no-shrink refusals and preserves attempt diagnostics", () => {
+    const detail = "compaction candidate saves -101 tokens; required 222 and 0.2; history was not changed.\nCompaction attempt ID: attempt-tiny";
+    const error = new CompactionCannotReduceError("no_shrink", detail);
+    expect(compactionCannotShrinkDisplay(error)).toBe("Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed.\nCompaction attempt ID: attempt-tiny");
+    expect(error.message).toBe(detail);
+    expect(compactionCannotShrinkDisplay(new Error(detail))).toBeUndefined();
+    expect(compactionCannotShrinkDisplay(new CompactionCannotReduceError("failure_guard", detail))).toBeUndefined();
+  });
+
   it("durably authorizes rollback before exposing its projection", () => {
     const store = operatorStore();
     expect(rollbackCompactionForOperator({

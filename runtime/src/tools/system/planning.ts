@@ -388,7 +388,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
   const todoWriteTool: Tool = {
     name: "TodoWrite",
     description:
-      "Update the todo list for the current session. Always provide both content (imperative) and activeForm (present continuous) for each task.",
+      "Update the session's todo list, which the user follows. Send each update in the same response as the tool call for the step it starts; a response that only updates the list costs a full model round trip. Always provide both content (imperative) and activeForm (present continuous) for each task.",
     metadata: metadata("TodoWrite", { virtualNoFsWrites: true }),
     recoveryCategory: "side-effecting",
     inputSchema: {

@@ -1,4 +1,5 @@
 import React from 'react'
+import stripAnsi from 'strip-ansi'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Tool } from '../../tools/Tool.js'
@@ -145,6 +146,24 @@ describe('AssistantToolUseMessage recovery rendering', () => {
     appStateMock.pendingWorkerRequest = undefined
     appStateMock.toolPermissionContext.mode = 'default'
     appStateMock.toolPermissionContext.strippedDangerousRules = undefined
+  })
+
+  it('shows the Node diagnostic on the actual collapsed failed tool row', async () => {
+    const raw = "evalmachine.<anonymous>:113\n  els.input.focus();\n            ^\n\nTypeError: els.input.focus is not a function\n    at evalmachine.<anonymous>:113:13\n\nNode.js v26.5.0\n\n[exec exit_code=1 wall_time=0.123s tokens=253]"
+    const output = await renderToString(<AssistantToolUseMessage
+      param={param} addMargin={false} tools={[tool]} commands={[]} verbose={false}
+      inProgressToolUseIDs={new Set()} progressMessagesForMessage={[]}
+      shouldAnimate={false} shouldShowDot={false}
+      lookups={{
+        resolvedToolUseIDs: new Set([param.id]),
+        erroredToolUseIDs: new Set([param.id]),
+        toolResultByToolUseID: new Map([[param.id, { type: 'user', message: { content: [
+          { type: 'tool_result', tool_use_id: param.id, is_error: true, content: raw },
+        ] } }]]),
+      } as never}
+    />, 120)
+    expect(stripAnsi(output)).toContain('exit 1, TypeError: els.input.focus is not a function')
+    expect(stripAnsi(output)).not.toContain('Node.js v26.5.0')
   })
 
   it('renders a visible fallback when tool definitions are unavailable', async () => {

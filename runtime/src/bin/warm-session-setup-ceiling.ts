@@ -1,6 +1,7 @@
 /** Nonshipping warm-daemon experiment. Never replaces canonical admission. */
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { syncDirectorySync } from "../utils/durable-atomic-file.js";
 
 export function createWarmSessionSetupCeiling(agencHome: string, sessionId: string, fastMode = false): {
   register(setup: () => Promise<void>): void;
@@ -35,7 +36,7 @@ export function createWarmSessionSetupCeiling(agencHome: string, sessionId: stri
         : (firstRequest ?? setupTask).catch(() => {});
     },
     register(setup) {
-      
+
       assertOpen();
       if (firstRequest !== undefined) throw new Error("session setup registered after dispatch");
       callbacks.push(setup);
@@ -63,8 +64,7 @@ export function createWarmSessionSetupCeiling(agencHome: string, sessionId: stri
           for (let offset = 0; offset < bytes.length;) offset += writeSync(fd, bytes, offset);
           fsyncSync(fd);
         } finally { closeSync(fd); }
-        const directory = openSync(agencHome, "r");
-        try { fsyncSync(directory); } finally { closeSync(directory); }
+        syncDirectorySync(agencHome);
         mark("fx_warm_request_journal_synced");
         let response: Response | undefined;
         firstRequest = (async () => {

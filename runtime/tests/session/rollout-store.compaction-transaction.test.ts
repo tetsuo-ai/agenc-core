@@ -11,10 +11,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
+import * as checkpointReader from "../../src/session/durable-checkpoint-reader.js";
 import { currentBuildId } from "../../src/session/durable-turns.js";
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
@@ -85,20 +86,58 @@ afterEach(() => {
 });
 
 describe("RolloutStore transactional compaction", () => {
-  it("fails fast on a concurrent compaction lease and releases idempotently", () => {
+  it("refuses an uncheckpointable replacement before the durable commit point", () => {
+    const store = openStore("checkpoint-consumer-preflight");
+    const hash = vi.spyOn(checkpointReader, "computeCheckpointPrefixHashV4");
+    try {
+      expect(() => commitSmallCompaction(store, "checkpoint-consumer-attempt", () => {
+        hash.mockImplementationOnce(() => {
+          throw new Error("checkpoint consumer rejected replacement");
+        });
+      })).toThrow(/replacement cannot be checkpointed; history was not changed/);
+      expect(store.readAll().some((item) => item.type === "compaction_committed")).toBe(false);
+      expect(store.prepareSource("after-refusal", []).messages.map((item) => item.content))
+        .toEqual(["source one", "source two"]);
+    } finally {
+      hash.mockRestore();
+      store.close();
+    }
+  });
+
+  it("fails fast on a concurrent compaction lease and releases idempotently", async () => {
     const store = openStore("compaction-lease");
     try {
-      const first = store.acquireCompactionLease("lease-a");
+      const first = await store.acquireCompactionLease("lease-a");
       expect(() => store.acquireCompactionLease("lease-b")).toThrow(
         /compaction already in progress/i,
       );
       first.release();
       first.release();
-      const second = store.acquireCompactionLease("lease-c");
+      const second = await store.acquireCompactionLease("lease-c");
       second.release();
     } finally {
       store.close();
     }
+  });
+
+  it("keeps parent bookkeeping behind committed projection and cleanup", async () => {
+    const store = openStore("compaction-projection-ownership");
+    const attemptId = "projection-ownership";
+    try {
+      const lease = await store.acquireCompactionLease(attemptId);
+      commitSmallCompaction(store, attemptId);
+      lease.release();
+      let published = false;
+      const pending = store.withCanonicalBackgroundWork(() => { published = true; });
+      await Promise.resolve();
+      expect(published).toBe(false);
+      store.markProjectionComplete(attemptId);
+      await Promise.resolve();
+      expect(published).toBe(false);
+      store.markCleanupComplete(attemptId);
+      await pending;
+      expect(published).toBe(true);
+    } finally { store.close(); }
   });
 
   it("rejects dynamically omitted source and commit payload bundles", () => {
@@ -427,6 +466,42 @@ describe("RolloutStore transactional compaction", () => {
       ).toMatchObject({ type: "compaction_rollback_committed" });
     } finally {
       store.close();
+    }
+  });
+
+  it("reopens the source while its completed reviewed branch has a live writer", () => {
+    const store = openStore("resume-source-with-live-branch");
+    const cwd = store.store.cwd;
+    const transaction = commitSmallCompaction(store, "live-branch-attempt");
+    store.markProjectionComplete(transaction.intent.attempt_id);
+    store.rollbackCompaction({
+      attemptId: transaction.intent.attempt_id,
+      nowMs: transaction.committedAtMs + 2,
+      reviewedBranchTargetSessionId: "live-reviewed-branch",
+    });
+    const target = new SessionStore({
+      cwd, sessionId: "live-reviewed-branch", agencVersion: "0.13.0",
+      agencHome: temporaryHome, resume: true,
+    });
+    target.acquireExclusiveReservation();
+    const metadata = target.readAll().find(item => item.type === "session_meta");
+    if (metadata?.type !== "session_meta") throw new Error("branch metadata missing");
+    target.open(metadata.payload);
+    target.reAppendSessionMetadata();
+    target.appendRollout({
+      type: "response_item", payload: { role: "user", content: "later branch work" },
+    }, { durable: true });
+    store.close();
+    try {
+      const resumed = openStore("resume-source-with-live-branch", { resume: true }, cwd);
+      resumed.close();
+      expect(existsSync(target.lockPath)).toBe(true);
+      expect(target.readAll().filter(item => item.type === "session_meta")).toHaveLength(2);
+      expect(target.readAll().at(-1)).toMatchObject({
+        type: "response_item", payload: { content: "later branch work" },
+      });
+    } finally {
+      target.close();
     }
   });
 
@@ -1604,7 +1679,7 @@ describe("RolloutStore transactional compaction", () => {
       expect(() =>
         readCompactionRolloutPayload("compaction_intent", {
           ...transaction.intent,
-          minimum_reader_runtime: "0.15.0",
+          minimum_reader_runtime: "0.19.1",
         }),
       ).toThrow(/reader floor/i);
       expect(() =>
@@ -1891,6 +1966,24 @@ describe("RolloutStore transactional compaction", () => {
       })).not.toThrow();
     } finally {
       reopened.close();
+    }
+  });
+
+  it("allows immediate rollback after a bound retention extension and rejected repeat", () => {
+    const cwd = createTestWorkspace();
+    temporaryWorkspaces.push(cwd);
+    const store = openStore("retention-immediate-rollback", {}, cwd);
+    try {
+      const transaction = commitSmallCompaction(store, "retention-immediate-attempt");
+      const attemptId = transaction.intent.attempt_id;
+      store.markProjectionComplete(attemptId);
+      store.markCleanupComplete(attemptId);
+      const until = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS + 60_000;
+      store.extendCompactionRollbackRetention(attemptId, until);
+      expect(() => store.extendCompactionRollbackRetention(attemptId, until)).toThrow(/strictly increase/);
+      expect(store.rollbackCompaction({ attemptId, nowMs: transaction.committedAtMs + 1 }).rollback_mode).toBe("same_session");
+    } finally {
+      store.close();
     }
   });
 

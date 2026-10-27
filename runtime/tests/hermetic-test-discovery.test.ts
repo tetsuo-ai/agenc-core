@@ -1,9 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer } from "node:net";
 
 import { describe, expect, it } from "vitest";
@@ -79,10 +86,17 @@ const HOSTED_FND_TEST_FILES = [
 ] as const;
 
 const KERNEL_TEST_FILES = [
+  "tests/routines/scheduled-session-mode-sandbox.kernel.test.ts",
   "tests/sandbox/landlock-seccomp.kernel.test.ts",
+  "tests/sandbox/linux-launcher/bound-search-launch.kernel.test.ts",
   "tests/sandbox/linux-launcher/direct-bwrap.kernel.test.ts",
   "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+  "tests/sandbox/linux-launcher/local-binding.kernel.test.ts",
+  "tests/sandbox/linux-launcher/session-sandbox.kernel.test.ts",
   "tests/sandbox/readonly-delegation.kernel.test.ts",
+  "tests/unified-exec/protected-create-session.kernel.test.ts",
+  "tests/unified-exec/session-sandbox.kernel.test.ts",
+  "tests/utils/process-broker-v2-lifecycle.kernel.test.ts",
 ] as const;
 
 const POWERSHELL_TEST_FILES = [
@@ -603,6 +617,60 @@ describe("hermetic test discovery", () => {
     };
 
     expect(boundary.PINNED_NODE_IMAGE).toBe(toolchain.docker.buildImage);
+  });
+
+  it("mounts only the pinned npm over the image's bundled npm", async () => {
+    const boundaryUrl = new URL(
+      "../scripts/run-hermetic-test-boundary.mjs",
+      import.meta.url,
+    );
+    boundaryUrl.searchParams.set("pinned-npm", String(Date.now()));
+    const boundary = (await import(/* @vite-ignore */ boundaryUrl.href)) as {
+      readonly pinnedNpmPackageRoot: (
+        npmExecPath: string | undefined,
+        root: string,
+        nodeExecPath: string,
+      ) => string;
+    };
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "agenc-pinned-npm-")));
+    try {
+      const root = join(base, "repo");
+      mkdirSync(root);
+      writeFileSync(
+        join(root, "release-toolchain.json"),
+        JSON.stringify({ npmVersion: "11.17.0" }),
+      );
+      const npmPackage = (dir: string, version: string): string => {
+        mkdirSync(join(dir, "bin"), { recursive: true });
+        writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "npm", version }));
+        writeFileSync(join(dir, "bin", "npm-cli.js"), "");
+        return join(dir, "bin", "npm-cli.js");
+      };
+      const pinnedCli = npmPackage(join(base, "pinned", "npm"), "11.17.0");
+      const bundledCli = npmPackage(join(base, "bundled", "npm"), "11.20.0");
+      const toolchainNode = join(base, "toolchain", "bin", "node");
+      mkdirSync(dirname(toolchainNode), { recursive: true });
+      writeFileSync(toolchainNode, "");
+      npmPackage(join(base, "toolchain", "lib", "node_modules", "npm"), "11.17.0");
+      const missingNode = join(base, "missing", "bin", "node");
+
+      // The npm that runs `npm test`.
+      expect(boundary.pinnedNpmPackageRoot(pinnedCli, root, missingNode)).toBe(
+        join(base, "pinned", "npm"),
+      );
+      // Started with node directly: the npm installed next to that node.
+      expect(boundary.pinnedNpmPackageRoot(undefined, root, toolchainNode)).toBe(
+        join(base, "toolchain", "lib", "node_modules", "npm"),
+      );
+      expect(() => boundary.pinnedNpmPackageRoot(bundledCli, root, missingNode)).toThrow(
+        /Hermetic tests require npm 11\.17\.0; npm test ran with npm@11\.20\.0/u,
+      );
+      expect(() => boundary.pinnedNpmPackageRoot(undefined, root, missingNode)).toThrow(
+        /Hermetic tests need the pinned npm on the host/u,
+      );
+    } finally {
+      rmSync(base, { force: true, recursive: true });
+    }
   });
 
   it("streams attached test output without daemon-side Docker log persistence", async () => {

@@ -92,6 +92,49 @@ describe("output-style commands", () => {
     return runWithAgentRuntimeOptions(runtimeOptions, operation);
   }
 
+  it("applies a saved style to the live daemon before reporting success", async () => {
+    const cwd = tempProject();
+    const store = new ConfigStore({ home: join(cwd, "agenc-home"), env: {}, cwd, projectRoot: cwd, projectTrusted: false });
+    await store.reload();
+    const ctx = stubCtx(cwd, "Learning", undefined, store);
+    Object.assign(ctx.session.services, { runtimeOptions: resolveAgentRuntimeOptions({}, { pluginStorageRoot: join(cwd, "agenc-home", "plugins") }) });
+    const applyDaemonConfig = vi.fn(async () => {
+      expect(store.current().outputStyle).toBe("Learning");
+      return { sessionId: "live", applied: true, summary: "config updated" };
+    });
+    Object.assign(ctx.session, { applyDaemonConfig });
+    expect(await outputStyleCommand.execute(ctx)).toMatchObject({ kind: "text", text: 'Output style switched to "Learning".' });
+    expect(applyDaemonConfig).toHaveBeenCalledWith({ reload: true });
+  });
+
+  it("loads cold TUI styles from its captured plugin authority without an active runtime", async () => {
+    const cwd = tempProject();
+    const store = new ConfigStore({ home: join(cwd, "agenc-home"), env: {}, cwd, projectRoot: cwd, projectTrusted: false });
+    await store.reload();
+    const ctx = stubCtx(cwd, "", undefined, store);
+    const capturedCtx = { ...ctx, session: { ...ctx.session, services: { configStore: store, runtimeOptions: resolveAgentRuntimeOptions({}, { pluginStorageRoot: join(cwd, "agenc-home", "plugins") }) } } as unknown as Session };
+    const result = await runWithCanonicalSettingsAuthority(store, () => outputStyleCommand.execute(capturedCtx));
+    expect(result.kind).toBe("text");
+    const switched = await runWithCanonicalSettingsAuthority(store, () => outputStyleCommand.execute({ ...capturedCtx, argsRaw: "Explanatory" }));
+    expect(switched).toEqual({ kind: "text", text: 'Output style switched to "Explanatory".' });
+    const unknown = await runWithCanonicalSettingsAuthority(store, () => outputStyleCommand.execute({ ...capturedCtx, argsRaw: "unknown" }));
+    expect(unknown).toMatchObject({ kind: "text", text: expect.stringContaining("Unknown output style") });
+  });
+
+  it("captures canonical settings authority for later output-style picker selections", async () => {
+    const cwd = tempProject();
+    const store = new ConfigStore({ home: join(cwd, "agenc-home"), env: {}, cwd, projectRoot: cwd, projectTrusted: false });
+    await store.reload();
+    const setToolJSX = vi.fn();
+    const ctx = stubCtx(cwd, "", { setToolJSX }, store);
+    const capturedCtx = { ...ctx, session: { ...ctx.session, services: { configStore: store, runtimeOptions: resolveAgentRuntimeOptions({}, { pluginStorageRoot: join(cwd, "agenc-home", "plugins") }) } } as unknown as Session };
+    expect(await runWithCanonicalSettingsAuthority(store, () => outputStyleCommand.execute(capturedCtx))).toEqual({ kind: "skip" });
+    const view = setToolJSX.mock.calls[0][0].jsx;
+    resetCanonicalSettingsAuthorityForTesting();
+    expect(await view.props.onSelect("Explanatory")).toEqual({ message: 'Output style switched to "Explanatory".', shouldClose: true });
+    expect(store.current().outputStyle).toBe("Explanatory");
+  });
+
   it("lists available styles outside the TUI", async () => {
     const cwd = tempProject();
 

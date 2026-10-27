@@ -29,7 +29,7 @@ describe("remote token state gate", () => {
   it("keeps default tier, usage and catalog signed-out lookups out of secure storage", async () => {
     const { backend, fetchImpl } = await fixture();
     await expect(backend.getSubscriptionTier()).resolves.toBe("free");
-    await expect(backend.getLlmUsage()).resolves.toMatchObject({ subscriptionTier: "free" });
+    await expect(backend.getLlmUsage()).rejects.toThrow("AgenC accounts no longer provide models");
     await expect(backend.listAgencModels()).resolves.toEqual([]);
     expect(readCredential).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -80,7 +80,7 @@ describe("remote token state gate", () => {
     const { backend, fetchImpl } = await fixture();
     await writeFile(backend.authFile(), JSON.stringify(state));
     readCredential.mockImplementationOnce(() => { throw new Error("native storage locked"); });
-    await expect(backend.getLlmUsage()).rejects.toThrow("native storage locked");
+    await expect(backend.getSubscriptionTier()).rejects.toThrow("native storage locked");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

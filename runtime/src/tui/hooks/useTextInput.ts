@@ -8,6 +8,7 @@ import { addToHistory } from '../history/history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
+  TextInputChangeResult,
   TextInputState,
 } from '../../types/textInputTypes.js'
 import {
@@ -23,7 +24,7 @@ import {
 import { env } from '../../utils/env.js'
 import type { ImageDimensions } from '../../utils/imageResizer.js'
 import { isModifierPressed, prewarmModifiers } from '../../utils/modifiers.js'
-import { useDoublePress } from './useDoublePress.js'
+import { clearSharedDoublePressState, useDoublePress } from './useDoublePress.js'
 
 type MaybeCursor = void | TextCursor
 type InputHandler = (input: string) => MaybeCursor
@@ -38,7 +39,8 @@ function mapInput(input_map: Array<[string, InputHandler]>): InputMapper {
 
 export type UseTextInputProps = {
   value: string
-  onChange: (value: string) => void
+  /** Return false to refuse the edit; the input then restores its text. */
+  onChange: (value: string) => TextInputChangeResult
   onSubmit?: (value: string) => void
   onExit?: () => void
   onExitMessage?: (show: boolean, key?: string) => void
@@ -153,10 +155,22 @@ export function useTextInput({
 
     updateRenderedInput(nextValue, nextOffset)
 
-    if (previousValue !== nextValue) {
-      onChange(nextValue)
+    const edit = previousValue !== nextValue ? onChange(nextValue) : undefined
+    if (edit === false) {
+      // The parent handled this edit as a shortcut and kept its own value.
+      // Restore the mirror, or the refused text shows up and the next
+      // keystroke builds on it, since the parent's props never change.
+      updateRenderedInput(previousValue, previousOffset)
+      return
     }
 
+    if (typeof edit === 'object' && edit !== null) {
+      // The parent may consume a mode prefix without changing its props.
+      // Commit its normalized edit before another key can read the mirror.
+      nextValue = edit.value
+      nextOffset = edit.offset
+      updateRenderedInput(nextValue, nextOffset)
+    }
     if (previousOffset !== nextOffset) {
       onOffsetChange(nextOffset)
     }
@@ -172,22 +186,30 @@ export function useTextInput({
   const cursor = TextCursor.fromText(value, columns, offset)
   const { addNotification, removeNotification } = useNotifications()
 
-  const handleCtrlC = useDoublePress(
+  const handleEmptyCtrlC = useDoublePress(
     (show: boolean) => {
       onExitMessage?.(show, 'Ctrl-C')
     },
     () => onExit?.(),
-    () => {
-      const currentValue = getLiveValue()
-      if (currentValue) {
-        updateRenderedInput('', 0)
-        onChange('')
-        onOffsetChange(0)
-        onHistoryReset?.()
-      }
-    },
+    undefined,
     'app:interrupt',
   )
+
+  function handleCtrlC(): void {
+    const currentValue = getLiveValue()
+    if (currentValue !== '') {
+      // Clearing a draft is editing, not the first of two empty-prompt exits.
+      clearSharedDoublePressState('app:interrupt')
+      onExitMessage?.(false, 'Ctrl-C')
+      if (mask === '' && currentValue.trim() !== '') addToHistory(currentValue)
+      updateRenderedInput('', 0)
+      onChange('')
+      onOffsetChange(0)
+      onHistoryReset?.()
+      return
+    }
+    handleEmptyCtrlC()
+  }
 
   // NOTE(keybindings): This escape handler is intentionally NOT migrated to the keybindings system.
   // It's a text-level double-press escape for clearing input, not an action-level keybinding.
@@ -214,7 +236,7 @@ export function useTextInput({
       if (currentValue) {
         // Track double-escape usage for feature discovery
         // Save to history before clearing
-        if (currentValue.trim() !== '') {
+        if (mask === '' && currentValue.trim() !== '') {
           addToHistory(currentValue)
         }
         updateRenderedInput('', 0)

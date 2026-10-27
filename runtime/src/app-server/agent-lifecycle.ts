@@ -42,6 +42,8 @@ import {
 } from "../state/runtime-settings-snapshot.js";
 
 import { AsyncLock } from "../utils/async-lock.js";
+import { canonicalRolloutHoldsNoInput } from "../session/rollout-input.js";
+import { UNUSED_TUI_PREWARM_STOP_REASON } from "./agent-stop-reasons.js";
 import {
   captureRecoverableCommandEnvironment,
   captureRecoverableSessionEnvironment,
@@ -154,6 +156,7 @@ import type {
   SessionShellExecuteResult,
   SessionStatusLineExecuteParams,
   SessionStatusLineExecuteResult,
+  SessionSetProviderKeyParams,
   SessionSetModelParams,
   SessionSetModelResult,
   SessionSetPermissionModeParams,
@@ -208,6 +211,17 @@ import {
   type PermissionAuditLogger,
 } from "../permissions/permission-audit-log.js";
 import { DEFAULT_UNATTENDED_ALLOWLIST } from "../permissions/unattended-policy.js";
+import {
+  TOOL_POLICY_METADATA_KEY,
+  TOOL_POLICY_MODE_CEILING_METADATA_KEY,
+  frozenPermissionModeMessage,
+  isWiderPermissionMode,
+  retainedToolPolicyModeCeiling,
+  sameSessionToolPolicy,
+  sessionToolPolicyFromMetadata,
+  type SessionToolPolicy,
+} from "../permissions/session-tool-policy.js";
+import { isPermissionMode, type PermissionMode } from "../permissions/types.js";
 import {
   consumeExitPlanModeApproval,
   recordExitPlanModeApproval,
@@ -379,6 +393,13 @@ export interface AgenCDaemonAgentManagerOptions {
     ids: readonly string[],
     signal?: AbortSignal,
   ) => Promise<void> | undefined;
+  /**
+   * Mode for a new agent whose `runtimeOptions` leave `lightMode` unset: the
+   * daemon's config.toml `light_mode`, then Light. The value is recorded with
+   * the session, so a restart or resume never re-reads it. Resumed agents
+   * keep their recorded mode. Without it an unset mode stays standard.
+   */
+  readonly defaultLightMode?: () => boolean;
 }
 
 export interface AgenCDaemonAgentToolOutputReadParams {
@@ -610,6 +631,7 @@ export class AgenCDaemonAgentManager {
         signal?: AbortSignal,
       ) => Promise<void> | undefined)
     | undefined;
+  readonly #defaultLightMode: (() => boolean) | undefined;
   #shuttingDown = false;
   #shutdownDisposition: "cancel" | "suspend_idle" = "cancel";
   #activeCreates = 0;
@@ -667,6 +689,7 @@ export class AgenCDaemonAgentManager {
     this.#cancelRunTreeDurable = options.cancelRunTreeDurable;
     this.#voidBudgetHoldsForAgents = options.voidBudgetHoldsForAgents;
     this.#waitForStartupRestore = options.waitForStartupRestore;
+    this.#defaultLightMode = options.defaultLightMode;
   }
 
   createAgent(
@@ -800,6 +823,7 @@ export class AgenCDaemonAgentManager {
           params.initialContent !== undefined ||
           params.deferInitialTurn !== undefined ||
           params.initialDisplayUserMessage !== undefined ||
+          params.initialUserPromptText !== undefined ||
           params.metadata !== undefined ||
           params.unattendedAllow !== undefined ||
           params.unattendedDeny !== undefined)
@@ -994,6 +1018,17 @@ export class AgenCDaemonAgentManager {
         (canonicalRuntimeSettings === undefined
           ? metadataString(retainedMetadata, "profile")
           : (canonicalRuntimeSettings.profile ?? undefined));
+      const taskBudget: { taskTokenBudget?: number; taskMaxCalls?: number } = {};
+      for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+        const value = params[key] ?? retainedMetadata?.[key];
+        if (value === undefined) continue;
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "INVALID_ARGUMENT", `agent.create ${key} must be a non-negative safe integer`,
+          );
+        }
+        taskBudget[key] = value;
+      }
       const configPath = params.configPath ?? retainedConfigPath;
       if (configPath !== undefined && !isAbsolute(configPath)) {
         throw new AgenCDaemonAgentLifecycleError(
@@ -1014,9 +1049,25 @@ export class AgenCDaemonAgentManager {
         params.unattendedDeny,
         metadataStringList(retainedMetadata, "unattendedDeny") ?? [],
       );
-      const requestedRuntimeOptions = validateAgentRuntimeOptions(
+      const toolPolicy = resolveCreateToolPolicy(
+        params.toolPolicy,
+        retainedMetadata,
+      );
+      const validatedRuntimeOptions = validateAgentRuntimeOptions(
         params.runtimeOptions,
       );
+      // A new agent whose creator chose no mode starts in the daemon default.
+      // The settled value is recorded below like an explicit one. A resume
+      // passes its request through: the retained mode decides it.
+      const requestedRuntimeOptions =
+        resumeSessionId === undefined &&
+        validatedRuntimeOptions.lightMode === undefined &&
+        this.#defaultLightMode !== undefined
+          ? Object.freeze({
+              ...validatedRuntimeOptions,
+              lightMode: this.#defaultLightMode(),
+            })
+          : validatedRuntimeOptions;
       const retainedRuntimeOptions =
         resumeSessionId === undefined
           ? undefined
@@ -1030,13 +1081,16 @@ export class AgenCDaemonAgentManager {
       const retainedLightMode = resumeSessionId === undefined
         ? undefined
         : retainedRuntimeOptions?.lightMode ??
+          resumeProof?.lightMode ??
           this.#threadStore?.readThreadLightMode?.(
             resumeSessionId,
             // assertAuthoritativeResumeSource already bound this canonical
             // projects/<project>/sessions/<id>/rollout file to the caller.
             dirname(dirname(dirname(resumeRolloutPath!))),
           ) ??
-          (requestedRuntimeOptions.lightMode !== undefined ? false : undefined);
+          (resumeProof?.reviewedRollbackBranch
+            ? requestedRuntimeOptions.lightMode
+            : (requestedRuntimeOptions.lightMode !== undefined ? false : undefined));
       const runtimeOptions = Object.freeze({
         ...requestedRuntimeOptions,
         ...(requestedRuntimeOptions.relaxedOneShot !== undefined ? { relaxedOneShot: selectRelaxedOneShot({
@@ -1075,11 +1129,16 @@ export class AgenCDaemonAgentManager {
           : profile !== undefined
             ? { profile }
             : {}),
+        ...taskBudget,
         ...(configPath !== undefined ? { configPath } : {}),
         ...(addDirs !== undefined ? { addDirs: [...addDirs] } : {}),
         ...(permissionMode !== undefined ? { permissionMode } : {}),
         unattendedAllow,
         unattendedDeny,
+        // Part of the durable run identity: a restore reads it back from here.
+        ...(toolPolicy !== undefined
+          ? { [TOOL_POLICY_METADATA_KEY]: toolPolicyToMetadata(toolPolicy) }
+          : {}),
         commandEnvironment: captureRecoverableCommandEnvironment(params.envOverrides),
         // The rest of the client snapshot a restart must reproduce: endpoint
         // and setting values, plus only the names of credentials, which are
@@ -1106,6 +1165,7 @@ export class AgenCDaemonAgentManager {
               ...(model !== undefined ? { model } : {}),
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
+              ...taskBudget,
               ...(configPath !== undefined ? { configPath } : {}),
               ...(addDirs !== undefined ? { addDirs } : {}),
               ...(params.initialContent !== undefined
@@ -1113,6 +1173,9 @@ export class AgenCDaemonAgentManager {
                 : {}),
               ...(params.deferInitialTurn !== undefined
                 ? { deferInitialTurn: params.deferInitialTurn }
+                : {}),
+              ...(params.initialUserPromptText !== undefined
+                ? { initialUserPromptText: params.initialUserPromptText }
                 : {}),
               ...(params.initialDisplayUserMessage !== undefined
                 ? {
@@ -1122,6 +1185,7 @@ export class AgenCDaemonAgentManager {
               metadata,
               unattendedAllow,
               unattendedDeny,
+              ...(toolPolicy !== undefined ? { toolPolicy } : {}),
               runtimeOptions,
               ...(permissionMode !== undefined ? { permissionMode } : {}),
               ...(params.envOverrides !== undefined
@@ -1149,6 +1213,7 @@ export class AgenCDaemonAgentManager {
               ...(model !== undefined ? { model } : {}),
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
+              ...taskBudget,
               ...(configPath !== undefined ? { configPath } : {}),
               ...(addDirs !== undefined ? { addDirs } : {}),
               ...(permissionMode !== undefined ? { permissionMode } : {}),
@@ -1201,6 +1266,9 @@ export class AgenCDaemonAgentManager {
                 runtimeRestore: "available",
               },
             }
+          : {}),
+        ...(started.toolPolicyModeCeiling !== undefined
+          ? { [TOOL_POLICY_MODE_CEILING_METADATA_KEY]: started.toolPolicyModeCeiling }
           : {}),
         ...(started.rolloutPath !== undefined
           ? { canonicalRolloutPath: started.rolloutPath }
@@ -1483,6 +1551,8 @@ export class AgenCDaemonAgentManager {
     readonly provider?: string;
     readonly profile?: string;
     readonly configPath?: string;
+    readonly taskTokenBudget?: number;
+    readonly taskMaxCalls?: number;
     readonly addDirs?: readonly string[];
     readonly permissionMode?:
       | "default"
@@ -1538,6 +1608,12 @@ export class AgenCDaemonAgentManager {
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      ...(params.taskTokenBudget !== undefined
+        ? { taskTokenBudget: params.taskTokenBudget }
+        : {}),
+      ...(params.taskMaxCalls !== undefined
+        ? { taskMaxCalls: params.taskMaxCalls }
+        : {}),
       ...(params.configPath !== undefined
         ? { configPath: params.configPath }
         : {}),
@@ -2018,7 +2094,9 @@ export class AgenCDaemonAgentManager {
     const reason = normalizeNonEmpty(params.reason) ?? "agent.stop";
     const pending = this.#agentStopTasks.get(agentId);
     if (pending !== undefined) return pending.result;
-    const task = this.#stopAgentOnce(agentId, reason);
+    const task = reason === UNUSED_TUI_PREWARM_STOP_REASON
+      ? this.#stopUnusedTuiPrewarm(agentId, reason)
+      : this.#stopAgentOnce(agentId, reason);
     const operation = { result: task };
     this.#agentStopTasks.set(agentId, operation);
     try {
@@ -2028,6 +2106,60 @@ export class AgenCDaemonAgentManager {
         this.#agentStopTasks.delete(agentId);
       }
     }
+  }
+
+  /**
+   * Stop a session the TUI created while its user typed and then never used,
+   * and archive its canonical thread when the thread holds no input: an
+   * untouched TUI leaves no session to list, resume or continue. A daemon
+   * that restarted without restoring the agent still archives the thread.
+   */
+  async #stopUnusedTuiPrewarm(
+    agentId: string,
+    reason: string,
+  ): Promise<AgentStopResult> {
+    let stopped: AgentStopResult | undefined;
+    let notFound: unknown;
+    try {
+      stopped = await this.#stopAgentOnce(agentId, reason);
+    } catch (error) {
+      if (
+        !(error instanceof AgenCDaemonAgentLifecycleError) ||
+        error.code !== "AGENT_NOT_FOUND"
+      ) {
+        throw error;
+      }
+      notFound = error;
+    }
+    const archived = this.#archiveUntouchedThread(agentId);
+    if (stopped !== undefined) return stopped;
+    if (archived) return { agentId, stopped: false };
+    throw notFound;
+  }
+
+  /** Archive a root thread whose canonical rollout records no input. */
+  #archiveUntouchedThread(threadId: string): boolean {
+    const store = this.#threadStore;
+    if (store === undefined) return false;
+    let thread: StoredThread;
+    try {
+      thread = store.readThread({
+        threadId,
+        includeArchived: false,
+        includeHistory: false,
+      });
+    } catch (error) {
+      if (error instanceof ThreadNotFoundError) return false;
+      throw error;
+    }
+    if (
+      thread.rolloutPath === undefined ||
+      !canonicalRolloutHoldsNoInput(thread.rolloutPath)
+    ) {
+      return false;
+    }
+    store.archiveThread({ threadId });
+    return true;
   }
 
   async #stopAgentOnce(agentId: string, reason: string): Promise<AgentStopResult> {
@@ -2779,6 +2911,14 @@ export class AgenCDaemonAgentManager {
         "allowAllToolsForSession requires session approval scope",
       );
     }
+    // "Allow all tools" is a switch to bypassPermissions; a frozen session
+    // never gets one, however the approval arrives.
+    if (allowAllToolsForSession && this.#frozenSessionMode(agentId) !== undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "allowAllToolsForSession is refused: this session's permission mode is frozen by its toolPolicy",
+      );
+    }
     if (
       allowAllToolsForSession &&
       this.#runner?.setAgentPermissionMode === undefined
@@ -3040,28 +3180,41 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon session has no working directory: ${params.sessionId}`,
       );
     }
-    // Clients address the daemon session (`session_...`), but the durable
-    // effect rows and the live runtime session belong to the agent's
-    // conversation (`conv-...`). The live runner resolves only its own
-    // conversation, so review against that id. Injected runners without a
-    // live journal keep the legacy daemon-session keying.
-    const reviewSessionId =
-      this.#runner?.resolveLiveEffectReview !== undefined
-        ? session.agentId
-        : params.sessionId;
+    // The attached daemon session authorizes its canonical conversation and
+    // durable spawn descendants. Never infer authority from a supplied id.
+    const reviewSessionIds = this.#runner?.effectReviewSessionIds?.(session.agentId) ?? [
+      this.#runner?.resolveLiveEffectReview !== undefined ? session.agentId : params.sessionId,
+    ];
+    if (params.effectSessionId !== undefined && !reviewSessionIds.includes(params.effectSessionId)) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+        `Session ${params.effectSessionId} is not owned by parent ${params.sessionId}; attach to its owning session to review it`);
+    }
+    const selectedIds = params.effectSessionId === undefined ? reviewSessionIds : [params.effectSessionId];
     const driver = openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
     try {
-      const candidates =
-        params.toolCallId !== undefined
-          ? [
-              {
-                sessionId: reviewSessionId,
-                toolCallId: params.toolCallId,
-                toolName: "",
-                startedAt: "",
-              },
-            ]
-          : [...listUnresolvedUnknownOutcomeEffects(driver, reviewSessionId)];
+      const durableEffects = new StateRunDurabilityRepository(driver);
+      const pending = selectedIds.flatMap(id => [...listUnresolvedUnknownOutcomeEffects(driver, id)]);
+      const candidates = params.toolCallId === undefined ? pending : selectedIds.flatMap(id => {
+        const effect = durableEffects.getEffectBySessionCall(id, params.toolCallId!);
+        if (params.attempt !== undefined && effect?.runId !== params.attempt.runId) return [];
+        const legacy = pending.find(candidate => candidate.sessionId === id && candidate.toolCallId === params.toolCallId);
+        return effect === undefined && legacy === undefined ? [] : [{ sessionId: id,
+          toolCallId: params.toolCallId!, toolName: effect?.toolName ?? legacy?.toolName ?? "", startedAt: effect?.intentAt ?? legacy?.startedAt ?? "" }];
+      });
+      if (params.toolCallId !== undefined && candidates.length > 1) {
+        throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+          `Tool call ${params.toolCallId} has multiple owning sessions. Review one at a time from this parent: ` +
+          candidates.map(effect => `/resolve ${effect.toolCallId} <confirmed_committed|confirmed_no_effect|remains_unknown> --session ${effect.sessionId}`).join("; "));
+      }
+      // Keep exact-attempt stale checks on the canonical owner even if the
+      // requested record disappeared. They must not silently turn into no-ops.
+      if (params.toolCallId !== undefined && candidates.length === 0) {
+        candidates.push({ sessionId: params.effectSessionId ?? reviewSessionIds[0]!,
+          toolCallId: params.toolCallId, toolName: "", startedAt: "" });
+      }
+      const reviewSessionId = candidates[0]?.sessionId ?? reviewSessionIds[0]!;
+      const remainingCount = () => reviewSessionIds.reduce((count, id) =>
+        count + listUnresolvedUnknownOutcomeEffects(driver, id).length, 0);
       const resolved: SessionResolveToolCallResult["resolved"][number][] = [];
 
       if (!isEvidenceToolCallResolution(params)) {
@@ -3072,7 +3225,7 @@ export class AgenCDaemonAgentManager {
           // v1/v2 effect stays pending until an evidence-bearing request arrives.
           if (
             durableEffects.getEffectBySessionCall(
-              reviewSessionId,
+              effect.sessionId,
               effect.toolCallId,
             ) !== undefined
           ) {
@@ -3080,7 +3233,7 @@ export class AgenCDaemonAgentManager {
           }
           if (
             resolveUnknownOutcomeEffect(driver, {
-              sessionId: reviewSessionId,
+              sessionId: effect.sessionId,
               toolCallId: effect.toolCallId,
             })
           ) {
@@ -3093,16 +3246,13 @@ export class AgenCDaemonAgentManager {
         return {
           sessionId: params.sessionId,
           resolved,
-          remaining: listUnresolvedUnknownOutcomeEffects(
-            driver,
-            reviewSessionId,
-          ).length,
+          remaining: remainingCount(),
         };
       }
 
       const reviewedAt = new Date().toISOString();
       const reviewedBy = params.reviewer?.trim() || "tui_operator";
-      const resolution = createOperatorEffectReviewResolution({
+      const operatorResolution = createOperatorEffectReviewResolution({
         disposition: params.disposition,
         actorId: reviewedBy,
         ...(isOperatorAttestation(params)
@@ -3119,6 +3269,12 @@ export class AgenCDaemonAgentManager {
             }),
         reviewedAt,
       });
+      // A live conversation's "keep blocked" choice is a pending review.
+      // Job-level abandonment retains its existing terminal semantics.
+      const { domainAction: _domainAction, ...pendingResolution } = operatorResolution;
+      const resolution = params.disposition === "remains_unknown"
+        ? { ...pendingResolution, workflowStatus: "pending" as const }
+        : operatorResolution;
       for (const effect of candidates) {
         const reviewOptions = {
           sessionId: reviewSessionId,
@@ -3171,10 +3327,7 @@ export class AgenCDaemonAgentManager {
           });
         }
       }
-      const remaining = listUnresolvedUnknownOutcomeEffects(
-        driver,
-        reviewSessionId,
-      ).length;
+      const remaining = remainingCount();
       return { sessionId: params.sessionId, resolved, remaining };
     } finally {
       driver.close();
@@ -3536,6 +3689,38 @@ export class AgenCDaemonAgentManager {
       { allowMcpDisableServer: true },
     );
     const result = await this.#runner.disableMcpServer(agentId, {
+      sessionId: params.sessionId,
+      serverName: params.serverName,
+    });
+    return {
+      sessionId: params.sessionId,
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
+  async removeMcpServerOnSession(
+    params: SessionMcpServerByNameParams,
+  ): Promise<SessionMcpServerMutationResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.mcp.removeServer requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.removeMcpServer === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.mcp.removeServer requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowMcpRemoveServer: true },
+    );
+    const result = await this.#runner.removeMcpServer(agentId, {
       sessionId: params.sessionId,
       serverName: params.serverName,
     });
@@ -3959,6 +4144,7 @@ export class AgenCDaemonAgentManager {
     return await this.#runner.previewFileRewind(agentId, {
       sessionId: params.sessionId,
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
   }
 
@@ -3984,7 +4170,21 @@ export class AgenCDaemonAgentManager {
     return await this.#runner.rewindFilesToMessage(agentId, {
       sessionId: params.sessionId,
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
+  }
+
+  async setSessionProviderKey(
+    params: SessionSetProviderKeyParams,
+  ): Promise<{ readonly sessionId: string }> {
+    if (this.#runner?.setAgentProviderKey === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE", "Session key replacement is unavailable.",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId, { allowSetProviderKey: true });
+    await this.#runner.setAgentProviderKey(agentId, { provider: params.provider, apiKey: params.apiKey });
+    return { sessionId: params.sessionId };
   }
 
   async setSessionModel(
@@ -4040,6 +4240,17 @@ export class AgenCDaemonAgentManager {
       params.sessionId,
       { allowSetPermissionMode: true },
     );
+    const frozenCeiling = this.#frozenSessionMode(agentId);
+    if (
+      frozenCeiling !== undefined &&
+      isPermissionMode(params.mode) &&
+      isWiderPermissionMode(params.mode, frozenCeiling)
+    ) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        frozenPermissionModeMessage(params.mode, frozenCeiling),
+      );
+    }
     const result = await this.#runner.setAgentPermissionMode(agentId, {
       sessionId: params.sessionId,
       mode: params.mode,
@@ -4077,6 +4288,16 @@ export class AgenCDaemonAgentManager {
       params.sessionId,
       { allowMutatePermissionRule: true },
     );
+    if (
+      this.#frozenSessionMode(agentId) !== undefined &&
+      !permissionRuleMutationNarrows(params.operation, params.behavior)
+    ) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.permissions.mutateRule is refused: this session's permission mode is frozen by its toolPolicy, " +
+          "so rules may only narrow access (add deny or ask, remove allow)",
+      );
+    }
     const result = await this.#runner.mutateAgentPermissionRule(agentId, {
       sessionId: params.sessionId,
       operation: params.operation,
@@ -4180,6 +4401,8 @@ export class AgenCDaemonAgentManager {
     );
     const result = await this.#runner.applyAgentConfig(agentId, {
       sessionId: params.sessionId,
+      ...(params.taskBudgetLevel !== undefined ? { taskBudgetLevel: params.taskBudgetLevel } : {}),
+      ...(params.taskTokenBudget !== undefined ? { taskTokenBudget: params.taskTokenBudget } : {}),
       ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
       ...(params.modelVerbosity !== undefined ? { modelVerbosity: params.modelVerbosity } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
@@ -4188,6 +4411,7 @@ export class AgenCDaemonAgentManager {
     return {
       sessionId: params.sessionId,
       applied: result.applied,
+      ...(result.taskTokenBudget !== undefined ? { taskTokenBudget: result.taskTokenBudget } : {}),
       ...(result.provider === undefined ? {} : { provider: result.provider }),
       ...(result.model === undefined ? {} : { model: result.model }),
       ...(result.runtimeSettingsEventId === undefined
@@ -4207,6 +4431,7 @@ export class AgenCDaemonAgentManager {
     readonly acceptedAt: string;
     readonly ifBusy?: "reject";
     readonly displayUserMessage?: string | null;
+    readonly userPromptText?: string;
     readonly methodName?: "message.send" | "message.stream";
     /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
     readonly localMcpAccess?: boolean;
@@ -4274,6 +4499,7 @@ export class AgenCDaemonAgentManager {
         originalContent: params.content,
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
+        ...(params.userPromptText !== undefined ? { userPromptText: params.userPromptText } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
           : {}),
@@ -4416,8 +4642,10 @@ export class AgenCDaemonAgentManager {
       readonly allowMcpReconnectServer?: boolean;
       readonly allowMcpEnableServer?: boolean;
       readonly allowMcpDisableServer?: boolean;
+      readonly allowMcpRemoveServer?: boolean;
       readonly allowSnapshot?: boolean;
       readonly allowProcessControl?: boolean;
+      readonly allowSetProviderKey?: boolean;
       readonly allowSetModel?: boolean;
       readonly allowSetPermissionMode?: boolean;
       readonly allowMutatePermissionRule?: boolean;
@@ -4475,12 +4703,17 @@ export class AgenCDaemonAgentManager {
     const hasMcpDisableServerRunner =
       options.allowMcpDisableServer === true &&
       this.#runner?.disableMcpServer !== undefined;
+    const hasMcpRemoveServerRunner =
+      options.allowMcpRemoveServer === true &&
+      this.#runner?.removeMcpServer !== undefined;
     const hasSnapshotRunner =
       options.allowSnapshot === true &&
       this.#runner?.snapshotAgentSession !== undefined;
     const hasProcessControlRunner = options.allowProcessControl === true &&
       (this.#runner?.listAgentSessionProcesses !== undefined ||
         this.#runner?.stopAgentSessionProcess !== undefined);
+    const hasSetProviderKeyRunner = options.allowSetProviderKey === true &&
+      this.#runner?.setAgentProviderKey !== undefined;
     const hasSetModelRunner =
       options.allowSetModel === true &&
       this.#runner?.setAgentModel !== undefined;
@@ -4527,8 +4760,10 @@ export class AgenCDaemonAgentManager {
       !hasMcpReconnectServerRunner &&
       !hasMcpEnableServerRunner &&
       !hasMcpDisableServerRunner &&
+      !hasMcpRemoveServerRunner &&
       !hasSnapshotRunner &&
       !hasProcessControlRunner &&
+      !hasSetProviderKeyRunner &&
       !hasSetModelRunner &&
       !hasSetPermissionModeRunner &&
       !hasMutatePermissionRuleRunner &&
@@ -4638,6 +4873,55 @@ export class AgenCDaemonAgentManager {
       }
     });
     return agentId;
+  }
+
+  /**
+   * The permission-mode ceiling of an agent whose toolPolicy freezes its mode,
+   * or undefined when its mode is not frozen. A frozen agent with no recorded
+   * ceiling is held to `plan`, the narrowest mode.
+   */
+  #frozenSessionMode(agentId: string): PermissionMode | undefined {
+    const metadata = this.#state.peek((state) => state.agents.get(agentId)?.metadata);
+    if (sessionToolPolicyFromMetadata(metadata)?.frozenPermissionMode !== true) {
+      return undefined;
+    }
+    return retainedToolPolicyModeCeiling(metadata) ?? "plan";
+  }
+
+  /**
+   * The tool policy of the session (or agent) `ownerId` names, if it has one.
+   * Read-only and best effort: an unknown id has no policy to report.
+   */
+  /**
+   * Every session id of the agent that owns `ownerId` (an agent id or one of
+   * its session ids). It only widens where an attachment is looked for; the
+   * attachment itself is the authority.
+   */
+  peekOwnerSessionIds(ownerId: string): readonly string[] {
+    return this.#state.peek((state) => {
+      const agent =
+        state.agents.get(ownerId) ??
+        [...state.agents.values()].find((candidate) => candidate.sessionIds.includes(ownerId));
+      return agent === undefined ? [] : [...agent.sessionIds];
+    });
+  }
+
+  /** The id of the agent that owns `ownerId` (an agent id or one of its session ids). */
+  peekOwnerAgentId(ownerId: string): string | undefined {
+    return this.#state.peek((state) => {
+      if (state.agents.has(ownerId)) return ownerId;
+      for (const [agentId, candidate] of state.agents) if (candidate.sessionIds.includes(ownerId)) return agentId;
+      return undefined;
+    });
+  }
+
+  getSessionToolPolicy(ownerId: string): SessionToolPolicy | undefined {
+    return this.#state.peek((state) => {
+      const agent =
+        state.agents.get(ownerId) ??
+        [...state.agents.values()].find((candidate) => candidate.sessionIds.includes(ownerId));
+      return sessionToolPolicyFromMetadata(agent?.metadata);
+    });
   }
 
   async #resolvePermissionOwner(
@@ -4893,6 +5177,62 @@ function metadataString(
     : undefined;
 }
 
+/**
+ * The policy a created or resumed session runs under. A resume keeps the
+ * policy the session was created with; naming one again must match it exactly
+ * (it cannot swap or widen), and naming one for a session that had none
+ * restricts it from now on. A malformed stored policy refuses the create.
+ */
+/** @internal Exported for hermetic regression coverage of the resume rules. */
+export function resolveCreateToolPolicy(
+  requested: SessionToolPolicy | undefined,
+  retainedMetadata: JsonObject | undefined,
+): SessionToolPolicy | undefined {
+  let retained: SessionToolPolicy | undefined;
+  try {
+    retained = sessionToolPolicyFromMetadata(retainedMetadata);
+  } catch (error) {
+    throw new AgenCDaemonAgentLifecycleError(
+      "INVALID_ARGUMENT",
+      `agent.create retained ${error instanceof Error ? error.message : "toolPolicy is invalid"}`,
+    );
+  }
+  if (requested === undefined) return retained;
+  if (retained !== undefined && !sameSessionToolPolicy(requested, retained)) {
+    throw new AgenCDaemonAgentLifecycleError(
+      "INVALID_ARGUMENT",
+      "agent.create toolPolicy differs from the policy this session was created with",
+    );
+  }
+  return retained ?? requested;
+}
+
+function toolPolicyToMetadata(policy: SessionToolPolicy): JsonObject {
+  return {
+    enabledTools: [...policy.enabledTools],
+    ...(policy.frozenPermissionMode !== undefined
+      ? { frozenPermissionMode: policy.frozenPermissionMode }
+      : {}),
+    ...(policy.deferMcpTools !== undefined
+      ? { deferMcpTools: policy.deferMcpTools }
+      : {}),
+    ...(policy.noFsWriteTools !== undefined
+      ? { noFsWriteTools: [...policy.noFsWriteTools] }
+      : {}),
+  };
+}
+
+/**
+ * Whether a session rule mutation can only keep or narrow access. Adding an
+ * allow rule, or removing a deny or ask rule, may widen it.
+ */
+function permissionRuleMutationNarrows(
+  operation: string,
+  behavior: string,
+): boolean {
+  return operation === "add" ? behavior !== "allow" : behavior === "allow";
+}
+
 function metadataStringList(
   metadata: JsonObject | undefined,
   key: string,
@@ -4943,6 +5283,8 @@ interface ResumeSourceProof {
   readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
   readonly runtimeSettingsEventId?: string;
   readonly legacyPermissionMode?: "plan";
+  readonly lightMode?: boolean;
+  readonly reviewedRollbackBranch?: boolean;
 }
 
 function interactivePermissionModeFromRuntimeSettings(
@@ -5359,11 +5701,14 @@ function assertAuthoritativeResumeSource(params: {
     }
     const explicitlyTopLevel =
       meta.originator === "agenc-cli" && meta.source === "interactive-root";
+    const reviewedRollbackTopLevel =
+      meta.source === "interactive-root-reviewed-rollback" &&
+      /^c2-reviewed-rollback:[a-f0-9]{64}$/u.test(meta.originator);
     const retainedLegacyTopLevel =
       meta.originator === "agenc-cli" &&
       meta.source === undefined &&
       params.allowLegacyRetainedRoot;
-    if (!explicitlyTopLevel && !retainedLegacyTopLevel) {
+    if (!explicitlyTopLevel && !retainedLegacyTopLevel && !reviewedRollbackTopLevel) {
       fail(
         "agent.create resume rollout is not a top-level interactive session",
       );
@@ -5399,6 +5744,8 @@ function assertAuthoritativeResumeSource(params: {
       ...(canonical.terminalStatus !== undefined
         ? { terminalStatus: canonical.terminalStatus }
         : {}),
+      ...(meta.lightMode !== undefined ? { lightMode: meta.lightMode } : {}),
+      ...(reviewedRollbackTopLevel ? { reviewedRollbackBranch: true } : {}),
       ...(meta.model !== undefined ? { model: meta.model } : {}),
       ...(meta.modelProvider !== undefined
         ? { provider: meta.modelProvider }

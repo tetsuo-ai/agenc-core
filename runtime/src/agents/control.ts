@@ -1,3 +1,4 @@
+import { isEffectReviewRequired, waitForEffectReview } from "../session/effect-review-gate.js";
 /**
  * AgentControl — subagent lifecycle + control plane.
  *
@@ -199,7 +200,7 @@ export class MaxDepthExceededError extends Error {
 
 class SpawnRaceAbortedError extends Error {
   constructor(public readonly parentPath: AgentPath) {
-    super(`spawn aborted — parent ${parentPath} interrupted mid-spawn`);
+    super(`spawn aborted: parent ${parentPath} interrupted mid-spawn`);
     this.name = "SpawnRaceAbortedError";
   }
 }
@@ -424,6 +425,7 @@ export class AgentControl {
   private readonly parentOf = new Map<ThreadId, ThreadId>();
   private threadManager: ThreadManager | undefined;
   private rootFollowupInFlight = false;
+  private rootFollowupWaitingForReview = false;
   private rootFollowupRequested = false;
   private rootFollowupRetryAttempt = 0;
   private rootFollowupRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2559,13 +2561,23 @@ export class AgentControl {
       this.rootFollowupRequested = true;
       return;
     }
+    if (this.rootFollowupWaitingForReview) return;
+    if (this.session.rolloutStore?.hasPendingEffectReviews?.()) {
+      this.waitForRootEffectReview(author);
+      return;
+    }
     this.rootFollowupInFlight = true;
+    let reviewRequired = false;
     let retryableFailure = false;
     void submit
       .call(this.session, "", { displayUserMessage: null })
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         if (message === "Session submit hook is not installed") return;
+        if (isEffectReviewRequired(err)) {
+          reviewRequired = true;
+          return;
+        }
         retryableFailure = true;
         emitWarning(
           this.session.eventLog,
@@ -2576,6 +2588,10 @@ export class AgentControl {
       })
       .finally(() => {
         this.rootFollowupInFlight = false;
+        if (reviewRequired) {
+          this.waitForRootEffectReview(author);
+          return;
+        }
         if (!retryableFailure) {
           this.rootFollowupRetryAttempt = 0;
         }
@@ -2614,6 +2630,18 @@ export class AgentControl {
         }
         this.requestRootFollowupTurn(author);
       });
+  }
+
+  private waitForRootEffectReview(author: string): void {
+    this.rootFollowupWaitingForReview = true;
+    const generation = this.session.userStopGeneration;
+    void waitForEffectReview(this.session).then((allowed) => {
+      this.rootFollowupWaitingForReview = false;
+      if (allowed && !this.session.stoppedByUserSinceLastPrompt &&
+          generation === this.session.userStopGeneration) {
+        this.requestRootFollowupTurn(author);
+      }
+    });
   }
 
   private emitCompletionWatcherSendFailed(

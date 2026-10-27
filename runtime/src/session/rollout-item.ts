@@ -133,6 +133,7 @@ export interface ResponseItem {
   readonly providerReasoning?: ProviderReasoningReplay;
   /** Checkpoint-v2 identity for the exact durable tool-result body. */
   readonly toolResultIntegrity?: ToolResultIntegrity;
+  readonly toolResultIsError?: true;
   /** Durable authority/channel identity for a versioned agent invocation. */
   readonly agentInvocation?: AgentInvocationChannelMetadata;
   /** Authenticated by the enclosing compaction commit digest. */
@@ -424,11 +425,17 @@ export function parseRolloutLine(line: string): RolloutItem | null {
   const trimmed = line.trim();
   if (trimmed.length === 0) return null;
   const parsed = JSON.parse(trimmed) as RolloutItem;
+  return parseRolloutValue(parsed, trimmed);
+}
+
+/** Normalize an already decoded JSON record without another stringify/parse. */
+export function parseRolloutValue(value: unknown, originalRaw?: string): RolloutItem | null {
+  const parsed = value as RolloutItem;
   const typeTag = (parsed as { type?: string }).type;
   if (typeTag && !isKnownRolloutType(typeTag)) {
     return {
       type: "unknown",
-      payload: { raw: trimmed, originalType: typeTag },
+      payload: { raw: originalRaw ?? JSON.stringify(parsed), originalType: typeTag },
       eventVersion:
         (parsed as { eventVersion?: number }).eventVersion ?? undefined,
     };

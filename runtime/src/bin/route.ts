@@ -27,6 +27,8 @@ import {
   AUTONOMOUS_FLAG,
   BYPASS_APPROVALS_FLAG,
   DANGEROUS_BYPASS_FLAG,
+  LIGHT_FLAG,
+  STANDARD_FLAG,
   findRetiredStartupFlag,
   retiredStartupFlagError,
 } from "./startup-flags.js";
@@ -99,7 +101,8 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "-h",
   "--version",
   "--bare",
-  "--light",
+  LIGHT_FLAG,
+  STANDARD_FLAG,
   "--full-durability",
   "--continue",
   "-c",

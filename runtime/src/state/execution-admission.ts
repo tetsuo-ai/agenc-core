@@ -34,7 +34,7 @@ import {
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
 import type { StateSqliteDriver, SqliteStatement } from "./sqlite-driver.js";
-import { AdmissionUsageProjection, captureMaterializedUsage, type UsageReservation } from "./admission-usage-snapshot.js";
+import { AdmissionUsageProjection, captureMaterializedUsage, MAX_UNPRICED_USAGE_CALLS, unpricedUsageCall, type UsageReservation } from "./admission-usage-snapshot.js";
 
 export const NANO_USD_PER_USD = 1_000_000_000;
 const MAX_LIST_LIMIT = 1_000;
@@ -194,6 +194,7 @@ export interface PersistedAdmissionAllocation {
   readonly ownerRunId: string;
   readonly parentKey?: string;
   readonly maxTokens?: number;
+  readonly maxModelCalls?: number;
   readonly maxCostUsd?: number;
   readonly usedTokens: number;
   readonly usedCostUsd: number;
@@ -332,6 +333,7 @@ interface AllocationRow {
   readonly owner_run_id: string;
   readonly parent_scope_key: string | null;
   readonly max_tokens: number | null;
+  readonly max_model_calls: number | null;
   readonly max_cost_nanos: number | null;
   readonly used_tokens: number;
   readonly used_cost_nanos: number;
@@ -458,7 +460,7 @@ export class ExecutionAdmissionRepository {
         request.approvalRequired || request.budgetScopes?.length !== 1) return;
     const scope = request.budgetScopes[0]!;
     if (scope.key !== `run:${request.step.runId}` || scope.parentKey !== undefined ||
-        scope.maxCostUsd !== undefined || scope.maxTokens !== undefined) return;
+        scope.maxCostUsd !== undefined || scope.maxTokens !== undefined || scope.maxModelCalls !== undefined) return;
     const admittedAt = this.#timestamp();
     const day = admittedAt.slice(0, 10);
     const budgetIdentity = budgetIdentityForRequest(request);
@@ -481,7 +483,7 @@ export class ExecutionAdmissionRepository {
       if (scopes.length !== 1) return;
       const allocation = this.#allocationLocked(scope.key);
       if (allocation && (allocation.parent_scope_key !== null || allocation.max_tokens !== null ||
-          allocation.max_cost_nanos !== null || allocation.blocked_by_provider_overrun)) return;
+          allocation.max_cost_nanos !== null || allocation.max_model_calls !== null || allocation.blocked_by_provider_overrun)) return;
       return this.#createCapturedGrant(request, admittedAt);
     });
     if (captured && revision !== undefined && revision === this.uncappedPolicyRevision) {
@@ -563,11 +565,26 @@ export class ExecutionAdmissionRepository {
     } finally { this.#capturedAdmission = undefined; this.#capturedTimestamp = undefined; }
   }
 
+  /**
+   * Incremental usage views, one per (run, allocation scope). A view holds the
+   * scope's reservation rows; `dirty` names rows to read again before use.
+   * Every change to a reservation row or its scope links is written together
+   * with an admission journal row naming the reservation (the journal is the
+   * canonical record of admission), so a view stays exact by re-reading the
+   * reservations named in journal rows it has not yet applied, from whichever
+   * connection committed them. A write on this connection outside a tracked
+   * write transaction, a journal row that disappeared, or a backlog larger than
+   * a rebuild discards the views instead.
+   */
   readonly #usageViews = new Map<string, {
     readonly projection: AdmissionUsageProjection;
     readonly dirty: Set<string>;
   }>();
-  #usageDatabaseVersion: string | undefined;
+  /** This connection's total_changes() when the views were last brought up to date. */
+  #usageLocalChanges: number | undefined;
+  /** Journal sequence through which the views have applied every journal row. */
+  #usageJournalCursor: number | undefined;
+  #usageLocalChangesStatement?: SqliteStatement<[], { count: number }>;
 
   constructor(
     driver: StateSqliteDriver,
@@ -608,6 +625,13 @@ export class ExecutionAdmissionRepository {
           )
           .get(runId) !== undefined,
     );
+  }
+
+  /** Read-only eligibility probe; observations have no usage or durable job. */
+  observationDenial(request: RuntimeAdmissionRequest): string | undefined {
+    return this.#ancestorDenial(request)?.reason ??
+      (request.deadlineAt !== undefined && request.deadlineAt <= this.#timestamp()
+        ? "deadline_expired" : undefined);
   }
 
   isRunCancellationLocked(runId: string): boolean {
@@ -682,13 +706,15 @@ export class ExecutionAdmissionRepository {
   bindRunBudgetLimits(
     ownerRunId: string,
     scope: AdmissionBudgetScope,
-  ): Pick<AdmissionBudgetScope, "maxCostUsd" | "maxTokens"> {
+  ): Pick<AdmissionBudgetScope, "maxCostUsd" | "maxTokens" | "maxModelCalls"> {
     requireNonEmpty(ownerRunId, "bindRunBudgetLimits.ownerRunId");
     const key = requireNonEmpty(scope.key, "bindRunBudgetLimits.scope.key");
     const proposed =
       scope.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
     const proposedTokens = scope.maxTokens === undefined ? undefined
       : normalizeNonNegativeInteger(scope.maxTokens, `${key}.maxTokens`);
+    const proposedCalls = scope.maxModelCalls === undefined ? undefined
+      : normalizeNonNegativeInteger(scope.maxModelCalls, `${key}.maxModelCalls`);
     const now = this.#timestamp();
     return this.#writeTransaction(() => {
       const existing = this.#allocationLocked(key);
@@ -711,6 +737,13 @@ export class ExecutionAdmissionRepository {
            SET max_tokens = ?, updated_at = ? WHERE scope_key = ?`,
         ).run(proposedTokens, now, key);
       }
+      if (existing !== undefined && proposedCalls !== undefined &&
+          (existing.max_model_calls === null || proposedCalls < existing.max_model_calls)) {
+        this.#driver.prepareState(
+          "UPDATE execution_admission_allocations SET max_model_calls = ?, updated_at = ? WHERE scope_key = ?",
+        ).run(proposedCalls, now, key);
+      }
+      const persistedCalls = this.#allocationLocked(key)?.max_model_calls ?? proposedCalls;
       const persisted = this.#allocationLocked(key)?.max_cost_nanos ?? proposed;
       const persistedTokens = this.#allocationLocked(key)?.max_tokens ?? proposedTokens;
       const allocation = this.#ensureAllocationLocked(
@@ -721,13 +754,44 @@ export class ExecutionAdmissionRepository {
             ? { maxCostUsd: nanosToUsd(persisted) }
             : {}),
           ...(persistedTokens !== undefined ? { maxTokens: persistedTokens } : {}),
+          ...(persistedCalls !== undefined ? { maxModelCalls: persistedCalls } : {}),
         },
         now,
       );
       return {
         ...(allocation.max_cost_nanos !== null ? { maxCostUsd: nanosToUsd(allocation.max_cost_nanos) } : {}),
         ...(allocation.max_tokens !== null ? { maxTokens: allocation.max_tokens } : {}),
+        ...(allocation.max_model_calls !== null ? { maxModelCalls: allocation.max_model_calls } : {}),
       };
+    });
+  }
+
+  /** Explicit host/operator update. Spend, holds, call caps and effect state survive. */
+  setRootTaskTokenBudget(ownerRunId: string, key: string, tokens: number | undefined): void {
+    if (tokens !== undefined) normalizeNonNegativeInteger(tokens, "task token allowance");
+    this.#writeTransaction(() => {
+      const allocation = this.#requireAllocationLocked(key);
+      if (allocation.owner_run_id !== ownerRunId || allocation.parent_scope_key !== null) {
+        throw new ExecutionAdmissionStateError("Only the root operator can change its task allowance");
+      }
+      this.#driver.prepareState("UPDATE execution_admission_allocations SET max_tokens = ?, updated_at = ? WHERE scope_key = ?")
+        .run(tokens ?? null, this.#timestamp(), key);
+      // Queued work has no effect yet. Refresh only this shared token scope,
+      // preserving estimates, approvals, deadlines and every other cap.
+      const queued = this.#driver.prepareState<[], { id: string; input_json: string }>(
+        "SELECT id, input_json FROM agent_jobs WHERE status IN ('queued', 'approval_required') AND admission_run_id IS NOT NULL",
+      ).all();
+      for (const job of queued) {
+        const request = parseRequest(job.input_json);
+        if (!request.budgetScopes?.some(scope => scope.key === key)) continue;
+        const scopes = request.budgetScopes.map(scope => {
+          if (scope.key !== key) return scope;
+          const { maxTokens: _oldTokens, ...rest } = scope;
+          return { ...rest, ...(tokens !== undefined ? { maxTokens: tokens } : {}) };
+        });
+        this.#driver.prepareState("UPDATE agent_jobs SET input_json = ? WHERE id = ?")
+          .run(JSON.stringify({ ...request, budgetScopes: scopes }), job.id);
+      }
     });
   }
 
@@ -1736,6 +1800,23 @@ export class ExecutionAdmissionRepository {
     };
   }
 
+  /** Kept separate from reported billing usage: unknown outcomes consume the reservation. */
+  getTaskBudgetUsage(allocationKey: string): { tokens: number; calls: number } {
+    return this.#driver.transaction(() => {
+      const ancestors = this.#allocationClosureLocked([{ key: allocationKey }]);
+      const root = ancestors.find((row) => row.parent_scope_key === null);
+      if (!root) return { tokens: 0, calls: 0 };
+      return this.#driver.prepareState<[string], { tokens: number; calls: number }>(
+        `SELECT COALESCE(SUM(CASE WHEN reservation.status = 'held_unknown' THEN MAX(COALESCE(reservation.actual_tokens, 0), reservation.reserved_tokens) ELSE COALESCE(reservation.actual_tokens, reservation.reserved_tokens) END), 0) AS tokens,
+           COUNT(*) AS calls FROM execution_admission_reservations AS reservation
+         JOIN execution_admission_reservation_allocations AS allocation
+           ON allocation.reservation_id = reservation.reservation_id
+         WHERE allocation.scope_key = ? AND reservation.kind = 'model_turn'
+           AND reservation.status IN ('dispatched', 'held_unknown', 'reconciled', 'provider_overrun')`,
+      ).get(root.scope_key)!;
+    });
+  }
+
   getUsageSummary(runId: string, allocationKey: string, directOnly = false): AdmissionUsageSummary {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
@@ -1790,10 +1871,23 @@ export class ExecutionAdmissionRepository {
           agentRows.set(row.run_id, group);
         }
       }
+      const unpricedCallCount = rows.reduce((sum, row) => sum + row.unknown_count, 0);
+      const unpricedCalls = unpricedCallCount === 0 ? [] : this.#driver
+        .prepareState<string[], UsageReservation>(
+          `SELECT reservation.* FROM execution_admission_reservations AS reservation
+           JOIN execution_admission_reservation_allocations AS allocation
+             ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
+           WHERE (reservation.status = 'held_unknown' OR
+             (reservation.status IN ('reconciled', 'provider_overrun') AND reservation.actual_cost_nanos IS NULL))
+             ${directOnly ? "AND reservation.run_id = ?" : ""}
+           ORDER BY reservation.reservation_id LIMIT ${MAX_UNPRICED_USAGE_CALLS}`,
+        ).all(...(directOnly ? [allocationKey, runId] : [allocationKey]))
+        .map(row => unpricedUsageCall(row)!);
       return {
         runId,
         sequence,
         ...sumUsageRows(rows),
+        ...(unpricedCallCount > 0 ? { unpricedCalls, unpricedCallCount } : {}),
         models: [...modelRows.values()].map((group) => ({
           model: group[0]!.model ?? "unknown",
           ...(group[0]!.provider !== null ? { provider: group[0]!.provider! } : {}),
@@ -1811,10 +1905,17 @@ export class ExecutionAdmissionRepository {
   captureUsageSummary(runId: string, allocationKey: string): AdmissionUsageSnapshot {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
+    // Inside a caller's transaction the rows read may never commit, and a
+    // journal sequence read there may be reused after a rollback. Answer from
+    // the table without letting that state into the views.
+    if (this.#driver.state.inTransaction) {
+      return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
+    }
     return this.#driver.transaction(() => {
-      const version = this.#usageVersion();
-      if (version !== this.#usageDatabaseVersion) this.#usageViews.clear();
-      this.#usageDatabaseVersion = version;
+      const sequence = this.#driver.prepareState<[], { sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
+      ).get()?.sequence ?? 0;
+      this.#catchUpUsageViews(sequence);
       const key = JSON.stringify([runId, allocationKey]);
       let view = this.#usageViews.get(key);
       const select = `SELECT reservation.* FROM execution_admission_reservations AS reservation
@@ -1841,9 +1942,6 @@ export class ExecutionAdmissionRepository {
           return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
         }
       }
-      const sequence = this.#driver.prepareState<[], { sequence: number }>(
-        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
-      ).get()?.sequence ?? 0;
       return view.projection.capture(runId, sequence);
     });
   }
@@ -1852,11 +1950,55 @@ export class ExecutionAdmissionRepository {
     this.#usageViews.delete(JSON.stringify([runId, allocationKey]));
   }
 
-  #usageVersion(): string {
-    // These inspect SQLite connection metadata, never a deferred projection.
-    const external = this.#driver.state.pragma("data_version", { simple: true });
-    const changes = this.#driver.state.prepare<[], { count: number }>("SELECT total_changes() AS count").get()?.count;
-    return `${external}:${changes}`;
+  /**
+   * Bring every view up to `sequence`, the journal maximum of this read
+   * snapshot: mark the reservations named by journal rows since the cursor
+   * dirty, from any connection. Commits by other connections that do not
+   * touch admission (the session's rollout projection, durability rows) leave
+   * the journal unchanged and so cost nothing here.
+   */
+  #catchUpUsageViews(sequence: number): void {
+    const local = this.#usageLocalChanges;
+    const cursor = this.#usageJournalCursor;
+    this.#usageLocalChanges = this.#usageLocalVersion();
+    this.#usageJournalCursor = sequence;
+    if (this.#usageViews.size === 0) return;
+    if (
+      this.#usageLocalChanges !== local ||
+      cursor === undefined ||
+      sequence < cursor ||
+      sequence - cursor > MAX_USAGE_PROJECTION_RESERVATIONS
+    ) {
+      this.#usageViews.clear();
+      return;
+    }
+    if (sequence === cursor) return;
+    const rows = this.#driver
+      .prepareState<[number, number], { readonly reservation_id: string | null }>(
+        `SELECT reservation_id FROM execution_admission_journal
+         WHERE sequence > ? AND sequence <= ? ORDER BY sequence`,
+      )
+      .all(cursor, sequence);
+    // Sequences are AUTOINCREMENT and never reused, so a missing one is a
+    // removed row whose change is unknown.
+    if (rows.length !== sequence - cursor) {
+      this.#usageViews.clear();
+      return;
+    }
+    for (const view of this.#usageViews.values()) {
+      for (const row of rows) {
+        if (row.reservation_id !== null) view.dirty.add(row.reservation_id);
+      }
+    }
+  }
+
+  /** Rows changed by this connection, including writes outside admission. */
+  #usageLocalVersion(): number {
+    // Connection metadata, read on the raw connection (no write-behind barrier).
+    const statement = this.#usageLocalChangesStatement ??= this.#driver.state.prepare<[], { count: number }>(
+      "SELECT total_changes() AS count",
+    );
+    return statement.get()!.count;
   }
 
   /** Read a consistent budget snapshot without creating or reserving a scope. */
@@ -1986,7 +2128,6 @@ export class ExecutionAdmissionRepository {
 
   #writeTransaction<T>(operation: () => T): T {
     const outermost = this.#writeDepth === 0;
-    let usageVersionBefore: string | undefined;
     // Nested inside a transaction this repository did not open: whether its
     // rows commit is not observable here, so the buffer cannot be trusted.
     if (outermost && this.#driver.state.inTransaction) this.#journalBufferExact = false;
@@ -1995,9 +2136,14 @@ export class ExecutionAdmissionRepository {
     let result: T;
     try {
       result = this.#driver.transactionImmediate(() => {
-        if (outermost && this.#usageViews.size > 0) {
-          usageVersionBefore = this.#usageVersion();
-          if (this.#usageDatabaseVersion !== usageVersionBefore) this.#usageViews.clear();
+        // Another write on this connection since the views were last brought
+        // up to date changed rows they cannot name.
+        if (
+          outermost &&
+          this.#usageViews.size > 0 &&
+          this.#usageLocalVersion() !== this.#usageLocalChanges
+        ) {
+          this.#usageViews.clear();
         }
         return operation();
       });
@@ -2017,13 +2163,10 @@ export class ExecutionAdmissionRepository {
           if (event.reservationId !== undefined) view.dirty.add(event.reservationId);
         }
       }
-      if (this.#usageViews.size > 0) {
-        const versionAfter = this.#usageVersion();
-        // Another connection may commit just after our write lock releases.
-        // Never credit that writer's change to our own incremental deltas.
-        if (usageVersionBefore?.split(":")[0] !== versionAfter.split(":")[0]) this.#usageViews.clear();
-        this.#usageDatabaseVersion = versionAfter;
-      }
+      // This connection's own rows are now named above. Other connections'
+      // journal rows, including any committed right after this write released
+      // its lock, are caught up from the journal at the next capture.
+      if (this.#usageViews.size > 0) this.#usageLocalChanges = this.#usageLocalVersion();
       for (const event of this.#openJournal) this.#committedJournal.push(event);
       this.#openJournal = [];
     }
@@ -2236,7 +2379,7 @@ export class ExecutionAdmissionRepository {
     reservedCostNanos: number | null,
     now: string,
   ): {
-    readonly reason: "budget_exceeded" | "unpriced_under_hard_cap" | "allocation_blocked";
+    readonly reason: "budget_exceeded" | "model_call_budget_exceeded" | "unpriced_under_hard_cap" | "allocation_blocked";
     readonly details?: Readonly<Record<string, unknown>>;
   } | null {
     for (const scope of scopes) {
@@ -2247,6 +2390,20 @@ export class ExecutionAdmissionRepository {
     for (const allocation of closure) {
       if (allocation.blocked_by_provider_overrun === 1) {
         return { reason: "allocation_blocked" };
+      }
+      if (request.kind === "model_turn" && allocation.max_model_calls !== null) {
+        const calls = this.#driver.prepareState<[string], { calls: number }>(
+          `SELECT COUNT(*) AS calls FROM execution_admission_reservations AS reservation
+           JOIN execution_admission_reservation_allocations AS allocation
+             ON allocation.reservation_id = reservation.reservation_id
+           WHERE allocation.scope_key = ? AND reservation.kind = 'model_turn'
+             AND reservation.status != 'voided'`,
+        ).get(allocation.scope_key)!.calls;
+        if (calls >= allocation.max_model_calls) {
+          return { reason: "model_call_budget_exceeded", details: {
+            allocationKey: allocation.scope_key, calls, maxModelCalls: allocation.max_model_calls,
+          } };
+        }
       }
       if (
         allocation.max_tokens !== null &&
@@ -2332,6 +2489,8 @@ export class ExecutionAdmissionRepository {
       scope.maxTokens === undefined
         ? undefined
         : normalizeNonNegativeInteger(scope.maxTokens, `${key}.maxTokens`);
+    const maxModelCalls = scope.maxModelCalls === undefined ? undefined
+      : normalizeNonNegativeInteger(scope.maxModelCalls, `${key}.maxModelCalls`);
     const maxCostNanos =
       scope.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
     const existing = this.#allocationLocked(key);
@@ -2340,8 +2499,8 @@ export class ExecutionAdmissionRepository {
         .prepareState(
           `INSERT INTO execution_admission_allocations (
             scope_key, owner_run_id, parent_scope_key, max_tokens,
-            max_cost_nanos, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            max_cost_nanos, created_at, updated_at, max_model_calls
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           key,
@@ -2351,11 +2510,15 @@ export class ExecutionAdmissionRepository {
           maxCostNanos ?? null,
           now,
           now,
+          maxModelCalls ?? null,
         );
       return this.#requireAllocationLocked(key);
     }
     if (parentKey !== undefined && existing.parent_scope_key !== parentKey) {
       throw new AdmissionAllocationConflictError(key, "parentKey");
+    }
+    if (maxModelCalls !== undefined && (existing.max_model_calls === null || maxModelCalls < existing.max_model_calls)) {
+      throw new AdmissionAllocationConflictError(key, "maxModelCalls");
     }
     if (maxTokens !== undefined && (existing.max_tokens === null || maxTokens < existing.max_tokens)) {
       throw new AdmissionAllocationConflictError(key, "maxTokens");
@@ -2515,18 +2678,29 @@ export class ExecutionAdmissionRepository {
            LIMIT 1`,
         )
         .get(reservationId) !== undefined;
-      overrun =
-        input.kind === "provider_overrun" ||
-        (hasHardBudgetCap &&
-          (actualTokens > reservation.reserved_tokens ||
-            (actualCostNanos !== null &&
-              actualCostNanos > reservation.reserved_cost_nanos)));
+      const hasHardCostCap = !this.#capturedAdmission && this.#driver
+        .prepareState<[string], { readonly capped: number }>(
+          `SELECT 1 AS capped FROM execution_admission_reservation_allocations AS link
+           JOIN execution_admission_allocations AS allocation ON allocation.scope_key = link.scope_key
+           WHERE link.reservation_id = ? AND allocation.max_cost_nanos IS NOT NULL LIMIT 1`,
+        ).get(reservationId) !== undefined;
+      // A model token reservation is an estimate, not an additional task cap.
+      // Charge known actual usage atomically and release the hold even when the
+      // estimate was low. Future admission checks the shared allocation total;
+      // the task loop drains admitted tools and reports a normal budget stop.
+      // Explicit overruns, tool contracts and monetary caps keep their existing
+      // fail-closed behavior. Unknown monetary usage retains its full cost hold.
+      const reconcileModelEstimate = request.kind === "model_turn";
+      overrun = input.kind === "provider_overrun" ||
+        (hasHardBudgetCap && !reconcileModelEstimate && actualTokens > reservation.reserved_tokens) ||
+        ((reconcileModelEstimate ? hasHardCostCap : hasHardBudgetCap) &&
+          actualCostNanos !== null && actualCostNanos > reservation.reserved_cost_nanos);
       if (actualCostNanos === null && !overrun) {
         finalStatus = "held_unknown";
         event = "held_unknown";
         reason = input.reason ?? "reported_usage_cost_unknown";
         charge = {
-          tokens: reservation.reserved_tokens,
+          tokens: Math.max(reservation.reserved_tokens, actualTokens),
           costNanos: reservation.reserved_cost_nanos,
           blockByProviderOverrun: false,
         };
@@ -2545,7 +2719,12 @@ export class ExecutionAdmissionRepository {
       }
     }
 
-    if (resolvesHeldUnknown && finalStatus === "held_unknown") {
+    // A late report may identify tokens even while price remains unknown.
+    // Preserve a token high-water mark until fully priced settlement arrives;
+    // repeated reports must not charge twice or lower the conservative hold.
+    if (resolvesHeldUnknown && finalStatus === "held_unknown" &&
+        (actualTokens === null || (reservation.actual_tokens !== null &&
+          actualTokens <= reservation.actual_tokens))) {
       return {
         applied: false,
         outcome: "duplicate",
@@ -2719,8 +2898,9 @@ export class ExecutionAdmissionRepository {
       .all(reservation.reservation_id);
     for (const link of links) {
       const allocation = this.#requireAllocationLocked(link.scope_key);
+      const previousTokens = Math.max(link.reserved_tokens, reservation.actual_tokens ?? 0);
       if (
-        allocation.used_tokens < link.reserved_tokens ||
+        allocation.used_tokens < previousTokens ||
         allocation.used_cost_nanos < link.reserved_cost_nanos
       ) {
         throw new ExecutionAdmissionStateError(
@@ -2728,7 +2908,7 @@ export class ExecutionAdmissionRepository {
         );
       }
       checkedTokenSum(
-        allocation.used_tokens - link.reserved_tokens,
+        allocation.used_tokens - previousTokens,
         charge.tokens,
       );
       checkedNanoSum(
@@ -2747,7 +2927,7 @@ export class ExecutionAdmissionRepository {
            WHERE scope_key = ?`,
         )
         .run(
-          link.reserved_tokens,
+          previousTokens,
           charge.tokens,
           link.reserved_cost_nanos,
           charge.costNanos,
@@ -3251,7 +3431,7 @@ export class ExecutionAdmissionRepository {
       } else if (link.status === "held_unknown") {
         total.usedTokens = checkedTokenSum(
           total.usedTokens,
-          link.reserved_tokens,
+          Math.max(link.reserved_tokens, link.actual_tokens ?? 0),
         );
         total.usedCostNanos = checkedNanoSum(
           total.usedCostNanos,
@@ -3715,6 +3895,7 @@ function allocationFromRow(row: AllocationRow): PersistedAdmissionAllocation {
       ? { parentKey: row.parent_scope_key }
       : {}),
     ...(row.max_tokens !== null ? { maxTokens: row.max_tokens } : {}),
+    ...(row.max_model_calls !== null ? { maxModelCalls: row.max_model_calls } : {}),
     ...(row.max_cost_nanos !== null
       ? { maxCostUsd: nanosToUsd(row.max_cost_nanos) }
       : {}),

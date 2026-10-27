@@ -345,6 +345,12 @@ export class StateThreadRepository {
    * boundary. The fresh metadata read, rows, receipts and final filesystem
    * validation share one immediate transaction. Nothing catches an append
    * failure here, so the outer rollback also covers its private append body.
+   *
+   * The commit is "rebuildable" (see `StateCommitDurability`): it is visible
+   * to every reader when this returns, and the next FULL commit on the
+   * database makes it durable. If a power loss drops it first, its receipt
+   * goes with its rows, and the next index of this source re-reads the
+   * dropped lines from the journal.
    */
   appendRolloutProjection(params: AppendRolloutItemsParameters & {
     readonly threadMetadata: IncrementalProjectionMetadata;
@@ -377,7 +383,7 @@ export class StateThreadRepository {
       }
       this.appendRolloutItemsInTransaction(params);
       params.validateCanonical();
-    });
+    }, "rebuildable");
   }
 
   private appendRolloutItemsInTransaction(params: AppendRolloutItemsParameters): void {
@@ -563,21 +569,42 @@ export class StateThreadRepository {
     readonly size: number;
     readonly sha256: string;
     readonly lineCount: number;
+    readonly canonicalMarker?: CanonicalProjectionMarker;
   }): void {
     this.driver.transaction(() => {
-      this.driver
-        .prepareState<[ThreadId, string]>(
-          "DELETE FROM thread_rollout_items WHERE thread_id = ? AND source_path = ?",
-        )
-        .run(params.threadId, params.sourcePath);
+      const foreign = this.driver.prepareState<[string, ThreadId], { thread_id: string }>(
+        "SELECT thread_id FROM thread_rollout_items WHERE source_path = ? AND thread_id != ? LIMIT 1",
+      ).get(params.sourcePath, params.threadId);
+      if (foreign !== undefined) throw new Error("canonical source projection belongs to another thread");
       const insert = this.driver.prepareState(
         `INSERT INTO thread_rollout_items (
           thread_id, source_path, line_number, byte_offset, item_index,
           item_type, event_version, event_id, event_seq, payload_json, line_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_path, line_number) DO UPDATE SET
+          byte_offset = excluded.byte_offset,
+          item_index = excluded.item_index,
+          item_type = excluded.item_type,
+          event_version = excluded.event_version,
+          event_id = excluded.event_id,
+          event_seq = excluded.event_seq,
+          payload_json = excluded.payload_json,
+          line_hash = excluded.line_hash,
+          imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE byte_offset IS NOT excluded.byte_offset
+           OR item_index IS NOT excluded.item_index
+           OR item_type IS NOT excluded.item_type
+           OR event_version IS NOT excluded.event_version
+           OR event_id IS NOT excluded.event_id
+           OR event_seq IS NOT excluded.event_seq
+           OR payload_json IS NOT excluded.payload_json
+           OR line_hash IS NOT excluded.line_hash`,
       );
       let itemCount = 0;
       params.produce((item) => {
+        if (item.lineNumber !== itemCount + 1) {
+          throw new Error("canonical replay must produce each physical row once in order");
+        }
         insert.run(
           params.threadId,
           params.sourcePath,
@@ -598,6 +625,9 @@ export class StateThreadRepository {
           `canonical rollout replay produced ${itemCount} rows; expected ${params.expectedItemCount}`,
         );
       }
+      this.driver.prepareState<[ThreadId, string, number]>(
+        "DELETE FROM thread_rollout_items WHERE thread_id = ? AND source_path = ? AND (line_number < 1 OR line_number > ?)",
+      ).run(params.threadId, params.sourcePath, itemCount);
       this.writeBackfillReceipts({
         threadId: params.threadId,
         sourcePath: params.sourcePath,
@@ -606,6 +636,7 @@ export class StateThreadRepository {
         sha256: params.sha256,
         lineCount: params.lineCount,
         itemCount,
+        ...(params.canonicalMarker !== undefined ? { canonicalMarker: params.canonicalMarker } : {}),
       });
     });
   }

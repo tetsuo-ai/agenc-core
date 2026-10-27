@@ -83,6 +83,7 @@ interface UsageSubscription {
 }
 
 interface ActiveCapacity {
+  readonly observation?: true;
   readonly reservationId: string;
   readonly key: string;
   readonly binding: WorkspaceBinding;
@@ -114,6 +115,7 @@ interface ClientBudgetState {
   readonly runAllocationKey: string;
   readonly taskAllocationKey?: string;
   /** Durable root-agent identity for cumulative calendar-window caps. */
+  readonly operatorTokenCeiling?: number;
   readonly periodIdentity: string;
   readonly periodPolicy?: Pick<
     ExecutionAdmissionBudgetPolicy,
@@ -277,6 +279,7 @@ export class ExecutionAdmissionKernel {
         (this.#listeners.get(scope.runId)?.size ?? 0) > 0 ||
         [...(this.#usageListeners.get(binding.workspace) ?? [])].some(listener => listener.snapshotListener === undefined) ||
         scope.hasHardCostCap || scope.hasHardTokenCap || scope.maxCostUsd !== undefined || scope.maxTokens !== undefined ||
+        scope.maxModelCalls !== undefined ||
         !binding.workspace.driver.isRelaxedOneShotRun(scope.runId)) return;
     queue.assertHealthy();
     const request = requestFor(binding, input, this.#now());
@@ -476,6 +479,27 @@ export class ExecutionAdmissionKernel {
     this.#evictIdleBinding(binding);
   }
 
+  setTaskTokenBudget(binding: ClientBinding, tokens: number): number {
+    if (!Number.isSafeInteger(tokens) || tokens < 0) throw new TypeError("Invalid task token allowance");
+    if (binding.scope.parentRunId !== undefined || binding.scope.taskId !== undefined) {
+      throw new Error("Only a root session can change its task token allowance");
+    }
+    this.#flushCaptured(binding.workspace);
+    const effective = minimumDefined(tokens === 0 ? undefined : tokens, binding.budget.operatorTokenCeiling);
+    binding.workspace.repository.setRootTaskTokenBudget(binding.scope.runId, binding.budget.runAllocationKey, effective);
+    // Child bindings share these ancestor objects; their own caps stay intact.
+    const rootScope = binding.budget.scopes.find(scope => scope.key === binding.budget.runAllocationKey)!;
+    const mutable = rootScope as { maxTokens?: number };
+    if (effective === undefined) delete mutable.maxTokens;
+    else mutable.maxTokens = effective;
+    const scope = binding.scope as { maxTokens?: number; hasHardTokenCap?: boolean };
+    scope.hasHardTokenCap = effective !== undefined || binding.budget.periodPolicy?.dailyTokens !== undefined || binding.budget.periodPolicy?.monthlyTokens !== undefined;
+    if (effective === undefined) delete scope.maxTokens;
+    else scope.maxTokens = effective;
+    this.#scheduleDrain();
+    return effective ?? 0;
+  }
+
   updateLimits(limits: AdmissionConcurrencyLimits): void {
     this.#limits = normalizeLimits(limits);
     this.#scheduleDrain();
@@ -569,6 +593,42 @@ export class ExecutionAdmissionKernel {
     );
     this.#pending.set(pending.key, pending);
     return this.#attachPending(pending, signal);
+  }
+
+  tryAcquireObservation(binding: ClientBinding, input: AdmissionAcquireInput, signal?: AbortSignal):
+    { readonly signal: AbortSignal; release(): void } | undefined {
+    this.#assertOpen();
+    if (input.kind !== "tool_exec" || input.maxInputTokens !== 0 || input.maxOutputTokens !== 0 || input.maxCostUsd !== 0) {
+      throw new TypeError("observations must be uncharged local tool calls");
+    }
+    signal?.throwIfAborted();
+    const request = requestFor(binding, input, this.#now());
+    const denial = binding.workspace.repository.observationDenial(request);
+    if (denial !== undefined) throw new AdmissionDeniedError(denial, "cancelled");
+    // Saturated calls use the existing durable fair queue rather than growing
+    // an unbounded second queue. Observations count against the same limits.
+    if (!this.#hasCapacity(request) || this.#pending.size > 0) return undefined;
+    const reservationId = `observation:${this.#id()}`;
+    const controller = new AbortController();
+    const active: ActiveCapacity = {
+      observation: true, reservationId, key: admissionRecordKey(request.step),
+      binding: binding.workspace, runId: request.step.runId,
+      ...(request.step.parentRunId !== undefined ? { parentRunId: request.step.parentRunId } : {}),
+      workspaceId: request.workspaceId, sessionId: request.sessionId,
+      parentScopeId: request.parentScopeId ?? request.sessionId, controller,
+      ...(signal !== undefined ? { sourceSignal: signal } : {}),
+    };
+    this.#active.set(reservationId, active);
+    active.onSourceAbort = () => this.#abortActive(active, signal?.reason);
+    signal?.addEventListener("abort", active.onSourceAbort, { once: true });
+    if (request.deadlineAt !== undefined) active.deadlineTimer = scheduleAt(
+      Date.parse(request.deadlineAt), this.#now,
+      () => this.#abortActive(active, new AdmissionDeniedError("deadline_expired", "cancelled")),
+    );
+    return { signal: controller.signal, release: () => {
+      this.#finishCapacity(reservationId);
+      this.#scheduleDrain();
+    } };
   }
 
   markDispatched(
@@ -786,6 +846,7 @@ export class ExecutionAdmissionKernel {
         ...(createsChildRun ? { parentKey: binding.budget.runAllocationKey } : {}),
         ...(taskId === undefined && options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
         ...(taskId === undefined && options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        ...(taskId === undefined && options.maxModelCalls !== undefined ? { maxModelCalls: options.maxModelCalls } : {}),
       };
       scopes.push({ ...runScope, ...binding.workspace.repository.bindRunBudgetLimits(runId, runScope) });
       const taskAllocationKey = taskId === undefined ? undefined : `task:${JSON.stringify([runId, taskId])}`;
@@ -793,13 +854,15 @@ export class ExecutionAdmissionKernel {
         const taskScope = { key: taskAllocationKey, parentKey: runAllocationKey,
           ...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
           ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+          ...(options.maxModelCalls !== undefined ? { maxModelCalls: options.maxModelCalls } : {}),
         };
         scopes.push({ ...taskScope, ...binding.workspace.repository.bindRunBudgetLimits(runId, taskScope) });
       }
-      const { maxCostUsd: _oldCost, maxTokens: _oldTokens, taskId: _oldTask,
+      const { maxCostUsd: _oldCost, maxTokens: _oldTokens, maxModelCalls: _oldCalls, taskId: _oldTask,
         hasHardCostCap: _oldCostCap, hasHardTokenCap: _oldTokenCap, ...baseScope } = binding.scope;
       const maxCostUsd = minimumDefined(...scopes.map((entry) => entry.maxCostUsd));
       const maxTokens = minimumDefined(...scopes.map((entry) => entry.maxTokens));
+      const maxModelCalls = minimumDefined(...scopes.map((entry) => entry.maxModelCalls));
       const period = binding.budget.periodPolicy;
       const scope: AdmissionClientScope = {
         ...baseScope,
@@ -809,6 +872,7 @@ export class ExecutionAdmissionKernel {
         ...(taskId !== undefined ? { taskId } : {}),
         ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
         ...(maxTokens !== undefined ? { maxTokens } : {}),
+        ...(maxModelCalls !== undefined ? { maxModelCalls } : {}),
         ...(maxCostUsd !== undefined || period?.dailyUsd !== undefined || period?.monthlyUsd !== undefined ? { hasHardCostCap: true } : {}),
         ...(maxTokens !== undefined || period?.dailyTokens !== undefined || period?.monthlyTokens !== undefined ? { hasHardTokenCap: true } : {}),
         ...(options.parentScopeId !== undefined
@@ -838,6 +902,11 @@ export class ExecutionAdmissionKernel {
       this.releaseClient(binding.workspace);
       throw error;
     }
+  }
+
+  getTaskBudgetUsage(binding: ClientBinding): { tokens: number; calls: number } {
+    this.#assertOpen();
+    return binding.workspace.repository.getTaskBudgetUsage(binding.budget.runAllocationKey);
   }
 
   getUsageSummary(binding: ClientBinding): AdmissionUsageSummary {
@@ -1144,10 +1213,12 @@ export class ExecutionAdmissionKernel {
       );
     }
     for (const active of this.#active.values()) {
-      active.binding.repository.cancelStep(active.key, {
-        reason: "admission_kernel_closed",
-      });
-      this.#publishNewJournal(active.binding);
+      if (!active.observation) {
+        active.binding.repository.cancelStep(active.key, {
+          reason: "admission_kernel_closed",
+        });
+        this.#publishNewJournal(active.binding);
+      }
       this.#abortAndReleaseActive(
         active,
         new AdmissionDeniedError("admission_kernel_closed", "cancelled"),
@@ -1831,8 +1902,17 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
     this.releaseClient?.();
   }
 
+  setTaskTokenBudget(tokens: number): number {
+    return this.kernel.setTaskTokenBudget(this.binding, tokens);
+  }
+
   get scope(): AdmissionClientScope {
     return this.binding.scope;
+  }
+
+  tryAcquireObservation(input: AdmissionAcquireInput, signal?: AbortSignal):
+    { readonly signal: AbortSignal; release(): void } | undefined {
+    return this.kernel.tryAcquireObservation(this.binding, input, signal);
   }
 
   acquire(
@@ -1894,6 +1974,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   subscribe(listener: (event: AdmissionJournalEvent) => void): () => void {
     return this.kernel.subscribe(this.scope.runId, listener);
+  }
+
+  getTaskBudgetUsage(): { tokens: number; calls: number } {
+    return this.kernel.getTaskBudgetUsage(this.binding);
   }
 
   getUsageSummary(): AdmissionUsageSummary {
@@ -1996,6 +2080,9 @@ function validateChildAllocation(options: Parameters<ExecutionAdmissionClient["f
   if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 0)) {
     throw new AdmissionDeniedError("admission_child_token_limit_invalid");
   }
+  if (options.maxModelCalls !== undefined && (!Number.isSafeInteger(options.maxModelCalls) || options.maxModelCalls < 0)) {
+    throw new AdmissionDeniedError("admission_child_call_limit_invalid");
+  }
   if (options.taskId !== undefined && (typeof options.taskId !== "string" || options.taskId.trim().length === 0)) {
     throw new AdmissionDeniedError("admission_child_task_identity_invalid");
   }
@@ -2013,11 +2100,13 @@ function rootBudgetState(
     key: runAllocationKey,
     ...(runMaxCostUsd !== undefined ? { maxCostUsd: runMaxCostUsd } : {}),
     ...(runMaxTokens !== undefined ? { maxTokens: runMaxTokens } : {}),
+    ...(scope.maxModelCalls !== undefined ? { maxModelCalls: scope.maxModelCalls } : {}),
   });
   const periodPolicy = periodPolicyFor(policy);
   return {
     scopes,
     runAllocationKey,
+    ...(policy?.runMaxTokens !== undefined ? { operatorTokenCeiling: policy.runMaxTokens } : {}),
     periodIdentity: scope.budgetIdentity,
     ...(periodPolicy !== undefined ? { periodPolicy } : {}),
   };

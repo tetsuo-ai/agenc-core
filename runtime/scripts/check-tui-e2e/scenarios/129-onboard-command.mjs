@@ -94,10 +94,10 @@ export default async function (session) {
     /This machine\s+no key needed, check it is running/u,
     "a local provider's own option comes first and needs no key",
   );
-  assert.match(
+  assert.doesNotMatch(
     accessFrame,
-    /AgenC account\s+sign in for hosted models/u,
-    "model access must offer AgenC account sign-in/signup",
+    /AgenC account/u,
+    "model access must not offer account-provided models",
   );
   assert.match(
     accessFrame,

@@ -478,7 +478,7 @@ describe("AutoUpdater coverage swarm row 050", () => {
         "default channel update check",
       );
 
-      expect(harness.getLatestVersion).toHaveBeenCalledWith("latest");
+      expect(harness.getLatestVersion).toHaveBeenCalledWith("latest", { background: true });
     } finally {
       await rendered.cleanup();
     }
@@ -585,7 +585,7 @@ describe("AutoUpdater coverage swarm row 050", () => {
       expect(output).toContain("globalVersion: 1.0.0 - latestVersion: 2.0.0");
       expect(output).toContain("OK Update installed - Restart to apply");
       expect(harness.intervalDelay).toBe(1_800_000);
-      expect(harness.getLatestVersion).toHaveBeenCalledWith("stable");
+      expect(harness.getLatestVersion).toHaveBeenCalledWith("stable", { background: true });
       expect(harness.removeInstalledSymlink).not.toHaveBeenCalled();
       expect(harness.getCurrentInstallationType).toHaveBeenCalledOnce();
       expect(harness.installGlobalPackage).toHaveBeenCalledOnce();

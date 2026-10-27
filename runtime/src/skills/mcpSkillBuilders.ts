@@ -36,7 +36,7 @@ export function registerMCPSkillBuilders(b: MCPSkillBuilders): void {
 export function getMCPSkillBuilders(): MCPSkillBuilders {
   if (!builders) {
     throw new Error(
-      'MCP skill builders not registered — loadSkillsDir.ts has not been evaluated yet',
+      'MCP skill builders not registered: loadSkillsDir.ts has not been evaluated yet',
     )
   }
   return builders

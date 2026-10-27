@@ -14,6 +14,15 @@
  *            POST /v2/video_generation → task_id;
  *            GET /v2/query/video_generation/{task_id} until "succeeded" →
  *            task.content.url on MiniMax's CDN.
+ *   OpenRouter POST /videos → id; GET /videos/{id} until "completed";
+ *            GET /videos/{id}/content streams the MP4 under the same auth
+ *            (the response's unsigned_urls are never followed).
+ *   Venice   POST /video/quote (free) → price; POST /video/queue → queue_id
+ *            (and for some models a pre-signed download_url on venice.ai);
+ *            POST /video/retrieve until the body is video/mp4, or until
+ *            COMPLETED and then the download_url through the download guard;
+ *            the stored copy is removed afterwards.
+ *   OpenRouter and Venice sessions use only their own key (session-native).
  *
  * Auth follows the same rule as ImagineImage: a session generates with its
  * own provider's native route, authorized only by that provider's canonical
@@ -45,6 +54,11 @@ import type { Tool, ToolResult } from "../types.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
+import {
+  cachedVeniceMediaModels,
+  loadVeniceMediaModels,
+  type VeniceMediaModel,
+} from "./venice-media-models.js";
 
 export interface ImagineVideoToolOptions {
   readonly workspaceRoot: string;
@@ -171,7 +185,167 @@ const MINIMAX_V2_DEFAULT_RATIO = "16:9";
 const MAX_VIDEO_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const MAX_VIDEO_DOWNLOAD_REDIRECTS = 5;
 
-type VideoBackendKind = "xai" | "openai" | "minimax";
+type VideoBackendKind = "xai" | "openai" | "minimax" | "openrouter" | "venice";
+
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_VENICE_BASE_URL = "https://api.venice.ai/api/v1";
+
+interface ReviewedVideoModel {
+  /** Seconds the model takes; a request snaps to the nearest. */
+  readonly durations: readonly number[];
+  /** USD per second of output by resolution: the reviewed ceiling. */
+  readonly perSecond: Readonly<Record<string, number>>;
+  readonly aspects: readonly string[];
+}
+
+const seconds = (from: number, to: number): readonly number[] =>
+  Object.freeze(Array.from({ length: to - from + 1 }, (_, index) => from + index));
+
+/**
+ * Reviewed OpenRouter video models (GET /api/v1/videos/models pricing_skus,
+ * 2026-10-20). 480p and 720p only, so one short clip stays cheap.
+ */
+const OPENROUTER_VIDEO_MODELS: ReadonlyMap<string, ReviewedVideoModel> = new Map<string, ReviewedVideoModel>([
+  ["x-ai/grok-imagine-video-1.5-lite", Object.freeze({
+    durations: seconds(1, 15), perSecond: Object.freeze({ "480p": 0.02, "720p": 0.03 }),
+    aspects: Object.freeze(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]),
+  })],
+  ["alibaba/wan-3.0", Object.freeze({
+    durations: seconds(2, 15), perSecond: Object.freeze({ "480p": 0.05, "720p": 0.1 }),
+    aspects: Object.freeze(["16:9", "4:3", "1:1", "3:4", "9:16"]),
+  })],
+  ["google/veo-3.1-lite", Object.freeze({
+    durations: Object.freeze([4, 6, 8]), perSecond: Object.freeze({ "720p": 0.08 }),
+    aspects: Object.freeze(["16:9", "9:16"]),
+  })],
+]);
+const OPENROUTER_DEFAULT_VIDEO_MODEL = "x-ai/grok-imagine-video-1.5-lite";
+
+/**
+ * Reviewed Venice text-to-video models. Venice publishes video prices only
+ * through POST /video/quote; these ceilings come from quotes on 2026-10-20
+ * (jobs/pv/probes/venice-video-quotes.json) and every call is quoted again
+ * first and refused above its ceiling.
+ */
+const VENICE_VIDEO_MODELS: ReadonlyMap<string, ReviewedVideoModel> = new Map<string, ReviewedVideoModel>([
+  ["grok-imagine-1-5-lite-text-to-video", Object.freeze({
+    durations: seconds(1, 15), perSecond: Object.freeze({ "480p": 0.025, "720p": 0.036 }),
+    aspects: Object.freeze(["16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"]),
+  })],
+  ["seedance-2-0-mini-text-to-video-basic", Object.freeze({
+    durations: seconds(4, 15), perSecond: Object.freeze({ "480p": 0.045, "720p": 0.095 }),
+    aspects: Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+  })],
+  ["wan-3-0-text-to-video", Object.freeze({
+    durations: Object.freeze([2, 5, 10, 15]), perSecond: Object.freeze({ "480p": 0.066, "720p": 0.13 }),
+    aspects: Object.freeze(["16:9", "9:16", "1:1", "4:3", "3:4"]),
+  })],
+]);
+const VENICE_DEFAULT_VIDEO_MODEL = "grok-imagine-1-5-lite-text-to-video";
+/**
+ * Any other text-to-video model in Venice's live list is accepted with the
+ * call's own ceiling (`max_usd`): Venice prices video only by quote, and a
+ * quote above the ceiling is refused before anything is queued.
+ */
+const VENICE_LISTED_VIDEO_DEFAULT_CEILING_USD = 1;
+const VENICE_LISTED_VIDEO_MAX_CEILING_USD = 5;
+const VIDEO_RESOLUTION_ORDER = ["256p", "360p", "480p", "540p", "580p", "720p", "768p", "1080p", "1440p", "4k"];
+
+function listedVideoCeiling(args: Record<string, unknown>): number {
+  const requested = typeof args.max_usd === "number" && Number.isFinite(args.max_usd) && args.max_usd > 0
+    ? args.max_usd
+    : VENICE_LISTED_VIDEO_DEFAULT_CEILING_USD;
+  return Math.min(requested, VENICE_LISTED_VIDEO_MAX_CEILING_USD);
+}
+
+/** A Venice text-to-video row's durations (seconds), resolutions and aspect ratios. */
+function listedVideoShape(row: VeniceMediaModel | undefined): {
+  readonly durations: readonly number[];
+  readonly resolutions: readonly string[];
+  readonly aspects: readonly string[];
+} | undefined {
+  if (row?.type !== "video" || row.constraints.model_type !== "text-to-video") return undefined;
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const durations = strings(row.constraints.durations)
+    .map(value => Number.parseFloat(value))
+    .filter(value => Number.isFinite(value) && value > 0);
+  // Venice spells some tiers in capitals (480P); order them case-blind and
+  // send the model's own spelling.
+  const rank = (value: string): number => {
+    const index = VIDEO_RESOLUTION_ORDER.indexOf(value.toLowerCase());
+    return index < 0 ? VIDEO_RESOLUTION_ORDER.length : index;
+  };
+  const resolutions = strings(row.constraints.resolutions).sort((a, b) => rank(a) - rank(b));
+  if (durations.length === 0 || resolutions.length === 0) return undefined;
+  return { durations, resolutions, aspects: strings(row.constraints.aspect_ratios) };
+}
+const GATEWAY_DEFAULT_VIDEO_SECONDS = 4;
+const GATEWAY_DEFAULT_VIDEO_RESOLUTION = "480p";
+
+interface GatewayVideoPlan {
+  readonly model: string;
+  readonly duration: number;
+  readonly resolution: string;
+  readonly aspectRatio: string;
+  readonly ceilingUsd: number;
+  readonly ignoredControls: readonly string[];
+}
+
+/** The model, duration, resolution and price ceiling one call will use. */
+function planGatewayVideo(
+  kind: "openrouter" | "venice",
+  args: Record<string, unknown>,
+  listed?: ReadonlyMap<string, VeniceMediaModel>,
+): GatewayVideoPlan | { readonly error: string } {
+  const catalog = kind === "openrouter" ? OPENROUTER_VIDEO_MODELS : VENICE_VIDEO_MODELS;
+  const model = stringValue(args.model) ??
+    (kind === "openrouter" ? OPENROUTER_DEFAULT_VIDEO_MODEL : VENICE_DEFAULT_VIDEO_MODEL);
+  const reviewed = catalog.get(model);
+  if (reviewed === undefined && kind === "venice") {
+    const shape = listedVideoShape(listed?.get(model));
+    if (shape === undefined) {
+      const names = listed === undefined
+        ? [...catalog.keys()]
+        : [...listed.values()].filter(row => listedVideoShape(row) !== undefined).map(row => row.id);
+      return { error: `Venice video model must be a text-to-video model in Venice's list: ${names.join(", ")}` };
+    }
+    const ignoredControls: string[] = [];
+    const duration = snapDuration(requestedDuration(args), shape.durations,
+      snapDuration(GATEWAY_DEFAULT_VIDEO_SECONDS, shape.durations, shape.durations[0]!));
+    const requestedResolution = stringValue(args.resolution)?.toLowerCase();
+    const listedSpelling = (wanted: string): string | undefined =>
+      shape.resolutions.find(value => value.toLowerCase() === wanted);
+    const resolution = (requestedResolution === undefined ? undefined : listedSpelling(requestedResolution)) ??
+      listedSpelling(GATEWAY_DEFAULT_VIDEO_RESOLUTION) ?? shape.resolutions[0]!;
+    if (requestedResolution !== undefined && requestedResolution !== resolution.toLowerCase()) ignoredControls.push("resolution");
+    const requestedAspect = stringValue(args.aspect_ratio);
+    const aspectRatio = requestedAspect !== undefined && shape.aspects.includes(requestedAspect)
+      ? requestedAspect : shape.aspects[0] ?? "";
+    if (requestedAspect !== undefined && requestedAspect !== aspectRatio) ignoredControls.push("aspect_ratio");
+    return { model, duration, resolution, aspectRatio, ignoredControls, ceilingUsd: listedVideoCeiling(args) };
+  }
+  if (reviewed === undefined) {
+    return { error: `${kind === "openrouter" ? "OpenRouter" : "Venice"} video model must be one of ${[...catalog.keys()].join(", ")}` };
+  }
+  const ignoredControls: string[] = [];
+  const duration = snapDuration(requestedDuration(args), reviewed.durations,
+    snapDuration(GATEWAY_DEFAULT_VIDEO_SECONDS, reviewed.durations, reviewed.durations[0]!));
+  const requestedResolution = stringValue(args.resolution)?.toLowerCase();
+  const resolutions = Object.keys(reviewed.perSecond);
+  const resolution = requestedResolution !== undefined && resolutions.includes(requestedResolution)
+    ? requestedResolution
+    : resolutions.includes(GATEWAY_DEFAULT_VIDEO_RESOLUTION) ? GATEWAY_DEFAULT_VIDEO_RESOLUTION : resolutions[0]!;
+  if (requestedResolution !== undefined && requestedResolution !== resolution) ignoredControls.push("resolution");
+  const requestedAspect = stringValue(args.aspect_ratio);
+  const aspectRatio = requestedAspect !== undefined && reviewed.aspects.includes(requestedAspect)
+    ? requestedAspect : reviewed.aspects[0]!;
+  if (requestedAspect !== undefined && requestedAspect !== aspectRatio) ignoredControls.push("aspect_ratio");
+  return {
+    model, duration, resolution, aspectRatio, ignoredControls,
+    ceilingUsd: reviewed.perSecond[resolution]! * duration,
+  };
+}
 
 interface VideoBackend {
   readonly kind: VideoBackendKind;
@@ -203,6 +377,11 @@ const VIDEO_DOWNLOAD_POLICY: Readonly<
   minimax: { kind: "hosts", suffixes: ["minimax.io", "minimaxi.com"] },
   // Streams from the API host under the same bearer; no payload URL exists.
   openai: { kind: "none" },
+  // OpenRouter streams the MP4 from its API host under the session's key.
+  openrouter: { kind: "none" },
+  // Venice returns some videos inline and others (Grok Imagine models,
+  // observed 2026-10-20) behind a pre-signed private-share.venice.ai link.
+  venice: { kind: "hosts", suffixes: ["venice.ai"] },
   xai: { kind: "any-https" },
 });
 
@@ -243,6 +422,37 @@ function environmentVideoBackend(
  * which does not authorize /videos at all. Both new backends therefore read
  * only their canonical API-key ingress.
  */
+/**
+ * An OpenRouter or Venice session's own video route: its own key (factory
+ * or canonical environment) and base URL. The managed AgenC route lends no
+ * credential to media.
+ */
+function gatewayVideoBackend(
+  kind: "openrouter" | "venice",
+  provider: unknown,
+  env: NodeJS.ProcessEnv,
+): VideoBackend | undefined {
+  const factory = readProviderFactoryOptions(provider as never);
+  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
+    return undefined;
+  }
+  const bearer =
+    typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
+      ? factory.apiKey.trim()
+      : resolveProviderApiKeyEnvironment(kind, env)?.value;
+  if (bearer === undefined) return undefined;
+  const baseURL =
+    factory.baseURL ??
+    resolveProviderBaseURLEnvironment(kind, env)?.value ??
+    (kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL);
+  try {
+    new URL(baseURL);
+  } catch {
+    return undefined;
+  }
+  return { kind, baseURL: baseURL.replace(/\/$/, ""), bearer };
+}
+
 function resolveVideoBackend(
   opts: ImagineVideoToolOptions,
 ): VideoBackendResolution {
@@ -250,6 +460,16 @@ function resolveVideoBackend(
   const provider = opts.getSession()?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
   let oauthBaseUrlError: string | undefined;
+
+  // An OpenRouter or Venice session generates with its own key and nobody
+  // else's; neither backend is offered to sessions of other providers.
+  if (
+    (providerIdentity === "openrouter" || providerIdentity === "venice") &&
+    provider !== undefined
+  ) {
+    const backend = gatewayVideoBackend(providerIdentity, provider, env);
+    if (backend !== undefined) return { backend };
+  }
 
   if (providerIdentity === "openai" || providerIdentity === "minimax") {
     const backend = environmentVideoBackend(
@@ -492,8 +712,16 @@ function requestedDuration(args: Record<string, unknown>): number | undefined {
 
 type PollOutcome<T> =
   | { readonly state: "done"; readonly value: T }
-  | { readonly state: "pending"; readonly status: string }
+  /** `waitMs`: how long the provider says the job takes (Venice's P80 estimate). */
+  | { readonly state: "pending"; readonly status: string; readonly waitMs?: number }
   | { readonly state: "failed"; readonly error: string };
+
+/**
+ * The longest a call waits for a provider that says its job takes longer than
+ * the default poll (Venice reports a P80 estimate; longcat-distilled lists
+ * 13.6 minutes, observed 2026-10-20). The tool's own timeout covers it.
+ */
+const MAX_ESTIMATED_VIDEO_WAIT_MS = 20 * 60_000;
 
 /**
  * The submit-then-poll wait shared by all three backends. Only the probe
@@ -505,7 +733,7 @@ async function pollForVideo<T>(
   probe: () => Promise<PollOutcome<T>>,
 ): Promise<{ readonly value: T } | { readonly error: string }> {
   const interval = opts.pollIntervalMs ?? 5_000;
-  const timeout = opts.pollTimeoutMs ?? 240_000;
+  let timeout = opts.pollTimeoutMs ?? 240_000;
   let elapsed = 0;
   let lastStatus = "queued";
   while (elapsed < timeout) {
@@ -513,6 +741,10 @@ async function pollForVideo<T>(
     if (outcome.state === "done") return { value: outcome.value };
     if (outcome.state === "failed") return { error: outcome.error };
     lastStatus = outcome.status;
+    // Wait about half again the provider's own estimate, never past the cap.
+    if (outcome.waitMs !== undefined && Number.isFinite(outcome.waitMs) && outcome.waitMs > 0) {
+      timeout = Math.max(timeout, Math.min(Math.ceil(outcome.waitMs * 1.5), MAX_ESTIMATED_VIDEO_WAIT_MS));
+    }
     await sleep(interval, signal);
     elapsed += interval;
   }
@@ -1165,10 +1397,237 @@ async function runMinimaxV2Video(
   });
 }
 
+// ── OpenRouter and Venice (session-native gateways) ───────────────────
+
+function finiteCost(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function gatewayVideoResult(
+  plan: GatewayVideoPlan,
+  path: string,
+  requestId: string,
+  costUsd: number,
+): ToolResult {
+  return {
+    ...json({
+      model: plan.model,
+      path,
+      request_id: requestId,
+      duration: plan.duration,
+      aspect_ratio: plan.aspectRatio,
+      resolution: plan.resolution,
+      modality: "text",
+      costUsd,
+      ...(plan.ignoredControls.length > 0 ? { ignoredControls: plan.ignoredControls } : {}),
+    }),
+    admissionUsage: { inputTokens: 0, outputTokens: 0, costUsd },
+  };
+}
+
+async function runOpenRouterVideo(ctx: VideoRunContext): Promise<ToolResult> {
+  const { args, backend, fetchImpl, signal } = ctx;
+  if (ctx.imageUrl || ctx.referenceImages.length > 0) {
+    return refusal({ error: "This OpenRouter video backend is text-to-video only" });
+  }
+  const plan = planGatewayVideo("openrouter", args);
+  if ("error" in plan) return refusal({ error: plan.error });
+  const submitRes = await fetchImpl(`${backend.baseURL}/videos`, {
+    method: "POST",
+    headers: authHeaders(backend),
+    body: JSON.stringify({
+      model: plan.model,
+      prompt: ctx.prompt,
+      duration: plan.duration,
+      resolution: plan.resolution,
+      aspect_ratio: plan.aspectRatio,
+    }),
+    ...signalInit(signal),
+  });
+  const submitJson = (await submitRes.json()) as { id?: string; error?: { message?: string } | string };
+  if (!submitRes.ok) {
+    const message = (typeof submitJson.error === "string" ? submitJson.error : submitJson.error?.message) ??
+      `OpenRouter video submit HTTP ${submitRes.status}`;
+    // A refused submit generated nothing.
+    return submitRes.status >= 400 && submitRes.status < 500
+      ? refusal({ error: message })
+      : json({ error: message }, true);
+  }
+  const videoId = submitJson.id;
+  if (!videoId || !/^[\w-]+$/.test(videoId)) {
+    return json({ error: "OpenRouter response did not include a usable video id" }, true);
+  }
+  const polled = await pollForVideo<number | undefined>(ctx.opts, signal, async () => {
+    const pollRes = await fetchImpl(`${backend.baseURL}/videos/${videoId}`, {
+      method: "GET",
+      headers: authHeaders(backend),
+      ...signalInit(signal),
+    });
+    const pollJson = (await pollRes.json()) as {
+      status?: string;
+      error?: { message?: string } | string;
+      usage?: { cost?: number };
+    };
+    if (!pollRes.ok) {
+      return { state: "failed", error: `OpenRouter video poll HTTP ${pollRes.status}` };
+    }
+    const status = String(pollJson.status ?? "").toLowerCase();
+    if (status === "completed") return { state: "done", value: finiteCost(pollJson.usage?.cost) };
+    if (status === "failed" || status === "cancelled" || status === "expired") {
+      const detail = typeof pollJson.error === "string" ? pollJson.error : pollJson.error?.message;
+      return { state: "failed", error: `OpenRouter video ${status}: ${detail ?? "upstream failure"}` };
+    }
+    return { state: "pending", status };
+  });
+  if ("error" in polled) return json({ error: polled.error, request_id: videoId }, true);
+  // The MP4 streams from the API host under the same key; the response's
+  // unsigned_urls are never followed.
+  const contentRes = await fetchImpl(`${backend.baseURL}/videos/${videoId}/content?index=0`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${backend.bearer}` },
+    ...signalInit(signal),
+  });
+  if (!contentRes.ok) {
+    return json({ error: `Failed to download the OpenRouter video (HTTP ${contentRes.status})`, request_id: videoId }, true);
+  }
+  const bytes = await readCappedBody(contentRes);
+  const path = await saveVideoBytes(ctx.opts.workspaceRoot, bytes, signal);
+  return gatewayVideoResult(plan, path, videoId, polled.value ?? plan.ceilingUsd);
+}
+
+async function runVeniceVideo(ctx: VideoRunContext): Promise<ToolResult> {
+  const { args, backend, fetchImpl, signal } = ctx;
+  if (ctx.imageUrl || ctx.referenceImages.length > 0) {
+    return refusal({ error: "This Venice video backend is text-to-video only" });
+  }
+  const listed = VENICE_VIDEO_MODELS.has(stringValue(args.model) ?? VENICE_DEFAULT_VIDEO_MODEL)
+    ? undefined
+    : await loadVeniceMediaModels(backend.baseURL, backend.bearer, fetchImpl, signal);
+  const plan = planGatewayVideo("venice", args, listed);
+  if ("error" in plan) return refusal({ error: plan.error });
+  const shape = {
+    model: plan.model,
+    duration: `${plan.duration}s`,
+    resolution: plan.resolution,
+    ...(plan.aspectRatio ? { aspect_ratio: plan.aspectRatio } : {}),
+  };
+  // Venice prices video only by quote; a quote above the reviewed ceiling
+  // is refused before anything is queued.
+  const quoteRes = await fetchImpl(`${backend.baseURL}/video/quote`, {
+    method: "POST",
+    headers: authHeaders(backend),
+    body: JSON.stringify(shape),
+    ...signalInit(signal),
+  });
+  const quoteJson = (await quoteRes.json()) as { quote?: number; error?: string };
+  const quote = finiteCost(quoteJson.quote);
+  if (!quoteRes.ok || quote === undefined) {
+    return refusal({ error: quoteJson.error ?? `Venice video quote HTTP ${quoteRes.status}` });
+  }
+  if (quote > plan.ceilingUsd + 1e-9) {
+    return refusal({
+      error: VENICE_VIDEO_MODELS.has(plan.model)
+        ? `Venice quoted ${quote} USD for this clip, above its reviewed ceiling of ${plan.ceilingUsd.toFixed(3)} USD`
+        : `Venice quoted ${quote} USD for this clip, above max_usd ${plan.ceilingUsd.toFixed(3)} USD`,
+    });
+  }
+  const queueRes = await fetchImpl(`${backend.baseURL}/video/queue`, {
+    method: "POST",
+    headers: authHeaders(backend),
+    body: JSON.stringify({ ...shape, prompt: ctx.prompt }),
+    ...signalInit(signal),
+  });
+  const queueJson = (await queueRes.json()) as { queue_id?: string; download_url?: string; error?: string };
+  // Venice hands some models' result out once, as a pre-signed link on its
+  // own domain; it is checked against the download guard before anything.
+  let downloadUrl: string | undefined;
+  if (typeof queueJson.download_url === "string" && queueJson.download_url.length > 0) {
+    try {
+      downloadUrl = validatedVideoDownloadUrl(queueJson.download_url, "venice").toString();
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "Venice download link refused" }, true);
+    }
+  }
+  if (!queueRes.ok) {
+    const message = queueJson.error ?? `Venice video queue HTTP ${queueRes.status}`;
+    return queueRes.status >= 400 && queueRes.status < 500
+      ? refusal({ error: message })
+      : json({ error: message }, true);
+  }
+  const queueId = queueJson.queue_id;
+  if (!queueId || !/^[\w-]+$/.test(queueId)) {
+    return json({ error: "Venice did not return a usable queue id" }, true);
+  }
+  const ticket = { model: plan.model, queue_id: queueId };
+  const polled = await pollForVideo<Buffer | "download">(ctx.opts, signal, async () => {
+    const retrieveRes = await fetchImpl(`${backend.baseURL}/video/retrieve`, {
+      method: "POST",
+      headers: authHeaders(backend),
+      body: JSON.stringify(ticket),
+      ...signalInit(signal),
+    });
+    const contentType = retrieveRes.headers.get("content-type")?.toLowerCase() ?? "";
+    if (retrieveRes.ok && contentType.startsWith("video/")) {
+      return { state: "done", value: await readCappedBody(retrieveRes) };
+    }
+    const status = (await retrieveRes.json().catch(() => ({}))) as {
+      status?: string;
+      error?: string;
+      average_execution_time?: number;
+    };
+    if (!retrieveRes.ok) {
+      return { state: "failed", error: status.error ?? `Venice video retrieve HTTP ${retrieveRes.status}` };
+    }
+    const state = String(status.status ?? "").toUpperCase();
+    if (state === "FAILED" || state === "ERROR") {
+      return { state: "failed", error: `Venice video failed: ${status.error ?? "upstream failure"}` };
+    }
+    if (state === "COMPLETED") {
+      return downloadUrl !== undefined
+        ? { state: "done", value: "download" as const }
+        : { state: "failed", error: "Venice finished the video without returning it or a download link" };
+    }
+    // Venice reports how long this model's jobs take (P80, milliseconds).
+    const estimate = typeof status.average_execution_time === "number" ? status.average_execution_time : undefined;
+    return {
+      state: "pending",
+      status: state.toLowerCase() || "processing",
+      ...(estimate === undefined ? {} : { waitMs: estimate }),
+    };
+  });
+  if ("error" in polled) return json({ error: polled.error, request_id: queueId }, true);
+  // The pre-signed link carries no key; the session's key never goes there.
+  const bytes = polled.value === "download"
+    ? await downloadVideo(fetchImpl, downloadUrl!, "venice", signal)
+    : polled.value;
+  const path = await saveVideoBytes(ctx.opts.workspaceRoot, bytes, signal);
+  // Best effort: remove Venice's stored copy once the file is saved here
+  // (DELETE revokes a pre-signed link; /video/complete deletes inline media).
+  await (downloadUrl !== undefined
+    ? fetchImpl(downloadUrl, { method: "DELETE", ...signalInit(signal) })
+    : fetchImpl(`${backend.baseURL}/video/complete`, {
+      method: "POST",
+      headers: authHeaders(backend),
+      body: JSON.stringify(ticket),
+      ...signalInit(signal),
+    })).catch(() => undefined);
+  return gatewayVideoResult(plan, path, queueId, quote);
+}
+
 // ── Tool surface ──────────────────────────────────────────────────────
 
 function imagineVideoDescription(kind: VideoBackendKind | undefined): string {
   switch (kind) {
+    case "openrouter":
+      return (
+        "Generate a short video with OpenRouter on this session's OpenRouter key and save the MP4 under the workspace. " +
+        "Text-to-video only; 480p or 720p, default 4 seconds at 480p."
+      );
+    case "venice":
+      return (
+        "Generate a short video with Venice on this session's Venice key and save the MP4 under the workspace. " +
+        "Text-to-video only; 480p or 720p, default 4 seconds at 480p. Venice quotes the price first."
+      );
     case "openai":
       return (
         "Generate a video with OpenAI Sora and save the MP4 under the workspace. " +
@@ -1188,8 +1647,8 @@ function imagineVideoDescription(kind: VideoBackendKind | undefined): string {
       );
     default:
       return (
-        "Generate a video with the configured xAI, OpenAI Sora, or MiniMax Hailuo " +
-        "media backend and save the MP4 under the workspace."
+        "Generate a video with the configured xAI, OpenAI Sora, MiniMax Hailuo, " +
+        "OpenRouter or Venice media backend and save the MP4 under the workspace."
       );
   }
 }
@@ -1198,6 +1657,42 @@ function imagineVideoInputSchema(
   kind: VideoBackendKind | undefined,
 ): Record<string, unknown> {
   const prompt = { type: "string" };
+  if (kind === "openrouter" || kind === "venice") {
+    const catalog = kind === "openrouter" ? OPENROUTER_VIDEO_MODELS : VENICE_VIDEO_MODELS;
+    return {
+      type: "object",
+      properties: {
+        prompt,
+        model: kind === "openrouter"
+          ? { type: "string", enum: [...catalog.keys()] }
+          : {
+            type: "string",
+            description:
+              `A Venice text-to-video model id (default ${VENICE_DEFAULT_VIDEO_MODEL}; any text-to-video model ` +
+              "in Venice's model list, priced by Venice's quote).",
+          },
+        ...(kind === "venice"
+          ? {
+            max_usd: {
+              type: "number",
+              description:
+                `Highest price in USD accepted for a model AgenC has not reviewed (default ` +
+                `${VENICE_LISTED_VIDEO_DEFAULT_CEILING_USD}, at most ${VENICE_LISTED_VIDEO_MAX_CEILING_USD}); ` +
+                "Venice quotes first and a higher quote is refused.",
+            },
+          }
+          : {}),
+        duration: {
+          type: "number",
+          description: `Seconds; snaps to what the model takes (default ${GATEWAY_DEFAULT_VIDEO_SECONDS})`,
+        },
+        aspect_ratio: { type: "string" },
+        resolution: { type: "string", enum: ["480p", "720p"], description: "default 480p" },
+      },
+      required: ["prompt"],
+      additionalProperties: false,
+    };
+  }
   if (kind === "openai") {
     return {
       type: "object",
@@ -1257,7 +1752,17 @@ function imagineVideoInputSchema(
       model: {
         type: "string",
         description:
-          "grok-imagine-video (text-to-video default) or grok-imagine-video-1.5-preview (image-to-video default)",
+          "xAI: grok-imagine-video (text-to-video default) or grok-imagine-video-1.5-preview (image-to-video default); " +
+          `OpenRouter: ${[...OPENROUTER_VIDEO_MODELS.keys()].join(", ")}; ` +
+          `Venice: any Venice text-to-video model id (default ${VENICE_DEFAULT_VIDEO_MODEL})`,
+      },
+      // The schema a registry advertises before its session attaches is the
+      // one the TUI keeps, so it carries every backend's controls.
+      max_usd: {
+        type: "number",
+        description:
+          `Venice: highest price in USD accepted for a model AgenC has not reviewed (default ` +
+          `${VENICE_LISTED_VIDEO_DEFAULT_CEILING_USD}, at most ${VENICE_LISTED_VIDEO_MAX_CEILING_USD}); other backends ignore it`,
       },
       image_url: {
         type: "string",
@@ -1274,7 +1779,7 @@ function imagineVideoInputSchema(
         description: "Seconds 1–15 (max 10 with reference images); default 8",
       },
       aspect_ratio: { type: "string" },
-      resolution: { type: "string", enum: ["480p", "720p"] },
+      resolution: { type: "string", description: "e.g. 480p or 720p; snaps to what the model takes (default 480p)" },
     },
     required: ["prompt"],
     additionalProperties: false,
@@ -1313,17 +1818,33 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
     // Video generation legitimately outlives the 30s default tool timeout: the
-    // internal poll alone waits up to 240s (pollTimeoutMs), plus the initial
-    // POST and the MP4 download. Give the harness backstop 5min so a healthy
-    // long generation isn't killed mid-poll; the tool's own internal timeouts
-    // still fire first with a clean error.
-    timeoutMs: 300_000,
+    // internal poll waits 240s (pollTimeoutMs), or up to 20 minutes when the
+    // provider says the job takes longer (Venice's estimate), plus the
+    // initial POST and the MP4 download. The harness backstop sits above that
+    // so a healthy long generation is not killed mid-poll; the tool's own
+    // internal timeouts still fire first with a clean error.
+    timeoutMs: 22 * 60_000,
     recoveryCategory: "side-effecting",
-    admissionEstimate: () => ({
-      maxInputTokens: 0,
-      maxOutputTokens: 0,
-      maxCostUsd: null,
-    }),
+    admissionEstimate: (args) => {
+      // OpenRouter and Venice clips have a reviewed per-second ceiling.
+      const resolution = resolveVideoBackend(opts);
+      const kind = "backend" in resolution ? resolution.backend.kind : undefined;
+      const listed = "backend" in resolution && kind === "venice"
+        ? cachedVeniceMediaModels(resolution.backend.baseURL)
+        : undefined;
+      const plan = kind === "openrouter" || kind === "venice" ? planGatewayVideo(kind, args, listed) : undefined;
+      // A Venice model AgenC has not reviewed is bounded by the call's max_usd
+      // whether or not its list has been read yet.
+      const model = stringValue(args.model);
+      const listedCeiling = kind === "venice" && model !== undefined && !VENICE_VIDEO_MODELS.has(model)
+        ? listedVideoCeiling(args)
+        : undefined;
+      return {
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: plan !== undefined && !("error" in plan) ? plan.ceilingUsd : listedCeiling ?? null,
+      };
+    },
     inputSchema: imagineVideoInputSchema(advertisedKind),
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
@@ -1377,6 +1898,8 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       try {
         if (backend.kind === "openai") return await runOpenAiVideo(ctx);
         if (backend.kind === "minimax") return await runMinimaxVideo(ctx);
+        if (backend.kind === "openrouter") return await runOpenRouterVideo(ctx);
+        if (backend.kind === "venice") return await runVeniceVideo(ctx);
         return await runXaiVideo(ctx);
       } catch (error) {
         admittedSignal?.throwIfAborted();

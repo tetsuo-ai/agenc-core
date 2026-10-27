@@ -17,7 +17,7 @@ function setup(providerName = "ollama") {
   const tools: LLMTool[] = [{ type: "function", function: {
     name: "FileRead", description: "Detailed file tool documentation. ".repeat(700), parameters: { type: "object" },
   } }];
-  const { session, events } = mkSession({ provider });
+  const { session, events, state: sessionState } = mkSession({ provider });
   vi.spyOn(session.services.registry, "toLLMTools").mockReturnValue(tools);
   const base = mkCtx();
   const ctx = mkCtx({ modelProviderId: providerName, modelInfo: {
@@ -25,7 +25,7 @@ function setup(providerName = "ollama") {
   } });
   const user: LLMMessage = { role: "user", content: "Read the verification marker." };
   const state = buildInitialTurnState(ctx, user, { modelInstructions: "Follow the user request." });
-  return { provider, tools, session, events, ctx, state, user };
+  return { provider, tools, session, events, ctx, state, sessionState, user };
 }
 
 describe("local proactive context pressure", () => {
@@ -50,25 +50,26 @@ describe("local proactive context pressure", () => {
     expect(h.events.map(event => classifyTurnTerminal(event.msg))).toContainEqual(expect.objectContaining({ outcome: "completed" }));
   });
 
-  test("cloud proactive accounting still includes its original output reservation", async () => {
+  test("cloud proactive pressure counts input separately from the hard output reservation", async () => {
     const h = setup("grok");
     const compact = vi.fn(async () => ({ wasCompacted: false }));
     setAutoCompactImplForTests(compact);
-    expect(getActiveContextTokenUsage(h.session, h.ctx, h.state)).toBe(
-      getActiveContextTokenUsage(h.session, h.ctx, h.state, { includeOutput: true }),
+    expect(getActiveContextTokenUsage(h.session, h.ctx, h.state, { includeOutput: true })).toBe(
+      getActiveContextTokenUsage(h.session, h.ctx, h.state) + 16_384,
     );
-    await runPreSamplingCompact(h.session, h.ctx, "repl_main_thread", h.state);
-    expect(compact).toHaveBeenCalledOnce();
+    await drain(runTurn(h.session, h.ctx, String(h.user.content)));
+    expect(compact).not.toHaveBeenCalled();
   });
 
   test("real local input pressure still reaches the compaction dispatcher", async () => {
     const h = setup();
     const historical = "Keep this detailed historical implementation context. ".repeat(1_500);
     h.state.messages.unshift({ role: "assistant", content: historical });
+    h.sessionState.history.push({ role: "assistant", content: historical });
     const compact = vi.fn(async () => ({ wasCompacted: false }));
     setAutoCompactImplForTests(compact);
     expect(getActiveContextTokenUsage(h.session, h.ctx, h.state)).toBeGreaterThan(getPreSamplingAutoCompactTokenLimit(h.ctx)!);
-    await runPreSamplingCompact(h.session, h.ctx, "repl_main_thread", h.state);
+    await drain(runTurn(h.session, h.ctx, String(h.user.content)));
     expect(compact).toHaveBeenCalledOnce();
     expect(JSON.stringify(compact.mock.calls[0]?.[0])).toContain(historical);
   });
@@ -77,6 +78,7 @@ describe("local proactive context pressure", () => {
     const h = setup();
     const sample = vi.spyOn(h.provider, "chatStream");
     Object.assign(h.provider, { tokenCountCapability: {
+      runsLocally: true as const,
       capabilityVersion: "local-proactive-boundary", adapterRevision: "1", configurationRevision: "overflow",
       countTokens: async () => ({ inputTokens: 32_769, complete: true, confidence: "exact", countedComponents: ["system", "messages", "tools", "provider_framing"] }),
     } });
@@ -87,13 +89,13 @@ describe("local proactive context pressure", () => {
     expect(h.events.map(event => classifyTurnTerminal(event.msg))).toContainEqual(expect.objectContaining({ outcome: "errored" }));
   });
 
-  test.each(["ollama", "grok"])("service trigger uses input only for proactive local calls, retaining forced and downshift behavior (%s)", async providerName => {
+  test.each(["ollama", "grok"])("service trigger uses input for proactive calls and retains forced and downshift behavior (%s)", async providerName => {
     const h = setup(providerName);
     const compact = vi.spyOn(compactService, "compactConversation").mockResolvedValue({} as never);
     const messages = toAgenCRuntimeMessages([h.user]);
     const context = { provider: h.provider, options: { mainLoopModel: h.ctx.modelInfo.slug, contextWindowTokens: 32_768, maxOutputTokens: 16_384, tools: h.tools } };
     await autoCompactIfNeeded(messages, context);
-    expect(compact).toHaveBeenCalledTimes(providerName === "ollama" ? 0 : 1);
+    expect(compact).not.toHaveBeenCalled();
     compact.mockClear();
     await autoCompactIfNeeded(messages, context, undefined, "repl_main_thread", undefined, 0, { force: true });
     expect(compact).toHaveBeenCalledOnce();

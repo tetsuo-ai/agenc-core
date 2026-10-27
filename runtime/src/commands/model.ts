@@ -1,3 +1,5 @@
+import { openRouterSelectionNotice } from "../llm/model-catalog-selection.js";
+import { openRouterMenuCatalog } from "./openrouter-menu-models.js";
 /**
  * `/model <model-name>` — switch the model for subsequent turns.
  *
@@ -26,6 +28,11 @@
 import type { Session } from "../session/session.js";
 import { readProviderConfig } from "../config/resolve-provider.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
+import { listRegisteredModelCatalogEntries } from "../llm/registry/model-catalog.js";
+import {
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+  providerLocalModelIdFromCatalog,
+} from "../llm/registry/provider-info.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
 import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
 import {
@@ -33,6 +40,11 @@ import {
   validateHistoryCompatibility,
 } from "../llm/shape-request.js";
 import { readCommandConfig } from "./config-context.js";
+import { openRouterModelHasZdrEndpoint } from "../llm/registry/openrouter-zdr-endpoints.js";
+import {
+  OPENROUTER_ZDR_OFF_HINT,
+  openRouterZeroDataRetentionEnabled,
+} from "../llm/zero-data-retention.js";
 import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu-snapshot.js";
 import { asRecord } from "../utils/record.js";
 import {
@@ -123,7 +135,9 @@ export async function applyModelSwitch(
     }) => Promise<void> | void;
   } = {},
 ): Promise<ProviderModelSelectionOutcome> {
-  const current = readSessionSelection(session);
+  // A previous accepted switch may still be waiting for the next turn.
+  // Compare against that selection so a switch back replaces it.
+  const current = readSessionSelection(session, { includePending: true });
   let selection;
   try {
     selection = resolveSessionProviderModelSelection(
@@ -331,6 +345,38 @@ function updateModelChrome(ctx: SlashCommandContext, model: string): void {
   ctx.appState?.setModel?.(model);
 }
 
+// Custom endpoints intentionally accept private model IDs. Keep that support,
+// but distinguish an unlisted spelling from a verified catalog selection.
+function unverifiedModelNotice(provider: ProviderSlug, model: string): string {
+  if (provider === "openrouter") {
+    const note = openRouterSelectionNotice(model);
+    return note === undefined ? "" : `${note}\n`;
+  }
+  const known = BUILT_IN_PROVIDER_MODEL_CATALOG[provider].some(
+    entry => providerLocalModelIdFromCatalog(provider, entry) === model,
+  ) || listRegisteredModelCatalogEntries(provider).some(entry => entry.model === model);
+  return known ? "" :
+    `Unverified custom model "${model}": absent from AgenC's bundled catalog. Check the spelling with /model.\n`;
+}
+
+/**
+ * While OpenRouter requests ask for zero data retention, a model OpenRouter
+ * lists no zero-retention endpoint for would be refused on every request. Say
+ * so now. Unchecked until the TUI has read OpenRouter's list.
+ */
+function openRouterZdrRefusal(
+  ctx: SlashCommandContext,
+  provider: ProviderSlug,
+  model: string,
+): string | undefined {
+  if (provider !== "openrouter" || !openRouterZeroDataRetentionEnabled(readCommandConfig(ctx))) {
+    return undefined;
+  }
+  return openRouterModelHasZdrEndpoint(model) === false
+    ? `No zero-retention endpoint serves openrouter/${model}, so OpenRouter would refuse it. ${OPENROUTER_ZDR_OFF_HINT}`
+    : undefined;
+}
+
 export const modelCommand: SlashCommand = {
   name: "model",
   description: "Choose a model (or pass a model name)",
@@ -339,6 +385,8 @@ export const modelCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
+      const catalog = openRouterMenuCatalog(ctx);
+      catalog.read();
       const target = ctx.argsRaw.trim();
       if (target.length === 0) {
         if (
@@ -347,7 +395,9 @@ export const modelCommand: SlashCommand = {
         ) {
           return { kind: "skip" };
         }
-        return { kind: "text", text: modelMenuFallback(readModelMenuSnapshot(ctx)) };
+        const snapshot = readModelMenuSnapshot(ctx);
+        if (snapshot.provider === "openrouter") void catalog.refresh();
+        return { kind: "text", text: modelMenuFallback(snapshot) };
       }
       const selection = resolveCommandSelection(ctx, { model: target });
       if (!selection.ok) {
@@ -364,8 +414,13 @@ export const modelCommand: SlashCommand = {
       if (access.effect === "unchanged") {
         return {
           kind: "text",
-          text: `Model unchanged: ${selection.provider}/${selection.model}.`,
+          text: unverifiedModelNotice(selection.provider, selection.model) +
+            `Model unchanged: ${selection.provider}/${selection.model}.`,
         };
+      }
+      const zdrRefusal = openRouterZdrRefusal(ctx, selection.provider, selection.model);
+      if (zdrRefusal !== undefined) {
+        return { kind: "text", text: zdrRefusal };
       }
       const outcome = await applyModelSwitch(
         ctx.session,
@@ -380,6 +435,9 @@ export const modelCommand: SlashCommand = {
       if (outcome.applied) {
         updateModelChrome(ctx, outcome.model);
       }
-      return { kind: "text", text: outcome.summary };
+      return {
+        kind: "text",
+        text: (outcome.applied ? unverifiedModelNotice(selection.provider, outcome.model) : "") + outcome.summary,
+      };
     }),
 };

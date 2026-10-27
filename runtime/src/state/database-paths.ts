@@ -10,6 +10,8 @@ export interface StateDatabasePaths {
 
 export const STATE_DATABASE_FILENAME = "agenc-state_1.sqlite";
 export const LOGS_DATABASE_FILENAME = "agenc-logs_1.sqlite";
+/** WorkflowTool's handoff artifact store, a directory beside the databases. */
+export const WORKFLOW_HANDOFF_STORE_DIRNAME = "workflow-handoffs";
 
 export function discoverStateDatabasePaths(
   agencHome: string,

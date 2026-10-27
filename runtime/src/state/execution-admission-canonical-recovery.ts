@@ -307,9 +307,16 @@ function convergeRun(params: {
       const targetEvents = targetUnchanged
         ? targetRead.events
         : readCanonicalSource(targetRaw, target.sourcePath).events;
-      const targetSequences = targetEvents.flatMap((record) =>
-        record.sequence === undefined ? [] : [record.sequence],
-      );
+      // A long rollout can exceed V8's call argument limit even though its
+      // journal is valid. Keep the bounds calculation constant in stack and
+      // auxiliary space instead of spreading every sequence into Math.min/max.
+      let firstAvailableSequence = Infinity;
+      let lastTargetSequence = 0;
+      for (const record of targetEvents) {
+        if (record.sequence === undefined) continue;
+        firstAvailableSequence = Math.min(firstAvailableSequence, record.sequence);
+        lastTargetSequence = Math.max(lastTargetSequence, record.sequence);
+      }
       params.driver.transactionImmediate(() => {
         for (const binding of bindings) {
           const lease = leases.get(binding.sourcePath)!;
@@ -349,11 +356,11 @@ function convergeRun(params: {
               : {}),
           });
         }
-        if (targetSequences.length > 0) {
+        if (lastTargetSequence > 0) {
           params.durability.updateJournalBounds({
             sourcePath: target.sourcePath,
-            firstAvailableSequence: Math.min(...targetSequences),
-            lastSequence: Math.max(...targetSequences),
+            firstAvailableSequence,
+            lastSequence: lastTargetSequence,
             updatedAt: new Date().toISOString(),
           });
         }

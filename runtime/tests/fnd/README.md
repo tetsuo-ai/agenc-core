@@ -75,7 +75,7 @@ inode, so callers must use process/credential isolation when that adversary is
 in scope. Directory rename is audited before and after commit but is not
 presented as an atomic no-clobber rename on every platform.
 
-Run the focused cross-runtime contracts with Node 26.5.0 and Bun 1.3.12:
+Run the focused cross-runtime contracts with Node 26.12.1 and Bun 1.3.12:
 
 ```sh
 npx vitest run runtime/tests/fnd/bounded-file-io.test.ts \

@@ -10,7 +10,9 @@
  *
  * These tests pin the split: across two consecutive turns the
  * serialized prefix (instructions/static system + earlier messages) is
- * byte-identical, with dynamic content only in the final item.
+ * byte-identical. On xAI the dynamic content is the final item; on OpenAI
+ * Responses it is the first input item, fixed for the session, so a request
+ * only appends to the previous one (responses-openai-stable-layout.test.ts).
  */
 import { describe, expect, it } from "vitest";
 
@@ -63,7 +65,7 @@ describe("OpenAI Responses wire keeps the request prefix stable across turns", (
     });
   }
 
-  it("instructions carry only the static head; dynamic content is the final input item", () => {
+  it("instructions carry only the static head; dynamic content is the first input item", () => {
     const turn1: LLMMessage[] = [{ role: "user", content: "first" }];
     const turn2: LLMMessage[] = [
       { role: "user", content: "first" },
@@ -71,30 +73,28 @@ describe("OpenAI Responses wire keeps the request prefix stable across turns", (
       { role: "user", content: "second" },
     ];
     const request1 = requestFor(turn1, "T1");
-    const request2 = requestFor(turn2, "T2");
+    const request2 = requestFor(turn2, "T1");
 
     expect(request1.instructions).toBe(STATIC_HEAD);
-    // Byte-identical across turns despite different timestamps.
     expect(request2.instructions).toBe(request1.instructions);
 
     const input1 = request1.input as Array<Record<string, unknown>>;
     const input2 = request2.input as Array<Record<string, unknown>>;
-    const last1 = input1.at(-1);
-    const last2 = input2.at(-1);
-    expect(last1).toEqual({
+    expect(input1[0]).toEqual({
       type: "message",
       role: "system",
       content: [{ type: "input_text", text: "Now: T1\nBranch: main" }],
     });
-    expect(JSON.stringify(last2)).toContain("Now: T2");
+    // Turn 2's input begins with turn 1's input, the dynamic tail included.
+    const serialized1 = JSON.stringify(input1);
+    expect(JSON.stringify(input2).startsWith(serialized1.slice(0, -1))).toBe(true);
 
-    // The serialized prefix (everything before the dynamic tail) of
-    // turn 2 begins with turn 1's serialized prefix.
-    const prefix1 = JSON.stringify(input1.slice(0, -1));
-    const prefix2 = JSON.stringify(input2.slice(0, -1));
-    expect(
-      prefix2.startsWith(prefix1.slice(0, prefix1.length - 1)),
-    ).toBe(true);
+    // A different tail changes only that first item; the static head stays.
+    const changed = requestFor(turn2, "T2");
+    expect(changed.instructions).toBe(request1.instructions);
+    expect(JSON.stringify((changed.input as unknown[])[0])).toContain("Now: T2");
+    expect(JSON.stringify((changed.input as unknown[]).slice(1)))
+      .toBe(JSON.stringify(input2.slice(1)));
   });
 });
 

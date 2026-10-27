@@ -1108,7 +1108,7 @@ function validatePath(
       decisionReason: {
         type: 'other',
         reason:
-          'Glob patterns in paths cannot be statically validated — symlinks inside the glob expansion are not examined. Requires manual approval.',
+          'Glob patterns in paths cannot be statically validated: symlinks inside the glob expansion are not examined. Requires manual approval.',
       },
     }
   }
@@ -1483,11 +1483,11 @@ function checkPathConstraintsForStatement(
     firstAsk = {
       behavior: 'ask',
       message:
-        'Compound command changes working directory (Set-Location/Push-Location/Pop-Location/New-PSDrive) — relative paths cannot be validated against the original cwd and require manual approval',
+        'Compound command changes working directory (Set-Location/Push-Location/Pop-Location/New-PSDrive): relative paths cannot be validated against the original cwd and require manual approval',
       decisionReason: {
         type: 'other',
         reason:
-          'Compound command contains cd with path operation — manual approval required to prevent path resolution bypass',
+          'Compound command contains cd with path operation: manual approval required to prevent path resolution bypass',
       },
     }
   }

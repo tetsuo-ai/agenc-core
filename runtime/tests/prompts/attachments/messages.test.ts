@@ -243,7 +243,9 @@ describe("attachmentsToMessages", () => {
     expect(content).toContain("explicit user confirmation");
     expect(content).toContain("Never share secrets");
     expect(content).not.toContain("Auto Mode Active");
-    expect(content.length).toBeLessThan(String(full[0]?.content).length / 3);
+    // One short paragraph, well under the full variant.
+    expect(content.length).toBeLessThan(400);
+    expect(content.length).toBeLessThan(String(full[0]?.content).length * 0.6);
   });
 
   test("renders date_change with the new date", () => {
@@ -416,9 +418,12 @@ describe("attachmentsToMessages", () => {
     expect(content).toContain("wait for its schema before invoking it");
     expect(content).toContain("Never call a listed skill name as a tool");
     expect(content).not.toContain("invoke the Skill tool before responding");
-    expect(content).toContain("An @plugin-id mention selects that plugin");
-    expect(content).toContain("use its listed skill names, which may differ from the plugin name");
-    expect(content).toContain("an empty tool search does not mean its listed skills are unavailable");
+    // The plugin rules ride only with a listing that names plugin skills.
+    expect(content).not.toContain("An @plugin-id mention selects that plugin");
+    const plugin = attachmentsToMessages([{ kind, content: "- parser-tests: Write parser tests [plugin: acme]" }])[0]?.content;
+    expect(plugin).toContain("An @plugin-id mention selects that plugin");
+    expect(plugin).toContain("use its listed skill names, which may differ from the plugin name");
+    expect(plugin).toContain("an empty tool search does not mean its listed skills are unavailable");
   });
 
   test("renders agent_listing_delta in initial vs delta modes", () => {

@@ -34,7 +34,7 @@ export function bindCompactionTransactionHarness(
   options: {
     readonly contextWindowTokens?: number;
     readonly maxOutputTokens?: number;
-    readonly chat?: (messages: LLMMessage[]) => Promise<LLMResponse>;
+    readonly chat?: LLMProvider["chat"];
   } = {},
 ): Pick<CompactionTransactionHarness, "context" | "provider" | "session" | "close"> {
   const home = process.env.AGENC_HOME;
@@ -114,7 +114,7 @@ export function createCompactionTransactionHarness(
     readonly contextWindowTokens?: number;
     readonly maxOutputTokens?: number;
     readonly compactionMode?: "automatic" | "manual";
-    readonly chat?: (messages: LLMMessage[]) => Promise<LLMResponse>;
+    readonly chat?: LLMProvider["chat"];
     readonly sessionId?: string;
   } = {},
 ): CompactionTransactionHarness {
@@ -239,7 +239,7 @@ export function createCompactionTransactionHarness(
 }
 
 export function createProvider(
-  chatOverride?: (messages: LLMMessage[]) => Promise<LLMResponse>,
+  chatOverride?: LLMProvider["chat"],
   countCompactionMarkersAsFixed = true,
 ): CompactionTransactionHarness["provider"] {
   const countTokens = vi.fn(async (request: {
@@ -258,7 +258,7 @@ export function createProvider(
     countedComponents: ["system" as const, "messages" as const],
   }));
   // The runtime pins every tool pair itself; the summary is prose only.
-  const defaultChat: (messages: LLMMessage[]) => Promise<LLMResponse> = async () => ({
+  const defaultChat: LLMProvider["chat"] = async () => ({
     content: JSON.stringify({
       narrative: "Bounded summary.",
       facts: [],
@@ -275,7 +275,13 @@ export function createProvider(
     model: "grok-4.5",
     finishReason: "stop",
   });
-  const chat = vi.fn(chatOverride ?? defaultChat);
+  const chat = vi.fn<LLMProvider["chat"]>((messages, options) =>
+    (chatOverride ?? defaultChat)(messages, options));
+  const chatStream: LLMProvider["chatStream"] = async (messages, onChunk, options) => {
+    const response = await chat(messages, options);
+    onChunk({ content: response.content, done: true });
+    return response;
+  };
   return {
     name: "grok",
     getExecutionProfile: async () => ({
@@ -286,7 +292,7 @@ export function createProvider(
       supportsMaxOutputTokens: true,
     }),
     chat,
-    chatStream: chat,
+    chatStream,
     healthCheck: async () => true,
     tokenCountCapability: {
       capabilityVersion: "c2-test-v1",

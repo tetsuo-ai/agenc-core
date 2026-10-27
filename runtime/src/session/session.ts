@@ -1,3 +1,4 @@
+import { toolStage } from "../tools/stage-timing.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionWriteBehindQueue, withSessionWriteBehind } from "./write-behind.js";
 /**
@@ -35,6 +36,8 @@ import { SessionWriteBehindQueue, withSessionWriteBehind } from "./write-behind.
  */
 
 import { randomUUID } from "node:crypto";
+import { isHiddenGoalContinuation } from "./hidden-goal-history.js";
+import { MAX_RECOVERY_CANONICAL_LINE_BYTES } from "../state/recovery-contract.js";
 import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
 import { boundDisplayCompletionEvent } from "./display-completion.js";
@@ -85,6 +88,7 @@ import {
 import {
   extendCompactionRetentionForOperator,
   formatCompactionOperatorDisplay,
+  compactionCannotShrinkDisplay,
   rollbackCompactionForOperator,
 } from "../services/compact/operator.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
@@ -96,7 +100,6 @@ import {
   type CompactionHistoryMarkerV1,
 } from "./compaction-history-marker.js";
 import {
-  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
   type ProviderEnvironment,
 } from "../llm/provider-options.js";
 import {
@@ -1044,8 +1047,11 @@ export interface RolloutRecorder {
 
 /** Runtime provider/model catalog. */
 export interface ModelsManager {
+  getProviderDefaultModel?(provider: string): Promise<string | undefined>;
   getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
   getModelInfoForProvider?(provider: string, model: string): Promise<ModelInfo>;
+  /** Completed metadata only; must not initiate or await discovery. */
+  tryGetModelInfoForProvider?(provider: string, model: string): ModelInfo | undefined;
   tryListModels(): ReadonlyArray<ModelInfo> | undefined;
   listModels(
     strategy?: "online_if_uncached",
@@ -1066,6 +1072,7 @@ export interface McpManager {
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
+  removeServer?(name: string): Promise<McpServerMutationResult>;
   addServer?(config: McpSessionServerConfig, options?: { readonly replace?: boolean }): Promise<McpServerMutationResult>;
   /**
    * Canonical live-manager tool boundary for callers that have already
@@ -1585,21 +1592,6 @@ function providerSwitchFailureReason(error: unknown, fallback: string): string {
     : fallback;
 }
 
-function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
-  return {
-    ...modelInfo,
-    maxOutputTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
-    maxOutputTokensUpperLimit:
-      modelInfo.maxOutputTokensUpperLimit !== undefined
-        ? Math.min(
-            modelInfo.maxOutputTokensUpperLimit,
-            MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
-          )
-        : MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
-    maxOutputTokensCappedDefault: true,
-  };
-}
-
 export const DEFAULT_LEGACY_EVENT_QUEUE_DEPTH = 1024;
 
 /** Abort reason classification (per I-7). */
@@ -1689,6 +1681,7 @@ export interface SessionRewindConversationToMessageParams {
 
 export interface SessionFileRewindParams {
   readonly messageOrdinal: number;
+  readonly userMessageId?: string;
 }
 
 export type SessionFileRewindErrorCode =
@@ -1700,6 +1693,7 @@ export type SessionPreviewFileRewindResult =
       readonly sessionId: string;
       /** True when restoring files for this message would change disk state. */
       readonly canRestoreFiles: boolean;
+      readonly checkpointAvailable?: boolean;
       readonly filesChanged: readonly string[];
       readonly insertions: number;
       readonly deletions: number;
@@ -1989,17 +1983,21 @@ export function normalizeHistoryMessages(
         model?: unknown;
       };
       toolResultIntegrity?: ToolResultIntegrity;
+      toolResultIsError?: unknown;
       agentInvocation?: AgentInvocationChannelMetadata;
       compactionHistory?: CompactionHistoryMarkerV1;
       runtimeOnly?: {
         responseItemId?: unknown;
         userMessageId?: unknown;
         toolResultIntegrity?: ToolResultIntegrity;
+        toolResultIsError?: unknown;
         agentInvocation?: AgentInvocationChannelMetadata;
         compactionHistory?: CompactionHistoryMarkerV1;
       };
     };
     const durable = durableHistoryMetadata(candidate);
+    const toolResultIsError = candidate.role === "tool" &&
+      (candidate.runtimeOnly?.toolResultIsError === true || candidate.toolResultIsError === true);
     if (
       candidate.role !== "system" &&
       candidate.role !== "developer" &&
@@ -2041,10 +2039,12 @@ export function normalizeHistoryMessages(
       typeof candidate.id === "string" ||
       typeof candidate.runtimeOnly?.userMessageId === "string" ||
       durable.toolResultIntegrity !== undefined ||
+      toolResultIsError ||
       durable.agentInvocation !== undefined ||
       durable.compactionHistory !== undefined
         ? {
             runtimeOnly: {
+              ...(toolResultIsError ? { toolResultIsError: true as const } : {}),
               ...(typeof candidate.runtimeOnly?.responseItemId === "string"
                 ? { responseItemId: candidate.runtimeOnly.responseItemId }
                 : typeof candidate.id === "string"
@@ -2052,6 +2052,8 @@ export function normalizeHistoryMessages(
                   : {}),
               ...(typeof candidate.runtimeOnly?.userMessageId === "string"
                 ? { userMessageId: candidate.runtimeOnly.userMessageId }
+                : candidate.role === "user" && typeof candidate.id === "string"
+                  ? { userMessageId: candidate.id }
                 : {}),
               ...(durable.toolResultIntegrity !== undefined
                 ? { toolResultIntegrity: durable.toolResultIntegrity }
@@ -2121,8 +2123,9 @@ function lastTextBlock(content: LLMMessage["content"]): string {
   return "";
 }
 
-function isSelectableHistoryUserMessage(message: LLMMessage): boolean {
+export function isSelectableHistoryUserMessage(message: LLMMessage): boolean {
   if (message.role !== "user") return false;
+  if (isHiddenGoalContinuation(message)) return false;
   const invocationChannel = message.runtimeOnly?.agentInvocation;
   if (invocationChannel !== undefined) {
     // The three authenticated user-role records are one logical invocation,
@@ -2205,10 +2208,24 @@ function toCompactRuntimeMessages(
         : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
+      ...(message.providerReasoningContent !== undefined
+        ? { providerReasoningContent: message.providerReasoningContent }
+        : {}),
+      ...(message.providerReasoningProvenance !== undefined
+        ? { providerReasoningProvenance: { ...message.providerReasoningProvenance } }
+        : {}),
       ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
-      message.runtimeOnly?.agentInvocation !== undefined
+      message.runtimeOnly?.toolResultIsError === true ||
+      message.runtimeOnly?.agentInvocation !== undefined ||
+      message.runtimeOnly?.compactionHistory !== undefined
         ? {
             runtimeOnly: {
+              ...(message.runtimeOnly?.toolResultIsError === true
+                ? { toolResultIsError: true as const }
+                : {}),
+              ...(message.runtimeOnly?.compactionHistory !== undefined
+                ? { compactionHistory: { ...message.runtimeOnly.compactionHistory } }
+                : {}),
               ...(message.runtimeOnly?.toolResultIntegrity !== undefined
                 ? {
                     toolResultIntegrity:
@@ -2855,6 +2872,10 @@ export class Session {
         model: liveBinding.model,
       },
       { model_provider: pending.provider, model: pending.model },
+      this.services.providerEnvironment,
+      // Interactive ingress already admits names before staging. Profiles,
+      // recovery and restored settings may carry uncatalogued saved routes.
+      { validateCatalog: false },
     );
     const admittedPending: PendingProviderSwitch = Object.freeze({
       ...pending,
@@ -2875,9 +2896,7 @@ export class Session {
       ),
       provider.binding,
     );
-    const modelInfo = provider.managedDefaultOutputCap
-      ? capManagedOpenRouterModelInfo(rawModelInfo)
-      : rawModelInfo;
+    const modelInfo = rawModelInfo;
     const permissionContext = this.permissionModeRegistry.current();
     const promptContext = buildTurnContext({
       conversationId: this.conversationId,
@@ -2904,6 +2923,7 @@ export class Session {
     });
     const baseInstructions = await assembleBaseInstructionsForModel({
       session: this,
+      ...(configSnapshot !== undefined ? { configSnapshot } : {}),
       ctx: promptContext,
       registry: this.services.registry,
       provider: provider.binding.provider,
@@ -3128,6 +3148,7 @@ export class Session {
 
   newDefaultTurnWithSubId(subId: string): TurnContext {
     this.assertProviderSwitchTransactionHealthy();
+    this.adoptCompletedModelMetadata();
     return buildDefaultTurnWithSubId(this, subId);
   }
 
@@ -3135,12 +3156,37 @@ export class Session {
     return this.newDefaultTurnWithSubId(this.nextInternalSubId());
   }
 
+  /** Validate daemon input before its transcript and submission identity are committed. */
+  async assertUserPromptFits(input: string | readonly LLMContentPart[]): Promise<void> {
+    const configStore = this.services.configStore;
+    if (configStore === undefined) throw new Error("Prompt admission requires the session's ConfigStore authority");
+    await runWithCurrentRuntimeSession(this, () => runWithCanonicalSettingsAuthority(configStore, async () => {
+      const { assertUserPromptFits } = await import("./run-turn.js");
+      await assertUserPromptFits(this, this.newDefaultTurn(), input);
+    }));
+  }
+
   newTurnWithSubId(
     subId: string,
     configOverrides?: Partial<Config>,
   ): TurnContext {
     this.assertProviderSwitchTransactionHealthy();
+    this.adoptCompletedModelMetadata();
     return buildTurnWithSubId(this, subId, configOverrides);
+  }
+
+  private adoptCompletedModelMetadata(): void {
+    const manager = this.services.modelsManager;
+    if (manager?.tryGetModelInfoForProvider === undefined) return;
+    const { provider, model } = this.providerBinding;
+    // DeepSeek can start from the catalog while discovery runs in the
+    // background. Replace the root snapshot only when constructing a turn;
+    // contexts already in use retain their original limits.
+    if (provider !== "deepseek") return;
+    const refreshed = manager.tryGetModelInfoForProvider(provider, model);
+    if (refreshed !== undefined) {
+      (this as { modelInfo: ModelInfo }).modelInfo = refreshed;
+    }
   }
 
   private assertProviderSwitchTransactionHealthy(): void {
@@ -4091,7 +4137,12 @@ export class Session {
       const selectedIndex = activeHistoryIndexForOrdinal(
         activeHistory,
         params.messageOrdinal,
-      );
+      ) ?? (params.messageOrdinal === 0 && params.direction === "from" &&
+        activeHistory.length > 0 && activeHistory.every((message) =>
+          !isSelectableHistoryUserMessage(message))
+        // Full manual compaction remains meaningful when the previous
+        // compaction left only a summary. There is no selectable prompt.
+        ? 0 : null);
       if (selectedIndex === null) {
         return this.partialCompactFailure(
           "MESSAGE_NOT_FOUND",
@@ -4128,7 +4179,7 @@ export class Session {
             ].map(cloneLlmMessage);
       const event = createHistoryReplacedEvent({
         replacementHistory,
-        id: `history-replaced-${task.subId}`,
+        id: `history-replaced-${compactionResult.transaction?.attempt_id ?? task.subId}`,
       });
       const attemptId = compactionResult.transaction?.attempt_id;
       const displayText = formatCompactionOperatorDisplay(
@@ -4161,6 +4212,8 @@ export class Session {
           "Conversation summarization was cancelled.",
         );
       }
+      const message = compactionCannotShrinkDisplay(error);
+      if (message !== undefined) throw new Error(message, { cause: error });
       throw error;
     } finally {
       params.signal?.removeEventListener("abort", onCallerAbort);
@@ -4491,14 +4544,36 @@ export class Session {
   }
 
   /**
-   * Resolve a message ordinal (over selectable user messages in the
-   * active history — same contract as conversation rewind) to the
-   * `userMessageId` stamped by `runTurn`, which keys the file-history
-   * sidecar's barrier snapshot for that message.
+   * Resolve a durable prompt ID across automatic compaction, or a legacy
+   * active-history ordinal, to the file-history barrier snapshot. Explicit
+   * transcript resets retire older selections; compaction does not.
    */
   private resolveFileRewindTarget(
     messageOrdinal: number,
+    durableUserMessageId?: string,
   ): { found: false } | { found: true; userMessageId: string | null } {
+    if (durableUserMessageId !== undefined) {
+      // Stable IDs never fall back to ordinals: compaction can reassign those.
+      const current = this.snapshotHistoryMessages().some(message =>
+        isSelectableHistoryUserMessage(message) &&
+        (message.runtimeOnly?.userMessageId ?? message.runtimeOnly?.responseItemId) === durableUserMessageId);
+      if (current) return { found: true, userMessageId: durableUserMessageId };
+      const items = this.rolloutStore?.readAll() ?? [];
+      // Automatic compaction is not a transcript reset. Explicit clear/rewind
+      // boundaries do retire prompts and must not resurrect stale selections.
+      let boundary = -1;
+      for (let index = items.length - 1; index >= 0; index--) {
+        const item = items[index]!;
+        if (item.type === "event_msg" &&
+            (item.payload.msg.type === "history_cleared" || item.payload.msg.type === "transcript_epoch")) {
+          boundary = index;
+          break;
+        }
+      }
+      const exists = items.slice(boundary + 1).some(item => item.type === "event_msg" &&
+        item.payload.msg.type === "user_message" && item.payload.id === durableUserMessageId);
+      return exists ? { found: true, userMessageId: durableUserMessageId } : { found: false };
+    }
     const sourceHistory = this.snapshotHistoryMessages();
     const { activeHistory } = splitActiveHistory(sourceHistory);
     const selectedIndex = activeHistoryIndexForOrdinal(
@@ -4522,7 +4597,7 @@ export class Session {
   async previewFileRewind(
     params: SessionFileRewindParams,
   ): Promise<SessionPreviewFileRewindResult> {
-    const target = this.resolveFileRewindTarget(params.messageOrdinal);
+    const target = this.resolveFileRewindTarget(params.messageOrdinal, params.userMessageId);
     if (!target.found) {
       return {
         ok: false,
@@ -4542,6 +4617,7 @@ export class Session {
         ok: true,
         sessionId: this.conversationId,
         canRestoreFiles: false,
+        checkpointAvailable: false,
         filesChanged: [],
         insertions: 0,
         deletions: 0,
@@ -4551,6 +4627,7 @@ export class Session {
       ok: true,
       sessionId: this.conversationId,
       canRestoreFiles: preview.filesChanged.length > 0,
+      checkpointAvailable: true,
       filesChanged: [...preview.filesChanged],
       insertions: preview.insertions,
       deletions: preview.deletions,
@@ -4589,7 +4666,7 @@ export class Session {
       throw error;
     }
     try {
-      const target = this.resolveFileRewindTarget(params.messageOrdinal);
+      const target = this.resolveFileRewindTarget(params.messageOrdinal, params.userMessageId);
       if (!target.found) {
         return {
           ok: false,
@@ -4900,11 +4977,32 @@ export class Session {
     event: Event,
     appendOpts: AppendOptions = {},
   ): { readonly event: Event; publish(): Event } {
+    // Through the class, not the receiver: prepareEmit may be borrowed by a
+    // facade (`Session.prototype.prepareEmit`) that has no private helpers.
+    return toolStage("persistence", () => Session.prototype.prepareEmitTimed.call(this, event, appendOpts));
+  }
+
+  private prepareEmitTimed(
+    event: Event,
+    appendOpts: AppendOptions,
+  ): { readonly event: Event; publish(): Event } {
     if (this.writeBehind.draining) this.writeBehind.drain();
     if (this.canonicalJournalSealed) {
       throw new Error(
         `cannot append ${event.msg.type}: canonical run journal is sealed`,
       );
+    }
+    if (event.msg.type === "session_configured" &&
+      Buffer.byteLength(JSON.stringify(event), "utf8") > MAX_RECOVERY_CANONICAL_LINE_BYTES - 4096) {
+      // Canonical transcript rows and getInitialTranscriptEvents own this
+      // display seed already. Bound the header before stamping so publication
+      // and persistence agree, and checkpoint prefix hashes cover those bytes.
+      event = { ...event, msg: { ...event.msg, payload: {
+        ...event.msg.payload, initialMessages: [],
+      } } };
+      if (Buffer.byteLength(JSON.stringify(event), "utf8") > MAX_RECOVERY_CANONICAL_LINE_BYTES - 4096) {
+        throw new Error("session configuration metadata exceeds its recovery byte limit");
+      }
     }
     if (event.msg.type === "tool_call_completed") {
       let completion = boundDisplayCompletionEvent(event as Parameters<typeof boundDisplayCompletionEvent>[0]);
@@ -4996,6 +5094,10 @@ export class Session {
 
   /** Publish an event already stamped and appended by {@link prepareEmit}. */
   publishPreparedEvent(event: Event): Event {
+    return toolStage("ui_fanout", () => Session.prototype.publishPreparedEventTimed.call(this, event));
+  }
+
+  private publishPreparedEventTimed(event: Event): Event {
     if (this.writeBehind.deferring) {
       const captured = structuredClone(event);
       this.writeBehind.defer("event-publication", () => this.publishPreparedEvent(captured));

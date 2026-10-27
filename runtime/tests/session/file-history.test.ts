@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   checkOriginFileChanged,
@@ -21,7 +21,12 @@ import {
   fileHistoryRewind,
   type FileHistorySnapshot,
 } from "./file-history.js";
+import { applyPatchText } from "../../src/tools/apply-patch/runtime.js";
 import type { RolloutItem } from "./rollout-item.js";
+import {
+  acquireCanonicalCompactionLease,
+  withCanonicalBackgroundWork,
+} from "../../src/session/canonical-background-work.js";
 
 let previousAgencHome: string | undefined;
 
@@ -50,6 +55,145 @@ describe("FileHistory (I-28)", () => {
   afterEach(() => {
     if (project) rmSync(project, { recursive: true, force: true });
   });
+
+  test("defers snapshot diagnostics while compaction owns the journal", async () => {
+    const key = join(project, "rollout#epoch:1");
+    const directory = join(project, "new-scene");
+    const events: string[] = [];
+    const history = new FileHistory({
+      projectDir: project,
+      onDiagnostic: (diagnostic) => { events.push(diagnostic.cause); },
+      withCanonicalBackgroundWork: (work) => withCanonicalBackgroundWork(key, work),
+    });
+    // Shell tracking can record a nonexistent path that becomes a directory.
+    await history.trackEdit(directory, "before");
+    mkdirSync(directory);
+    const lease = await acquireCanonicalCompactionLease(key, () => new Error("busy"));
+    await history.makeSnapshot("after");
+    // Real filesystem work finished, but its EISDIR warning cannot enter
+    // the intent-to-commit window. The sidecar drain waits for publication.
+    expect(history.getState().snapshots.at(-1)?.messageId).toBe("after");
+    expect(events).toEqual([]);
+    let flushed = false;
+    const drain = history.flush().then(() => { flushed = true; });
+    await Promise.resolve();
+    expect(flushed).toBe(false);
+    lease.release();
+    await drain;
+    expect(events).toEqual(["file_history_snapshot_failed"]);
+    history.stop();
+  });
+
+  test("a failed diagnostic delivery does not block later diagnostics or restore", async () => {
+    const key = join(project, "rollout#epoch:1");
+    const file = join(project, "durable.txt");
+    writeFileSync(file, "original\n");
+    let attempts = 0;
+    const delivered: string[] = [];
+    const history = new FileHistory({
+      projectDir: project,
+      onDiagnostic: (diagnostic) => {
+        if (++attempts === 1) throw new Error("canonical run journal is sealed");
+        delivered.push(diagnostic.cause);
+      },
+      withCanonicalBackgroundWork: (work) => withCanonicalBackgroundWork(key, work),
+    });
+    const sidecar = new FileHistorySidecar({ fileHistory: history });
+    try {
+      await history.makeSnapshot("before-edit");
+      await history.trackEdit(file, "edit");
+      writeFileSync(file, "changed\n");
+      // Trying to back up a directory produces real filesystem diagnostics.
+      await history.trackEdit(project, "first-diagnostic");
+      await history.trackEdit(project, "second-diagnostic");
+      await expect(history.flush()).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+      expect(delivered).toEqual(["file_history_track_failed"]);
+      expect((await history.previewRewind("before-edit"))?.filesChanged).toEqual([file]);
+      await expect(history.rewindToMessage("before-edit")).resolves.toEqual([file]);
+      expect(readFileSync(file, "utf8")).toBe("original\n");
+      await expect(history.clear()).resolves.toBeUndefined();
+      await expect(sidecar.stop()).resolves.toBeUndefined();
+    } finally {
+      history.stop();
+    }
+  });
+
+  test("resumes published barriers without overwriting origins or another session", async () => {
+    const file = join(project, "durable.txt");
+    writeFileSync(file, "original\n");
+    const first = new FileHistory({ projectDir: project, sessionId: "first" });
+    await first.makeSnapshot("before-edit");
+    await first.trackEdit(file, "edit");
+    writeFileSync(file, "changed\n");
+    await first.makeSnapshot("after-edit");
+    first.stop();
+    const other = new FileHistory({ projectDir: project, sessionId: "other" });
+    await other.trackEdit(file, "other-edit");
+    other.stop();
+    const diagnostics: string[] = [];
+    const resumed = new FileHistory({
+      projectDir: project,
+      sessionId: "first",
+      onDiagnostic: ({ cause }) => { diagnostics.push(cause); },
+    });
+    await resumed.loadFromDisk();
+    await resumed.flush();
+    expect(diagnostics).toEqual([]);
+    expect((await resumed.previewRewind("before-edit"))?.filesChanged).toEqual([file]);
+    await resumed.rewindToMessage("before-edit");
+    expect(readFileSync(file, "utf8")).toBe("original\n");
+    await resumed.makeSnapshot("restored");
+    await resumed.trackEdit(file, "again");
+    writeFileSync(file, "another\n");
+    await resumed.makeSnapshot("after-again");
+    await resumed.rewindToMessage("after-edit");
+    expect(readFileSync(file, "utf8")).toBe("changed\n");
+    resumed.stop();
+  });
+
+  test.each(["root", "sibling-prefix", "other-session", "traversal", "relative"])(
+    "rejects a persisted %s backup path without loading the index",
+    async (kind) => {
+      const file = join(project, "durable.txt");
+      writeFileSync(file, "original\n");
+      const first = new FileHistory({ projectDir: project, sessionId: "first" });
+      await first.trackEdit(file, "edit");
+      await first.flush();
+      first.stop();
+      const other = new FileHistory({ projectDir: project, sessionId: "other" });
+      other.stop();
+      const invalidPaths: Record<string, string> = {
+        root: first.historyDir,
+        "sibling-prefix": join(`${first.historyDir}-other`, "v1"),
+        "other-session": join(other.historyDir, "v1"),
+        traversal: `${first.historyDir}${sep}..${sep}outside`,
+        relative: "v1",
+      };
+      const indexPath = join(first.historyDir, "snapshots.json");
+      const index = JSON.parse(readFileSync(indexPath, "utf8"));
+      const backup = index.snapshots[0].trackedFileBackups[file];
+      expect(backup.backupFileName).toBeTypeOf("string");
+      backup.backupFileName = invalidPaths[kind];
+      writeFileSync(indexPath, JSON.stringify(index));
+      const diagnostics: string[] = [];
+      const resumed = new FileHistory({
+        projectDir: project,
+        sessionId: "first",
+        onDiagnostic: ({ cause }) => { diagnostics.push(cause); },
+      });
+      try {
+        await resumed.loadFromDisk();
+        await resumed.flush();
+        expect(diagnostics).toEqual(["file_history_load_failed"]);
+        expect(resumed.getState().snapshots).toEqual([]);
+        expect(resumed.getState().trackedFiles.size).toBe(0);
+        expect(readFileSync(file, "utf8")).toBe("original\n");
+      } finally {
+        resumed.stop();
+      }
+    },
+  );
 
   test("trackEdit creates v1 backup of tracked file", async () => {
     const file = join(project, "src.txt");
@@ -263,6 +407,34 @@ describe("FileHistorySidecar event wiring", () => {
     await waitForTracked(hist, b);
     expect(hist.getState().trackedFiles.has(a)).toBe(true);
     expect(hist.getState().trackedFiles.has(b)).toBe(true);
+  });
+
+  test.each([false, true])("rewind restores both sides of a patch move (existing destination=%s)", async (existing) => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist, workspaceRoot: project });
+    const source = join(project, "source.txt");
+    const destination = join(project, "destination.txt");
+    writeFileSync(source, "before\n");
+    if (existing) writeFileSync(destination, "destination original\n");
+    const input = [
+      "*** Begin Patch", "*** Update File: source.txt", "*** Move to: destination.txt",
+      "@@", "-before", "+after", "*** End Patch",
+    ].join("\n");
+    try {
+      await hist.makeSnapshot("before-move");
+      sidecar.onEvent(startedEvent("move", "apply_patch", { input }));
+      await waitForTracked(hist, source);
+      await waitForTracked(hist, destination);
+      await applyPatchText(input, { cwd: project, allowedPaths: [project] });
+      await hist.makeSnapshot("after-move");
+      expect(readFileSync(destination, "utf8")).toBe("after\n");
+      await hist.rewindToMessage("before-move");
+      expect(readFileSync(source, "utf8")).toBe("before\n");
+      if (existing) expect(readFileSync(destination, "utf8")).toBe("destination original\n");
+      else expect(() => readFileSync(destination, "utf8")).toThrow();
+    } finally {
+      await sidecar.stop();
+    }
   });
 
   test("user_message events take a barrier snapshot keyed by the event id", async () => {

@@ -68,6 +68,47 @@ const FAKE_BWRAP_SOURCE = [
 ].join("\n") + "\n";
 
 describe("Linux sandbox launcher", () => {
+  it("preserves the local binding opt-in without enabling general networking", () => {
+    const args = ["--allow-local-binding", "--sandbox-policy-cwd", "/workspace",
+      "--command-cwd", "/workspace", "--permission-profile",
+      JSON.stringify(workspaceWriteProfile("/workspace", "disabled")),
+      "--session-temp-root", os.tmpdir(), "--", "/bin/true"];
+    expect(parseLinuxSandboxLauncherArgs(args).allowLocalBinding).toBe(true);
+    expect(parseLinuxSandboxLauncherArgs(args.slice(1)).allowLocalBinding).toBe(false);
+    expect(networkSeccompMode("disabled", false, false, true)).toBe("local-only");
+    expect(networkSeccompMode("enabled", false, false, true)).toBeNull();
+    expect(networkSeccompMode("restricted", true, true, true)).toBe("proxy-routed");
+  });
+
+  it.each(["x64", "arm64"] as const)("allows isolated IP and stream stdio pairs without opening Unix services on %s", (arch) => {
+    const program = createNetworkSeccompProgram("local-only", arch);
+    const socket = arch === "x64" ? 41 : 198;
+    const pair = arch === "x64" ? 53 : 199;
+    const syscallResult = (nr: number, arg0 = 0, arg1 = 0): number => {
+      let accumulator = 0;
+      const data = new Map([[0, nr], [4, arch === "x64" ? 0xc000003e : 0xc00000b7], [16, arg0], [24, arg1]]);
+      for (let pc = 0; pc * 8 < program.length; pc++) {
+        const at = pc * 8, code = program.readUInt16LE(at), k = program.readUInt32LE(at + 4);
+        if (code === 0x20) accumulator = data.get(k) ?? 0;
+        else if (code === 0x54) accumulator &= k;
+        else if (code === 0x15) pc += program.readUInt8(at + (accumulator === k ? 2 : 3));
+        else if (code === 0x06) return k;
+        else throw new Error(`unsupported BPF opcode ${code}`);
+      }
+      throw new Error("unterminated BPF");
+    };
+    const allow = 0x7fff0000, deny = 0x00050001;
+    for (const family of [2, 10]) expect(syscallResult(socket, family)).toBe(allow);
+    for (const family of [1, 16, 17]) expect(syscallResult(socket, family)).toBe(deny);
+    // Datagram socketpairs can reconnect to a pathname Unix service. Only
+    // connected stream pairs used for child stdio are safe in this mode.
+    for (const flags of [0, 0x80000, 0x800, 0x80800]) expect(syscallResult(pair, 1, 1 | flags)).toBe(allow);
+    for (const type of [2, 5]) expect(syscallResult(pair, 1, type)).toBe(deny);
+    for (const nr of arch === "x64" ? [42, 49, 50, 43, 288] : [203, 200, 201, 202, 242]) {
+      expect(syscallResult(nr)).toBe(allow);
+    }
+    for (const nr of [425, 426, 427, arch === "x64" ? 101 : 117]) expect(syscallResult(nr)).toBe(deny);
+  });
   it("parses browser CDP stdio transport before the command separator", () => {
     const parsed = parseLinuxSandboxLauncherArgs([
       "--browser-cdp-over-stdio",
@@ -514,8 +555,13 @@ describe("Linux sandbox launcher", () => {
   it("maps restricted filesystem policy to writable, readonly, and masked bwrap mounts", () => {
     const root = withTempDir("agenc-linux-launcher-fs-");
     // Own the repository metadata fixture; an ambient ancestor repository
-    // must not decide whether this root has a protected .git path.
-    fs.mkdirSync(path.join(root, ".git"));
+    // must not decide whether this root has a protected .git path. A real
+    // `.git` directory is narrowed: its inert data (refs, objects, ...) is
+    // writable while hooks/config/info/objects-info stay read-only.
+    fs.mkdirSync(path.join(root, ".git", "hooks"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".git", "refs", "heads"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".git", "objects", "info"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".git", "config"), "[core]\n");
     const secret = path.join(root, "token.secret");
     const otherSecret = path.join(root, "other.token");
     fs.writeFileSync(secret, "sensitive");
@@ -546,8 +592,61 @@ describe("Linux sandbox launcher", () => {
     expect(args).toContain("--ro-bind");
     expect(args).toContain(secret);
     expect(args).toContain(otherSecret);
-    expect(args).toContain(path.join(root, ".git"));
+    // The whole workspace (including .git) is writable-bound (sliceAfter above
+    // shows the effective `--bind root root`); only the git
+    // execution/redirection surface is read-only, not all of .git.
+    expect(bindModeForDestination(args, path.join(root, ".git", "hooks"))).toBe("--ro-bind");
+    expect(bindModeForDestination(args, path.join(root, ".git", "config"))).toBe("--ro-bind");
+    expect(bindModeForDestination(args, path.join(root, ".git", "objects", "info"))).toBe("--ro-bind");
+    // .git itself and its inert data areas are not read-only mounts.
+    expect(bindModeForDestination(args, path.join(root, ".git"))).toBeUndefined();
+    expect(bindModeForDestination(args, path.join(root, ".git", "refs"))).toBeUndefined();
     expect(args).toContain("--unshare-net");
+  });
+
+  it("narrows a real .git to a writable repository whose code/pointer surface stays read-only", () => {
+    const root = withTempDir("agenc-linux-git-narrow-");
+    // Populated like a freshly committed repository.
+    fs.mkdirSync(path.join(root, ".git", "hooks"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".git", "refs", "heads"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".git", "logs"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".git", "objects", "info"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".git", "info"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".git", "branches"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".git", "config"), "[core]\n");
+    fs.writeFileSync(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const policy = restrictedFileSystemPolicy([
+      { path: { kind: "path", path: root }, access: "write" },
+    ]);
+    const plan = createBwrapCommandArgs(["/bin/true"], policy, root, root, {
+      mountProc: false,
+      networkMode: "isolated",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    });
+    const args = plan.args;
+
+    // Existing execution/redirection paths are read-only bound.
+    for (const name of ["hooks", "config", "info", "branches"]) {
+      expect(bindModeForDestination(args, path.join(root, ".git", name))).toBe("--ro-bind");
+    }
+    expect(bindModeForDestination(args, path.join(root, ".git", "objects", "info"))).toBe("--ro-bind");
+    // Missing execution/redirection paths inside the narrowed .git are watched
+    // by the created-path monitor (detect, remove, fail), never placeholdered -
+    // a mount point at a missing path inside the host-bind-mounted .git would
+    // make bubblewrap create that entry on the real host .git. So nothing is
+    // bound or mounted at them, and the repository is left untouched.
+    for (const name of ["config.worktree", "modules", "worktrees", "remotes", "commondir"]) {
+      const target = path.join(root, ".git", name);
+      expect(plan.protectedCreateTargets).toContain(target);
+      expect(bindModeForDestination(args, target)).toBeUndefined();
+      expect(args.some((v, idx) => v === "--tmpfs" && args[idx + 1] === target)).toBe(false);
+      expect(args.some((v, idx) => v === "--ro-bind" && args[idx + 2] === target)).toBe(false);
+    }
+    // .git and its inert data areas are not read-only.
+    expect(bindModeForDestination(args, path.join(root, ".git"))).toBeUndefined();
+    for (const name of ["refs", "logs", "objects", "HEAD"]) {
+      expect(bindModeForDestination(args, path.join(root, ".git", name))).toBeUndefined();
+    }
   });
 
   it("scaffolds narrow aliases before host mounts without binding their parents", () => {
@@ -946,6 +1045,49 @@ describe("Linux sandbox launcher", () => {
     expect(fs.existsSync(protectedTarget)).toBe(false);
   });
 
+  it.each([
+    { rel: ".git/commondir", removed: ".git/commondir" },
+    { rel: ".git/hooks/pre-commit", removed: ".git/hooks" },
+  ])("removes and fails a launch that creates a missing narrowed .git carve-out: $rel", async ({ rel, removed }) => {
+    // A narrowed .git (real directory) whose execution/redirection surface is
+    // kept read-only. For a carve-out that does not exist yet (here the repo
+    // has no hooks/ or commondir), a command the write-policy classifier cannot
+    // parse (a compiled helper, python) could try to create it; the
+    // created-path monitor must remove it and fail the launch, never leaving it
+    // on the host for a later git to follow. Existing carve-outs are instead
+    // read-only bound by the real sandbox (covered elsewhere).
+    const workspace = withTempDir("agenc-linux-launcher-narrow-create-");
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, ".git", "config"), "[core]\n");
+    fs.writeFileSync(path.join(workspace, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const bin = path.join(workspace, "bin"); fs.mkdirSync(bin);
+    const fakeBwrap = path.join(bin, "bwrap");
+    const createTarget = path.join(workspace, rel);
+    writeExecutable(
+      fakeBwrap,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const t = process.env.AGENC_PROTECTED_TARGET;",
+        "fs.mkdirSync(path.dirname(t), { recursive: true });",
+        "fs.writeFileSync(t, 'x');",
+        "process.exit(0);",
+      ].join("\n") + "\n",
+    );
+    const exitCode = await runLinuxSandboxMain([
+      "--sandbox-policy-cwd", workspace, "--command-cwd", workspace,
+      "--permission-profile", JSON.stringify(workspaceWriteProfile(workspace, "disabled")),
+      "--session-temp-root", bin, "--", "/bin/true",
+    ], {
+      env: { ...process.env, AGENC_PROTECTED_TARGET: createTarget },
+      selfCommand: [process.execPath, path.join(workspace, "inner.js")],
+      preferredLauncher: () => ({ program: fakeBwrap, supportsArgv0: false }),
+    });
+    expect(exitCode).toBe(1);
+    expect(fs.existsSync(path.join(workspace, removed))).toBe(false);
+  });
+
   it("expands unreadable absolute globs from their static root", () => {
     const workspace = withTempDir("agenc-linux-launcher-glob-work-");
     const external = withTempDir("agenc-linux-launcher-glob-external-");
@@ -1130,6 +1272,25 @@ describe("Linux sandbox launcher", () => {
       supportsArgv0: true,
       supportsBindFd: false,
     });
+  });
+
+  it("reads both bubblewrap help capabilities in one process with the session environment", () => {
+    const root = withTempDir("agenc-linux-launcher-help-once-");
+    const cwd = path.join(root, "workspace");
+    fs.mkdirSync(cwd);
+    const trusted = path.join(root, "bin");
+    fs.mkdirSync(trusted);
+    const calls = path.join(root, "calls");
+    writeExecutable(path.join(trusted, "bwrap"), [
+      "#!/bin/sh",
+      'printf "help\\n" >> "$AGENC_HELP_CALLS"',
+      'printf "%s" "--argv0 --ro-bind-fd"',
+    ].join("\n") + "\n");
+    expect(preferredBubblewrapLauncher({
+      searchPath: trusted, cwd, trustedDirectories: [trusted],
+      env: { ...process.env, AGENC_HELP_CALLS: calls },
+    })).toMatchObject({ supportsArgv0: true, supportsBindFd: true });
+    expect(fs.readFileSync(calls, "utf8")).toBe("help\n");
   });
 
   it("does not recover a missing session PATH from the launcher process", () => {

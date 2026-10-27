@@ -146,7 +146,7 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
   return {
     name: "kill_process",
     description:
-      "Terminate background processes started by exec_command in this conversation. Pass session_id for one, session_ids for several, or all=true to stop every session this conversation still has running. Reports terminated=false for a session that already exited (a benign race, not an error) and always lists the owned sessions that remain live, so cleanup is driven by session ids. Never clean up by scanning the process table for task filenames or command text: such a match also selects AgenC's own CLI and process brokers. Another conversation's sessions are refused.",
+      "Stop background sessions exec_command started in this conversation: session_id for one, session_ids for several, all=true for every one still running. terminated=false means the session had already exited; the result lists your sessions still live. Never stop processes by searching the process table for file names or command text: that also matches AgenC's own processes. Other conversations' sessions are refused.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -185,19 +185,16 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       properties: {
         session_id: {
           type: "number",
-          description:
-            "The session_id returned by exec_command for the process to terminate.",
+          description: "Session to stop.",
         },
         session_ids: {
           type: "array",
           items: { type: "number" },
-          description:
-            "Several session_ids to terminate together. Every id is ownership-checked before any signal is sent.",
+          description: "Several sessions to stop.",
         },
         all: {
           type: "boolean",
-          description:
-            "Stop every background session this conversation started that is still running. Never touches another conversation's sessions.",
+          description: "Stop every session this conversation still has running.",
         },
       },
       additionalProperties: false,

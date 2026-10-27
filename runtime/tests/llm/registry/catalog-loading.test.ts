@@ -55,7 +55,7 @@ describe('catalog data on first use', () => {
     state.mismatch = true
     expect(() => OPENROUTER_MODELS[0]).toThrow('does not match its model index')
     state.mismatch = false
-    expect(OPENROUTER_MODELS[0]?.model).toBe('anthropic/claude-sonnet-5.5')
+    expect(OPENROUTER_MODELS[0]?.model).toBe('minimax/minimax-m3.1-flash:free')
     expect(state.reads).toBe(2)
   })
 

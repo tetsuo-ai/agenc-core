@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { OpenAIProvider } from "../../../../src/llm/providers/openai/adapter.js";
-import type { LLMMessage, LLMResponse } from "../../../../src/llm/types.js";
+import type { LLMChatOptions, LLMMessage, LLMResponse } from "../../../../src/llm/types.js";
 import { runWithStartupProviderSelection } from "../../../../src/utils/model/providers.js";
 
 const MODEL = "gpt-6-sol";
@@ -97,6 +97,24 @@ function requestBody(
 }
 
 describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPLAY)", () => {
+  test.each([false, true])("keeps Luna max encrypted replay without forcing automatic summaries (stream=%s)", async (stream) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(stream
+      ? toolTurnStream([REASONING, SERVER_CALL])
+      : new Response(JSON.stringify({ status: "completed", output: [REASONING, SERVER_CALL] }),
+        { headers: { "content-type": "application/json" } }));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-6-luna", fetchImpl });
+    const messages: LLMMessage[] = [{ role: "user", content: "read a" }];
+    const options = { reasoningEffort: "max" as const, maxOutputTokens: 8192 };
+    const response = await withReplaySwitch(undefined, () => stream
+      ? provider.chatStream(messages, () => {}, options)
+      : provider.chat(messages, options));
+
+    expect(requestBody(fetchImpl, 0).reasoning).toEqual({ effort: "max" });
+    expect(requestBody(fetchImpl, 0).include).toEqual(["reasoning.encrypted_content"]);
+    expect(requestBody(fetchImpl, 0).max_output_tokens).toBe(8192);
+    expect(response.providerReasoningProvenance).toEqual({ provider: "openai", model: "gpt-6-luna" });
+  });
+
   test.each([
     ["the completion lists its output", [REASONING, SERVER_CALL]],
     ["the completion has an empty output, as on the ChatGPT backend", []],
@@ -106,16 +124,17 @@ describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPL
       .mockResolvedValueOnce(answerStream());
     const provider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl });
 
-    const first = await withReplaySwitch("1", () =>
+    const first = await withReplaySwitch(undefined, () =>
       provider.chatStream([{ role: "user", content: "read a" }], () => {}));
-    await withReplaySwitch("1", () => provider.chatStream(historyAfter(first), () => {}));
+    await withReplaySwitch(undefined, () => provider.chatStream(historyAfter(first), () => {}));
 
     expect(first.providerReasoningProvenance).toEqual({ provider: "openai", model: MODEL });
     expect(requestBody(fetchImpl, 0).include).toEqual(["reasoning.encrypted_content"]);
     expect(requestBody(fetchImpl, 1).input).toEqual([
       { type: "message", role: "user", content: [{ type: "input_text", text: "read a" }] },
       REASONING,
-      { type: "function_call", id: "fc_1", call_id: "call_1", name: "read", arguments: '{"path":"a"}' },
+      // The call goes back with the item id the server issued for it.
+      { type: "function_call", id: "fc_server_side_id", call_id: "call_1", name: "read", arguments: '{"path":"a"}' },
       { type: "function_call_output", call_id: "call_1", output: "A" },
     ]);
   });
@@ -150,10 +169,7 @@ describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPL
     expect(requestBody(fetchImpl, 1).input).not.toContainEqual(REASONING);
   });
 
-  test.each([
-    ["switch unset", undefined],
-    ["switch off", "0"],
-  ])("keeps today's wire and response with the %s", async (_label, value) => {
+  test.each(["0", "false", "no", "off", " FALSE "])("keeps replay disabled with explicit opt-out %s", async (value) => {
     const fetchImpl = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(toolTurnStream([REASONING, SERVER_CALL]))
       .mockResolvedValueOnce(answerStream());
@@ -170,6 +186,112 @@ describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPL
     expect(requestBody(fetchImpl, 0).include).toBeUndefined();
     expect(requestBody(fetchImpl, 1).include).toBeUndefined();
     expect(requestBody(fetchImpl, 1).input).not.toContainEqual(REASONING);
+  });
+
+  test.each([
+    { chatgptBackend: false, stream: false },
+    { chatgptBackend: false, stream: true },
+    { chatgptBackend: true, stream: false },
+    { chatgptBackend: true, stream: true },
+  ])("preserves default replay and explicit summary choices on both paths: %j", async ({ chatgptBackend, stream }) => {
+    for (const summary of [undefined, "none", "concise", "detailed", "auto"] as const) {
+      const fetchImpl = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(stream ? toolTurnStream([]) : new Response(JSON.stringify({
+          status: "completed", output: [REASONING, SERVER_CALL],
+        }), { headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(stream ? answerStream() : new Response(JSON.stringify({
+          status: "completed", output: [],
+        }), { headers: { "content-type": "application/json" } }));
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, chatgptBackend, fetchImpl });
+      // The task pipeline materializes metadata-default none; retain its provenance.
+      const options: LLMChatOptions = {
+        reasoningEffort: "max",
+        reasoningSummary: summary ?? "none",
+        ...(summary === undefined ? { reasoningSummaryIsDefault: true } : {}),
+      };
+      const invoke = (messages: LLMMessage[]) => withReplaySwitch(undefined, () => stream
+        ? provider.chatStream(messages, () => {}, options) : provider.chat(messages, options));
+      const first = await invoke([{ role: "user", content: "read a" }]);
+      await invoke(historyAfter(first));
+
+      expect(first.providerReasoningProvenance).toEqual({ provider: "openai", model: MODEL });
+      const body = requestBody(fetchImpl, 1);
+      expect(body.include).toEqual(["reasoning.encrypted_content"]);
+      expect(body.reasoning).toEqual({ effort: "max", ...(summary === "none" ? {} : { summary: summary ?? "auto" }) });
+      expect(body.input).toContainEqual(REASONING);
+      expect(body.input).toContainEqual(SERVER_CALL);
+    }
+  });
+
+  test("ChatGPT opt-out retains its encrypted-content request contract without retaining or replaying state", async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(toolTurnStream([]))
+      .mockResolvedValueOnce(answerStream());
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, chatgptBackend: true, fetchImpl });
+    const options: LLMChatOptions = { reasoningEffort: "max" };
+    const first = await withReplaySwitch("0", () => provider.chatStream([{ role: "user", content: "read a" }], () => {}, options));
+    await withReplaySwitch("0", () => provider.chatStream(historyAfter({ ...first, ...replayFrom(first) }), () => {}, options));
+
+    expect(first.providerReasoningContent).toBeUndefined();
+    expect(requestBody(fetchImpl, 1).include).toEqual(["reasoning.encrypted_content"]);
+    expect(requestBody(fetchImpl, 1).reasoning).toEqual({ effort: "max" });
+    expect(requestBody(fetchImpl, 1).input).not.toContainEqual(REASONING);
+  });
+
+  test.each([
+    ["gpt-6-luna", undefined, true],
+    ["gpt-6.1-sol", undefined, true],
+    ["o3", undefined, true],
+    ["gpt-5.4", undefined, false],
+    ["gpt-5.4", "medium", true],
+    ["gpt-6-luna", "none", false],
+    ["gpt-4.1", undefined, false],
+  ] as const)("defaults replay only for effective reasoning calls (%s, %s)", async (model, reasoningEffort, enabled) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(toolTurnStream([REASONING, SERVER_CALL]));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model, fetchImpl });
+    const history = historyAfter({ content: "", toolCalls: [{ id: "call_1", name: "read", arguments: '{"path":"a"}' }],
+      providerReasoningContent: JSON.stringify([REASONING]), providerReasoningProvenance: { provider: "openai", model } });
+    const response = await withReplaySwitch(undefined, () => provider.chatStream(history, () => {}, { reasoningEffort }));
+    const body = requestBody(fetchImpl, 0);
+    expect(body.include).toEqual(enabled ? ["reasoning.encrypted_content"] : undefined);
+    if (enabled) {
+      expect(body.input).toContainEqual(REASONING);
+      // Luna on the platform API keeps its own summary default; other models request auto.
+      const expected = { ...(reasoningEffort ? { effort: reasoningEffort } : {}),
+        ...(model === "gpt-6-luna" ? {} : { summary: "auto" }) };
+      expect(body.reasoning).toEqual(Object.keys(expected).length > 0 ? expected : undefined);
+      expect(response.providerReasoningProvenance).toEqual({ provider: "openai", model });
+    } else {
+      expect(body.input).not.toContainEqual(REASONING);
+      expect(response.providerReasoningContent).toBeUndefined();
+    }
+  });
+
+  test("keeps concurrent sessions' default and opt-out independent", async () => {
+    const defaultFetch = vi.fn<typeof fetch>().mockResolvedValue(toolTurnStream([]));
+    const disabledFetch = vi.fn<typeof fetch>().mockResolvedValue(toolTurnStream([]));
+    const defaultProvider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl: defaultFetch });
+    const disabledProvider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl: disabledFetch });
+    const [on, off] = await Promise.all([
+      withReplaySwitch(undefined, () => defaultProvider.chatStream([{ role: "user", content: "read a" }], () => {})),
+      withReplaySwitch("0", () => disabledProvider.chatStream([{ role: "user", content: "read a" }], () => {})),
+    ]);
+    expect(on.providerReasoningContent).toBe(JSON.stringify([REASONING]));
+    expect(off.providerReasoningContent).toBeUndefined();
+    expect(requestBody(defaultFetch, 0).reasoning).toEqual({ summary: "auto" });
+    expect(requestBody(disabledFetch, 0).reasoning).toBeUndefined();
+  });
+
+  test("does not retain stateless replay for stored Responses requests", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: "completed", output: [REASONING, SERVER_CALL],
+    }), { headers: { "content-type": "application/json" } }));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, store: true, fetchImpl });
+    const response = await withReplaySwitch(undefined, () => provider.chat([{ role: "user", content: "read a" }], { reasoningEffort: "max" }));
+    expect(requestBody(fetchImpl, 0).store).toBe(true);
+    expect(requestBody(fetchImpl, 0).include).toBeUndefined();
+    expect(requestBody(fetchImpl, 0).reasoning).toEqual({ effort: "max" });
+    expect(response.providerReasoningContent).toBeUndefined();
   });
 
   test("leaves other providers on this adapter unchanged", async () => {

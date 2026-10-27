@@ -52,6 +52,18 @@ describe("canonical provider environment leaf", () => {
     expect(Object.isFrozen(captured)).toBe(true);
   });
 
+  it("keeps the web search settings the session's WebSearch tool reads", () => {
+    // Without these keys a daemon session never sees the user's setting.
+    const settings = {
+      AGENC_DEEPSEEK_WEB_SEARCH: "0",
+      AGENC_WEB_SEARCH: "on",
+      AGENC_WEB_SEARCH_ENDPOINT: "https://search.example/api",
+      AGENC_WEB_SEARCH_KIND: "brave",
+      AGENC_WEB_SEARCH_API_KEY: "fixture-search-key",
+    };
+    expect(snapshotProviderEnvironment(settings)).toEqual(settings);
+  });
+
   it.each(["", "/retired"])("rejects retired home input %j before snapshot filtering", (value) => {
     expect(() => snapshotProviderEnvironment({ [RETIRED_CONFIG_DIR_ENV]: value }))
       .toThrow(RetiredConfigDirError);

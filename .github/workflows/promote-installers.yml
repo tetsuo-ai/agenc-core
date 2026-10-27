@@ -39,7 +39,7 @@ permissions:
   contents: write
 
 env:
-  NODE_VERSION: "26.5.0"
+  NODE_VERSION: "26.12.1"
 
 jobs:
   promote:

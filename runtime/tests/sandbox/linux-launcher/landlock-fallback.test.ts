@@ -71,6 +71,13 @@ async function runFallback(
 }
 
 describe("planLandlockConfinement refusals", () => {
+  it("refuses local binding without a network namespace", () => {
+    expect(planLandlockConfinement({
+      fileSystem: restrictedFileSystemPolicy([]), sandboxPolicyCwd: "/tmp",
+      sessionTempRoot: "/tmp", allowNetworkForProxy: false, inheritedCwd: false,
+      allowLocalBinding: true,
+    })).toEqual({ kind: "refused", reason: expect.stringContaining("private network namespace") });
+  });
   const base = {
     sandboxPolicyCwd: "/tmp",
     sessionTempRoot: "/tmp/agenc-landlock-session-root",

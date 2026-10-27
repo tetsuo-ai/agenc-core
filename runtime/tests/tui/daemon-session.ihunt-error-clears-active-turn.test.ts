@@ -125,7 +125,7 @@ function createBaseSession(): AgenCTuiBridgeSession {
   };
 }
 
-function createClient(options: { readonly submit?: () => Promise<unknown> } = {}): AgenCDaemonTuiClient & {
+function createClient(options: { readonly submit?: () => Promise<unknown>; readonly cancel?: () => Promise<unknown> } = {}): AgenCDaemonTuiClient & {
   readonly requests: Array<{ readonly method: string; readonly params?: JsonObject }>;
   emit(sessionId: string, event: JsonObject): void;
 } {
@@ -141,6 +141,7 @@ function createClient(options: { readonly submit?: () => Promise<unknown> } = {}
       if (method === "message.stream" && options.submit !== undefined) {
         return await options.submit() as AgenCDaemonResultByMethod[AgenCDaemonMethod];
       }
+      if (method === "session.cancelTurn" && options.cancel !== undefined) return await options.cancel() as AgenCDaemonResultByMethod[AgenCDaemonMethod];
       return {} as AgenCDaemonResultByMethod[AgenCDaemonMethod];
     },
     subscribeToSessionEvents: (sessionId, cb) => {
@@ -166,6 +167,29 @@ function createClient(options: { readonly submit?: () => Promise<unknown> } = {}
 }
 
 describe("daemon session activeTurn error handling (ihunt)", () => {
+  it("clears visible activity before delayed cancellation cleanup acknowledges", async () => {
+    let finish!: () => void;
+    const cleanup = new Promise<void>(resolve => { finish = resolve; });
+    const client = createClient({ cancel: () => cleanup });
+    const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+    const emit = (id: string, type: string, payload: JsonObject) => client.emit("session_1", {
+      method: "event.session_event", params: { eventId: id, event: { id, type, payload } },
+    });
+    emit("start", "turn_started", { turnId: "turn-1" });
+    expect(session.activeTurn?.unsafePeek()).not.toBeNull();
+    const cancellation = session.cancelActiveTurn?.("interrupted");
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    emit("late-tool", "tool_call_started", { callId: "call", toolName: "exec_command" });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    expect(client.requests.filter(request => request.method === "session.cancelTurn")).toEqual([{
+      method: "session.cancelTurn", params: { sessionId: "session_1", expectedTurnId: "turn-1", reason: "interrupted" },
+    }]);
+    finish();
+    await cancellation;
+    emit("next", "turn_started", { turnId: "turn-2" });
+    expect(session.activeTurn?.unsafePeek()).not.toBeNull();
+  });
+
   it.each([0, 1, 130] as const)(
     "settles a submission from its authoritative terminal response (%s) when live completion is missing",
     async (code) => {

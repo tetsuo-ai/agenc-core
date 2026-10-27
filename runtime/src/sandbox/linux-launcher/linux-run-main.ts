@@ -26,6 +26,7 @@ import {
   type NetworkSeccompMode,
 } from "./landlock.js";
 import { planLandlockConfinement } from "./landlock-exec.js";
+import { protectedCreateExitCode, startProtectedCreateMonitor } from "./protected-create-monitor.js";
 import {
   landlockLaunchArgs,
   probeLandlock,
@@ -164,6 +165,7 @@ async function runLinuxSandboxOptions(
     network,
     options.allowNetworkForProxy,
     proxyRoutedNetwork,
+    options.allowLocalBinding,
   );
   const bwrapSeccompMode = options.allowNetworkForProxy ? null : seccompMode;
   const networkMode = bwrapNetworkMode(network, options.allowNetworkForProxy);
@@ -276,7 +278,7 @@ async function runLinuxSandboxOptions(
     try {
       const exitCode = await waitForChildWithSignalRelay(spawned.child);
       protectedCreateViolation = protectedMonitor.stop();
-      return protectedCreateViolation && exitCode === 0 ? 1 : exitCode;
+      return protectedCreateExitCode(exitCode, protectedCreateViolation);
     } finally {
       if (!protectedCreateViolation) protectedMonitor.stop();
       spawned.cleanup();
@@ -313,6 +315,7 @@ async function runUnderLandlockFallback(input: {
     sandboxPolicyCwd: input.options.sandboxPolicyCwd,
     sessionTempRoot: input.options.sessionTempRoot,
     allowNetworkForProxy: input.options.allowNetworkForProxy,
+    allowLocalBinding: input.seccompMode === "local-only",
     inheritedCwd: input.options.inheritedCwd,
     extraReadOnlyBindRoots: input.extraReadOnlyBindRoots,
     extraDeviceBindPaths: input.extraDeviceBindPaths,
@@ -361,7 +364,7 @@ async function runUnderLandlockFallback(input: {
     try {
       const exitCode = await waitForChildWithSignalRelay(child);
       protectedCreateViolation = protectedMonitor.stop();
-      return protectedCreateViolation && exitCode === 0 ? 1 : exitCode;
+      return protectedCreateExitCode(exitCode, protectedCreateViolation);
     } finally {
       if (!protectedCreateViolation) protectedMonitor.stop();
     }
@@ -468,6 +471,7 @@ function createInnerLauncherCommand(
     options.sessionTempRoot,
     ...(options.mountProc ? [] : ["--no-proc"]),
     ...(options.allowNetworkForProxy ? ["--allow-network-for-proxy"] : []),
+    ...(options.allowLocalBinding ? ["--allow-local-binding"] : []),
     ...(proxyRouteSpec === null ? [] : ["--proxy-route-spec", proxyRouteSpec]),
     "--",
     ...options.command,
@@ -740,34 +744,6 @@ export function isProcMountFailure(stderr: string): boolean {
   // bubblewrap reports a procfs mount failure as "Can't mount proc on <dest>"
   // (older builds also emit "Can't mount new procfs").
   return /can't mount (?:new )?proc(?:fs)?\b/i.test(stderr);
-}
-
-function startProtectedCreateMonitor(
-  targets: readonly string[],
-): { readonly stop: () => boolean } {
-  if (targets.length === 0) return { stop() { return false; } };
-  let violation = false;
-  const scan = () => {
-    for (const target of targets) {
-      if (fs.existsSync(target)) {
-        violation = true;
-      }
-      try {
-        fs.rmSync(target, { recursive: true, force: true });
-      } catch {
-        // Best-effort cleanup for protected metadata created during launch.
-      }
-    }
-  };
-  scan();
-  const interval = setInterval(scan, 100);
-  return {
-    stop(): boolean {
-      clearInterval(interval);
-      scan();
-      return violation;
-    },
-  };
 }
 
 /**

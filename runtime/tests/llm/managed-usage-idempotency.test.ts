@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { createProvider } from "../../src/llm/provider.js";
 import type { LLMMessage } from "../../src/llm/types.js";
@@ -19,13 +20,16 @@ const stream = () => new Response([
 ].join(""), { headers: { "content-type": "text/event-stream" } });
 
 function managed(fetchImpl: typeof fetch, extra: Record<string, unknown> = {}) {
-  return createProvider("openrouter", { apiKey: "synthetic-agenc-session", baseURL, model,
-    extra: { managedGateway: true, maxTokens: 100, fetchImpl, ...extra } });
+  // Saved-wire receipt parsing remains in the shared adapter. These transports are
+  // synthetic; production factory entry points reject the retired account routes.
+  return new OpenAIProvider({ apiKey: "synthetic-agenc-session", baseURL,
+    model: "openrouter/" + model, providerName: "openrouter", useResponsesApi: false,
+    managedRequestId: true, maxTokens: 100, fetchImpl, ...extra });
 }
 function requestId(init: RequestInit | undefined) { return new Headers(init?.headers).get("Idempotency-Key"); }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-describe("managed paid request identity", () => {
+describe("historical managed receipt compatibility and retired factory routes", () => {
   test.each([false, true])("keeps repeated provider tool IDs distinct across rounds and stable within an attempt (stream=%s)", async (streaming) => {
     const tools = [{type:"function" as const,function:{name:"write_marker",parameters:{type:"object",properties:{content:{type:"string"}}}}}];
     const argumentsText = JSON.stringify({content:"    marker\n"});
@@ -176,32 +180,28 @@ describe("managed paid request identity", () => {
     expect(new Set(identities).size).toBe(5);
   });
 
-  test("sets the wire identity after lazy managed credential vending without exposing it as a body field", async () => {
+  test("rejects lazy managed credential vending before consulting the account or transport", () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => response());
-    const backend: AuthBackend = { login: () => ({ authenticated: true, provider: "remote" }), logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "remote" }), getSubscriptionTier: () => "pro",
-      inferAgencModel: () => ({ provider: "openrouter", model }),
-      vendKey: (provider, sessionId) => ({ kind: "api-key", provider, sessionId, apiKey: "synthetic-vended-session", baseUrl: baseURL }) };
-    const provider = createProvider("openrouter", { model, extra: { authBackend: backend, managedCredential: true,
-      sessionId: "synthetic-session", maxTokens: 100, fetchImpl } });
-    await provider.chat(messages);
-    expect(String(fetchImpl.mock.calls[0]![0])).toBe(`${baseURL}/chat/completions`);
-    const init = fetchImpl.mock.calls[0]![1]!;
-    expect(requestId(init)).toMatch(uuid);
-    expect(new Headers(init.headers).get("authorization")).toBe("Bearer synthetic-vended-session");
-    expect(JSON.parse(String(init.body))).toEqual({ model: "openrouter/openai/gpt-5", stream: false,
-      messages: [{ role: "user", content: "Synthetic request" }], max_tokens: 100 });
-    expect(String(init.body)).not.toContain("Idempotency"); expect(String(init.body)).not.toContain("synthetic-vended-session");
+    const vendKey = vi.fn();
+    const backend = { vendKey } as unknown as AuthBackend;
+    expect(() => createProvider("openrouter", { model, extra: { authBackend: backend, managedCredential: true,
+      sessionId: "synthetic-session", maxTokens: 100, fetchImpl } })).toThrow("AgenC accounts no longer provide models");
+    expect(vendKey).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("preserves direct BYOK headers and does not infer managed authority from a hostname", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => response());
     const options = { managedRequestId: "40c87426-0d3a-4b8e-9eb7-a06a882d52a3" };
-    for (const target of ["https://openrouter.ai/api/v1", baseURL]) {
+    for (const target of ["https://openrouter.ai/api/v1", "https://custom-provider.invalid/v1"]) {
       const provider = createProvider("openrouter", { apiKey: "synthetic-byok", baseURL: target, model, extra: { fetchImpl } });
       await provider.chat(messages, options);
       expect(requestId(fetchImpl.mock.lastCall![1])).toBeNull();
     }
+    const callsBeforeRetiredRoute = fetchImpl.mock.calls.length;
+    expect(() => createProvider("openrouter", { apiKey: "synthetic-byok", baseURL, model,
+      extra: { fetchImpl } })).toThrow("AgenC accounts no longer provide models");
+    expect(fetchImpl).toHaveBeenCalledTimes(callsBeforeRetiredRoute);
     const explicit = createProvider("openrouter", { apiKey: "synthetic-byok", model,
       extra: { fetchImpl, defaultHeaders: { "Idempotency-Key": "synthetic-custom-direct-header" } } });
     await explicit.chat(messages, options);

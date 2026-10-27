@@ -1,3 +1,5 @@
+import { runtimeOptionsForChildSession } from "../one-shot-fast-mode.js";
+import { isEffectReviewRequired, waitForEffectReview } from "../session/effect-review-gate.js";
 /**
  * runAgent — drive one subagent's run-turn loop.
  *
@@ -20,7 +22,7 @@
 import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
 import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
-import { bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
+import { bindExecEscalationDiscovery, bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { createToolSearchTool } from "../tools/system/tool-search.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
@@ -45,6 +47,7 @@ import { registerChildApprovalSession, revokeChildApprovalSession } from "./chil
 import { bindLiveAgentSession } from "./live-session.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
 import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
+import { PROCESS_SESSION_TOOLS } from "../tools/rare-tool-deferral.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import { createChildAbortController } from "../utils/abortController.js";
 import type {
@@ -1714,7 +1717,15 @@ export function requestParentFollowupTurn(params: {
         followupTurnStateByParent.delete(parent);
         return;
       }
+      if (parent.rolloutStore?.hasPendingEffectReviews?.()) {
+        void waitForEffectReview(parent).then((allowed) => {
+          if (allowed && followupTurnStateByParent.get(parent) === state) schedule();
+          else followupTurnStateByParent.delete(parent);
+        });
+        return;
+      }
       state.submitInFlight = true;
+      let reviewRequired = false;
       let transientSubmitFailure = false;
       let suppressed = false;
       void parent
@@ -1727,6 +1738,10 @@ export function requestParentFollowupTurn(params: {
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           if (message === "Session submit hook is not installed") return;
+          if (isEffectReviewRequired(err)) {
+            reviewRequired = true;
+            return;
+          }
           transientSubmitFailure = true;
           state.transientFailureCount += 1;
           if (!state.transientFailureWarningReported) {
@@ -1749,6 +1764,13 @@ export function requestParentFollowupTurn(params: {
           if (followupTurnStateByParent.get(parent) !== state) return;
           if (parent.abortController.signal.aborted || suppressed || parent.stoppedByUserSinceLastPrompt || state.generation !== parent.userStopGeneration) {
             followupTurnStateByParent.delete(parent);
+            return;
+          }
+          if (reviewRequired) {
+            void waitForEffectReview(parent).then((allowed) => {
+              if (allowed && followupTurnStateByParent.get(parent) === state) schedule();
+              else followupTurnStateByParent.delete(parent);
+            });
             return;
           }
           if (transientSubmitFailure && parent.mailbox.hasPending()) {
@@ -2317,9 +2339,22 @@ export function buildFilteredRegistry(
       if (toolCatalogScope.has(name)) discoveredToolNames.add(name);
     }
   };
+  // A live exec session exposes polling and termination to Light children;
+  // other children follow the standard deferral of all three process tools.
+  const execSessionToolNames: readonly string[] = opts.lightMode === true
+    ? ["write_stdin", "kill_process"]
+    : PROCESS_SESSION_TOOLS;
+  // A sandbox notice that tells the model to retry with sandbox_permissions
+  // loads exec_command's full schema. A Light child presents its own
+  // discoveries; other children present the parent registry's tools, whose
+  // exec_command reports the advice to that registry itself.
+  const execEscalationAdvised = opts.lightMode === true
+    ? { onExecEscalationAdvised: () => discoverToolNames(["exec_command"]) }
+    : {};
   const localSearch = opts.lightMode === true ? createToolSearchTool({
     allowedPaths: [],
     persistenceRootDir: "",
+    compactResults: true,
     getToolCatalog: () => eligibleTools.map((tool): ToolCatalogEntry => ({
       name: tool.name,
       description: tool.description,
@@ -2350,7 +2385,8 @@ export function buildFilteredRegistry(
       const wrapped = wrapToolForChild(tool, {
         ...opts,
         toolCatalogScope,
-        onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
+        onExecSessionYielded: () => discoverToolNames(execSessionToolNames),
+        ...execEscalationAdvised,
         ...(searchTools !== undefined ? { searchTools } : {}),
       });
       const sessionSurface = (wrapped as Tool & {
@@ -2502,7 +2538,8 @@ export function buildFilteredRegistry(
         const prepared = await prepareChildToolCall(baseTool, parsedArgs, {
           ...opts,
           toolCatalogScope,
-          onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
+          onExecSessionYielded: () => discoverToolNames(execSessionToolNames),
+          ...execEscalationAdvised,
           ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
         });
         if ("result" in prepared) return prepared.result;
@@ -2952,6 +2989,7 @@ function wrapToolForChild(
     readonly toolCatalogScope?: ReadonlySet<string>;
     readonly searchTools?: Tool["execute"];
     readonly onExecSessionYielded?: () => void;
+    readonly onExecEscalationAdvised?: () => void;
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
@@ -3168,6 +3206,7 @@ async function prepareChildToolCall(
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
     readonly onExecSessionYielded?: () => void;
+    readonly onExecEscalationAdvised?: () => void;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }
@@ -3200,7 +3239,7 @@ async function prepareChildToolCall(
   // error the model reads and recovers from: a deny at the permission check
   // would end a whole Goal run (a workflow child's denied approval is
   // WorkflowApprovalFailure, policy_denied).
-  const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path);
+  const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path, childSession);
   if (outsideWorktree !== undefined) {
     return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
   }
@@ -3272,6 +3311,10 @@ async function prepareChildToolCall(
     // Both admitted registry dispatch and direct tool execution use this final
     // argument object. Bind after every policy rewrite and authority injection.
     bindExecSessionDiscovery(childArgs, opts.onExecSessionYielded);
+  }
+  if ((tool.name === "exec_command" || tool.name === "write_stdin") &&
+      opts.onExecEscalationAdvised !== undefined) {
+    bindExecEscalationDiscovery(childArgs, opts.onExecEscalationAdvised);
   }
   return { args: childArgs };
 }
@@ -3621,6 +3664,7 @@ async function buildChildSession(
       mcpManagerOwnership: "borrowed",
       services: {
         ...params.parent.services,
+        runtimeOptions: runtimeOptionsForChildSession(params.parent.services.runtimeOptions),
         readOnlyDelegation: params.live.metadata.executionConstraint,
         provider,
         // A provider service is session-owned. Do not let the parent's service
@@ -4422,12 +4466,17 @@ export async function* runAgent(
     const allowlist =
       params.toolAllowlist ?? live.role.config.allowlist ?? undefined;
     if (allowlist && allowlist.length > 0) {
-      emitWarning(
-        parent.eventLog,
-        parent.nextInternalSubId(),
-        "subagent_tool_allowlist",
-        `subagent ${live.agentPath} allowlist: ${allowlist.join(",")}`,
-      );
+      const notice = (): void => { emitWarning(
+          parent.eventLog,
+          parent.nextInternalSubId(),
+          "subagent_tool_allowlist",
+          `subagent ${live.agentPath} allowlist: ${allowlist.join(",")}`,
+        ); };
+      if (parent.rolloutStore !== null && parent.rolloutStore !== undefined) {
+        await parent.rolloutStore.withCanonicalBackgroundWork(notice);
+      } else {
+        notice();
+      }
     }
 
     let cacheSafeParamsCaptured = false;
@@ -4643,6 +4692,7 @@ export async function* runAgent(
       let stopReason:
         | "completed"
         | "max_turns"
+        | "task_budget"
         | "max_budget_usd"
         | "cancelled"
         | "error"
@@ -4717,6 +4767,9 @@ export async function* runAgent(
             switch (step.value?.reason) {
               case "max_turns":
                 stopReason = "max_turns";
+                break;
+              case "task_budget":
+                stopReason = "task_budget";
                 break;
               case "max_budget_usd":
                 stopReason = "max_budget_usd";
@@ -4842,6 +4895,7 @@ export async function* runAgent(
 
       const boundedStop =
         stopReason === "max_turns" ||
+        stopReason === "task_budget" ||
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
         stopReason === "effect_review_required" ||
@@ -4849,7 +4903,7 @@ export async function* runAgent(
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
       const boundedTerminalReason: ChildTerminalReason | undefined =
-        stopReason === "max_turns" ? "step_limit" :
+        stopReason === "max_turns" || stopReason === "task_budget" ? "step_limit" :
         stopReason === "no_progress" ? "no_progress" :
         stopReason === "max_budget_usd" ? "cost_cap_reached" :
         stopReason === "effect_review_required" ? "effect_outcome_unknown" :
@@ -4866,6 +4920,8 @@ export async function* runAgent(
         let message: string;
         if (stopReason === "max_turns") {
           message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;
+        } else if (stopReason === "task_budget") {
+          message = assistantText || "subagent reached its task allocation";
         } else if (stopReason === "max_budget_usd") {
           message = "subagent reached the canonical session cost cap";
         } else if (stopReason === "no_progress") {

@@ -1,4 +1,5 @@
 import { sessionProcessBoundaries } from "./session-process-boundary.js";
+import { attachProtectedCreateMonitor, startProtectedCreateMonitor } from "../sandbox/linux-launcher/protected-create-monitor.js";
 import {
   execFileSync,
   spawn,
@@ -26,13 +27,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
-import type { Readable, Writable } from "node:stream";
+import type { Duplex, Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { serializeProcessBrokerPayload } from "./process-broker-protocol.js";
 import { ProcessBrokerV3StatusDecoder, PROCESS_BROKER_V3_CAPABILITY, type ProcessBrokerV3Outcome } from "./process-broker-protocol-v3.js";
 import { PROCESS_BROKER_V2_CAPABILITY } from "./process-broker-protocol-v2.js";
 import { consumeDirectBwrapPlan, type PreparedDirectBwrap, type DirectBwrapHandoff } from "./direct-bwrap-handoff.js";
 import { isSignalablePid } from "./child-signal.js";
+import { preferLaunchedProcessAsOomVictim } from "./oom-preference.js";
 
 import {
   resolveTrustedWindowsSystemExecutable,
@@ -261,10 +263,12 @@ function alive(pid) {
   }
 }
 
-function snapshot() {
+function snapshot(rootOnly) {
   const result = spawnSync(
     '/bin/ps',
-    ['-axo', 'pid=,ppid=,state=,lstart='],
+    rootOnly
+      ? ['-o', 'pid=,ppid=,state=,lstart=', '-p', String(config.rootPid)]
+      : ['-axo', 'pid=,ppid=,state=,lstart='],
     { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 2000 }
   );
   if (result.error || result.signal || result.status !== 0) return null;
@@ -285,9 +289,9 @@ function snapshot() {
   return records;
 }
 
-function extendTracked() {
+function extendTracked(rootOnly) {
   if (config.cgroupPath) return;
-  const records = snapshot();
+  const records = snapshot(rootOnly);
   if (!records) return;
   const root = records.get(config.rootPid);
   if (root && tracked.size === 0) tracked.set(root.identity, root);
@@ -351,24 +355,54 @@ function stop() {
   process.exit(0);
 }
 
+function watch() {
+  timer = setInterval(() => {
+    extendTracked();
+    if (
+      process.ppid !== config.ownerPid ||
+      !alive(config.ownerPid) ||
+      !alive(config.rootPid)
+    ) stop();
+  }, 25);
+}
+
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 process.on('SIGHUP', stop);
-extendTracked();
-try {
-  fs.writeSync(3, 'ready\n');
-  fs.closeSync(3);
-} catch {
-  stop();
+// Readiness gates the command: the root is still blocked on its handoff and
+// has no children, so the first snapshot needs only the root's own identity.
+// Querying that one pid is far cheaper than a whole-table ps.
+extendTracked(true);
+if (config.awaitRelease === true) {
+  // A prepared launch: no command has been chosen for the root yet. It is
+  // blocked on its handoff and can start nothing, so there is nothing to
+  // poll for. The owner writes one line here just before it hands the root a
+  // command; until then this channel is the ownership lease, and its end
+  // (the owner exited or dropped the launch) stops the root.
+  let channel;
+  try {
+    channel = new (require('node:net').Socket)({ fd: 3, readable: true, writable: true });
+  } catch {
+    stop();
+  }
+  channel.on('error', stop);
+  channel.on('end', stop);
+  channel.once('data', () => {
+    channel.removeAllListeners();
+    channel.on('error', () => {});
+    channel.destroy();
+    watch();
+  });
+  channel.write('ready\n');
+} else {
+  try {
+    fs.writeSync(3, 'ready\n');
+    fs.closeSync(3);
+  } catch {
+    stop();
+  }
+  watch();
 }
-timer = setInterval(() => {
-  extendTracked();
-  if (
-    process.ppid !== config.ownerPid ||
-    !alive(config.ownerPid) ||
-    !alive(config.rootPid)
-  ) stop();
-}, 25);
 `;
 
 export const POSIX_PROCESS_GATE_SCRIPT = String.raw`
@@ -589,10 +623,13 @@ export function containedProcessCommandOutcome(child: ProcessTreeChild): Process
 
 /**
  * Allow an exited child's native cleanup proof to drain before verification.
- * A complete subreaper proof ends the wait immediately; missing proof and
- * other containment backends retain the bounded settlement window. Resolution
- * is only a scheduling signal, never cleanup authority: callers must still
- * run terminateProcessTreeAndReport and handle its failure.
+ * A complete subreaper proof ends the wait immediately. A child with no native
+ * boundary (the POSIX gate, as on Darwin) ends it once every stdio stream has
+ * closed and its process group is empty: the window lets exiting group members
+ * finish, and none remain. Missing proof, a group that still has a member, and
+ * the other containment backends retain the bounded settlement window.
+ * Resolution is only a scheduling signal, never cleanup authority: callers
+ * must still run terminateProcessTreeAndReport and handle its failure.
  */
 export function waitForContainedProcessSettlement(
   child: ChildProcessWithoutNullStreams,
@@ -600,6 +637,11 @@ export function waitForContainedProcessSettlement(
   const session = sessionProcessBoundaries.get(child);
   if (session) return session.settled;
   const boundary = linuxSubreaperBoundaries.get(child);
+  const groupOnly =
+    boundary === undefined &&
+    process.platform !== "win32" &&
+    !linuxCgroupBoundaries.has(child) &&
+    !windowsJobBoundaries.has(child);
   return new Promise((resolve) => {
     const finish = (): void => {
       clearTimeout(timer);
@@ -614,7 +656,9 @@ export function waitForContainedProcessSettlement(
         boundary.protocolError === undefined
       ) {
         finish();
+        return;
       }
+      if (groupOnly && processGroupIsEmpty(child)) finish();
     };
     const timer = setTimeout(finish, 20);
     timer.unref?.();
@@ -623,8 +667,36 @@ export function waitForContainedProcessSettlement(
       // status bytes and boundary flags are settled before this listener runs.
       child.once("close", onClose);
       onClose(); // Also handle a child that closed before subscription.
+    } else if (groupOnly) {
+      // 'close' follows 'exit' once stdout and stderr have ended, so all
+      // output has been delivered.
+      child.once("close", onClose);
+      if (stdioClosed(child)) onClose();
     }
   });
+}
+
+/** The leader exited and both output streams have closed: 'close' is due or done. */
+function stdioClosed(child: ChildProcessWithoutNullStreams): boolean {
+  return (
+    leaderReaped(child) &&
+    child.stdout.closed === true &&
+    child.stderr.closed === true
+  );
+}
+
+/**
+ * True only when no process, zombies included, is left in the child's process
+ * group. EPERM means a member exists under another user.
+ */
+function processGroupIsEmpty(child: Pick<ChildProcess, "pid">): boolean {
+  if (!isSignalablePid(child.pid)) return false;
+  try {
+    process.kill(-child.pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
 }
 
 let compiledLinuxSubreaperBroker: string | undefined;
@@ -665,6 +737,12 @@ export interface ContainedProcessSpawnOptions {
   readonly argv0?: string;
   /** Select the deterministic Linux subreaper boundary even when cgroup v2 is available. */
   readonly linuxContainment?: "auto" | "subreaper";
+  /**
+   * Darwin: claim the launch `prepareContainedProcessLaunch` prepared in this
+   * `cwd`, if one is waiting. That child was spawned before this call, so a
+   * caller that opts in must not wait for its 'spawn' event.
+   */
+  readonly usePreparedLaunch?: boolean;
   /** Trusted pipe-shell optimization. Evaluated only AFTER backend selection. */
   readonly directBwrap?: {
     readonly protocol?: "v3";
@@ -778,9 +856,21 @@ export function spawnContainedProcess(
               options.directBwrap.validateAdmission();
               options.directBwrap.signal.throwIfAborted();
               dispatched = true;
-              return spawnLinuxSubreaperContainedProcess(program, args, options, {
-                ...handoff, brokerPath, brokerContext,
-              });
+              // Missing protected paths this launch leaves unmounted: watch
+              // them from before the command starts until its owner stops the
+              // monitor after the whole process tree is gone.
+              const monitor = handoff.protectedCreateTargets === undefined
+                ? undefined : startProtectedCreateMonitor(handoff.protectedCreateTargets);
+              try {
+                const child = spawnLinuxSubreaperContainedProcess(program, args, options, {
+                  ...handoff, brokerPath, brokerContext,
+                });
+                if (monitor !== undefined) attachProtectedCreateMonitor(child, monitor);
+                return child;
+              } catch (error) {
+                monitor?.stop();
+                throw error;
+              }
             }
           } finally {
             if (!dispatched) handoff.dispose();
@@ -798,6 +888,10 @@ export function spawnContainedProcess(
       args,
       options,
     );
+    if (options.usePreparedLaunch === true && cgroupPath === null) {
+      const prepared = claimPreparedPosixLaunch(options.cwd, gatePayload);
+      if (prepared !== undefined) return prepared;
+    }
     child = spawn(process.execPath, ["-e", POSIX_PROCESS_GATE_SCRIPT], {
       cwd: options.cwd,
       env: trustedPosixBootstrapEnvironment(),
@@ -808,6 +902,8 @@ export function spawnContainedProcess(
     if (child.pid === undefined || child.pid <= 0) {
       throw new Error("contained process did not publish a pid");
     }
+    // Before the gate receives its command: the command inherits the score.
+    preferLaunchedProcessAsOomVictim(child.pid);
     if (cgroupPath !== null) {
       writeFileSync(join(cgroupPath, "cgroup.procs"), `${child.pid}\n`);
       linuxCgroupBoundaries.set(child, {
@@ -930,6 +1026,9 @@ function spawnLinuxSubreaperContainedProcess(
       "Linux process containment broker did not publish a safe pid",
     );
   }
+  // Before the bootstrap payload: the broker forks the command only after it
+  // reads that payload, so the command and its descendants inherit the score.
+  preferLaunchedProcessAsOomVictim(child.pid);
   const status = child.stdio[3];
   if (
     status === undefined ||
@@ -1380,6 +1479,283 @@ function launchPosixOwnerWatchdog(
   watchdog.once("exit", () => {
     if (!released) fail("exited before it was ready");
   });
+}
+
+/**
+ * How long a prepared launch waits for its command before it is dropped. An
+ * agent's next command usually follows within one model turn; until then
+ * the launch holds two idle Node processes.
+ */
+const PREPARED_LAUNCH_IDLE_MS = 60_000;
+let preparedLaunchIdleMs = PREPARED_LAUNCH_IDLE_MS;
+
+type PreparedPosixLaunch = {
+  readonly child: ChildProcessWithoutNullStreams;
+  readonly gate: Writable;
+  readonly watchdog: ChildProcess;
+  readonly channel: Duplex;
+  readonly cwd: string;
+  readonly directory: string;
+  ready: boolean;
+  state: "idle" | "claimed" | "dropped";
+  idleTimer?: ReturnType<typeof setTimeout>;
+  onReady?: () => void;
+};
+
+let preparedPosixLaunch: PreparedPosixLaunch | undefined;
+
+function directoryIdentity(path: string): string {
+  const stats = statSync(path, { bigint: true });
+  if (!stats.isDirectory()) throw new Error(`not a directory: ${path}`);
+  return `${stats.dev}:${stats.ino}`;
+}
+
+/**
+ * Prepare the next contained launch in `cwd` (darwin).
+ *
+ * Every darwin command starts behind a fresh Node gate and waits until a
+ * fresh Node owner watchdog has recorded the gate's identity: two Node
+ * startups and a `ps` on the path of every command. A prepared launch does
+ * that work while nothing waits on it. Its gate is spawned in `cwd` and
+ * blocks on its handoff like any gate. Its watchdog records the gate's
+ * identity, reports ready, and then waits without polling, because a gate
+ * that holds no command can start nothing. A launch that opts in with
+ * `usePreparedLaunch` claims it: the watchdog is told to start watching,
+ * then the gate receives the command's payload, so the command starts behind
+ * the same boundary and after the same readiness as an unprepared launch.
+ *
+ * If this process exits, both prepared processes see their channels end and
+ * stop. An unclaimed launch is dropped after an idle period and keeps
+ * nothing in this process alive.
+ */
+export function prepareContainedProcessLaunch(cwd: string): void {
+  if (process.platform !== "darwin") return;
+  const current = preparedPosixLaunch;
+  if (current !== undefined) {
+    if (current.cwd === cwd) {
+      armPreparedLaunchIdleTimer(current);
+      return;
+    }
+    dropPreparedPosixLaunch(current);
+  }
+  let directory: string;
+  try {
+    directory = directoryIdentity(cwd);
+  } catch {
+    return;
+  }
+  let child: ChildProcessWithoutNullStreams | undefined;
+  let watchdog: ChildProcess | undefined;
+  try {
+    child = spawn(process.execPath, ["-e", POSIX_PROCESS_GATE_SCRIPT], {
+      cwd,
+      env: trustedPosixBootstrapEnvironment(),
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      detached: true,
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams;
+    // A failed spawn reports on the next tick; with no listener that is an
+    // uncaught exception in the daemon.
+    child.on("error", () => {});
+    const rootPid = child.pid;
+    // The prepared gate waits for its command; that command inherits the score.
+    preferLaunchedProcessAsOomVictim(rootPid);
+    const gate = child.stdio[3];
+    if (
+      rootPid === undefined ||
+      !isSignalablePid(rootPid) ||
+      gate === undefined ||
+      gate === null ||
+      typeof gate === "number" ||
+      !("end" in gate)
+    ) {
+      throw new Error("prepared process gate did not start");
+    }
+    gate.on("error", () => {});
+    watchdog = spawn(process.execPath, ["-e", POSIX_OWNER_WATCHDOG_SCRIPT], {
+      cwd: "/",
+      env: trustedPosixBootstrapEnvironment({
+        AGENC_PROCESS_WATCHDOG_CONFIG: Buffer.from(
+          JSON.stringify({ ownerPid: process.pid, rootPid, awaitRelease: true }),
+          "utf8",
+        ).toString("base64"),
+      }),
+      stdio: ["ignore", "ignore", "ignore", "pipe"],
+      detached: true,
+      windowsHide: true,
+    });
+    watchdog.on("error", () => {});
+    const channel = watchdog.stdio?.[3];
+    if (
+      channel === undefined ||
+      channel === null ||
+      typeof channel === "number" ||
+      !("write" in channel) ||
+      !("once" in channel)
+    ) {
+      throw new Error("prepared process watchdog channel is unavailable");
+    }
+    channel.on("error", () => {});
+    const launch: PreparedPosixLaunch = {
+      child,
+      gate,
+      watchdog,
+      channel: channel as unknown as Duplex,
+      cwd,
+      directory,
+      ready: false,
+      state: "idle",
+    };
+    channel.once("data", () => {
+      launch.ready = true;
+      launch.onReady?.();
+    });
+    child.once("exit", () => dropPreparedPosixLaunch(launch));
+    watchdog.once("exit", () => dropPreparedPosixLaunch(launch));
+    setPreparedLaunchRef(launch, false);
+    armPreparedLaunchIdleTimer(launch);
+    preparedPosixLaunch = launch;
+  } catch {
+    if (child !== undefined) safeKill(child, "SIGKILL");
+    if (watchdog !== undefined) safeKill(watchdog, "SIGKILL");
+  }
+}
+
+/** Drop the prepared launch, if any. Its gate holds no command. */
+export function discardPreparedContainedProcessLaunch(): void {
+  if (preparedPosixLaunch !== undefined) dropPreparedPosixLaunch(preparedPosixLaunch);
+}
+
+/** @internal Test seam: the prepared launch's processes, if one is waiting. */
+export function preparedContainedProcessLaunchForTesting():
+  | { readonly gatePid: number; readonly watchdogPid: number; readonly cwd: string; readonly ready: boolean }
+  | undefined {
+  const launch = preparedPosixLaunch;
+  if (launch === undefined || launch.child.pid === undefined || launch.watchdog.pid === undefined) {
+    return undefined;
+  }
+  return {
+    gatePid: launch.child.pid,
+    watchdogPid: launch.watchdog.pid,
+    cwd: launch.cwd,
+    ready: launch.ready,
+  };
+}
+
+/** Tests only: shorten the idle period. Returns a restore function. */
+export function setPreparedLaunchIdleTimeoutForTesting(ms: number): () => void {
+  const previous = preparedLaunchIdleMs;
+  preparedLaunchIdleMs = ms;
+  return () => {
+    preparedLaunchIdleMs = previous;
+  };
+}
+
+function armPreparedLaunchIdleTimer(launch: PreparedPosixLaunch): void {
+  if (launch.idleTimer !== undefined) clearTimeout(launch.idleTimer);
+  launch.idleTimer = setTimeout(() => dropPreparedPosixLaunch(launch), preparedLaunchIdleMs);
+  launch.idleTimer.unref?.();
+}
+
+/** An idle launch must not keep this process alive; a claimed one must. */
+function setPreparedLaunchRef(launch: PreparedPosixLaunch, ref: boolean): void {
+  const handles: unknown[] = [launch.child, launch.channel, ...launch.child.stdio];
+  if (!ref) handles.push(launch.watchdog);
+  for (const handle of handles) {
+    const target = handle as { ref?: () => void; unref?: () => void } | null | undefined;
+    if (ref) target?.ref?.();
+    else target?.unref?.();
+  }
+}
+
+function dropPreparedPosixLaunch(launch: PreparedPosixLaunch): void {
+  if (launch.state !== "idle") return;
+  launch.state = "dropped";
+  if (preparedPosixLaunch === launch) preparedPosixLaunch = undefined;
+  if (launch.idleTimer !== undefined) clearTimeout(launch.idleTimer);
+  // The gate is blocked on its handoff: nothing else runs in its group.
+  safeKill(launch.child, "SIGKILL");
+  for (const stream of launch.child.stdio) {
+    (stream as { destroy?: () => void } | null | undefined)?.destroy?.();
+  }
+  // Ending the lease stops the watchdog, which finds its root gone and exits.
+  launch.channel.destroy();
+}
+
+/**
+ * Hand a prepared launch the command, when it was prepared in `cwd` and is
+ * still intact. The command starts only after the watchdog has reported
+ * ready, as in an unprepared launch.
+ */
+function claimPreparedPosixLaunch(
+  cwd: string,
+  gatePayload: string,
+): ChildProcessWithoutNullStreams | undefined {
+  const launch = preparedPosixLaunch;
+  if (launch === undefined || launch.state !== "idle" || launch.cwd !== cwd) {
+    return undefined;
+  }
+  const { child, watchdog } = launch;
+  let directory: string | undefined;
+  try {
+    directory = directoryIdentity(cwd);
+  } catch {
+    directory = undefined;
+  }
+  if (
+    directory !== launch.directory ||
+    child.exitCode !== null ||
+    child.signalCode !== null ||
+    watchdog.exitCode !== null ||
+    watchdog.signalCode !== null
+  ) {
+    // The directory was replaced since the gate started in it, or a process
+    // of the launch is gone: launch fresh in the current directory instead.
+    dropPreparedPosixLaunch(launch);
+    return undefined;
+  }
+  launch.state = "claimed";
+  preparedPosixLaunch = undefined;
+  if (launch.idleTimer !== undefined) clearTimeout(launch.idleTimer);
+  setPreparedLaunchRef(launch, true);
+  posixOwnerWatchdogs.set(child, watchdog);
+  let released = false;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    if (deadline !== undefined) clearTimeout(deadline);
+    launch.onReady = undefined;
+    // Start the watchdog's observation, then hand over the command.
+    launch.channel.end("go\n");
+    watchdog.unref();
+    launch.gate.end(gatePayload);
+  };
+  const fail = (why: string): void => {
+    if (released) return;
+    released = true;
+    if (deadline !== undefined) clearTimeout(deadline);
+    launch.onReady = undefined;
+    containedLaunchFailures.set(
+      child,
+      new Error(`the command did not start: its process watchdog ${why}`),
+    );
+    safeKill(child, "SIGKILL");
+    launch.gate.destroy();
+    launch.channel.destroy();
+  };
+  watchdog.once("exit", () => {
+    if (!released) fail("exited before it was ready");
+  });
+  if (launch.ready) {
+    release();
+  } else {
+    launch.onReady = release;
+    deadline = armReadinessDeadline(() =>
+      fail(`was not ready within ${containedWatchdogReadyTimeoutMs} ms`),
+    );
+  }
+  return child;
 }
 
 /**
@@ -2377,11 +2753,16 @@ export function captureProcessTreeDescendants(
     return;
   }
 
-  const snapshot = readNativeProcessSnapshot();
   let boundary = ownedProcessBoundaries.get(child);
   // Once the leader has been reaped its pid may belong to another process.
   // Only identities recorded while it was ours can still be matched.
   const reaped = leaderReaped(child);
+  // A reaped leader that was never observed has no identities to match, so a
+  // process-table snapshot cannot extend anything: skip it. On Darwin that
+  // snapshot is a synchronous `ps` of every process (about 20 ms), and the
+  // exec settlement path took two of them after each command exited.
+  if (boundary === undefined && reaped) return;
+  const snapshot = readNativeProcessSnapshot();
   if (snapshot === undefined) {
     boundary ??= {
       rootPid,
@@ -2397,7 +2778,6 @@ export function captureProcessTreeDescendants(
   }
 
   if (boundary === undefined) {
-    if (reaped) return;
     const root = snapshot.records.get(rootPid);
     if (root === undefined && snapshot.complete) return;
     boundary = {

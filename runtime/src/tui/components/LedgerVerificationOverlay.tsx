@@ -16,7 +16,8 @@ import {
 } from "../../services/Ledger/ledgerVerification.js";
 import { useRegisterOverlay } from "../context/overlayContext.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
-import { Box, Text, useInput } from "../ink.js";
+import { Box, Text, useInput, type Key } from "../ink.js";
+import { useInputCapture } from "../keybindings/useKeybinding.js";
 import { TerminalWriteContext } from "../ink/useTerminalNotification.js";
 import ThemedBox from "./design-system/ThemedBox.js";
 import ThemedText from "./design-system/ThemedText.js";
@@ -192,12 +193,16 @@ export function LedgerVerificationOverlay(): React.ReactNode {
   const terminalSize = useTerminalSize();
   const [frame, setFrame] = useState(0);
 
+  const dismissOnKey = (input: string, key: Key): boolean => {
+    if (!visible || !(key.escape || (key.ctrl && input === "c"))) return false;
+    dismissLedgerVerification(snapshot.requestId);
+    return true;
+  };
+  // Run before composer editing/exit bindings, including when it has a draft.
+  // Printable input (especially the x in /exit) belongs to the composer.
+  useInputCapture(dismissOnKey, { context: "Modal", isActive: visible });
   useInput((input, key, event) => {
-    if (!visible) return;
-    if (key.escape || input === "x" || input === "X") {
-      event.stopImmediatePropagation();
-      dismissLedgerVerification(snapshot.requestId);
-    }
+    if (dismissOnKey(input, key)) event.stopImmediatePropagation();
   });
 
   useEffect(() => {

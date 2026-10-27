@@ -10,6 +10,7 @@ const EXAMPLE_USAGE = {
   output_tokens_details: { thinking_tokens: 312 },
 } as const;
 const EXPECTED_USAGE = {
+  cacheInputExcludedFromPrompt: true,
   promptTokens: 120,
   completionTokens: 348,
   totalTokens: 468,
@@ -223,6 +224,8 @@ describe("AnthropicProvider thinking-token usage (#2112)", () => {
         cacheCreationInputTokens: 1024,
         reasoningOutputTokens: 312,
         reasoningIncludedInCompletion: true,
+        // 120 ordinary input + 2048 cache read + 1024 cache write + 348 output.
+        totalTokens: 3540,
       });
       const tracker = new BudgetTracker();
       const sidecar = new CostSidecar({

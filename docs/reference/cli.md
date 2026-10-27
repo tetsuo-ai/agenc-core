@@ -9,7 +9,7 @@ Live help: `agenc help` and `agenc help <topic>`. Sources:
 Top-level help is a command index; `agenc help <topic>` contains each
 command's full syntax and options.
 
-Version: **0.18.0**. Default session provider **grok**, fresh-config session model
+Version: **0.19.19**. Default session provider **grok**, fresh-config session model
 **grok-4.6** (see [providers.md](providers.md)).
 
 ---
@@ -53,8 +53,12 @@ From `formatCliHelpText()`:
 | `--input-format <format>` | Print mode input: `stream-json` |
 | `--deadline <+seconds\|ISO-8601>` | Print mode: the instant the run must end by, as `+<seconds>` from now or an ISO 8601 time with a zone. See the print-mode notes. |
 | `--deadline-reserve <seconds>` | Print mode, with `--deadline`: how long before the deadline the model is told to wrap up. Default 10 % of the budget, clamped to 5-30 minutes and never more than half the budget. |
+| `--budget <level>` | Set the task token allowance. Interactive TUI sessions ask at checkpoints; headless runs keep a hard cap. `max` removes the task token cap. |
+| `--task-token-budget <tokens>` | Set a numeric task allowance; `0` disables it. Explicit CLI and project values override saved `/budget` choices. |
 | `--no-tui` | Force one-shot CLI mode (no interactive TUI) |
 | `--bare` | Use reduced startup mode; immutably suppress every session hook extension point and skip LSP, plugin sync, and skill discovery while keeping authentication active |
+| `--light` | Start a new session in Light mode, the default: core tools first, other tools through `system.searchTools`. Overrides `light_mode = false`. |
+| `--standard` | Start a new session in standard mode instead of Light. Overrides `light_mode`. Passing both `--light` and `--standard` is an error. |
 | `-c`, `--continue` | Continue the latest project session. In the TUI this reopens it; with `-p`, piped stdin or `--no-tui` the prompt runs as one more turn of that session and the process exits with the turn's outcome (`agenc -c -p "next step"`). |
 | `-r`, `--resume <session-id>` | Resume a prior project session. TUI by default; headless (`-p`, piped stdin, `--no-tui`) runs the prompt as one more turn of that session. |
 | `--config <path>` | Load an explicit schema-v2 `config.toml` layer for this invocation |
@@ -63,9 +67,37 @@ From `formatCliHelpText()`:
 | `--model <id\|provider:id>` | Override model for this session |
 | `--permission-mode <mode>` | Override startup mode: `default`, `acceptEdits`, `plan`, `dontAsk`, or `auto`. `bypassPermissions` is an explicit session-only opt-in bound to the current workspace. Internal `unattended` / `bubble` modes are not CLI addressable. |
 | `--autonomous` | Enable autonomous tick mode |
-| `--bypass-approvals` | Skip approval prompts, sandbox escalation requests included: commands start in the OS sandbox, and one that asks to run outside it (`sandbox_permissions: "require_escalated"`) is allowed without a prompt. In a workspace-write sandbox the model is told it may ask only for GUI apps and blocked network, and to keep file changes inside the workspace; elsewhere it is told such requests are rejected. Same session-only `bypassPermissions` opt-in as `--permission-mode bypassPermissions`. On a host that cannot sandbox at all the run continues without kernel confinement and prints one stderr notice naming the reason. Conflicts with a different `--permission-mode`. |
+| `--bypass-approvals` | Skip approval prompts, sandbox escalation requests included: commands start in the OS sandbox, and one that asks to run outside it (`sandbox_permissions: "require_escalated"`) is allowed without a prompt. In a workspace-write sandbox the model is told it may ask only for GUI apps, blocked network, and one retry of an operation the user asked for that the sandbox refused on a protected path such as `.git` metadata, and to keep file changes inside the workspace; elsewhere it is told such requests are rejected. Same session-only `bypassPermissions` opt-in as `--permission-mode bypassPermissions`. On a host that cannot sandbox at all the run continues without kernel confinement and prints one stderr notice naming the reason. Conflicts with a different `--permission-mode`. |
 | `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks everywhere (the explicit no-sandbox opt-out) |
 | `--image <file\|url\|data-url>` | Attach a startup image |
+
+### Session mode
+
+New sessions start in Light mode, in the TUI and in print mode (`-p`). To
+start in standard mode, pass `--standard` or set `light_mode = false` in
+`config.toml` (see [config.md](config.md#core-and-runtime-selection)). A flag
+wins over the config, and `--light` overrides `light_mode = false`. A resumed
+or continued session (`-r`, `-c`) keeps the mode it started with; the flags
+apply only to new sessions. Sessions started before Light became the default
+keep the mode they started with. The status line shows `standard` for a
+standard session and no label for Light. Swarm teammates are started with the
+leader's mode.
+
+### Status line
+
+The line under the prompt shows the folder, model, effort, permission mode and
+session markers on the left, and the context share, cache share, spend and a
+`ZDR` badge on the right. At a narrow width the line keeps its facts as long as
+it can. Facts first
+take short forms, one at a time: `high effort` becomes `high`, `asks first`
+becomes `asks`, `cache 82%` becomes `c 82%`, `$0.041 off-peak` becomes
+`$0.041 op`, `price unknown` becomes `no price`, and the folder becomes its
+last name. Then the folder and the model are shortened in the middle. When one
+row still cannot hold everything, the usage figures and the badge move to a
+second row and the prompt area gives up that row. The badge is green when the
+provider and model keep no data, red when data may be kept, and a dim `ZDR?`
+when AgenC cannot tell; `/status` says why
+([providers.md](providers.md#zero-data-retention)).
 
 ### Print-mode notes
 
@@ -121,6 +153,38 @@ From `formatCliHelpText()`:
   structured output includes the event. `completion_gate.mode = "never"`
   in the config turns that off; see
   [config.md](config.md#built-in-defaults).
+  Verification requests reuse current evidence and ask for at most five grouped
+  evidence lines. They do not require repeated tests or separate items for
+  trivial properties. A narrow literal-file fast path preserves the requested
+  content-only answer: a short, explicit create/write-and-read-back request,
+  exactly one successful literal write and one complete read of the same file,
+  and a matching answer. It recognizes quoted ASCII content or consistent
+  byte-count/hexadecimal content, FileWrite/Write, and a literal `printf` with
+  an optional byte dump. Other wording, commands, extra requirements, partial
+  reads, failures and more involved tasks retain the full gate.
+  `literal_file_verified` records this decision without another model call.
+  The gate permits at most three checklist requests and six additional model
+  samples, including tool continuations and recovery samples. Each gated
+  request reserves at most 8,192 output tokens, or the lower configured limit.
+  The sample allowance is checkpointed. Transport retries retain their own
+  existing limits. If the model keeps working past six samples without a final
+  answer, the run stops with `max_turns` and an unverified-result warning.
+  With `--output-format json` or `stream-json` the caller requires the exact
+  final answer, and the check is skipped by default: `finalMessage` is the
+  model's first final answer. `completion_gate.exact_output = "verify"` in the
+  config runs the same check for structured output as internal work: the
+  answer that drew the first request is held, the checklist rounds appear in
+  the event stream only as ordinary agent messages and tool calls (the gate's
+  decisions are `completion_gate` records in the session rollout), and
+  `finalMessage` is the held answer byte for byte. A verification reply that
+  ends with a line containing only `<final_answer_changed/>` gets one more
+  request for the corrected answer in the task's own form, and that reply
+  becomes `finalMessage`. A structured run whose verification uses up its six
+  samples keeps its held answer and exit 0, with the `completion_gate_exhausted`
+  warning event. No result field or event type is added. With `--deadline`, a
+  verification round that would not finish before the reserve is not started
+  (recorded as `skipped`, reason `deadline_reserve`).
+  Clear information requests (such as MCP data queries or explanations) can finish without a workspace checklist when the turn has successful tool results and no commands or recorded workspace writes. Requests mentioning implementation, execution or output artifacts retain verification, as do ambiguous tasks, explicit checklists and verification rounds already in progress. The gate records this applicability decision as `skipped` with reason `answer_only`; it does not certify answer correctness or change tool permissions.
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
   (`promptViaSubprocess` in `@tetsuo-ai/agenc-sdk`).
@@ -423,10 +487,13 @@ model name can be overridden per child. The command returns after the
 durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
 then tails the run journal until the terminal result.
 
-The `run.start` RPC and SDK `startRun` accept `lightMode: true` to run the
-Goal and its child sessions in Light mode. Omit it for standard mode. The
-frozen setting appears in `run.status.workflow.lightMode` and is inherited
-by a continuation unless that request supplies its own boolean value.
+The `run.start` RPC and SDK `startRun` accept `lightMode` to choose the mode
+of the Goal and its child sessions: `true` for Light, `false` for standard.
+When it is omitted, a new Goal takes the daemon default, which is
+`light_mode` from the daemon's `config.toml` and otherwise Light.
+`agenc run start` has no mode flag and uses that default. The frozen setting
+appears in `run.status.workflow.lightMode` and is inherited by a continuation
+unless that request supplies its own boolean value.
 
 Workflow runs default to `acceptEdits` when `--permission-mode` is omitted.
 Use `--permission-mode default` for normal per-tool approval checks. `run start`
@@ -506,8 +573,17 @@ owners still fail with `RUN_ID_AMBIGUOUS`; changing cwd does not select an owner
 
 ## `remote`
 
+The owner must edit `[remote_control] enabled = true` in
+`$AGENC_HOME/config.toml` outside the agent, then restart the daemon. The default
+is false; managed policy wins. Flags, project config and environment variables
+cannot enable this capability. Disabled starts refuse before connector imports,
+account checks or network access. Local `status` and `off` remain available;
+`/remote` is hidden from TUI help and completion. After owner enablement,
+`--full-control` (or `AGENC_REMOTE_FULL_CONTROL=1`) supplies the existing per-run
+consent, followed by the account check.
+
 ```text
-agenc remote on
+agenc remote on --full-control
 agenc remote status
 agenc remote off
 ```
@@ -627,7 +703,7 @@ order stays private; keyless providers omit the field.
 | `--no-local-check` | Skip localhost health probes |
 
 Built-in provider slugs: `grok`, `openai`, `anthropic`, `ollama`, `lmstudio`,
-`openai-compatible`, `openrouter`, `groq`, `deepseek`, `meta`, `gemini`,
+`openai-compatible`, `openrouter`, `groq`, `venice`, `abliteration`, `deepseek`, `meta`, `gemini`,
 `mistral`, `nvidia-nim`, `minimax`, `github`, `amazon-bedrock`, `agenc`.
 
 ---

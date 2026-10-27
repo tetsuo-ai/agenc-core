@@ -106,16 +106,59 @@ describe.runIf(process.platform === "linux")("native settlement notification", (
   });
 });
 
-it("retains the settlement window without a native boundary", async () => {
-  const child = fakeChild();
-  vi.useFakeTimers();
-  const settled = vi.fn();
-  const waiting = waitForContainedProcessSettlement(child).then(settled);
-  child.emit("close", 0, null);
-  await vi.advanceTimersByTimeAsync(19);
-  expect(settled).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(1);
-  await waiting;
-  expect(settled).toHaveBeenCalledTimes(1);
-  expect(child.listenerCount("close")).toBe(0);
+describe.runIf(process.platform !== "win32")("settlement without a native boundary", () => {
+  it("retains the window while the child's process group still has a member", async () => {
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const member = actual.spawn("/bin/sleep", ["5"], { detached: true, stdio: "ignore" });
+    await new Promise<void>((resolveSpawn, rejectSpawn) => {
+      member.once("spawn", resolveSpawn);
+      member.once("error", rejectSpawn);
+    });
+    try {
+      // The fake leader shares the live group of a still-running member.
+      const child = Object.assign(fakeChild(), { pid: member.pid });
+      vi.useFakeTimers();
+      const settled = vi.fn();
+      const waiting = waitForContainedProcessSettlement(child).then(settled);
+      child.emit("close", 0, null);
+      await vi.advanceTimersByTimeAsync(19);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+      expect(settled).toHaveBeenCalledTimes(1);
+      expect(child.listenerCount("close")).toBe(0);
+    } finally {
+      member.kill("SIGKILL");
+    }
+  });
+
+  it("settles at close once the child's process group is empty", async () => {
+    const child = fakeChild(); // No process holds this group.
+    vi.useFakeTimers();
+    const settled = vi.fn();
+    const waiting = waitForContainedProcessSettlement(child).then(settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled(); // Exit alone does not settle.
+    child.emit("close", 0, null);
+    await Promise.resolve();
+    await Promise.resolve();
+    // No clock advance: stdio closed and the group is empty.
+    expect(settled).toHaveBeenCalledTimes(1);
+    await waiting;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(child.listenerCount("close")).toBe(0);
+  });
+
+  it("bounds a child that never closes its stdio", async () => {
+    const child = fakeChild();
+    vi.useFakeTimers();
+    const settled = vi.fn();
+    const waiting = waitForContainedProcessSettlement(child).then(settled);
+    await vi.advanceTimersByTimeAsync(19);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await waiting;
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(child.listenerCount("close")).toBe(0);
+  });
 });

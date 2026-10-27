@@ -2127,7 +2127,11 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("applies rename and delete changes through the incremental writer exclusion", async () => {
-    const fixture = await createFixture();
+    // This test owns the change records. OS watcher timing has separate coverage.
+    const fixture = await createFixture({
+      backgroundRefresh: false,
+      watcherFactoryForTesting: createSilentWatcher,
+    });
     const oldPath = join(fixture.projectRoot, "old-name.md");
     const newPath = join(fixture.projectRoot, "new-name.md");
     await writeMemory(oldPath, "Rename", "atomicrenameterm");

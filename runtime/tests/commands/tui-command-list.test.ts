@@ -31,6 +31,8 @@ const MINIMAL_TUI_NAMES = [
   "openai-logout",
   "cost",
   "model",
+  "update",
+  "budget",
   "provider",
   "effort",
   "resolve",
@@ -42,11 +44,11 @@ const MINIMAL_TUI_NAMES = [
   "tasks",
   "todos",
   "config",
+  "theme",
   "keybindings",
   "hooks",
   "skills",
   "mcp",
-  "remote",
   "plugins",
   "memory",
   "resume",
@@ -85,6 +87,8 @@ const DAEMON_TUI_NAMES = [
   "openai-logout",
   "cost",
   "model",
+  "update",
+  "budget",
   "provider",
   "effort",
   "resolve",
@@ -96,11 +100,11 @@ const DAEMON_TUI_NAMES = [
   "tasks",
   "todos",
   "config",
+  "theme",
   "keybindings",
   "hooks",
   "skills",
   "mcp",
-  "remote",
   "plugins",
   "memory",
   "resume",
@@ -142,7 +146,6 @@ const REMOVED_TUI_NAMES = [
   "review",
   "sandbox",
   "terminal-setup",
-  "theme",
   "wiki",
 ] as const;
 
@@ -203,6 +206,15 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     expect(projected.get("resume")?.aliases).toEqual(["sessions"]);
     expect(projected.get("context")?.aliases).toEqual(["ctx"]);
     expect(projected.get("exit")?.aliases).toEqual(["quit"]);
+  });
+
+  it("hides /remote while the owner has not enabled remote control", () => {
+    // Remote control is off by default; /remote stays dispatchable for
+    // refusal and cleanup but is left out of help and completion.
+    expect(listTuiCommandList().map((cmd) => cmd.name)).not.toContain("remote");
+    expect(
+      listTuiCommandList(buildDefaultRegistry({ surface: "daemon-tui" })).map((cmd) => cmd.name),
+    ).not.toContain("remote");
   });
 
   it("does not include removed or legacy command surfaces", () => {

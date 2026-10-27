@@ -234,4 +234,28 @@ describe("trust review wording", () => {
       },
     ]);
   });
+
+  test("the home folder's .agenc is the user's own config, not repository settings", async () => {
+    // A session started in the home folder: the root's .agenc folder is the AgenC home.
+    const agencHome = join(empty, ".agenc");
+    mkdirSync(agencHome);
+    writeFileSync(
+      join(agencHome, "config.toml"),
+      [
+        "config_version = 2",
+        'model = "gpt-6.1-sol"',
+        'model_provider = "openai"',
+        'reasoning_effort = "high"',
+        "",
+      ].join("\n"),
+    );
+    const listed = await reviewProjectTrust({ projectRoot: empty, config: {} });
+    expect(listed.repoItems).toEqual([
+      { label: "Settings", values: ["model, model_provider, reasoning_effort"] },
+    ]);
+
+    const home = await reviewProjectTrust({ projectRoot: empty, config: {}, agencHome });
+    expect(home.repoItems).toEqual([]);
+    expect(projectTrustReviewIsEmpty(home)).toBe(true);
+  });
 });

@@ -37,7 +37,10 @@ test("get.agenc.ag source preserves the landing page and release routes", () => 
     new URL("../../../packaging/get-agenc-ag/vercel.json", import.meta.url),
     "utf8",
   ));
-  assert.deepEqual(Object.keys(config).sort(), ["headers", "redirects"]);
+  assert.deepEqual(Object.keys(config).sort(), ["git", "headers", "redirects"]);
+  assert.deepEqual(config.git, {
+    deploymentEnabled: { "feat/agenc-login-model-access-20260910": false },
+  });
   assert.deepEqual(config.redirects, [
     {
       source: "/install.sh",
@@ -106,7 +109,7 @@ test("get.agenc.ag source preserves the landing page and release routes", () => 
   assert.ok(advertisedVersions.length > 0);
   assert.deepEqual([...new Set(advertisedVersions)], [version]);
   assert.doesNotMatch(landingPage, /PRE-RELEASE/);
-  assert.ok(landingPage.includes("PRIVATE NODE 26.5"));
+  assert.ok(landingPage.includes("PRIVATE NODE 26.12"));
   assert.ok(landingPage.includes("curl -fsSL https://get.agenc.ag/install.sh | sh"));
   for (const asset of ["agenc-logo.svg", "agenc-wordmark.svg"]) {
     const contents = readFileSync(
@@ -218,7 +221,8 @@ test("consumer GitHub CLI pins exactly mirror the reviewed release toolchain", (
     ["linux-arm64", "linuxArm64", "gh_2.96.0_linux_arm64/bin/gh"],
     ["darwin-x64", "macosX64", "gh_2.96.0_macOS_amd64/bin/gh"],
     ["darwin-arm64", "macosArm64", "gh_2.96.0_macOS_arm64/bin/gh"],
-    ["win-x64", "windowsX64", "gh_2.96.0_windows_amd64/bin/gh.exe"],
+    // The real Windows zip holds LICENSE and bin/gh.exe at its root.
+    ["win-x64", "windowsX64", "bin/gh.exe"],
   ]) {
     assert.deepEqual(PINNED_GITHUB_CLI_ARTIFACTS[consumerKey], {
       ...toolchain.githubCli[toolchainKey],
@@ -252,7 +256,7 @@ test("modern release identity advances while the installer legacy bridge remains
       nodeApiVersion: toolchain.nodeApiVersion,
     },
     {
-      nodeVersion: "26.5.0",
+      nodeVersion: "26.12.1",
       nodeMajor: NODE_MAJOR,
       nodeModuleAbi: NODE_MODULE_ABI,
       nodeApiVersion: NODE_API_VERSION,

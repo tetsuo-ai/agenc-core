@@ -1,0 +1,478 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "abliterated-model",
+      "object": "model",
+      "owned_by": "abliteration.ai",
+      "name": "Abliterated Model",
+      "display_name": "Abliterated Model",
+      "access": {
+        "required_checks": [],
+        "available": true,
+        "locked": false,
+        "missing_requirements": []
+      },
+      "created": 1781324687,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.000003",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000001"
+      },
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+        "stop",
+        "seed",
+        "max_tokens",
+        "logit_bias"
+      ],
+      "sampling_limits": {
+        "temperature": {
+          "minimum": 0.0,
+          "maximum": 2.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        },
+        "top_p": {
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "minimum_inclusive": false,
+          "maximum_inclusive": true
+        }
+      },
+      "sampling_limits_revision": "32961838ed5daeec",
+      "supported_features": [
+        "tools",
+        "json_mode",
+        "structured_outputs",
+        "logprobs",
+        "web_search",
+        "reasoning"
+      ],
+      "is_ready": true,
+      "quantization": "bf16",
+      "context_length": 262144,
+      "max_output_length": 262134,
+      "root": "abliterated-model",
+      "parent": null
+    },
+    {
+      "id": "abliterated-model-large",
+      "object": "model",
+      "owned_by": "abliteration.ai",
+      "name": "Abliterated Large",
+      "display_name": "Abliterated Large",
+      "access": {
+        "required_checks": [],
+        "available": true,
+        "locked": false,
+        "missing_requirements": []
+      },
+      "created": 1781324687,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000005",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000003"
+      },
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+        "stop",
+        "seed",
+        "max_tokens",
+        "logit_bias"
+      ],
+      "sampling_limits": {
+        "temperature": {
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        },
+        "top_p": {
+          "minimum": 0.01,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        }
+      },
+      "sampling_limits_revision": "72f42877a4f8d56b",
+      "supported_features": [
+        "tools",
+        "json_mode",
+        "structured_outputs",
+        "logprobs",
+        "web_search",
+        "reasoning"
+      ],
+      "is_ready": true,
+      "quantization": "fp8",
+      "context_length": 1000000,
+      "max_output_length": 999990,
+      "root": "abliterated-model",
+      "parent": null
+    },
+    {
+      "id": "abliterated-model-large-v2",
+      "object": "model",
+      "owned_by": "abliteration.ai",
+      "name": "Abliterated Large v2",
+      "display_name": "Abliterated Large v2",
+      "access": {
+        "required_checks": [],
+        "available": true,
+        "locked": false,
+        "missing_requirements": []
+      },
+      "created": 1787961600,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000005",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000003"
+      },
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+        "stop",
+        "seed",
+        "max_tokens",
+        "logit_bias"
+      ],
+      "sampling_limits": {
+        "temperature": {
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        },
+        "top_p": {
+          "minimum": 0.01,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        }
+      },
+      "sampling_limits_revision": "72f42877a4f8d56b",
+      "supported_features": [
+        "tools",
+        "json_mode",
+        "structured_outputs",
+        "logprobs",
+        "web_search",
+        "reasoning"
+      ],
+      "is_ready": true,
+      "quantization": "fp8",
+      "context_length": 1000000,
+      "max_output_length": 999990,
+      "root": "abliterated-model",
+      "parent": null
+    },
+    {
+      "id": "abliterated-model-large-flash",
+      "display_name": "Abliterated Large Flash",
+      "name": "Abliterated Large Flash",
+      "context_length": 1048576,
+      "max_output_length": 262144,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "supported_features": [
+        "tools",
+        "json_mode",
+        "structured_outputs",
+        "logprobs",
+        "web_search",
+        "reasoning"
+      ],
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.000002",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000001"
+      },
+      "access": {
+        "required_checks": [],
+        "available": true,
+        "locked": false,
+        "missing_requirements": []
+      },
+      "is_ready": true
+    },
+    {
+      "id": "fixture-locked-model",
+      "object": "model",
+      "owned_by": "abliteration.ai",
+      "name": "Fixture Locked Model",
+      "display_name": "Fixture Locked Model",
+      "access": {
+        "required_checks": [
+          "fixture_check"
+        ],
+        "available": false,
+        "locked": true,
+        "missing_requirements": [
+          "fixture_check"
+        ]
+      },
+      "created": 1790000000,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000004",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000002"
+      },
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "stop",
+        "seed",
+        "max_tokens"
+      ],
+      "sampling_limits": {
+        "temperature": {
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        }
+      },
+      "sampling_limits_revision": "fixture",
+      "supported_features": [
+        "tools",
+        "json_mode",
+        "structured_outputs",
+        "logprobs",
+        "web_search",
+        "reasoning"
+      ],
+      "is_ready": true,
+      "quantization": "fixture",
+      "context_length": 131072,
+      "max_output_length": 131062,
+      "root": "fixture-locked-model",
+      "parent": null
+    },
+    {
+      "id": "fixture-warming-model",
+      "object": "model",
+      "owned_by": "abliteration.ai",
+      "name": "Fixture Warming Model",
+      "display_name": "Fixture Warming Model",
+      "access": {
+        "required_checks": [],
+        "available": true,
+        "locked": false,
+        "missing_requirements": []
+      },
+      "created": 1790000000,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000004",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000002"
+      },
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "stop",
+        "seed",
+        "max_tokens"
+      ],
+      "sampling_limits": {
+        "temperature": {
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        }
+      },
+      "sampling_limits_revision": "fixture",
+      "supported_features": [
+        "tools",
+        "json_mode",
+        "structured_outputs",
+        "logprobs",
+        "web_search",
+        "reasoning"
+      ],
+      "is_ready": false,
+      "quantization": "fixture",
+      "context_length": 131072,
+      "max_output_length": 131062,
+      "root": "fixture-warming-model",
+      "parent": null
+    },
+    {
+      "id": "fixture-no-tools-model",
+      "object": "model",
+      "owned_by": "abliteration.ai",
+      "name": "Fixture No Tools Model",
+      "display_name": "Fixture No Tools Model",
+      "access": {
+        "required_checks": [],
+        "available": true,
+        "locked": false,
+        "missing_requirements": []
+      },
+      "created": 1790000000,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000004",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000002"
+      },
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "stop",
+        "seed",
+        "max_tokens"
+      ],
+      "sampling_limits": {
+        "temperature": {
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        }
+      },
+      "sampling_limits_revision": "fixture",
+      "supported_features": [
+        "json_mode",
+        "reasoning"
+      ],
+      "is_ready": true,
+      "quantization": "fixture",
+      "context_length": 131072,
+      "max_output_length": 131062,
+      "root": "fixture-no-tools-model",
+      "parent": null
+    },
+    {
+      "id": "fixture-new-model",
+      "object": "model",
+      "owned_by": "abliteration.ai",
+      "name": "Fixture New Model",
+      "display_name": "Fixture New Model",
+      "access": {
+        "required_checks": [],
+        "available": true,
+        "locked": false,
+        "missing_requirements": []
+      },
+      "created": 1790000000,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000006",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0.0000002"
+      },
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "stop",
+        "seed",
+        "max_tokens"
+      ],
+      "sampling_limits": {
+        "temperature": {
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "minimum_inclusive": true,
+          "maximum_inclusive": true
+        }
+      },
+      "sampling_limits_revision": "fixture",
+      "supported_features": [
+        "tools",
+        "json_mode",
+        "structured_outputs",
+        "logprobs",
+        "web_search",
+        "reasoning"
+      ],
+      "is_ready": true,
+      "quantization": "fixture",
+      "context_length": 524288,
+      "max_output_length": 524278,
+      "root": "fixture-new-model",
+      "parent": null
+    }
+  ]
+}

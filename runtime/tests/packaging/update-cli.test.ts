@@ -1,3 +1,4 @@
+import "../helpers/cron-os-home.js";
 // Tests for `agenc update` (runtime/src/bin/update-cli.ts).
 //
 // The updater must speak the exact install contract shared by
@@ -8,7 +9,7 @@
 // runs against a synthetic tarball and a file:// manifest, mirroring
 // install-sh.test.ts.
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -23,10 +24,17 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import {
+  createServer,
+  request as httpRequest,
+  type ServerResponse,
+} from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { setTimeout as realDelay } from "node:timers/promises";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   findInstallShWrappers,
   findGeneratedWrapperCandidates,
@@ -46,6 +54,7 @@ import {
   resolveTrustedSystemTar,
   runBoundedProcess,
   runAgenCUpdateCli,
+  checkAgenCUpdate,
   runPreparedOfficialAttestationVerifier,
   sanitizeTerminalText,
   selectUpdateArtifact,
@@ -117,6 +126,24 @@ function runtimeBins(platform = "linux"): {
   };
 }
 
+// Packs a synthetic runtime tree. On macOS, bsdtar would otherwise add
+// AppleDouble "._*" members and xattr PAX records (com.apple.provenance),
+// which the runtime archive policy rejects. Linux runs are unchanged.
+function packSyntheticTree(tarball: string, tree: string): ReturnType<typeof spawnSync> {
+  return spawnSync(
+    "tar",
+    [
+      ...(process.platform === "darwin" ? ["--no-xattrs"] : []),
+      "-czf",
+      tarball,
+      "-C",
+      tree,
+      "node_modules",
+    ],
+    { env: { ...process.env, COPYFILE_DISABLE: "1" } },
+  );
+}
+
 function sha256(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
@@ -149,6 +176,8 @@ function makeSyntheticArtifact(
     readonly identityNodeModuleAbi?: string;
     readonly nodeBehavior?: "host" | "wrong-identity" | "fail";
     readonly platform?: "linux" | "win";
+    /** Incompressible filler that makes the archive about this much larger. */
+    readonly paddingBytes?: number;
   } = {},
 ): { tarball: string; sha: string } {
   const tree = join(dir, "tree");
@@ -164,6 +193,9 @@ function makeSyntheticArtifact(
     join(binDir, "agenc"),
     'console.log("ok " + process.argv.slice(2).join(" "));\n',
   );
+  if (options.paddingBytes !== undefined) {
+    writeFileSync(join(dirname(binDir), "padding.bin"), randomBytes(options.paddingBytes));
+  }
   const nodeShim = options.nodeBehavior === "wrong-identity"
     ? [
         "#!/bin/sh",
@@ -178,6 +210,10 @@ function makeSyntheticArtifact(
       : [
           "#!/bin/sh",
           "unset LD_LIBRARY_PATH",
+          'if [ "${1:-}" = "-e" ]; then',
+          '  shift; fixture_script="$1"; shift',
+          `  exec ${JSON.stringify(process.execPath)} -e "Object.defineProperty(process, 'platform', { value: '${options.platform === "win" ? "win32" : "linux"}' }); Object.defineProperty(process, 'arch', { value: 'x64' }); $fixture_script" "$@"`,
+          "fi",
           `exec ${JSON.stringify(process.execPath)} "$@"`,
           "",
         ].join("\n");
@@ -228,7 +264,7 @@ function makeSyntheticArtifact(
     );
   }
   const tarball = join(dir, `agenc-runtime-${NEW_VERSION}-test.tar.gz`);
-  const res = spawnSync("tar", ["-czf", tarball, "-C", tree, "node_modules"]);
+  const res = packSyntheticTree(tarball, tree);
   expect(res.status).toBe(0);
   return { tarball, sha: sha256(readFileSync(tarball)) };
 }
@@ -357,6 +393,211 @@ function responseFromChunks(
 
 function fetchResponse(response: Response): typeof fetch {
   return (async () => response) as unknown as typeof fetch;
+}
+
+// --- slow-link harness ---------------------------------------------------------
+//
+// A loopback HTTP server stands in for GitHub. Paced resources send their
+// headers at once and then only the bytes a test releases, so a test can hold
+// a transfer open for minutes of fake time. The fake clock (setTimeout and
+// performance.now) moves only when a test advances it; sockets, files and
+// child processes stay real. Every advance waits until the updater has pulled
+// the released bytes, so silence on the wire is exactly the advanced time.
+
+interface PacedHttpServer {
+  /** Routes the updater's HTTPS requests to this server by URL path. */
+  readonly fetchImpl: typeof fetch;
+  /** True once the updater requested this paced path. */
+  readonly requested: (path: string) => boolean;
+  /** Body bytes of a paced path the updater has pulled so far. */
+  readonly delivered: (path: string) => number;
+  /** True when the client closed a paced response before it ended. */
+  readonly abandoned: (path: string) => boolean;
+  readonly send: (path: string, chunk: Uint8Array) => void;
+  readonly end: (path: string) => void;
+  readonly close: () => Promise<void>;
+}
+
+async function startPacedHttpServer(options: {
+  readonly paced: ReadonlyMap<string, number>;
+  readonly files?: ReadonlyMap<string, Buffer>;
+}): Promise<PacedHttpServer> {
+  const responses = new Map<string, ServerResponse>();
+  const delivered = new Map<string, number>();
+  const abandoned = new Set<string>();
+  const ended = new Set<string>();
+  const server = createServer((request, response) => {
+    const path = request.url ?? "";
+    const length = options.paced.get(path);
+    if (length !== undefined) {
+      response.writeHead(200, { "content-length": String(length) });
+      response.flushHeaders();
+      response.on("close", () => {
+        if (!ended.has(path)) abandoned.add(path);
+      });
+      responses.set(path, response);
+      return;
+    }
+    const file = options.files?.get(path);
+    if (file === undefined) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-length": String(file.length) }).end(file);
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const { port } = server.address() as AddressInfo;
+  const fetchImpl = ((input: string | URL | Request, init?: RequestInit) =>
+    new Promise<Response>((resolveFetch, rejectFetch) => {
+      const path = new URL(String(input)).pathname;
+      const request = httpRequest(
+        {
+          host: "127.0.0.1",
+          port,
+          path,
+          headers: { "accept-encoding": "identity" },
+          // One connection per request: the updater aborts each finished
+          // transfer, which must not reach a socket a later transfer reuses.
+          agent: false,
+        },
+        (incoming) => {
+          const headers = new Headers();
+          for (const [name, value] of Object.entries(incoming.headers)) {
+            if (typeof value === "string") headers.set(name, value);
+          }
+          const chunks = incoming[Symbol.asyncIterator]();
+          const body = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              const next = await chunks.next();
+              if (next.done) {
+                controller.close();
+                return;
+              }
+              const chunk = next.value as Buffer;
+              delivered.set(path, (delivered.get(path) ?? 0) + chunk.length);
+              controller.enqueue(new Uint8Array(chunk));
+            },
+            cancel() {
+              incoming.destroy();
+            },
+          }, { highWaterMark: 0 });
+          resolveFetch(new Response(body, {
+            status: incoming.statusCode ?? 500,
+            statusText: incoming.statusMessage ?? "",
+            headers,
+          }));
+        },
+      );
+      request.on("error", rejectFetch);
+      const signal = init?.signal;
+      if (signal) {
+        // Destroy the transport on the next turn, so the updater's own
+        // timeout error settles first, as in the 0.19.12 field logs.
+        const abort = (): void => {
+          setImmediate(() => request.destroy(new Error("aborted")));
+        };
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      }
+      request.end();
+    })) as typeof fetch;
+  return {
+    fetchImpl,
+    requested: (path) => responses.has(path),
+    delivered: (path) => delivered.get(path) ?? 0,
+    abandoned: (path) => abandoned.has(path),
+    send: (path, chunk) => {
+      responses.get(path)!.write(chunk);
+    },
+    end: (path) => {
+      ended.add(path);
+      responses.get(path)!.end();
+    },
+    close: () => new Promise<void>((resolveClose) => {
+      server.closeAllConnections();
+      server.close(() => resolveClose());
+    }),
+  };
+}
+
+interface Settlement<T> {
+  done: boolean;
+  /** Fake-clock time when the operation settled. */
+  at: number;
+  value?: T;
+  error?: unknown;
+}
+
+function settlementOf<T>(operation: Promise<T>): Settlement<T> {
+  const state: Settlement<T> = { done: false, at: Number.NaN };
+  operation.then(
+    (value) => {
+      state.done = true;
+      state.at = performance.now();
+      state.value = value;
+    },
+    (error: unknown) => {
+      state.done = true;
+      state.at = performance.now();
+      state.error = error;
+    },
+  );
+  return state;
+}
+
+/** Waits in real time; the fake clock does not move meanwhile. */
+async function waitForRealCondition(condition: () => boolean, what: string): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > 20_000) throw new Error(`timed out waiting for ${what}`);
+    await realDelay(2);
+  }
+}
+
+/**
+ * Releases each chunk after `gapMs` of fake-clock silence and waits until the
+ * updater pulled it. Stops early once the operation settles.
+ */
+async function sendPaced(
+  server: PacedHttpServer,
+  path: string,
+  chunks: readonly Uint8Array[],
+  gapMs: number,
+  state: Settlement<unknown>,
+): Promise<void> {
+  await waitForRealCondition(() => state.done || server.requested(path), `a request for ${path}`);
+  let released = server.delivered(path);
+  for (const chunk of chunks) {
+    await vi.advanceTimersByTimeAsync(gapMs);
+    if (state.done) return;
+    server.send(path, chunk);
+    released += chunk.length;
+    await waitForRealCondition(
+      () => state.done || server.delivered(path) >= released,
+      `delivery of ${path}`,
+    );
+  }
+}
+
+/** Moves the fake clock in small steps while real I/O finishes the operation. */
+async function runUntilSettled(
+  state: Settlement<unknown>,
+  stepMs: number,
+  limitMs: number,
+): Promise<void> {
+  for (let elapsed = 0; !state.done; elapsed += stepMs) {
+    if (elapsed > limitMs) throw new Error(`operation did not settle within ${limitMs} ms of fake time`);
+    await vi.advanceTimersByTimeAsync(stepMs);
+    await realDelay(2);
+  }
+}
+
+function splitIntoChunks(content: Buffer, chunkBytes: number): Buffer[] {
+  const chunks: Buffer[] = [];
+  for (let offset = 0; offset < content.length; offset += chunkBytes) {
+    chunks.push(content.subarray(offset, offset + chunkBytes));
+  }
+  return chunks;
 }
 
 function makeRemoteArtifact(
@@ -799,12 +1040,14 @@ describe("agenc update CLI", () => {
       platform: "win32",
       env: { Path: `${lower};${lower};${upper}` },
       userHome: work,
-    }).map((wrapper) => wrapper.path)).toEqual([lowerWrapper, upperWrapper]);
+    }).map((wrapper) => wrapper.path)).toEqual(
+      statSync(lower).ino === statSync(upper).ino ? [lowerWrapper] : [lowerWrapper, upperWrapper],
+    );
     expect(findGeneratedWrapperCandidates({
       platform: "win32",
       env: { Path: `${lower};${lower};${upper}` },
       userHome: work,
-    })).toEqual([lowerWrapper, upperWrapper]);
+    })).toEqual(statSync(lower).ino === statSync(upper).ino ? [lowerWrapper] : [lowerWrapper, upperWrapper]);
   });
 
   test.skipIf(process.platform === "win32")(
@@ -2016,7 +2259,7 @@ describe("agenc update CLI", () => {
         stalledHeaders,
         { timeoutMs: 20 },
       ),
-    ).rejects.toThrow(/manifest response timed out after 20ms/);
+    ).rejects.toThrow(/runtime manifest download did not finish within 20 ms \(0 bytes received\)/);
     expect(headerAborted).toBe(true);
 
     let bodyCancelled = 0;
@@ -2043,7 +2286,7 @@ describe("agenc update CLI", () => {
         } as unknown as Response),
         { timeoutMs: 20 },
       ),
-    ).rejects.toThrow(/manifest body timed out after 20ms/);
+    ).rejects.toThrow(/runtime manifest download did not finish within 20 ms \(0 bytes received\)/);
     expect(bodyCancelled).toBe(1);
   });
 
@@ -2109,7 +2352,9 @@ describe("agenc update CLI", () => {
         manifestTrust: "explicitHttps",
         tmpDir: work,
       }),
-    ).rejects.toThrow(/artifact body timed out after 20ms/);
+    ).rejects.toThrow(
+      /runtime artifact download did not finish within 20 ms \(0 of 1 bytes received\)/,
+    );
     expect(cancelled).toBe(1);
     expect(
       readdirSync(work).filter((name) => name.startsWith("agenc-update-download-")),
@@ -2260,6 +2505,28 @@ describe("agenc update CLI", () => {
       latestVersion: NEW_VERSION,
       updateAvailable: true,
     });
+    expect(existsSync(join(agencHome, "runtime", NEW_VERSION))).toBe(false);
+  });
+
+  test("shared check retains the CLI fallback for an unparsable current version", async () => {
+    const artifact = makeSyntheticArtifact(work);
+    const manifestUrl = `file://${writeManifest(work, artifact)}`;
+    const checked = await checkAgenCUpdate({ kind: "update", check: true, json: false, manifestUrl }, { ...deps, currentVersion: "local-build" });
+    expect(checked.updateAvailable).toBe(true);
+    const code = await runAgenCUpdateCli({ kind: "update", check: true, json: true, manifestUrl }, { ...deps, currentVersion: "local-build" });
+    expect(code).toBe(0);
+    expect(JSON.parse(out.join(""))).toMatchObject({ currentVersion: "local-build", latestVersion: NEW_VERSION, updateAvailable: true });
+  });
+
+  test("TUI check shares the CLI result and rejects a changed release before installation", async () => {
+    const artifact = makeSyntheticArtifact(work);
+    const manifestUrl = `file://${writeManifest(work, artifact)}`;
+    const checked = await checkAgenCUpdate({ kind: "update", check: true, json: false, manifestUrl }, deps);
+    expect(checked).toMatchObject({ currentVersion: OLD_VERSION, latestVersion: NEW_VERSION, updateAvailable: true });
+    expect(existsSync(join(agencHome, "runtime", NEW_VERSION))).toBe(false);
+    const code = await runAgenCUpdateCli({ kind: "update", check: false, json: false, manifestUrl }, { ...deps, expectedVersion: "9.9.7-test" });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("release changed");
     expect(existsSync(join(agencHome, "runtime", NEW_VERSION))).toBe(false);
   });
 
@@ -2446,7 +2713,7 @@ describe("agenc update CLI", () => {
   test("runtime install preserves the operation and every cleanup failure in order", async () => {
     const artifact = makeSyntheticArtifact(work);
     rmSync(join(work, "tree", BIN_REL));
-    const rebuilt = spawnSync("tar", ["-czf", artifact.tarball, "-C", join(work, "tree"), "node_modules"]);
+    const rebuilt = packSyntheticTree(artifact.tarball, join(work, "tree"));
     expect(rebuilt.status).toBe(0);
     artifact.sha = sha256(readFileSync(artifact.tarball));
     const manifest = JSON.parse(readFileSync(writeManifest(work, artifact), "utf8"));
@@ -2923,5 +3190,305 @@ describe("agenc update CLI", () => {
     expect(err.join("\n")).toContain(
       "local runtime artifact URL must be an authority-free file URL",
     );
+  });
+
+  describe("download limits on slow links", () => {
+    // Only the clock is fake. Sockets, files and child processes stay real.
+    const fakeClock = (): void => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    };
+    const remoteManifestUrl =
+      `https://github.com/${OFFICIAL_RELEASE_REPOSITORY}/releases/download/` +
+      "agenc-v9.9.9/agenc-runtime-manifest-v2.json";
+
+    // The staged private Node probe compares the host with this linux-x64
+    // fixture, so other hosts skip only that probe. Checksum and archive
+    // checks still run; transfer limits are what these tests exercise.
+    const stagedNodeProbe = process.platform === "linux" && process.arch === "x64"
+      ? {}
+      : { verifyStagedPrivateNode: async (): Promise<void> => undefined };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    test("a slow but steady runtime download that outlasts the old 120 s budget completes and verifies", async () => {
+      // About 16.8 MB at 128 KiB/s, the floor rate: roughly 132 s on the wire.
+      const source = makeSyntheticArtifact(work, { paddingBytes: 16 * 1024 * 1024 });
+      const content = readFileSync(source.tarball);
+      const artifact = makeRemoteArtifact(content.length, source.sha);
+      const path = new URL(artifact.url).pathname;
+      const server = await startPacedHttpServer({ paced: new Map([[path, content.length]]) });
+      fakeClock();
+      try {
+        const started = performance.now();
+        const install = settlementOf(installRuntimeFromManifest({
+          manifest: manifestForArtifact(artifact),
+          artifact,
+          agencHome,
+          acquireLock: async () => () => undefined,
+          fetchImpl: server.fetchImpl,
+          manifestTrust: "explicitHttps",
+          tmpDir: work,
+          ...stagedNodeProbe,
+        }));
+        await sendPaced(server, path, splitIntoChunks(content, 512 * 1024), 4_000, install);
+        const transferMs = performance.now() - started;
+        if (!install.done) server.end(path);
+        await runUntilSettled(install, 5, 120_000);
+        expect(install.error).toBeUndefined();
+        expect(transferMs).toBeGreaterThan(120_000);
+        expect(install.value).toMatchObject({ downloaded: true });
+        const installDir = join(agencHome, "runtime", "9.9.9", linuxInstallKey(source.sha));
+        expect(readFileSync(join(installDir, ".agenc-runtime-ok"), "utf8")).toBe(source.sha);
+      } finally {
+        vi.useRealTimers();
+        await server.close();
+      }
+    }, 60_000);
+
+    test("a transfer that stops sending fails at the idle limit with one plain line naming it and the fix", async () => {
+      const declaredBytes = 1_048_576;
+      const manifest = makeRemoteManifest();
+      const remote = (manifest.artifacts as Record<string, unknown>[])[0]!;
+      remote.bytes = declaredBytes;
+      const path = new URL(String(remote.url)).pathname;
+      const server = await startPacedHttpServer({
+        paced: new Map([[path, declaredBytes]]),
+        files: new Map([
+          [new URL(remoteManifestUrl).pathname, Buffer.from(JSON.stringify(manifest))],
+        ]),
+      });
+      const oldBin = join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL);
+      const wrapper = writeInstallShWrapper(binDir, agencHome, oldBin);
+      const wrapperBefore = readFileSync(wrapper, "utf8");
+      fakeClock();
+      try {
+        const update = settlementOf(runAgenCUpdateCli(
+          { kind: "update", check: false, json: false, manifestUrl: remoteManifestUrl },
+          { ...deps, ...stagedNodeProbe, fetchImpl: server.fetchImpl },
+        ));
+        // 256 KiB over 40 s, then the server goes silent without closing.
+        const chunks = Array.from({ length: 8 }, () => Buffer.alloc(32 * 1024));
+        await sendPaced(server, path, chunks, 5_000, update);
+        const silentFrom = performance.now();
+        await runUntilSettled(update, 250, 300_000);
+        expect(update.value).toBe(1);
+        expect(err).toEqual([
+          "agenc: update failed: runtime artifact download stalled: no data for 30 s " +
+            "(0.3 of 1.0 MB received). Rerun agenc update, or reinstall with the " +
+            "installer (curl -fsSL https://get.agenc.ag/install.sh | sh) or npm " +
+            "(npm install -g @tetsuo-ai/agenc@latest).",
+        ]);
+        expect(update.at - silentFrom).toBeGreaterThanOrEqual(30_000);
+        expect(update.at - silentFrom).toBeLessThan(33_000);
+        await waitForRealCondition(() => server.abandoned(path), "the transfer to be closed");
+        expect(readFileSync(wrapper, "utf8")).toBe(wrapperBefore);
+        expect(existsSync(join(
+          agencHome,
+          "runtime",
+          "9.9.9",
+          linuxInstallKey(String(remote.sha256)),
+        ))).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        await server.close();
+      }
+    }, 60_000);
+
+    test("the size-scaled cap still bounds a trickle that never trips the idle limit", async () => {
+      // ceil(32 MiB / 128 KiB/s) s + 30 s = 286 s.
+      const declaredBytes = 32 * 1024 * 1024;
+      const capMs = 286_000;
+      const artifact = makeRemoteArtifact(declaredBytes);
+      const path = new URL(artifact.url).pathname;
+      const server = await startPacedHttpServer({ paced: new Map([[path, declaredBytes]]) });
+      fakeClock();
+      try {
+        const started = performance.now();
+        const install = settlementOf(installRuntimeFromManifest({
+          manifest: manifestForArtifact(artifact),
+          artifact,
+          agencHome,
+          acquireLock: async () => () => undefined,
+          fetchImpl: server.fetchImpl,
+          manifestTrust: "explicitHttps",
+          tmpDir: work,
+        }));
+        // One KiB every 20 s: always inside the 30 s idle limit.
+        const trickle = Array.from({ length: 20 }, () => Buffer.alloc(1024));
+        await sendPaced(server, path, trickle, 20_000, install);
+        await runUntilSettled(install, 250, 60_000);
+        expect(String(install.error)).toContain(
+          "runtime artifact download did not finish within 4 min 46 s " +
+            "(0.0 of 33.6 MB received)",
+        );
+        expect(install.at - started).toBeGreaterThanOrEqual(capMs);
+        expect(install.at - started).toBeLessThan(capMs + 3_000);
+        await waitForRealCondition(() => server.abandoned(path), "the transfer to be closed");
+        expect(
+          readdirSync(work).filter((name) => name.startsWith("agenc-update-download-")),
+        ).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        await server.close();
+      }
+    }, 60_000);
+
+    test("after a slow official runtime download, the GitHub CLI bootstrap gets its own limits", async () => {
+      // The 0.19.12 field failure: the runtime used most of one shared 120 s
+      // budget, then the verifier download had seconds left and timed out.
+      const content = randomBytes(4 * 1024 * 1024);
+      const bundle = Buffer.from('{"verificationMaterial":{}}');
+      const artifact = makeOfficialArtifact(content, bundle);
+      const platformKey =
+        `${process.platform === "win32" ? "win" : process.platform}-${process.arch}`;
+      const pinned = PINNED_GITHUB_CLI_ARTIFACTS[platformKey]!;
+      const artifactPath = new URL(artifact.url).pathname;
+      const cliPath = new URL(pinned.url).pathname;
+      const server = await startPacedHttpServer({
+        paced: new Map([[artifactPath, content.length], [cliPath, pinned.bytes]]),
+        files: new Map([
+          [new URL(artifact.attestationUrl!).pathname, bundle],
+          [new URL(artifact.buildProvenanceUrl!).pathname, bundle],
+        ]),
+      });
+      fakeClock();
+      try {
+        const install = settlementOf(installRuntimeFromManifest({
+          manifest: manifestForArtifact(artifact),
+          artifact,
+          agencHome,
+          acquireLock: async () => () => undefined,
+          fetchImpl: server.fetchImpl,
+          manifestTrust: "official",
+          tmpDir: work,
+        }));
+        // 4 MiB over 100 s, then the ~14 MB verifier archive over 35 s.
+        await sendPaced(server, artifactPath, splitIntoChunks(content, 256 * 1024), 6_250, install);
+        if (!install.done) server.end(artifactPath);
+        const archive = splitIntoChunks(Buffer.alloc(pinned.bytes), 1024 * 1024);
+        await sendPaced(server, cliPath, archive, 2_500, install);
+        if (!install.done) server.end(cliPath);
+        await runUntilSettled(install, 5, 60_000);
+        // The stand-in archive arrived in full; only its pinned checksum fails.
+        expect(String(install.error)).toMatch(/GitHub CLI bootstrap checksum mismatch/);
+        expect(
+          readdirSync(work).filter((name) => name.startsWith("agenc-update-download-")),
+        ).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        await server.close();
+      }
+    }, 60_000);
+
+    test("a server that never answers fails at the response limit", async () => {
+      let aborted = false;
+      const silent = ((_input: URL | RequestInfo, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          }, { once: true });
+        })) as typeof fetch;
+      fakeClock();
+      const started = performance.now();
+      const fetching = settlementOf(
+        fetchRuntimeManifest("https://example.invalid/manifest.json", silent),
+      );
+      await runUntilSettled(fetching, 1_000, 200_000);
+      expect(String(fetching.error)).toContain(
+        "runtime manifest server did not respond within 30 s",
+      );
+      expect(fetching.at - started).toBeGreaterThanOrEqual(30_000);
+      expect(fetching.at - started).toBeLessThan(31_000);
+      expect(aborted).toBe(true);
+    });
+
+    test("draws download progress on a TTY and the TUI, then finishes the update", async () => {
+      const source = makeSyntheticArtifact(work, { paddingBytes: 2 * 1024 * 1024 });
+      const content = readFileSync(source.tarball);
+      const manifest = makeRemoteManifest();
+      const remote = (manifest.artifacts as Record<string, unknown>[])[0]!;
+      remote.bytes = content.length;
+      remote.sha256 = source.sha;
+      const path = new URL(String(remote.url)).pathname;
+      const server = await startPacedHttpServer({
+        paced: new Map([[path, content.length]]),
+        files: new Map([
+          [new URL(remoteManifestUrl).pathname, Buffer.from(JSON.stringify(manifest))],
+        ]),
+      });
+      const oldBin = join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL);
+      writeInstallShWrapper(binDir, agencHome, oldBin);
+      const terminal: string[] = [];
+      const tui: string[] = [];
+      fakeClock();
+      try {
+        const update = settlementOf(runAgenCUpdateCli(
+          { kind: "update", check: false, json: false, manifestUrl: remoteManifestUrl },
+          {
+            ...deps,
+            ...stagedNodeProbe,
+            fetchImpl: server.fetchImpl,
+            progressTerminal: { isTTY: true, write: (chunk: string) => terminal.push(chunk) },
+            onProgress: (line) => tui.push(line),
+          },
+        ));
+        await sendPaced(server, path, splitIntoChunks(content, 512 * 1024), 2_000, update);
+        if (!update.done) server.end(path);
+        await runUntilSettled(update, 5, 60_000);
+        expect(err).toEqual([]);
+        expect(update.value).toBe(0);
+        const progressLine =
+          /^\rDownloading runtime 9\.9\.9: (\d+)% \((\d+\.\d) of (\d+\.\d) MB, \d+\.\d MB\/s\) *(\n?)$/;
+        expect(terminal.length).toBeGreaterThanOrEqual(3);
+        const percents = terminal.map((chunk) => {
+          const match = progressLine.exec(chunk);
+          expect(match, JSON.stringify(chunk)).not.toBeNull();
+          return Number(match![1]);
+        });
+        expect(percents).toEqual([...percents].sort((left, right) => left - right));
+        expect(terminal.at(-1)).toMatch(/: 100% \(.*\n$/);
+        expect(terminal.slice(0, -1).every((chunk) => !chunk.endsWith("\n"))).toBe(true);
+        expect(tui[0]).toBe("Downloading and verifying the runtime.");
+        expect(tui.some((line) => /^Downloading runtime 9\.9\.9: \d+% /.test(line))).toBe(true);
+        expect(tui.slice(-2)).toEqual([
+          "Verifying the runtime.",
+          "Activating the verified runtime for the next launch.",
+        ]);
+        expect(out[0]).toContain("Updated agenc 9.9.8-test -> 9.9.9 (downloaded, sha256 verified).");
+      } finally {
+        vi.useRealTimers();
+        await server.close();
+      }
+    }, 60_000);
+
+    test("adds no progress output when stderr is not a TTY", async () => {
+      const source = makeSyntheticArtifact(work);
+      const content = readFileSync(source.tarball);
+      const manifest = makeRemoteManifest();
+      const remote = (manifest.artifacts as Record<string, unknown>[])[0]!;
+      remote.bytes = content.length;
+      remote.sha256 = source.sha;
+      const oldBin = join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL);
+      writeInstallShWrapper(binDir, agencHome, oldBin);
+      const writes: string[] = [];
+      const fetchImpl = (async (input: string | URL | Request) => String(input) === remoteManifestUrl
+        ? responseFromChunks([Buffer.from(JSON.stringify(manifest))])
+        : responseFromChunks([content], { "content-length": String(content.length) })) as typeof fetch;
+      const code = await runAgenCUpdateCli(
+        { kind: "update", check: false, json: false, manifestUrl: remoteManifestUrl },
+        {
+          ...deps,
+          ...stagedNodeProbe,
+          fetchImpl,
+          progressTerminal: { isTTY: false, write: (chunk: string) => writes.push(chunk) },
+        },
+      );
+      expect(code).toBe(0);
+      expect(writes).toEqual([]);
+      expect(err).toEqual([]);
+    });
   });
 });

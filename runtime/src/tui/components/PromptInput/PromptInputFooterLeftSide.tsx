@@ -347,7 +347,8 @@ function ModeIndicator({
   // click-target Box isn't nested inside <Text wrap="truncate"> — the
   // reconciler throws on Box-in-Text. Computed here so the empty-checks
   // below still treat "pill present" as non-empty.
-  const tasksPart = hasBackgroundTasks && !hasTeammatePills && !shouldHideTasksFooter(tasks, showSpinnerTree) ? <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} /> : null;
+  const hasFooterTasks = !isFullscreen || Object.values(tasks).some(task => isBackgroundTask(task) && task.type !== 'local_bash');
+  const tasksPart = hasFooterTasks && hasBackgroundTasks && !hasTeammatePills && !shouldHideTasksFooter(tasks, showSpinnerTree) ? <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} /> : null;
   const copyOnSelect = settings.tui?.copyOnSelect ?? true;
   const selectionHintHasContent = hasSelection && (!copyOnSelect || isXtermJs());
 

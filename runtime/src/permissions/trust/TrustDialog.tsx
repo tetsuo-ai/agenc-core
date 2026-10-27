@@ -67,7 +67,11 @@ export interface TrustDialogProps {
   readonly review?: ProjectTrustReview;
   readonly location?: TrustLocation;
   readonly bypassPermissionsRequested?: boolean;
-  readonly bypassSandboxRequested?: boolean;
+  /**
+   * Commands in this run have no OS sandbox: a flag dropped it, the host
+   * cannot provide one, or the config selects danger-full-access.
+   */
+  readonly sandboxOff?: boolean;
   readonly onAccept: () => void | Promise<void>;
   readonly onReject: () => void | Promise<void>;
 }
@@ -119,13 +123,16 @@ export function trustReviewLead(
 
 export function trustSafetyNote(
   bypassPermissionsRequested: boolean,
-  bypassSandboxRequested: boolean,
+  sandboxOff: boolean,
 ): string {
-  if (bypassSandboxRequested) {
+  if (bypassPermissionsRequested && sandboxOff) {
     return "Approvals and the sandbox are off for this run.";
   }
   if (bypassPermissionsRequested) {
     return "Approvals are off for this run. The sandbox still applies.";
+  }
+  if (sandboxOff) {
+    return "Approvals still apply. The sandbox is off.";
   }
   return "Approvals and the sandbox still apply.";
 }
@@ -254,7 +261,8 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
   );
   const valueWidth = Math.max(8, innerWidth - labelWidth);
   const bypass = props.bypassPermissionsRequested === true;
-  const note = trustSafetyNote(bypass, props.bypassSandboxRequested === true);
+  const sandboxOff = props.sandboxOff === true;
+  const note = trustSafetyNote(bypass, sandboxOff);
 
   const button = (id: TrustChoice, shortcut: string): React.ReactElement => {
     const text = `${trustDialogOptionLabel(id, choice, pending)}  ${shortcut}`;
@@ -330,7 +338,10 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
       ) : null}
 
       <Box marginTop={1}>
-        <ThemedText color={bypass ? "text" : "inactive"} bold={bypass}>
+        <ThemedText
+          color={bypass || sandboxOff ? "text" : "inactive"}
+          bold={bypass || sandboxOff}
+        >
           {note}
         </ThemedText>
       </Box>

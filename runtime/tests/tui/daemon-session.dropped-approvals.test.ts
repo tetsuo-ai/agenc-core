@@ -1,3 +1,4 @@
+import { notifyApprovalResolverReady } from "../../src/tui/approval-resolver-ready.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -93,6 +94,40 @@ const flush = (): Promise<void> =>
   });
 
 describe("daemon approval/elicitation delivery never silently drops decisions", () => {
+  it.each(["pending", "permission_decision", "tool_call_completed"])(
+    "retains an approval arriving before the TUI resolver mounts (%s)",
+    async (state) => {
+      const client = createClient();
+      const session = createDaemonTuiSession({
+        baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+      });
+      const unsubscribe = session.subscribeToEvents(() => {});
+      const contexts: import("../../src/tools/orchestrator.js").ApprovalCtx[] = [];
+      const request = {
+        method: "event.permission_request",
+        params: { requestId: "early", callId: "tool_early", toolName: "Bash", turnId: "turn_1", permissions: ["exec"] },
+      };
+      client.emit("session_1", request);
+      client.emit("session_1", request);
+      if (state !== "pending") client.emit("session_1", {
+        method: "event.session_event",
+        params: { event: { type: state, payload: {
+          callId: "tool_early", requestEventId: "early", turnId: "turn_1",
+        } } },
+      });
+      await flush();
+      expect(client.requests.filter(r => r.method === "tool.deny")).toHaveLength(0);
+      session.services.approvalResolver = { request: async ctx => { contexts.push(ctx); return DENIED; } };
+      notifyApprovalResolverReady(session.services);
+      await flush();
+      expect(contexts).toHaveLength(state === "pending" ? 1 : 0);
+      expect(client.requests.filter(r => r.method === "tool.deny")).toEqual(state === "pending"
+        ? [{ method: "tool.deny", params: { sessionId: "session_1", requestId: "early", reason: "denied" } }]
+        : []);
+      unsubscribe();
+    },
+  );
+
   it.each([
     { kind: "existing", content: "old contents\n" },
     { kind: "missing" },

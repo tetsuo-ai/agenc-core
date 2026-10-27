@@ -303,18 +303,10 @@ function specialPlanInterviewAction(
 const DESCRIPTION =
   "Asks the user multiple choice questions to gather information, clarify ambiguity, understand preferences, make decisions, or offer choices.";
 
-const PROMPT = `Use this tool when you need to ask the user questions during execution. This allows you to:
-1. Gather user preferences or requirements
-2. Clarify ambiguous instructions
-3. Get decisions on implementation choices as you work
-4. Offer choices to the user about what direction to take.
-
-Usage notes:
-- Users will always be able to select "Other" to provide custom text input.
-- Use multiSelect: true to allow multiple answers to be selected for a question.
-- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label.
-- In plan mode, use this tool to clarify requirements or choose between approaches before finalizing your plan.
-- Do not use this tool to ask if the plan is ready or whether you should proceed. Use ExitPlanMode for plan approval.`;
+const PROMPT = `Use it for a decision, a preference or a missing requirement you cannot settle yourself.
+- The user can always answer Other with free text; multiSelect: true accepts several answers.
+- Put a recommended option first and end its label with "(Recommended)".
+- In plan mode, use it to settle requirements or choose an approach before finishing the plan. Do not use it to ask whether the plan is ready or whether to proceed: ExitPlanMode asks for plan approval.`;
 
 const inputSchema = {
   type: "object",

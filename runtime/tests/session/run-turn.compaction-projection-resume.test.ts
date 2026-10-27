@@ -40,7 +40,7 @@ function compactionScenario() {
   delete process.env.AGENC_DISABLE_COMPACT;
   delete process.env.AGENC_DISABLE_AUTO_COMPACT;
 
-  const source: LLMMessage[] = Array.from({ length: 8 }, (_, index) => ({
+  const source: LLMMessage[] = Array.from({ length: 20 }, (_, index) => ({
     role: index % 2 === 0 ? "user" : "assistant",
     content: `source-${index}:${"x".repeat(4_000)}`,
   }));

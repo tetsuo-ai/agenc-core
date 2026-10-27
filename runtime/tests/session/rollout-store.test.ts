@@ -879,6 +879,7 @@ describe("RolloutStore thread-spawn edges", () => {
         expect(resumed.runEpoch).toBe(2);
         expect(resumed.hasPendingEffectReviews()).toBe(true);
         expect(() => resumed.assertModelExecutionAllowed()).toThrow(/effect review/i);
+        expect(() => resumed.assertModelExecutionAllowed()).toThrow(/\/resolve call-1/);
         const driver = openStateDatabases({ cwd, agencHome });
         try {
           const row = driver

@@ -386,7 +386,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
           'auto mode is unavailable because the classifier gate is closed'
         logForDebugging(
           '[auto-mode gate @ ExitPlanModeV2Tool] prePlanMode=auto ' +
-            'but gate is off (reason=classifier-unavailable) — falling back to default on plan exit',
+            'but gate is off (reason=classifier-unavailable): falling back to default on plan exit',
           { level: 'warn' },
         )
       }

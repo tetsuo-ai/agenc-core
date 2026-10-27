@@ -1,10 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
-import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
 import { DeepSeekProvider } from "../../src/llm/providers/deepseek/index.js";
 import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
-import type { AuthBackend } from "../../src/auth/backend.js";
 import type { LLMProvider } from "../../src/llm/types.js";
 import type { Session } from "../../src/session/session.js";
 
@@ -47,34 +45,25 @@ describe("independent provider-declared context reserve", () => {
     expect(await provider.getExecutionProfile()).not.toHaveProperty("contextSafetyBufferTokens");
   });
 
-  for (const managed of [false, true]) {
-    test.each(boundaries)(`real admission preserves the declared reserve (managed=${managed}, input=$input, output=$requested)`, async ({ input, requested, expected }) => {
+    test.each(boundaries)("real admission preserves the declared reserve (input=$input, output=$requested)", async ({ input, requested, expected }) => {
       const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
         model: "deepseek-flash", choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
         usage: { prompt_tokens: input, completion_tokens: 1, total_tokens: input + 1 },
       }), { headers: { "content-type": "application/json" } }));
       const delegate = new DeepSeekProvider({ apiKey: "offline", model: "deepseek-flash", fetchImpl });
-      const factory = vi.fn(() => delegate);
-      const provider: LLMProvider = managed ? new AgenCProvider({
-        model: "agenc:deepseek-flash", sessionId: `managed-${input}-${requested}`,
-        authBackend: {
-          inferAgencModel: () => ({ provider: "deepseek", model: "deepseek-flash" }),
-          vendKey: () => ({ kind: "api-key", apiKey: "offline" }),
-        } as unknown as AuthBackend,
-        providerFactory: factory,
-      }) : delegate;
+      const provider: LLMProvider = delegate;
       Object.assign(provider, { tokenCountCapability: {
         capabilityVersion: "independent-exact-input", adapterRevision: "1",
-        configurationRevision: `${managed}-${input}-${requested}`,
+        configurationRevision: `${input}-${requested}`,
         countTokens: async () => ({ inputTokens: input, complete: true, confidence: "exact", countedComponents: ["system", "messages", "tools", "provider_framing"] }),
       } });
       const profile = await provider.getExecutionProfile!();
       expect(profile.contextSafetyBufferTokens).toBe(1024);
-      const session = { conversationId: `review-${managed}-${input}-${requested}`, services: { admissionRequired: false } } as unknown as Session;
+      const session = { conversationId: `review-${input}-${requested}`, services: { admissionRequired: false } } as unknown as Session;
       const invoke = vi.fn(options => provider.chat(messages, options));
       const call = runAdmittedModelCall({ session, provider, messages, options: {
-        model: managed ? "agenc:deepseek-flash" : "deepseek-flash", contextWindowTokens: windowTokens, maxOutputTokens: requested,
-      }, stepId: "review-step", model: managed ? "agenc:deepseek-flash" : "deepseek-flash", providerName: managed ? "agenc" : "deepseek", invoke });
+        model: "deepseek-flash", contextWindowTokens: windowTokens, maxOutputTokens: requested,
+      }, stepId: "review-step", model: "deepseek-flash", providerName: "deepseek", invoke });
       if (expected === undefined) {
         await expect(call).rejects.toMatchObject({ reason: "context_window_exceeded" });
         expect(invoke).not.toHaveBeenCalled();
@@ -87,7 +76,5 @@ describe("independent provider-declared context reserve", () => {
         expect(body.max_tokens).toBe(expected);
         expect(input + expected + 1024).toBeLessThanOrEqual(windowTokens);
       }
-      if (managed) expect(factory).toHaveBeenCalledOnce();
     });
-  }
 });

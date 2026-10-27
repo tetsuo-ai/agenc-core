@@ -297,4 +297,4 @@ export const PLAN_WHEN_TO_USE =
   "Software architect agent for designing implementation plans. Use this when you need to plan the implementation strategy for a task. Returns step-by-step plans, identifies critical files, and considers architectural trade-offs.";
 
 export const VERIFICATION_WHEN_TO_USE =
-  "Use this agent to verify that implementation work is correct before reporting completion. Invoke after non-trivial tasks (3+ file edits, backend/API changes, infrastructure changes). Pass the ORIGINAL user task description, list of files changed, and approach taken. The agent runs builds, tests, linters, and checks to produce a PASS/FAIL/PARTIAL verdict with evidence.";
+  "Use this agent for an independent check of implementation work when the user asks for one, or when the change is broad or risky (backend/API, infrastructure, many modules) and your own checks cannot cover it. A change whose tests you ran and saw pass needs no verifier. Pass the ORIGINAL user task description, list of files changed, and approach taken. The agent runs builds, tests, linters, and checks to produce a PASS/FAIL/PARTIAL verdict with evidence.";

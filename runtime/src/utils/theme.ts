@@ -73,6 +73,10 @@ export type Theme = {
   successWash: string
   errorWash: string
   text2: string
+  /** Quiet tool-result summaries, still readable against the terminal surface. */
+  text3: string
+  /** Monochrome code ink, between primary prose and secondary tool arguments. */
+  codeText: string
   muted3: string
   line: string
   lineSoft: string
@@ -207,6 +211,8 @@ const chromaticDarkTheme: Theme = {
   successWash: 'rgb(19,38,31)',
   errorWash: 'rgb(46,22,31)',
   text2: 'rgb(206,205,212)',
+  text3: 'rgb(138,138,138)',
+  codeText: 'rgb(218,218,218)',
   muted3: 'rgb(64,64,70)',
   line: 'rgb(52,53,57)',
   lineSoft: 'rgb(34,35,39)',
@@ -286,6 +292,9 @@ function monochromeTheme(
 }
 
 const darkTheme = monochromeTheme('rgb(0,0,0)', 'rgb(255,255,255)', {
+  text2: 'rgb(178,178,178)',
+  text3: 'rgb(138,138,138)',
+  codeText: 'rgb(218,218,218)',
   inactive: 'rgb(112,112,112)',
   inactiveShimmer: 'rgb(142,142,142)',
   subtle: 'rgb(82,82,82)',
@@ -310,9 +319,44 @@ const darkTheme = monochromeTheme('rgb(0,0,0)', 'rgb(255,255,255)', {
   diffRemovedWord: 'rgb(255,79,122)',
 })
 
+// Olive: the dark layout on an olive-black surface with cream ink and a wine
+// accent, from the owner's olive / burgundy / cream palette. It is what
+// "auto" shows on a dark terminal. Burgundy itself (#5e181b) is too dark to
+// read on this surface, so the accent is a lighter wine that keeps AA
+// contrast. Success is a light olive green and failure an orange red, so
+// neither can be mistaken for the accent.
+const oliveTheme = monochromeTheme('rgb(25,27,17)', 'rgb(235,227,208)', {
+  text2: 'rgb(201,193,172)',
+  text3: 'rgb(158,154,128)',
+  codeText: 'rgb(222,214,195)',
+  inactive: 'rgb(143,141,114)',
+  inactiveShimmer: 'rgb(170,166,138)',
+  subtle: 'rgb(102,101,80)',
+  muted3: 'rgb(84,83,64)',
+  line: 'rgb(42,45,28)',
+  lineSoft: 'rgb(35,38,26)',
+  promptBackground: 'rgb(35,38,26)',
+  accent: 'rgb(208,106,112)',
+  accentSoft: 'rgb(190,140,132)',
+  stepOk: 'rgb(168,180,98)',
+  stepFail: 'rgb(242,128,82)',
+  userBand: 'rgb(44,30,31)',
+  success: 'rgb(168,180,98)',
+  error: 'rgb(242,128,82)',
+  diffAdded: 'rgb(38,48,22)',
+  diffRemoved: 'rgb(60,26,26)',
+  diffAddedDimmed: 'rgb(30,36,18)',
+  diffRemovedDimmed: 'rgb(44,22,22)',
+  diffAddedWord: 'rgb(168,180,98)',
+  diffRemovedWord: 'rgb(242,128,82)',
+})
+
 // The light grays keep the dark theme's contrast against the surface, so
 // muted text reads the same weight on a white terminal.
 const lightTheme = monochromeTheme('rgb(255,255,255)', 'rgb(0,0,0)', {
+  text2: 'rgb(86,86,86)',
+  text3: 'rgb(118,118,118)',
+  codeText: 'rgb(50,50,50)',
   inactive: 'rgb(118,118,118)',
   inactiveShimmer: 'rgb(96,96,96)',
   subtle: 'rgb(158,158,158)',
@@ -338,6 +382,9 @@ const lightTheme = monochromeTheme('rgb(255,255,255)', 'rgb(0,0,0)', {
 // Sixteen-color terminals have one gray on each side, so the ANSI themes use
 // the terminal's own palette for the muted tones and the prompt fill.
 const darkAnsiTheme = monochromeTheme('ansi:black', 'ansi:whiteBright', {
+  text2: 'ansi:white',
+  text3: 'ansi:blackBright',
+  codeText: 'ansi:whiteBright',
   inactive: 'ansi:white',
   inactiveShimmer: 'ansi:whiteBright',
   subtle: 'ansi:blackBright',
@@ -357,6 +404,9 @@ const darkAnsiTheme = monochromeTheme('ansi:black', 'ansi:whiteBright', {
 })
 
 const lightAnsiTheme = monochromeTheme('ansi:whiteBright', 'ansi:black', {
+  text2: 'ansi:blackBright',
+  text3: 'ansi:blackBright',
+  codeText: 'ansi:black',
   inactive: 'ansi:blackBright',
   inactiveShimmer: 'ansi:black',
   subtle: 'ansi:white',
@@ -425,6 +475,8 @@ function getBaseTheme(themeName: ThemeName): Theme {
       return lightAnsiTheme
     case 'dark-ansi':
       return darkAnsiTheme
+    case 'olive':
+      return oliveTheme
     default:
       return darkTheme
   }

@@ -89,6 +89,15 @@ afterEach(() => {
 });
 
 describe("agenc config CLI", () => {
+  it("cannot enable remote control through config set or unset", async () => {
+    const home = makeHome();
+    for (const argv of [["config", "set", "remote_control.enabled", "true"], ["config", "unset", "remote_control"]]) {
+      const result = await run(parseAgenCConfigCliArgs(argv), home);
+      expect(result.code).toBe(1);
+      expect(result.io.stderrText()).toContain("owner-only");
+      expect(existsSync(configPath(home))).toBe(false);
+    }
+  });
   it("parses help and subcommands", () => {
     expect(parseAgenCConfigCliArgs(["prompt"])).toBeNull();
     expect(parseAgenCConfigCliArgs(["config"])).toEqual({

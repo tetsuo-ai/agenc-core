@@ -1468,7 +1468,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
   });
 
-  it("routes session.mcp.reconnect/enable/disable through the active daemon agent runtime", async () => {
+  it("routes session.mcp.reconnect/enable/disable/remove through the active daemon agent runtime", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({
       sessionId: "session_mcp",
@@ -1503,6 +1503,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         reconnectMcpServer,
         enableMcpServer,
         disableMcpServer,
+        removeMcpServer: disableMcpServer,
       },
     });
     await agentManager.restoreAgent({
@@ -1581,6 +1582,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         toolCount: 0,
       },
     });
+    await expect(connection.dispatch(request("remove-mcp", "session.mcp.removeServer", {
+      sessionId: "session_mcp", serverName: "audit-ping",
+    }))).resolves.toMatchObject({ result: { success: true, toolCount: 0 } });
     expect(disableMcpServer).toHaveBeenCalledWith("agent_mcp", {
       sessionId: "session_mcp",
       serverName: "audit-ping",

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, test } from 'vitest'
 
-import { resolveHomeContext } from '../../src/config/home.js'
+import { resolveHomeContext, resolveProcessHomePathInput } from '../../src/config/home.js'
 
 const roots: string[] = []
 
@@ -12,6 +12,34 @@ afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+describe('explicit process home path ingress', () => {
+  test('preserves symlink coordinates for validation in the candidate filesystem root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agenc-process-home-input-'))
+    roots.push(root)
+    const physical = join(root, 'physical')
+    const alias = join(root, 'alias')
+    mkdirSync(physical)
+    symlinkSync(physical, alias, 'dir')
+
+    expect(resolveProcessHomePathInput({ AGENC_HOME: alias })).toBe(alias)
+    expect(resolveProcessHomePathInput({ HOME: alias })).toBe(join(alias, '.agenc'))
+    expect(resolveHomeContext({ AGENC_HOME: alias }, { platformHome: root }).path).toBe(physical)
+  })
+
+  test('uses only explicit candidate coordinates and the shared home precedence', () => {
+    expect(resolveProcessHomePathInput({ AGENC_HOME: ' /candidate-home ', HOME: '/other' })).toBe('/candidate-home')
+    expect(resolveProcessHomePathInput({ AGENC_HOME: ' ', HOME: ' /foreign/user ' })).toBe('/foreign/user/.agenc')
+    expect(resolveProcessHomePathInput({})).toBeNull()
+    expect(resolveProcessHomePathInput({ AGENC_HOME: ' ', HOME: ' ' })).toBeNull()
+  })
+
+  test('rejects the retired authority even when candidate home coordinates are unknown', () => {
+    // An explicit invalid-input payload, never an installed test home alias.
+    const retiredAuthorityInput = Object.fromEntries([['AGENC_CONFIG_DIR', '']])
+    expect(() => resolveProcessHomePathInput(retiredAuthorityInput)).toThrow('AGENC_CONFIG_DIR')
+  })
 })
 
 describe('canonical AgenC home identity', () => {

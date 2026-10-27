@@ -16,7 +16,8 @@ import type { RuntimeMessage } from "../../src/services/compact/types.js";
 import { createProvider } from "../helpers/compaction-transaction-harness.js";
 import { drain, mkCtx, mkSession } from "../fixtures.js";
 
-const SOURCE_MESSAGE_COUNT = 8;
+// Leave compactable history beyond the twelve-message automatic tail.
+const SOURCE_MESSAGE_COUNT = 16;
 const SOURCE_MESSAGE_BYTES = 4_000;
 const SESSION_ID = "conv-test";
 const REVIEWED_SESSION_ID = "conv-test-reviewed-compaction-source";
@@ -107,15 +108,52 @@ describe("runTurn automatic compaction rollback wiring", () => {
         resume: true,
       });
       try {
-        expect(reconstructFromRollout(reviewed.readAll()).history).toEqual(
-          expectedSourceHistory([
-            ...source,
-            { role: "user", content: USER_MESSAGE },
-          ]),
-        );
+        const seedEvent = rows.find((item) => item.type === "event_msg" &&
+          item.payload.msg.type === "user_message");
+        const userMessageId = seedEvent?.type === "event_msg" ? seedEvent.payload.id : undefined;
+        expect(userMessageId).toMatch(/^user-msg-/);
+        expect(reconstructFromRollout(reviewed.readAll()).history).toEqual([
+          ...expectedSourceHistory(source),
+          { role: "user", content: USER_MESSAGE, id: userMessageId },
+        ]);
       } finally {
         reviewed.close();
       }
+    } finally {
+      harness.close();
+      restoreCompactionEnvironment(environment);
+    }
+  });
+
+  it("refuses an effective window that cannot fit a compaction request before recording intent", async () => {
+    const environment = saveCompactionEnvironment();
+    enableAutomaticCompaction(1_000);
+    const harness = createRunTurnHarness(createSourceMessages());
+    try {
+      await drain(runTurn(harness.session, mkCtx({
+        cwd: harness.cwd,
+        modelInfo: harness.session.modelInfo,
+      }), USER_MESSAGE));
+
+      const rows = harness.store.readAll();
+      expect(rows.some((item) => item.type === "compaction_intent")).toBe(false);
+      expect(rows.some((item) => item.type === "compaction_committed")).toBe(false);
+      expect(harness.provider.chat).not.toHaveBeenCalled();
+      const warnings = rows.flatMap((item) =>
+        item.type === "event_msg" && item.payload.msg.type === "warning"
+          ? [item.payload.msg.payload] : []);
+      expect(warnings).toContainEqual(expect.objectContaining({
+        cause: "auto_compact_failed",
+        message: expect.stringContaining("model context leaves no bounded compaction input budget"),
+        details: expect.objectContaining({ error_code: "context_limit" }),
+      }));
+      expect(rows).toContainEqual(expect.objectContaining({
+        type: "event_msg",
+        payload: expect.objectContaining({ msg: expect.objectContaining({
+          type: "turn_failed",
+          payload: expect.objectContaining({ code: "compact_failed" }),
+        }) }),
+      }));
     } finally {
       harness.close();
       restoreCompactionEnvironment(environment);
@@ -127,6 +165,7 @@ interface RunTurnHarness {
   readonly cwd: string;
   readonly session: ReturnType<typeof mkSession>["session"];
   readonly store: RolloutStore;
+  readonly provider: ReturnType<typeof createProvider>;
   close(): void;
 }
 
@@ -211,6 +250,7 @@ function createRunTurnHarness(
     cwd,
     session,
     store,
+    provider,
     close: () => {
       if (closed) return;
       closed = true;
@@ -301,9 +341,12 @@ function saveCompactionEnvironment(): ReadonlyMap<string, string | undefined> {
   );
 }
 
-function enableAutomaticCompaction(): void {
-  process.env.AGENC_AUTO_COMPACT_WINDOW = "1000";
-  process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
+function enableAutomaticCompaction(window = 64_000): void {
+  // The effective window is enforced for summary calls as well as sampling.
+  // Trigger early with the percentage instead of making the protocol too large
+  // for its window; rollback coverage requires a successful real transaction.
+  process.env.AGENC_AUTO_COMPACT_WINDOW = String(window);
+  process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
   delete process.env.AGENC_DISABLE_COMPACT;
   delete process.env.AGENC_DISABLE_AUTO_COMPACT;
 }

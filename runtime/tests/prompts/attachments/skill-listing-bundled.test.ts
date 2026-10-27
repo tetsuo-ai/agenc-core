@@ -18,6 +18,7 @@ import { describe, expect, test } from "vitest";
   NATIVE_PACKAGE_URL: undefined,
 };
 
+import { normalizeSessionToolPolicy } from "../../permissions/session-tool-policy.js";
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 import { skillListingProducer } from "./skill-listing.js";
@@ -28,6 +29,7 @@ function makeOpts(
     readonly description?: string;
     readonly loadedFrom?: string;
   }>,
+  extra: Partial<GetAttachmentsOptions> = {},
 ): GetAttachmentsOptions {
   return {
     sessionKey: {},
@@ -42,6 +44,7 @@ function makeOpts(
     skillsManager: {
       skillsForConfig: async () => ({ invokedSkills: [], availableSkills }),
     },
+    ...extra,
   };
 }
 
@@ -65,7 +68,77 @@ describe("skillListingProducer with runtime-registered bundled skills", () => {
 
     expect(listing).toContain("- repo-docs: Explain the repository docs");
     expect(listing).toMatch(/^- browser-automation: How to drive the Browser tool/mu);
+  });
+
+  test("keeps the kit installer out of the default listing", async () => {
+    const listing = await listingFor(
+      makeOpts([{ name: "repo-docs", description: "Explain the repository docs", loadedFrom: "skills" }]),
+    );
+
+    expect(listing).not.toContain("agenc-marketplace-kit-installer");
+  });
+
+  test("lists the kit installer once the operator enabled the marketplace", async () => {
+    const listing = await listingFor(
+      makeOpts([], { config: { protocol: { enabled: true, adapter: "marketplace-cli" } } }),
+    );
+
     expect(listing).toMatch(/^- agenc-marketplace-kit-installer: /mu);
+  });
+
+  test("does not list the installer when the marketplace is explicitly off", async () => {
+    const listing = await listingFor(makeOpts([], { config: { protocol: { enabled: false } } }));
+
+    expect(listing).not.toContain("agenc-marketplace-kit-installer");
+  });
+
+  describe("in a session with a toolPolicy", () => {
+    const names = (listing: string): string[] =>
+      [...listing.matchAll(/^- ([^:\s]+):/gmu)].map((match) => match[1]!);
+
+    test("names only the bundled skills the policy enables", async () => {
+      const listing = await listingFor(
+        makeOpts([{ name: "repo-docs", description: "Explain the docs", loadedFrom: "skills" }], {
+          toolPolicy: normalizeSessionToolPolicy({
+            enabledTools: ["Skill", "Skill:browser-automation"],
+          }),
+        }),
+      );
+
+      expect(names(listing)).toEqual(expect.arrayContaining(["browser-automation", "repo-docs"]));
+      expect(listing).not.toContain("agenc-marketplace-kit-installer");
+    });
+
+    test("names no bundled skill when the policy enables none", async () => {
+      const listing = await listingFor(
+        makeOpts([{ name: "repo-docs", description: "Explain the docs", loadedFrom: "skills" }], {
+          toolPolicy: normalizeSessionToolPolicy({ enabledTools: ["Skill"] }),
+        }),
+      );
+
+      expect(names(listing)).toEqual(["repo-docs"]);
+    });
+
+    test("never names the kit installer, even with the marketplace enabled", async () => {
+      const listing = await listingFor(
+        makeOpts([], {
+          toolPolicy: normalizeSessionToolPolicy({ enabledTools: ["Skill", "Skill:browser-automation"] }),
+          config: { protocol: { enabled: true, adapter: "marketplace-cli" } },
+        }),
+      );
+
+      expect(listing).not.toContain("agenc-marketplace-kit-installer");
+    });
+
+    test("emits no listing at all when the policy leaves out the Skill tool", async () => {
+      const opts = makeOpts([{ name: "repo-docs", loadedFrom: "skills" }], {
+        toolPolicy: normalizeSessionToolPolicy({ enabledTools: ["FileRead"] }),
+      });
+
+      const out = await skillListingProducer(opts, getAttachmentTrackingState(opts.sessionKey));
+
+      expect(out).toEqual([]);
+    });
   });
 
   test("lets a loader skill shadow a bundled skill with the same name", async () => {

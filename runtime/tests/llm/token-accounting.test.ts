@@ -27,6 +27,7 @@ import {
   TokenAccountingService,
   assertTokenAccountingWithinContext,
   canonicalTokenEndpointIdentity,
+  conservativeBytesPerToken,
   createTokenAccountingRequest,
   estimateInlineImageTokenUnits,
   estimateTokenAccountingRequest,
@@ -1498,4 +1499,10 @@ describe("provider-usage calibration of the conservative fallback", () => {
     service.clear();
     expect((await service.count(scoped("conversation-c"))).calibration).toBeUndefined();
   });
+});
+
+
+test("uses the conservative DeepSeek input ratio before any calibration", () => {
+  expect(conservativeBytesPerToken("deepseek", "deepseek-flash")).toBe(2);
+  expect(conservativeBytesPerToken(undefined, "deepseek-flash")).toBe(2);
 });

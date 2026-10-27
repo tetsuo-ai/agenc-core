@@ -5,6 +5,7 @@ import type { AgenCConfig } from "../../src/config/schema.js";
 import type { LLMChatOptions } from "../../src/llm/types.js";
 import { describe, expect, it } from "vitest";
 import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
+import { gatewayFamilyDefaultEffort } from "../../src/llm/model-family.js";
 import { listRegisteredModelCatalogEntries } from "../../src/llm/registry/model-catalog.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../src/llm/wire/capability-gating.js";
 import catalog from "./desktop-effort-catalog.json";
@@ -17,8 +18,11 @@ import { StaticModelsManager } from "../../src/llm/models-manager.js";
 
 describe("provider-scoped effort contract", () => {
   it.each(listRegisteredModelCatalogEntries())("preserves $provider/$model", entry => {
+    // A DeepSeek model through a gateway defaults to DeepSeek's own high (model-family.ts).
+    const defaultLevel = gatewayFamilyDefaultEffort(entry.provider, entry.model, entry.supportedReasoningLevels) ??
+      entry.defaultReasoningLevel;
     expect(resolveReasoningEffort(entry)).toMatchObject({ levels: entry.supportedReasoningLevels,
-      ...(entry.defaultReasoningLevel === undefined ? {} : { defaultLevel: entry.defaultReasoningLevel }) });
+      ...(defaultLevel === undefined ? {} : { defaultLevel }) });
   });
   it.each(catalog.filter(row => row.levels.length > 0))("supports Desktop $provider/$model", row => {
     const resolved = resolveReasoningEffort(row);

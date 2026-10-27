@@ -1,3 +1,6 @@
+import { join } from "node:path";
+import { readStrictConfigLayer } from "../config/repository.js";
+import { readCommandConfig } from "./config-context.js";
 /**
  * `/coordinator` — first-class switch for coordinator mode (alias
  * `/fleet`).
@@ -23,11 +26,12 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 
-function statusText(configFlag: boolean | undefined): string {
+function statusText(configFlag: boolean | undefined, savedFlag: boolean | undefined): string {
   const effective = isCoordinatorModeEnabled(configFlag);
   return [
     `Coordinator mode: ${effective ? "ON" : "off"}`,
     `Config flag (coordinator_mode): ${configFlag === true ? "true" : configFlag === false ? "false" : "<unset>"}`,
+    `Saved preference (coordinator_mode): ${savedFlag === undefined ? "<unset>" : String(savedFlag)}` ,
     effective
       ? `Active surface: ${LIVE_COORDINATOR_ALLOWED_TOOLS.join(", ")}`
       : "When on, the session becomes an orchestrator: coordinator prompt + orchestration-only tools (no file edits, no shell).",
@@ -43,9 +47,12 @@ export const coordinatorCommand: SlashCommand = {
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const arg = ctx.argsRaw.trim().toLowerCase();
-      const configFlag = ctx.configStore?.current().coordinator_mode;
+      const configFlag = readCommandConfig(ctx)?.coordinator_mode ?? ctx.session.config?.coordinatorMode;
       if (arg === "") {
-        return { kind: "text", text: statusText(configFlag) };
+        const saved = ctx.agencHome === undefined
+          ? undefined
+          : (await readStrictConfigLayer(join(ctx.agencHome, "config.toml"), "user"))?.config.coordinator_mode;
+        return { kind: "text", text: statusText(configFlag, saved) };
       }
       if (arg !== "on" && arg !== "off") {
         return {

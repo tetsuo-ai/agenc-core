@@ -29,6 +29,7 @@ export interface LinuxSandboxLauncherOptions {
   readonly sessionTempRoot: string;
   readonly applySeccompThenExec: boolean;
   readonly allowNetworkForProxy: boolean;
+  readonly allowLocalBinding: boolean;
   readonly proxyRouteSpec: string | null;
   readonly mountProc: boolean;
   readonly command: readonly string[];
@@ -80,6 +81,7 @@ export function parseLinuxSandboxLauncherArgs(
   let sessionTempRoot: string | null = null;
   let applySeccompThenExec = false;
   let allowNetworkForProxy = false;
+  let allowLocalBinding = false;
   let proxyRouteSpec: string | null = null;
   let mountProc = true;
   let browserCdpOverStdio = false;
@@ -136,6 +138,9 @@ export function parseLinuxSandboxLauncherArgs(
         break;
       case "--apply-seccomp-then-exec":
         applySeccompThenExec = true;
+        break;
+      case "--allow-local-binding":
+        allowLocalBinding = true;
         break;
       case "--allow-network-for-proxy":
         allowNetworkForProxy = true;
@@ -198,6 +203,7 @@ export function parseLinuxSandboxLauncherArgs(
     sessionTempRoot,
     applySeccompThenExec,
     allowNetworkForProxy,
+    allowLocalBinding,
     proxyRouteSpec,
     mountProc,
     command,

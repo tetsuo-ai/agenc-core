@@ -1448,10 +1448,38 @@ function nextPostCommitBookkeeping(
 ): PostCommitBookkeeping | "later_work" {
   if (isUsageObservation(item)) return current;
   if (
+    item.type === "compaction_retention_extended" &&
+    committed.intent !== undefined &&
+    item.payload.attempt_id === committed.intent.attempt_id &&
+    item.payload.commit_sha256 === committed.commitSha256 &&
+    item.payload.source_sha256 === committed.intent.source.source_sha256 &&
+    item.payload.source_session_id === committed.intent.source.session_id &&
+    item.payload.source_epoch === committed.intent.source.epoch
+  ) {
+    // Extending this exact commit's rollback window changes no conversation
+    // work. The strict reader checks the extension digest, and normal
+    // lifecycle processing still checks its binding to the hydrated commit.
+    return current;
+  }
+  if (
     item.type === "compaction_cleanup_pending" &&
     item.payload.attempt_id === committed.intent?.attempt_id
   ) {
     return current;
+  }
+  if (
+    current === "await_context" &&
+    committed.intent?.automatic === false &&
+    item.type === "event_msg" &&
+    item.payload.msg.type === "transcript_epoch" &&
+    item.payload.msg.payload.reason === "partial_compact" &&
+    item.payload.eventId ===
+      `transcript-epoch:history-replaced-${committed.intent.attempt_id}`
+  ) {
+    // The daemon's single transcript reset is the display projection of this
+    // exact manual commit. A later reset or any other work still blocks an
+    // in-place rollback.
+    return "complete";
   }
   if (
     current === "await_context" &&

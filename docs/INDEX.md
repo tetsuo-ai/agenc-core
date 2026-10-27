@@ -3,9 +3,9 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.18.0**; embedding SDK
+Version in tree: **runtime / launcher 0.19.19**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
-default **grok-4.6**. Managed OpenRouter's paid default remains
+default **grok-4.6**. OpenRouter's default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
 
 Layout follows a Diataxis-ish split: tutorials (start here), how-to, reference,
@@ -28,8 +28,8 @@ history; the linked pages below are current product truth.
 | --- | --- |
 | [gateway.md](gateway.md) | Channel gateway: Telegram, Discord, Slack, WebChat, stdio; pairing; heartbeat/hooks |
 | [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
-| [managed-openrouter.md](managed-openrouter.md) | Hosted OpenRouter / managed keys via remote auth |
-| [agenc-account-model-access.md](agenc-account-model-access.md) | Account-scoped models after login, sponsored credits and the reviewed DeepSeek route |
+| [managed-openrouter.md](managed-openrouter.md) | OpenRouter user-key setup and retired account model access |
+| [agenc-account-model-access.md](agenc-account-model-access.md) | Account sign-in remains separate from model-provider access |
 | [grok-oauth.md](grok-oauth.md) | Sign in with X for Grok subscription access without an API key (`agenc grok-login` + TUI) |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |
@@ -59,17 +59,17 @@ history; the linked pages below are current product truth.
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config`, and `agent.retention.rollout_days` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
 | [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, the 900 s compaction wall budget, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v4 / schema 5 pairing, additive journal vs fail-closed reader, compaction recovery fields, rebuilt transcript `turnResults`, session rollout retention (30-day default, pending-review keep, startup quarantine), [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon) (connectability readiness, hydrating `daemon start`, TUI 10 s lost-turn), and [max-output-tokens recovery](reference/daemon.md#max-output-tokens-recovery) (capped-default escalate, `messagesAtSampleStart` truncate, reasoning-only next step, 3-retry exhaust) |
-| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
+| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, overflow diagnostics, and [zero data retention](reference/providers.md#zero-data-retention) per provider (OpenRouter on by default, the status line's ZDR badge) |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics, `/compact`, and `/resolve` vs attested agent-validation refusals |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP; autonomous keepalive stops after `compact_failed` |
-| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, close/assign/send validation no-effect, deferred first message, worktree evidence, turn-scoped abort, and keep-alive `compact_failed` idle |
+| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, close/assign/send validation no-effect, deferred first message, worktree evidence, turn-scoped abort, keep-alive `compact_failed` idle, and [routine permission-blocked explanations](reference/agents.md#permission-blocked-explanation) |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, result outcomes, and public SDK result-type sync |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/project-storage.md](reference/project-storage.md) | Versioned project keys, legacy data isolation, recovery and rollback |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, omitted-type object schemas, model-facing tool text, and Landlock diagnostics |
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, HTTP(S) archive fetch limits, recorded-source and update-success redaction, native archive fetch error redaction, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn, daemon session survival, Stop-hook throw telemetry that does not close a turn, and PreToolUse allow that cannot skip interactive prompts |
-| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, interactive-tool prompts that survive bypass, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
+| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, interactive-tool prompts that survive bypass, live bypass consent, OS sandbox, home-workspace remediation, [AgenC home under writable sandbox roots](reference/tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots), launcher contract, and plugin MCP confinement |
 
 ## Explanation
 
@@ -99,6 +99,26 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.19.19.md](releases/0.19.19.md) | AgenC 0.19.19: transport recovery, OOM preference, opt-in headless completion check, smaller standard requests, less idle time and Large V2 Light fixes |
+| [releases/0.19.18.md](releases/0.19.18.md) | AgenC 0.19.18: Kimi cache accounting, manual web search, bounded completion checks and native Windows fixes |
+| [releases/0.19.17.md](releases/0.19.17.md) | AgenC 0.19.17: Kimi K3.1 Pro and Highspeed, faster daemon startup, stable macOS Node paths, transport recovery and Abliterated Large Flash |
+| [releases/0.19.16.md](releases/0.19.16.md) | AgenC 0.19.16: live OpenRouter models, reasoning replay and compatible routing |
+| [releases/0.19.15.md](releases/0.19.15.md) | AgenC 0.19.15: Windows headless prompts, account model retirement, and message punctuation. |
+| [releases/0.19.14.md](releases/0.19.14.md) | AgenC 0.19.14: Windows PATH on install, OpenRouter zero data retention by default, and provider balances in /usage |
+| [releases/0.19.13.md](releases/0.19.13.md) | AgenC 0.19.13: abliteration.ai as a built-in provider, and agenc update finishes on slow links |
+| [releases/0.19.12.md](releases/0.19.12.md) | AgenC 0.19.12: Light is the default session mode, with the Node.js 26.12.1 and undici 8.12.3 security fixes |
+| [releases/0.19.11.md](releases/0.19.11.md) | AgenC 0.19.11: real costs for OpenRouter and every model in the picker |
+| [releases/0.19.10.md](releases/0.19.10.md) | AgenC 0.19.10: DeepSeek V4.1 Flash-1017 by name and on OpenRouter, and --continue while a reply still streams |
+| [releases/0.19.9.md](releases/0.19.9.md) | AgenC 0.19.9: a command the sandbox cuts off from the network gets one approval and runs, the first Browser call opens its page, and /status names a missing git |
+| [releases/0.19.8.md](releases/0.19.8.md) | AgenC 0.19.8: the TUI starts on Windows after a one-time question about the sandbox, and simplify runs only when you ask for a review |
+| [releases/0.19.7.md](releases/0.19.7.md) | AgenC 0.19.7: smaller requests in standard sessions, and retries when a provider answers with an error page |
+| [releases/0.19.6.md](releases/0.19.6.md) | AgenC 0.19.6: a faster default TUI with far fewer tokens, plus Venice, Ledger and session fixes |
+| [releases/0.19.5.md](releases/0.19.5.md) | AgenC 0.19.5: git status above the input, Venice AI as a provider, and input, paste and session fixes |
+| [releases/0.19.4.md](releases/0.19.4.md) | AgenC 0.19.4: the daemon stops and restarts while macOS waits for folder permission, and snap browsers are skipped inside the Linux sandbox |
+| [releases/0.19.3.md](releases/0.19.3.md) | AgenC 0.19.3: the Browser tool starts Chrome on macOS, an unknown tool outcome shows a review card and keeps your prompts, and the daemon no longer hangs at startup on a session folder |
+| [releases/0.19.2.md](releases/0.19.2.md) | AgenC 0.19.2: on macOS `agenc daemon restart` keeps launchd as the daemon's owner, the home-folder trust card no longer lists your own settings, and the Windows installer finishes again, including in Windows PowerShell 5.1 |
+| [releases/0.19.1.md](releases/0.19.1.md) | AgenC 0.19.1: no task token cap by default, and sessions started in the home folder load and save configuration |
+| [releases/0.19.0.md](releases/0.19.0.md) | AgenC 0.19.0: bypass fast mode, session sandbox reuse, fewer automatic WAL checkpoints, and task budget controls |
 | [releases/0.18.0.md](releases/0.18.0.md) | AgenC 0.18.0: the `/goal` session goal with independent verification, removal of the embedded editor and workbench, four new providers, and compaction that degrades instead of ending the turn |
 | [releases/0.17.0.md](releases/0.17.0.md) | AgenC 0.17.0: restart-safe resumable sessions, race-safe protocol 1.2 client sync, Linux Landlock fallback, and reliable large tool-output handling |
 | [releases/0.16.1.md](releases/0.16.1.md) | AgenC 0.16.1: stock-macOS installer repair, live install progress, launcher portability, and reliable supervised-process teardown |
@@ -133,7 +153,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.18.0) |
+| [`../README.md`](../README.md) | Product README (0.19.19) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |

@@ -48,13 +48,15 @@ function collabStatusToTaskStatus(status: unknown): TaskStatus {
     case "starting":
       return "pending";
     case "running":
-    case "interrupted":
       return "running";
     case "completed":
     case "complete":
     case "idle":
       return "completed";
     case "shutdown":
+    // Reusable interrupted workers are alive, but have stopped working.
+    // Inventory refreshes must not resurrect their cancelled task as running.
+    case "interrupted":
     case "killed":
     case "cancelled":
     case "canceled":

@@ -50,12 +50,12 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
     const owner = manager.createOwnerLifetime("prepared"), binding = owner.bind();
     await manager.prepareOneShotCommandBoundary("prepared", binding);
     expect(launch).not.toHaveBeenCalled();
-    await withOneShotFastMode(() => manager.prepareOneShotCommandBoundary("prepared", binding));
+    await withOneShotFastMode(() => manager.prepareOneShotCommandBoundary("prepared", binding), "prepared");
     expect(launch).toHaveBeenCalledTimes(1);
     const pid = launch.mock.results[0]!.value.pid;
     await owner.prepareForDurableClose();
     expect(() => process.kill(pid, 0)).toThrow();
-    await expect(withOneShotFastMode(() => manager.prepareOneShotCommandBoundary("prepared", binding))).rejects.toThrow();
+    await expect(withOneShotFastMode(() => manager.prepareOneShotCommandBoundary("prepared", binding), "prepared")).rejects.toThrow();
     expect(launch).toHaveBeenCalledTimes(1);
   });
   test("an aborted preparation never publishes a command", async () => {
@@ -193,7 +193,7 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
       const rejected = expect(pending).rejects.toThrow();
       await waiting; await owner.prepareForDurableClose(); decline(); await rejected;
       expect(launch).not.toHaveBeenCalled();
-    });
+    }, "closing");
   });
   test("the command cannot write a forged terminal frame through the server's proc descriptors", async () => {
     const s = server();
@@ -216,6 +216,6 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
       const next = manager.createOwnerLifetime("fast");
       expect((await manager.execCommand({cmd:"echo third",ownerId:"fast",ownerBinding:next.bind(),login:false})).stdout).toBe("third\n");
       expect(spy).toHaveBeenCalledTimes(2);
-    });
+    }, "fast");
   });
 });

@@ -253,7 +253,8 @@ const SKILL_LISTING_DEFAULT_CHAR_BUDGET = 8_000;
  * `SLASH_COMMAND_TOOL_CHAR_BUDGET` still overrides both the scale and the cap.
  */
 const SKILL_LISTING_MAX_CHAR_BUDGET = 12_000;
-const SKILL_LISTING_DESC_MAX_CHARS = 250;
+/** The listing rides on every request; a skill's own file carries the full text. */
+const SKILL_LISTING_DESC_MAX_CHARS = 120;
 const SKILL_LISTING_CONTEXT_PERCENT = 0.01;
 const CHARS_PER_TOKEN = 4;
 const SKIP_DIRS = new Set([
@@ -1836,6 +1837,11 @@ export function buildSkillListingWithinBudget(
   skills: readonly SkillListingEntry[],
   contextWindowTokens?: number,
   request?: string | null,
+  /**
+   * A ceiling below SKILL_LISTING_MAX_CHAR_BUDGET for this listing (a Light
+   * session's). SLASH_COMMAND_TOOL_CHAR_BUDGET still overrides it.
+   */
+  maxChars?: number,
 ): {
   readonly listing: string;
   readonly stats: SkillListingStats;
@@ -1855,11 +1861,11 @@ export function buildSkillListingWithinBudget(
   if (commands.length === 0) {
     return {
       listing: "",
-      stats: emptyStats(getListingCharBudget(contextWindowTokens)),
+      stats: emptyStats(getListingCharBudget(contextWindowTokens, maxChars)),
       listedNames: [],
     };
   }
-  const budget = getListingCharBudget(contextWindowTokens);
+  const budget = getListingCharBudget(contextWindowTokens, maxChars);
   // Every line is at least "- <name>: ", so a catalog whose names alone
   // overflow the budget cannot fit; skip formatting 1,800 lines to learn it.
   const shortestTotal =
@@ -1995,18 +2001,22 @@ export function rankSkillsForRequest(
   };
 }
 
-function getListingCharBudget(contextWindowTokens?: number): number {
+function getListingCharBudget(contextWindowTokens?: number, maxChars?: number): number {
   const envBudget = Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET);
   if (Number.isFinite(envBudget) && envBudget > 0) return envBudget;
+  const ceiling = Math.min(
+    SKILL_LISTING_MAX_CHAR_BUDGET,
+    maxChars ?? SKILL_LISTING_MAX_CHAR_BUDGET,
+  );
   if (contextWindowTokens && Number.isFinite(contextWindowTokens)) {
     return Math.min(
-      SKILL_LISTING_MAX_CHAR_BUDGET,
+      ceiling,
       Math.floor(
         contextWindowTokens * CHARS_PER_TOKEN * SKILL_LISTING_CONTEXT_PERCENT,
       ),
     );
   }
-  return SKILL_LISTING_DEFAULT_CHAR_BUDGET;
+  return Math.min(ceiling, SKILL_LISTING_DEFAULT_CHAR_BUDGET);
 }
 
 function getSkillListingDescription(
@@ -2720,6 +2730,9 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
   {
     name: "simplify",
     description: "Review changed code for reuse, quality, and efficiency, then fix issues.",
+    // GPT-6 Luna ran it unasked once its own fix passed: three review agents, about 50 s and 365k
+    // tokens more (2026-10-16 race). The listing line must stay within SKILL_LISTING_DESC_MAX_CHARS.
+    whenToUse: "Only if the user asks to review or clean up.",
     argumentHint: "[additional focus]",
     getPrompt: (args) =>
       args.trim()
@@ -2781,7 +2794,7 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
   },
   {
     name: "verify",
-    description: "Plan and run a concrete verification pass for CLI, server, or UI changes.",
+    description: "Plan and run a concrete verification pass for CLI, server, or UI changes that the project's own tests do not cover.",
     argumentHint: "[thing to verify]",
     files: VERIFY_FILES,
     getPrompt: (args) => `# Verify

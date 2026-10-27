@@ -20,7 +20,7 @@ import {
   CompactionCleanupPendingError,
   finalizeCompactionTransaction,
 } from "../services/compact/finalize-transaction.js";
-import { formatCompactionOperatorDisplay } from "../services/compact/operator.js";
+import { formatCompactionOperatorDisplay, compactionCannotShrinkDisplay } from "../services/compact/operator.js";
 import type { CompactedItem } from "../session/rollout-item.js";
 import {
   extractMessageText,
@@ -50,9 +50,7 @@ import {
 } from "../permissions/types.js";
 import { asRecord } from "../utils/record.js";
 import {
-  getAutoCompactThresholdForEnvironment,
-  getEffectiveContextWindowSizeForEnvironment,
-  isAutoCompactEnabledForEnvironment,
+  getAutoCompactPolicyForEnvironment,
 } from "../services/compact/thresholds.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
@@ -193,6 +191,10 @@ export function executeCompactCommand(
         session: ctx.session,
         ctx: allocated.turnContext,
         customInstructions: ctx.argsRaw,
+      }).catch((error: unknown) => {
+        const message = compactionCannotShrinkDisplay(error);
+        if (message !== undefined) throw new Error(message, { cause: error });
+        throw error;
       });
       return {
         kind: "compact",
@@ -801,12 +803,14 @@ async function runContextUsage(params: {
     params.ctx.cwd,
   );
   const mcpServers = await loadMcpServerInstructionsForContext(params.session);
+  const deferredToolNames = params.session.services.registry.getDeferredToolNames?.();
   const systemMessage = await buildSyntheticSystemMessage({
     session: params.session,
     ctx: params.ctx,
     projectInstructions,
     mcpServers,
     enabledToolNames,
+    ...(deferredToolNames !== undefined ? { deferredToolNames } : {}),
   });
   const sourceMessages = params.session.snapshotHistoryMessages();
   const conversationMessages = toAgenCRuntimeMessages(sourceMessages);
@@ -939,6 +943,7 @@ async function buildSyntheticSystemMessage(opts: {
   readonly projectInstructions: string;
   readonly mcpServers: readonly McpServerInstructionsInput[];
   readonly enabledToolNames: ReadonlySet<string>;
+  readonly deferredToolNames?: ReadonlySet<string>;
 }): Promise<RuntimeMessage | null> {
   try {
     let permissionContext: ToolPermissionContext | null = null;
@@ -956,7 +961,11 @@ async function buildSyntheticSystemMessage(opts: {
     const outputStyle = await getOutputStyleConfig();
     // Mirror `prepareTurnRuntimeInputs`: the memory instructions and the
     // directory block are part of every turn's prompt when auto memory is
-    // enabled, so /context must count them too.
+    // enabled, so /context must count them too. An interactive session whose
+    // memory was empty when its prompt was assembled carries them instead as
+    // a reminder from its first message about memory on
+    // (prompts/attachments/memory-on-request.ts); /context counts that block
+    // as well, so the memory a session can load never drops out of the count.
     const memory = await resolveMemoryPromptInputs(opts.session, opts.ctx.cwd);
     const assembled = await assembleSystemPrompt({
       ...buildAssembleSystemPromptOpts({
@@ -967,6 +976,9 @@ async function buildSyntheticSystemMessage(opts: {
         memoryPrompt: memory.memoryPrompt,
         mcpServers: opts.mcpServers,
         enabledToolNames: opts.enabledToolNames,
+        ...(opts.deferredToolNames !== undefined
+          ? { deferredToolNames: opts.deferredToolNames }
+          : {}),
         provider,
         permissionContext,
         autonomousMode,
@@ -979,6 +991,7 @@ async function buildSyntheticSystemMessage(opts: {
       ...(permissionContext === null ? [] : [
         getSessionPermissionInstructions(opts.session, opts.ctx, permissionContext),
       ]),
+      memory.memoryOnRequest ?? "",
     ].filter((section) => section.length > 0).join("\n\n");
     return {
       role: "system",
@@ -1135,19 +1148,13 @@ export function computeContextUsageBreakdown(
   const lookup = inputs.contextWindowTokens !== undefined && inputs.contextWindowTokens > 0
     ? { options: { contextWindowTokens: inputs.contextWindowTokens, mainLoopModel: inputs.model } }
     : (inputs.model ?? "");
-  const hardLimit = getEffectiveContextWindowSizeForEnvironment(
+  const policy = getAutoCompactPolicyForEnvironment(
     typeof lookup === "string" ? lookup : (lookup as never),
     inputs.providerEnvironment,
   );
-  const autoCompactEnabled = isAutoCompactEnabledForEnvironment(
-    inputs.providerEnvironment,
-  );
-  const compactionThreshold = autoCompactEnabled
-    ? getAutoCompactThresholdForEnvironment(
-      typeof lookup === "string" ? lookup : (lookup as never),
-      inputs.providerEnvironment,
-    )
-    : hardLimit;
+  const hardLimit = policy.effectiveWindowTokens;
+  const autoCompactEnabled = policy.autoCompactEnabled;
+  const compactionThreshold = policy.compactionThresholdTokens;
   const accountingContext = {
     provider: {
       name: inputs.providerHint?.provider ?? "unknown",

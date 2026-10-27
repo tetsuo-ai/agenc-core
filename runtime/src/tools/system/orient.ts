@@ -45,12 +45,11 @@ import { bindWorkspaceDirectoryReadCapability } from "../../workspace/lazy-file-
 export const ORIENT_TOOL_NAME = "Orient";
 
 const ORIENT_DESCRIPTION =
-  "Locate the most relevant source files for a natural-language query by " +
-  "building an ephemeral structural map of the repository (symbols + " +
-  "references + lexical match). Use it to orient before reading — ask 'where " +
-  "is X handled' and get a ranked shortlist of files plus their key symbols, " +
-  "instead of bulk-reading or guessing. Read-only; respects .gitignore and " +
-  "skips generated/build/vendored dirs.";
+  "Ask where something is handled ('where is the retry logic') and get a " +
+  "ranked shortlist of the most relevant source files with their key symbols, " +
+  "from a quick structural map of the repository (symbols, references, text " +
+  "matches). Use it to orient before reading. Read-only; skips gitignored and " +
+  "build or vendored directories.";
 
 /** Source extensions the map understands (def/ref extraction is language-aware). */
 const SOURCE_GLOB =
@@ -177,17 +176,15 @@ export function createOrientTool(
       properties: {
         query: {
           type: "string",
-          description:
-            "What you are trying to locate, in natural language (e.g. 'where is the retry/backoff logic', 'what handles task settlement'). Mention specific symbol or file names in backticks when known.",
+          description: "What to locate, in plain words; put known symbol or file names in backticks.",
         },
         path: {
           type: "string",
-          description:
-            "Optional. Subdirectory to scope the map to. Defaults to the workspace root.",
+          description: "Subdirectory to map; defaults to the workspace root.",
         },
         maxFiles: {
           type: "number",
-          description: `Optional. Cap on source files scanned (default ${DEFAULT_MAX_FILES}, max ${HARD_MAX_FILES}).`,
+          description: `Cap on source files scanned (default ${DEFAULT_MAX_FILES}, max ${HARD_MAX_FILES}).`,
         },
       },
       required: ["query"],
@@ -404,7 +401,7 @@ export function createOrientTool(
         const header =
           `Orientation map for: ${query}\n` +
           `Scanned ${files.size} source file(s)${scopeNote}${cappedNote}. ` +
-          `Most relevant first — read these, don't bulk-scan:\n\n`;
+          `Most relevant first: read these, don't bulk-scan:\n\n`;
         const body = top.map((p, i) => `${i + 1}. ${p}`).join("\n");
         const mapSection = rendered
           ? `\n\nKey symbols by file:\n${rendered}`

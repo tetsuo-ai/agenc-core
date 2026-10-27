@@ -26,6 +26,8 @@ const fixtureRelativePaths = [
   "packages/agenc/lib/sqlite-lock.mjs",
   "packages/agenc/lib/activation-lock-identity.mjs",
   "packages/agenc/lib/generated-wrapper.mjs",
+  "packages/agenc/lib/stable-node.mjs",
+  "packages/agenc/lib/runtime-maintenance.mjs",
 ];
 const installerStartMarker =
   "// BEGIN GENERATED AGENC RUNTIME INSTALLER PROGRAM";

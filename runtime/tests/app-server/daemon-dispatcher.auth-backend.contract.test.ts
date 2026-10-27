@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   AuthBackend,
   AuthDaemonSocketIdentity,
@@ -37,6 +37,42 @@ function makeAuthBackend(calls: string[]): AuthBackend {
 }
 
 describe("AgenC daemon AuthBackend integration", () => {
+  it("logs an unexpected handler stack with secrets redacted and preserves its RPC error", async () => {
+    const failure = new Error("backend unavailable");
+    const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+    failure.stack = `Error: backend unavailable\n    at providerHandler (api_key=${secret})`;
+    const backend = makeAuthBackend([]);
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      authBackend: { ...backend, whoami: () => { throw failure; } },
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocol: { version: "1.0.0" } },
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "whoami",
+        method: "auth.whoami",
+      })).resolves.toMatchObject({
+        id: "whoami",
+        error: { code: -32603, message: failure.message },
+      });
+      expect(logged).toHaveBeenCalledOnce();
+      const text = logged.mock.calls[0]!.join(" ");
+      expect(text).toContain("unexpected RPC handler exception");
+      expect(text).toContain("at providerHandler");
+      expect(text).not.toContain(secret);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   it("routes daemon auth methods through the configured AuthBackend", async () => {
     const calls: string[] = [];
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({

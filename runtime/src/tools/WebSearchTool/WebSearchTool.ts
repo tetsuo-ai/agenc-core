@@ -79,7 +79,7 @@ function formatProviderOutput(po: ProviderOutput, query: string): Output {
 
   const snippets = po.hits
     .filter(h => h.description)
-    .map(h => `**${h.title}** — ${h.description} (${h.url})`)
+    .map(h => `**${h.title}**: ${h.description} (${h.url})`)
     .join('\n')
   if (snippets) results.push(snippets)
 

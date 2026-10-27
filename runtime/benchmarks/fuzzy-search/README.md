@@ -38,7 +38,7 @@ and reported separately as `persistedOracleElapsedMs`. The report keeps service
 and persisted counts separate and records the compact entry-store bytes beside
 the unchanged production cache ceiling.
 
-The runner requires Node 26.5.0 and npm 11.17.0. Corpus-v1 digests and logical
+The runner requires Node 26.12.1 and npm 11.17.0. Corpus-v1 digests and logical
 byte totals are frozen in the report contract for every quick and full size;
 intentional generator changes require a reviewed version and descriptor update.
 The runner refuses staged, unstaged, untracked, or ignored changes below

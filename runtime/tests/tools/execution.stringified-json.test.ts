@@ -67,7 +67,7 @@ describe("schema validation of stringified JSON tool input", () => {
   test.each(["[]", "null", "true", "1", "hello"])("rejects wrong object input %s", (value) => {
     expect(normalizeModelToolArgs(schemaFor({ type: "object" }), { value }).errors[0]?.message).toBe("expected object, got string");
   });
-  test.each([["number", "1"], ["boolean", "true"]])("does not guess %s", (type, value) => {
+  test.each([["boolean", "true"]])("does not guess %s", (type, value) => {
     expect(normalizeModelToolArgs(schemaFor({ type }), { value }).valid).toBe(false);
   });
   test("preserves already valid values and nested identities", () => {
@@ -137,5 +137,22 @@ describe("schema validation of stringified JSON tool input", () => {
     const request = buildXaiResponsesRequest({ model: "grok-4.7", messages: [restored] });
     expect(request.input).toContainEqual(encrypted);
     expect(request.input).toContainEqual({ type: "function_call", call_id: "c1", name: "TodoWrite", arguments: raw });
+  });
+});
+
+describe("schema-directed numeric string repair", () => {
+  test("normalizes safe numbers only in execution input", () => {
+    const input = { offset: "490", limit: "2", label: "3" };
+    const result = normalizeModelToolArgs({ type: "object", properties: { offset: { type: "integer", minimum: 1 }, limit: { type: "number" }, label: { type: "string" } } }, input);
+    expect(result.valid).toBe(true);
+    expect(result.args).toEqual({ offset: 490, limit: 2, label: "3" });
+    expect(input).toEqual({ offset: "490", limit: "2", label: "3" });
+  });
+  test.each(["", "true", "null", "01", "1.5", "0", "-1", "9007199254740993", "1e999", "NaN"])("rejects invalid integer offset %s", value => {
+    expect(normalizeModelToolArgs(schemaFor({ type: "integer", minimum: 1 }), { value }).valid).toBe(false);
+  });
+  test("preserves strings when a schema admits both strings and numbers", () => {
+    const input = { value: "490" };
+    expect(normalizeModelToolArgs(schemaFor({ anyOf: [{ type: "string" }, { type: "number" }] }), input).args).toBe(input);
   });
 });

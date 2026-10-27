@@ -8,6 +8,8 @@ import type { ApprovalCtx } from "../../src/tools/orchestrator.js";
 import type { ReviewDecision } from "../../src/permissions/review-decision.js";
 import { ABORT, APPROVED } from "../../src/permissions/review-decision.js";
 import { createRoot } from "../../src/tui/ink.js";
+import { getInkInstance } from "../../src/tui/ink/instances.js";
+import { charInCellAt, type Screen } from "../../src/tui/ink/screen.js";
 import type { PendingRequest } from "../../src/tui/permission-requests.js";
 import { AgenCPermissionOverlay } from "../../src/tui/permission-requests.js";
 import { KeybindingProvider } from "../../src/tui/keybindings/KeybindingContext.js";
@@ -73,6 +75,15 @@ async function sleep(ms = 25): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function screenText(stdout: NodeJS.WriteStream): string {
+  // Read the rendered cells: a terminal diff omits unchanged characters.
+  const instance = getInkInstance(stdout) as unknown as { frontFrame: { screen: Screen } };
+  const screen = instance.frontFrame.screen;
+  return Array.from({ length: screen.height }, (_, y) =>
+    Array.from({ length: screen.width }, (_, x) => charInCellAt(screen, x, y) ?? " ").join(""),
+  ).join("\n");
+}
+
 function createExitPlanRequest(
   resolve: (decision: ReviewDecision) => void,
 ): PendingRequest {
@@ -104,7 +115,7 @@ describe("permission-requests routes ExitPlanMode to PlanApprovalOverlay (contra
     ["3\r", { action: "revise" }, APPROVED],
     ["\x1b", { action: "revise" }, APPROVED],
     ["\x03", undefined, ABORT],
-  ])("settles only once for batched input %j", async (input, choice, decision) => {
+  ])("settles only once after an isolated choice following input %j", async (input, choice, decision) => {
     const resolved: ReviewDecision[] = [];
     const request = createExitPlanRequest((value) => resolved.push(value));
     const { stdin, stdout } = createStreams();
@@ -136,6 +147,18 @@ describe("permission-requests routes ExitPlanMode to PlanApprovalOverlay (contra
       await sleep();
       stdin.write(input);
       await sleep(75);
+      if (/^[123]\r$/u.test(input)) {
+        expect(resolved).toEqual([]);
+        expect(takePlanApprovalChoice(request.id)).toBeUndefined();
+        expect(screenText(stdout as unknown as NodeJS.WriteStream)).toContain("Card is waiting. Press 1, 2 or 3.");
+        await sleep(550);
+        stdin.write("\r");
+        await sleep();
+        expect(resolved).toEqual([]);
+        expect(takePlanApprovalChoice(request.id)).toBeUndefined();
+        stdin.write(input[0]!);
+        await sleep();
+      }
       stdin.write("\r1\r");
       await sleep();
       expect(resolved).toEqual([decision]);
@@ -146,8 +169,17 @@ describe("permission-requests routes ExitPlanMode to PlanApprovalOverlay (contra
       await sleep();
       stdin.write("2\r");
       await sleep();
+      expect(resolved).toEqual([decision]);
+      expect(takePlanApprovalChoice(nextRequest.id)).toBeUndefined();
+      expect(screenText(stdout as unknown as NodeJS.WriteStream)).toContain("Card is waiting. Press 1, 2 or 3.");
+      await sleep(550);
+      stdin.write("2");
+      await sleep();
       expect(resolved).toEqual([decision, APPROVED]);
       expect(takePlanApprovalChoice(nextRequest.id)).toEqual({ action: "approve", mode: "default" });
+      stdin.write("\r2\r");
+      await sleep();
+      expect(resolved).toEqual([decision, APPROVED]);
     } finally {
       root.unmount();
       stdin.end();

@@ -384,6 +384,8 @@ describe("app-server-client daemon helpers", () => {
         model: "grok-4.3",
         profile: "fast",
         configPath: "operator.toml",
+        taskTokenBudget: 219000,
+        taskMaxCalls: 17,
         addDirs: [...additionalDirectories, additionalDirectories[0]!],
         initialContent: [
           { type: "text", text: "describe this" },
@@ -393,6 +395,7 @@ describe("app-server-client daemon helpers", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
       });
 
       expect(createAgent).toHaveBeenCalledWith(
@@ -407,6 +410,8 @@ describe("app-server-client daemon helpers", () => {
           model: "grok-4.3",
           profile: "fast",
           configPath: "/workspace/operator.toml",
+          taskTokenBudget: 219000,
+          taskMaxCalls: 17,
           addDirs: additionalDirectories,
           initialContent: [
             { type: "text", text: "describe this" },
@@ -416,6 +421,7 @@ describe("app-server-client daemon helpers", () => {
             },
           ],
           initialDisplayUserMessage: "Explain the selected code",
+        initialUserPromptText: "Expanded initial human request",
         }),
       );
       await startAgenCDaemonPromptAgent({
@@ -486,6 +492,44 @@ describe("app-server-client daemon helpers", () => {
     } finally {
       vi.doUnmock("../app-server/agent-cli.js");
       vi.resetModules();
+    }
+  });
+
+  it.each(["matching", "disabled", "stale"])("restores cold exact-workspace consent only when valid and permitted (%s)", async scenario => {
+    // RuntimeStateRepository defaults to isolated memory storage in tests.
+    // This regression needs two independently created stores to share disk.
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-cold-consent-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-cold-consent-workspace-"));
+    const { ConfigStore } = await import("../config/store.js");
+    const { recordBypassPermissionsConsent } = await import("../permissions/bypass-consent-state.js");
+    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null = null;
+    try {
+      if (scenario === "disabled") writeFileSync(join(agencHome, "config.toml"), 'config_version = 2\n[permissions]\nbypassPermissionsMode = "disable"\n');
+      const store = new ConfigStore({ home: agencHome, env: { AGENC_HOME: agencHome, HOME: agencHome }, cwd: workspace }); await store.reload();
+      recordBypassPermissionsConsent(store.stateRepository, workspace);
+      if (scenario === "stale") store.stateRepository.updateNamespace("permissions", value => {
+        const accepted = value.bypassPermissionsAcceptedByCwd as Record<string, Record<string, unknown>>;
+        return { ...value, bypassPermissionsAcceptedByCwd: { ...accepted, [workspace]: { ...accepted[workspace], ino: "1" } } } as never;
+      });
+      context = await createAgenCDaemonOnlyTuiContext({ env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome }, cwd: workspace,
+        conversationId: "cold-consent", runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }) });
+      const permission = context.baseSession.services.permissionModeRegistry.current();
+      if (scenario === "matching") {
+        const { loadBypassPermissionsConsent } = await import("../permissions/bypass-consent-state.js");
+        expect(context.baseSession.services.configStore.agencHome).toBe(agencHome);
+        expect(loadBypassPermissionsConsent(context.baseSession.services.configStore.stateRepository, workspace, { reload: true })).toEqual([workspace]);
+        expect(permission.bypassPermissionsModeDisabledByPolicy).not.toBe(true);
+      }
+      expect(permission.mode).toBe("default");
+      expect(permission.isBypassPermissionsModeAvailable).toBe(scenario === "matching");
+      expect(permission.bypassPermissionsAcceptedIn ?? []).toEqual(scenario === "matching" ? [workspace] : []);
+      if (scenario === "disabled") expect(permission.bypassPermissionsModeDisabledByPolicy).toBe(true);
+      expect(context.baseSession.services.sandboxExecutionBroker?.mode).toBe("workspace_write");
+    } finally {
+      await context?.close(); rmSync(agencHome, { recursive: true, force: true }); rmSync(workspace, { recursive: true, force: true });
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousNodeEnv;
     }
   });
 
@@ -634,7 +678,7 @@ describe("app-server-client daemon helpers", () => {
           bypassPermissionsWorkspace: null,
           bypassPermissionsConsentWorkspace: workspace,
           provider: "grok",
-          model: "grok-live-model",
+          model: "grok-4.7",
           profile: null,
           reasoningEffort: null,
           modelVerbosity: null,
@@ -679,7 +723,7 @@ describe("app-server-client daemon helpers", () => {
           bypassPermissionsWorkspace: workspace,
           bypassPermissionsConsentWorkspace: workspace,
           provider: "grok",
-          model: "grok-plan-model",
+          model: "grok-4.6",
           profile: null,
           reasoningEffort: null,
           modelVerbosity: null,
@@ -701,6 +745,37 @@ describe("app-server-client daemon helpers", () => {
       );
     } finally {
       await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("projects saved deny rules on attach and preserves session rules across mode changes", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-resume-rule-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-resume-rule-workspace-"));
+    writeFileSync(join(agencHome, "config.toml"), 'config_version = 2\n[permissions]\ndeny = ["exec_command(printf DENIED)"]\n');
+    const settings = {
+      permissionMode: "default" as const, prePlanMode: null, autoModeActive: false,
+      autoModeAvailable: false, bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null, bypassPermissionsConsentWorkspace: null,
+      provider: "grok", model: "grok-4.7", profile: null, reasoningEffort: null,
+      modelVerbosity: null, serviceTier: null, hooksDisabled: false,
+    };
+    const context = await createAgenCDaemonOnlyTuiContext({
+      env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome }, cwd: workspace,
+      conversationId: "resume-rules", runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }),
+      runtimeSettings: settings,
+    });
+    try {
+      const registry = context.baseSession.services.permissionModeRegistry;
+      expect(registry.current().alwaysDenyRules.userSettings).toEqual(["exec_command(printf DENIED)"]);
+      await registry.update({ ...registry.current(), alwaysDenyRules: { ...registry.current().alwaysDenyRules, session: ["Bash(printf SESSION)"] } });
+      await applyDaemonTuiRuntimeSettingsAuthority(context.baseSession, workspace, { ...settings, permissionMode: "acceptEdits" });
+      expect(registry.current().mode).toBe("acceptEdits");
+      expect(registry.current().alwaysDenyRules.userSettings).toEqual(["exec_command(printf DENIED)"]);
+      expect(registry.current().alwaysDenyRules.session).toEqual(["Bash(printf SESSION)"]);
+    } finally {
+      await context.close();
       rmSync(agencHome, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -739,7 +814,7 @@ describe("app-server-client daemon helpers", () => {
           bypassPermissionsWorkspace: workspace,
           bypassPermissionsConsentWorkspace: workspace,
           provider: "grok",
-          model: "grok-live-model",
+          model: "grok-4.7",
           profile: null,
           reasoningEffort: null,
           modelVerbosity: null,
@@ -801,7 +876,7 @@ describe("app-server-client daemon helpers", () => {
           bypassPermissionsWorkspace: null,
           bypassPermissionsConsentWorkspace: workspace,
           provider: "grok",
-          model: "grok-live-model",
+          model: "grok-4.7",
           profile: null,
           reasoningEffort: null,
           modelVerbosity: null,
@@ -840,7 +915,7 @@ describe("app-server-client daemon helpers", () => {
           bypassPermissionsWorkspace: null,
           bypassPermissionsConsentWorkspace: workspace,
           provider: "grok",
-          model: "grok-live-model",
+          model: "grok-4.7",
           profile: null,
           reasoningEffort: null,
           modelVerbosity: null,
@@ -874,7 +949,7 @@ describe("app-server-client daemon helpers", () => {
           bypassPermissionsWorkspace: workspace,
           bypassPermissionsConsentWorkspace: workspace,
           provider: "grok",
-          model: "grok-live-model",
+          model: "grok-4.7",
           profile: null,
           reasoningEffort: null,
           modelVerbosity: null,
@@ -1178,7 +1253,7 @@ describe("app-server-client daemon helpers", () => {
       await expect(run("/settings")).resolves.toMatchObject({
         result: {
           kind: "error",
-          message: "Unknown command: /settings",
+          message: "Unknown command: /settings. Run /config to change settings.",
         },
       });
       await expect(run("/provider grok")).resolves.toMatchObject({

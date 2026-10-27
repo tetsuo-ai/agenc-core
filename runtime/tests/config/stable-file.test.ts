@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
+import { itWhen } from "../helpers/platform-registration.js";
 
 import {
   assertNoSymlinkAncestors,
@@ -150,7 +151,7 @@ describe("assertNoSymlinkAncestors", () => {
 });
 
 describe("ensurePrivateDescendantDirectory", () => {
-  test("creates a 0700 descendant under the authority root", async () => {
+  test("creates a descendant under the authority root", async () => {
     const root = fixtureRoot();
     const created = await ensurePrivateDescendantDirectory(root, [
       "secure-storage",
@@ -160,6 +161,12 @@ describe("ensurePrivateDescendantDirectory", () => {
       realpathSync(join(root, "secure-storage", "private-store")),
     );
     expect(created.path).toBe(join(root, "secure-storage", "private-store"));
+  });
+
+  itWhen(process.platform !== "win32")("sets POSIX owner-only permissions on descendants", async () => {
+    const root = fixtureRoot();
+    const created = await ensurePrivateDescendantDirectory(root, ["secure-storage", "private-store"]);
+    expect(statSync(join(root, "secure-storage")).mode & 0o777).toBe(0o700);
     expect(statSync(created.canonicalPath).mode & 0o777).toBe(0o700);
   });
 

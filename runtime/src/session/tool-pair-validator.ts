@@ -278,6 +278,35 @@ export class StreamingToolPairValidator {
     return { status: "valid", summary };
   }
 
+  /**
+   * The outcome {@link finish} would return for the stream pushed so far,
+   * without persisting it or closing the validator, so one stream can be
+   * judged at successive prefixes. Later pushes continue the same stream.
+   */
+  peekFinish(allowDanglingAtEnd: boolean): ToolPairValidationOutcome {
+    if (this.terminalFailure !== undefined) return this.terminalFailure;
+    const summary = this.summary();
+    if (this.openCalls.size === 0) return { status: "valid", summary };
+    if (!allowDanglingAtEnd) {
+      return {
+        ...invalid(
+          "tool_result_missing",
+          null,
+          `tool-pair stream ended with unresolved calls: ${summarizeOpenIds(this.openCalls)}`,
+        ),
+        summary,
+      };
+    }
+    return {
+      status: "dangling",
+      summary,
+      danglingToolUses: Array.from(
+        this.openCalls,
+        ([callId, call]) => ({ callId, toolName: call.toolName }),
+      ),
+    };
+  }
+
   summary(): ToolPairProjectionSummary {
     return {
       callCount: this.callCount,

@@ -1,3 +1,4 @@
+import { createMemoizedSecretRedactor } from "../../src/secrets/sanitizer.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +31,30 @@ afterEach(() => {
 });
 
 describe("secrets sanitizer", () => {
+  it.each([redactSecretsInValue, createMemoizedSecretRedactor()])(
+    "preserves protocol flags and containers while redacting credential values",
+    (redact) => {
+      const shared = { value: "opaque-credential", isSecret: false };
+      const input = {
+        questions: [{ isSecret: false }, { isSecret: true }],
+        plain: shared,
+        secret: shared,
+        secretKey: [1, 2, 3],
+        password: "opaque-password",
+        authorization: { enabled: false, credentials: ["opaque-token"] },
+      };
+      expect(redact(input)).toEqual({
+        questions: [{ isSecret: false }, { isSecret: true }],
+        plain: shared,
+        secret: { value: REDACTED_SECRET, isSecret: false },
+        secretKey: REDACTED_SECRET,
+        password: REDACTED_SECRET,
+        authorization: { enabled: false, credentials: [REDACTED_SECRET] },
+      });
+      expect(input.secret.value).toBe("opaque-credential");
+    },
+  );
+
   it.each(canonicalRedactionFixtures)(
     "redacts canonical outbound text: $name",
     ({ input, expected, secretFragments, preservedFragments }) => {
@@ -67,6 +92,22 @@ describe("secrets sanitizer", () => {
     expect(redacted).toContain(`Bearer ${REDACTED_SECRET}`);
     expect(redacted).not.toContain(`${REDACTED_SECRET}=`);
     expect(redacted).toContain(`Bearer ${REDACTED_SECRET};`);
+  });
+
+  it("redacts abliteration.ai keys by shape and under ABLIT_KEY", () => {
+    // `ak_` plus 43 URL-safe base64 characters, assembled from fragments.
+    const key = "ak_" + "Ab3-" + "x_Y9".repeat(9) + "zQ7";
+    expect(key.length).toBe(46);
+    for (const text of [key, `export ABLIT_KEY='${key}'`, `ABLITERATION_API_KEY=${key}`, `{"key":"${key}"}`]) {
+      expect(redactSecrets(text)).not.toContain(key);
+    }
+    // ABLIT_KEY matches no generic credential name; its own rule redacts any value under it.
+    const value = redactSecretsInValue({ envOverrides: { ABLIT_KEY: "short-fixture", ABLITERATION_API_KEY: "other-fixture" } });
+    expect(value).toEqual({ envOverrides: { ABLIT_KEY: REDACTED_SECRET, ABLITERATION_API_KEY: REDACTED_SECRET } });
+    // Ordinary identifiers that start with ak_ stay visible.
+    for (const text of ["ak_total_count = 3", "const ak_flag_value_for_the_demo_mode = true"]) {
+      expect(redactSecrets(text)).toBe(text);
+    }
   });
 
   it("redacts vendor key shapes lacking a key/context word", () => {

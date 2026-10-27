@@ -1,3 +1,4 @@
+import { publishedModelCatalogEntries } from "../llm/registry/published-model-catalog.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   resolveProviderSlug,
@@ -80,5 +81,10 @@ export function configuredModelForProvider(
 export function defaultModelForProvider(provider: ProviderSlug): string {
   // The single source of truth for "which model is default" is
   // BUILT_IN_PROVIDER_DEFAULT_MODELS; every provider slug has an entry there.
-  return BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
+  const preferred = BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
+  if (provider === "openrouter") {
+    const models = publishedModelCatalogEntries(provider);
+    if (models?.length && !models.some(entry => entry.model === preferred)) return models[0]!.model;
+  }
+  return preferred;
 }

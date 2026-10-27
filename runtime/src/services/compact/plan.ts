@@ -663,12 +663,12 @@ export function structuredReductionMessages(params: {
         kind: "untrusted_compaction_summaries",
         stage: params.stage,
         coverage_priority: params.requestedFocus ?? "",
-        allowed_source_ref_ids: params.children.map((child) => child.ref_id),
+        allowed_source_ref_ids: params.children.map((_, index) => compactionSourceRefAlias(index)),
         // The reducer cites a child by its ref. The child's digest, pinned
         // tool pairs and record sources are runtime provenance, so a
         // preflight child with an empty body measures what is sent.
-        summaries: params.children.map((child) => ({
-          ref_id: child.ref_id,
+        summaries: params.children.map((child, index) => ({
+          ref_id: compactionSourceRefAlias(index),
           narrative: child.body.narrative,
           facts: child.body.facts.map(childRecord),
           open_actions: child.body.open_actions.map(childRecord),
@@ -1042,7 +1042,7 @@ function structuredTranscriptMessages(
         version: COMPACTION_STRUCTURED_TRANSCRIPT_VERSION,
         kind: COMPACTION_STRUCTURED_TRANSCRIPT_KIND,
         coverage_priority: requestedFocus ?? "",
-        allowed_source_ref_ids: allowedSourceRefIds,
+        allowed_source_ref_ids: allowedSourceRefIds.map((_, index) => compactionSourceRefAlias(index)),
         // Tool call/result pairs are not part of the payload: the runtime
         // pins them into the summary itself, so the model has nothing to
         // echo and the output no longer grows with the number of tool calls.
@@ -1053,6 +1053,11 @@ function structuredTranscriptMessages(
       }),
     },
   ];
+}
+
+/** Call-local labels avoid asking the model to transcribe opaque run IDs. */
+export function compactionSourceRefAlias(index: number): string {
+  return `s${index + 1}`;
 }
 
 function chunkSourceRef(
@@ -1248,6 +1253,7 @@ function messageForDigest(message: RuntimeMessage): unknown {
     ...(message.runtimeOnly?.toolResultIntegrity !== undefined
       ? { tool_result_integrity: message.runtimeOnly.toolResultIntegrity }
       : {}),
+    ...(message.runtimeOnly?.toolResultIsError === true ? { tool_result_is_error: true } : {}),
     ...(message.runtimeOnly?.agentInvocation !== undefined
       ? { agent_invocation: message.runtimeOnly.agentInvocation }
       : {}),

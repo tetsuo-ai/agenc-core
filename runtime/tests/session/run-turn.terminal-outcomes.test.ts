@@ -1,3 +1,4 @@
+import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
 import type { LLMResponse } from "../../src/llm/types.js";
@@ -96,19 +97,20 @@ describe("canonical turn outcomes", () => {
       usage: { promptTokens: 100, completionTokens: 1, totalTokens: 101 },
       finishReason: "tool_calls",
     });
+    installPreparedCompactionPressure(provider, request => request.messages.length > 1 ? 100_000 : 100);
     setAutoCompactImplForTests(async () => ({ wasCompacted: false }));
     const { session, events } = mkSession({ provider });
     const ctx = mkCtx();
     await drain(runTurn(session, {
       ...ctx,
-      modelInfo: { ...ctx.modelInfo, autoCompactTokenLimit: 1 },
+      modelInfo: { ...ctx.modelInfo, autoCompactTokenLimit: 99_000 },
     }, "create the implementation"));
 
     expectFailedTurn(events, "compact_failed");
     expect(
       events.find((event) => event.msg.type === "turn_failed")?.msg,
     ).toMatchObject({
-      payload: { message: expect.stringContaining("mid_turn_compact_skipped") },
+      payload: { message: expect.stringContaining("The conversation is too large") },
     });
   });
 

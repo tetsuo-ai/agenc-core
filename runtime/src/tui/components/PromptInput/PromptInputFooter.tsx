@@ -141,13 +141,11 @@ function PromptInputFooter({
   } : null, [isFullscreen, shouldShowSuggestions, suggestions, selectedSuggestion, maxColumnWidth, suggestionType]);
   useSetPromptOverlay(overlayData);
   if (shouldShowSuggestions) {
-    // Fullscreen suggestions are rendered by
-    // PromptSuggestionsOverlay. Do not also render the ordinary footer below
-    // the composer: it duplicated "? for shortcuts" while the popup was open.
+    // The list takes the footer's place under the prompt. In fullscreen,
+    // FullscreenLayout draws it right under the bottom slot (outside its
+    // clip), so this footer renders nothing while the list is open.
     if (isFullscreen) return null;
-    return <Box paddingX={2} paddingY={0} opaque>
-        <PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} suggestionType={suggestionType} />
-      </Box>;
+    return <PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} />;
   }
   if (helpOpen) {
     return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} runtimeState={runtimeState} />;

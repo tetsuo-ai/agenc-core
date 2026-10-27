@@ -383,7 +383,7 @@ function waitForCallback(
         res.end(
           `<html><body><h3>IdP login failed</h3><p>${safeErr}</p><p>${safeDesc}</p></body></html>`,
         )
-        rejectOnce(new Error(`XAA IdP: ${err}${desc ? ` — ${desc}` : ''}`))
+        rejectOnce(new Error(`XAA IdP: ${err}${desc ? `: ${desc}` : ''}`))
         return
       }
 

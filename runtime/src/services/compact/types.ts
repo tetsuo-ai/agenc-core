@@ -47,6 +47,9 @@ export type RuntimeMessage = {
   readonly timestamp?: string;
   readonly isMeta?: boolean;
   readonly runtimeOnly?: {
+    readonly responseItemId?: string;
+    readonly userMessageId?: string;
+    readonly toolResultIsError?: true;
     readonly toolResultIntegrity?: ToolResultIntegrity;
     readonly agentInvocation?: AgentInvocationChannelMetadata;
     readonly mergeBoundary?: "user_context";
@@ -55,6 +58,8 @@ export type RuntimeMessage = {
 };
 
 export type CompactContext = {
+  /** Trusted turn-local identity; recovery prompts cannot replace this request. */
+  readonly liveUserMessageId?: string;
   readonly abortController?: AbortController;
   /** Canonical workspace for lifecycle hook metadata. */
   readonly cwd?: string;
@@ -87,12 +92,28 @@ export type CompactContext = {
 };
 
 export type CompactProgressEvent =
+  | CompactionProgressEvent
   | {
       readonly type: "hooks_start";
       readonly hookType: "pre_compact" | "post_compact" | "session_start";
     }
   | { readonly type: "compact_start" }
   | { readonly type: "compact_end" };
+
+/** Observable operation progress only. It cannot authorize or replace history. */
+export interface CompactionProgressEvent {
+  readonly type: "compact_progress";
+  readonly attemptId: string;
+  readonly phase: "prepare" | "summary" | "validate" | "commit" | "complete" | "failed" | "refused";
+  readonly percent: number;
+  readonly startedAtMs: number;
+  readonly beforeTokens: number;
+  readonly afterTokens?: number;
+  readonly summaryTokensReceived?: number;
+  readonly targetSummaryTokens?: number;
+  readonly summaryTokensEstimated?: boolean;
+  readonly reason?: string;
+}
 
 export type CompactCleanupDeps = {
   readonly clearReadFileState?: () => void;

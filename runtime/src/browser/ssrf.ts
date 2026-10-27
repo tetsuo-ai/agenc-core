@@ -152,7 +152,7 @@ export function validateNavigableUrl(rawUrl: string): URL {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new BrowserSsrfError(
-      `unsupported scheme "${url.protocol}" — only http and https can be navigated`,
+      `unsupported scheme "${url.protocol}": only http and https can be navigated`,
     );
   }
   if (url.username !== "" || url.password !== "") {
@@ -185,12 +185,12 @@ export async function resolveAllowedAddress(
   for (const address of addresses) {
     if (isIP(address) === 0) {
       throw new BrowserSsrfError(
-        `blocked ${bare} — resolver returned a non-IP address`,
+        `blocked ${bare}: resolver returned a non-IP address`,
       );
     }
     if (isDisallowedAddress(address, policy)) {
       throw new BrowserSsrfError(
-        `blocked ${bare} — resolves to ${address} (private/loopback/metadata address; set [browser].allow_private_network to permit local targets)`,
+        `blocked ${bare}: resolves to ${address} (private/loopback/metadata address; set [browser].allow_private_network to permit local targets)`,
       );
     }
   }

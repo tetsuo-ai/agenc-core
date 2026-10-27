@@ -1,19 +1,19 @@
 # Homebrew formula template for the self-contained AgenC runtime.
 #
-# OWNER-PUBLISH STEP — this file remains deliberately unpublishable until the
-# two placeholder digests are replaced from an immutable agenc-v0.18.0
+# OWNER-PUBLISH STEP: this file remains deliberately unpublishable until the
+# two placeholder digests are replaced from an immutable agenc-v0.19.19
 # manifest and the formula is copied to tetsuo-ai/homebrew-agenc.
 class Agenc < Formula
   desc "Daemon-backed, terminal-native coding agent"
   homepage "https://github.com/tetsuo-ai/agenc-core"
-  url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.18.0/agenc-runtime-0.18.0-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}-node26-abi147.tar.gz"
-  version "0.18.0"
+  url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.19.19/agenc-runtime-0.19.19-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}-node26-abi147.tar.gz"
+  version "0.19.19"
   arm64_sha256 = "REPLACE_WITH_DARWIN_ARM64_SHA256"
   x64_sha256 = "REPLACE_WITH_DARWIN_X64_SHA256"
   sha256 Hardware::CPU.arm? ? arm64_sha256 : x64_sha256
   license "MIT"
 
-  # The runtime artifact includes its reviewed Node 26.5.0 executable. Keep
+  # The runtime artifact includes its reviewed Node 26.12.1 executable. Keep
   # ripgrep as the only host tool dependency used by the coding-agent surface.
   depends_on macos: :ventura
   depends_on "ripgrep"

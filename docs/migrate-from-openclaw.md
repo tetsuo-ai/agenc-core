@@ -5,7 +5,7 @@ center of gravity: OS-sandboxed execution, a fail-closed permission layer, and
 an auditable state model. This guide maps concepts honestly — including what
 AgenC does **not** have yet.
 
-**AgenC 0.18.0.** Related: [quickstart](quickstart.md) ·
+**AgenC 0.19.19.** Related: [quickstart](quickstart.md) ·
 [onboarding](onboarding.md) · [gateway](gateway.md) ·
 [Hermes migrate](migrate-from-hermes.md).
 
@@ -55,8 +55,8 @@ agenc onboard autonomy
 - **MCP both directions** (client + server), subagent teams and background
   agents in isolated worktrees, an eval-regression harness, and 16 model
   providers including Ollama/LM Studio.
-- **Managed OpenRouter** with free `:free` hosted routes and paid default
-  `x-ai/grok-4.5`; BYOK still wins ([managed-openrouter.md](managed-openrouter.md)).
+- **OpenRouter** with your own key, including free `:free` models and the
+  unchanged default `x-ai/grok-4.5` ([OpenRouter setup](managed-openrouter.md)).
 
 ## Persona workspace files
 

@@ -18,7 +18,7 @@ const TOKEN = "xai-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6q7R8";
  */
 describe("automatic compaction with a secret in the source history", () => {
   it("commits, keeps the secret out of the rollout, and the rollout reads back strictly", async () => {
-    const source: readonly RuntimeMessage[] = Array.from({ length: 8 }, (_, index) => ({
+    const source: readonly RuntimeMessage[] = Array.from({ length: 20 }, (_, index) => ({
       role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
       content:
         index === 3

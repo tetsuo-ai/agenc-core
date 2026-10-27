@@ -245,9 +245,11 @@ describe("collabAgentTaskSync coverage swarm row 140", () => {
       status: "completed",
       notified: true,
     });
+    // An interrupted reusable worker has stopped working (aa93cae63): it
+    // must not count as running in the swarm status.
     expect(next.tasks?.interrupted).toMatchObject({
-      status: "running",
-      notified: false,
+      status: "killed",
+      notified: true,
     });
     expect(next.tasks?.shutdown).toMatchObject({
       status: "killed",

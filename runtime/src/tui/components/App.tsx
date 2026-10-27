@@ -1,3 +1,9 @@
+import { resolveWebSearchMode } from "../../tools/web-search-mode.js";
+import { useSessionEffortCatalog } from "../hooks/useSessionEffortCatalog.js";
+import { isEffectReviewRequired } from "../../session/effect-review-gate.js";
+import { usePendingEffectReviews } from "../hooks/usePendingEffectReviews.js";
+import { EffectReviewCard } from "./EffectReviewCard.js";
+import { useStartupUpdate } from "../hooks/useStartupUpdate.js";
 import { logForDebugging } from "src/utils/debug.js";
 import { isRecord } from "../../utils/record.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -15,6 +21,9 @@ import React, {
 import { FpsMetricsProvider, useFpsMetrics } from "../context/fpsMetrics.js";
 import { StatsProvider, type StatsStore } from "../context/stats.js";
 import { onChangeAppState } from "../state/onChangeAppState.js";
+import { syncRuntimeEffortEventToAppState } from "../state/runtimeEffortSync.js";
+import { syncRuntimeModelEventToAppState } from "../state/runtimeModelSync.js";
+import { syncTaskBudgetEventToTuiSession } from "../state/taskBudgetSync.js";
 import { syncCollabAgentEventToAppState } from "../state/collabAgentTaskSync.js";
 import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import {
@@ -26,7 +35,7 @@ import type { FpsMetrics } from "../../utils/fpsTracker.js";
 import { Messages } from "./Messages.js";
 import {
   MessageSelector,
-  selectableUserMessagesFilter,
+  selectableMessageOrdinal,
 } from "./MessageSelector.js";
 import { ExitFlow } from "./ExitFlow.js";
 import PromptInput from "./PromptInput/PromptInput.js";
@@ -44,6 +53,8 @@ import {
   isMouseTrackingEnabled,
 } from "../../utils/fullscreen.js";
 import { SpinnerWithVerb } from "./spinner/Spinner.js";
+import { CompactingStatus } from "./spinner/CompactingStatus.js";
+import { compactionIsActive, readCompactionProgress, type CompactionProgress } from "../compaction-progress.js";
 import { getActiveLocalAgentTasks } from "./spinner/agentActivity.js";
 import type { SpinnerMode } from "./spinner/types.js";
 import { PromptInputQueuedCommands } from "./PromptInput/PromptInputQueuedCommands.js";
@@ -73,7 +84,8 @@ import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
 import { useApiKeyVerification } from "../hooks/useApiKeyVerification.js";
 import type { ProviderAuthReadContext } from "../../utils/auth.js";
-import { addToHistory } from "../history/history.js";
+import { addToHistory, flushPromptHistoryForExit } from "../history/history.js";
+import { expandPastedTextRefs, parseReferences } from "../../utils/pasteReferences.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import {
   type AppState,
@@ -85,10 +97,15 @@ import {
 } from "../state/AppState.js";
 import { useSettings } from "../hooks/useSettings.js";
 import { useMainLoopModel } from "../hooks/useMainLoopModel.js";
-import { StatusEffortContext } from "../context/statusEffortContext.js";
+import { GitStatusChrome } from "./GitStatusLine.js";
+import { StatusEffortContext, StatusContextUsageContext, StatusTurnBusyContext, StatusPromptCacheContext, StatusOffPeakContext, StatusZdrContext, StatusWebSearchContext } from "../context/statusEffortContext.js";
+import { resolveZeroDataRetentionStatus } from "../../llm/zero-data-retention.js";
+import { readVeniceMenuModels } from "../../commands/venice-menu-models.js";
 import { readSessionSelection } from "../../session/provider-model-selection.js";
+import { offPeakScheduleFor } from "../../session/off-peak-pricing.js";
 import {
   getSessionEffortLabelForContext,
+  getUnsupportedEffortNoticeForContext,
   modelSupportsEffortForContext,
 } from "../../utils/effort.js";
 import {
@@ -101,12 +118,15 @@ import {
   useApp,
   useTerminalFocus,
   useTerminalTitle,
+  type Key,
 } from "../ink.js";
 import {
   clearPendingResumeSessionId,
   setPendingResumeSessionId,
 } from "../pending-resume.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
+import { useInputCapture } from "../keybindings/useKeybinding.js";
+import { clearSharedDoublePressState } from "../hooks/useDoublePress.js";
 import {
   calculateContextPercentages,
   getContextWindowForModelForContext,
@@ -133,6 +153,7 @@ import type {
   McpSurfaceTool,
 } from "../../session/session.js";
 import { makeUserMessage, useSessionTranscript } from "../session-transcript.js";
+import { awaitSubmissionTerminal, createSubmissionTerminalEvents } from "../submission-terminal.js";
 import { countUserTextRows, lastUserText, type PendingUserEcho, withPendingUserEcho } from "../pending-user-echo.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { ContentWidthProvider } from "../context/contentWidthContext.js";
@@ -158,6 +179,7 @@ import {
   isCommandEnabled,
   listTuiCommandList,
 } from "../../commands.js";
+import { skillChangeDetector } from "../../skills/change-detector.js";
 import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
 import { getAgentDefinitionsWithOverrides } from "../../tools/AgentTool/loadAgentsDir.js";
 import {
@@ -187,6 +209,7 @@ import {
   resolveSessionProviderModelSelection,
 } from "../../session/provider-model-selection.js";
 import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
+import { useStartupNotices } from "../hooks/notifs/useStartupNotices.js";
 import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
 import { useNotifications, type Notification } from "../context/notifications.js";
@@ -217,6 +240,7 @@ import {
   beginLedgerVerification,
   getLedgerVerificationSnapshot,
   isLedgerAuthenticityRequest,
+  isLedgerDeviceRequest,
   markLedgerVerificationFailed,
   markLedgerVerified,
   markLedgerVerifying,
@@ -1298,6 +1322,7 @@ function ElicitationPickerOverlay({
     <AskUserQuestionOverlay
       key={`${pending.request.requestId}:${pending.index}`}
       input={input}
+      allowOther={!pending.request.callId.startsWith("task-budget-checkpoint-")}
       onSubmit={(updatedInput) => {
         const record = updatedInput as { answers?: Record<string, unknown> };
         const raw = record.answers?.[question.question];
@@ -1305,7 +1330,7 @@ function ElicitationPickerOverlay({
           submit(raw);
         }
       }}
-      onSkip={() => submit("skip")}
+      onSkip={() => submit(pending.request.callId.startsWith("task-budget-checkpoint-") ? "Stop here" : "skip")}
     />
   );
 }
@@ -1553,6 +1578,7 @@ function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
   );
   return {
     ...defaults,
+    lightMode: props.session.services.runtimeOptions?.lightMode === true,
     mainLoopModel: startupModel(props),
     mainLoopModelForSession: startupModel(props),
     toolPermissionContext: initialPermissionContext(props),
@@ -2344,11 +2370,45 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [],
   );
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
+  const composerCursorRef = useRef<{ input: string; offset: number } | null>(null);
+  const liveComposerDraftRef = useRef({ input, pastedContents });
+  liveComposerDraftRef.current = { input, pastedContents };
   const retrySubmissionRef = useRef<ComposerSubmission | null>(null);
   const changeComposerInput = useCallback((nextInput: string) => {
     retrySubmissionRef.current = null;
+    liveComposerDraftRef.current = { ...liveComposerDraftRef.current, input: nextInput };
     setInput(nextInput);
   }, []);
+  const preserveApprovalDraftInput = useCallback((value: string, key: Key) => {
+    const current = liveComposerDraftRef.current.input;
+    const cursor = composerCursorRef.current;
+    let offset = cursor?.input === current ? cursor.offset : current.length;
+    let next = current;
+    if (key.return || key.escape) return;
+    if (key.home || (key.ctrl && value === "a")) offset = 0;
+    else if (key.end || (key.ctrl && value === "e")) offset = current.length;
+    else if (key.leftArrow) offset = Math.max(0, offset - 1);
+    else if (key.rightArrow) offset = Math.min(current.length, offset + 1);
+    else if (key.ctrl && value === "u") { next = current.slice(offset); offset = 0; }
+    else if (key.ctrl && value === "k") next = current.slice(0, offset);
+    else if (key.ctrl && value === "w") {
+      const start = current.slice(0, offset).replace(/\S+\s*$/u, "").length;
+      next = current.slice(0, start) + current.slice(offset);
+      offset = start;
+    } else if (key.backspace) {
+      const previous = Array.from(current.slice(0, offset)).at(-1)?.length ?? 0;
+      next = current.slice(0, offset - previous) + current.slice(offset);
+      offset -= previous;
+    } else if (key.delete) {
+      const following = Array.from(current.slice(offset))[0]?.length ?? 0;
+      next = current.slice(0, offset) + current.slice(offset + following);
+    } else if (value.length > 0 && !key.ctrl && !key.meta && !key.super) {
+      next = current.slice(0, offset) + value + current.slice(offset);
+      offset += value.length;
+    }
+    composerCursorRef.current = { input: next, offset };
+    changeComposerInput(next);
+  }, [changeComposerInput]);
   const changeComposerPastedContents = useCallback<
     React.Dispatch<React.SetStateAction<Record<number, any>>>
   >((nextContents) => {
@@ -2359,8 +2419,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // restored text even when the submit clear and the restore commit in one
   // render, where the input prop never visibly changes.
   const [draftRestoreRevision, setDraftRestoreRevision] = useState(0);
-  const liveComposerDraftRef = useRef({ input, pastedContents });
-  liveComposerDraftRef.current = { input, pastedContents };
   const setComposerInput = useCallback((nextInput: string): void => {
     liveComposerDraftRef.current = { ...liveComposerDraftRef.current, input: nextInput };
     setInput(nextInput);
@@ -2375,6 +2433,30 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     },
     [],
   );
+  const savedExitDraftRef = useRef<typeof liveComposerDraftRef.current | null>(null);
+  const saveComposerDraftBeforeExit = useCallback(() => {
+    const draft = liveComposerDraftRef.current;
+    const saved = savedExitDraftRef.current;
+    if (draft.input.trim() === "" ||
+      (saved?.input === draft.input && saved.pastedContents === draft.pastedContents)) return;
+    addToHistory({ display: draft.input, pastedContents: draft.pastedContents });
+    savedExitDraftRef.current = draft;
+  }, []);
+  // Also cover overlays calling Ink's exit directly instead of App's exit flow.
+  useEffect(() => {
+    const flushExitDraft = async () => {
+      saveComposerDraftBeforeExit();
+      await flushPromptHistoryForExit();
+    };
+    const unregister = registerCleanup(flushExitDraft);
+    // This task must survive React unmount: bootTUI drains the barrier after
+    // Ink exits and before it closes the owning daemon transport.
+    props.registerTuiTeardown?.(flushExitDraft);
+    return () => {
+      saveComposerDraftBeforeExit();
+      unregister();
+    };
+  }, [saveComposerDraftBeforeExit, props.registerTuiTeardown]);
   const restoreComposerDraft = useCallback(
     (failedDraft: {
       readonly input: string;
@@ -2431,6 +2513,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     label: null as string | null,
     responseLength: 0,
   });
+  const [compactActivity, setCompactActivity] = useState<CompactionProgress | null>(null);
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
   const reportProcessRefreshError = useCallback((message: string) => {
@@ -2512,16 +2595,32 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     () => appStateStore.getState(),
     [appStateStore],
   );
+  const submissionTerminalEvents = useMemo(createSubmissionTerminalEvents, [props.session]);
+  // Chrome that mounts after startup (the git line returns with the composer
+  // after every approval) listens through this shell's one long-lived
+  // subscription. A late daemon replay subscription is refused once the
+  // session passes the replay capacity (DaemonEventReplayGapError).
+  const liveSessionEvents = useMemo(() => {
+    if (typeof props.session.subscribeToEvents === "function") return submissionTerminalEvents;
+    const eventLog = props.session.eventLog;
+    return eventLog === undefined ? undefined : {
+      subscribeToEvents: (cb: (event: unknown) => void) => eventLog.subscribe(event => cb(event)),
+    };
+  }, [props.session, submissionTerminalEvents]);
   useEffect(() => {
     const subscribe = props.session.subscribeToEvents;
     if (typeof subscribe !== "function") return;
     const unsubscribe = subscribe((event: unknown) => {
+      submissionTerminalEvents.publish(event);
       const recovered = submissionRecoveryNotification(event);
       if (recovered !== null) {
         if (recovered.clientMessageId === pendingSubmissionIdRef.current) setPendingSubmission(false);
         addNotification(recovered.notification);
       }
       syncCollabAgentEventToAppState(event, setAppState);
+      syncRuntimeEffortEventToAppState(event, setAppState);
+      syncRuntimeModelEventToAppState(event, setAppState);
+      syncTaskBudgetEventToTuiSession(event, props.session);
     });
     return () => {
       unsubscribe();
@@ -2531,6 +2630,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.session,
     props.session.conversationId,
     setAppState,
+    submissionTerminalEvents,
   ]);
   const [toolPermissionContext, setToolPermissionContext] =
     useSyncedPermissionContext(props.session);
@@ -2582,6 +2682,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.session,
     props.initialUserMessages ?? EMPTY_INITIAL_USER_MESSAGES,
   );
+  const { reviews: pendingEffectReviews, noteRefusal: noteReviewRefusal } = usePendingEffectReviews(props.session);
+  const reviewNeeded = pendingEffectReviews.length > 0;
+  const reviewBlocksPrompt = pendingEffectReviews.some(review => review.blocksSession !== false);
   const ledgerVerification = useSyncExternalStore(
     subscribeLedgerVerification,
     getLedgerVerificationSnapshot,
@@ -2668,20 +2771,21 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // "high effort" in the status line: the level the session runs at, or the
   // model's default when none is chosen. Follows /effort and model switches.
   const statusEffortValue = useAppState((state) => state.effortValue);
-  const statusEffortLabel = useMemo(() => {
+  const notifiedUnsupportedEfforts = useRef(new Set<string>());
+  useEffect(() => {
     const selection = readSessionSelection(props.session, { includePending: true });
-    if (selection.provider === "unknown" || selection.model === "unknown") return null;
-    const context = Object.freeze({ ...remoteAuthSessionContext, provider: selection.provider });
-    if (!modelSupportsEffortForContext(selection.model, context)) return null;
-    // The chosen level, else the default the daemon runs ("effort off" for a
-    // native none); nothing when no truthful default is known.
-    return getSessionEffortLabelForContext(
-      selection.model,
-      statusEffortValue as never,
-      context,
-    );
-  }, [props.session, remoteAuthSessionContext, statusEffortValue, resolvedMainLoopModel]);
-  const contextPctLabel = useMemo(() => {
+    if (selection.provider === "unknown" || selection.model === "unknown") return;
+    // The generic config default is not a saved choice by this user.
+    if (props.session.services.configStore?.provenance?.("reasoning_effort")?.scope === "default") return;
+    const context = { ...remoteAuthSessionContext, provider: selection.provider };
+    const text = getUnsupportedEffortNoticeForContext(selection.model, statusEffortValue, context);
+    if (text === undefined) return;
+    const key = `${selection.provider}:${selection.model}:${statusEffortValue}`;
+    if (notifiedUnsupportedEfforts.current.has(key)) return;
+    notifiedUnsupportedEfforts.current.add(key);
+    addNotification({ key: "unsupported-effort", text, priority: "high", timeoutMs: 15000 });
+  }, [props.session, remoteAuthSessionContext, statusEffortValue, resolvedMainLoopModel, addNotification]);
+  const contextUsagePercent = useMemo(() => {
     if (props.session.getDaemonSessionSnapshot !== undefined) {
       if (residentContext?.session !== props.session ||
           residentContext.conversationId !== props.session.conversationId ||
@@ -2691,13 +2795,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         model: resolvedMainLoopModel,
         contextWindowTokens: configuredContextWindow(config),
       });
-      return `ctx ${usage.usedPercentage}%`;
+      return usage.usedPercentage;
     }
     const usage = transcript.latestUsage ?? getCurrentUsage(transcriptMessagesRef.current as any[]);
     if (!usage) return null;
     const windowSize = getContextWindowForModelForContext(resolvedMainLoopModel, remoteAuthSessionContext);
     const { used } = calculateContextPercentages(usage, windowSize);
-    return used === null ? null : `ctx ${used}%`;
+    return used;
   }, [props.session, props.session.conversationId, residentContext, config, lastAssistantMessageId, transcript.latestUsage,
     resolvedMainLoopModel, remoteAuthSessionContext]);
   const realtimeState = useRealtimeState(props.session.realtime);
@@ -2814,6 +2918,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     () =>
       buildDefaultRegistry({
         surface: "daemon-tui",
+        remoteControlEnabled: () => configStore.current().remote_control?.enabled === true,
       }),
     [],
   );
@@ -2835,18 +2940,25 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     process.cwd();
   const dynamicCommandPluginStorageRoot =
     props.session.services.runtimeOptions?.pluginStorageRoot;
+  const [skillCommandRevision, setSkillCommandRevision] = useState(0);
+  useEffect(() => skillChangeDetector.subscribe(() => {
+    props.session.services.skillsManager?.clearSkillCaches?.();
+    setSkillCommandRevision(revision => revision + 1);
+  }), [props.session]);
   const dynamicCommandSource = useMemo(
     () => ({
       cwd: dynamicCommandsCwd,
       pluginStorageRoot: dynamicCommandPluginStorageRoot,
       skillsManager: props.session.services.skillsManager,
       config,
+      skillCommandRevision,
     }),
     [
       dynamicCommandsCwd,
       dynamicCommandPluginStorageRoot,
       props.session.services.skillsManager,
       config,
+      skillCommandRevision,
     ],
   );
   const [dynamicCommandSnapshot, setDynamicCommandSnapshot] = useState<{
@@ -2942,13 +3054,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
   const hasActiveSessionTurn = hasActiveConversationTurn(props.session);
   const hasActiveModelSubmission = activeModelSubmissionCount > 0;
+  const isCompacting = compactActivity !== null && compactionIsActive(compactActivity);
   const isLoading =
     transcript.isStreaming ||
     pendingSubmission ||
     hasActiveSessionTurn ||
     hasActiveModelSubmission;
   const effectiveInputBusy =
+    reviewBlocksPrompt ||
     isLoading ||
+    isCompacting ||
     shellAbortController !== null ||
     hasActiveLocalAgents ||
     completionPipelineActive;
@@ -2979,52 +3094,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     pendingSubmission,
     activeModelSubmissionCount,
   ]);
-  // M4 unknown-outcome gate visibility: when a tool result reports the
-  // session blocked by an unresolved unknown-outcome effect, the block
-  // otherwise only reaches the agent as a tool error — the user just watches
-  // the agent go quiet ("se calló el proceso"). Surface it as an immediate
-  // notification with the /resolve hint, once per blocking effect.
-  const lastGateNotifiedRef = useRef<string | null>(null);
-  useEffect(() => {
-    const messages = transcript.messages as readonly {
-      type?: string;
-      message?: { content?: unknown };
-    }[];
-    const textOf = (content: unknown): string => {
-      if (typeof content === "string") return content;
-      if (Array.isArray(content)) {
-        return content
-          .map((block) =>
-            block !== null && typeof block === "object" && "text" in block
-              ? String((block as { text?: unknown }).text ?? "")
-              : "",
-          )
-          .join("\n");
-      }
-      return "";
-    };
-    for (
-      let i = messages.length - 1;
-      i >= 0 && i > messages.length - 6;
-      i -= 1
-    ) {
-      const text = textOf(messages[i]?.message?.content);
-      const match = text.match(
-        /unresolved unknown-outcome effect\(s\) \[([^\]]+)\]/,
-      );
-      if (match === null) continue;
-      const blocking = match[1]!;
-      if (lastGateNotifiedRef.current === blocking) return;
-      lastGateNotifiedRef.current = blocking;
-      addNotification({
-        key: "unknown-outcome-gate",
-        text: `Session blocked by an unknown tool outcome (${blocking}). Side-effecting tools are gated until you review it. Run /resolve to lift the gate.`,
-        priority: "immediate",
-        timeoutMs: 15000,
-      });
-      return;
-    }
-  }, [transcript.messages, addNotification]);
   const allQueuedCommands = useCommandQueue();
   const queuedCommands = useMemo(
     () =>
@@ -3034,7 +3103,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [allQueuedCommands, commandQueueOwner],
   );
   const queueDrainActiveRef = useRef(false);
-  const [, setQueueDrainTick] = useState(0);
+  const [queueDrainTick, setQueueDrainTick] = useState(0);
 
   // Tool-use context builder. Declared above submit so the slash-command
   // interceptor can read it without TDZ on first render. Also handed to
@@ -3189,6 +3258,49 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setToolJSX,
     ],
   );
+  const effortSelection = readSessionSelection(props.session, { includePending: true });
+  const effortCatalogRevision = useSessionEffortCatalog(props.session, effortSelection.provider,
+    effortSelection.model, () => createSlashCommandContext(""));
+  const statusEffortLabel = useMemo(() => {
+    const selection = readSessionSelection(props.session, { includePending: true });
+    if (selection.provider === "unknown" || selection.model === "unknown") return null;
+    const context = Object.freeze({ ...remoteAuthSessionContext, provider: selection.provider });
+    if (!modelSupportsEffortForContext(selection.model, context)) return null;
+    // The chosen level, else the default the daemon runs ("effort off" for a
+    // native none); nothing when no truthful default is known.
+    return getSessionEffortLabelForContext(
+      selection.model,
+      statusEffortValue as never,
+      context,
+    );
+  }, [props.session, remoteAuthSessionContext, statusEffortValue, resolvedMainLoopModel, effortCatalogRevision]);
+  // "off-peak" in the status line follows the route a call made now would use.
+  const statusOffPeakSchedule = offPeakScheduleFor(effortSelection.provider, effortSelection.model);
+  // So does the ZDR badge. It re-reads when the provider's live lists arrive
+  // (OpenRouter's zero-retention endpoints, Venice's private models).
+  const statusZdrConfig = configStore.current();
+  // The command context changes with every usage update; the badge reads it
+  // only for Venice's list, which the catalog revision already tracks.
+  const statusZdrContextRef = useRef(createSlashCommandContext);
+  statusZdrContextRef.current = createSlashCommandContext;
+  const statusZdr = useMemo(() => {
+    if (effortSelection.provider === "unknown" || effortSelection.model === "unknown") return null;
+    let veniceModels: ReturnType<typeof readVeniceMenuModels>;
+    if (effortSelection.provider === "venice") {
+      try {
+        veniceModels = readVeniceMenuModels(statusZdrContextRef.current(""));
+      } catch {
+        // The bundled list answers.
+      }
+    }
+    return resolveZeroDataRetentionStatus({
+      provider: effortSelection.provider,
+      model: effortSelection.model,
+      config: statusZdrConfig,
+      env: remoteAuthSessionContext.environment,
+      ...(veniceModels !== undefined ? { veniceModels } : {}),
+    }) ?? null;
+  }, [effortSelection.provider, effortSelection.model, statusZdrConfig, remoteAuthSessionContext, effortCatalogRevision]);
   const runLocalControlCommand = useCallback(async (parsed: ParsedSlashCommand): Promise<void> => {
     cancelTransientResult(true);
     try {
@@ -3361,6 +3473,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         };
         await executeBash();
       } catch (err_1) {
+        // The daemon owns the cancelled call's canonical error row. The
+        // transport's aborted-request exception is not another shell result.
+        if (usesDaemonShellBridge && bashAbortController.signal.aborted) return;
         const message_1 =
           err_1 instanceof Error ? err_1.message : String(err_1);
         emitTranscriptText(
@@ -3387,19 +3502,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setActiveModelSubmissionCount(activeModelSubmissionTokensRef.current.size);
       effectiveInputBusyRef.current = true;
       try {
-        await submitSession(value, options);
+        await awaitSubmissionTerminal(props.session.subscribeToEvents === undefined
+          ? props.session : submissionTerminalEvents, options?.clientMessageId,
+          () => submitSession(value, options));
       } finally {
         if (activeModelSubmissionTokensRef.current.delete(token)) {
           setActiveModelSubmissionCount(activeModelSubmissionTokensRef.current.size);
         }
       }
     },
-    [props.session],
+    [props.session, submissionTerminalEvents],
   );
   const submit = useCallback(
     async (value: string, options?: LiveSubmitOptions) => {
-      const text_0 = value.trim();
-      const historyDisplay = (options?.displayUserMessage ?? text_0).trim();
+      const historyDisplay = (options?.displayUserMessage ?? value).trim();
       const draftRestoreValue = options?.draftRestoreValue ?? value;
       const candidateRetry = retrySubmissionRef.current;
       const retry =
@@ -3410,7 +3526,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           : null;
       const clientMessageId = retry?.clientMessageId ?? randomUUID();
       const activePastedContents =
-        retry?.pastedContents ?? options?.pastedContentsOverride ?? pastedContents;
+        retry?.pastedContents ?? options?.pastedContentsOverride ??
+        (options?.fromQueue ? {} : pastedContents);
+      // The composer and history keep compact refs. All prompt consumers,
+      // including command dispatch and the daemon's routing/skill/title paths,
+      // receive the same in-place expansion, in the user's original order.
+      const expandedValue = expandPastedTextRefs(value, activePastedContents);
+      const text_0 = expandedValue.trim();
       const hasAttachments = Object.keys(activePastedContents).length > 0;
       if (text_0.length === 0 && !hasAttachments) return;
       const rejectNonModelSubmission = (): void => {
@@ -3434,15 +3556,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         await runLocalControlCommand(localControl);
         return;
       }
-      // On-demand Ledger status read: mentioning "ledger" refreshes the bottom
-      // connection indicator (no background polling — this is the only read).
-      if (/\bledger\b/i.test(text_0)) {
+      // Hardware features must stay out of ordinary coding/accounting turns.
+      // Explicit slash commands perform their own reads in ledgerCommand.
+      if (isLedgerDeviceRequest(text_0)) {
         void refreshLedgerStatus();
         if (isLedgerAuthenticityRequest(text_0)) {
           beginLedgerVerification({
-            source: /^\/(?:ledger|wallet)\s+genuine-check\b/i.test(text_0)
-              ? "slash"
-              : "prompt",
+            source: "prompt",
             transcriptStartIndex: transcriptMessagesRef.current.length,
             model: getLedgerStatusSnapshot().model,
           });
@@ -3470,14 +3590,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         rejectNonModelSubmission();
         return;
       }
-      if (!options?.fromQueue && effectiveInputBusyRef.current) {
+      const isReviewCommand = parsedSlashCommand !== null &&
+        (parsedSlashCommand.name === "resolve" || parsedSlashCommand.name === "resolve-effects");
+      if (!options?.fromQueue && effectiveInputBusyRef.current && !isReviewCommand) {
         if (retry !== null) {
           showTransientResult("Wait for the current request to settle before retrying the restored submission.", { display: "error" });
           return;
         }
         enqueue({
-          value: text_0,
-          preExpansionValue: text_0,
+          value,
+          preExpansionValue: historyDisplay,
           mode: "prompt",
           queueOwner: commandQueueOwner,
           ...(hasAttachments
@@ -3532,8 +3654,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // user action, so it never fights a deliberate scroll-up mid-turn.
         scrollRef.current?.scrollToBottom();
       }
-      setComposerInput("");
-      retrySubmissionRef.current = null;
+      // A queued item owns its captured content, not the draft being edited.
+      if (!options?.fromQueue) {
+        setComposerInput("");
+        retrySubmissionRef.current = null;
+      }
       // Persist the submitted prompt so Up-arrow / Ctrl+R history recall
       // can find it. The daemon-backed AgenCTuiApp dispatch path used to
       // skip this, so the picker said "No history yet" right after a
@@ -3550,19 +3675,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           // best-effort: history persistence must not block submit
         }
       }
-      const attachmentsMessage = hasAttachments
-        ? pastedContentsToLLMMessage(activePastedContents)
-        : null;
+      // Referenced text is now part of the prompt, not a second user message.
+      // Keep images and any unreferenced attachments on the multipart path.
+      const remainingPastedContents = { ...activePastedContents };
+      for (const ref of parseReferences(value)) {
+        if (activePastedContents[ref.id]?.type === "text") {
+          delete remainingPastedContents[ref.id];
+        }
+      }
+      const attachmentsMessage = pastedContentsToLLMMessage(remainingPastedContents);
       const submission: ComposerSubmission = retry ?? {
         conversationId: props.session.conversationId,
         clientMessageId,
         draftRestoreValue,
         pastedContents: activePastedContents,
-        value,
+        value: expandedValue,
         options: {
           ...(options?.automatic === true ? {} : { source: "user" as const }),
           clientMessageId,
           displayUserMessage: options?.displayUserMessage ?? value,
+          ...(expandedValue !== value ? { userPromptText: expandedValue } : {}),
         },
         inputs: attachmentsMessage === null ? [] : [attachmentsMessage],
         ready: false,
@@ -3609,10 +3741,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           rollback(): boolean;
         } | null = null;
         let submitted = false;
+        let reviewRefusal = false;
         try {
           try {
             startPendingSubmission();
-            setComposerPastedContents({});
+            if (!options?.fromQueue) setComposerPastedContents({});
             const loaded = await loadDollarSkillCommandForTurn(
               parsedCommand,
               command,
@@ -3632,6 +3765,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               ...(options?.automatic === true ? {} : { source: "user" as const }),
               clientMessageId,
               displayUserMessage: displayText,
+              ...(expandedValue !== value ? { userPromptText: expandedValue } : {}),
             };
             const admissionToken = admitPendingInputs(submission.inputs);
             admissionLease = {
@@ -3646,12 +3780,17 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                   true,
             };
             submission.ready = true;
-            await submitToSession(submission.value, submission.options);
-            submitted = true;
+            try {
+              await submitToSession(submission.value, submission.options);
+              submitted = true;
+            } catch (error) {
+              reviewRefusal = isEffectReviewRequired(error);
+              throw error;
+            }
           } finally {
             if (submitted) {
               admissionLease?.commit();
-            } else if (admissionLease === null || admissionLease.rollback()) {
+            } else if ((admissionLease === null || admissionLease.rollback()) && !reviewRefusal) {
               restoreComposerDraft({
                 input: draftRestoreValue,
                 pastedContents: activePastedContents,
@@ -3660,6 +3799,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             }
           }
         } catch (error) {
+          if (reviewRefusal) {
+            noteReviewRefusal(error);
+            enqueue({ value, preExpansionValue: value, mode: "prompt", queueOwner: commandQueueOwner,
+              ...(hasAttachments ? { pastedContents: snapshotQueuedPastedContents(activePastedContents) } : {}),
+            });
+            setPendingEcho(null);
+            return;
+          }
           const message = error instanceof Error ? error.message : String(error);
           showTransientResult(message, { display: "error" });
           addNotification({
@@ -3710,7 +3857,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               args: parsedSlashCommand.argsRaw,
             },
             slashPromptCommand,
-            text_0,
+            historyDisplay,
           );
           return;
         }
@@ -3756,6 +3903,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               return {
                 forwardedToModel: false,
               };
+            if (!options?.fromQueue && commandName === "clear" && result.kind === "text") {
+              setComposerPastedContents({});
+              retrySubmissionRef.current = null;
+              // A clear is an authoritative draft reset, even when the
+              // input was already empty and React batches the updates.
+              setDraftRestoreRevision((revision) => revision + 1);
+            }
             if (result.kind === "exit") {
               // /exit (and its `/quit` alias) returns kind:"exit" after
               // calling session.shutdown(). The TUI needs to unmount
@@ -3801,6 +3955,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             showTransientResult(display, {
               display: result.kind === "error" ? "error" : undefined,
               persistent: [
+                "compact",
                 "login",
                 "logout",
                 "grok-login",
@@ -3840,12 +3995,30 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         }
       }
       if (parsedDollarSkill !== null) {
+        let invocationCommands = commands;
+        // An edit can precede the file watcher's debounce. Refresh only for
+        // explicit skill use, with this session's captured discovery authority.
+        // A pending/failed config generation remains unavailable as before.
+        if (dynamicCommandSource.pluginStorageRoot !== undefined &&
+            dynamicCommandSnapshot.source === dynamicCommandSource &&
+            dynamicCommandSnapshot.status === "ready") {
+          startPendingSubmission();
+          dynamicCommandSource.skillsManager?.clearSkillCaches?.();
+          const refreshed = await getCommands(dynamicCommandSource.cwd, {
+            pluginStorageRoot: dynamicCommandSource.pluginStorageRoot,
+            skillsManager: dynamicCommandSource.skillsManager,
+          }, dynamicCommandSource.config);
+          const visible = refreshed.filter(command => command.userInvocable !== false &&
+            command.isHidden !== true && isCommandEnabled(command));
+          setDynamicCommandSnapshot({ source: dynamicCommandSource, status: "ready", commands: visible });
+          invocationCommands = [...builtinTuiCommands, ...visible];
+        }
         const command = findCommand(
           parsedDollarSkill.commandName,
-          commands as unknown as Command[],
+          invocationCommands as unknown as Command[],
         );
         if (isDollarSkillCommand(command)) {
-          await submitPromptCommand(parsedDollarSkill, command, text_0);
+          await submitPromptCommand(parsedDollarSkill, command, historyDisplay);
           return;
         }
         if (command?.type === "local") {
@@ -3879,9 +4052,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           attachmentAdmissionToken = admitPendingInputs(submission.inputs);
           attachmentAdmitted = true;
         }
-        setComposerPastedContents({});
-        // Pass `value` as displayUserMessage so the daemon emits the
-        // user-message transcript event with the user's raw typed text,
+        if (!options?.fromQueue) setComposerPastedContents({});
+        // Keep the compact value as displayUserMessage so the daemon emits
+        // the user-message transcript event with the user's composer text,
         // not the model-facing expanded payload. Without this the
         // transcript can show the post-expansion envelope instead of
         // the original input. Pairs with the daemon-hook change in
@@ -3894,6 +4067,17 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         }
         if (retry !== null && pendingSubmissionIdRef.current === clientMessageId) setPendingSubmission(false);
       } catch (err_1) {
+        if (isEffectReviewRequired(err_1)) {
+          noteReviewRefusal(err_1);
+          if (attachmentAdmissionToken !== null) props.session.rollbackIdleInputAdmission?.(attachmentAdmissionToken);
+          enqueue({ value, preExpansionValue: value, mode: "prompt", queueOwner: commandQueueOwner,
+            ...(hasAttachments ? { pastedContents: snapshotQueuedPastedContents(activePastedContents) } : {}),
+          });
+          if (!options?.fromQueue) { setComposerInput(""); setComposerPastedContents({}); }
+          setPendingEcho(null);
+          if (pendingSubmissionIdRef.current === clientMessageId) setPendingSubmission(false);
+          return;
+        }
         // Same defense as submitPromptToModel above: a daemon JSON-RPC
         // error response (e.g. "AgenC daemon agent not running:
         // <agentId>") rejects the pending request, which turns into an
@@ -3905,11 +4089,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           err_1 instanceof Error ? err_1.message : String(err_1);
         showTransientResult(message_0, {
           display: "error",
+          // Keep a rejected submission actionable until the next user action.
+          // Its restored composer draft can otherwise look like a silent no-op.
+          persistent: true,
         });
-        // The transient box auto-clears after 3s and is skipped entirely
-        // while a local-JSX overlay is pinned, so a failed submit used to
-        // look like the composer silently ate the prompt. The footer
-        // notification lane renders regardless of overlays.
+        // Also report through the footer lane when a local JSX overlay
+        // owns the main tool surface.
         addNotification({
           key: "prompt-submit-failed",
           text: `Submission failed: ${message_0}`,
@@ -3948,8 +4133,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       commandRegistry,
       createSlashCommandContext,
       commands,
+      builtinTuiCommands,
+      dynamicCommandSource,
+      dynamicCommandSnapshot,
       runLocalControlCommand,
       submitToSession,
+      noteReviewRefusal,
       setComposerInput,
       setComposerPastedContents,
       restoreComposerDraft,
@@ -4073,6 +4262,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     submit,
     runQueuedBashCommand,
     commandQueueOwner,
+    queueDrainTick,
   ]);
   // Start the cron scheduler on session mount so durable scheduled tasks
   // restored from disk actually fire (CronCreate starts it when a task is made
@@ -4126,6 +4316,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     }
   }, [isLoading]);
   const handleTurnCancel = useCallback(() => {
+    if (isCompacting) {
+      // Manual compaction owns a cancellable daemon RPC, not a model turn.
+      requestTuiSessionTurnCancel(props.session);
+      return;
+    }
+    // The checkpoint is waiting before admission, so Escape is its Stop
+    // choice. Resolve and dismiss the card locally instead of interrupting
+    // the daemon and leaving its pending question mounted.
+    if (elicitation.pending?.kind === "user" &&
+        elicitation.pending.request.callId.startsWith("task-budget-checkpoint-")) {
+      elicitation.submit("Stop here");
+      return;
+    }
     // Fire the local signal first so cooperative command contexts see the
     // interruption, then ask the daemon to interrupt the active turn. Errors
     // from the RPC are swallowed inside cancelActiveTurn — pressing ESC must
@@ -4166,7 +4369,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     setPendingSubmission(false);
     activeModelSubmissionTokensRef.current.clear();
     setActiveModelSubmissionCount(0);
-  }, [isLoading, turnAbortController, props.session]);
+  }, [isLoading, isCompacting, turnAbortController, props.session, elicitation.pending, elicitation.submit]);
   const handleAgentsKilled = useCallback(
     (agents: readonly KilledAgentSummary[]) => {
       const text = formatAgentsKilledNotification(agents);
@@ -4184,6 +4387,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     mcpClients,
     mcpServers: mcpSurface.servers,
   });
+  useStartupNotices();
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating =
     transcript.isStreaming &&
@@ -4191,7 +4395,27 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     elicitation.prompt === null &&
     toolJSX === null &&
     !onboarding.active;
+  useStartupUpdate({
+    configStore: getTuiConfigStore(props.session),
+    safe: !effectiveInputBusy && input.length === 0 && Object.keys(pastedContents).length === 0 &&
+      toolJSX === null && permissionRequests.length === 0 && elicitation.prompt === null &&
+      !onboarding.active && !showCostDialog && !isMessageSelectorVisible,
+    setToolJSX,
+  });
   const isLocalJSXCommandActive = toolJSX?.isLocalJSXCommand === true;
+  const localCommandPopupRef = useRef(toolJSX);
+  localCommandPopupRef.current = toolJSX;
+  useInputCapture((value, key) => {
+    const popup = localCommandPopupRef.current;
+    if (value !== "c" || !key.ctrl || popup?.isLocalJSXCommand !== true ||
+      popup.shouldHidePromptInput !== true) return false;
+    localCommandPopupRef.current = null;
+    clearSharedDoublePressState("app:interrupt");
+    // Same close action as the local-command bridge. Capture it before
+    // any embedded input or composer can interpret this as editing or exit.
+    setToolJSX({ jsx: null, shouldHidePromptInput: false, clearLocalJSX: true });
+    return true;
+  }, { context: "Chat", isActive: isLocalJSXCommandActive });
   useEffect(() => {
     if (haveShownCostDialog || showCostDialog) return;
     if (getTotalCost() < 5) return;
@@ -4224,6 +4448,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [],
   );
   const handleCompactProgress = useCallback((event: unknown) => {
+    const activity = readCompactionProgress(event);
+    if (activity !== null) {
+      setCompactActivity(previous => previous !== null && previous.startedAtMs > activity.startedAtMs ? previous : activity);
+      if (activity.phase === "prepare" || activity.phase === "complete") {
+        void props.session.getDaemonSessionSnapshot?.().then(observeDaemonSnapshot).catch(error => logError(error));
+      }
+      return;
+    }
     if (!isCompactProgressEvent(event)) return;
     if (event.type === "hooks_start") {
       setCompactProgress({
@@ -4246,7 +4478,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       label: null,
       responseLength: 0,
     });
-  }, []);
+  }, [props.session, observeDaemonSnapshot]);
+  useEffect(() => {
+    setCompactActivity(null);
+    const stopLog = props.session.eventLog?.subscribe(handleCompactProgress);
+    const stopEvents = props.session.subscribeToEvents?.(handleCompactProgress);
+    const stopCompact = props.session.subscribeToCompactProgress?.(handleCompactProgress);
+    return () => { stopLog?.(); stopEvents?.(); stopCompact?.(); };
+  }, [props.session, handleCompactProgress]);
   useEffect(
     () =>
       installCompactProgressControls(props.session, {
@@ -4288,10 +4527,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           "Conversation rewind is not supported by this session.",
         );
       }
-      const selectableMessages = (transcript.messages as any[]).filter(
-        selectableUserMessagesFilter as any,
-      );
-      const messageOrdinal = selectableMessages.indexOf(message_1);
+      const messageOrdinal = selectableMessageOrdinal(transcript.messages as any[], message_1);
       if (messageOrdinal === -1) {
         throw new Error("The selected message is no longer available.");
       }
@@ -4316,10 +4552,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const resolveSelectableMessageOrdinal = useCallback(
     (message: any): number => {
-      const selectableMessages = (transcript.messages as any[]).filter(
-        selectableUserMessagesFilter as any,
-      );
-      return selectableMessages.indexOf(message);
+      return selectableMessageOrdinal(transcript.messages as any[], message);
     },
     [transcript.messages],
   );
@@ -4330,11 +4563,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // only works for sessions whose tools ran inside the TUI process.
       if (props.session.rewindFilesToMessage !== undefined) {
         const messageOrdinal = resolveSelectableMessageOrdinal(message_2);
-        if (messageOrdinal === -1) {
+        const userMessageId = message_2.canonicalUserMessageId;
+        if (messageOrdinal === -1 && typeof userMessageId !== "string") {
           throw new Error("The selected message is no longer available.");
         }
         const result = await props.session.rewindFilesToMessage({
-          messageOrdinal,
+          messageOrdinal: Math.max(0, messageOrdinal),
+          ...(typeof userMessageId === "string" ? { userMessageId } : {}),
         });
         if (!result.ok) {
           throw new Error(result.message ?? "Failed to restore files.");
@@ -4354,12 +4589,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     async (message_p: any) => {
       if (props.session.previewFileRewind === undefined) return undefined;
       const messageOrdinal = resolveSelectableMessageOrdinal(message_p);
-      if (messageOrdinal === -1) return undefined;
+      const userMessageId = message_p.canonicalUserMessageId;
+      if (messageOrdinal === -1 && typeof userMessageId !== "string") return undefined;
       try {
         const result = await props.session.previewFileRewind({
-          messageOrdinal,
+          messageOrdinal: Math.max(0, messageOrdinal),
+          ...(typeof userMessageId === "string" ? { userMessageId } : {}),
         });
-        if (!result.ok || result.canRestoreFiles !== true) return undefined;
+        if (!result.ok) throw new Error(result.message ?? "Code checkpoint is unavailable.");
+        if (result.checkpointAvailable === false) return undefined;
         return {
           filesChanged: [...(result.filesChanged ?? [])],
           insertions: result.insertions ?? 0,
@@ -4386,10 +4624,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           "Conversation summarization is not supported by this session.",
         );
       }
-      const selectableMessages_0 = (transcript.messages as any[]).filter(
-        selectableUserMessagesFilter as any,
-      );
-      const messageOrdinal_0 = selectableMessages_0.indexOf(message_3);
+      const messageOrdinal_0 = selectableMessageOrdinal(transcript.messages as any[], message_3);
       if (messageOrdinal_0 === -1) {
         throw new Error("The selected message is no longer available.");
       }
@@ -4466,6 +4701,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const performAppExit = useCallback(
     (intent: AppExitIntent) => {
+      saveComposerDraftBeforeExit();
       if (getCurrentWorktreeSession() !== null) {
         setExitFlow(
           <ExitFlow
@@ -4498,7 +4734,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       stagePendingResumeForExit(intent);
       exit();
     },
-    [exit, stagePendingResumeForExit],
+    [exit, stagePendingResumeForExit, saveComposerDraftBeforeExit],
   );
   const requestSafeAppExit = useCallback(
     (resumeSessionId?: string) => {
@@ -4570,13 +4806,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             ? "thinking"
             : "requesting";
   const cancelStreamMode = visibleCancelStreamMode(showSpinner, streamMode);
-  const spinnerElement = showSpinner ? (
+  const spinnerElement = isCompacting ? <CompactingStatus progress={compactActivity} /> : showSpinner ? (
     <SpinnerWithVerb
       mode={streamMode}
       loadingStartTimeRef={loadingStartTimeRef}
       totalPausedMsRef={totalPausedMsRef}
       pauseStartTimeRef={pauseStartTimeRef}
       responseLengthRef={responseLengthRef}
+      streamQuietWarning={transcript.streamQuietWarning}
       verbose={false}
       providerAuthContext={remoteAuthSessionContext}
       hasActiveTools={hasActiveToolActivity}
@@ -4624,6 +4861,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             onAutoUpdaterResult={() => {}}
             autoUpdaterResult={null}
             input={input}
+            composerCursorRef={composerCursorRef}
             onInputChange={changeOnboardingInput}
             mode={mode}
             onModeChange={setMode}
@@ -4741,7 +4979,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           {row}
         </Text>
       ))}
-      {compactProgress.status !== "idle" ? (
+      {compactProgress.status !== "idle" && compactActivity === null ? (
         <Box flexDirection="row" width="100%">
           <Text dimColor>
             {compactProgress.label ?? "Compacting conversation"}
@@ -4751,7 +4989,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           ) : null}
         </Box>
       ) : null}
-      {renderHealthWarning !== null ? (
+      {screen === "transcript" && renderHealthWarning !== null ? (
         <Text color="warning" wrap="truncate">
           {renderHealthWarning}
         </Text>
@@ -4785,6 +5023,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           request={permissionRequests[0]}
           tools={permissionToolDescriptors}
           mcpClients={mcpClients as any}
+          composerDraft={{ text: input, onInput: preserveApprovalDraftInput }}
         />
       </>
     ) : elicitation.prompt !== null ? (
@@ -4828,6 +5067,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onAutoUpdaterResult={() => {}}
       autoUpdaterResult={null}
       input={input}
+      composerCursorRef={composerCursorRef}
       onInputChange={changeComposerInput}
       mode={mode}
       onModeChange={setMode}
@@ -4857,16 +5097,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         if (isLocalJSXCommandActive) {
           return;
         }
+        const expandedInput = expandPastedTextRefs(
+          value_1, submitOptions?.pastedContentsOverride ?? pastedContents,
+        );
         if (
-          await executeRealtimeComposerCommand(props.session.realtime, value_1)
+          await executeRealtimeComposerCommand(props.session.realtime, expandedInput)
         ) {
+          setComposerPastedContents({});
           helpers_0.clearBuffer();
           helpers_0.resetHistory();
           helpers_0.setCursorOffset(0);
           return;
         }
         await submitViaElicitationPrompt(
-          elicitation,
+          { submit: () => elicitation.submit(expandedInput) },
           submit,
           value_1,
           helpers_0,
@@ -4909,7 +5153,21 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           {selectorNotice}
         </Text>
       ) : null}
+      {reviewNeeded && pendingEffectReviews[0]!.callId.length > 0 && props.session.resolveDaemonToolCall !== undefined ? (
+        <EffectReviewCard key={`${pendingEffectReviews[0]!.sessionId ?? ""}:${pendingEffectReviews[0]!.callId}`}
+          review={pendingEffectReviews[0]!}
+          resolve={props.session.resolveDaemonToolCall}
+          active={input.length === 0 && permissionRequests.length === 0 && elicitation.prompt === null && !isMessageSelectorVisible && !toolOwnsPrompt}
+        />
+      ) : null}
+      {reviewBlocksPrompt && fullscreen && queuedCommands.length > 0 ? (
+        <Text dimColor wrap="truncate">
+          {queuedCommands.length} queued · {queuedCommandInputText(queuedCommands[queuedCommands.length - 1]!)}
+        </Text>
+      ) : null}
+      {showPromptInput ? <GitStatusChrome session={props.session} events={liveSessionEvents} /> : null}
       {promptInputElement}
+      {reviewBlocksPrompt ? <Text color="warning">review needed · prompts wait for tool outcome review</Text> : null}
     </Box>
   );
 
@@ -4920,10 +5178,27 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // breaks the flex chain — the inner Box collapses to its intrinsic content
   // size and the bottom slot has 0 height. KeybindingSetup must remain a
   // context provider, not a Box.
+  const messageSelectorElement = isMessageSelectorVisible ? (
+        <MessageSelector
+          messages={transcript.messages as any[]}
+          onPreRestore={() => {}}
+          onRestoreMessage={handleRestoreMessage}
+          onRestoreCode={handleRestoreCode}
+          onPreviewRewind={handlePreviewRewind}
+          onSummarize={handleSummarize}
+          onClose={handleCloseMessageSelector}
+        />
+      ) : null;
   const body = (
     <StatusLineExecutionContext value={props.session.executeDaemonStatusLine}>
     <SessionUsageContext value={transcript.sessionUsage ?? null}>
     <StatusEffortContext value={statusEffortLabel}>
+    <StatusContextUsageContext value={contextUsagePercent}>
+    <StatusPromptCacheContext value={transcript.promptCacheShare}>
+    <StatusOffPeakContext value={statusOffPeakSchedule}>
+    <StatusZdrContext value={statusZdr}>
+    <StatusWebSearchContext value={resolveWebSearchMode(remoteAuthSessionContext.environment, config.web_search) === "on"}>
+    <StatusTurnBusyContext value={isLoading || shellAbortController !== null}>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers
         screen={screen as any}
@@ -4934,7 +5209,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       />
       <ScrollKeybindingHandler
         scrollRef={modalToolJSX !== null ? modalScrollRef : scrollRef}
-        isActive={fullscreen && permissionRequests.length === 0}
+        isActive={fullscreen && permissionRequests.length === 0 && !isMessageSelectorVisible}
         isModal={modalToolJSX !== null}
       />
       <CancelRequestHandler
@@ -4956,10 +5231,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             : {})}
         isSearchingHistory={isSearchingHistory}
         isHelpOpen={helpOpen}
+        isLocalJSXCommand={isLocalJSXCommandActive}
         inputMode={mode as never}
         inputValue={input}
         streamMode={cancelStreamMode as never}
-        canCancelActiveTurn={isLoading || shellAbortController !== null}
+        canCancelActiveTurn={isLoading || isCompacting || shellAbortController !== null}
         queueOwner={commandQueueOwner}
       />
       <FullscreenLayout
@@ -4968,11 +5244,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         bottom={bottomContent}
         overlay={overlayContent ?? undefined}
         modal={
-          modalToolJSX !== null ? (
+          messageSelectorElement ?? (modalToolJSX !== null ? (
             <Box flexDirection="column" width="100%">
               {modalToolJSX}
             </Box>
-          ) : undefined
+          ) : undefined)
         }
         modalScrollRef={modalScrollRef}
       />
@@ -4981,17 +5257,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       ) : null}
       <LedgerVerificationOverlay />
       {exitFlow}
-      {isMessageSelectorVisible ? (
-        <MessageSelector
-          messages={transcript.messages as any[]}
-          onPreRestore={() => {}}
-          onRestoreMessage={handleRestoreMessage}
-          onRestoreCode={handleRestoreCode}
-          onPreviewRewind={handlePreviewRewind}
-          onSummarize={handleSummarize}
-          onClose={handleCloseMessageSelector}
-        />
-      ) : null}
+
+    </StatusTurnBusyContext>
+    </StatusWebSearchContext>
+    </StatusZdrContext>
+    </StatusOffPeakContext>
+    </StatusPromptCacheContext>
+    </StatusContextUsageContext>
     </StatusEffortContext>
     </SessionUsageContext>
     </StatusLineExecutionContext>

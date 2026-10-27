@@ -1,3 +1,4 @@
+import { requiresAtomicSpendAdmission } from "../../src/one-shot-fast-mode.js";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,4 +95,13 @@ test.each(["reported", "unknown", "provider-failure", "dispatch-failure", "late-
  } else if (scenario === "unknown" || scenario === "provider-failure") {
   expect(fast.unknown).toHaveLength(1);
  } else expect(fast.voided).toHaveLength(1);
+});
+
+// Call-only limits must use the same durable reservation path as token limits.
+test("call-only task allocations require atomic admission in fast mode", () => {
+ const { session } = mkSession();
+ const admission = createAllowAdmissionHarness();
+ Object.assign(admission.admission.scope, { maxModelCalls: 1 });
+ Object.assign(session.services, { executionAdmission: admission.admission });
+ expect(requiresAtomicSpendAdmission(session)).toBe(true);
 });

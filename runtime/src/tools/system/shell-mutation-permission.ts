@@ -1,3 +1,4 @@
+import { remoteControlAuthorityPaths } from "../../sandbox/remote-control-protection.js";
 import { resolve } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
 import {
@@ -32,6 +33,7 @@ const PROMPT_FREE_APPROVAL_POLICIES: ReadonlySet<
 
 export interface ShellWorkspaceMutationPermission {
   readonly allowWorkspaceDeletions: boolean;
+  readonly allowWorkspaceWrites: boolean;
   readonly protectedRoots: readonly string[];
   /** Directories the user added with `--add-dir` or approved during the session. */
   readonly additionalRoots: readonly string[];
@@ -223,6 +225,7 @@ export function shellDeletionProtectedRoots(
     // A refused or unresolvable ambient home contributes nothing; the session
     // root above still stands.
   }
+  for (const root of remoteControlAuthorityPaths()) roots.add(root);
   return [...roots];
 }
 
@@ -237,6 +240,7 @@ export function shellWorkspaceMutationPermission(
   const context = readToolRuntimeContext(args);
   return {
     allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
+    allowWorkspaceWrites: shellWorkspaceDeletionsAllowed(context),
     protectedRoots: shellDeletionProtectedRoots(context),
     additionalRoots: shellAdditionalWriteRoots(context),
     bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
@@ -253,6 +257,7 @@ export function deferredShellWorkspaceMutationPermission(
   const context = readToolRuntimeContext(args);
   return {
     allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
+    allowWorkspaceWrites: shellWorkspaceDeletionsAllowed(context),
     resolveProtectedRoots: () => shellDeletionProtectedRoots(context),
     additionalRoots: shellAdditionalWriteRoots(context),
     bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),

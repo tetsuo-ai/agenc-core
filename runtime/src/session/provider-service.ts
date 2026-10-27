@@ -23,7 +23,7 @@ import {
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderRegionalEndpoint,
 } from "../llm/registry/provider-info.js";
-import { resolveProviderBaseURLEnvironment } from "../llm/registry/provider-ingress.js";
+import { canonicalProviderApiKeyEnvVar, resolveProviderBaseURLEnvironment } from "../llm/registry/provider-ingress.js";
 import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import { createPinnedProviderFetch } from "../llm/credential-redirect-fetch.js";
 import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
@@ -51,7 +51,6 @@ export interface ProviderBinding {
 export interface PreparedProviderBinding {
   readonly binding: ProviderBinding;
   readonly expectedRevision: number;
-  readonly managedDefaultOutputCap: boolean;
   readonly billingSource?: "byok" | "sign_in" | "managed" | "local";
   readonly authProfile?: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
   readonly signInModelCapabilities?: SignInChildModelCapabilities;
@@ -65,9 +64,6 @@ export interface ApprovedChildAuthority {
 
 export interface ProviderPreparationRuntime {
   readonly signal?: AbortSignal;
-  readonly managedKeysEnabled?: boolean;
-  readonly freeManagedCredential?: boolean;
-  readonly applyManagedDefaultOutputCap?: boolean;
 }
 
 export interface ProviderPreparationRequest {
@@ -207,7 +203,8 @@ export function bindingFromProvider(params: {
  * allowing two concurrent switch attempts to overwrite one another.
  */
 export class SessionProviderService {
-  readonly #environment: ProviderEnvironment;
+  #environment: ProviderEnvironment;
+  readonly #sessionApiKeys = new Map<string, string>();
   readonly #credentialHome: ProviderFactoryOptions["credentialHome"];
   readonly #readSavedApiKey: ReadSavedProviderApiKey | undefined;
   readonly #authBackend: AuthBackend | undefined;
@@ -263,6 +260,34 @@ export class SessionProviderService {
 
   environment(): ProviderEnvironment {
     return this.#environment;
+  }
+
+  /** Explicit user ingress. Memory only; never changes process or shell environment. */
+  async useSessionApiKey(provider: string, apiKey: string): Promise<void> {
+    const slug = resolveBuiltInProviderSlug(provider);
+    const envVar = slug === undefined ? undefined : canonicalProviderApiKeyEnvVar(slug);
+    if (envVar === undefined || !apiKey.trim() || /\s/u.test(apiKey)) {
+      throw new Error("A provider API key must be a single non-empty token.");
+    }
+    const previousEnvironment = this.#environment;
+    const previousKey = this.#sessionApiKeys.get(provider);
+    this.#sessionApiKeys.set(provider, apiKey);
+    this.#environment = snapshotProviderEnvironment({
+      ...previousEnvironment,
+      [envVar]: apiKey,
+    });
+    try {
+      if (this.#binding.provider === provider) {
+        const prepared = await this.prepare({ provider, model: this.#binding.model });
+        this.commit(prepared);
+      }
+    } catch {
+      this.#environment = previousEnvironment;
+      if (previousKey === undefined) this.#sessionApiKeys.delete(provider);
+      else this.#sessionApiKeys.set(provider, previousKey);
+      // Provider exceptions can contain credential material. Do not echo them.
+      throw new Error("Could not activate the key in this session. Try again when the session is idle.");
+    }
   }
 
   /** Give a child an independent binding with the same captured authority sources. */
@@ -348,10 +373,6 @@ export class SessionProviderService {
       ...(this.#authBackend !== undefined ? { authBackend: this.#authBackend } : {}),
       ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
       ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
-      ...(preparation.runtime?.managedKeysEnabled !== undefined
-        ? { managedKeysEnabled: preparation.runtime.managedKeysEnabled } : {}),
-      ...(preparation.runtime?.freeManagedCredential !== undefined
-        ? { freeManagedCredential: preparation.runtime.freeManagedCredential } : {}),
     });
     if (requireConnected) requireProviderRuntimeCredential(provider, authority);
     const authProfile = authority.managedCredential ? "managed" as const
@@ -405,21 +426,6 @@ export class SessionProviderService {
     return this.#prepare(selection, requested, runtime, false);
   }
 
-  async resolveManagedChildDestination(model: string): Promise<ProviderSelection> {
-    if (this.#authBackend === undefined || this.#sessionId === undefined) {
-      throw new Error("AgenC managed child needs an authenticated session");
-    }
-    const inferred = await this.#authBackend.inferAgencModel({
-      provider: "agenc", requestedModel: model, sessionId: this.#sessionId,
-      ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
-    });
-    const provider = resolveBuiltInProviderSlug(inferred.provider);
-    if (provider === undefined || provider === "agenc" || !inferred.model?.trim()) {
-      throw new Error("AgenC managed child resolved an invalid concrete destination");
-    }
-    return Object.freeze({ provider, model: inferred.model.trim() });
-  }
-
   /** Prepare a child, pinning durable cross-provider children to the registry endpoint. */
   async prepareChild(
     selection: ProviderSelection,
@@ -459,8 +465,9 @@ export class SessionProviderService {
         `${provider} provider switch has no canonical preparation request`,
       );
     }
-    const requestedOptions = preparation.requested;
-    const runtimeOptions = preparation.runtime ?? {};
+    const sessionApiKey = this.#sessionApiKeys.get(provider);
+    const requestedOptions = sessionApiKey === undefined ? preparation.requested
+      : { ...preparation.requested, apiKey: sessionApiKey };
     const canonicalEndpointRequired = this.#crossProviderProvenance ||
       (child && (crossProviderProvenance || provider !== this.#binding.provider));
     if (child && canonicalEndpointRequired && provider === "agenc" &&
@@ -546,12 +553,6 @@ export class SessionProviderService {
       ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
       ...(this.#subscriptionTier !== undefined
         ? { subscriptionTier: this.#subscriptionTier }
-        : {}),
-      ...(runtimeOptions.managedKeysEnabled !== undefined
-        ? { managedKeysEnabled: runtimeOptions.managedKeysEnabled }
-        : {}),
-      ...(runtimeOptions.freeManagedCredential !== undefined
-        ? { freeManagedCredential: runtimeOptions.freeManagedCredential }
         : {}),
     };
     // Resolve once from local state. Reuse this choice for live preparation so
@@ -715,9 +716,6 @@ export class SessionProviderService {
       authProfile,
       ...(signInModelCapabilities !== undefined ? { signInModelCapabilities } : {}),
       billingSource,
-      managedDefaultOutputCap:
-        authority.managedCredential &&
-        runtimeOptions.applyManagedDefaultOutputCap === true,
       binding,
     });
   }

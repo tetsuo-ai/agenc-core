@@ -67,11 +67,16 @@ describe("Claude Haiku 5.5", () => {
       inputModalities: ["text", "image"], defaultReasoningLevel: "medium", additionalSpeedTiers: [] });
     expect([...row!.supportedReasoningLevels].sort()).toEqual([...levels].sort());
   });
-  it("does not advertise deferred Bedrock or OpenRouter support", () => {
+  it("does not advertise deferred Bedrock support", () => {
     for (const id of [`anthropic.${model}`, `global.anthropic.${model}`, `us.anthropic.${model}`]) {
       expect(resolveRegisteredModelCatalogEntry({ provider: "amazon-bedrock", model: id })).toBeUndefined();
     }
-    expect(resolveRegisteredModelCatalogEntry({ provider: "openrouter", model: "anthropic/claude-haiku-5.5" })).toBeUndefined();
+  });
+  it("lists OpenRouter's route from OpenRouter's own model list", () => {
+    // OpenRouter lists anthropic/claude-haiku-5.5 (live list 2026-10-20); a TUI
+    // session through it passed vision, coding and tools (jobs/pv G-or-haiku55).
+    expect(resolveRegisteredModelCatalogEntry({ provider: "openrouter", model: "anthropic/claude-haiku-5.5" }))
+      .toMatchObject({ provider: "openrouter", model: "anthropic/claude-haiku-5.5" });
   });
   it("exposes the registered limits and efforts to the model picker", async () => {
     const manager = new StaticModelsManager({ config: defaultConfig(), fallbackProvider: "anthropic" });

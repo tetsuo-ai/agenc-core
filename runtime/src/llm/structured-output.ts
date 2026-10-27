@@ -22,6 +22,10 @@ import type {
 import { isRecord } from "../utils/record.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
+import {
+  isRegisteredMetaChatModel,
+  metaModelUsesResponsesApi,
+} from "./registry/meta-models.js";
 
 export const ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME = "agenc_structured_output";
 
@@ -115,15 +119,6 @@ export function supportsAnthropicStructuredOutputToolUse(
   return typeof model === "string" && model.trim().length > 0;
 }
 
-function supportsMetaStructuredOutputs(model: string | undefined): boolean {
-  if (typeof model !== "string") return false;
-  const normalized = model.trim();
-  return (
-    /(?:^|[/:])muse-spark-(?:1\.3(?:-contributor)?|1\.2(?:-contributor)?|1\.1)$/i
-      .test(normalized)
-  );
-}
-
 export function resolveProviderStructuredOutputMode(input: {
   readonly provider: string | undefined;
   readonly model: string | undefined;
@@ -145,13 +140,13 @@ export function resolveProviderStructuredOutputMode(input: {
       : "native_text_format";
   }
   if (provider === "meta") {
-    if (
-      input.api !== "chat_completions" ||
-      !supportsMetaStructuredOutputs(input.model)
-    ) {
-      return "unsupported";
-    }
-    return "chat_response_format";
+    if (!isRegisteredMetaChatModel(input.model)) return "unsupported";
+    // Muse Wonder runs on Responses (`text.format`); Muse Spark on Chat
+    // Completions (`response_format`). https://dev.meta.ai/docs/structured-output
+    const responses = metaModelUsesResponsesApi(input.model);
+    if (responses && input.api === "responses") return "native_text_format";
+    if (!responses && input.api === "chat_completions") return "chat_response_format";
+    return "unsupported";
   }
   if (provider === "cerebras") {
     if (

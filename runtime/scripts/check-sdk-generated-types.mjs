@@ -63,6 +63,7 @@ export function parseSdkGeneratedTypesMode(args) {
 }
 
 const transcriptV2InterfaceNames = [
+  "PendingEffectReview",
   "SessionTranscriptV2Message",
   "SessionTranscriptV2ActiveTurn",
   "SessionTranscriptV2TurnResult",

@@ -611,7 +611,7 @@ static int visit_direct_children(direct_child_action action,
     return AGENC_BROKER_FAILURE;
   }
   for (;;) {
-    pid_t child_pid;
+    pid_t child_pid = 0;
     int read_result = read_direct_child(stream, &child_pid);
 
     if (read_result == AGENC_BROKER_CHILD_READ_END) {
@@ -1031,7 +1031,10 @@ static int read_owned_payload(struct launch_payload *payload, int *snapshot_fd,
     size_t offset = 0;
     while (offset < data_length) {
       if (v2_owner_alive() != 0) goto failure;
-      ssize_t n = pread(5, verified + offset, data_length - offset, (off_t)offset);
+      size_t remaining = data_length - offset;
+      /* Keep the validated payload bound explicit for fortified pread. */
+      if (remaining > sizeof(verified)) goto failure;
+      ssize_t n = pread(5, verified + offset, remaining, (off_t)offset);
       if (n < 0 && errno == EINTR) continue;
       if (n <= 0) goto failure;
       offset += (size_t)n;

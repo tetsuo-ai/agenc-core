@@ -30,10 +30,12 @@ export default async function (session) {
   session.send("q");
   await session.waitForIdle({ timeout: 15_000 });
   await session.type("/");
-  await session.waitFor(/SLASH COMMANDS/u, {
-    timeout: 10_000,
-    label: "slash menu after closing /diff",
-  });
+  await waitForFrameText(
+    session,
+    /›\s+\/[a-z]/u,
+    "slash list after closing /diff",
+    10_000,
+  );
   session.sendEscape();
   session.send("\x7f");
 }

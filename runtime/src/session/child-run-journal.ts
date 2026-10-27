@@ -6,6 +6,7 @@ import { bindExecutionAdmissionJournal } from "./execution-admission-journal.js"
 import type { SubagentTurnOutcomeEvent } from "./event-log.js";
 import { RolloutStore } from "./rollout-store.js";
 import type { Session } from "./session.js";
+import { watchChildEffectReviews } from "./child-effect-reviews.js";
 
 export interface MountChildRunJournalOptions {
   readonly parent: Session;
@@ -227,6 +228,7 @@ export function mountChildRunJournal(
 
   try {
     child.mountRolloutStore(store);
+    child.onBeforeDurableClose(watchChildEffectReviews(parent, child));
     child.eventLog.seedCanonicalHistory(
       store
         .readAll()

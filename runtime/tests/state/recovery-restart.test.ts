@@ -322,7 +322,7 @@ describe("recoverDaemonStateOnStartup", () => {
     });
   });
 
-  it("keeps a canonically projected run listable when live cwd authority is unavailable", () => {
+  it("keeps a canonically projected run listable when live cwd authority is unavailable", async () => {
     const runId = "run-runtime-cwd-unavailable";
     insertAgentRun({
       id: runId,
@@ -346,7 +346,12 @@ describe("recoverDaemonStateOnStartup", () => {
     expect(report.recoveredRuns).toEqual([
       expect.objectContaining({ id: runId, status: "running" }),
     ]);
-    expect(report.recoveredRuns[0]?.resumeSource).toBeUndefined();
+    const source = report.recoveredRuns[0]?.resumeSource;
+    expect(source).toBeDefined();
+    await expect(source!.prepareCwd()).rejects.toThrow(
+      process.platform === "darwin" ? "startup workspace open probe failed" : "ENOENT",
+    );
+    source!.close();
     expect(projectedRolloutRows(rolloutPath)).toBe(1);
     expect(agentRunStatus(runId)).toBe("running");
     expect(resumeBudget.retainedSources).toBe(0);
@@ -803,7 +808,7 @@ describe("recoverDaemonStateOnStartup", () => {
     ).toBeUndefined();
   });
 
-  it("bounds retained startup resume descriptor pairs without hiding projected runs", () => {
+  it("bounds retained startup resume descriptor pairs without hiding projected runs", async () => {
     for (const runId of ["run-resume-budget-a", "run-resume-budget-b"]) {
       insertAgentRun({
         id: runId,
@@ -829,12 +834,13 @@ describe("recoverDaemonStateOnStartup", () => {
     expect(source).toBeDefined();
     expect(report.recoveredRuns[1]?.resumeSource).toBeUndefined();
     expect(budget.retainedSources).toBe(1);
-    expect(() => fstatSync(source!.cwdFd)).not.toThrow();
+    const proof = await source!.prepareCwd();
+    expect(() => fstatSync(proof.fd)).not.toThrow();
 
     source!.close();
     source!.close();
     expect(budget.retainedSources).toBe(0);
-    expect(() => fstatSync(source!.cwdFd)).toThrow(
+    expect(() => fstatSync(proof.fd)).toThrow(
       expect.objectContaining({ code: "EBADF" }),
     );
     expect(() => source!.rolloutLease.claim()).toThrow(/already consumed/);
@@ -872,7 +878,7 @@ describe("recoverDaemonStateOnStartup", () => {
     expect(budget.retainedSources).toBe(0);
   });
 
-  it("keeps the pinned startup cwd valid while a child changes directory nlink", () => {
+  it("keeps the pinned startup cwd valid while a child changes directory nlink", async () => {
     const runId = "run-resume-cwd-child-race";
     insertAgentRun({
       id: runId,
@@ -892,6 +898,8 @@ describe("recoverDaemonStateOnStartup", () => {
       afterStartupResumeCwdOpenForTestingOnly: mutateChild,
     });
 
+    expect(mutateChild).not.toHaveBeenCalled();
+    await report.recoveredRuns[0]?.resumeSource?.prepareCwd();
     expect(mutateChild).toHaveBeenCalledOnce();
     expect(report.recoveryExclusions).toEqual([]);
     expect(report.recoveredRuns[0]?.resumeSource?.cwd).toBe(cwd);
@@ -909,17 +917,14 @@ describe("recoverDaemonStateOnStartup", () => {
     });
     bindRunJournal(runId, writeRuntimeResumeJournal(runId));
     const budget = new StartupResumeSourceBudget(1);
-    let retainedCwdFd: number | undefined;
     let retainedLease: { claim(): number; closeUnclaimed(): void } | undefined;
     const delivered = vi.fn(
       (source: {
-        readonly cwdFd: number;
         readonly rolloutLease: {
           claim(): number;
           closeUnclaimed(): void;
         };
       }) => {
-        retainedCwdFd = source.cwdFd;
         retainedLease = source.rolloutLease;
         throw new Error("delivery failed after descriptor creation");
       },
@@ -936,10 +941,6 @@ describe("recoverDaemonStateOnStartup", () => {
       expect.objectContaining({ runId, kind: "deferred" }),
     ]);
     expect(budget.retainedSources).toBe(0);
-    expect(retainedCwdFd).toBeTypeOf("number");
-    expect(() => fstatSync(retainedCwdFd!)).toThrow(
-      expect.objectContaining({ code: "EBADF" }),
-    );
     expect(() => retainedLease!.claim()).toThrow(/already consumed/);
   });
 

@@ -1,15 +1,12 @@
 import {
   closeSync,
-  constants as fsConstants,
   existsSync,
   fstatSync,
-  lstatSync,
-  openSync,
   opendirSync,
-  realpathSync,
   statSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
+import { openStartupResumeCwd, type StartupResumeCwd } from "./startup-resume-cwd.js";
 
 import type {
   EffectBoundary,
@@ -73,8 +70,9 @@ import { cancelAgentRunTree } from "./run-cancellation.js";
 const DEFAULT_MAX_STARTUP_RUNS = 4_096;
 const DEFAULT_MAX_ROLLOUT_FILES_PER_RUN = 32;
 /**
- * Each retained startup source owns two handles until the restore loop adopts
- * or closes it: one append-capable rollout fd and one pinned cwd directory fd.
+ * Each retained startup source owns an append-capable rollout fd until the
+ * restore loop adopts or closes it. The cwd is pinned asynchronously only
+ * when that session is restored, after daemon readiness.
  * Keep the aggregate staging cost well below ordinary per-process fd limits,
  * including the descriptors temporarily needed by the strict scanner.
  */
@@ -167,12 +165,15 @@ export interface StartupRunResumeSource {
   readonly activeRuntimeSettingsEventId?: string;
   readonly legacyPermissionMode?: "plan";
   readonly rolloutLease: ResumeRolloutDescriptorLease;
-  readonly cwdIdentity: { readonly dev: string; readonly ino: string };
-  readonly cwdFd: number;
+  /** Pin workspace authority after readiness, with a per-session deadline. */
+  prepareCwd(options?: {
+    readonly signal?: AbortSignal;
+    readonly timeoutMs?: number;
+  }): Promise<StartupResumeCwd>;
   close(): void;
 }
 
-/** Shared lifetime budget for exact startup resume descriptor pairs. */
+/** Shared lifetime budget for retained rollout and eventual cwd descriptors. */
 export class StartupResumeSourceBudget {
   #retainedSources = 0;
 
@@ -222,7 +223,14 @@ export function recoverCanonicalRunJournalForRun(
   } = {},
 ): CanonicalRunJournalProjectionResult {
   const durableExclusion = getRecoveryRunExclusion(driver, runId);
-  if (durableExclusion !== undefined) {
+  // A failed SQLite projection says nothing about the canonical evidence.
+  // On-demand inspection retries it under the same strict file proof, keeping
+  // the old execution exclusion until the entire projection succeeds.
+  const retryProjection = options.strict?.projectionFailure === "throw" &&
+    durableExclusion?.kind === "deferred" &&
+    ["projection_failure", "recovery_storage_unavailable", "database_io", "database_busy", "database_unavailable"]
+      .includes(durableExclusion.reasonCode ?? "");
+  if (durableExclusion !== undefined && !retryProjection) {
     return emptyProjectionResult(durableExclusion);
   }
   const agentRun = driver
@@ -230,7 +238,6 @@ export function recoverCanonicalRunJournalForRun(
       `SELECT id, status, started_at, current_session_id
        FROM agent_runs AS runs
        WHERE id = ?
-         AND ${recoveryRunIsExecutableSql("runs.id")}
        LIMIT 1`,
     )
     .get(runId);
@@ -254,7 +261,14 @@ export function recoverCanonicalRunJournalForRun(
     return emptyProjectionResult(selection.exclusion);
   }
   const sources = selection.sources;
-  return recoverStrictRun(driver, threads, run, sources, options.strict);
+  const result = recoverStrictRun(driver, threads, run, sources, options.strict);
+  if (retryProjection && result.exclusion === undefined && result.filesScanned > 0) {
+    new StateRecoveryIncidentRepository(driver).retryDeferred({
+      blockId: durableExclusion.evidenceId!, actor: "run_inspection",
+      note: "canonical journal projection repaired after storage failure", resolvedAtMs: Date.now(),
+    }, () => {});
+  }
+  return result;
 }
 
 /** The sha256 recorded for a source that no longer exists; an operator confirms it to abandon the incident. */
@@ -393,7 +407,6 @@ function recoverableBoundRun(
               ) AS session_id
        FROM run_lifecycle_epochs AS epoch
        WHERE epoch.run_id = ?
-         AND ${recoveryRunIsExecutableSql("epoch.run_id")}
          AND EXISTS (
            SELECT 1 FROM run_journal_bindings AS binding
            WHERE binding.run_id = epoch.run_id
@@ -973,15 +986,11 @@ function createStartupRunResumeSource(
     budgetReleased = true;
     releaseBudget();
   };
-  let cwdProof:
-    | {
-        readonly fd: number;
-        readonly identity: { readonly dev: string; readonly ino: string };
-      }
-    | undefined;
+  let cwdProof: StartupResumeCwd | undefined;
+  let preparingCwd: Promise<StartupResumeCwd> | undefined;
+  const closeController = new AbortController();
   let rolloutFd: number | undefined;
   try {
-    cwdProof = openStartupResumeCwd(metadata.cwd, afterCwdOpenForTestingOnly);
     rolloutFd = prepared.openAppendDescriptor(lifecycle.sourceIndex);
     const rolloutStats = fstatSync(rolloutFd, { bigint: true });
     if (
@@ -1002,7 +1011,6 @@ function createStartupRunResumeSource(
       rolloutFd,
     );
     rolloutFd = undefined;
-    let openCwdFd: number | undefined = cwdProof.fd;
     return Object.freeze({
       runId,
       sessionId: source.sessionId,
@@ -1032,9 +1040,33 @@ function createStartupRunResumeSource(
         ? { legacyPermissionMode: lifecycle.legacyPermissionMode }
         : {}),
       rolloutLease,
-      cwdIdentity: cwdProof.identity,
-      cwdFd: cwdProof.fd,
+      prepareCwd: (options: {
+        readonly signal?: AbortSignal;
+        readonly timeoutMs?: number;
+      } = {}) => {
+        closeController.signal.throwIfAborted();
+        preparingCwd ??= openStartupResumeCwd(metadata.cwd, {
+          ...options,
+          signal:
+            options.signal === undefined
+              ? closeController.signal
+              : AbortSignal.any([closeController.signal, options.signal]),
+          ...(afterCwdOpenForTestingOnly !== undefined
+            ? { afterOpenForTestingOnly: afterCwdOpenForTestingOnly }
+            : {}),
+        }).then((proof) => {
+          // close() can run while the filesystem operation is in flight.
+          if (closeController.signal.aborted) {
+            closeSync(proof.fd);
+            closeController.signal.throwIfAborted();
+          }
+          cwdProof = proof;
+          return proof;
+        });
+        return preparingCwd;
+      },
       close: () => {
+        closeController.abort(new Error("startup resume source closed"));
         const closeErrors: unknown[] = [];
         try {
           try {
@@ -1042,9 +1074,9 @@ function createStartupRunResumeSource(
           } catch (error) {
             closeErrors.push(error);
           }
-          if (openCwdFd !== undefined) {
-            const closing = openCwdFd;
-            openCwdFd = undefined;
+          if (cwdProof !== undefined) {
+            const closing = cwdProof.fd;
+            cwdProof = undefined;
             try {
               closeSync(closing);
             } catch (error) {
@@ -1071,13 +1103,6 @@ function createStartupRunResumeSource(
         closeErrors.push(closeError);
       }
     }
-    if (cwdProof !== undefined) {
-      try {
-        closeSync(cwdProof.fd);
-      } catch (closeError) {
-        closeErrors.push(closeError);
-      }
-    }
     releaseBudgetOnce();
     if (closeErrors.length > 0) {
       throw new AggregateError(
@@ -1086,67 +1111,6 @@ function createStartupRunResumeSource(
         { cause: error },
       );
     }
-    throw error;
-  }
-}
-
-function openStartupResumeCwd(
-  cwd: string,
-  afterOpenForTestingOnly?: (cwd: string) => void,
-): {
-  readonly fd: number;
-  readonly identity: { readonly dev: string; readonly ino: string };
-} {
-  if (!isAbsolute(cwd) || resolve(cwd) !== cwd) {
-    throw new Error(
-      "canonical startup resume cwd is not absolute and normalized",
-    );
-  }
-  const before = lstatSync(cwd, { bigint: true });
-  if (
-    !before.isDirectory() ||
-    before.isSymbolicLink() ||
-    !hasSupportedFileIdentity(before) ||
-    realpathSync(cwd) !== cwd
-  ) {
-    throw new Error(
-      "canonical startup resume cwd is not a supported non-symlink directory",
-    );
-  }
-  const noFollow =
-    (fsConstants as typeof fsConstants & { readonly O_NOFOLLOW?: number })
-      .O_NOFOLLOW ?? 0;
-  const directoryOnly =
-    (fsConstants as typeof fsConstants & { readonly O_DIRECTORY?: number })
-      .O_DIRECTORY ?? 0;
-  const fd = openSync(cwd, fsConstants.O_RDONLY | noFollow | directoryOnly);
-  try {
-    const opened = fstatSync(fd, { bigint: true });
-    afterOpenForTestingOnly?.(cwd);
-    const after = lstatSync(cwd, { bigint: true });
-    if (
-      !opened.isDirectory() ||
-      !after.isDirectory() ||
-      after.isSymbolicLink() ||
-      !hasSupportedFileIdentity(opened) ||
-      !hasSupportedFileIdentity(after) ||
-      opened.dev !== before.dev ||
-      opened.ino !== before.ino ||
-      opened.dev !== after.dev ||
-      opened.ino !== after.ino ||
-      realpathSync(cwd) !== cwd
-    ) {
-      throw new Error("canonical startup resume cwd changed while pinned");
-    }
-    return {
-      fd,
-      identity: {
-        dev: opened.dev.toString(10),
-        ino: opened.ino.toString(10),
-      },
-    };
-  } catch (error) {
-    closeSync(fd);
     throw error;
   }
 }
@@ -1205,6 +1169,7 @@ function recoverStrictRun(
         projectDir: driver.projectDir,
         sources,
         threads,
+        ...(strict.canonicalProjectionEpoch !== undefined ? { canonicalProjectionEpoch: strict.canonicalProjectionEpoch } : {}),
         ...(limits !== undefined ? { limits } : {}),
         ...(strict.descriptorBudget !== undefined
           ? { descriptorBudget: strict.descriptorBudget }
@@ -1329,6 +1294,18 @@ function projectRunEvents(
     )
     .all(...sourcePaths);
   validateCanonicalIdentities(identityRows, run.id);
+  // These projection rows are frozen inside the surrounding transaction.
+  // Reuse their exact per-source bounds rather than rescanning the entire
+  // rollout table for every effect/lifecycle event we project.
+  const sourceBounds = new Map<string, SourceBoundsRow>();
+  for (const row of identityRows) {
+    if (row.event_seq === null) continue;
+    const prior = sourceBounds.get(row.source_path);
+    sourceBounds.set(row.source_path, {
+      first_sequence: Math.min(prior?.first_sequence ?? row.event_seq, row.event_seq),
+      last_sequence: Math.max(prior?.last_sequence ?? row.event_seq, row.event_seq),
+    });
+  }
   const rows = identityRows.filter(
     (row): row is ProjectionRow =>
       row.event_id !== null &&
@@ -1368,7 +1345,7 @@ function projectRunEvents(
     const payload = message.payload;
     if (type === "effect_intent") {
       bindSource(
-        driver,
+        sourceBounds,
         repository,
         run.id,
         projectionEpoch,
@@ -1400,7 +1377,7 @@ function projectRunEvents(
         );
       }
       bindSource(
-        driver,
+        sourceBounds,
         repository,
         run.id,
         projectionEpoch,
@@ -1456,7 +1433,7 @@ function projectRunEvents(
         throw invalidEvent(row, run.id, "run_suspended epoch is out of order");
       }
       bindSource(
-        driver,
+        sourceBounds,
         repository,
         run.id,
         projectionEpoch,
@@ -1492,7 +1469,7 @@ function projectRunEvents(
         throw invalidEvent(row, run.id, "run_resumed epoch is out of order");
       }
       bindSource(
-        driver,
+        sourceBounds,
         repository,
         run.id,
         projectionEpoch,
@@ -1544,7 +1521,7 @@ function projectRunEvents(
         );
       }
       bindSource(
-        driver,
+        sourceBounds,
         repository,
         run.id,
         projectionEpoch,
@@ -1579,7 +1556,7 @@ function projectRunEvents(
         );
       }
       bindSource(
-        driver,
+        sourceBounds,
         repository,
         run.id,
         projectionEpoch,
@@ -1621,7 +1598,7 @@ function projectRunEvents(
         "run terminal conflicts with its cancellation request",
       );
     }
-    bindSource(driver, repository, run.id, epoch, row, projectionOpenedAt);
+    bindSource(sourceBounds, repository, run.id, epoch, row, projectionOpenedAt);
     repository.recordTerminalResult({
       epoch,
       result: terminalResult(row, run.id, payload),
@@ -2080,21 +2057,14 @@ function effectReviewResolution(value: unknown): EffectReviewResolution {
 }
 
 function bindSource(
-  driver: StateSqliteDriver,
+  sourceBounds: ReadonlyMap<string, SourceBoundsRow>,
   repository: StateRunDurabilityRepository,
   runId: string,
   epoch: number,
   row: ProjectionRow,
   boundAt: string,
 ): void {
-  const bounds = driver
-    .prepareState<[string], SourceBoundsRow>(
-      `SELECT MIN(event_seq) AS first_sequence,
-              MAX(event_seq) AS last_sequence
-       FROM thread_rollout_items
-       WHERE source_path = ? AND event_seq IS NOT NULL`,
-    )
-    .get(row.source_path);
+  const bounds = sourceBounds.get(row.source_path);
   if (
     bounds?.first_sequence === null ||
     bounds?.first_sequence === undefined ||

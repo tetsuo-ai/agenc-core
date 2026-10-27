@@ -26,11 +26,15 @@ export class StateToolPairProjection implements ToolPairProjection {
     private readonly options: {
       /** Offline staging projections are deleted before their transaction commits. */
       readonly discardOnTerminal?: boolean;
+      /** Canonical owners rebuild these rows from their journal on every open. */
+      readonly rebuildable?: boolean;
     } = {},
   ) {}
 
   runAtomically<T>(operation: () => T): T {
-    return this.driver.transactionImmediate(operation);
+    return this.driver.transactionImmediate(
+      operation, this.options.rebuildable === true ? "rebuildable" : "full",
+    );
   }
 
   reset(params: {

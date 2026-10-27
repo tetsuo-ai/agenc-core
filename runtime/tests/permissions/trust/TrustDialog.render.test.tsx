@@ -198,7 +198,7 @@ describe("TrustDialog card", () => {
   it("says plainly when a bypass flag turns protections off", async () => {
     const both = await renderTrust("/work/shop", 100, {
       bypassPermissionsRequested: true,
-      bypassSandboxRequested: true,
+      sandboxOff: true,
     });
     expect(both).toContain("Approvals and the sandbox are off for this run.");
     expect(both).not.toContain("still apply");
@@ -208,6 +208,12 @@ describe("TrustDialog card", () => {
     expect(approvals).toContain(
       "Approvals are off for this run. The sandbox still applies.",
     );
+  });
+
+  it("does not claim a sandbox when the run has none", async () => {
+    const out = await renderTrust("/work/shop", 100, { sandboxOff: true });
+    expect(out).toContain("Approvals still apply. The sandbox is off.");
+    expect(out).not.toContain("sandbox still");
   });
 
   it("keeps the card inside a narrow terminal", async () => {

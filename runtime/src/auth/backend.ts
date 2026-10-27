@@ -156,7 +156,6 @@ export interface AuthAgencModel extends AuthJsonObject {
 
 export interface AuthBackend {
   readonly kind?: AuthBackendKind;
-  readonly managedKeysEnabled?: boolean;
   login(params?: AuthLoginParams): AuthLoginResult | Promise<AuthLoginResult>;
   logout(
     params?: AuthLogoutParams,

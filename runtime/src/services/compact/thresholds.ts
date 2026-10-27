@@ -57,7 +57,11 @@ export function getEffectiveContextWindowSizeForEnvironment(
       : context?.options?.mainLoopModel,
   );
   const envWindow = positiveInteger(environment.AGENC_AUTO_COMPACT_WINDOW);
-  return envWindow ?? context?.options?.contextWindowTokens ?? modelFallback;
+  const configuredWindow = context?.options?.contextWindowTokens;
+  // A client can cap live capacity, but cannot enlarge the provider's known
+  // window and move the proactive gate behind hard admission.
+  return envWindow === undefined ? configuredWindow ?? modelFallback
+    : configuredWindow === undefined ? envWindow : Math.min(envWindow, configuredWindow);
 }
 
 export function getAutoCompactThreshold(
@@ -97,6 +101,29 @@ export function getAutoCompactThresholdForEnvironment(
     ));
   }
   return Math.max(1, defaultThreshold);
+}
+
+/** Daemon-owned capacity policy shared by the dispatch gate and its snapshots.
+ * A threshold equal to the window means proactive compaction is disabled.
+ * Output reservations belong to admission and never alter this denominator.
+ */
+export function getAutoCompactPolicyForEnvironment(
+  modelOrContext: string | Pick<CompactContext, "options"> | undefined,
+  environment: ProviderEnvironment,
+): {
+  readonly effectiveWindowTokens: number;
+  readonly compactionThresholdTokens: number;
+  readonly autoCompactEnabled: boolean;
+} {
+  const effectiveWindowTokens = getEffectiveContextWindowSizeForEnvironment(modelOrContext, environment);
+  const autoCompactEnabled = isAutoCompactEnabledForEnvironment(environment);
+  return {
+    effectiveWindowTokens,
+    compactionThresholdTokens: autoCompactEnabled
+      ? getAutoCompactThresholdForEnvironment(modelOrContext, environment)
+      : effectiveWindowTokens,
+    autoCompactEnabled,
+  };
 }
 
 export function calculateTokenWarningState(

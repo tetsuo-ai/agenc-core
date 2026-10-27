@@ -6,27 +6,30 @@
 // terminal-cell rectangle. Keep the SVG as the source of truth.
 export const AGENC_LOGO_RASTER_SIZE = 160
 
-// Portable monochrome previews generated from the same alpha raster at a 0.22
-// coverage threshold. Each Braille cell encodes a 2×4 sample grid, preserving
-// the official mark's geometry in terminals without an image protocol.
+// Portable Braille marks sampled from the same official SVG: 20×10 cells for
+// the welcome screen and 12×6 for short or narrow panes. Each cell encodes a
+// 2×4 dot grid; the sizes keep all 13 shapes of the mark separate, with ink
+// close to the vector's, in terminals without an image protocol.
 export const AGENC_LOGO_BRAILLE_LINES = [
-  '⣠⣾⠖⢿⠶⣿⣦⡀⢀⣴⣿⠶⡿⠲⣷⣄',
-  '⣼⣅⠀⠀⠀⠈⢻⣿⣿⡟⠁⠀⠀⠀⣨⣧',
-  '⣼⣧⡀⠀⢀⣴⣿⠟⠻⣿⣦⡀⠀⢀⣼⣧',
-  '⠈⠻⣿⣶⣿⠟⠁⠀⠀⠈⠻⣿⣶⣿⠟⠁',
-  '⢀⣴⣿⠿⣿⣦⡀⠀⠀⢀⣴⣿⠿⣿⣦⡀',
-  '⢻⡟⠁⠀⠈⠻⣿⣦⣴⣿⠟⠁⠀⠈⢻⡟',
-  '⢻⡋⠀⠀⠀⢀⣼⣿⣿⣧⡀⠀⠀⠀⢙⡟',
-  '⠙⢿⠦⣾⠶⣿⠟⠁⠈⠻⣿⠶⣷⠴⡿⠋',
+  '⢀⣴⡷⠰⣿⠆⢾⣦⡀⠀⠀⢀⣴⡷⠰⣿⠆⢾⣦⡀',
+  '⢙⡋⠀⠀⠀⠀⠀⠙⢿⣦⣴⡿⠋⠀⠀⠀⠀⠀⢙⡋',
+  '⠻⠟⠀⠀⠀⠀⠀⢀⣼⣿⣿⣧⡀⠀⠀⠀⠀⠀⠻⠟',
+  '⠺⣷⣄⠀⠀⢀⣴⣿⠟⠁⠈⠻⣿⣦⡀⠀⠀⣠⣾⠗',
+  '⠀⠈⠻⣷⣶⣿⠟⠁⠀⠀⠀⠀⠈⠻⣿⣶⣾⠟⠁⠀',
+  '⠀⢀⣴⡿⠿⣿⣦⡀⠀⠀⠀⠀⢀⣴⣿⠿⢿⣦⡀⠀',
+  '⢴⡿⠋⠀⠀⠈⠻⣿⣦⡀⢀⣴⣿⠟⠁⠀⠀⠙⢿⡦',
+  '⣴⣦⠀⠀⠀⠀⠀⠈⢻⣿⣿⡟⠁⠀⠀⠀⠀⠀⣴⣦',
+  '⣨⣅⠀⠀⠀⠀⠀⣠⣾⠟⠻⣷⣄⠀⠀⠀⠀⠀⣨⣅',
+  '⠈⠻⡷⠰⣿⠆⢾⠟⠁⠀⠀⠈⠻⡷⠰⣿⠆⢾⠟⠁',
 ] as const
 
 export const AGENC_LOGO_BRAILLE_COMPACT_LINES = [
-  '⢴⡿⠒⠗⠺⣶⣄⣠⣴⠗⠺⠓⢿⣦',
-  '⢺⡂⠀⠀⠀⣨⣿⣿⣅⡀⠀⠀⢐⣗',
-  '⠙⠿⣦⣴⡿⠛⠁⠀⠙⢿⣦⣴⡿⠋',
-  '⣠⣴⠟⠻⣷⣄⡀⠀⣠⣾⠟⠻⣶⣄',
-  '⢽⡅⠀⠀⠈⢙⣿⣿⡛⠁⠀⠀⠨⡯',
-  '⠺⣷⢤⡦⢴⡿⠋⠙⠿⣦⢴⡤⣶⠗',
+  '⠴⠃⠚⠘⢷⣄⣠⡾⠃⠓⠘⠦',
+  '⣚⠀⠀⠀⣠⡿⢿⣄⠀⠀⠀⣓',
+  '⠙⢷⣤⡾⠋⠀⠀⠙⢷⣤⡾⠋',
+  '⣠⡾⠛⢷⣄⠀⠀⣠⡾⠛⢷⣄',
+  '⢭⠀⠀⠀⠙⣷⣾⠋⠀⠀⠀⡭',
+  '⠲⡄⢤⢠⡾⠋⠙⢷⡄⡤⢠⠖',
 ] as const
 
 export const AGENC_LOGO_RGBA_ZLIB_BASE64 =

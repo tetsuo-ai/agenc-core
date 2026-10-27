@@ -22,6 +22,7 @@ import {
 } from "../sandbox/execution-broker.js";
 import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 import { terminateProcessTreeAndWait } from "../utils/supervisedProcess.js";
+import { SNAP_IN_SANDBOX_HINT } from "./executable.js";
 
 const NUL = "\0";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
@@ -487,6 +488,7 @@ export async function launchBrowser(
   }
 
   let stderrTail = "";
+  let launchExit: LaunchExit | undefined;
   // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
   // stdio undefined. Listen before touching stdio or taking the branch below
   // that awaits cleanup, so that report is never an uncaught exception.
@@ -494,15 +496,16 @@ export async function launchBrowser(
     child.once("error", (err) =>
       reject(new CdpError(`failed to spawn browser: ${err.message}`)),
     );
-    child.once("exit", (code) =>
+    child.once("exit", (code, signal) => {
+      launchExit = { code, signal };
       reject(
         new CdpError(
-          `browser exited before CDP was ready (code ${code ?? "null"})${
-            stderrTail !== "" ? `: ${stderrTail.trim()}` : ""
-          }`,
+          `browser exited before CDP was ready (code ${code ?? "null"}${
+            signal !== null ? `, signal ${signal}` : ""
+          })${stderrTail !== "" ? `: ${stderrTail.trim()}` : ""}`,
         ),
-      ),
-    );
+      );
+    });
   });
   // Raced below; a launch that fails earlier leaves nobody to await it.
   spawnError.catch(() => {});
@@ -555,6 +558,11 @@ export async function launchBrowser(
   } catch (err) {
     connection.close();
     const detail = err instanceof Error ? err.message : String(err);
+    // The CDP pipe closes as the browser dies, usually just before its exit is
+    // reported. Wait a moment for that report so a crash is named as one; the
+    // cleanup below would otherwise record its own kill instead.
+    if (launchExit === undefined) await exitReportWindow(child);
+    const exitBeforeCleanup = launchExit;
     try {
       await terminateProcessTreeAndWait(child, {
         label: "browser launch",
@@ -562,13 +570,13 @@ export async function launchBrowser(
     } catch (error) {
       const cleanupError = toError(error);
       throw new BrowserLaunchCleanupError(
-        `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. Cleanup also failed: ${cleanupError.message}. ${launchFailureHint(stderrTail, browserCdpOverStdio)}`,
+        `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. Cleanup also failed: ${cleanupError.message}. ${launchFailureHint(stderrTail, browserCdpOverStdio, exitBeforeCleanup)}`,
         child,
         cleanupError,
       );
     }
     throw new CdpError(
-      `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. ${launchFailureHint(stderrTail, browserCdpOverStdio)}`,
+      `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. ${launchFailureHint(stderrTail, browserCdpOverStdio, exitBeforeCleanup)}`,
     );
   }
   return { child, connection };
@@ -583,17 +591,68 @@ const CHROMIUM_OWN_SANDBOX_ABORT =
   /SUID sandbox helper binary was found, but is not configured correctly|No usable sandbox!/;
 
 /**
- * The next step for a launch failure, chosen from what Chromium printed and
- * whether it ran inside AgenC's Linux sandbox. Outside it, turning Chromium's
- * sandbox off would leave the browser with no sandbox at all.
+ * What snap printed on Ubuntu 26.04 when a snap browser that detection did not
+ * recognize reached AgenC's Linux sandbox: the `snap` launcher parsing
+ * Chromium's flags as its own, or `snap run` failing to create its scope.
  */
-export function launchFailureHint(stderrTail: string, insideAgencLinuxSandbox: boolean): string {
-  if (!CHROMIUM_OWN_SANDBOX_ABORT.test(stderrTail)) {
-    return "If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.";
+const SNAP_LAUNCH_FAILURE =
+  /error: unknown flag `|internal error, please report: running "[^"]*" failed/;
+
+/** How the browser process ended before CDP connected, when it did. */
+export interface LaunchExit {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
+const EXIT_REPORT_WINDOW_MS = 250;
+
+function exitReportWindow(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      child.off("exit", done);
+      resolve();
+    };
+    child.once("exit", done);
+    timer = setTimeout(done, EXIT_REPORT_WINDOW_MS);
+    timer.unref?.();
+  });
+}
+
+/** Signals that leave a crash report behind on macOS. */
+const CRASH_SIGNALS = new Set<NodeJS.Signals>([
+  "SIGABRT", "SIGBUS", "SIGFPE", "SIGILL", "SIGSEGV", "SIGSYS", "SIGTRAP",
+]);
+
+/**
+ * The next step for a launch failure, chosen from what Chromium printed, how
+ * it ended, and whether it ran inside AgenC's Linux sandbox. Outside it,
+ * turning Chromium's sandbox off would leave the browser with no sandbox at
+ * all. A browser killed by a signal crashed: the wrapper script advice does
+ * not apply to it. A snap that slipped past detection is named as one.
+ */
+export function launchFailureHint(
+  stderrTail: string,
+  insideAgencLinuxSandbox: boolean,
+  exit?: LaunchExit,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (insideAgencLinuxSandbox && SNAP_LAUNCH_FAILURE.test(stderrTail)) {
+    return SNAP_IN_SANDBOX_HINT;
   }
-  return insideAgencLinuxSandbox
-    ? "Chromium's own sandbox cannot start inside AgenC's sandbox on this system. Set [browser] no_sandbox = true to run it under AgenC's sandbox alone."
-    : "Chromium's own sandbox is not set up correctly on this system. Fix the Chromium installation as its message above says.";
+  if (CHROMIUM_OWN_SANDBOX_ABORT.test(stderrTail)) {
+    return insideAgencLinuxSandbox
+      ? "Chromium's own sandbox cannot start inside AgenC's sandbox on this system. Set [browser] no_sandbox = true to run it under AgenC's sandbox alone."
+      : "Chromium's own sandbox is not set up correctly on this system. Fix the Chromium installation as its message above says.";
+  }
+  if (exit?.signal != null) {
+    const report = platform === "darwin" && CRASH_SIGNALS.has(exit.signal)
+      ? " macOS keeps its crash report in ~/Library/Logs/DiagnosticReports."
+      : "";
+    return `Chromium was killed by ${exit.signal} during launch.${report}`;
+  }
+  return "If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.";
 }
 
 function toError(error: unknown): Error {

@@ -13,8 +13,13 @@
  *     base58 shape check BEFORE any process is spawned; limits are
  *     clamped integers serialized by this adapter.
  *   - Binary resolution: explicit config `cli_path` → `AGENC_MARKETPLACE_CLI`
- *     env → `node_modules/.bin/agenc-marketplace`. NEVER `npx`. Missing
- *     binary is a clean typed `CLI_NOT_FOUND` error.
+ *     env → the installer's own `~/.agenc/bin/agenc-marketplace`, only when
+ *     that file and its directory belong to the current user and are not
+ *     world-writable. The working directory is NEVER searched (a repository
+ *     could plant `node_modules/.bin/agenc-marketplace`) and `npx` is never
+ *     used. Missing binary is a clean typed `CLI_NOT_FOUND` error.
+ *   - Minimal child environment: only {@link CLI_ENV_ALLOWLIST} variables
+ *     reach the binary, never the session's full environment.
  *   - Bounded execution: timeout + maxBuffer on every spawn; stdout is
  *     parsed defensively (success flag, plain-object/array shape checks)
  *     and all strings are length-capped and control-char-stripped.
@@ -23,8 +28,9 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, statSync, type Stats } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import type {
   ClaimableTaskList,
@@ -52,6 +58,77 @@ const OWNER_GATED_MESSAGE =
   "claims, submits, settles, or stakes. Enabling it requires explicit owner " +
   "approval through a signing flow outside this runtime.";
 
+/**
+ * Environment variables the kit binary may receive. Everything else in the
+ * session environment (provider keys, wallet and signer settings, tokens) is
+ * dropped: the binary only lists tasks and reads one task, which needs a home
+ * directory for its own state, a PATH, locale and temp dirs, proxy and
+ * certificate settings to reach the network, and its own RPC override.
+ * Matched case-insensitively so Windows spellings (`Path`) work.
+ */
+export const CLI_ENV_ALLOWLIST: readonly string[] = Object.freeze([
+  "PATH",
+  "HOME",
+  "USERPROFILE",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "SYSTEMROOT",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "AGENC_HOME",
+  "AGENC_RPC_URL",
+]);
+
+const CLI_ENV_ALLOWED: ReadonlySet<string> = new Set(CLI_ENV_ALLOWLIST);
+
+/** The part of `env` the kit binary is allowed to see. */
+export function minimalCliEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const minimal: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && CLI_ENV_ALLOWED.has(key.toUpperCase())) {
+      minimal[key] = value;
+    }
+  }
+  return minimal;
+}
+
+/**
+ * The path the kit installer puts the binary at, or undefined when it cannot
+ * be trusted: the file and its directory must be owned by the current user
+ * and not world-writable, so another account (or a planted file in a shared
+ * directory) cannot substitute it. Ownership cannot be checked on Windows, so
+ * there the binary must be named with `cli_path` or `AGENC_MARKETPLACE_CLI`.
+ */
+export function resolveInstalledKitBinary(
+  homeDir: string = homedir(),
+): string | undefined {
+  if (typeof process.getuid !== "function") return undefined;
+  const uid = process.getuid();
+  const trusted = (stats: Stats): boolean =>
+    stats.uid === uid && (stats.mode & 0o002) === 0;
+  const candidate = join(homeDir, ".agenc", "bin", "agenc-marketplace");
+  try {
+    const file = statSync(candidate);
+    const dir = statSync(join(homeDir, ".agenc", "bin"));
+    return file.isFile() && dir.isDirectory() && trusted(file) && trusted(dir)
+      ? candidate
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface MarketplaceKitCliAdapterOptions {
   /**
    * Trusted operator-configured binary path (`[protocol].cli_path`).
@@ -59,10 +136,18 @@ export interface MarketplaceKitCliAdapterOptions {
    * marketplace data.
    */
   readonly cliPath?: string;
-  /** Base dir for the `node_modules/.bin` fallback (default `process.cwd()`). */
+  /**
+   * Working directory of the spawned binary (default: inherited). It is not
+   * searched for the binary.
+   */
   readonly cwd?: string;
-  /** Env snapshot consulted for `AGENC_MARKETPLACE_CLI` (default `process.env`). */
+  /**
+   * Env snapshot consulted for `AGENC_MARKETPLACE_CLI` (default `process.env`).
+   * Only the {@link CLI_ENV_ALLOWLIST} subset is passed on to the binary.
+   */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Home directory holding the installer's `.agenc/bin` (default `os.homedir()`). */
+  readonly homeDir?: string;
   /** Per-invocation kill timeout in ms (default 30s). */
   readonly timeoutMs?: number;
   /** Max stdout/stderr bytes before the child is killed (default 1MB). */
@@ -130,9 +215,6 @@ export class MarketplaceKitCliAdapter implements ProtocolTransport {
     if (typeof envPath === "string" && envPath.trim().length > 0) {
       candidates.push(envPath);
     }
-    candidates.push(
-      resolve(this.opts.cwd ?? process.cwd(), "node_modules/.bin/agenc-marketplace"),
-    );
     for (const candidate of candidates) {
       try {
         if (existsSync(candidate) && statSync(candidate).isFile()) {
@@ -142,7 +224,8 @@ export class MarketplaceKitCliAdapter implements ProtocolTransport {
         // unreadable candidate — try the next resolution source
       }
     }
-    return undefined;
+    // Never the working directory: a repository controls what is in it.
+    return resolveInstalledKitBinary(this.opts.homeDir);
   }
 
   // ── Bounded, shell-free execution ───────────────────────────────────
@@ -157,8 +240,9 @@ export class MarketplaceKitCliAdapter implements ProtocolTransport {
         errorMessage:
           "agenc-marketplace binary not found. Set [protocol].cli_path or " +
           "AGENC_MARKETPLACE_CLI, or install the kit so " +
-          "node_modules/.bin/agenc-marketplace exists. npx fallback is " +
-          "deliberately not supported.",
+          "~/.agenc/bin/agenc-marketplace exists and is owned by you and not " +
+          "world-writable. The working directory is never searched and the " +
+          "npx fallback is deliberately not supported.",
       });
     }
     return new Promise((resolvePromise) => {
@@ -171,7 +255,7 @@ export class MarketplaceKitCliAdapter implements ProtocolTransport {
           timeout: this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxBuffer: this.opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
           windowsHide: true,
-          env: { ...(this.opts.env ?? process.env) },
+          env: minimalCliEnv(this.opts.env ?? process.env),
           cwd: this.opts.cwd,
         },
         (err, stdout, stderr) => {

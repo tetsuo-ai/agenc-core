@@ -47,6 +47,7 @@ import {
 } from "../../utils/sessionStorage.js";
 import {
   applyCommandSuggestion,
+  commandRequiresArguments,
   findMidInputSlashCommand,
   generateCommandSuggestions,
   getBestCommandMatch,
@@ -129,7 +130,7 @@ function getPreservedSelection(
   );
 
   // Return the new index if found, otherwise default to 0
-  return newIndex >= 0 ? newIndex : 0;
+  return newIndex >= 0 ? newIndex : Math.min(prevSelection, newSuggestions.length - 1);
 }
 function buildResumeInputFromSuggestion(suggestion: SuggestionItem): string {
   const metadata = suggestion.metadata as
@@ -1007,10 +1008,10 @@ export function useTypeahead({
           commands,
           runtimeState,
         );
-        setSuggestionsState(() => ({
+        setSuggestionsState((prev) => ({
           commandArgumentHint,
           suggestions: commandItems,
-          selectedSuggestion: commandItems.length > 0 ? 0 : -1,
+          selectedSuggestion: getPreservedSelection(prev.suggestions, prev.selectedSuggestion, commandItems),
         }));
         setSuggestionType(commandItems.length > 0 ? "command" : "none");
 
@@ -1697,14 +1698,9 @@ export function useTypeahead({
       selectedSuggestion < suggestions.length
     ) {
       if (suggestion) {
-        // Only auto-execute when the typed slash literal matches the
-        // suggestion's name or an alias. Otherwise the picker has only
-        // a fuzzy match (e.g. typing `/history` while `/clear` is the
-        // top fuzzy hit because its description contains "history") —
-        // accepting that on Enter silently runs a different and
-        // possibly destructive command. With no exact match, we still
-        // apply the suggestion to the composer so the user can confirm
-        // with a second Enter, but skip the auto-run.
+        // Enter accepts the highlighted command in one press. Required
+        // arguments keep a partial selection in the composer; exact command
+        // input retains its existing execution path. Tab completes only.
         const typed = input.trim().replace(/^\//, "").toLowerCase();
         const meta = isCommandMetadata(suggestion.metadata)
           ? suggestion.metadata
@@ -1715,7 +1711,7 @@ export function useTypeahead({
             (meta?.aliases ?? []).some((a) => a.toLowerCase() === typed));
         applyCommandSuggestion(
           suggestion,
-          exactMatch,
+          exactMatch || (meta !== null && !commandRequiresArguments(meta)),
           commands,
           onInputChange,
           setCursorOffset,

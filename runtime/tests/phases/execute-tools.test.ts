@@ -2219,8 +2219,15 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       withDenialTracking: true,
     });
 
+    // A write the workspace sandbox admits: this approval runs it inside the
+    // sandbox. (With no target the sandbox refuses the write, and running it
+    // without the sandbox would need its own approval.)
     const state = mkState({
-      toolCalls: [{ id: "c-hook-ask", name: "Write", arguments: "{}" }],
+      toolCalls: [{
+        id: "c-hook-ask",
+        name: "Write",
+        arguments: JSON.stringify({ file_path: "/tmp/hook-ask.txt", content: "x" }),
+      }],
     });
 
     await executeTools(state, mkCtx(), session);
@@ -3722,4 +3729,56 @@ test.each([false, true])("Light=%s aliases exec presentation without changing ca
   expect(state.completedToolResults[0]).toMatchObject({ content: raw, isError: true, metadata });
   expect(emitted.find(event => event.msg.type === "tool_call_completed")?.msg.payload)
     .toMatchObject({ result: raw, isError: true, metadata });
+});
+
+describe("tool_call_started recovery category for the in-flight tool index", () => {
+  const startedCategory = async (
+    tool: Tool,
+    args: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const { emitted, run } = singleToolRun(tool, {
+      id: `call-${tool.name}`,
+      name: tool.name,
+      arguments: JSON.stringify(args),
+    });
+    await run();
+    const started = emitted.find((event) => event.msg.type === "tool_call_started");
+    expect(started).toBeDefined();
+    return (started!.msg.payload as Record<string, unknown>).recoveryCategory;
+  };
+
+  test("sends the tool's own category", async () => {
+    expect(await startedCategory({
+      name: "FileRead", description: "fixture", inputSchema: { type: "object" },
+      recoveryCategory: "idempotent", execute: async () => ({ content: "x" }),
+    }, { file_path: "/tmp/x" })).toBe("idempotent");
+    expect(await startedCategory({
+      name: "Write", description: "fixture", inputSchema: { type: "object" },
+      recoveryCategory: "side-effecting", execute: async () => ({ content: "ok" }),
+    }, { file_path: "/tmp/x", content: "y" })).toBe("side-effecting");
+  });
+
+  test("marks a read-only exec_command idempotent and keeps other commands side-effecting", async () => {
+    const shell = (): Tool => ({
+      name: "exec_command", description: "fixture", inputSchema: { type: "object" },
+      recoveryCategory: "side-effecting", execute: async () => ({ content: "ok" }),
+    });
+    expect(await startedCategory(shell(), { cmd: "ls -la", workdir: "/tmp" })).toBe("idempotent");
+    expect(await startedCategory(shell(), { cmd: "cat README.md" })).toBe("idempotent");
+    expect(await startedCategory(shell(), { cmd: "touch x" })).toBe("side-effecting");
+    expect(await startedCategory(shell(), { cmd: "ls | wc -l" })).toBe("idempotent");
+    expect(await startedCategory(shell(), { cmd: "printf x > out.txt" })).toBe("side-effecting");
+    expect(await startedCategory(shell(), { cmd: "ls -la", detach: true })).toBe("side-effecting");
+  });
+
+  test("sends no category for a tool without a valid one", async () => {
+    expect(await startedCategory({
+      name: "Custom", description: "fixture", inputSchema: { type: "object" },
+      execute: async () => ({ content: "ok" }),
+    }, {})).toBeUndefined();
+    expect(await startedCategory({
+      name: "Legacy", description: "fixture", inputSchema: { type: "object" },
+      recoveryCategory: "read-only" as never, execute: async () => ({ content: "ok" }),
+    }, {})).toBeUndefined();
+  });
 });

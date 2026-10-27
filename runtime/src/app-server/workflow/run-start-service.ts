@@ -68,6 +68,13 @@ export interface DaemonWorkflowStartServiceOptions {
   ) => void | Promise<void>;
   readonly warn: (message: string) => void;
   readonly now?: () => Date;
+  /**
+   * Mode for a new Goal whose `run.start` omits `lightMode`: the daemon's
+   * config.toml `light_mode`, then Light. It is frozen with the run. A
+   * continuation that omits it keeps its source Goal's mode. Without it an
+   * omitted mode stays standard.
+   */
+  readonly defaultLightMode?: () => boolean;
 }
 
 export class DaemonWorkflowStartService {
@@ -108,10 +115,14 @@ export class DaemonWorkflowStartService {
         ? { deadlineAt: params.deadlineAt }
         : {}),
     };
+    const lightMode = params.lightMode ??
+      (params.continuation === undefined
+        ? this.#options.defaultLightMode?.()
+        : undefined);
     const startParams: WorkflowStartParams = {
       ...(params.continuation !== undefined ? { continuation: params.continuation } : {}),
       goal: params.goal,
-      ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}),
+      ...(lightMode !== undefined ? { lightMode } : {}),
       repoPath,
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined

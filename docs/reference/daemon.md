@@ -1,6 +1,6 @@
 # Daemon reference
 
-The local **app-server** control plane for AgenC **0.18.0**. One daemon per
+The local **app-server** control plane for AgenC **0.19.19**. One daemon per
 `AGENC_HOME`. Clients (TUI, print CLI, gateway, remote, SDK, background
 agents) attach over a local socket and speak JSON-RPC.
 
@@ -11,6 +11,8 @@ autostart and the TUI 10 s lost-turn probe:
 [`#recovery-after-a-disappeared-daemon`](#recovery-after-a-disappeared-daemon).
 Max-output-tokens escalate, continuation, and exhaustion:
 [`#max-output-tokens-recovery`](#max-output-tokens-recovery).
+Routine permission-blocked explanations:
+[agents.md](agents.md#permission-blocked-explanation).
 
 ## Connection and session ownership
 
@@ -28,6 +30,24 @@ Use `session.cancelTurn` with `expectedTurnId` to interrupt the observed turn.
 The TUI defers pre-start cancellation until it correlates its own submitted
 message with a daemon turn. Closing an SDK client settles its local prompt
 waiters without issuing turn cancellation.
+
+Reopening with `-c` or `/resume` restores the visible assistant prefix of a
+streaming turn, followed by new deltas. An interrupted answer remains visible
+with an `Interrupted partial answer` label. These partials are display only:
+they are excluded from model history so an unfinished answer cannot be mistaken
+for a completed assistant response on the next turn.
+
+Transcript reconstruction retains at most 64 KiB of UTF-8 text per uncommitted
+segment and marks omitted text explicitly. A later canonical assistant commit
+replaces that prefix with the complete answer. Recovery uses the journal's
+existing sanitized display deltas; it adds no persistence or fsync guarantee
+for in-flight output. Committed-message durability and daemon lifetime rules
+are unchanged. A hard crash can still lose deltas that had not been flushed.
+Retry boundaries discard the failed attempt's partial text. Active snapshots
+carry a display-stream replay watermark even while waiting for fresh output,
+so replay cannot restore the discarded attempt or clear the new prefix.
+Disconnections that exhaust or refuse retries retain the last partial answer;
+only explicit discards or recognized legacy reconnect notices clear it.
 
 Session termination revokes new attachments immediately and awaits resource
 cleanup. Concurrent terminators share cleanup; a later termination request can
@@ -229,6 +249,10 @@ Override home:
 export AGENC_HOME=/var/lib/agenc
 ```
 
+When that home sits under a writable sandbox ancestor (CI `TMPDIR`, a parent
+workspace), sandboxed children see it as reserved read-only. See
+[tools-permissions-sandbox.md](tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots).
+
 ## Transports & auth
 
 Unix socket paths are limited by UTF-8 byte length: 107 usable bytes on Linux,
@@ -369,7 +393,7 @@ Never retry after admission may have arrived.
 | `session.statusLine.execute`                                                                                | Render the configured custom status line for the owning live session (protocol 1.11)                               |
 | `session.processes.list` / `session.processes.stop`                                                         | Inspect and acknowledge-stop the session's own background processes (protocol 1.13)                                |
 | `session.goal`                                                                                              | Set, inspect, pause, resume, or clear the session goal. See [goal.md](goal.md) (protocol 1.14)                      |
-| `routine.capabilities` / `routine.list` / `routine.get` / `routine.create` / `routine.update` / `routine.delete` / `routine.run` / `routine.runs` / `routine.cancel`                                                                                                 | Daemon-owned local routines. See [autonomy.md](autonomy.md)                                                        |
+| `routine.capabilities` / `routine.list` / `routine.get` / `routine.create` / `routine.update` / `routine.delete` / `routine.run` / `routine.runs` / `routine.cancel`                                                                                                 | Daemon-owned local routines. See [agents.md](agents.md#routine-runs). Permission-blocked runs store a fixed `run.error`: [agents.md](agents.md#permission-blocked-explanation). |
 | `routine.session.prepare.respond`                                                                           | Answer Core's request to prepare a routine's session before its first turn, so the client can attach its tools (protocol 1.17) |
 | `remote.*` / `telegram.*`                                                                                   | See the [remote and Telegram method contracts](#remote-and-telegram-methods) below                     |
 | `daemon.reload`                                                                                             | Reload configuration. Open sessions take the new `[agents]` cross-provider settings. A session that could not read them again is listed in the result's `crossProviderSettings.failed`, with `timedOut: true` when it ran out of time. Other session settings apply to new sessions |
@@ -388,11 +412,25 @@ reviews are still pending. See
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
 
+#### Session mode (Light)
+
+`agent.create` carries the session mode as `runtimeOptions.lightMode`:
+`true` for Light, `false` for standard. A new agent that omits it starts in
+the daemon default, which is `light_mode` from the daemon's `config.toml`
+(read at start and on `agenc daemon reload`) and otherwise Light. The settled
+value is recorded with the session, so a restart, an attach or a cold resume
+restores it and never applies the default again. A resume keeps the recorded
+mode; a session recorded without one (created before Light became the
+default) stays standard. The CLI always sends an explicit value for a new
+session, resolved from `--light`, `--standard`, its own `light_mode` and the
+default. Phone, Telegram and routine sessions use the daemon default.
+
 #### Goal Light mode
 
 `run.start` accepts optional `lightMode: boolean`. When `true`, the Goal and
-its child sessions use Light mode; when omitted, they use standard mode. The
-frozen value appears at `run.status.workflow.lightMode` and survives recovery.
+its child sessions use Light mode; when `false`, standard mode. When it is
+omitted, a new Goal uses the daemon default described above. The frozen value
+appears at `run.status.workflow.lightMode` and survives recovery.
 Continuations inherit their source Goal's mode unless the new `run.start`
 request explicitly sets it. `initialize.result.capabilities["run.start.lightMode"]`
 advertises support when `run.start` is available.
@@ -446,6 +484,102 @@ verification, independent review or finalization runs after that checkpoint.
 Required checks are unchanged and a verifier's PASS label cannot override a
 failing required command. Correcting the requirements requires an explicit
 new Goal; the frozen specification is not modified.
+
+#### Session tool policy (protocol 1.32)
+
+`agent.create` accepts an optional `toolPolicy` that fixes the tools a session
+may use. A client that opens a restricted session, for example a marketplace
+task that may only call a few tools from one MCP server, sends:
+
+```json
+{
+  "toolPolicy": {
+    "enabledTools": ["FileRead", "mcp.desktop.read_file", "mcp.desktop.submit_work"],
+    "frozenPermissionMode": true,
+    "deferMcpTools": false
+  }
+}
+```
+
+- `enabledTools` is required: non-empty, at most 256 exact dispatch names,
+  each matching `[A-Za-z0-9][A-Za-z0-9._:-]*` (at most 128 characters), no
+  duplicates. Built-ins use their dispatch name (`FileRead`); MCP tools use
+  `mcp.<server>.<tool>`. Anything else is a `-32602` invalid-params error. An older daemon
+  rejects the unknown `toolPolicy` param, so a client that needs the
+  restriction fails closed instead of running unrestricted.
+- A tool outside `enabledTools` is never built. It is absent from the
+  model-visible catalog and from `system.searchTools`, and a call to it by name
+  is refused with `tool "<name>" is not enabled for this session`. Role
+  allowlists and `spawn_agent` children start from this filtered set, so they
+  cannot reach a removed tool. MCP servers that connect later are filtered the
+  same way. The permission evaluator also denies every tool outside the list in
+  all modes, including `bypassPermissions`. `toolPolicy` composes with
+  `tools_config` by intersection.
+- Removing `system.searchTools` removes discovery, and with the default
+  deferred MCP catalog the allowlisted MCP tools would then be unreachable. So
+  a policy that defers MCP tools must list `system.searchTools`: `agent.create`
+  answers `-32602` when `deferMcpTools` is `true`, or omitted while `enabledTools`
+  names an `mcp.` tool, and `system.searchTools` is missing. Set
+  `deferMcpTools: false` to advertise the allowlisted MCP tools directly with no
+  search step, which also suits small models and Light mode. A policy that names
+  no MCP tool and leaves `deferMcpTools` omitted needs no search tool.
+- `noFsWriteTools` is optional: MCP tools from `enabledTools`, written
+  `mcp.<server>.<tool>`, that the client vouches write nothing through Core.
+  The sandbox then does not try to infer their filesystem targets, which it
+  otherwise must for an MCP tool before it runs. It applies only to servers
+  attached to this session with `session.mcp.addServer`, never to configured,
+  project or plugin servers, and a server's own config cannot claim it. A name
+  that is not an enabled `mcp.` tool is a `-32602` error. The list is part of
+  the persisted policy, so a restored session keeps exactly the same grant.
+- Bundled skills are skills that ship inside the daemon, such as
+  `browser-automation`. A session with a `toolPolicy` is offered none of them
+  unless `enabledTools` lists the `Skill` tool and names each skill as
+  `Skill:<name>`:
+
+  ```json
+  { "enabledTools": ["FileRead", "Skill", "Skill:browser-automation"] }
+  ```
+
+  A `Skill:<name>` entry without `Skill` is refused at `agent.create`. A skill
+  that is not named is absent from the per-session skill listing and from
+  `/skills`, and `Skill(<name>)` answers `skill "<name>" is not enabled for this
+  session`; the permission check denies it as well. `agenc-marketplace-kit-installer`
+  can never be enabled: it tells the model to download and run an installer, so
+  `Skill:agenc-marketplace-kit-installer` is refused at `agent.create` and the
+  skill is withheld even from a hand-built policy. A policy without the `Skill`
+  tool gets no skill listing at all. Skills that live in the workspace, the
+  user's home or a plugin are not bundled and follow the `Skill` tool as before.
+- The protocol slash commands `/claim`, `/delegate`, `/proof`, `/settle` and
+  `/stake` are unavailable in a session with a `toolPolicy`. They answer
+  `AgenC protocol · <verb>: AgenC protocol commands are not available in a
+  session with a toolPolicy. No command was executed.` before reading config or
+  starting any process, whatever the operator's `[protocol]` block says, so the
+  marketplace CLI adapter behind them never runs in such a session.
+- `frozenPermissionMode: true` pins the session's permission mode at its mode
+  when created: it can narrow (for example to `plan`) and return, never widen.
+  `tool.approve` with `allowAllToolsForSession`, a wider `session.setPermissionMode`
+  (including `bypassPermissions`), and `session.permissions.mutateRule` calls
+  that could widen access (adding `allow`, removing `deny` or `ask`) answer
+  `INVALID_ARGUMENT`. The permission registry also refuses every other path to
+  a wider mode (ExitPlanMode, a restore override), so none can bypass those
+  checks.
+- The policy is stored in the agent's metadata, survives a daemon restart and a
+  resume, and cannot be changed afterwards. A resume that names a different
+  policy is refused; naming one for a session that had none restricts it from
+  then on. Stored policy that cannot be read fails the restore instead of
+  bringing the session back unrestricted.
+- For a session with a `toolPolicy`, `tool.approve` and `elicitation.respond`
+  must arrive on a connection that holds a client attached to that session,
+  the same rule `session.resolveToolCall` has. Another connection gets
+  `SESSION_NOT_ATTACHED`. `agent.create` does not attach: attach with
+  `agent.attach` or `session.attach` on the connection that will answer
+  prompts. Sessions without a policy, and remote connections (which carry their
+  own grant), are unchanged.
+- `session.shell.execute` runs the session's shell tool, so it answers
+  "not available" unless the policy lists it (`system.bash`, or `PowerShell` on
+  Windows).
+- `metadata.toolPolicy` and `metadata.toolPolicyModeCeiling` are reserved and
+  rejected in `agent.create`.
 
 #### Remote and Telegram methods
 
@@ -1068,10 +1202,14 @@ current Ledger action is documented in
 
 ## Startup and restored sessions
 
-The daemon recovers its state databases and its execution admission state
-before it listens. It then listens, publishes its identity record, and
-restores the sessions that were open at its last shutdown in the background,
-four at a time. A client can connect as soon as the identity record appears.
+The daemon validates canonical journals, repairs cancellations, classifies
+stale tools, and recovers execution admission state before it listens.
+It then listens, publishes its identity record, and loads snapshot payloads
+inside each session's restore gate. It restores the sessions that were open
+at its last shutdown in the background,
+four at a time, yielding to socket I/O between batches. A client can connect
+as soon as the identity record appears. Startup never runs a full database
+VACUUM; existing incremental reclamation remains bounded.
 
 A request that names a session still restoring waits until that restore
 settles, then runs as it would have once startup had finished. The daemon
@@ -1085,6 +1223,22 @@ session comes back with a live runtime, the create fails with the error data
 code `CANONICAL_SESSION_ALREADY_ACTIVE`, and the client attaches to the
 restored agent instead. `agenc --continue` and `agenc --resume`, headless or
 in the TUI, do this, so they work right after a daemon restart.
+
+While waiting for readiness, the CLI shows `Starting AgenC...` after one
+second. A TUI or print request waiting for a specific restored session shows
+`Reopening 193 sessions...` with the current backlog. That wait has a
+120-second deadline and sends `request.cancel` on timeout. The subsequent
+agent turn keeps its normal execution and cancellation rules. New sessions
+do not wait for the backlog. Progress is written to stderr, preserving print
+mode's stdout, and uses an optional `event.startup_restore` notification with
+`requestId` and `remaining` (zero ends that request's restore wait).
+
+`metadata.recovery.snapshot` contains the snapshot location, timestamp, and
+tool recovery notices. Full conversation, tool state, and MCP state stay in
+the snapshot database and the restored runtime. They are not duplicated in
+list responses or the daemon shutdown summary. Durable tool classifications
+survive a crash before deferred hydration; hydration reapplies and flushes
+them before the session can replay tools or be published.
 
 These answer at once: `health.*`, `daemon.*`, `request.cancel`,
 `session.list`, `agent.list`, and every request that names no session still

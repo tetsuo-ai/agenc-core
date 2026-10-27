@@ -10,14 +10,9 @@ import { Byline } from '../design-system/Byline.js';
 import FullWidthRow from '../design-system/FullWidthRow.js';
 import { ShimmerVerb } from './ShimmerVerb.js';
 import type { SpinnerMode } from './types.js';
-import {
-  formatStreamQuietWarning,
-  STREAM_QUIET_WARNING_MS,
-} from '../../../llm/stream-watchdog.js';
 import { computeSpinnerMessageMaxWidth, truncateSpinnerText } from './utils.js';
 
 const SEP_WIDTH = stringWidth(' · ');
-const THINKING_BARE_WIDTH = stringWidth('thinking');
 // Show the elapsed timer + token counter almost immediately (Claude Code
 // parity): 30s felt like the indicator was frozen/slow on every normal turn.
 // The tok/s rate keeps its own ≥20-token/≥5s floor, so early reads show the
@@ -223,6 +218,7 @@ export type SpinnerAnimationRowProps = {
   leaderIsIdle?: boolean;
   thinkingStatus: 'thinking' | number | null;
   effortSuffix: string;
+  streamQuietWarning?: string | null;
   showLeaderTokenStats?: boolean;
 };
 
@@ -243,7 +239,7 @@ export function SpinnerAnimationRow({
   teammateTokens,
   foregroundedTeammate,
   thinkingStatus,
-  effortSuffix,
+  streamQuietWarning,
   showLeaderTokenStats = true,
 }: SpinnerAnimationRowProps): React.ReactNode {
   // Whole-second wall clock with a live tick, so the elapsed timer and the
@@ -295,8 +291,8 @@ export function SpinnerAnimationRow({
     trackLiveness &&
     !hasRunningTeammates &&
     !toolsRunning &&
-    msSinceLastToken >= STREAM_QUIET_WARNING_MS
-      ? formatStreamQuietWarning(msSinceLastToken)
+    streamQuietWarning
+      ? streamQuietWarning
       : null;
   const stallNoteText =
     quietWarningText ??
@@ -317,7 +313,7 @@ export function SpinnerAnimationRow({
 
   let thinkingText =
     thinkingStatus === 'thinking'
-      ? `thinking${effortSuffix}`
+      ? 'thinking'
       : typeof thinkingStatus === 'number'
         ? `thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`
         : null;
@@ -334,27 +330,24 @@ export function SpinnerAnimationRow({
     (showLeaderTokenStats && (elapsedTimeMs > SHOW_TOKENS_AFTER_MS || showStallNote));
   const availableSpace = columns - messageWidth - 5;
   let showThinking = wantsThinking && availableSpace > thinkingWidthValue;
-  if (!showThinking && wantsThinking && thinkingStatus === 'thinking' && effortSuffix) {
-    if (availableSpace > THINKING_BARE_WIDTH) {
-      thinkingText = 'thinking';
-      thinkingWidthValue = THINKING_BARE_WIDTH;
-      showThinking = true;
-    }
-  }
 
+
+  const warningWidth = quietWarningText ? stallNoteWidth + SEP_WIDTH : 0;
+  const statusSpace = Math.max(0, availableSpace - warningWidth);
   const usedAfterThinking = showThinking ? thinkingWidthValue + SEP_WIDTH : 0;
-  const showTimer = wantsTimerAndTokens && availableSpace > usedAfterThinking + timerWidth;
+  const showTimer = wantsTimerAndTokens && statusSpace > usedAfterThinking + timerWidth;
   const usedAfterTimer = usedAfterThinking + (showTimer ? timerWidth + SEP_WIDTH : 0);
-  const showTokens = wantsTimerAndTokens && totalTokens > 0 && availableSpace > usedAfterTimer + tokensWidth;
+  const showTokens = wantsTimerAndTokens && totalTokens > 0 && statusSpace > usedAfterTimer + tokensWidth;
   // Only append the rate when it actually fits next to the token count.
   const usedAfterTokens = usedAfterTimer + (showTokens ? tokensWidth + SEP_WIDTH : 0);
   const rateSuffix = showTokens && rateText ? ` · ${rateText}` : '';
   const showRate =
-    rateSuffix !== '' && availableSpace > usedAfterTokens + stringWidth(rateSuffix);
+    rateSuffix !== '' && statusSpace > usedAfterTokens + stringWidth(rateSuffix);
   const usedAfterRate = usedAfterTokens + (showRate ? stringWidth(rateSuffix) : 0);
   const fitStallNote =
-    stallNoteText !== null && availableSpace > usedAfterRate + stallNoteWidth + SEP_WIDTH;
-  const thinkingOnly = showThinking && thinkingStatus === 'thinking' && !spinnerSuffix && !showTimer && !showTokens;
+    quietWarningText !== null ||
+    (stallNoteText !== null && availableSpace > usedAfterRate + stallNoteWidth + SEP_WIDTH);
+  const thinkingOnly = showThinking && thinkingStatus === 'thinking' && !spinnerSuffix && !showTimer && !showTokens && !quietWarningText;
 
   const parts = [
     ...(spinnerSuffix ? [<Text dimColor key="suffix">{spinnerSuffix}</Text>] : []),
@@ -375,7 +368,7 @@ export function SpinnerAnimationRow({
   if (
     !thinkingOnly &&
     parts.length > 0 &&
-    availableSpace > usedAfterRate + ESC_HINT_WIDTH + SEP_WIDTH
+    (quietWarningText !== null || availableSpace > usedAfterRate + ESC_HINT_WIDTH + SEP_WIDTH)
   ) {
     parts.push(<Text dimColor key="esc">{ESC_HINT_TEXT}</Text>);
   }

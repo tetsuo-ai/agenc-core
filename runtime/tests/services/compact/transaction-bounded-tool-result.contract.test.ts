@@ -115,6 +115,6 @@ function createSource(): RuntimeMessage[] {
       toolCalls: [{ id: "call-1", name: "FileRead", arguments: "{}" }],
     },
     toolResult,
-    ...Array.from({ length: 8 }, (_, index) => filler(index)),
+    ...Array.from({ length: 20 }, (_, index) => filler(index)),
   ];
 }

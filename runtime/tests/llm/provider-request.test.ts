@@ -4,7 +4,7 @@ import {
   resolveProviderRuntimeRequest,
 } from '../../src/llm/provider-request.ts'
 import { resolveProviderCredentialAuthority } from '../../src/llm/provider-options.ts'
-import { createProvider } from '../../src/llm/provider.ts'
+import { createProvider, readProviderFactoryOptions } from '../../src/llm/provider.ts'
 import { bindingFromProvider } from '../../src/session/provider-service.ts'
 
 describe('provider runtime request', () => {
@@ -32,6 +32,60 @@ describe('provider runtime request', () => {
       environment: {},
     })
     expect(openai.requested.extra?.zeroDataRetention).toBeUndefined()
+  })
+
+  test('asks OpenRouter for zero data retention by default; only an explicit false turns it off', () => {
+    for (const config of [{}, { providers: {} }, { providers: { openrouter: {} } }]) {
+      const request = resolveProviderRuntimeRequest({
+        provider: 'openrouter',
+        model: 'deepseek/deepseek-v4.1-flash',
+        config,
+        environment: { OPENROUTER_API_KEY: 'sk-or-test' },
+      })
+      expect(request.requested.extra).toMatchObject({ zeroDataRetention: true })
+    }
+    const optedOut = resolveProviderRuntimeRequest({
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4.1-flash',
+      config: { providers: { openrouter: { zero_data_retention: false } } },
+      environment: { OPENROUTER_API_KEY: 'sk-or-test' },
+    })
+    expect(optedOut.requested.extra?.zeroDataRetention).toBeUndefined()
+    // No other provider gets the OpenRouter routing preference.
+    for (const provider of ['openai', 'groq', 'venice', 'deepseek'] as const) {
+      const request = resolveProviderRuntimeRequest({ provider, model: 'm', config: {}, environment: {} })
+      expect(request.requested.extra?.zeroDataRetention, provider).toBeUndefined()
+    }
+  })
+
+  test('keeps ZDR and required parameters on default OpenRouter sessions and their children', async () => {
+    const bodies: Record<string, unknown>[] = []
+    const fetchImpl = async (_input: unknown, init?: { body?: unknown }) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_default_zdr',
+        object: 'chat.completion',
+        created: 0,
+        model: 'deepseek/deepseek-v4.1-flash',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const request = resolveProviderRuntimeRequest({
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4.1-flash',
+      config: {},
+      environment: {},
+      baseExtra: { fetchImpl },
+    })
+    const provider = createProvider('openrouter', { ...request.requested, apiKey: 'sk-or-test' })
+    await provider.chat([{ role: 'user', content: 'hi' }])
+    expect(bodies[0]?.provider).toEqual({ require_parameters: true, zdr: true })
+    // A child or reviewer rebuilt from the session's provider keeps it.
+    expect(readProviderFactoryOptions(provider).extra?.zeroDataRetention).toBe(true)
+    const child = createProvider('openrouter', { ...readProviderFactoryOptions(provider), apiKey: 'sk-or-test' })
+    await child.chat([{ role: 'user', content: 'hi' }])
+    expect(bodies[1]?.provider).toEqual({ require_parameters: true, zdr: true })
   })
 
   test('turns Grok response continuation on unless the config turns it off', () => {

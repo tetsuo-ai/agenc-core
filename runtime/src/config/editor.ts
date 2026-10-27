@@ -75,16 +75,24 @@ export function parseConfigEditorCommand(raw: string): {
   return { command, args: parts.slice(1) };
 }
 
-export const spawnConfigEditor: ConfigEditorSpawner = (command, args) =>
-  new Promise((resolve) => {
-    try {
-      const child = spawn(command, [...args], { stdio: "inherit" });
-      child.on("exit", (code) => resolve(code ?? 0));
-      child.on("error", () => resolve(127));
-    } catch {
-      resolve(127);
-    }
-  });
+export const spawnConfigEditor: ConfigEditorSpawner = async (command, args) => {
+  const { getInkInstance } = await import("../tui/ink/instances.js");
+  const ink = getInkInstance(process.stdout);
+  ink?.enterAlternateScreen();
+  try {
+    return await new Promise<number>((resolve) => {
+      try {
+        const child = spawn(command, [...args], { stdio: "inherit" });
+        child.on("exit", (code) => resolve(code ?? 0));
+        child.on("error", () => resolve(127));
+      } catch {
+        resolve(127);
+      }
+    });
+  } finally {
+    ink?.exitAlternateScreen();
+  }
+};
 
 /**
  * Open a private snapshot, validate the edited document, then commit it through

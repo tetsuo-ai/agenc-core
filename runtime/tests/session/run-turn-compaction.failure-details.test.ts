@@ -1,3 +1,4 @@
+import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { LLMResponse } from "../../src/llm/types.js";
 import { CompactionTransactionFailureWithDetails } from "../../src/services/compact/failure-details.js";
@@ -22,6 +23,7 @@ describe("auto_compact_failed carries the failure's cause (#2499)", () => {
     const logged = vi.spyOn(debug, "logForDebugging").mockImplementation(() => {});
     let streamCount = 0;
     const provider = mkProvider({});
+    installPreparedCompactionPressure(provider, request => request.messages.length > 1 ? 18_130 : 100);
     provider.chatStream = async (): Promise<LLMResponse> => {
       streamCount += 1;
       return {

@@ -98,6 +98,10 @@ and the next safe fix. Do not retry the same failing command repeatedly.`;
 
 export const AGENC_MARKETPLACE_KIT_INSTALLER_SKILL: BundledSkillDefinition = {
   name: "agenc-marketplace-kit-installer",
+  // It tells the model to download and run an installer, so it stays out of
+  // every session's skill list until the operator turns the marketplace on
+  // (`[protocol] enabled = true`). It still loads by exact name.
+  listedByDefault: false,
   description:
     "Install the signed AgenC Marketplace kit binary (SHA-256 verified, no GitHub auth) and wire this machine to operate the marketplace on Solana mainnet.",
   whenToUse:

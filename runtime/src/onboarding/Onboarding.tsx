@@ -23,20 +23,8 @@ import {
   signedInAccount,
   type SignInProvider,
 } from "../auth/provider-sign-in-accounts.js";
+
 import {
-  createAuthBackend,
-  resolveAuthManagedKeysEnabled,
-} from "../auth/selection.js";
-import { accountDefaultModel, readAccountModelAccess } from "../auth/account-access.js";
-import type {
-  AuthIdentity,
-  AuthSubscriptionTier,
-} from "../auth/backend.js";
-import type { RemoteAuthDeviceCodePrompt } from "../auth/backends/remote.js";
-import {
-  hasEntitledRemoteAuthSessionSync,
-  hasRemoteAuthSessionSync,
-  remoteAuthSessionSubscriptionTierSync,
   type RemoteAuthSessionReadContext,
 } from "../auth/session-state.js";
 import {
@@ -100,6 +88,7 @@ import {
   isTerminalBackgroundDetected,
 } from "../utils/terminalBackground.js";
 import { getTheme, type ThemeName, type ThemeSetting } from "../utils/theme.js";
+import { themeSettingNote } from "../utils/themeSetting.js";
 import { applyTextStyles } from "../tui/ink/colorize.js";
 import type { Color } from "../tui/ink/styles.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
@@ -107,12 +96,7 @@ import {
   verifyApiKey,
   verifyPreparedProviderConnection,
 } from "./useApiKeyVerification.js";
-import {
-  isFreeSubscriptionManagedModel,
-  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-  subscriptionManagedDefaultModel,
-  subscriptionManagedDefaultModelForTier,
-} from "../commands/subscription-managed-models.js";
+
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export type FirstRunOnboardingStepId =
@@ -220,15 +204,6 @@ export type ProviderSignInResult =
   | { readonly ok: true; readonly accountLabel: string }
   | { readonly ok: false; readonly message: string };
 
-export type AgenCAccountLoginResult =
-  | {
-      readonly ok: true;
-      readonly accountLabel: string;
-      readonly subscriptionTier: AuthSubscriptionTier;
-      readonly managedModel?: string;
-    }
-  | { readonly ok: false; readonly message: string };
-
 export interface OnboardingAuthPrompt {
   readonly heading: string;
   readonly detail: string;
@@ -255,11 +230,6 @@ export interface FirstRunOnboardingContext {
    * so wizard tests never open a browser; the default lazily imports it.
    */
   readonly runProviderSignIn?: (provider: SignInProvider) => Promise<ProviderSignInResult>;
-  /**
-   * Runs AgenC account sign-in (the same remote auth backend as /login).
-   * Injectable so wizard tests never open a browser.
-   */
-  readonly runAgenCAccountLogin?: () => Promise<AgenCAccountLoginResult>;
   /** Reports the URL/code while a browser or device sign-in is pending. */
   readonly onAuthPrompt?: (prompt: OnboardingAuthPrompt) => void;
 }
@@ -322,77 +292,6 @@ async function defaultRunProviderSignIn(
   }
 }
 
-function authIdentityLabel(identity: AuthIdentity | undefined): string {
-  return (
-    identity?.displayName?.trim() ||
-    identity?.email?.trim() ||
-    identity?.accountId?.trim() ||
-    "AgenC account"
-  );
-}
-
-function reportAgenCDeviceCode(
-  context: FirstRunOnboardingContext,
-  prompt: RemoteAuthDeviceCodePrompt,
-): void {
-  if (prompt.verificationUri === undefined) return;
-  context.onAuthPrompt?.({
-    heading: "Sign in or create an AgenC account",
-    detail:
-      "Finish the browser sign-in. New users can create their account in the same flow.",
-    url: prompt.verificationUri,
-    ...(prompt.userCode !== undefined ? { userCode: prompt.userCode } : {}),
-  });
-}
-
-async function defaultRunAgenCAccountLogin(
-  context: FirstRunOnboardingContext,
-): Promise<AgenCAccountLoginResult> {
-  try {
-    const ingress = captureSecureStorageIngress(
-      context.env ?? process.env,
-      context.agencHome,
-    );
-    const { openUrlInBrowser } = await import("../commands/auth.js");
-    const backend = createAuthBackend(context.config, {
-      agencHome: ingress.home.path,
-      env: ingress.environment,
-      remote: {
-        onDeviceCode: async (prompt) => {
-          reportAgenCDeviceCode(context, prompt);
-          if (prompt.verificationUri === undefined) return;
-          await openUrlInBrowser(prompt.verificationUri).catch(() => {
-            // The URL and optional code remain visible in the onboarding card.
-          });
-        },
-      },
-    });
-    const login = await backend.login({ sessionId: "tui" });
-    const subscriptionTier = await backend.getSubscriptionTier({
-      sessionId: "tui",
-    });
-    const access = await readAccountModelAccess(backend);
-    const managedModel = accountDefaultModel(access);
-    if (subscriptionTier === "free" && managedModel === undefined) {
-      return { ok: false, message: "Signed in to AgenC. No active model credits are available right now. Refresh access or choose another model connection." };
-    }
-    return {
-      ok: true,
-      accountLabel: authIdentityLabel(login.identity),
-      subscriptionTier,
-      ...(managedModel === undefined ? {} : { managedModel }),
-    };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      message:
-        `AgenC account sign-in did not complete (${detail}). ` +
-        "Try again, use another access method, or configure model access later.",
-    };
-  }
-}
-
 export interface FirstRunOnboardingSubmitResult {
   readonly state: FirstRunOnboardingState;
   readonly completed: boolean;
@@ -432,6 +331,7 @@ const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
     ready: "Ready",
   });
 
+// The same list, notes and saved setting as /theme (utils/themeSetting.ts).
 const THEME_CHOICES: readonly ThemeSetting[] = TUI_THEME_SETTINGS;
 
 /**
@@ -472,23 +372,6 @@ function providerDefaultModel(
     "config" | "env" | "remoteAuthSessionContext"
   >,
 ): string {
-  if (
-    providerOnboardingInfo(provider).supportsManagedKeyAccess &&
-    resolveAuthManagedKeysEnabled(context.config) &&
-    context.remoteAuthSessionContext !== undefined &&
-    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
-  ) {
-    return (
-      subscriptionManagedDefaultModelForTier(
-        provider,
-        remoteAuthSessionSubscriptionTierSync(
-          context.remoteAuthSessionContext,
-        ),
-      ) ??
-      subscriptionManagedDefaultModel(provider) ??
-      BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]
-    );
-  }
   if (provider === "gemini") {
     return readProviderConfig(context.config, provider)?.default_model?.trim() ||
       BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
@@ -538,7 +421,6 @@ export function createInitialFirstRunOnboardingState(
     highlightedChoice: null,
   };
 }
-
 
 /**
  * Probe the well-known local runtimes (O-1, onboarding-plan-2026-07): a user
@@ -606,11 +488,8 @@ function providerSetupStatus(
       return missingProviderCredentialEnvironmentLabel(provider, env) === undefined
         ? { status: "AWS credentials set", connected: true }
         : { status: "needs AWS credentials", connected: false };
-    case "managed":
-      return context.remoteAuthSessionContext !== undefined &&
-          hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
-        ? { status: "AgenC account", connected: true }
-        : { status: "needs an AgenC account", connected: false };
+    case "retired":
+      return { status: "unavailable", connected: false };
     default:
       break;
   }
@@ -622,15 +501,6 @@ function providerSetupStatus(
   if (match !== undefined) return { status: `env ${match.envVar}`, connected: true };
   if (home !== undefined && readOrDefault(() => hasSavedProviderKey(home, provider), false)) {
     return { status: "key saved", connected: true };
-  }
-  // A paid AgenC account reaches this provider with managed keys.
-  if (
-    providerOnboardingInfo(provider).supportsManagedKeyAccess &&
-    resolveAuthManagedKeysEnabled(context.config) &&
-    context.remoteAuthSessionContext !== undefined &&
-    hasEntitledRemoteAuthSessionSync(context.remoteAuthSessionContext)
-  ) {
-    return { status: "AgenC account", connected: true };
   }
   return { status: "not set", connected: false };
 }
@@ -728,7 +598,7 @@ function withCompletedStep(
 }
 
 /** The model-access options, in the order the menu numbers them. */
-type ModelAccessOptionId = "key" | "account" | "sign-in" | "later";
+type ModelAccessOptionId = "key" | "sign-in" | "later";
 
 /**
  * What the model-access menu lists for a provider. The key option is the
@@ -741,8 +611,7 @@ function modelAccessOptionIds(
 ): readonly ModelAccessOptionId[] {
   const access = providerOnboardingInfo(provider).access;
   return [
-    ...(access === "managed" ? [] : ["key" as const]),
-    "account",
+    ...(access === "retired" ? [] : ["key" as const]),
     ...(isSignInProvider(provider) ? ["sign-in" as const] : []),
     "later",
   ];
@@ -750,7 +619,6 @@ function modelAccessOptionIds(
 
 const MODEL_ACCESS_OPTION_COMMANDS: Readonly<Record<ModelAccessOptionId, string>> = {
   key: "key",
-  account: "account",
   "sign-in": "sign-in",
   later: "later",
 };
@@ -902,15 +770,6 @@ function isConfigureLaterCommand(command: string): boolean {
     command === "later" ||
     command === "next" ||
     command === "skip"
-  );
-}
-
-function isAgenCAccountLoginCommand(command: string): boolean {
-  return (
-    command === "account" ||
-    command === "agenc" ||
-    command === "agenc-login" ||
-    command === "login"
   );
 }
 
@@ -1333,20 +1192,6 @@ function withConnectionCheck(
   );
 }
 
-function authenticatedConnection(
-  provider: BuiltInProviderSlug,
-  model: string,
-  detail: string,
-): ProviderConnectionCheck {
-  return {
-    provider,
-    model,
-    status: "ready",
-    ok: true,
-    detail,
-  };
-}
-
 function captureApiKeyPaste(
   state: FirstRunOnboardingState,
   raw: string,
@@ -1665,13 +1510,13 @@ export async function checkOnboardingProviderConnection(
     : undefined;
   const onboarding = providerOnboardingInfo(provider);
 
-  if (onboarding.access === "managed") {
+  if (onboarding.access === "retired") {
     return {
       provider,
       model,
       status: "credentials-required",
       ok: false,
-      detail: "Hosted AgenC requires account auth; choose a BYOK provider for this first-run path.",
+      detail: "AgenC accounts no longer provide models. Choose a provider with your own credentials.",
     };
   }
 
@@ -1839,55 +1684,6 @@ export async function checkOnboardingProviderConnection(
       detail: `Gemini credential found via ${geminiCredentialSourceLabel(credentialPlan)}.`,
       credentialLabel,
       ...(credentialProvenance !== undefined ? { credentialProvenance } : {}),
-      baseURL,
-    };
-  }
-
-  if (
-    onboarding.supportsManagedKeyAccess &&
-    authority.credential.status === "missing" &&
-    resolveAuthManagedKeysEnabled(context.config) &&
-    context.remoteAuthSessionContext !== undefined &&
-    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
-  ) {
-    const tier =
-      remoteAuthSessionSubscriptionTierSync(
-        context.remoteAuthSessionContext,
-      ) ?? "unknown";
-    if (
-      tier === "free" &&
-      isFreeSubscriptionManagedModel(provider, model)
-    ) {
-      return {
-        provider,
-        model,
-        status: "ready",
-        ok: true,
-        detail: "AgenC account is signed in. Free hosted model access is ready.",
-        baseURL,
-      };
-    }
-    if (!hasEntitledRemoteAuthSessionSync(context.remoteAuthSessionContext)) {
-      const keyLabel = credentialLabel ?? "a BYOK API key";
-      return {
-        provider,
-        model,
-        status: "credentials-required",
-        ok: false,
-        detail:
-          `AgenC account is signed in on the ${tier} plan. ` +
-          `Managed provider keys require an active AgenC subscription; paste ${keyLabel} to continue.`,
-        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
-        baseURL,
-        canSkip: false,
-      };
-    }
-    return {
-      provider,
-      model,
-      status: "ready",
-      ok: true,
-      detail: "AgenC Pro is signed in. Hosted OpenRouter model access is ready.",
       baseURL,
     };
   }
@@ -2094,77 +1890,6 @@ export async function submitFirstRunOnboardingInput(
         ) {
           return {
             state: { ...state, error: signInMismatchError(signInTarget) },
-            completed: false,
-          };
-        }
-        if (isAgenCAccountLoginCommand(command)) {
-          const runLogin =
-            context.runAgenCAccountLogin ??
-            (() => defaultRunAgenCAccountLogin(context));
-          const result = await runLogin();
-          if (!result.ok) {
-            return {
-              state: {
-                ...state,
-                authPrompt: null,
-                error: result.message,
-              },
-              completed: false,
-            };
-          }
-          if (!resolveAuthManagedKeysEnabled(context.config)) {
-            return {
-              state: {
-                ...state,
-                authPrompt: null,
-                error:
-                  `Signed in as ${result.accountLabel}, but hosted model access ` +
-                  "is disabled in this AgenC configuration. Choose an API key " +
-                  "or configure model access later.",
-              },
-              completed: false,
-            };
-          }
-          const hostedProvider = resolveBuiltInProviderSlug(
-            result.managedModel === undefined ? SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER : "agenc",
-          );
-          const hostedModel =
-            result.managedModel ?? (hostedProvider === undefined
-              ? undefined
-              : subscriptionManagedDefaultModelForTier(
-                  hostedProvider,
-                  result.subscriptionTier,
-                ));
-          if (hostedProvider === undefined || hostedModel === undefined) {
-            return {
-              state: {
-                ...state,
-                authPrompt: null,
-                error:
-                  `Signed in as ${result.accountLabel}, but no hosted model is ` +
-                  `available for the ${result.subscriptionTier} plan. ` +
-                  "Choose another access method or configure model access later.",
-              },
-              completed: false,
-            };
-          }
-          const accessDetail =
-            result.subscriptionTier === "free"
-              ? `Signed in to AgenC as ${result.accountLabel}. Free hosted model access is ready.`
-              : `Signed in to AgenC as ${result.accountLabel}. Hosted model access for the ${result.subscriptionTier} plan is ready.`;
-          return {
-            state: withModelAccessResult(
-              {
-                ...state,
-                selectedProvider: hostedProvider,
-                selectedModel: hostedModel,
-              },
-              authenticatedConnection(
-                hostedProvider,
-                hostedModel,
-                accessDetail,
-              ),
-            ),
             completed: false,
           };
         }
@@ -2603,16 +2328,6 @@ interface OnboardingCardView {
   readonly hint?: string;
 }
 
-const THEME_NOTES: Readonly<Record<ThemeSetting, string>> = {
-  auto: "matches your terminal background",
-  dark: "for dark terminals",
-  light: "for light terminals",
-  "light-daltonized": "color-blind friendly, light",
-  "dark-daltonized": "color-blind friendly, dark",
-  "light-ansi": "your terminal's 16 colors, light",
-  "dark-ansi": "your terminal's 16 colors, dark",
-};
-
 /** Providers visible at once; the rest collapse into "n more" rows. */
 const PROVIDER_WINDOW = 8;
 
@@ -2798,11 +2513,6 @@ function modelAccessMenuEntries(
     switch (id) {
       case "key":
         return keyOptionEntry(state, context);
-      case "account":
-        return {
-          label: "AgenC account",
-          note: "sign in for hosted models, free plan",
-        };
       case "sign-in":
         return state.selectedProvider === "openai"
           ? { label: "ChatGPT account", note: "sign in to use OpenAI with your plan" }
@@ -2948,7 +2658,6 @@ function accessSummary(state: FirstRunOnboardingState): string {
   }
   if (provenance?.kind === "environment") return `${credentialName(connection)}, checked`;
   if (providerAccessKind(connection.provider) === "local") return "local, no key needed";
-  if (connection.detail.startsWith("Signed in to AgenC")) return "AgenC account";
   return "ready";
 }
 
@@ -3006,9 +2715,7 @@ function onboardingCardView(
           state,
           THEME_CHOICES.map((theme) => ({
             label: theme,
-            note: theme === state.selectedTheme
-              ? `${THEME_NOTES[theme]} (current)`
-              : THEME_NOTES[theme],
+            note: themeSettingNote(theme, state.selectedTheme),
           })),
         ),
         hint: themeTip(),

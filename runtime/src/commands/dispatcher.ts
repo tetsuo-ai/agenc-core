@@ -188,7 +188,16 @@ async function dispatchScopedSlashCommand(
         },
       };
     }
-    const message = `Unknown command: /${parsed.name}`;
+    const relatedCommand = parsed.name === "settings"
+      ? { name: "config", purpose: "change settings" }
+      : parsed.name === "undo"
+        ? { name: "rewind", purpose: "preview and restore earlier changes" }
+        : undefined;
+    const destination = relatedCommand === undefined ? undefined : registry.find(relatedCommand.name);
+    const guidance = destination !== undefined && destination.userInvocable !== false && relatedCommand !== undefined
+      ? `Run /${relatedCommand.name} to ${relatedCommand.purpose}.`
+      : "Run /help to see available commands.";
+    const message = `Unknown command: /${parsed.name}. ${guidance}`;
     return {
       result: { kind: "error", message },
       immediate: false,

@@ -5,6 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { readableToolError } from "../../utils/readable-tool-error.js";
 import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { AgentControl } from "../../agents/control.js";
 import { MailboxClosedError } from "../../agents/mailbox.js";
@@ -188,13 +189,12 @@ function normalizeSessionShellResult(
     typeof codeMode.output === "string" ? codeMode.output : undefined;
   const rawStdout =
     metadataStdout ??
-    codeModeOutput ??
-    (dispatch.isError === true ? "" : dispatch.content);
+    (dispatch.isError === true ? "" : codeModeOutput ?? dispatch.content);
   const rawStderr =
     typeof metadata.stderr === "string"
       ? metadata.stderr
       : dispatch.isError === true && rawStdout.length === 0
-        ? dispatch.content
+        ? readableToolError(dispatch.content).replace(/<\/?tool_use_error>/g, "")
         : "";
   const metadataExitCode = metadata.exitCode;
   const codeModeExitCode = codeMode.exit_code;

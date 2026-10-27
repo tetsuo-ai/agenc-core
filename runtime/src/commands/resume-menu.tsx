@@ -8,6 +8,7 @@ import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 import type { RolloutEntry } from "./resume.js";
+import { clearPendingResumeSessionId } from "../tui/pending-resume.js";
 
 function formatTime(mtimeMs: number): string {
   const date = new Date(mtimeMs);
@@ -36,6 +37,10 @@ function ResumeMenuView({
   readonly requestResumeSession?: (sessionId: string) => void;
 }): React.ReactNode {
   const [activeIndex, setActiveIndex] = React.useState(0);
+  const selectedResume = React.useRef(false);
+  React.useEffect(() => () => {
+    if (!selectedResume.current) clearPendingResumeSessionId();
+  }, []);
   const rows =
     entries.length > 0
       ? entries
@@ -50,6 +55,7 @@ function ResumeMenuView({
 
   useInput((input, key) => {
     if (key.escape || input === "q") {
+      clearPendingResumeSessionId();
       onDone();
       return;
     }
@@ -61,6 +67,7 @@ function ResumeMenuView({
       if (canResume) {
         const target = rows[activeIndex] ?? rows[0];
         if (target && target.sessionId !== "none") {
+          selectedResume.current = true;
           requestResumeSession(target.sessionId);
           onDone();
         }
@@ -80,7 +87,6 @@ function ResumeMenuView({
   return (
     <MenuModal
       title="resume"
-      count={`${entries.length}`}
       summary="recent sessions"
       headerRight="local"
       columns={[3, 18, 20, 48]}
@@ -138,6 +144,7 @@ export function openResumeMenu(
   ctx: SlashCommandContext,
   entries: readonly RolloutEntry[],
 ): boolean {
+  clearPendingResumeSessionId();
   const requestResumeSession = ctx.appState?.requestResumeSession;
   return openLocalJsxCommand(ctx, close => (
     <ResumeMenuView

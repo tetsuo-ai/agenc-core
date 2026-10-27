@@ -57,11 +57,15 @@ export function AutoUpdater({
   // progress.
   const isUpdatingRef = useRef(isUpdating);
   isUpdatingRef.current = isUpdating;
+  const onChangeIsUpdatingRef = useRef(onChangeIsUpdating);
+  onChangeIsUpdatingRef.current = onChangeIsUpdating;
+  const onAutoUpdaterResultRef = useRef(onAutoUpdaterResult);
+  onAutoUpdaterResultRef.current = onAutoUpdaterResult;
   const checkForUpdates = React.useCallback(async () => {
     let didStartUpdating = false;
     const finishStartedUpdate = () => {
       if (didStartUpdating) {
-        onChangeIsUpdating(false);
+        onChangeIsUpdatingRef.current(false);
         didStartUpdating = false;
       }
     };
@@ -75,7 +79,7 @@ export function AutoUpdater({
       }
       const currentVersion = MACRO.VERSION;
       const channel = getExecutionAuthoritySettings()?.autoUpdatesChannel ?? 'latest';
-      let latestVersion = await getLatestVersion(channel);
+      let latestVersion = await getLatestVersion(channel, { background: true });
       const isDisabled = isAutoUpdaterDisabled();
       if (!mountedRef.current || isUpdatingRef.current) {
         return;
@@ -105,7 +109,7 @@ export function AutoUpdater({
 
       // Check if update needed and perform update
       if (!isDisabled && currentVersion && latestVersion && !gte(currentVersion, latestVersion) && !shouldSkipVersion(latestVersion)) {
-        onChangeIsUpdating(true);
+        onChangeIsUpdatingRef.current(true);
         didStartUpdating = true;
 
         // Remove native installer symlink since we're using JS-based updates
@@ -164,7 +168,7 @@ export function AutoUpdater({
           return;
         }
         finishStartedUpdate();
-        onAutoUpdaterResult({
+        onAutoUpdaterResultRef.current({
           version: latestVersion,
           status: installStatus
         });
@@ -173,12 +177,11 @@ export function AutoUpdater({
       logError(error);
       finishStartedUpdate();
     }
-    // isUpdating intentionally omitted from deps; we read isUpdatingRef
-    // instead so the guard is always current without changing callback
-    // identity (which would re-trigger the initial-check useEffect below).
+    // Latest props live in refs. A changed parent callback must not restart
+    // the initial check on every render or after a completed task.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    // biome-ignore lint/correctness/useExhaustiveDependencies: isUpdating read via ref
-  }, [onAutoUpdaterResult]);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: latest props read via refs
+  }, []);
 
   // Initial check
   useEffect(() => {

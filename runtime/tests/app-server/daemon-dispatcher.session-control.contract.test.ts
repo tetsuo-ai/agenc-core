@@ -1,3 +1,4 @@
+import { PermissionModeTransitionPrecommitError } from "../permissions/permission-mode.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
@@ -543,6 +544,15 @@ describe("daemon session-control internal method dispatch", () => {
     });
   });
 
+  it("marks a pure mode rejection as precommit so the client may make another choice", async () => {
+    const setSessionPermissionMode = vi.fn(async () => { throw new PermissionModeTransitionPrecommitError("Auto mode is unavailable"); });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { setSessionPermissionMode } as never });
+    const connection = dispatcher.createConnection(); await initialize(connection);
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "auto", method: "session.setPermissionMode", params: { sessionId: "session_1", mode: "auto" } })).resolves.toMatchObject({ error: {
+      code: -32602, data: { authorityPhase: "precommit", code: "PERMISSION_MODE_TRANSITION_REJECTED" },
+    } });
+  });
+
   it("rejects session.setPermissionMode without a mode", async () => {
     const setSessionPermissionMode = vi.fn();
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -747,6 +757,21 @@ describe("daemon session-control internal method dispatch", () => {
         "session.applyConfig.modelVerbosity": true,
         "session.applyConfig.reasoningEffortClear": true,
       } } });
+  });
+
+  it("accepts custom task token counts and rejects invalid or mixed budget mutations", async () => {
+    const applyConfigToSession = vi.fn(async (params: SessionApplyConfigParams) => ({ sessionId: params.sessionId, applied: true, taskTokenBudget: params.taskTokenBudget, summary: "budget applied" }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { applyConfigToSession } as never });
+    const connection = dispatcher.createConnection(); await initialize(connection);
+    for (const tokens of [0, 3_000_000]) {
+      await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "budget", method: "session.applyConfig", params: { sessionId: "session_1", taskTokenBudget: tokens } }))
+        .resolves.toMatchObject({ result: { taskTokenBudget: tokens } });
+    }
+    for (const invalid of [{ taskTokenBudget: -1 }, { taskTokenBudget: 1.5 }, { taskTokenBudget: "3m" }, { taskTokenBudget: Number.MAX_SAFE_INTEGER + 1 }, { taskTokenBudget: 10, taskBudgetLevel: "max" }, { taskTokenBudget: 10, reasoningEffort: "high" }, { taskTokenBudget: 10, profile: "fast" }, { taskTokenBudget: 10, modelVerbosity: "low" }]) {
+      await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "invalid", method: "session.applyConfig", params: { sessionId: "session_1", ...invalid } }))
+        .resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(applyConfigToSession).toHaveBeenCalledTimes(2);
   });
 
   it("routes session.applyConfig with reload flag", async () => {

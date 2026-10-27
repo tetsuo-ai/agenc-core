@@ -21,9 +21,11 @@ describe("alternate fullscreen canonical spend", () => {
   test.each([
     [{ costUsd: 1.25, hasUnknownCost: false }, "$1.25"],
     [{ costUsd: 0, hasUnknownCost: false }, "$0.00"],
-    [{ costUsd: 0.5, hasUnknownCost: true }, "$0.500 +?"],
-    [{ costUsd: 0.045, hasUnknownCost: false, costEstimated: true }, "$0.045 est."],
-    [{ costUsd: 0.045, hasUnknownCost: true, costEstimated: true }, "$0.045 est. +?"],
+    [{ costUsd: 0.5, hasUnknownCost: true }, "≥$0.500"],
+    // An estimated cost is the registry ceiling for a model with no known
+    // price, never a figure to show.
+    [{ costUsd: 0.045, hasUnknownCost: false, costEstimated: true }, "price unknown"],
+    [{ costUsd: 0.045, hasUnknownCost: true, costEstimated: true }, "price unknown"],
     [null, null],
   ] as const)("renders the scoped snapshot %j without sidecar polling", async (usage, label) => {
     const timer = vi.spyOn(globalThis, "setInterval");
@@ -43,6 +45,7 @@ describe("alternate fullscreen canonical spend", () => {
       expect(output).not.toContain("—");
     } else {
       expect(output).toContain(label);
+      if (label === "price unknown") expect(output).not.toContain("$0.045");
     }
     expect(output).not.toContain("spend");
     expect(mocks.getTotalCost).not.toHaveBeenCalled();

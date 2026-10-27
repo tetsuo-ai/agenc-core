@@ -20,6 +20,11 @@ export interface StartupSandboxBypass {
   readonly dangerouslyBypassApprovalsAndSandbox: boolean;
   /** One operator-facing line to write to stderr, when the sandbox was dropped. */
   readonly notice?: string;
+  /**
+   * The same fact, short enough for the TUI footer. The TUI takes over the
+   * terminal, so the stderr line is never seen there.
+   */
+  readonly tuiNotice?: string;
 }
 
 export interface StartupSandboxBypassOptions {
@@ -53,6 +58,18 @@ export function sandboxUnavailableNotice(status: SandboxExecutionStatus): string
   );
 }
 
+/** The TUI footer form of {@link sandboxUnavailableNotice}. */
+export function sandboxUnavailableTuiNotice(
+  status: SandboxExecutionStatus,
+  platform: NodeJS.Platform = status.platform,
+): string {
+  if (platform === "win32") {
+    return "No sandbox on Windows: commands run with your full Windows permissions.";
+  }
+  const reason = status.reason ?? "the platform sandbox is unavailable";
+  return `No sandbox on this host (${reason}): commands run with your full permissions. Run agenc doctor to repair it.`;
+}
+
 /**
  * Resolve the runtime sandbox flag for this startup from the parsed CLI flags.
  *
@@ -72,15 +89,17 @@ export function resolveStartupSandboxBypass(
     return { dangerouslyBypassApprovalsAndSandbox: false };
   }
   const probe = options.probe ?? defaultProbe;
+  const platform = options.platform ?? process.platform;
   const status = probe({
     cwd: options.cwd,
     env: options.env,
-    platform: options.platform ?? process.platform,
+    platform,
   });
   if (status.kind === "unavailable") {
     return {
       dangerouslyBypassApprovalsAndSandbox: true,
       notice: sandboxUnavailableNotice(status),
+      tuiNotice: sandboxUnavailableTuiNotice(status, platform),
     };
   }
   return { dangerouslyBypassApprovalsAndSandbox: false };

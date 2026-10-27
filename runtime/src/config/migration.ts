@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { syncDirectory } from "../utils/durable-atomic-file.js";
 
 import {
   findProjectRootSync,
@@ -584,7 +585,7 @@ async function quarantineExpectedMigrationFile(
       `${operation} quarantined a file that changed after validation; it was preserved for recovery at ${quarantinePath}`,
     );
   }
-  await fsyncPath(dirname(path)).catch(() => undefined);
+  await syncDirectory(dirname(path)).catch(() => undefined);
   return Object.freeze({
     path: quarantinePath,
     snapshot: quarantined,
@@ -606,7 +607,7 @@ async function discardQuarantinedMigrationFile(
     );
   }
   await rm(quarantined.path);
-  await fsyncPath(dirname(quarantined.path)).catch(() => undefined);
+  await syncDirectory(dirname(quarantined.path)).catch(() => undefined);
 }
 
 async function restoreQuarantinedMigrationFile(
@@ -725,7 +726,7 @@ async function moveMigrationFileNoClobber(
       `${operation} destination does not match the validated source: ${destinationPath}`,
     );
   }
-  await fsyncPath(dirname(destinationPath)).catch(() => undefined);
+  await syncDirectory(dirname(destinationPath)).catch(() => undefined);
   if (await readMigrationFile(sourcePath) !== null) {
     throw new ConfigMigrationError(
       `${operation} source reappeared after publication; the validated copy remains at ${quarantined.path}: ${sourcePath}`,
@@ -2762,6 +2763,7 @@ function migrateLegacyPerToolPermissionAliases(
 const TOOL_CONFIG_NON_TOOL_KEYS = new Set([
   "enabled_tools",
   "disabled_tools",
+  "web_search_provider",
   "web_search_endpoint",
   "web_search_endpoint_kind",
 ]);
@@ -5078,7 +5080,7 @@ async function writeExclusiveAtomic(
     } catch (error) {
       postPublicationErrors.push(asMigrationPublicationError(error));
     }
-    await fsyncPath(dirname(path)).catch(() => undefined);
+    await syncDirectory(dirname(path)).catch(() => undefined);
   } catch (error) {
     primaryFailure = error;
   }
@@ -5370,7 +5372,8 @@ async function recoverInterruptedPreparations(home: HomeContext): Promise<void> 
 }
 
 async function fsyncPath(path: string): Promise<void> {
-  const handle = await open(path, "r");
+  // FlushFileBuffers requires a writable file handle on Windows.
+  const handle = await open(path, process.platform === "win32" ? "r+" : "r");
   let syncFailed = false;
   let syncFailure: unknown;
   try {
@@ -5523,7 +5526,7 @@ async function writeAtomic(
       postPublicationErrors.push(asMigrationPublicationError(error));
     }
     try {
-      await fsyncPath(dirname(path));
+      await syncDirectory(dirname(path));
     } catch (error) {
       postPublicationErrors.push(asMigrationPublicationError(error));
     }
@@ -6225,7 +6228,7 @@ async function applyConfigV2MigrationLocked(
     );
     preparationManifestPublished = false;
     preparationManifestSnapshot = null;
-    await fsyncPath(dir).catch(() => undefined);
+    await syncDirectory(dir).catch(() => undefined);
 
     let checkpoint = prepared;
   let credentialTransaction: NativeSecureStorageTransaction | null = null;
@@ -7549,7 +7552,7 @@ async function rollbackJournal(
       await samePhysicalFile(archive.sourcePath, archive.archivePath)
     ) {
       await rm(archive.archivePath);
-      await fsyncPath(dirname(archive.sourcePath)).catch(() => undefined);
+      await syncDirectory(dirname(archive.sourcePath)).catch(() => undefined);
       restored += 1;
     } else if (sourceHash === null && archivedHash === archive.sha256) {
       try {
@@ -7571,7 +7574,7 @@ async function rollbackJournal(
         );
       }
       await rm(archive.archivePath);
-      await fsyncPath(dirname(archive.sourcePath)).catch(() => undefined);
+      await syncDirectory(dirname(archive.sourcePath)).catch(() => undefined);
       restored += 1;
     } else {
       throw new ConfigMigrationError(
@@ -7688,7 +7691,7 @@ async function rollbackJournal(
     }
 
     await rm(scratchPath);
-    await fsyncPath(dirname(write.targetPath)).catch(() => undefined);
+    await syncDirectory(dirname(write.targetPath)).catch(() => undefined);
     restored += 1;
     pendingWriteIndexes.delete(index);
     await checkpointRollbackProgress();

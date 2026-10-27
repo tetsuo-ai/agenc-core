@@ -19,7 +19,7 @@ import { AppStoreContext, useAppState } from '../state/AppState.js';
 import type { AppState } from '../state/AppStateStore.js';
 
 // Non-modal overlays that shouldn't disable TextInput focus
-const NON_MODAL_OVERLAYS = new Set(['autocomplete']);
+const NON_MODAL_OVERLAYS = new Set(['autocomplete', 'mode-switcher-toast']);
 
 /**
  * Hook to register a component as an active overlay.
@@ -128,6 +128,8 @@ export function useIsOverlayActive() {
  * Hook to check if any modal overlay is currently active.
  * Modal overlays are overlays that should capture all input (like Select dialogs).
  * Non-modal overlays (like autocomplete) don't disable TextInput focus.
+ * A composer may allow input under one informational overlay without releasing
+ * that overlay's ownership of Escape and cancellation in other consumers.
  *
  * @returns true if any modal overlay is currently active
  *
@@ -138,12 +140,12 @@ export function useIsOverlayActive() {
 function _temp2(s: AppState) {
   return s.activeOverlays.size > 0;
 }
-export function useIsModalOverlayActive() {
-  return useAppState(_temp3);
+export function useIsModalOverlayActive(inputAllowedOverlay?: string) {
+  return useAppState(s => _temp3(s, inputAllowedOverlay));
 }
-function _temp3(s: AppState) {
+function _temp3(s: AppState, inputAllowedOverlay?: string) {
   for (const id of s.activeOverlays) {
-    if (!NON_MODAL_OVERLAYS.has(id)) {
+    if (id !== inputAllowedOverlay && !NON_MODAL_OVERLAYS.has(id)) {
       return true;
     }
   }

@@ -88,6 +88,40 @@ describe("SandboxExecutionBroker", () => {
     );
   });
 
+  it("reuses the session's successful probe for same-cwd read-only inspection forks", () => {
+    const root = tempRoot("agenc-sandbox-broker-inspection-probe-");
+    const probe = vi.fn((options: { readonly mode: string }) =>
+      readyStatus(options.mode === "read_only" ? "read_only" : "workspace_write"));
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: root, probe, env: { PATH: "/usr/bin:/bin" } });
+    // Before the session has probed, a fork probes for itself.
+    expect(broker.forkForReadOnlyInspection(root).status()).toMatchObject({ kind: "ready", mode: "read_only" });
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(broker.status()).toMatchObject({ kind: "ready", mode: "workspace_write" });
+    expect(probe).toHaveBeenCalledTimes(2);
+    for (let index = 0; index < 3; index += 1) {
+      const fork = broker.forkForReadOnlyInspection(root);
+      expect(fork.status()).toEqual({ ...readyStatus("workspace_write"), mode: "read_only" });
+      expect(fork.runtimeSandbox("tool")?.permissionProfile.network).toBe("disabled");
+    }
+    expect(probe).toHaveBeenCalledTimes(2);
+    // Another cwd keeps its own probe.
+    mkdirSync(join(root, "nested"));
+    broker.forkForReadOnlyInspection(join(root, "nested")).status();
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
+
+  it("probes inspection forks again when the session probe is not ready", () => {
+    const root = tempRoot("agenc-sandbox-broker-inspection-unready-");
+    const probe = vi.fn((): SandboxExecutionStatus => ({
+      kind: "unavailable", mode: "workspace_write", platform: process.platform,
+      reason: "probe: namespace creation failed", remediation: "fix it",
+    }));
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: root, probe });
+    broker.status();
+    broker.forkForReadOnlyInspection(root).status();
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
   it("turns Ubuntu's AppArmor bubblewrap denial into the exact profile fix", () => {
     const diagnostic =
       "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted";
@@ -359,6 +393,73 @@ describe("SandboxExecutionBroker", () => {
       }
     },
   );
+
+  it.each([
+    { sandbox: "macos_seatbelt" as const, surface: "browser" as const, browserCdp: true, nested: true },
+    { sandbox: "linux_seccomp" as const, surface: "browser" as const, browserCdp: true, nested: true },
+    { sandbox: "macos_seatbelt" as const, surface: "browser" as const, browserCdp: false, nested: false },
+    { sandbox: "macos_seatbelt" as const, surface: "tool" as const, browserCdp: false, nested: false },
+  ])("turns Chromium's own sandbox off only for a browser inside AgenC's sandbox ($sandbox, $surface, browserCdp=$browserCdp)",
+    ({ sandbox, surface, browserCdp, nested }) => {
+      const root = tempRoot("agenc-browser-nested-sandbox-");
+      const transform = vi.fn((request: {
+        readonly command: { readonly program: string; readonly args: readonly string[] };
+        readonly chromiumBrowser?: boolean;
+      }) => ({
+        command: ["/sandbox/helper", "--", request.command.program, ...request.command.args],
+        cwd: root,
+        env: {},
+      }));
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        sandboxManager: { selectInitial: () => sandbox, transform } as never,
+        probe: () => readyStatus("workspace_write"),
+      });
+
+      broker.prepareSpawn(surface, {
+        program: "/bin/echo",
+        args: ["--headless=new", "about:blank"],
+        cwd: root,
+        env: {},
+        ...(browserCdp ? { browserCdp: true } : {}),
+      }).runSync(resolved => resolved);
+
+      const request = transform.mock.calls[0]![0];
+      expect(request.command.args).toEqual(nested
+        ? ["--no-sandbox", "--headless=new", "about:blank"]
+        : ["--headless=new", "about:blank"]);
+      expect(request.chromiumBrowser === true).toBe(browserCdp);
+    },
+  );
+
+  it("does not repeat --no-sandbox when the browser config already passes it", () => {
+    const root = tempRoot("agenc-browser-no-sandbox-once-");
+    const transform = vi.fn((request: {
+      readonly command: { readonly program: string; readonly args: readonly string[] };
+    }) => ({
+      command: ["/sandbox/helper", "--", request.command.program, ...request.command.args],
+      cwd: root,
+      env: {},
+    }));
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: root,
+      sandboxManager: { selectInitial: () => "macos_seatbelt", transform } as never,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    broker.prepareSpawn("browser", {
+      program: "/bin/echo",
+      args: ["--headless=new", "--no-sandbox", "about:blank"],
+      cwd: root,
+      env: {},
+      browserCdp: true,
+    }).runSync(resolved => resolved);
+
+    expect(transform.mock.calls[0]![0].command.args)
+      .toEqual(["--headless=new", "--no-sandbox", "about:blank"]);
+  });
 
   it("refuses CDP stdio for any surface but the browser", () => {
     const root = tempRoot("agenc-browser-cdp-surface-");

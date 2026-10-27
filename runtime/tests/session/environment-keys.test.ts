@@ -43,6 +43,7 @@ describe("canonicalSessionEnvironmentKeys", () => {
     ]);
     expect(keys).toContain("AGENC_MODEL");
     expect(keys).toContain("AGENC_PROVIDER");
+    expect(keys).toContain("AGENC_STREAM_QUIET_WARNING_MS");
     expect(Object.isFrozen(keys)).toBe(true);
   });
 

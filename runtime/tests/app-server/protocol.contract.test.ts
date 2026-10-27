@@ -10,6 +10,10 @@ import {
 } from "../../src/contracts/additional-working-directories.js";
 import { MAX_WHISPER_WAV_BYTES, WHISPER_LANGUAGES } from "../../src/audio/whisper.js";
 import {
+  MAX_SESSION_TOOL_POLICY_TOOLS,
+  sessionToolPolicyIssue,
+} from "../../src/permissions/session-tool-policy.js";
+import {
   AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
   AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET,
   AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
@@ -192,6 +196,7 @@ const expectedInternalMethods = [
   "session.previewFileRewind",
   "session.rewindFilesToMessage",
   "session.shell.execute",
+  "session.setProviderKey",
   "session.setModel",
   "session.setPermissionMode",
   "session.permissions.mutateRule",
@@ -242,7 +247,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.31.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.34.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",
@@ -492,6 +497,59 @@ describe("AgenC daemon protocol surface", () => {
     );
   });
 
+  it("publishes the agent.create toolPolicy schema with the daemon's own limits", () => {
+    const schema = readProtocolSchema();
+    const validatePolicy = compileDefinitionValidator(schema, "AgentToolPolicy");
+    const validateCreate = compileDefinitionValidator(schema, "AgentCreateParams");
+    const corpus: readonly unknown[] = [
+      { enabledTools: ["FileRead"] },
+      { enabledTools: ["FileRead", "mcp.desktop.read_file"], frozenPermissionMode: true, deferMcpTools: false },
+      { enabledTools: ["mcp.plugin:srv.tool-1"], deferMcpTools: false },
+      // MCP tools that deferral would leave unreachable, and the ways out.
+      { enabledTools: ["mcp.plugin:srv.tool-1"] },
+      { enabledTools: ["FileRead"], deferMcpTools: true },
+      { enabledTools: ["FileRead", "system.searchTools"], deferMcpTools: true },
+      { enabledTools: ["mcp.plugin:srv.tool-1", "system.searchTools"] },
+      // Bundled skills: Skill:<name> needs the Skill tool, and the installer is never allowed.
+      { enabledTools: ["Skill", "Skill:browser-automation"] },
+      { enabledTools: ["FileRead", "Skill:browser-automation"] },
+      { enabledTools: ["Skill", "Skill:"] },
+      { enabledTools: ["Skill", "Skill:agenc-marketplace-kit-installer"] },
+      { enabledTools: [] },
+      { enabledTools: ["FileRead", "FileRead"] },
+      { enabledTools: ["File Read"] },
+      { enabledTools: [""] },
+      { enabledTools: [".x"] },
+      { enabledTools: ["x".repeat(128)] },
+      { enabledTools: ["x".repeat(129)] },
+      { enabledTools: Array.from({ length: 256 }, (_, i) => `t${i}`) },
+      { enabledTools: Array.from({ length: 257 }, (_, i) => `t${i}`) },
+      { enabledTools: ["FileRead"], frozenPermissionMode: "yes" },
+      { enabledTools: ["FileRead"], deferMcpTools: 1 },
+      { enabledTools: ["FileRead"], other: true },
+      { frozenPermissionMode: true },
+      {},
+      ["FileRead"],
+    ];
+    for (const candidate of corpus) {
+      expect(validatePolicy(candidate), JSON.stringify(candidate).slice(0, 80)).toBe(
+        sessionToolPolicyIssue(candidate) === undefined,
+      );
+    }
+    // The cross-field rules are published, not only enforced by the daemon.
+    expect(validatePolicy({ enabledTools: ["mcp.plugin:srv.tool-1"] })).toBe(false);
+    expect(validatePolicy({ enabledTools: ["FileRead"], deferMcpTools: true })).toBe(false);
+    expect(validatePolicy({ enabledTools: ["mcp.plugin:srv.tool-1", "system.searchTools"] })).toBe(true);
+    expect(validatePolicy({ enabledTools: ["Skill", "Skill:browser-automation"] })).toBe(true);
+    expect(validatePolicy({ enabledTools: ["FileRead", "Skill:browser-automation"] })).toBe(false);
+    expect(
+      validatePolicy({ enabledTools: ["Skill", "Skill:agenc-marketplace-kit-installer"] }),
+    ).toBe(false);
+    expect(validateCreate({ cwd: "/work", toolPolicy: { enabledTools: ["FileRead"] } })).toBe(true);
+    expect(validateCreate({ cwd: "/work", toolPolicy: { enabledTools: [] } })).toBe(false);
+    expect(MAX_SESSION_TOOL_POLICY_TOOLS).toBe(256);
+  });
+
   it("keeps the published protocol-1.0 tool-resolution request compatible", () => {
     const validate = compileRequestValidator(readProtocolSchema());
     const request = (id: string, params: Record<string, unknown>) => ({
@@ -572,6 +630,20 @@ describe("AgenC daemon protocol surface", () => {
       { ...evidence, attempt: { ...attempt, unknownSequence: 1.5 } },
     ]) {
       expect(validate(request("attempt-invalid", params))).toBe(false);
+    }
+  });
+
+  it("accepts an owning child session for effect review without widening unrelated request fields", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    for (const review of [
+      { toolCallId: "child-call" },
+      { toolCallId: "child-call", disposition: "confirmed_no_effect", attestation: "operator" },
+      { toolCallId: "child-call", disposition: "confirmed_no_effect", evidenceRef: "receipt:child", evidenceSha256: "a".repeat(64) },
+    ]) {
+      const request = { jsonrpc: JSON_RPC_VERSION, id: "review-child", method: "session.resolveToolCall",
+        params: { sessionId: "attached-parent", effectSessionId: "owning-child", ...review } };
+      expect(validate(request), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...request, params: { ...request.params, effectSessionId: "" } })).toBe(false);
     }
   });
 

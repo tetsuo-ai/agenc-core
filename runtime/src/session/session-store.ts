@@ -1,5 +1,7 @@
 import { SessionWriteBehindQueue, registerSessionWriteBehind, drainRolloutWriteBehind } from "./write-behind.js";
+import { isLegacyConfiguredCacheWithinCeiling, recoveryPendingLineCeiling } from "../state/session-configured-cache.js";
 import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, supportsRelaxedOneShot, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
+import { DEFERRED_SYNC_INTERVAL_MS, openTurnDurabilityScope, type TurnDurabilityRelease } from "../durability/turn-durability.js";
 /**
  * Session on-disk store — owns the rollout JSONL file, its fsync
  * guarantees, flock acquisition, atomic write-then-rename, and the
@@ -22,8 +24,9 @@ import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, suppo
  *        advisory lock on the rollout sidecar lockfile via an atomic
  *        link-based handoff (tmp create + `link(tmp, lock)` — atomic
  *        even over NFS) and stores `{pid, startNs}` so the holder's
- *        identity survives PID reuse. Live-PID reclaim is refused
- *        unconditionally; EWOULDBLOCK → SessionLockedError.
+ *        identity survives PID reuse. A same-PID lock is reclaimed only
+ *        with proof that it predates this process; otherwise a live
+ *        PID produces SessionLockedError.
  *   I-24 (atomic write-then-rename) — whole-file rewrites (session
  *        metadata re-append after compaction, schema migrations,
  *        checkpoint-style flushes) go through `rewriteAtomically()`:
@@ -55,6 +58,7 @@ import {
   existsSync,
   fstatSync,
   ftruncateSync,
+  fsync as fsyncInBackground,
   fsyncSync,
   linkSync,
   lstatSync,
@@ -128,6 +132,63 @@ import {
 } from "./serialization-size.js";
 
 export const I4_FSYNC_RETRY_MS = 100;
+
+/** What a rollout mirror learns about one committed append. */
+export interface RolloutCommitNotice {
+  /**
+   * The append was written while a turn of this journal is open (turn-scoped
+   * durability). A mirror may then catch up later in the turn instead of at
+   * once; outside a turn every commit is mirrored when it happens.
+   */
+  readonly withinTurn: boolean;
+}
+
+/**
+ * Durable events that keep their fsync inside a turn (turn-scoped
+ * durability). A turn's end is the turn boundary. The others are records
+ * another store or session commits a reference to right after this append:
+ * effect intents, results and reviews and the run lifecycle events are
+ * projected into SQLite as "already fsync-committed", sub-agent receipts are
+ * read across sessions, and compaction, artifact, approval and protocol
+ * records order other files against the journal. Recovery relies on the
+ * journal never being behind those projections after an OS crash or power
+ * loss, so they stay write-ahead. Everything else a turn writes between its
+ * steps (admission and usage projections, whose SQLite source commits first,
+ * checkpoints, submissions, errors, plan markers, model items) commits with
+ * write().
+ */
+const SYNCED_IN_TURN_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "turn_complete",
+  "turn_aborted",
+  "turn_failed",
+  "turn_resumed",
+  "effect_intent",
+  "effect_result",
+  "effect_unknown_outcome",
+  "effect_review_resolved",
+  "run_startup_activated",
+  "run_runtime_settings_changed",
+  "run_terminal",
+  "run_reopened",
+  "run_suspended",
+  "run_resumed",
+  "run_cancel_requested",
+  "subagent_task_admitted",
+  "subagent_turn_outcome",
+  "subagent_funds_notice",
+  "artifact_intent",
+  "artifact_committed",
+  "request_permissions",
+  "permission_decision",
+  "context_compacted",
+  "history_cleared",
+  "transcript_epoch",
+  "recovery_decision",
+  "protocol_claim",
+  "protocol_settle",
+  "protocol_slash",
+  "protocol_stake",
+]);
 const I83_SUSPEND_DETECTION_MS = 10_000;
 
 type RolloutPhysicalLineExclusion = {
@@ -704,7 +765,7 @@ export class SchemaMismatchError extends Error {
     public readonly runtimeVersion: number,
   ) {
     super(
-      `rollout schema v${rolloutVersion} is newer than runtime v${runtimeVersion} — ` +
+      `rollout schema v${rolloutVersion} is newer than runtime v${runtimeVersion}: ` +
         `please use /fork to migrate or upgrade @tetsuo-ai/runtime`,
     );
     this.name = "SchemaMismatchError";
@@ -798,9 +859,28 @@ function maxEventSeqInRollout(path: string): EventSeq {
   }
 }
 
-function maxEventSeqInRolloutFd(fd: number): EventSeq {
+function maxEventSeqInRolloutFd(fd: number, strict = false): EventSeq {
   let maxSeq: EventSeq = 0;
   const chunk = Buffer.allocUnsafe(64 * 1024);
+  if (strict) {
+    const validator = new StrictCanonicalJournalValidator({
+      retainRecords: false,
+      onRecord: record => {
+        if (record.item.type !== "event_msg") return;
+        const seq = validEventSeq(record.item.payload.seq);
+        if (seq !== undefined) maxSeq = Math.max(maxSeq, seq);
+      },
+    });
+    let offset = 0;
+    for (;;) {
+      const count = readSync(fd, chunk, 0, chunk.byteLength, offset);
+      if (count === 0) break;
+      validator.push(chunk.subarray(0, count));
+      offset += count;
+    }
+    validator.finish();
+    return maxSeq;
+  }
   let pending = Buffer.alloc(0);
   let position = 0;
   const inspect = (lineBytes: Buffer): void => {
@@ -821,14 +901,21 @@ function maxEventSeqInRolloutFd(fd: number): EventSeq {
     if (bytesRead === 0) break;
     position += bytesRead;
     pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
-    if (pending.byteLength > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
-      throw new Error("canonical rollout row exceeds its recovery byte limit");
-    }
     for (;;) {
       const newline = pending.indexOf(0x0a);
       if (newline < 0) break;
+      if (newline > MAX_RECOVERY_CANONICAL_LINE_BYTES &&
+        !isLegacyConfiguredCacheWithinCeiling(pending.subarray(0, newline), MAX_RECOVERY_CANONICAL_LINE_BYTES)) {
+        throw new Error("canonical rollout row exceeds its recovery byte limit");
+      }
       inspect(pending.subarray(0, newline));
       pending = pending.subarray(newline + 1);
+    }
+    // The read chunk can contain the end of a valid near-limit row and the
+    // beginning of its successor. Apply the cap to individual rows, not to
+    // their combined read buffer. Unfinished rows remain equally bounded.
+    if (pending.byteLength > recoveryPendingLineCeiling(pending, MAX_RECOVERY_CANONICAL_LINE_BYTES)) {
+      throw new Error("canonical rollout row exceeds its recovery byte limit");
     }
   }
   if (pending.byteLength > 0) inspect(pending);
@@ -858,10 +945,9 @@ interface LockRecord {
    * wall-clock `Date.now()` stringified start so two AgenC processes
    * with the same PID (rare but possible after PID reuse, or in CI
    * fixtures that fork child Node processes) carry distinct start
-   * identifiers. The session-start identity is used ONLY for forensic
-   * logging — the actual "is this lock alive" check refuses to
-   * reclaim any lock whose PID is currently alive, regardless of
-   * startNs value.
+   * identifiers. On Linux the monotonic stamp, together with the wall
+   * timestamp, can prove a same-PID lock predates the current process.
+   * An unproved live holder is never reclaimed.
    */
   readonly startNs: string;
   readonly acquiredAtIso: string;
@@ -878,12 +964,10 @@ interface LockRecord {
  *     volume hardlinks; we fall back to `openSync(path, 'wx')` which
  *     is itself atomic on NTFS.
  *
- *   - Identity record: `{pid, startNs}`. The startNs field is a
- *     forensic aid; the liveness decision is PID-based and *refuses*
- *     to reclaim a lock whose PID is alive (`kill(pid, 0)` returns
- *     without ENOSRCH). This is strictly stronger than a pure PID
- *     sidecar: the caller cannot trick us into reclaiming a live
- *     lock by claiming to be the same process — we never check that.
+ *   - Identity record: `{pid, startNs, acquiredAtIso}`. Live PIDs are
+ *     protected unless both legacy acquisition clocks prove that a
+ *     same-PID record predates this process. This handles a daemon PID
+ *     reused after restart without admitting another store in the daemon.
  *
  *   - No `proper-lockfile` dep, no `fs-ext` native binding. Adding a
  *     dep for this was considered and rejected because (a) the
@@ -894,8 +978,8 @@ interface LockRecord {
  *
  *   1. The tmp+link dance is atomic on NFS where `open(O_EXCL)` is
  *      not reliable.
- *   2. Live-PID reclaim is never allowed; stale reclaim only proceeds
- *      when `kill(pid, 0)` reports ESRCH.
+ *   2. Stale reclaim requires a dead PID or proof that a same-PID
+ *      record belongs to an earlier process lifetime.
  *   3. The lock payload is structured so future diagnostic tools
  *      (agenc doctor) can show who is holding the rollout.
  */
@@ -922,10 +1006,13 @@ export class SessionLock {
       const existing = this.readLockRecord();
       if (existing !== null) {
         // Lock file exists. Decide if we can reclaim.
-        if (processIsAlive(existing.pid)) {
+        if (
+          processIsAlive(existing.pid) &&
+          !sessionLockPredatesCurrentProcess(existing)
+        ) {
           throw new SessionLockedError(existing.pid, this.lockPath);
         }
-        // Stale holder (PID dead). Remove and retry.
+        // Dead holder, or the current PID reused after the holder exited.
         try {
           unlinkSync(this.lockPath);
         } catch (err) {
@@ -1136,6 +1223,54 @@ export class SessionLockedError extends Error {
     );
     this.name = "SessionLockedError";
   }
+}
+
+// Sample clocks before uptime so scheduling delays only make these bounds
+// earlier. Keep a full second of slack for timer precision and startup skew.
+// Linux hrtime uses the system monotonic clock, shared across Node processes.
+const lockProcessMonotonicSample = process.hrtime.bigint();
+const lockProcessWallSample = Date.now();
+const lockProcessUptime = process.uptime();
+const lockProcessStartMonotonicLowerBound =
+  lockProcessMonotonicSample - BigInt(Math.ceil(lockProcessUptime * 1e9)) - 1_000_000_000n;
+const lockProcessStartWallLowerBound =
+  lockProcessWallSample - lockProcessUptime * 1_000 - 1_000;
+
+type SessionLockHolder = {
+  readonly pid?: unknown;
+  readonly startNs?: unknown;
+  readonly acquiredAtIso?: unknown;
+};
+
+/** PID equality alone cannot establish ownership after a cold daemon restart. */
+export function sessionLockIsLiveInCurrentProcess(record: SessionLockHolder): boolean {
+  return record.pid === process.pid && !sessionLockPredatesCurrentProcess(record);
+}
+
+function sessionLockPredatesCurrentProcess(record: SessionLockHolder): boolean {
+  // For other PIDs, platforms or legacy/unreadable stamps, retain the
+  // conservative PID liveness rule. Never infer staleness from wall time alone.
+  if (
+    process.platform !== "linux" ||
+    record.pid !== process.pid ||
+    typeof record.startNs !== "string" ||
+    typeof record.acquiredAtIso !== "string"
+  ) {
+    return false;
+  }
+  const stamp = /^(\d{1,16})-(\d{1,24})$/u.exec(record.startNs);
+  if (stamp === null) return false;
+  const createdAt = Number(stamp[1]);
+  const acquiredAt = Date.parse(record.acquiredAtIso);
+  const monotonicCreatedAt = BigInt(stamp[2]!);
+  return (
+    Number.isSafeInteger(createdAt) && createdAt > 0 &&
+    createdAt < lockProcessStartWallLowerBound &&
+    Number.isFinite(acquiredAt) && acquiredAt >= createdAt &&
+    acquiredAt < lockProcessStartWallLowerBound &&
+    monotonicCreatedAt > 0n &&
+    monotonicCreatedAt < lockProcessStartMonotonicLowerBound
+  );
 }
 
 function processIsAlive(pid: number): boolean {
@@ -1810,7 +1945,9 @@ export class SessionStore {
   private flushDepth = 0;
   private readonly deferredFlushDiagnostics: SessionStoreDiagnostic[] = [];
   /** Best-effort mirror notification after rollout bytes are appended. */
-  private onRolloutCommitted?: (rolloutPath: string) => void;
+  private onRolloutCommitted?: (rolloutPath: string, commit: RolloutCommitNotice) => void;
+  /** An in-turn commit was announced and no out-of-turn notice followed it yet. */
+  private inTurnCommitsUnannounced = false;
   /**
    * I-38 async fsync retries currently in flight. Tracked so `close()`
    * can wait for them to settle (or so tests can await completion).
@@ -1832,6 +1969,21 @@ export class SessionStore {
     length: number,
   ) => number = (fd, buffer, offset, length) =>
     writeSync(fd, buffer, offset, length);
+  /** Background half of {@link fsyncImpl}; a seam for the same reason. */
+  private fsyncInBackgroundImpl: (
+    fd: number,
+    callback: (error: NodeJS.ErrnoException | null) => void,
+  ) => void = fsyncInBackground;
+  /**
+   * Turn-scoped durability: open turn scopes (see `deferSyncsForTurn`), the
+   * number of durable flushes written without fsync, and how many of those
+   * the newest fsync of the file covers.
+   */
+  private turnSyncDeferrals = 0;
+  private deferredWrites = 0;
+  private syncedDeferredWrites = 0;
+  private deferredSyncTimer: ReturnType<typeof setTimeout> | undefined;
+  private backgroundSyncInFlight = false;
   /** Exact pre-append boundary whose rollback could not be durably proven. */
   private uncertainAppendStart: number | undefined;
   private readonly trajectoryExport: TrajectoryExportSink;
@@ -1847,6 +1999,8 @@ export class SessionStore {
   private resumeSourceFaulted = false;
   /** Exact source bytes most recently read through the lifetime fd. */
   private lastBoundReadProof: ResumeSourceReadProof | undefined;
+  /** Only terminal identities survive parsing, never the full hydrated history. */
+  private terminalRunCache: { readonly digest: string; readonly keys: ReadonlySet<string> } | undefined;
   private readonly beforeBoundResumeRewritePublishForTestingOnly?: () => void;
   private readonly boundResumeRewriteRename: (from: string, to: string) => void;
   private readonly afterBoundResumeRewriteStepForTestingOnly?: SessionStoreOpts["afterBoundResumeRewriteStepForTestingOnly"];
@@ -2116,7 +2270,12 @@ export class SessionStore {
         const rolloutSeq =
           resumeHandle === undefined
             ? maxEventSeqInRollout(this.rolloutPath)
-            : maxEventSeqInRolloutFd(resumeHandle.fd);
+            : maxEventSeqInRolloutFd(
+                resumeHandle.fd,
+                // Older schema headers still need the existing migration
+                // before they can pass the current canonical validator.
+                existingMeta.rolloutSchemaVersion === ROLLOUT_SCHEMA_VERSION,
+              );
         if (rolloutSeq > this.lastSeqWritten) {
           this.lastSeqWritten = rolloutSeq;
         }
@@ -2249,7 +2408,7 @@ export class SessionStore {
   }
 
   setOnRolloutCommitted(
-    listener: ((rolloutPath: string) => void) | undefined,
+    listener: ((rolloutPath: string, commit: RolloutCommitNotice) => void) | undefined,
   ): void {
     this.onRolloutCommitted = listener;
   }
@@ -2287,6 +2446,16 @@ export class SessionStore {
    */
   setFsyncImplForTest(impl: (fd: number) => void): void {
     this.fsyncImpl = impl;
+  }
+
+  /** @internal Test seam for the background flush of turn-scoped durability. */
+  setBackgroundFsyncImplForTest(
+    impl: (
+      fd: number,
+      callback: (error: NodeJS.ErrnoException | null) => void,
+    ) => void,
+  ): void {
+    this.fsyncInBackgroundImpl = impl;
   }
 
   /** @internal Test seam for short-write recovery. */
@@ -2553,8 +2722,8 @@ export class SessionStore {
               level: "error",
               cause: "rollout_degraded",
               message: requeue
-                ? `${(err as { code?: string }).code ?? "unknown"} during append — ${toWrite.length} events queued in degraded ring buffer`
-                : `${(err as { code?: string }).code ?? "unknown"} during fsync — ${toWrite.length} events already on disk, entering degraded mode without re-queue`,
+                ? `${(err as { code?: string }).code ?? "unknown"} during append: ${toWrite.length} events queued in degraded ring buffer`
+                : `${(err as { code?: string }).code ?? "unknown"} during fsync: ${toWrite.length} events already on disk, entering degraded mode without re-queue`,
             });
           }
           return true;
@@ -2566,6 +2735,12 @@ export class SessionStore {
       try {
         if (durable && this.oneShotWriter?.relaxed === true) {
           this.writeBytesAppendOnly(lines);
+        } else if (durable && this.defersTurnSync(toWrite)) {
+          // Inside a turn the write is the commit: once write() returns the
+          // bytes survive the process dying. The turn boundary or the
+          // background flush fsyncs them.
+          this.writeBytesAppendOnly(lines);
+          this.noteDeferredWrite();
         } else if (durable) {
           // I-38: async retry on fsync failure routes to degraded via
           // the callback. The bytes were already writeSync'd by this
@@ -2580,8 +2755,10 @@ export class SessionStore {
         this.fileSize += Buffer.byteLength(lines, "utf8");
         this.trajectoryExport.writeItems(toWrite);
         try {
+          const commit: RolloutCommitNotice = { withinTurn: this.turnSyncDeferrals > 0 };
+          this.inTurnCommitsUnannounced = commit.withinTurn;
           withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
-            () => this.onRolloutCommitted?.(this.rolloutPath));
+            () => this.onRolloutCommitted?.(this.rolloutPath, commit));
         } catch {
           // The rollout is already appended. A mirror callback cannot make this
           // canonical flush fail or cause its items to be re-queued.
@@ -2618,6 +2795,7 @@ export class SessionStore {
   }
 
   private syncCanonicalFile(): void {
+    const covered = this.deferredWrites;
     const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND;
     const fd = this.openCanonicalFile(flags, 0o600);
     try {
@@ -2627,6 +2805,178 @@ export class SessionStore {
     } finally {
       this.closeCanonicalOperationFd(fd);
     }
+    this.markDeferredWritesSynced(covered);
+  }
+
+  /**
+   * Open a turn's durability scope on this journal (turn-scoped durability,
+   * see `durability/turn-durability.ts`). Until the returned release runs, a
+   * durable flush returns as soon as its write() completes, in order: the
+   * record already survives the process dying, and it is in the file before
+   * the next model request or tool. The fsync follows at the turn boundary or
+   * from the background flush, at most {@link DEFERRED_SYNC_INTERVAL_MS}
+   * later. A turn's end (complete, aborted, failed) and the records listed in
+   * {@link SYNCED_IN_TURN_EVENT_TYPES} are still written with fsync, which
+   * covers everything before them. Releasing the last scope with "sync"
+   * fsyncs what is still unsynced; "background" hands that to the background
+   * flush.
+   */
+  deferSyncsForTurn(): TurnDurabilityRelease {
+    this.turnSyncDeferrals += 1;
+    const releaseScope = openTurnDurabilityScope(this.sessionId);
+    let released = false;
+    return (mode = "sync") => {
+      if (released) return;
+      released = true;
+      this.turnSyncDeferrals -= 1;
+      if (this.turnSyncDeferrals === 0) {
+        if (mode === "sync") this.syncDeferredWrites();
+        else this.armDeferredSync();
+        this.announceTurnBoundary();
+      }
+      releaseScope();
+    };
+  }
+
+  /**
+   * The last turn scope closed: a mirror that batches in-turn commits
+   * catches up now, so it is current at every turn boundary, as when each
+   * commit was mirrored at once.
+   */
+  private announceTurnBoundary(): void {
+    if (!this.inTurnCommitsUnannounced || this.closed) return;
+    this.inTurnCommitsUnannounced = false;
+    try {
+      withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
+        () => this.onRolloutCommitted?.(this.rolloutPath, { withinTurn: false }));
+    } catch {
+      // As for a commit's notice: the mirror cannot fail the journal.
+    }
+  }
+
+  /**
+   * Whether this durable batch may skip its fsync: inside a turn, and only
+   * events and model items between its steps. Session metadata, compaction
+   * records and {@link SYNCED_IN_TURN_EVENT_TYPES} keep theirs.
+   */
+  private defersTurnSync(items: readonly RolloutItem[]): boolean {
+    if (this.turnSyncDeferrals === 0 || this.closed) return false;
+    return items.every(
+      (item) =>
+        item.type === "response_item" ||
+        (item.type === "event_msg" &&
+          !SYNCED_IN_TURN_EVENT_TYPES.has(item.payload.msg.type)),
+    );
+  }
+
+  private noteDeferredWrite(): void {
+    this.deferredWrites += 1;
+    this.armDeferredSync();
+  }
+
+  private markDeferredWritesSynced(covered: number): void {
+    if (covered > this.syncedDeferredWrites) this.syncedDeferredWrites = covered;
+    if (
+      this.syncedDeferredWrites >= this.deferredWrites &&
+      this.deferredSyncTimer !== undefined
+    ) {
+      clearTimeout(this.deferredSyncTimer);
+      this.deferredSyncTimer = undefined;
+    }
+  }
+
+  private armDeferredSync(): void {
+    if (
+      this.deferredSyncTimer !== undefined ||
+      this.closed ||
+      this.syncedDeferredWrites >= this.deferredWrites
+    ) {
+      return;
+    }
+    this.deferredSyncTimer = setTimeout(() => {
+      this.deferredSyncTimer = undefined;
+      this.syncDeferredWritesInBackground();
+    }, DEFERRED_SYNC_INTERVAL_MS);
+    this.deferredSyncTimer.unref?.();
+  }
+
+  /**
+   * The turn-boundary flush: fsync what turn writes left unsynced. A failure
+   * takes the same path as a failed durable fsync (one retry, then degraded
+   * mode); the bytes themselves are already in the file.
+   */
+  private syncDeferredWrites(): void {
+    if (this.closed || this.syncedDeferredWrites >= this.deferredWrites) return;
+    try {
+      this.syncCanonicalFile();
+    } catch (error) {
+      this.scheduleFsyncRetry(error, (retryError) => {
+        if (!isDegradedErrno(retryError)) return;
+        const entered = !this.degraded.isDegraded;
+        this.degraded.enterDegraded(
+          `${(retryError as { code?: string }).code} during turn flush`,
+        );
+        if (entered) {
+          this.emitDiagnostic({
+            at: Date.now(),
+            level: "error",
+            cause: "rollout_degraded",
+            message: `${(retryError as { code?: string }).code ?? "unknown"} during turn flush; written events are already in the rollout, entering degraded mode`,
+          });
+        }
+      });
+    }
+  }
+
+  /**
+   * The background flush: fsync on the libuv pool, so the event loop never
+   * waits on it, through a descriptor of its own (never the pinned resume
+   * descriptor, which `close()` may release while the flush runs).
+   */
+  private syncDeferredWritesInBackground(): void {
+    if (
+      this.closed ||
+      this.backgroundSyncInFlight ||
+      this.syncedDeferredWrites >= this.deferredWrites
+    ) {
+      return;
+    }
+    const covered = this.deferredWrites;
+    let fd: number;
+    try {
+      fd = this.openForBackgroundSync();
+    } catch {
+      // The journal moved or became unreadable; the next turn boundary
+      // flushes it through the bound path, which reports a real failure.
+      return;
+    }
+    this.backgroundSyncInFlight = true;
+    this.fsyncInBackgroundImpl(fd, (error) => {
+      try {
+        closeSync(fd);
+      } catch {
+        // The descriptor is ours alone; a failed close leaves nothing to undo.
+      }
+      this.backgroundSyncInFlight = false;
+      if (error === null) this.markDeferredWritesSynced(covered);
+      this.armDeferredSync();
+    });
+  }
+
+  private openForBackgroundSync(): number {
+    const fd = openSync(
+      this.rolloutPath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+    const expected = this.resumeSourceIdentity;
+    if (expected !== undefined) {
+      const opened = fstatSync(fd, { bigint: true });
+      if (opened.dev !== expected.dev || opened.ino !== expected.ino) {
+        closeSync(fd);
+        throw new Error("canonical rollout was replaced");
+      }
+    }
+    return fd;
   }
 
   private writeBytesAppendOnly(content: string): void {
@@ -2748,6 +3098,8 @@ export class SessionStore {
       this.scheduleFsyncRetry(firstErr, onRetryFailure);
       return false;
     }
+    // The fsync covered the whole file, earlier deferred writes included.
+    this.markDeferredWritesSynced(this.deferredWrites);
     return true;
   }
 
@@ -3513,7 +3865,7 @@ export class SessionStore {
           start = newline + 1;
         }
         pending = Buffer.from(available.subarray(start));
-        if (pending.byteLength > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
+        if (pending.byteLength > recoveryPendingLineCeiling(pending, MAX_RECOVERY_CANONICAL_LINE_BYTES)) {
           throw new Error(
             "canonical row exceeds the streaming rewrite line limit",
           );
@@ -3884,6 +4236,42 @@ export class SessionStore {
 
   /** Read the rollout file fully and return the parsed items. */
   readAll(): RolloutItem[] {
+    return this.parseRolloutBytes(this.readRolloutBytes());
+  }
+
+  /**
+   * Query terminal evidence without repeatedly hydrating an unchanged journal.
+   * Every query still reads the source through the normal descriptor/identity
+   * checks. Only an exact SHA-256 match reuses the bounded terminal index; a
+   * changed source is parsed and its compaction payloads verified as readAll
+   * would do. This cache never supplies history or canonical recovery proofs.
+   */
+  hasTerminalRun(runId: string, epoch: number): boolean {
+    const bytes = this.readRolloutBytes();
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const key = JSON.stringify([runId, epoch]);
+    if (this.terminalRunCache?.digest === digest) {
+      return this.terminalRunCache.keys.has(key);
+    }
+    this.terminalRunCache = undefined;
+    const keys = new Set<string>();
+    let matched = false;
+    let overCapacity = false;
+    for (const item of this.parseRolloutBytes(bytes)) {
+      if (item.type !== "event_msg" || item.payload.msg.type !== "run_terminal") continue;
+      const terminal = item.payload.msg.payload;
+      const terminalKey = JSON.stringify([terminal.runId, terminal.epoch]);
+      if (terminalKey === key) matched = true;
+      // A large number of terminal identities must not create an unbounded
+      // process-lifetime index. Oversized journals simply use the cold path.
+      if (keys.size < 1_024) keys.add(terminalKey);
+      else if (!keys.has(terminalKey)) overCapacity = true;
+    }
+    if (!overCapacity) this.terminalRunCache = { digest, keys };
+    return matched;
+  }
+
+  private readRolloutBytes(): Buffer {
     this.writeBehind.barrier();
     if (this.oneShotFastMode) this.finishOneShotFastMode();
     if (this.resumeSourceFaulted) {
@@ -3891,7 +4279,11 @@ export class SessionStore {
         "resumed rollout writer authority was revoked after replacement failure",
       );
     }
-    const content = this.readCurrentRolloutBytes().toString("utf8");
+    return this.readCurrentRolloutBytes();
+  }
+
+  private parseRolloutBytes(bytes: Buffer): RolloutItem[] {
+    const content = bytes.toString("utf8");
     const items: RolloutItem[] = [];
     let malformed = 0;
     for (const line of content.split("\n")) {
@@ -3998,6 +4390,15 @@ export class SessionStore {
     capture(() => {
       if (this.pending.length > 0) this.flushBatch(true);
     });
+    // Turn writes that are still unsynced (a turn that never reached its
+    // boundary) are flushed before the journal is let go.
+    if (this.deferredSyncTimer !== undefined) {
+      clearTimeout(this.deferredSyncTimer);
+      this.deferredSyncTimer = undefined;
+    }
+    capture(() => {
+      if (this.syncedDeferredWrites < this.deferredWrites) this.syncCanonicalFile();
+    });
     // gaphunt3 #19: final best-effort drain of the degraded ring buffer
     // before stopping its retry timer. If the disk recovered after an
     // I-12/I-38 failure but the 30s retry tick has not yet fired, those
@@ -4019,7 +4420,7 @@ export class SessionStore {
               at: Date.now(),
               level: "error",
               cause: "rollout_degraded",
-              message: `${(err as { code?: string }).code ?? "unknown"} during close drain — ${remaining.length} buffered events lost`,
+              message: `${(err as { code?: string }).code ?? "unknown"} during close drain: ${remaining.length} buffered events lost`,
             });
           }
         }
@@ -4087,6 +4488,9 @@ export class SessionStore {
    * or missing snapshot is recoverable.
    */
   private writeIndexSnapshot(): void {
+    // An archive moved the rollout away: a snapshot beside its old path would
+    // only recreate a stray session directory.
+    if (!existsSync(this.rolloutPath)) return;
     const snapshot: IndexSnapshot = {
       snapshotSequenceNumber: this.lastSeqWritten,
       fileSize: this.fileSize,

@@ -101,7 +101,7 @@ function VerboseToolUse({
         />
         <Text>
           <Text bold={true}>{userFacingName}</Text>
-          {toolUseMessage && <Text>({toolUseMessage})</Text>}
+          {toolUseMessage && <Text color="text2">({toolUseMessage})</Text>}
         </Text>
         {input && tool.renderToolUseTag?.(input)}
       </Box>
@@ -451,7 +451,7 @@ export function CollapsedReadSearchContent({
             <Text dimColor>{responseGutter}</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
-            {displayedHint.split('\n').map((line, i, arr) => <Text key={`hint-${i}`} dimColor>
+            {displayedHint.split('\n').map((line, i, arr) => <Text key={`hint-${i}`} color="text2">
                 {line}
                 {i === arr.length - 1 && shellProgressSuffix}
               </Text>)}

@@ -66,7 +66,8 @@ describe('SpinnerAnimationRow coverage', () => {
     expect(activeTools).toContain('indexing')
     expect(activeTools).toContain('31s')
     expect(activeTools).toContain('4.5k tokens')
-    expect(activeTools).toContain('thinking deeply')
+    expect(activeTools).toContain('thinking')
+    expect(activeTools).not.toContain('deeply')
 
     // Under one second the timer is still hidden, so the row is the
     // thinking-only compact form. 21 columns leave room for the bare

@@ -199,12 +199,12 @@ const OPENAI_EXTRAS = [
 ];
 const OPENAI_TOOL_ERRORS = [
   {
-    name: "a truncated tool_calls fragment is an unterminated event",
+    name: "a truncated tool_calls fragment is a retryable transport interruption",
     fetchImpl: sseFetch([
       'data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n',
       'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0',
     ]),
-    kind: "invalid" as const,
+    kind: "truncated" as const,
     errorPattern: /unterminated event/i,
     expectNoDone: true,
   },

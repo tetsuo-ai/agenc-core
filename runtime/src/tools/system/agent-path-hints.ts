@@ -7,15 +7,16 @@
  * `file_path` by string prefix.
  */
 import { isAbsolute, relative, sep } from "node:path";
+import { abbreviateHomePaths } from "../../utils/home-path-display.js";
 
 export const FILE_TOOL_PATH_USAGE =
   "Use workspace-relative paths like `game.py` unless the user provided a real absolute path. Absolute Linux paths under `/root` are filesystem paths. Agent-tree identifiers such as `/root/task1` belong to agent-control APIs, not file tools.";
 
 export const FILE_TOOL_PATH_SCHEMA =
-  "Workspace-relative path, or a real absolute filesystem path. `/root/...` is a valid Linux filesystem path when it refers to a file. Agent-tree identifiers such as `/root/task1` belong to agent-control APIs, not file tools.";
+  "Workspace-relative or absolute path. `/root/...` is a valid Linux filesystem path; agent-tree IDs such as `/root/task1` are not files.";
 
 export function formatToolPathForDisplay(path: string): string {
-  return path;
+  return abbreviateHomePaths(path);
 }
 
 /** Presentation only: leave validation and canonical paths untouched. */

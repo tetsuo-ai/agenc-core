@@ -96,7 +96,7 @@ describe("pending resume slot", () => {
 describe("openResumeMenu Enter → requestResumeSession", () => {
   it("resumes the highlighted session and closes the surface", async () => {
     const setToolJSX = vi.fn();
-    const requestResumeSession = vi.fn();
+    const requestResumeSession = vi.fn((id: string) => setPendingResumeSessionId(id));
     const entries = [entry("sess-newest", 2000), entry("sess-older", 1000)];
 
     const opened = openResumeMenu(
@@ -139,6 +139,34 @@ describe("openResumeMenu Enter → requestResumeSession", () => {
           clearLocalJSX: true,
         }),
       );
+    } finally {
+      root.unmount();
+      expect(consumePendingResumeSessionId()).toBe("sess-older");
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
+
+  it.each(["escape", "q", "unmount"])("clears staged resume intent on picker %s dismissal", async (dismissal) => {
+    const setToolJSX = vi.fn();
+    const requestResumeSession = vi.fn();
+    setPendingResumeSessionId("stale-before-open");
+    openResumeMenu(makeCtx({ setToolJSX, requestResumeSession }), [entry("sess-a", 1000)]);
+    expect(consumePendingResumeSessionId()).toBeNull();
+    const payload = setToolJSX.mock.calls[0]?.[0] as { jsx?: React.ReactNode };
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({ patchConsole: false, stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream });
+    try {
+      root.render(<AppStateProvider initialState={getDefaultAppState()}>{payload.jsx}</AppStateProvider>);
+      await sleep();
+      setPendingResumeSessionId("stale-while-open");
+      if (dismissal === "unmount") root.unmount();
+      else stdin.write(dismissal === "escape" ? "\u001b" : "q");
+      // Standalone Esc is decoded after the terminal's sequence timeout.
+      await sleep(dismissal === "escape" ? 200 : 25);
+      expect(consumePendingResumeSessionId()).toBeNull();
+      expect(requestResumeSession).not.toHaveBeenCalled();
     } finally {
       root.unmount();
       stdin.end();

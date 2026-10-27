@@ -1886,6 +1886,29 @@ describe("OpenAIProvider", () => {
     });
   });
 
+  test("retries a streaming 5xx whose body is a gateway HTML page", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "deepseek-v4-flash",
+      providerName: "deepseek",
+      baseURL: "https://api.deepseek.com",
+      useResponsesApi: false,
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          '<!DOCTYPE HTML>\n<html lang="en"><head><title>Error response</title></head><body><h1>Error response</h1><p>Error code: 502</p></body></html>',
+          { status: 502, headers: { "content-type": "text/html;charset=utf-8" } },
+        ),
+      ),
+    });
+
+    const failure = await provider
+      .chatStream([{ role: "user", content: "hello" }], () => {})
+      .then(() => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(LLMServerError);
+    expect(failure).toMatchObject({ providerName: "deepseek", statusCode: 502 });
+    expect(isRetryableStreamError(new StreamModelError(failure))).toBe(true);
+  });
+
   test("omits Authorization headers for LMStudio when no API key is configured", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

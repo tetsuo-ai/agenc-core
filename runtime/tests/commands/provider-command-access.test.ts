@@ -37,6 +37,7 @@ function storedData(home: HomeContext): SecureStorageData {
 
 function installSecureStorage(): void {
   vi.doMock(secureStorageModulePath, () => ({
+    withSecureStorageDisplaySnapshot: (_home: HomeContext, read: () => unknown) => read(),
     getSecureStorage: (home: HomeContext) => ({
       name: "provider-command-access-test",
       read: () => storedData(home),
@@ -555,138 +556,41 @@ describe("provider command access", () => {
     expect(snapshot.rejection).toBeUndefined();
     expectRedactedSnapshot(snapshot);
   });
+});
 
-  test("enforces signed-out, free, and paid OpenRouter managed policy", async () => {
-    const signedOutHome = await createHome("managed-signed-out");
-    const freeHome = await createHome("managed-free");
-    const proHome = await createHome("managed-pro");
-    const { access } = await loadModules();
-    const config = { auth: { managedKeys: { enabled: true } } };
-    const paidModel = "x-ai/grok-4.5";
-    const freeModel = "cohere/north-mini-code:free";
+test.each(["free", "pro"] as const)("a signed-in %s account with legacy config grants no provider model routes", async tier => {
+  const home = await createHome(`retired-account-${tier}`);
+  await writeRemoteAuthSession(home, tier, "synthetic-account-bearer");
+  const { access } = await loadModules();
+  const { listBuiltInProviderInfo } = await import("../../src/llm/registry/provider-info.js");
+  const { readProvidersHubSnapshot } = await import("../../src/commands/providers-hub-snapshot.js");
+  const { readModelMenuSnapshot } = await import("../../src/commands/model-menu-snapshot.js");
+  const config = { auth: { backend: "remote", managedKeys: { enabled: true }, managed_keys: { enabled: true } } };
+  const ctx = commandContext(stubSession({ configStore: commandConfigStore(home, config) }));
+  const overlay = access.createProviderCommandAccessOverlay(ctx);
+  for (const info of listBuiltInProviderInfo()) {
+    const result = overlay.inspect({ provider: info.id, model: info.defaultModel });
+    expect(["subscription", "provider-managed"]).not.toContain(result.route);
+    expect(result.auth.state).not.toBe("managed");
+    expect(result).not.toHaveProperty("managed");
+  }
+  expect(overlay.inspect({ provider: "agenc", model: "agenc" }).route).toBe("unavailable");
+  const hub = readProvidersHubSnapshot(ctx);
+  expect(JSON.stringify(hub)).not.toContain("AgenC account");
+  expect(hub.rows.some(row => row.provider === "agenc")).toBe(false);
+  expect(readModelMenuSnapshot(ctx).rows.some(row => row.provider === "agenc")).toBe(false);
+});
 
-    const signedOut = access.createProviderCommandAccessOverlay(
-      commandContext(
-        stubSession({
-          configStore: commandConfigStore(signedOutHome, config),
-        }),
-      ),
-    ).inspect({ provider: "openrouter", model: freeModel });
-    expect(signedOut).toMatchObject({
-      effect: "blocked",
-      route: "unavailable",
-      managed: { enabled: true, signedIn: false },
-      rejection: { code: "login-required" },
-    });
-
-    const freeBearer = "free-managed-bearer";
-    await writeRemoteAuthSession(freeHome, "free", freeBearer);
-    const freeOverlay = access.createProviderCommandAccessOverlay(
-      commandContext(
-        stubSession({
-          configStore: commandConfigStore(freeHome, config),
-        }),
-      ),
-    );
-    const free = freeOverlay.inspect({
-      provider: "openrouter",
-      model: freeModel,
-    });
-    const paidForFreeAccount = freeOverlay.inspect({
-      provider: "openrouter",
-      model: paidModel,
-    });
-    expect(free).toMatchObject({
-      effect: "switch",
-      route: "subscription",
-      managed: { enabled: true, signedIn: true, tier: "free" },
-      auth: { state: "managed" },
-    });
-    expect(free.rejection).toBeUndefined();
-    expect(paidForFreeAccount).toMatchObject({
-      effect: "blocked",
-      route: "unavailable",
-      rejection: { code: "upgrade-required" },
-    });
-
-    const proBearer = "pro-managed-bearer";
-    await writeRemoteAuthSession(proHome, "pro", proBearer);
-    const paid = access.createProviderCommandAccessOverlay(
-      commandContext(
-        stubSession({
-          configStore: commandConfigStore(proHome, config),
-        }),
-      ),
-    ).inspect({ provider: "openrouter", model: paidModel });
-    expect(paid).toMatchObject({
-      effect: "switch",
-      route: "subscription",
-      managed: { enabled: true, signedIn: true, tier: "pro" },
-      auth: { state: "managed" },
-    });
-    expect(paid.rejection).toBeUndefined();
-
-    for (const snapshot of [signedOut, free, paidForFreeAccount, paid]) {
-      expectRedactedSnapshot(snapshot, [freeBearer, proBearer]);
-    }
-  });
-
-  test("requires an entitled AgenC login for the managed provider", async () => {
-    const signedOutHome = await createHome("agenc-signed-out");
-    const freeHome = await createHome("agenc-free");
-    const proHome = await createHome("agenc-pro");
-    const { access } = await loadModules();
-    const config = { auth: { managedKeys: { enabled: true } } };
-    const selection = { provider: "agenc" as const, model: "agenc" };
-
-    const signedOut = access.createProviderCommandAccessOverlay(
-      commandContext(
-        stubSession({
-          configStore: commandConfigStore(signedOutHome, config),
-        }),
-      ),
-    ).inspect(selection);
-    expect(signedOut.configurationError).toBeUndefined();
-    expect(signedOut).toMatchObject({
-      effect: "blocked",
-      route: "unavailable",
-      rejection: { code: "provider-managed-auth-required" },
-    });
-
-    const freeBearer = "free-agenc-bearer";
-    await writeRemoteAuthSession(freeHome, "free", freeBearer);
-    const free = access.createProviderCommandAccessOverlay(
-      commandContext(
-        stubSession({
-          configStore: commandConfigStore(freeHome, config),
-        }),
-      ),
-    ).inspect(selection);
-    expect(free).toMatchObject({
-      effect: "blocked",
-      route: "unavailable",
-      rejection: { code: "upgrade-required" },
-    });
-
-    const proBearer = "pro-agenc-bearer";
-    await writeRemoteAuthSession(proHome, "pro", proBearer);
-    const pro = access.createProviderCommandAccessOverlay(
-      commandContext(
-        stubSession({
-          configStore: commandConfigStore(proHome, config),
-        }),
-      ),
-    ).inspect(selection);
-    expect(pro).toMatchObject({
-      effect: "switch",
-      route: "provider-managed",
-      managed: { signedIn: true, tier: "pro" },
-      auth: { state: "managed", label: "AgenC sign-in" },
-    });
-    expect(pro.rejection).toBeUndefined();
-
-    for (const snapshot of [signedOut, free, pro]) {
-      expectRedactedSnapshot(snapshot, [freeBearer, proBearer]);
-    }
-  });
+test("OpenRouter free models use the user's own key and unchanged default", async () => {
+  const home = await createHome("openrouter-byok");
+  const { access } = await loadModules();
+  const { OPENROUTER_FREE_MODEL_IDS } = await import("../../src/llm/registry/openrouter-free-models.js");
+  const { BUILT_IN_PROVIDER_DEFAULT_MODELS } = await import("../../src/llm/registry/provider-info.js");
+  const ctx = commandContext(stubSession({ configStore: commandConfigStore(home), environment: { OPENROUTER_API_KEY: "synthetic-user-key" } }));
+  const overlay = access.createProviderCommandAccessOverlay(ctx);
+  expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter).toBe("x-ai/grok-4.5");
+  expect(OPENROUTER_FREE_MODEL_IDS[0]).toBe("cohere/north-mini-code:free");
+  for (const model of OPENROUTER_FREE_MODEL_IDS) {
+    expect(overlay.inspect({ provider: "openrouter", model })).toMatchObject({ route: "direct", auth: { state: "ready" } });
+  }
 });

@@ -12,6 +12,8 @@ interface Downloaded {
   readonly json: string;
   readonly bytes: number;
   readonly expires: number;
+  readonly keepStale?: boolean;
+  retryAt?: number;
 }
 interface Pending {
   readonly scope: EndpointMetadataScope;
@@ -130,7 +132,17 @@ export class EndpointMetadataCache {
   failureHandler(provider: string): () => void {
     void this.revision;
     const scope = this.#scopes.get(provider);
-    return () => { if (scope !== undefined) this.invalidate(scope); };
+    return () => {
+      if (scope === undefined) return;
+      // Inference failures are not evidence that a reusable catalog changed.
+      // In particular, a 429 followed by a listing outage must not discard
+      // Venice's known context limit. Authority rotation and explicit refresh
+      // still revoke these entries through invalidate()/clear().
+      for (const entry of this.#downloaded.values()) {
+        if (entry.scope === scope && entry.keepStale) return;
+      }
+      this.invalidate(scope);
+    };
   }
 
   #current(scope: EndpointMetadataScope): boolean {
@@ -155,6 +167,7 @@ export class EndpointMetadataCache {
       readonly timeoutMs: number;
     },
     download: () => Promise<EndpointMetadataJson | undefined>,
+    options: { readonly staleWhileRevalidate?: boolean } = {},
   ): Promise<EndpointMetadataJson | undefined> {
     const current = this.#current(scope);
     const key = fingerprint([scope.provider, scope.identity, request.baseUrl,
@@ -162,26 +175,36 @@ export class EndpointMetadataCache {
       request.body ?? null, request.timeoutMs]);
     const now = this.#now();
     for (const [id, value] of this.#downloaded) {
-      if (now >= value.expires) this.#remove(id);
+      if (now >= value.expires && !value.keepStale) this.#remove(id);
     }
     const hit = this.#downloaded.get(key);
-    if (current && hit?.scope === scope) {
+    const stale = current && hit?.scope === scope && options.staleWhileRevalidate === true ? hit : undefined;
+    if (current && hit?.scope === scope && (now < hit.expires || now < (hit.retryAt ?? 0))) {
       this.#downloaded.delete(key);
       this.#downloaded.set(key, hit);
       return JSON.parse(hit.json) as EndpointMetadataJson;
     }
     const pending = this.#pending.get(key);
     if (current && pending?.scope === scope) {
+      if (stale !== undefined) return JSON.parse(stale.json) as EndpointMetadataJson;
       const json = await pending.result;
       return json === undefined ? undefined : JSON.parse(json) as EndpointMetadataJson;
     }
     const retain = current && this.#pendingCount < this.#maxPending;
+    const failed = (): undefined => {
+      if (stale !== undefined && this.#current(scope)) {
+        // Retry transient listing failures later without replacing known limits.
+        stale.retryAt = this.#now() + Math.min(this.#reuseMs, 30_000);
+      } else {
+        this.invalidate(scope);
+      }
+      return undefined;
+    };
     const load = async (): Promise<string | undefined> => {
       try {
         const value = await download();
         if (value === undefined) {
-          this.invalidate(scope);
-          return undefined;
+          return failed();
         }
         const json = JSON.stringify(value);
         const bytes = Buffer.byteLength(json);
@@ -192,13 +215,13 @@ export class EndpointMetadataCache {
           while (this.#downloaded.size >= this.#maxEntries || this.#bytes + bytes > this.#maxBytes) {
             this.#remove(this.#downloaded.keys().next().value!);
           }
-          this.#downloaded.set(key, { scope, json, bytes, expires: this.#now() + this.#reuseMs });
+          this.#downloaded.set(key, { scope, json, bytes, expires: this.#now() + this.#reuseMs,
+            ...(options.staleWhileRevalidate ? { keepStale: true } : {}) });
           this.#bytes += bytes;
         }
         return json;
       } catch {
-        this.invalidate(scope);
-        return undefined;
+        return failed();
       }
     };
     // Defer download until its pending record has been published, including a
@@ -209,12 +232,19 @@ export class EndpointMetadataCache {
       this.#pendingCount += 1;
       this.#pending.set(key, record);
     }
+    const finish = () => {
+      if (retain) this.#pendingCount -= 1;
+      if (this.#pending.get(key) === record) this.#pending.delete(key);
+    };
+    if (stale !== undefined) {
+      void record.result.finally(finish);
+      return JSON.parse(stale.json) as EndpointMetadataJson;
+    }
     try {
       const json = await record.result;
       return json === undefined ? undefined : JSON.parse(json) as EndpointMetadataJson;
     } finally {
-      if (retain) this.#pendingCount -= 1;
-      if (this.#pending.get(key) === record) this.#pending.delete(key);
+      finish();
     }
   }
 }
@@ -230,9 +260,9 @@ export function endpointMetadataForTransport(transport: typeof fetch): EndpointM
   return cache;
 }
 
-/** Observed model errors invalidate the default network partition. Conservatively
- * evict the provider's current scope even when its model request used a custom
- * transport. No error, URL, credential or payload is retained. */
+/** Observed model errors invalidate the default network partition except catalogs
+ * explicitly retained across failures. Conservatively evict other provider scopes
+ * even when the model request used a custom transport. No error is retained. */
 export function endpointMetadataFailureHandler(provider: string): () => void {
   return transports.get(globalThis.fetch)?.failureHandler(
     normalizeProviderMetadataIdentity(provider) ?? "",

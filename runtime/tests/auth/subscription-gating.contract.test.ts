@@ -44,7 +44,7 @@ describe("remote subscription gating", () => {
             OPENROUTER_API_KEY: "",
           },
         }),
-      ).rejects.toThrow(/Managed provider keys require an active AgenC subscription/);
+      ).rejects.toThrow(/openrouter provider requires credentials/);
       expect(keyVendor).not.toHaveBeenCalled();
     } finally {
       await rm(agencHome, { recursive: true, force: true });
@@ -82,7 +82,7 @@ describe("remote subscription gating", () => {
             OPENROUTER_API_KEY: "",
           },
         }),
-      ).rejects.toThrow(/Managed provider keys require an active AgenC subscription/);
+      ).rejects.toThrow(/openrouter provider requires credentials/);
       expect(keyVendor).not.toHaveBeenCalled();
     } finally {
       await rm(agencHome, { recursive: true, force: true });
@@ -116,65 +116,9 @@ describe("remote subscription gating", () => {
             XAI_API_KEY: "",
           },
         }),
-      ).rejects.toThrow(/Hosted AgenC model routing requires an active AgenC subscription/);
+      ).rejects.toThrow(/AgenC accounts no longer provide models/);
       expect(modelInferer).not.toHaveBeenCalled();
     } finally {
-      await rm(agencHome, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("allows remote free-tier hosted OpenRouter free model startup", async () => {
-    const agencHome = await mkdtemp(join(tmpdir(), "agenc-tier-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-tier-ws-"));
-    const keyVendor = vi.fn(() => ({
-      provider: "openrouter",
-      sessionId: "conv-free-openrouter",
-      kind: "api-key" as const,
-      apiKey: "managed-free-key",
-      baseUrl: "https://llm.agenc.tech",
-    }));
-    const authBackend = new RemoteAuthBackend({
-      keyVendor,
-      managedKeysEnabled: true,
-      subscriptionTierResolver: () => "free",
-    });
-
-    let shutdown: (() => Promise<void>) | null = null;
-    try {
-      const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
-        conversationId: "conv-free-openrouter",
-        fetchImpl: vi
-          .fn<typeof fetch>()
-          .mockRejectedValue(new Error("offline runtime fixture")),
-        argv: [
-          "node",
-          "agenc",
-          "--provider",
-          "openrouter",
-          "--model",
-          "openai/gpt-oss-20b:free",
-        ],
-        env: {
-          AGENC_HOME: agencHome,
-          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
-          AGENC_WORKSPACE: workspace,
-          HOME: agencHome,
-          OPENROUTER_API_KEY: "",
-        },
-      });
-      shutdown = boot.shutdown;
-      expect(keyVendor).not.toHaveBeenCalled();
-      await boot.provider.getExecutionProfile?.();
-      expect(keyVendor).toHaveBeenCalledWith({
-        provider: "openrouter",
-        sessionId: "conv-free-openrouter",
-      });
-    } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }

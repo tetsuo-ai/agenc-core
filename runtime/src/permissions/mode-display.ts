@@ -104,3 +104,27 @@ export function permissionModeSymbol(
 export function isDefaultMode(mode: PermissionMode | undefined): boolean {
   return mode === "default" || mode === undefined;
 }
+
+/**
+ * Plain words for a permission mode, shared by the status line, the
+ * Shift+Tab switcher and the /permissions panel so all three read the same.
+ * Command and config names (default, acceptEdits, ...) do not change.
+ */
+const PERMISSION_MODE_PLAIN: Record<PermissionMode, { readonly label: string; readonly description: string }> = {
+  default: { label: "asks first", description: "Asks before it edits files or runs commands." },
+  acceptEdits: { label: "edits freely", description: "Edits without asking. Asks before commands." },
+  plan: { label: "plan only", description: "Reads and plans. Changes nothing." },
+  bypassPermissions: { label: "never asks", description: "Never asks for approval. Use with care." },
+  dontAsk: { label: "rules only", description: "Runs only what your rules allow. Denies the rest." },
+  auto: { label: "auto approve", description: "A safety check decides instead of asking you." },
+  unattended: { label: "unattended", description: "Runs as a background agent." },
+  bubble: { label: "nested", description: "Passes approvals up to the parent agent." },
+};
+
+export function permissionModePlainLabel(mode: PermissionMode): string {
+  return PERMISSION_MODE_PLAIN[mode]?.label ?? permissionModeShortTitle(mode).toLowerCase();
+}
+
+export function permissionModePlainDescription(mode: PermissionMode): string {
+  return PERMISSION_MODE_PLAIN[mode]?.description ?? "";
+}

@@ -6,21 +6,33 @@ import { createProcMountProbeArgs, runProcMountProbe } from "./proc-probe.js";
 import { bubblewrapCapabilityContext, capabilityDigest, type BubblewrapCapabilityHint } from "./capability-hint.js";
 
 /** Bounded process-local cache: no disk state, no negative capability results. */
-export class SuccessfulProbeCache {
-  private readonly entries = new Map<string, BubblewrapCapabilityHint>();
-  get(key: string, probe: () => BubblewrapCapabilityHint | undefined): BubblewrapCapabilityHint | undefined {
+export class SuccessfulProbeCache<T = BubblewrapCapabilityHint> {
+  private readonly entries = new Map<string, T>();
+  get(key: string, probe: () => T | undefined): T | undefined {
     const cached = this.entries.get(key);
     if (cached !== undefined) return cached;
     const result = probe();
-    if (result !== undefined) {
-      if (this.entries.size >= 64) this.entries.delete(this.entries.keys().next().value!);
-      this.entries.set(key, result);
-    }
+    if (result !== undefined) this.remember(key, result);
     return result;
+  }
+  peek(key: string): T | undefined { return this.entries.get(key); }
+  remember(key: string, value: T): void {
+    if (!this.entries.has(key) && this.entries.size >= 64) this.entries.delete(this.entries.keys().next().value!);
+    this.entries.set(key, value);
   }
   invalidate(key: string): void { this.entries.delete(key); }
 }
 const daemonProbes = new SuccessfulProbeCache();
+/**
+ * The namespace and `--help` probes depend on the bubblewrap executable and the
+ * capability context (its identity, the cwd, the sanitized environment, ids,
+ * namespaces and mounts), not on a command's mount arguments. Each sandbox
+ * policy (the inspection, read-only shell and workspace-write slots, and every
+ * policy change) has its own proc-mount probe, but one context runs these two
+ * probes once instead of once per policy: each is a synchronous child process
+ * on the daemon's event loop, on the path of the command that first needs it.
+ */
+const daemonCapabilities = new SuccessfulProbeCache<NonNullable<ReturnType<typeof probeBubblewrapCapabilities>>>();
 // Evidence for this exact in-process launch only. Serialized hints remain
 // advisory and cannot mint this entry; actual confinement is always rebuilt.
 const preparedProcProbes = new WeakMap<readonly string[], {
@@ -64,12 +76,18 @@ export function prepareLinuxSandboxProbeHint(
     const procArgs = capabilityDigest(proc.args);
     const key = capabilityDigest([context, procArgs]);
     const hint = daemonProbes.get(key, () => {
-      const capabilities = probeBubblewrapCapabilities(program, env, cwd);
+      const known = daemonCapabilities.peek(context);
+      const capabilities = known ?? probeBubblewrapCapabilities(program, env, cwd);
       if (capabilities === undefined) return undefined;
       const result = runProcMountProbe(probeOptions, proc.args, env);
       if (result.error !== undefined || result.status !== 0) return undefined;
       // Do not retain a result spanning replacement or namespace/mount change.
-      if (bubblewrapCapabilityContext(program, cwd, env) !== context) return undefined;
+      if (bubblewrapCapabilityContext(program, cwd, env) !== context) {
+        daemonCapabilities.invalidate(context);
+        return undefined;
+      }
+      // Like the hint itself, only a complete success seeds the cache.
+      if (known === undefined) daemonCapabilities.remember(context, capabilities);
       return { context, procArgs, ...capabilities };
     });
     if (hint === undefined) return undefined;
@@ -78,6 +96,8 @@ export function prepareLinuxSandboxProbeHint(
     return { args: hintedArgs, invalidate: () => {
       preparedProcProbes.delete(hintedArgs);
       daemonProbes.invalidate(key);
+      // A failed launch re-probes everything it relied on, as before.
+      daemonCapabilities.invalidate(context);
     } };
   } catch {
     // Optimization failure is a miss, with the original launcher/probes intact.

@@ -1,7 +1,22 @@
 {
   "name": "@tetsuo-ai/agenc",
-  "version": "0.18.0",
-  "description": "Public AgenC CLI launcher package",
+  "version": "0.19.19",
+  "description": "Open source AI coding agent for your terminal. Works with any model provider, including local models.",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "ai-coding-assistant",
+    "agent",
+    "cli",
+    "terminal",
+    "llm",
+    "deepseek",
+    "ollama",
+    "openai",
+    "anthropic",
+    "grok",
+    "gemini"
+  ],
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -9,7 +24,7 @@
     "url": "git+https://github.com/tetsuo-ai/agenc-core.git",
     "directory": "packages/agenc"
   },
-  "homepage": "https://github.com/tetsuo-ai/agenc-core#readme",
+  "homepage": "https://get.agenc.ag",
   "bugs": {
     "url": "https://github.com/tetsuo-ai/agenc-core/issues"
   },

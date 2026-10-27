@@ -8,6 +8,7 @@ import type {
 
 export interface AskUserQuestionOverlayProps {
   readonly input: AskUserQuestionInput;
+  readonly allowOther?: boolean;
   /** Called with the merged input (original questions + collected answers). */
   onSubmit(updatedInput: unknown): void;
   /** Called when the user dismisses the picker without answering (esc). */
@@ -36,6 +37,7 @@ function clampLine(text: string, max = 140): string {
  */
 export function AskUserQuestionOverlay({
   input,
+  allowOther = true,
   onSubmit,
   onSkip,
 }: AskUserQuestionOverlayProps): React.ReactElement | null {
@@ -50,8 +52,8 @@ export function AskUserQuestionOverlay({
   const question: AskUserQuestion | undefined = questions[questionIndex];
   if (question === undefined) return null;
 
-  const rowCount = question.options.length + 1; // + Other
-  const isOther = optionIndex === question.options.length;
+  const rowCount = question.options.length + (allowOther ? 1 : 0);
+  const isOther = allowOther && optionIndex === question.options.length;
 
   const commitAnswers = (nextAnswers: Record<string, string>): void => {
     if (questionIndex + 1 >= questions.length) {
@@ -222,7 +224,7 @@ export function AskUserQuestionOverlay({
             </Box>
           );
         })}
-        {isOther ? (
+        {allowOther && (isOther ? (
           <Box flexDirection="column">
             <Box>
               <Text color="planMode" bold={true}>{`❯ ${rowCount}  ${OTHER_LABEL}`}</Text>
@@ -239,7 +241,7 @@ export function AskUserQuestionOverlay({
           <Box>
             <Text color="muted3">{`  ${rowCount}  ${OTHER_LABEL}  type a custom answer`}</Text>
           </Box>
-        )}
+        ))}
       </Box>
       <Box marginTop={1}>
         <Text color="muted3">
@@ -247,7 +249,7 @@ export function AskUserQuestionOverlay({
             ? "⏎ submit answer   esc back"
             : question.multiSelect === true
               ? "space toggle · ⏎ confirm · ↑↓ move · esc skip"
-              : "1-4 choose · ↑↓ move · ⏎ confirm · esc skip"}
+              : allowOther ? "1-4 choose · ↑↓ move · ⏎ confirm · esc skip" : "1-3 choose · ↑↓ move · ⏎ continue · esc stop"}
         </Text>
       </Box>
     </Box>

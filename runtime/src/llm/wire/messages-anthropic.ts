@@ -600,15 +600,49 @@ export function readAnthropicReasoningOutputTokens(
  * is stored as `completionTokens`. Mark that subset so the session budget
  * adds completion once. A reasoning count above completion stays unmarked
  * and is still added on top.
+ * Also mark Anthropic's exclusive input counter. Cache reads and writes are
+ * billed in addition to input_tokens, unlike OpenAI-compatible input counters.
  */
 export function markAnthropicReasoningIncludedInCompletion(
   usage: LLMUsage,
 ): LLMUsage {
+  usage = { ...usage, cacheInputExcludedFromPrompt: true };
   const reasoning = usage.reasoningOutputTokens;
   if (reasoning === undefined || reasoning > usage.completionTokens) {
     return usage;
   }
   return { ...usage, reasoningIncludedInCompletion: true };
+}
+
+/**
+ * Anthropic reports cache reads and cache writes separately from
+ * `input_tokens`. Processed tokens are ordinary input plus those cache
+ * tokens plus output.
+ *
+ * https://platform.claude.com/docs/en/build-with-claude/prompt-caching#tracking-cache-performance
+ */
+export function withAnthropicProcessedTokenTotal(usage: LLMUsage): LLMUsage {
+  // Malformed negative cache counters must never credit previously spent tokens.
+  const cachedInputTokens = usage.cachedInputTokens === undefined
+    ? undefined
+    : Math.max(0, usage.cachedInputTokens);
+  const cacheCreationInputTokens = usage.cacheCreationInputTokens === undefined
+    ? undefined
+    : Math.max(0, usage.cacheCreationInputTokens);
+  const totalTokens =
+    usage.promptTokens +
+    usage.completionTokens +
+    (cachedInputTokens ?? 0) +
+    (cacheCreationInputTokens ?? 0);
+  if (totalTokens === usage.totalTokens &&
+    cachedInputTokens === usage.cachedInputTokens &&
+    cacheCreationInputTokens === usage.cacheCreationInputTokens) return usage;
+  return {
+    ...usage,
+    totalTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
+  };
 }
 
 export function parseAnthropicMessagesResponse(
@@ -711,17 +745,19 @@ export function parseAnthropicMessagesResponse(
       ? usageRecord.speed
       : undefined;
 
-  const normalizedUsage = markAnthropicReasoningIncludedInCompletion(
-    coerceUsage({
-      promptTokens: usageRecord.input_tokens,
-      completionTokens: usageRecord.output_tokens,
-      totalTokens: undefined,
-      cachedInputTokens: usageRecord.cache_read_input_tokens,
-      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-      cacheCreation1hInputTokens: (usageRecord.cache_creation as Record<string, unknown> | undefined)?.ephemeral_1h_input_tokens,
-      reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
-      webSearchRequests: serverToolUse.web_search_requests,
-    }),
+  const normalizedUsage = withAnthropicProcessedTokenTotal(
+    markAnthropicReasoningIncludedInCompletion(
+      coerceUsage({
+        promptTokens: usageRecord.input_tokens,
+        completionTokens: usageRecord.output_tokens,
+        totalTokens: undefined,
+        cachedInputTokens: usageRecord.cache_read_input_tokens,
+        cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+        cacheCreation1hInputTokens: (usageRecord.cache_creation as Record<string, unknown> | undefined)?.ephemeral_1h_input_tokens,
+        reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
+        webSearchRequests: serverToolUse.web_search_requests,
+      }),
+    ),
   );
 
   return {

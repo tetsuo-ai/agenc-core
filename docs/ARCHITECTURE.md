@@ -1,6 +1,6 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.18.0**). For the
+A current map of how `agenc` is put together (runtime **0.19.19**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
@@ -76,13 +76,14 @@ Everything past the launcher lives in the single runtime workspace
 | `app-server-protocol/`                                                   | Shared protocol constants (e.g. portal default local endpoint)                                                                                                                                                                                 |
 | `session/`                                                               | Session engine: turn loop, transcript, canonical append-only rollout journal + `index.json`, persist-before-publish events, resume, cost, autonomous mode. `session.transcript.v2` rebuilds closed-turn results from that rollout: [daemon.md](reference/daemon.md#closed-turn-results). Raw session `error` records are diagnostic, not closers: [daemon.md](reference/daemon.md#mid-turn-error-events). |
 | `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork. Spawn preflight is confirmed no-effect only before `delegate()`: [agents.md](reference/agents.md#spawn_agent-preflight). Close/assign/send argument and identity refusals use `tool:agents.v2:validation`: [agents.md](reference/agents.md#agent-validation-refusals). Fork interrupt and tool-abort stay turn-scoped: [agents.md](reference/agents.md#turn-abort-containment). |
+| `routines/`                                                              | Daemon-owned scheduled routines (`routines-v1.json`). A permission-blocked unattended run fails with a fixed mode-specific `run.error`: [agents.md](reference/agents.md#permission-blocked-explanation). |
 | `workflow/`                                                              | M5 verified-change pipeline (`agenc run start`). Session bootstrap, child names, review repair, and `refs/agenc/runs/<runId>` are documented in [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md). Not the `WorkflowTool` DAG. |
 | `auth/`                                                                  | Local and remote auth backends, native secure storage credential namespaces, BYOK precedence, provider auth selection, session auth metadata                                                                                                                                                   |
 | `llm/`                                                                   | Provider-neutral client/request shaping, provider-aware complete-request [token accounting](design/provider-aware-token-accounting.md), model catalog, retries, streaming, wire adapters, OAuth refresh. Grammar-safe, Gemini native JSON Schema, object-applicator roots that omit type, and LM Studio/openai-compatible ceiling shaping: [provider-tool-compat.md](provider-tool-compat.md#gemini-object-applicator-tool-roots). |
 | `tools/`                                                                 | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …)                                                                                                                         |
 | `tool-registry.ts` / `tools.ts`                                          | Tool registration and assembly entry points                                                                                                                                                                                                    |
 | `permissions/`                                                           | Trust, approval policy, rules, modes, sandbox policy, unattended policy, guardian/classifier, audit log. Tools with `requiresUserInteraction()` keep the user-input prompt under bypass, allowlists, hook allow, automatic review, and approval cache: [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md#interactive-tool-prompts). |
-| `sandbox/`                                                               | OS sandbox: Linux `bwrap` via `agenc-linux-sandbox` with `agenc-landlock-run` fallback; macOS in-tree Seatbelt (`engine/seatbelt.ts` + `/usr/bin/sandbox-exec`); Windows restricted-token fail-closed. Lifecycle brokers are separate (`agenc-process-broker`, `agenc-process-job-broker.exe`). Home-as-workspace helper refusal and Landlock MCP preflight: [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md). |
+| `sandbox/`                                                               | OS sandbox: Linux `bwrap` via `agenc-linux-sandbox` with `agenc-landlock-run` fallback; macOS in-tree Seatbelt (`engine/seatbelt.ts` + `/usr/bin/sandbox-exec`); Windows restricted-token fail-closed. Lifecycle brokers are separate (`agenc-process-broker`, `agenc-process-job-broker.exe`). Home-as-workspace helper refusal, [home reserved under writable ancestors](reference/tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots), and Landlock MCP preflight: [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md). |
 | `mcp-client/` / `mcp-server/` / `mcp/`                                   | Outbound MCP client, server framework, and serve bootstrap. Plugin merge, model-facing inputSchema sanitization, omitted-type object schemas, model-facing tool text, stderr retention, and Landlock stdio failures: [mcp.md](reference/mcp.md#mcp-object-schemas-that-omit-type).                                                                                            |
 | `gateway/`                                                               | Channel gateway as a **daemon client**: Telegram, Discord, Slack, WebChat, stdio; pairing, bindings, approvals, session routing, untrusted framing, hooks HTTP, cron delivery, optional media/onchain helpers. See [`gateway.md`](gateway.md). |
 | `heartbeat/`                                                             | Proactive ticks: policy, `HEARTBEAT.md` reader, runner, scheduler, gateway/budget wire. See [`reference/autonomy.md`](reference/autonomy.md).                                                                                                  |
@@ -123,7 +124,7 @@ Everything past the launcher lives in the single runtime workspace
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities                                                                                                                                                                                         |
 | `browser/`                                                               | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool                                                                                                                                                                          |
 | `audio/`                                                                 | Local Whisper dictation and verified model install. Downloads fail after 60 s of silence, not a ten-minute wall clock: [whisper-local.md](whisper-local.md#download-idle-clock).                                                               |
-| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.18.0`), public barrel                                                                                                                                                                                         |
+| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.19.19`), public barrel                                                                                                                                                                                         |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
@@ -147,6 +148,7 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `sessions/` (project-scoped)                                       | Canonical append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename). The daemon sweep deletes idle session dirs after `agent.retention.rollout_days` (default 30; 0 keeps every session): [session rollout retention](reference/daemon.md#session-rollout-retention). |
 | `derived-indexes/memory-v1.sqlite`                                 | Rebuildable full-corpus memory FTS cache (not source authority). See [memory.md](reference/memory.md).                               |
 | `whisper/`                                                         | Private Whisper model weights (`ggml-base.bin`, `ggml-small.bin`). Downloads use a 60 s idle clock: [whisper-local.md](whisper-local.md#download-idle-clock). |
+| `routines/routines-v1.json`                                        | Daemon-owned local routines and bounded run history. Permission-blocked runs store a fixed `run.error`: [agents.md](reference/agents.md#permission-blocked-explanation). |
 | logs / state DBs                                                   | SQLite state + logs databases under project/home layout                                                                              |
 
 Login tokens, provider BYOK keys, remote bearers, and persisted remote
@@ -181,6 +183,19 @@ or Anthropic native storage. See
 
 Optional trajectory export writes redacted rollout items via
 `AGENC_TRAJECTORY_EXPORT_PATH` or `AGENC_TRAJECTORY_EXPORT_DIR`.
+
+### Routine permission-blocked explanation
+
+A scheduled routine has nobody attached. A tool action that would ask a
+person ends the run as `failed` with a fixed `run.error` from
+`describePermissionDenial`. `default` and `plan` share the read-only
+string; `acceptEdits` and `bypassPermissions` each have their own.
+The executor path uses the launch snapshot; a Core
+`routine_permission_denied` terminal uses the stored routine's current
+mode. There is no env or `config.toml` override.
+
+Operator runbook:
+[agents.md](reference/agents.md#permission-blocked-explanation).
 
 ### Durable run event path
 
@@ -373,7 +388,7 @@ phase machine. Module files under `runtime/src/phases/` own the heavy steps;
 | 2   | `streamModel`        | `phases/stream-model.ts`         | Admit one physical sample; stream the provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
 | 3   | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors                                           |
 | 4   | `continuationNudge`  | `phases/continuation-nudge.ts`   | Nudge re-entry when the model stopped without required follow-up                                  |
-| 4b  | `completionGate`     | `phases/completion-gate.ts`      | Non-interactive sessions only: accept a tool-free final answer once each checked item has associated tool evidence after the last workspace change (the last file edit or a command the checklist does not name), the first answer only if it also cites a command that ran successfully since then; otherwise inject a durable verification request; at the round cap, or once an answer that ran no tool repeats the last request's verdict, settle `partial` for unavailable checks or `exhausted` |
+| 4b  | `completionGate`     | `phases/completion-gate.ts`      | Non-interactive sessions only: skip clear information requests with successful tool results and no commands or recorded writes; otherwise accept a tool-free final answer once each checked item has associated tool evidence after the last workspace change (the last file edit or a command the checklist does not name), the first answer only if it also cites a command that ran successfully since then; otherwise inject a durable verification request; at the round cap, or once an answer that ran no tool repeats the last request's verdict, settle `partial` for unavailable checks or `exhausted` |
 | 5   | `executeTools`       | `phases/execute-tools.ts`        | Drain / finalize tool dispatch → tool results                                                     |
 | 6   | `commit`             | `phases/commit.ts`               | Terminal commit for the iteration; may re-enter via stop-hooks                                    |
 
@@ -483,11 +498,11 @@ Default provider is **`grok`** (xAI). Model defaults are dual-sourced:
 | --------------------------------------------------------------- | ------------------- | ------------------------------------------- |
 | Fresh `defaultConfig().model`                                   | **`grok-4.6`**      | `runtime/src/config/schema.ts`              |
 | Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | **`grok-4.6`**      | `runtime/src/llm/registry/provider-info.ts` |
-| Managed OpenRouter paid first model                             | **`x-ai/grok-4.5`** | `subscription-managed-models.ts`            |
+| Direct OpenRouter default | **`x-ai/grok-4.5`** | `runtime/src/llm/registry/provider-info.ts` |
 
 Bare interactive startup with an empty/fresh config uses the **config** default
-(`grok-4.6`). The direct Grok provider map also uses **4.6**; paid managed
-OpenRouter intentionally remains on **`x-ai/grok-4.5`**.
+(`grok-4.6`). The direct Grok provider map also uses **4.6**. OpenRouter uses
+the user's own key and keeps **`x-ai/grok-4.5`** as its default.
 API key resolution for grok: `XAI_API_KEY` → `GROK_API_KEY`. The retired
 `AGENC_XAI_API_KEY` alias is rejected at ingress.
 
@@ -586,7 +601,7 @@ compression, and timestamp policy, validates the descriptor graph, compares
 every compressed blob, then starts the bound image under read-only-root,
 capability-free, no-network hardening and verifies native socket credentials.
 
-## Current status (0.18.0)
+## Current status (0.19.19)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with

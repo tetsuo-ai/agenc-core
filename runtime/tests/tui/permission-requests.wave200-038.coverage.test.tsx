@@ -119,6 +119,41 @@ function createSession(
 }
 
 describe("permission request bridge coverage", () => {
+  test("one interruption clears sibling approvals and rejects late arrivals from that turn", async () => {
+    const session = createSession({ request: vi.fn(async () => DENIED) }, { setModel: vi.fn() });
+    session.cancelActiveTurn = vi.fn(async () => {});
+    const setModel = vi.fn();
+    const setExpandedView = vi.fn();
+    const setAppState = vi.fn();
+    const getAppState = () => ({}) as AppState;
+    let latest: readonly PendingRequest[] = [];
+    function Harness() {
+      latest = usePermissionRequests(session, setModel, setExpandedView, setAppState, getAppState);
+      return <Text>{latest.length}</Text>;
+    }
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({ patchConsole: false, stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream });
+    try {
+      root.render(<Harness />);
+      await waitFor(() => expect(session.appStateBridge?.setModel).not.toBeUndefined());
+      await sleep(25);
+      const request = session.services.approvalResolver!.request;
+      const ctx = (id: string) => createCtx(id, "Write", { kind: "function", arguments: '{"file_path":"README.md"}' });
+      const first = request(ctx("first"));
+      const second = request(ctx("second"));
+      await waitFor(() => expect(latest).toHaveLength(2));
+      latest[0]!.resolve(ABORT);
+      await expect(Promise.all([first, second])).resolves.toEqual([ABORT, ABORT]);
+      await expect(request(ctx("late"))).resolves.toEqual(ABORT);
+      await waitFor(() => expect(latest).toHaveLength(0));
+      expect(session.cancelActiveTurn).toHaveBeenCalledExactlyOnceWith("interrupted");
+      const next = request({ ...ctx("next"), turnId: "new-turn" });
+      await waitFor(() => expect(latest).toHaveLength(1));
+      latest[0]!.resolve(APPROVED);
+      await expect(next).resolves.toEqual(APPROVED);
+    } finally { root.unmount(); stdin.end(); stdout.end(); }
+  });
+
   test("derives queued inputs and settles approval decisions", async () => {
     clearAskUserQuestionResponsesForTest();
 
@@ -283,11 +318,6 @@ describe("permission request bridge coverage", () => {
       shellConfirm!.onAllow(shellConfirm!.input, [{ scope: "session" }]);
       await expect(shellDecision).resolves.toEqual(APPROVED_FOR_SESSION);
 
-      const mcpConfirm = confirms.get("mcp-read");
-      expect(mcpConfirm).toBeDefined();
-      mcpConfirm!.onAbort();
-      await expect(mcpDecision).resolves.toEqual(ABORT);
-
       const askConfirm = confirms.get("ask-skip");
       expect(askConfirm).toBeDefined();
       askConfirm!.onReject(
@@ -305,6 +335,11 @@ describe("permission request bridge coverage", () => {
           planInterviewAction: "skip_plan_interview",
         },
       });
+
+      const mcpConfirm = confirms.get("mcp-read");
+      expect(mcpConfirm).toBeDefined();
+      mcpConfirm!.onAbort();
+      await expect(mcpDecision).resolves.toEqual(ABORT);
 
       await waitFor(() => {
         expect(latestRequests).toHaveLength(0);

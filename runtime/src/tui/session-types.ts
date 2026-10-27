@@ -120,6 +120,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
+  subscribeToCompactProgress?(cb: (event: unknown) => void): () => void;
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
   resolveDaemonToolCall?(
@@ -193,17 +194,18 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
         readonly message: string;
       }
   >;
-  previewFileRewind?(params: { readonly messageOrdinal: number }): Promise<{
+  previewFileRewind?(params: { readonly messageOrdinal: number; readonly userMessageId?: string }): Promise<{
     readonly ok: boolean;
     readonly sessionId: string;
     readonly code?: string;
     readonly message?: string;
     readonly canRestoreFiles?: boolean;
+    readonly checkpointAvailable?: boolean;
     readonly filesChanged?: readonly string[];
     readonly insertions?: number;
     readonly deletions?: number;
   }>;
-  rewindFilesToMessage?(params: { readonly messageOrdinal: number }): Promise<{
+  rewindFilesToMessage?(params: { readonly messageOrdinal: number; readonly userMessageId?: string }): Promise<{
     readonly ok: boolean;
     readonly sessionId: string;
     readonly code?: string;
@@ -219,6 +221,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     message: string,
     opts?: {
       readonly displayUserMessage?: string | null;
+      readonly userPromptText?: string;
     },
   ): Promise<void>;
   enqueueIdleInput?(input: LLMMessage, ownership?: IdleInputOwnership): number;
@@ -263,6 +266,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     setExpandedView?: (next: "none" | "tasks") => void;
     setAppState?: (updater: (prev: unknown) => unknown) => void;
   };
+  useSessionProviderKey?(provider: string, apiKey: string): Promise<void>;
   applyProviderModelSelection?(selection: {
     readonly provider: string;
     readonly model: string;

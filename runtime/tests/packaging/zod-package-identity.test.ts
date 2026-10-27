@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import config from "../../build.config.js";
+import { makeRuntimeScratch } from "../helpers/runtime-scratch.js";
 
 describe("production Zod package identity", () => {
   it("shares root, v3 and v4 constructors and registry with external consumers", async () => {
-    const temp = await mkdtemp(join(process.cwd(), ".zod-identity-"));
+    const { directory: temp, cleanup } = await makeRuntimeScratch("agenc-zod-identity-");
     try {
       const fixture = join(temp, "fixture.mjs");
       await writeFile(fixture, `
@@ -57,6 +58,6 @@ describe("production Zod package identity", () => {
       const run = spawnSync(process.execPath, [control], { encoding: "utf8", timeout: 30_000 });
       expect(run.status, run.stderr).toBe(0);
       expect(run.stdout.trim()).toBe("zod-package-identity-ok");
-    } finally { await rm(temp, { recursive: true, force: true }); }
+    } finally { await cleanup(); }
   });
 });

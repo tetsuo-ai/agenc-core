@@ -185,9 +185,10 @@ export function recordInFlightToolCallProgress(
         output_partial: string | null;
         output_log_path: string | null;
         output_log_bytes: number;
+        recovery_category: string;
       }
     >(
-      `SELECT output_partial, output_log_path, output_log_bytes
+      `SELECT output_partial, output_log_path, output_log_bytes, recovery_category
        FROM in_flight_tool_calls
        WHERE session_id = ?
          AND tool_call_id = ?`,
@@ -215,6 +216,7 @@ export function recordInFlightToolCallProgress(
       output_partial: null,
       output_log_path: null,
       output_log_bytes: 0,
+      recovery_category: normalizeToolRecoveryCategory(params.recoveryCategory),
     };
   }
 
@@ -227,6 +229,30 @@ export function recordInFlightToolCallProgress(
     chunk: stringifyToolOutput(params.chunk),
     policy,
   });
+  const category = params.recoveryCategory === undefined
+    ? undefined : normalizeToolRecoveryCategory(params.recoveryCategory);
+  if (category === undefined || category === row.recovery_category) {
+    // Only the display/output fields change. The call's durable start, status,
+    // arguments and recovery category remain the recovery authority. Publish
+    // the output immediately, but let the next FULL commit/checkpoint sync it.
+    // An orphan was backfilled above at the caller's original durability.
+    const writeOutput = () => driver.prepareState<
+      [string | null, string | null, number, string, string, string | null, string | null]
+    >(
+      `UPDATE in_flight_tool_calls
+       SET output_partial = ?, output_log_path = ?, output_log_bytes = ?
+       WHERE session_id = ? AND tool_call_id = ?
+         AND status NOT IN ('poisoned', 'unknown_resolved')
+         AND (? IS NULL OR recovery_category = ?)`,
+    ).run(appended.outputPartial, appended.outputLogPath ?? null, appended.outputLogBytes,
+      params.sessionId, params.toolCallId, category ?? null, category ?? null);
+    const result = driver.state.inTransaction
+      ? writeOutput()
+      : driver.transactionImmediate(writeOutput, "observational");
+    if (result.changes > 0 || category === undefined) return;
+    // Another writer may have changed the category since the read. Preserve
+    // the original category-update path and its FULL durability in that case.
+  }
   driver
     .prepareState<
       [string | null, string | null, number, string | null, string, string]

@@ -41,14 +41,6 @@ const yoloClassifierPromptDistDir = resolve(
   runtimeRoot,
   'dist/yolo-classifier-prompts',
 );
-const processBrokerSource = resolve(
-  runtimeRoot,
-  'native/agenc-process-broker.c',
-);
-const processBrokerDist = resolve(
-  runtimeRoot,
-  'dist/agenc-process-broker',
-);
 const landlockRunSource = resolve(
   runtimeRoot,
   'native/agenc-landlock-run.c',
@@ -177,86 +169,15 @@ function copyYoloClassifierPrompts(): void {
 
 function compileLinuxProcessBroker(): void {
   if (process.platform !== 'linux') return;
-  const compiler = process.env.CC?.trim() || 'cc';
-  const temporary = mkdtempSync(resolve(runtimeRoot, 'dist/.namespace-init-build-'));
-  try {
-    const sessionBuild = spawnSync(compiler, [
-      '-Os', '-static', '-std=c11', '-Wall', '-Wextra', '-Werror',
-      '-D_FORTIFY_SOURCE=2', '-fstack-protector-strong', '-Wl,-z,relro,-z,now',
-      '-o', resolve(runtimeRoot, 'dist/agenc-session-sandbox'),
-      resolve(runtimeRoot, 'native/agenc-session-sandbox.c'),
-    ], { encoding: 'utf8' });
-    if (sessionBuild.error || sessionBuild.status !== 0)
-      throw new Error('Session sandbox build failed: ' + sessionBuild.stderr);
-    const helper = resolve(temporary, 'namespace-init');
-    const staticBuild = spawnSync(compiler, [
-      '-Os', '-static', '-std=c11', '-Wall', '-Wextra', '-Werror',
-      '-D_FORTIFY_SOURCE=2', '-fstack-protector-strong', '-Wl,-z,relro,-z,now',
-      '-o', helper, resolve(runtimeRoot, 'native/agenc-namespace-init.c'),
-    ], { cwd: runtimeRoot, env: { ...process.env, LANG: 'C', LC_ALL: 'C' }, encoding: 'utf8' });
-    if (staticBuild.error !== undefined || staticBuild.status !== 0) {
-      throw new Error('Static Linux namespace-init build failed' +
-        (staticBuild.error === undefined ? '' : `: ${staticBuild.error.message}`) +
-        (staticBuild.stderr ? `\n${staticBuild.stderr.trim()}` : ''));
-    }
-    const image = readFileSync(helper);
-    if (image.length < 64 || image.length > 2 * 1024 * 1024 ||
-        image.subarray(0, 6).toString('hex') !== '7f454c460201' ||
-        image.readUInt16LE(54) !== 56) {
-      throw new Error('Namespace init must be a bounded, static little-endian ELF64 image');
-    }
-    const programOffset = image.readBigUInt64LE(32);
-    const programCount = image.readUInt16LE(56);
-    if (programCount < 1 || programCount > 128 ||
-        programOffset + BigInt(programCount * 56) > BigInt(image.length)) {
-      throw new Error('Invalid namespace-init ELF program table');
-    }
-    for (let i = 0; i < programCount; ++i) {
-      if (image.readUInt32LE(Number(programOffset) + i * 56) === 3) {
-        throw new Error('Namespace init must not contain a dynamic interpreter');
-      }
-    }
-    const header = resolve(temporary, 'namespace-init-image.h');
-    writeFileSync(header, 'static const unsigned char agenc_namespace_init_image[] = {\n' +
-      Array.from(image, byte => String(byte)).join(',') + '\n};\n');
-    const result = spawnSync(
-      compiler,
-      [
-        '-O2',
-        '-std=c11',
-        '-Wall',
-        '-Wextra',
-        '-Werror',
-        '-D_FORTIFY_SOURCE=2',
-        '-fstack-protector-strong',
-        '-Wl,-z,relro,-z,now',
-        `-DAGENC_NAMESPACE_INIT_IMAGE_HEADER=${JSON.stringify(header)}`,
-        '-o',
-        processBrokerDist,
-        processBrokerSource,
-      ],
-      {
-        cwd: runtimeRoot,
-        env: {
-          ...process.env,
-          LANG: 'C',
-          LC_ALL: 'C',
-        },
-        encoding: 'utf8',
-      },
-    );
-    if (result.error !== undefined || result.status !== 0) {
-      throw new Error(
-        'Linux process-broker build failed' +
-          (result.error === undefined ? '' : `: ${result.error.message}`) +
-          (result.stderr ? `\n${result.stderr.trim()}` : ''),
-      );
-    }
-    chmodSync(processBrokerDist, 0o755);
-    writeFileSync(resolve(runtimeRoot, 'dist/agenc-namespace-init-entry'),
-      'AGENC_NAMESPACE_INIT_ENTRY_V1\n', { mode: 0o644 });
-  } finally {
-    rmSync(temporary, { recursive: true, force: true });
+  const script = process.env.AGENC_LINUX_BROKER_PORTABLE === '1'
+    ? 'scripts/build-portable-linux-broker.mjs'
+    : 'scripts/build-linux-process-broker.mjs';
+  const result = spawnSync(process.execPath, [
+    resolve(runtimeRoot, script), runtimeRoot,
+  ], { cwd: runtimeRoot, env: process.env, encoding: 'utf8' });
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error('Linux process-broker build failed: ' +
+      (result.error?.message ?? result.stderr?.trim() ?? `exit ${result.status}`));
   }
 }
 
@@ -390,14 +311,16 @@ function compileWindowsProcessBroker(): void {
   const errors: string[] = [];
   for (const compiler of compilers) {
     const result = spawnSync(
-      compiler,
+      compiler.path,
       [
         '/nologo',
         '/target:exe',
         '/optimize+',
         '/checked+',
-        '/deterministic+',
-        `/pathmap:${runtimeRoot}=.`,
+        // The in-box .NET Framework 4.x compiler predates these Roslyn flags.
+        ...(compiler.supportsReproducibleBuild
+          ? ['/deterministic+', `/pathmap:${runtimeRoot}=.`]
+          : []),
         `/out:${windowsProcessBrokerDist}`,
         windowsProcessBrokerSource,
       ],
@@ -421,10 +344,10 @@ function compileWindowsProcessBroker(): void {
       return;
     }
     errors.push(
-      `${compiler}: ${
+      `${compiler.path}: ${
         result.error?.message ??
-        result.stderr?.trim() ??
-        `exit ${result.status ?? 'unknown'}`
+        ([result.stdout?.trim(), result.stderr?.trim()].filter(Boolean).join('\n') ||
+          `exit ${result.status ?? 'unknown'}`)
       }`,
     );
   }
@@ -433,8 +356,13 @@ function compileWindowsProcessBroker(): void {
   );
 }
 
-function windowsCSharpCompilerCandidates(): string[] {
-  const candidates: string[] = [];
+interface WindowsCSharpCompiler {
+  path: string;
+  supportsReproducibleBuild: boolean;
+}
+
+function windowsCSharpCompilerCandidates(): WindowsCSharpCompiler[] {
+  const candidates: WindowsCSharpCompiler[] = [];
   const programFilesX86 = process.env['ProgramFiles(x86)'];
   const programFiles = process.env.ProgramFiles;
   const visualStudioRoots = [programFilesX86, programFiles].filter(
@@ -469,7 +397,7 @@ function windowsCSharpCompilerCandidates(): string[] {
             candidate &&
             isTrustedWindowsBuildTool(candidate, visualStudioRoots)
           ) {
-            candidates.push(candidate);
+            candidates.push({ path: candidate, supportsReproducibleBuild: true });
           }
         }
       }
@@ -484,11 +412,11 @@ function windowsCSharpCompilerCandidates(): string[] {
     ]) {
       const candidate = resolve(systemRoot, relativePath);
       if (isTrustedWindowsBuildTool(candidate, [systemRoot])) {
-        candidates.push(candidate);
+        candidates.push({ path: candidate, supportsReproducibleBuild: false });
       }
     }
   }
-  return [...new Set(candidates)];
+  return [...new Map(candidates.map(candidate => [candidate.path, candidate])).values()];
 }
 
 function isTrustedWindowsBuildTool(
@@ -549,6 +477,43 @@ function existingSourceFile(base: string): string | null {
       return false;
     }
   }) ?? null;
+}
+
+// esbuild records a module's type from the first resolution that reaches it, and
+// a path returned by a plugin carries no package.json type. When a file is
+// reachable both natively and through these plugins, the importer that the
+// parallel parse happens to reach first decides its type, and with it the
+// __toESM node-mode flag of its CommonJS imports, so two builds of one commit
+// differ. The plugins therefore leave a path to esbuild whenever esbuild resolves
+// the literal target natively: an exact match, else exactly one candidate file.
+const NATIVE_RESOLUTION_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.mts', '.cts', '.mjs', '.cjs', '.json'];
+const NATIVE_REWRITTEN_EXTENSIONS: Record<string, string[]> = {
+  '.js': ['.ts', '.tsx'],
+  '.jsx': ['.ts', '.tsx'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+};
+
+function isExistingFile(candidate: string): boolean {
+  try {
+    return statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function uniqueNativeSourceFile(base: string): string | null {
+  // esbuild takes an exact match before trying any other extension.
+  if (isExistingFile(base)) return base;
+  const ext = /\.[^/\\.]+$/.exec(base)?.[0] ?? '';
+  const stem = ext === '' ? base : base.slice(0, -ext.length);
+  const candidates = new Set<string>([
+    ...(NATIVE_REWRITTEN_EXTENSIONS[ext] ?? []).map((rewritten) => `${stem}${rewritten}`),
+    ...NATIVE_RESOLUTION_EXTENSIONS.map((extension) => `${base}${extension}`),
+    ...NATIVE_RESOLUTION_EXTENSIONS.map((extension) => resolve(base, `index${extension}`)),
+  ]);
+  const found = [...candidates].filter(isExistingFile);
+  return found.length === 1 ? found[0] : null;
 }
 
 function isWithin(root: string, file: string): boolean {
@@ -747,8 +712,9 @@ const agencBareSrcAlias = {
   }) {
     build.onResolve({ filter: /^src\// }, (args) => {
       const resolved = resolveAgenCBareSrc(args.path);
-      if (resolved !== null) return { path: resolved };
-      return null;
+      if (resolved === null) return null;
+      const native = uniqueNativeSourceFile(resolve(runtimeSourceRoot, args.path.slice('src/'.length)));
+      return resolved === native ? null : { path: resolved };
     });
   },
 };
@@ -804,7 +770,11 @@ const agencOptionalExternal = {
       }
       if (args.path.startsWith('./') || args.path.startsWith('../')) {
         const resolved = resolveRelativeAgenCSource(args.importer, args.path);
-        if (resolved !== null) return { path: resolved };
+        if (resolved !== null) {
+          const importer = isAbsolute(args.importer) ? args.importer : resolve(runtimeRoot, args.importer);
+          const native = uniqueNativeSourceFile(resolve(dirname(importer), args.path));
+          return resolved === native ? null : { path: resolved };
+        }
         return isKnownMissingOptionalModule(args.path)
           ? { path: args.path, external: true }
           : null;
@@ -839,6 +809,7 @@ const agencKnownMissingOptionalExternal = {
 
 export const __agencBuildConfigTest = {
   agencOptionalExternal,
+  compileWindowsProcessBroker,
   entry,
   featureFlagLiteral,
   inlineCopiedTreeFeatureCalls,
@@ -886,7 +857,6 @@ const external = [
   '@modelcontextprotocol/sdk',
   'node-pty',
   '@anthropic-ai/bedrock-sdk',
-  '@aws-sdk/client-bedrock',
   '@aws-sdk/client-bedrock-runtime',
   '@smithy/core',
   '@smithy/node-http-handler',

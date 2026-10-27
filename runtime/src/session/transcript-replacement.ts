@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { LLMMessage } from "../llm/types.js";
+import { isHiddenGoalContinuation } from "./hidden-goal-history.js";
+import { isAuthenticatedCompactionBoundary } from "./compaction-history-marker.js";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | {
@@ -43,15 +45,19 @@ export function createHistoryReplacedEvent(params: {
 function llmHistoryToRuntimeTranscriptMessages(
   history: readonly LLMMessage[],
 ): RuntimeTranscriptMessage[] {
-  return history.flatMap((message, index) =>
-    llmMessageToRuntimeTranscriptMessages(message, index),
-  );
+  const boundaryIndex = history.findLastIndex(isAuthenticatedCompactionBoundary);
+  return history.flatMap((message, index) => {
+    const projected = llmMessageToRuntimeTranscriptMessages(message, index);
+    return index <= boundaryIndex && message.role === "user"
+      ? projected.map((row) => ({ ...row, isVisibleInTranscriptOnly: true })) : projected;
+  });
 }
 
 function llmMessageToRuntimeTranscriptMessages(
   message: LLMMessage,
   index: number,
 ): RuntimeTranscriptMessage[] {
+  if (isHiddenGoalContinuation(message)) return [];
   switch (message.role) {
     case "system":
     case "developer":
@@ -89,7 +95,7 @@ function llmMessageToRuntimeTranscriptMessages(
               type: "tool_result",
               tool_use_id: message.toolCallId ?? `tool-${index}`,
               content: contentToText(message.content),
-              is_error: false,
+              is_error: message.runtimeOnly?.toolResultIsError === true,
             }],
           },
           isMeta: true,
@@ -119,6 +125,8 @@ function makeUserMessage(
     ...(isCompactSummary ? { isCompactSummary: true } : {}),
     ...(marker === undefined ? {} : { compactionHistory: marker }),
     uuid: `history-user-${index}`,
+    ...(source.runtimeOnly?.responseItemId !== undefined
+      ? { canonicalUserMessageId: source.runtimeOnly.responseItemId } : {}),
     timestamp: new Date(0).toISOString(),
   };
 }

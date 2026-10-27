@@ -2,7 +2,12 @@ import { Box } from "../ink.js";
 import { usePromptOverlay, usePromptOverlayDialog } from "../context/promptOverlayContext.js";
 import PromptInputFooterSuggestions from "./PromptInput/PromptInputFooterSuggestions.js";
 
-export function PromptSuggestionsOverlay({
+/**
+ * Fullscreen suggestion list, laid out in the normal flow directly under the
+ * bottom slot (so under the prompt) and above the status line. It sits
+ * outside the slot's clip; the transcript gives up the rows it takes.
+ */
+export function PromptSuggestionsList({
   availableColumns,
   availableRows,
 }: {
@@ -15,21 +20,11 @@ export function PromptSuggestionsOverlay({
   }
 
   return (
-    <Box
-      position="absolute"
-      bottom="100%"
-      left={0}
-      right={0}
-      paddingX={0}
-      flexDirection="column"
-      opaque={true}
-    >
+    <Box flexDirection="column" flexShrink={0} width="100%">
       <PromptInputFooterSuggestions
         suggestions={data.suggestions}
         selectedSuggestion={data.selectedSuggestion}
         maxColumnWidth={data.maxColumnWidth}
-        suggestionType={data.suggestionType}
-        overlay={true}
         availableColumns={availableColumns}
         availableRows={availableRows}
       />

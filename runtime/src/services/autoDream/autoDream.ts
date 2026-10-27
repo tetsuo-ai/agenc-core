@@ -151,7 +151,7 @@ function initAutoDream(): void {
     const sinceScanMs = Date.now() - lastSessionScanAt
     if (!force && sinceScanMs < SESSION_SCAN_INTERVAL_MS) {
       logForDebugging(
-        `[autoDream] scan throttle — time-gate passed but last scan was ${Math.round(sinceScanMs / 1000)}s ago`,
+        `[autoDream] scan throttle: time-gate passed but last scan was ${Math.round(sinceScanMs / 1000)}s ago`,
       )
       return
     }
@@ -172,7 +172,7 @@ function initAutoDream(): void {
     sessionIds = sessionIds.filter(id => id !== currentSession)
     if (!force && sessionIds.length < cfg.minSessions) {
       logForDebugging(
-        `[autoDream] skip — ${sessionIds.length} sessions since last consolidation, need ${cfg.minSessions}`,
+        `[autoDream] skip: ${sessionIds.length} sessions since last consolidation, need ${cfg.minSessions}`,
       )
       return
     }
@@ -197,7 +197,7 @@ function initAutoDream(): void {
     }
 
     logForDebugging(
-      `[autoDream] firing — ${hoursSince.toFixed(1)}h since last, ${sessionIds.length} sessions to review`,
+      `[autoDream] firing: ${hoursSince.toFixed(1)}h since last, ${sessionIds.length} sessions to review`,
     )
 
     const setAppState =
@@ -278,7 +278,7 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
         })
       }
       logForDebugging(
-        `[autoDream] completed — cache: read=${result.totalUsage.cache_read_input_tokens} created=${result.totalUsage.cache_creation_input_tokens}`,
+        `[autoDream] completed: cache: read=${result.totalUsage.cache_read_input_tokens} created=${result.totalUsage.cache_creation_input_tokens}`,
       )
     } catch (e: unknown) {
       // Keep the consolidation cooldown after a deferred approval so idle

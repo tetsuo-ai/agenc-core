@@ -1,6 +1,10 @@
 import { createWriteStdinTool } from "../../../src/tools/system/write-stdin.js";
+import { PYTHON_SERVER_SOCKET_DENIED } from "../../helpers/python-server-denial.js";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { ConfigStore } from "../../../src/config/store.js";
+import { canWritePathWithCwd } from "../../../src/sandbox/engine/policy.js";
+import { effectivePermissionProfile } from "../../../src/sandbox/engine/policy-transforms.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,7 +15,13 @@ import {
   createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
-import { RESIDUAL_PROCESSES_NOTE } from "./exec-result-format.js";
+import {
+  RESIDUAL_PROCESSES_NOTE,
+  RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE,
+  RESIDUAL_PROCESSES_REPEAT_NOTE,
+  SERVER_CHECK_NOTE,
+  SERVER_CHECK_RUNNING_NOTE,
+} from "./exec-result-format.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-stdin.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -19,9 +29,13 @@ import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../..
 import { attachToolRuntimeContext } from "../runtimes/context.js";
 import {
   attachReadOnlyInspectionInvocation,
+  attachReadOnlyShellInvocation,
   inspectReadOnlyCommand,
+  inspectReadOnlyShellCommand,
   prepareReadOnlyInspectionInvocation,
+  prepareReadOnlyShellInvocation,
 } from "../../permissions/readonly-inspection.js";
+import { READ_ONLY_COMMAND_NOTICE } from "./exec-read-only-notice.js";
 import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
 import { buildFilteredRegistry, mergeRoleDisallowlist } from "../../agents/run-agent.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "../../agents/built-in-prompts.js";
@@ -143,6 +157,8 @@ describe("exec_command tool", () => {
     overrides: Record<string, unknown>,
     options: {
       readonly approvalPolicy?: string;
+      /** The session's policy when a permission-mode allow ran this attempt under `never`. */
+      readonly requestedApprovalPolicy?: string;
       readonly sandboxMode?: string;
       readonly mode?: string;
       readonly added?: readonly string[];
@@ -164,6 +180,9 @@ describe("exec_command tool", () => {
       source: { type: "model" },
       submittedAtMs: 0,
       approvalPolicy: options.approvalPolicy ?? "never",
+      ...(options.requestedApprovalPolicy !== undefined
+        ? { requestedApprovalPolicy: options.requestedApprovalPolicy }
+        : {}),
       requestedSandboxMode: sandboxMode,
       sandboxMode,
       approvalResolved: options.approvalResolved ?? true,
@@ -225,6 +244,21 @@ describe("exec_command tool", () => {
     };
   }
 
+  test.skipIf(process.platform !== "linux")("sandbox process probes explain why a persistent server may be invisible", async () => {
+    for (const cmd of ["ps -p 894 -o pid=,ppid=,cmd= || true", "pgrep -af 'node server.js|npm start' || true"]) {
+      const { tool } = mockManagerTool({ execCommand: async () => completedExecOutput("") });
+      const result = await tool.execute(contextArgs({ cmd }, {
+        sandboxMode: "workspace_write", approvalPolicy: "on_request", platformSandbox: true,
+      }));
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("PID namespace");
+      expect(result.content).toContain("daemon restart");
+      expect(result.content).toContain("same sandbox_permissions");
+      expect(result.content).toContain("Before starting another server");
+      expect(result.codeModeResult).toMatchObject({ sandbox_notice: expect.stringContaining("PID namespace") });
+    }
+  });
+
   // Live incident (session conv-mtjdmlfc, 2026-09-02): 21 `npm start` calls
   // over 412 s, each denied by the sandbox, each answered only by the child's
   // own errno text and an escalation request the parser silently discarded.
@@ -251,6 +285,59 @@ describe("exec_command tool", () => {
       1,
     );
 
+    test.each(["exec_command", "write_stdin"])("%s preserves the git error and offers one explicit approval", async toolName => {
+      const stderr = "fatal: cannot lock ref 'refs/heads/chore/comet-docs': unable to create directory for .git/refs/heads/chore/comet-docs";
+      const output = failedExecOutput(stderr, 128);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = toolName === "exec_command"
+        ? createExecCommandTool({ cwd: root, unifiedExecManager: manager })
+        : createWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+      const raw = toolName === "exec_command" ? { cmd: "git switch -c chore/comet-docs" } : { session_id: 11, chars: "" };
+      const result = await tool.execute(contextArgs(raw, {
+        approvalPolicy: "on_request", sandboxMode: "workspace_write", platformSandbox: true, toolName,
+      }));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(stderr);
+      expect(String(result.content).match(/\[sandbox\]/gu)).toHaveLength(1);
+      expect(result.content).toContain('sandbox_permissions="require_escalated"');
+      expect(result.codeModeResult).toMatchObject({ exit_code: 128, sandbox_notice: expect.stringContaining("only this command") });
+      const outside = await tool.execute(contextArgs(raw, { toolName }));
+      expect(outside.content).not.toContain("[sandbox]");
+    });
+
+    test("explains Python http.server socket creation refused before bind", async () => {
+      const { tool } = toolWith(failedExecOutput(PYTHON_SERVER_SOCKET_DENIED, 1));
+      const result = await tool.execute(sandboxedArgs({ cmd: "python3 -m http.server 8123", workdir: root }));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
+      expect(result.content).toContain("same command");
+    });
+
+    test("a sandbox notice about a server check leaves out the server guidance", async () => {
+      // The notice says what to do next (escalate, or start and test in the same command);
+      // advice about waiting for a port would compete with it.
+      const { tool } = toolWith(completedExecOutput(PYTHON_SERVER_SOCKET_DENIED));
+      const result = await tool.execute(sandboxedArgs({
+        cmd: "python3 -m http.server 8123 & sleep 1; curl -s localhost:8123; kill $!",
+        workdir: root, __agencSessionId: `sandbox-server-${Math.random()}`,
+      }));
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
+      expect(result.content).not.toContain(SERVER_CHECK_NOTE);
+    });
+
+    test("keeps the server diagnostic when background cleanup makes the shell succeed", async () => {
+      const { tool } = toolWith(completedExecOutput(PYTHON_SERVER_SOCKET_DENIED));
+      const result = await tool.execute(sandboxedArgs({ cmd: "python3 -m http.server 8123 & wait; true", workdir: root }));
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
+      expect(result.codeModeResult).toMatchObject({ exit_code: 0, sandbox_notice: expect.stringContaining("sandbox.network.allowLocalBinding = true") });
+    });
+
     test("a removed alias names the field that replaced it, so the model can correct the call", async () => {
       const { tool } = toolWith(completedExecOutput(""));
       const byCwd = await tool.execute(sandboxedArgs({ cmd: "npm test", cwd: root }));
@@ -273,7 +360,7 @@ describe("exec_command tool", () => {
       // And now so is the verdict.
       expect(result.content).toContain("[sandbox]");
       expect(result.content).toContain("Do not run this command again");
-      expect(result.content).toContain("give them the exact command to run in their own terminal");
+      expect(result.content).toContain("sandbox.network.allowLocalBinding = true");
     });
 
     test("under a policy with a human it asks for one escalated retry instead", async () => {
@@ -342,8 +429,54 @@ describe("exec_command tool", () => {
         approvalPolicy: "never", mode: "bypassPermissions", sandboxMode: "workspace_write", platformSandbox: true, toolName,
       }));
       expect(result.content).toContain("network access was disabled");
-      expect(result.content).toContain("approval flow before retrying");
+      // Bypass: the user turned approvals off, so the notice says the retry runs without asking.
+      expect(result.content).toContain('a retry with sandbox_permissions="require_escalated" runs without asking');
       expect(result.content).not.toContain("approval is unavailable");
+    });
+
+    // Default permissions: the permission mode allowed this sandboxed attempt, so it ran under
+    // `never`, but an escalated retry still gets an approval card. Both notices must offer it.
+    test("a default session whose attempt was already allowed is offered the approved retry", async () => {
+      const output = failedExecOutput("npm error getaddrinfo EAI_AGAIN registry.npmjs.org", 1);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = createExecCommandTool({ cwd: root, unifiedExecManager: manager });
+      const options = {
+        approvalPolicy: "never", requestedApprovalPolicy: "on_request", mode: "default",
+        sandboxMode: "workspace_write", platformSandbox: true, toolName: "exec_command",
+      };
+      const network = await tool.execute(contextArgs({ cmd: "npm install" }, options));
+      expect(network.content).toContain('retry it once with sandbox_permissions="require_escalated" and a short justification');
+      expect(network.content).not.toContain("approval is unavailable");
+      expect(network.content).not.toContain("Approvals are off");
+      const { tool: bindTool } = toolWith(BIND_DENIED);
+      const bind = await bindTool.execute(contextArgs({ cmd: "npm start", workdir: root }, options));
+      expect(bind.content).toContain("require_escalated");
+      expect(bind.content).not.toContain("Do not run this command again");
+      // A session whose own policy is never, outside bypass, still cannot escalate.
+      const never = await tool.execute(contextArgs({ cmd: "npm install" }, { ...options, requestedApprovalPolicy: "never" }));
+      expect(never.content).toContain("approval is unavailable");
+    });
+
+    // curl -s prints only its -w value when the lookup fails, so the exit status is the only signal.
+    test("a silent curl that cannot resolve its host gets the same notice", async () => {
+      const output = failedExecOutput("000", 6);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = createExecCommandTool({ cwd: root, unifiedExecManager: manager });
+      const result = await tool.execute(contextArgs({ cmd: "curl -s -o /dev/null -w '%{http_code}' https://example.com" }, {
+        approvalPolicy: "never", mode: "bypassPermissions", sandboxMode: "workspace_write", platformSandbox: true, toolName: "exec_command",
+      }));
+      expect(result.content).toContain("network access was disabled");
+      expect(result.content).toContain('sandbox_permissions="require_escalated"');
     });
 
     test("an ordinary failure is left alone", async () => {
@@ -408,6 +541,39 @@ describe("exec_command tool", () => {
     });
   });
 
+  test("reserves session memory on the runtime-context exec path even with additional grants", async () => {
+    const home = join(root, "agent-home");
+    const memory = join(root, "custom-memory");
+    const temp = join(root, "temp");
+    await Promise.all([home, memory, temp].map(dir => mkdir(dir)));
+    await writeFile(join(home, "config.toml"), `config_version = 2\nautoMemoryDirectory = ${JSON.stringify(memory)}\n`);
+    const configStore = new ConfigStore({ home, cwd: root, env: { AGENC_HOME: home } });
+    await configStore.reload();
+    for (const mode of ["default", "bypassPermissions"]) {
+      const args: Record<string, unknown> = {};
+      attachToolRuntimeContext(args, {
+        callId: "memory-shell", toolName: "exec_command", runtimeKind: "function",
+        classification: "exclusive", supportsParallelToolCalls: false,
+        source: { type: "model" }, submittedAtMs: 0, approvalPolicy: "never",
+        requestedSandboxMode: "workspace_write", sandboxMode: "workspace_write",
+        approvalResolved: true, rawArgs: "{}",
+        additionalPermissions: { fileSystem: { entries: [{ path: { kind: "path", path: memory }, access: "write" }] } },
+        invocation: {
+          session: { sessionConfiguration: { cwd: root },
+            permissionModeRegistry: { current: () => ({ mode }) },
+            services: { configStore, providerEnvironment: { AGENC_HOME: home }, runtimeOptions: { sessionTempRoot: temp } },
+          },
+          payload: { kind: "function", arguments: "{}" },
+          turn: { cwd: root, agencLinuxSandboxExe: "/bin/true" },
+        },
+      } as never);
+      const runtime = runtimeSandboxForExec(args, root)!;
+      const profile = effectivePermissionProfile(runtime.permissionProfile, runtime.additionalPermissions);
+      expect(canWritePathWithCwd(profile.fileSystem, join(memory, "note.md"), root, temp)).toBe(false);
+      expect(canWritePathWithCwd(profile.fileSystem, join(root, "control.txt"), root, temp)).toBe(true);
+    }
+  });
+
   test("threads network policy interfaces into runtime sandbox requests", () => {
     const policyDecider = { decide: () => ({ decision: "allow" as const }) };
     const blockedRequestObserver = { onBlockedRequest: () => undefined };
@@ -435,6 +601,7 @@ describe("exec_command tool", () => {
         payload: { kind: "function", arguments: "{}" },
         turn: {
           subId: "turn-network-proxy",
+          sandboxAllowLocalBinding: true,
           cwd: root,
           agencLinuxSandboxExe: "/bin/true",
           networkSandboxPolicy: {
@@ -453,6 +620,7 @@ describe("exec_command tool", () => {
 
     const runtimeSandbox = runtimeSandboxForExec(args, root);
 
+    expect(runtimeSandbox?.network?.allowLocalBinding).toBe(true);
     expect(runtimeSandbox?.networkPolicyDecider).toBe(policyDecider);
     expect(runtimeSandbox?.blockedRequestObserver).toBe(blockedRequestObserver);
     expect(runtimeSandbox?.sessionTempRoot).toBe(root);
@@ -882,7 +1050,7 @@ describe("exec_command tool", () => {
       expect(execCommand).not.toHaveBeenCalled();
     });
 
-    test("still refuses a redirect write into a source file under bypassPermissions", async () => {
+    test("permits a redirect write into a source file under bypassPermissions", async () => {
       const { tool, execCommand } = deletionTool();
 
       const result = await tool.execute(
@@ -891,9 +1059,8 @@ describe("exec_command tool", () => {
         }),
       );
 
-      expect(result.isError).toBe(true);
-      expect(result.content).toContain("shell_workspace_file_write_disallowed");
-      expect(execCommand).not.toHaveBeenCalled();
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledOnce();
     });
 
     test("a deletion under a prompting mode runs only after the approval path", async () => {
@@ -979,24 +1146,24 @@ describe("exec_command tool", () => {
       });
     }
 
-    test("a read-only subagent's refusal names no file tool it lacks", async () => {
+    test("a protected-path refusal names no file tool absent from the registry", async () => {
       const { tool, execCommand } = mockManagerTool();
-      const cmd = "echo hi > ./.vr-probe.txt";
+      const cmd = "echo hi > .git/config";
 
       // Preflight is where the live refusal came from (InputValidationError).
       const preflight = tool.preflight?.(liveArgs(cmd, verificationRegistry()));
       expect(preflight?.message).toContain("shell_workspace_file_write_disallowed");
       expect(preflight?.message).not.toMatch(FILE_TOOL_NAME_RE);
-      expect(preflight?.message).toContain("This session has no file editing tool");
+      expect(preflight?.message).toContain("ask the user to change them themselves");
 
       const result = await tool.execute(liveArgs(cmd, verificationRegistry()));
       expect(result.isError).toBe(true);
       expect(result.content).not.toMatch(FILE_TOOL_NAME_RE);
-      expect(result.content).toContain("tmp/, for example");
+      expect(result.content).toContain("protected paths");
       expect(execCommand).not.toHaveBeenCalled();
     });
 
-    test("an OpenAI Light session is pointed at its listed apply_patch", async () => {
+    test("an OpenAI Light session cannot edit protected paths through shell", async () => {
       const { tool, execCommand } = mockManagerTool();
       const registry = buildToolRegistry({
         workspaceRoot: root,
@@ -1005,40 +1172,36 @@ describe("exec_command tool", () => {
         getSession: () => ({ services: { provider: { name: "openai" } } }) as never,
       });
 
-      const result = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
+      const result = await tool.execute(liveArgs("echo hi > .git/config", registry));
 
       expect(result.isError).toBe(true);
-      expect(result.content).toContain("use apply_patch instead.");
+      expect(result.content).toContain("protected paths");
+      expect(result.content).not.toContain("use apply_patch");
       expect(result.content).not.toMatch(/\b(?:Edit|Write)\b/u);
       expect(execCommand).not.toHaveBeenCalled();
     });
 
-    test("the main session's refusal still names Edit and Write", async () => {
+    test("the main session cannot edit protected paths through shell", async () => {
       const { tool, execCommand } = mockManagerTool();
 
       const result = await tool.execute(
-        liveArgs("echo hi > ./.vr-probe.txt", registryOf(PARENT_TOOLS)),
+        liveArgs("echo hi > .git/config", registryOf(PARENT_TOOLS)),
       );
 
       expect(result.isError).toBe(true);
-      expect(result.content).toContain("use Edit or Write instead");
+      expect(result.content).toContain("protected paths");
       expect(execCommand).not.toHaveBeenCalled();
     });
 
-    test("still refuses a write target it cannot confirm, as the docs and the full-bypass tests define", async () => {
-      // bypassPermissions alone keeps every guard: the sandbox is still on.
-      // Only approvals bypassed AND no sandbox lift the unconfirmable-target
-      // refusal (see "runs a command with an unresolvable write target under
-      // the full bypass" above).
+    test("allows an opaque target in bypass while retaining its declared sandbox", async () => {
+      // Mode consent permits execution; the actual kernel profile still
+      // confines dynamic paths. This mock manager tests routing only.
       const { tool, execCommand } = mockManagerTool();
       const cmd = 'echo hi > "$TMPDIR/vr-probe.txt"';
 
       const sandboxed = await tool.execute(liveArgs(cmd, verificationRegistry()));
-      expect(sandboxed.isError).toBe(true);
-      expect(sandboxed.content).toContain("Unable to confirm workspace write targets");
-      expect(sandboxed.content).toContain("Name each file it writes with a literal path");
-      expect(sandboxed.content).not.toMatch(FILE_TOOL_NAME_RE);
-      expect(execCommand).not.toHaveBeenCalled();
+      expect(sandboxed.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledOnce();
 
       const fullBypass = await tool.execute(
         contextArgs({ cmd, workdir: root }, {
@@ -1049,7 +1212,7 @@ describe("exec_command tool", () => {
         }),
       );
       expect(fullBypass.isError).toBeUndefined();
-      expect(execCommand).toHaveBeenCalledTimes(1);
+      expect(execCommand).toHaveBeenCalledTimes(2);
     });
 
     test("an allowed command never lists the session's tools", async () => {
@@ -1080,9 +1243,10 @@ describe("exec_command tool", () => {
       expect(getUnavailableToolNames).not.toHaveBeenCalled();
       expect(toolsRead).not.toHaveBeenCalled();
 
-      const refused = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
-      expect(refused.content).toContain("use Edit or Write instead");
-      expect(toLLMTools).toHaveBeenCalledTimes(1);
+      const refused = await tool.execute(liveArgs("echo hi > .git/config", registry));
+      expect(refused.isError).toBe(true);
+      expect(refused.content).toContain("protected paths");
+      expect(toLLMTools).not.toHaveBeenCalled();
     });
 
     test("lets the way out it names through: a scratch file under the workspace's tmp", async () => {
@@ -1240,20 +1404,25 @@ describe("exec_command tool", () => {
       }
     });
 
-    test("refuses detach under a sandbox and names the flag and the alternative", async () => {
+    test("refuses sandboxed detach and offers a single escalated launch or a managed foreground command", async () => {
       const startDetachedProcess = vi.fn<
         NonNullable<UnifiedExecProcessManagerLike["startDetachedProcess"]>
       >(async () => detachedOutput({ pid: 1 }));
       const { tool, execCommand } = toolWithManager(startDetachedProcess);
 
-      const result = await tool.execute(
-        sandboxedArgs({ cmd: "python3 -m http.server 8080", detach: true, workdir: root }),
-      );
+      const result = await tool.execute(contextArgs(
+        { cmd: "python3 -m http.server 8080", detach: true, workdir: root },
+        { approvalPolicy: "on_request", sandboxMode: "workspace_write", platformSandbox: true },
+      ));
 
       expect(result.isError).toBe(true);
-      expect(result.content).toContain("danger-full-access");
-      expect(result.content).toContain("--dangerously-bypass-approvals-and-sandbox");
+      expect(result.content).toContain("require_escalated");
+      expect(result.content).toContain("plain-language justification");
+      expect(result.content).not.toContain("--dangerously-bypass-approvals-and-sandbox");
       expect(result.content).toContain("yield_time_ms");
+      expect(result.content).toContain("allowLocalBinding");
+      expect(result.content).toContain("private loopback");
+      expect(result.content).toContain("same sandbox_permissions");
       expect(result.metadata).toMatchObject({ kind: "exec_detach_unavailable", recoverable: true });
       expect(result.effectDisposition).toMatchObject({
         disposition: "confirmed_no_effect",
@@ -1261,6 +1430,26 @@ describe("exec_command tool", () => {
       });
       expect(startDetachedProcess).not.toHaveBeenCalled();
       expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    // The launch outside the sandbox is offered in the words of how the
+    // session grants it, and not at all where nobody can grant it.
+    test("words the sandboxed detach refusal for how the session grants a launch outside the sandbox", async () => {
+      const { tool } = toolWithManager(async () => detachedOutput({ pid: 1 }));
+      const cmd = { cmd: "python3 -m http.server 8080", detach: true, workdir: root };
+      const bypass = await tool.execute(contextArgs(cmd, {
+        approvalPolicy: "never", mode: "bypassPermissions", sandboxMode: "workspace_write", platformSandbox: true,
+      }));
+      expect(bypass.content).toContain("require_escalated");
+      expect(bypass.content).toContain("runs outside the sandbox without asking");
+      expect(bypass.content).not.toContain("If permitted");
+      const nobody = await tool.execute(sandboxedArgs(cmd));
+      expect(nobody.isError).toBe(true);
+      expect(nobody.content).not.toContain("require_escalated");
+      expect(nobody.content).toContain("cannot launch outside it");
+      expect(nobody.content).toContain("yield_time_ms");
+      expect(nobody.content).toContain("allowLocalBinding");
+      expect(nobody.content).toContain("run it in their terminal");
     });
 
     test("refuses detach when the exec manager cannot detach", async () => {
@@ -1331,6 +1520,80 @@ describe("exec_command tool", () => {
       expect(result.metadata).toMatchObject({ residualProcessesTerminated: true });
       expect(result.codeModeResult).toMatchObject({ residual_processes_terminated: true });
     });
+
+    test("a session's later residue notes are short; the server guidance came with the first", async () => {
+      const { tool: noteTool } = mockManagerTool({
+        execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
+          ...completedExecOutput("listening on 3000"),
+          residual_processes_terminated: true,
+        })),
+      });
+      const session = { __agencSessionId: `residue-${Math.random()}` };
+      const smoke = "node server.js & sleep 1; curl -s localhost:3000/health";
+
+      const first = await noteTool.execute(fullAccessArgs({ cmd: smoke, ...session }));
+      const second = await noteTool.execute(fullAccessArgs({ cmd: smoke, ...session }));
+      const otherSession = await noteTool.execute(fullAccessArgs({ cmd: smoke, __agencSessionId: `${session.__agencSessionId}-b` }));
+
+      expect(first.content).toContain(RESIDUAL_PROCESSES_NOTE);
+      expect(second.content).not.toContain(RESIDUAL_PROCESSES_NOTE);
+      expect(second.content).toContain(RESIDUAL_PROCESSES_REPEAT_NOTE);
+      expect(otherSession.content).toContain(RESIDUAL_PROCESSES_NOTE);
+      expect(second.metadata).toMatchObject({ residualProcessesTerminated: true });
+    });
+
+    test("a check that waited a fixed time for a server it started gets the server guidance once", async () => {
+      const { tool: noteTool } = mockManagerTool({
+        execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () =>
+          completedExecOutput("Listening on http://localhost:39485")),
+      });
+      const session = { __agencSessionId: `fixed-wait-${Math.random()}` };
+      const first = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      const second = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      const tests = await noteTool.execute(fullAccessArgs({ cmd: "npm test", __agencSessionId: `${session.__agencSessionId}-b` }));
+      expect(first.content).toContain(SERVER_CHECK_NOTE);
+      expect(second.content).not.toContain(SERVER_CHECK_NOTE);
+      expect(tests.content).not.toContain(SERVER_CHECK_NOTE);
+    });
+
+    test("a fixed-wait check still running when it yields gets the server guidance without the claim that nothing needs a kill", async () => {
+      // The yielded session needs kill_process or a poll (Light loads both with it).
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
+        ...completedExecOutput("listening on 3000"), exitCode: null, exit_code: null, process_id: 71,
+      }));
+      const { tool: noteTool } = mockManagerTool({ execCommand });
+      const session = { __agencSessionId: `yielded-${Math.random()}` };
+      const yielded = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000; wait", ...session }));
+      expect(yielded.content).toContain("session_id=71");
+      expect(yielded.content.endsWith(`\n${SERVER_CHECK_RUNNING_NOTE}`)).toBe(true);
+      expect(yielded.content).not.toContain("nothing needs a later kill");
+      execCommand.mockResolvedValue(completedExecOutput("ok"));
+      const later = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000; kill $!", ...session }));
+      expect(later.content).not.toContain("To check a server");
+    });
+
+    test("a session whose exec_command description says how to check a server gets no second copy in a note", async () => {
+      // A Light session on abliteration.ai Large V2 (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+      let described = true;
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
+        ...completedExecOutput("listening on 3000"),
+        residual_processes_terminated: true,
+      }));
+      const noteTool = createExecCommandTool({
+        cwd: root, allowedPaths: [root], serverChecksDescribed: () => described,
+        unifiedExecManager: { maxTimeoutMs: 30_000, execCommand, writeStdin: vi.fn(), closeAll: vi.fn(async () => {}) },
+      });
+      const session = { __agencSessionId: `described-${Math.random()}` };
+      const residue = await noteTool.execute(fullAccessArgs({ cmd: "node server.js & sleep 1; curl -s localhost:3000/health", ...session }));
+      expect(residue.content).toContain(RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE);
+      execCommand.mockResolvedValue(completedExecOutput("Listening on http://localhost:39485"));
+      const fixedWait = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      for (const result of [residue, fixedWait]) expect(result.content).not.toContain("To check a server");
+      // After a switch to a model without that description, the next fixed wait gets the guidance once.
+      described = false;
+      const switched = await noteTool.execute(fullAccessArgs({ cmd: "PORT=0 timeout 2 node server.js; true", ...session }));
+      expect(switched.content).toContain(SERVER_CHECK_NOTE);
+    });
   });
 
   describe("Light default yield", () => {
@@ -1369,6 +1632,71 @@ describe("exec_command tool", () => {
       const standard = lightTool(false);
       await standard.tool.execute(contextArgs({ cmd: "go test ./..." }));
       expect(standard.execCommand.mock.calls.at(-1)?.[0]).not.toHaveProperty("yield_time_ms");
+    });
+  });
+
+  describe("a command line run read-only", () => {
+    const readOnly: UnifiedExecRuntimeSandbox = {
+      preference: "require",
+      permissionProfile: {
+        fileSystem: restrictedFileSystemPolicy([{ path: { kind: "special", value: { kind: "root" } }, access: "read" }]),
+        network: "disabled",
+      },
+    };
+    function readOnlyArgs(cmd: string): Record<string, unknown> {
+      const args = contextArgs({ cmd }, { approvalPolicy: "on_request", sandboxMode: "workspace_write", platformSandbox: true });
+      const inspected = inspectReadOnlyShellCommand({ cmd }, root);
+      if (!inspected.allowed) throw new Error(inspected.reason);
+      attachReadOnlyShellInvocation(args, prepareReadOnlyShellInvocation(inspected.invocation, readOnly));
+      return args;
+    }
+
+    test("hands the classified command line and its sandbox to the manager, without shell options", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const result = await tool.execute(readOnlyArgs("ls -la | head -3"));
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      const request = execCommand.mock.calls[0]![0];
+      expect(request).toMatchObject({ cmd: "ls -la | head -3", workdir: root, runtimeSandbox: readOnly,
+        readOnlyShell: { command: "ls -la | head -3", cwd: root, runtimeSandbox: readOnly } });
+      expect(request).not.toHaveProperty("shell");
+      expect(request).not.toHaveProperty("login");
+      expect(request).not.toHaveProperty("tty");
+      expect(request).not.toHaveProperty("directInvocation");
+    });
+
+    test.each([
+      ["a refused write", "touch: cannot touch 'notes/x': Read-only file system", 1],
+      ["a refused connection", "connect: Operation not permitted", 7],
+      ["a failed lookup", "curl: (6) Could not resolve host: example.com", 6],
+    ])("explains %s as the read-only run, not the session sandbox", async (_name, stderr, exitCode) => {
+      const { tool } = mockManagerTool({ execCommand: vi.fn(async () => failedExecOutput(stderr, exitCode)) });
+      const result = await tool.execute(readOnlyArgs("cat notes.txt | head"));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(stderr);
+      expect(result.content).toContain(READ_ONLY_COMMAND_NOTICE);
+      expect(result.content).not.toContain("[sandbox]");
+      expect(result.content).not.toContain("require_escalated");
+    });
+
+    test("adds nothing to an ordinary failure or a success", async () => {
+      const failed = mockManagerTool({ execCommand: vi.fn(async () => failedExecOutput("", 1)) });
+      expect((await failed.tool.execute(readOnlyArgs("grep -rn missing src | head"))).content).not.toContain("[read-only]");
+      const passed = mockManagerTool();
+      expect((await passed.tool.execute(readOnlyArgs("ls | head"))).content).not.toContain("[read-only]");
+    });
+
+    test("refuses as no effect, without starting anything, when a command line has no authority", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const args = contextArgs({ cmd: "ls | head" });
+      const inspected = inspectReadOnlyShellCommand({ cmd: "ls | head" }, root);
+      if (!inspected.allowed) throw new Error(inspected.reason);
+      attachReadOnlyShellInvocation(args, { ...prepareReadOnlyShellInvocation(inspected.invocation, readOnly) });
+      const result = await tool.execute(args);
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("authority is missing");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(execCommand).not.toHaveBeenCalled();
     });
   });
 

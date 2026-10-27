@@ -953,6 +953,11 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
                 imagePasteIds: imageId !== undefined ? [imageId] : undefined,
                 origin: message.origin,
               }),
+              // Completed file mutation receipts belong to the display row,
+              // and must survive splitting tool results into normalized rows.
+              ...(message.fileMutation !== undefined
+                ? { fileMutation: message.fileMutation }
+                : {}),
               uuid: isNewChain
                 ? deriveUUID(message.uuid, index)
                 : message.uuid,
@@ -5713,7 +5718,7 @@ export function ensureToolResultPairing(
     if (getStrictToolResultPairing()) {
       throw new Error(
         `ensureToolResultPairing: tool_use/tool_result pairing mismatch detected (strict mode). ` +
-          `Refusing to repair — would inject synthetic placeholders into model context. ` +
+          `Refusing to repair: would inject synthetic placeholders into model context. ` +
           `Message structure: ${messageTypes.join('; ')}. See inc-4977.`,
       )
     }

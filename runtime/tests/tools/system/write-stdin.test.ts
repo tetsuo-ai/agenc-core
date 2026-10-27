@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import { PYTHON_SERVER_SOCKET_DENIED } from "../../helpers/python-server-denial.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "../../../src/tools/system/write-stdin.js";
+import { SandboxExecutionBroker, attachSandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js";
 import { RESIDUAL_PROCESSES_NOTE } from "../../../src/tools/system/exec-result-format.js";
 import {
   UnifiedExecError,
@@ -166,4 +168,42 @@ describe("write_stdin reaches a session started in another sandbox", () => {
     expect(properties.additional_permissions).toMatchObject({ type: "object" });
     expect(properties.justification).toMatchObject({ type: "string" });
   });
+});
+
+
+test.each([
+  "Error: listen EPERM: operation not permitted 127.0.0.1",
+  PYTHON_SERVER_SOCKET_DENIED,
+])("annotates a server denial emitted while polling a still-running test", async (output) => {
+  const manager: UnifiedExecProcessManagerLike = {
+    maxTimeoutMs: 30_000, execCommand: vi.fn(async () => undefined as never), closeAll: vi.fn(async () => {}),
+    writeStdin: vi.fn(async () => ({ output, stdout: "", stderr: output, exitCode: null, exit_code: null, process_id: 7, session_id: 7, durationMs: 1, wall_time_seconds: 0.001, timedOut: false, truncated: false, original_token_count: 10 })),
+  };
+  const tool = createUnboundWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+  const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: root, probe: () => ({ kind: "ready", mode: "workspace_write", platform: process.platform }) });
+  const args = { session_id: 7, chars: "" };
+  attachSandboxExecutionBroker(args, broker);
+  const result = await tool.execute(args);
+  expect(result.content).toContain("The sandbox blocks local servers");
+  expect(result.content).toContain("require_escalated");
+  expect(result.codeModeResult).toMatchObject({ sandbox_notice: expect.stringContaining("sandbox.network.allowLocalBinding = true") });
+  expect(result.metadata?.processId).toBe(7);
+});
+
+
+test("polling an escalated server does not label its OS error as a sandbox denial", async () => {
+  const output = "Error: listen EACCES: permission denied 127.0.0.1:80";
+  const manager: UnifiedExecProcessManagerLike = {
+    maxTimeoutMs: 30_000, execCommand: vi.fn(async () => undefined as never), closeAll: vi.fn(async () => {}),
+    writeStdin: vi.fn(async () => ({ output, stdout: "", stderr: output, exitCode: 1, exit_code: 1,
+      sandboxApplied: false, durationMs: 1, wall_time_seconds: 0.001, timedOut: false,
+      truncated: false, original_token_count: 10 })),
+  };
+  const tool = createUnboundWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+  const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: root, probe: () => ({ kind: "ready", mode: "workspace_write", platform: process.platform }) });
+  const args = { session_id: 7, chars: "" };
+  attachSandboxExecutionBroker(args, broker);
+  const result = await tool.execute(args);
+  expect(result.isError).toBe(true);
+  expect(result.content).not.toContain("sandbox blocks local servers");
 });

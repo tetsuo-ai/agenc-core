@@ -1,4 +1,11 @@
+import { prepareShellObservation } from "./side-effect-free-shell.js";
+import { sandboxModeRequiresPlatformIsolation } from "./runtimes/sandboxing.js";
+import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
+import { toolStage, withToolTiming } from "./stage-timing.js";
+import { interruptedExecReport } from "./interrupted-exec-report.js";
+import { readPendingPhysicalSettlement } from "./physical-settlement.js";
 import { stripModelSuppliedAgenCInternalArgs } from "./internal-args.js";
+import { modelToolAliasTarget, resolveModelToolAlias } from "./model-tool-aliases.js";
 /**
  * Tool router: spec registry, tool-call construction, and dispatch.
  *
@@ -78,6 +85,7 @@ import {
   approvalDenialEndsTurn,
 } from "./orchestrator.js";
 import { LiveEffectMutationBlockedError } from "../budget/effect-settlement-supervisor.js";
+import { McpFilesystemApprovalRequiredError } from "./runtimes/mcp-filesystem-approval.js";
 import {
   executeToolDispatch,
   type ApprovalRequestFn,
@@ -95,7 +103,7 @@ import type {
   PostToolUseHook,
   PreToolUseHook,
 } from "./hooks.js";
-import { runPreToolUseHooks } from "./hooks.js";
+import { runPreToolUseHooks as untimedPreHooks } from "./hooks.js";
 import { isWorkflowApprovalSession } from "../permissions/approval-failure.js";
 import { clearApprovalResponseKey } from "../permissions/approval-response-key.js";
 import {
@@ -131,9 +139,16 @@ import {
 } from "../elicitation/request-ledger-transfer.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import {
+  sessionToolPolicyAllowsTool,
+  toolPolicyRefusalMessage,
+  type SessionToolPolicy,
+} from "../permissions/session-tool-policy.js";
+import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
 } from "../workspace/tool-operation-lifetime.js";
+
+const runPreToolUseHooks: typeof untimedPreHooks = (...args) => toolStage("hooks", () => untimedPreHooks(...args));
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -182,6 +197,8 @@ export interface LiveToolDispatchOptions {
   readonly signal?: AbortSignal;
   readonly abortController?: AbortController;
   readonly source?: ToolCallSource;
+  /** Lifetime authority for effects outside an active model turn. */
+  readonly getActiveTurnId?: () => string | null;
   readonly approvalPolicy: ApprovalPolicy;
   readonly sandboxMode: SandboxMode;
   readonly execPolicy?: Policy;
@@ -218,6 +235,13 @@ export interface LiveToolDispatchOptions {
     idx: number,
   ) => void;
   readonly onHookAdditionalContext?: (contexts: readonly string[]) => void;
+  /**
+   * Set by the tool executor for a shell call it scheduled next to other calls
+   * of the same response because it classifies as read-only. If dispatch
+   * cannot run it on the read-only route (no-write, no-network sandbox), the
+   * ordinary run waits here until no other call of the batch executes.
+   */
+  readonly runAloneOffReadOnlyRoute?: <T>(run: () => Promise<T>) => Promise<T>;
 }
 
 export interface DirectToolDispatchOptions {
@@ -289,6 +313,12 @@ export interface ToolRouterOpts {
    * T9 wires from config.
    */
   readonly parallelMcpServerNames?: ReadonlySet<string>;
+  /**
+   * The session's tool allowlist. The specs it was applied to are already
+   * filtered; the router keeps it only to refuse a call to a tool outside it
+   * with an explicit message instead of "unknown tool".
+   */
+  readonly toolPolicy?: SessionToolPolicy;
 }
 
 /**
@@ -305,12 +335,14 @@ export interface ToolRouterFromConfigOpts {
   readonly discoverableTools?: ReadonlyArray<Tool>;
   readonly dynamicTools?: ReadonlyArray<Tool>;
   readonly parallelMcpServerNames?: ReadonlySet<string>;
+  readonly toolPolicy?: SessionToolPolicy;
 }
 
 export class ToolRouter {
   private readonly specs: ConfiguredToolSpec[];
   private readonly byName = new Map<string, ConfiguredToolSpec>();
   private readonly parallelMcpServerNames: ReadonlySet<string>;
+  private readonly toolPolicy: SessionToolPolicy | undefined;
 
   constructor(
     specs: ReadonlyArray<ConfiguredToolSpec>,
@@ -319,6 +351,14 @@ export class ToolRouter {
     this.specs = [...specs];
     for (const spec of this.specs) this.byName.set(spec.tool.name, spec);
     this.parallelMcpServerNames = opts.parallelMcpServerNames ?? new Set();
+    this.toolPolicy = opts.toolPolicy;
+  }
+
+  /** The error for a name no spec answers to: a policy refusal or unknown. */
+  private unknownToolError(name: string): string {
+    return sessionToolPolicyAllowsTool(this.toolPolicy, name)
+      ? `unknown tool: ${name}`
+      : toolPolicyRefusalMessage(name);
   }
 
   /**
@@ -380,9 +420,12 @@ export class ToolRouter {
       addTool(tool, { dynamic: true });
     }
 
-    const parallelOpts: ToolRouterOpts = opts.parallelMcpServerNames
-      ? { parallelMcpServerNames: opts.parallelMcpServerNames }
-      : {};
+    const parallelOpts: ToolRouterOpts = {
+      ...(opts.parallelMcpServerNames
+        ? { parallelMcpServerNames: opts.parallelMcpServerNames }
+        : {}),
+      ...(opts.toolPolicy !== undefined ? { toolPolicy: opts.toolPolicy } : {}),
+    };
     return new ToolRouter(Array.from(merged.values()), parallelOpts);
   }
 
@@ -531,11 +574,11 @@ export class ToolRouter {
     if (!spec) {
       return {
         content: JSON.stringify({
-          error: `unknown tool: ${
+          error: this.unknownToolError(
             invocation.toolName.namespace
               ? `${invocation.toolName.namespace}.${invocation.toolName.name}`
-              : invocation.toolName.name
-          }`,
+              : invocation.toolName.name,
+          ),
         }),
         isError: true,
       };
@@ -637,6 +680,7 @@ export class ToolRouter {
         },
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         approvalPolicy: effectiveApprovalPolicy,
+        requestedApprovalPolicy: opts.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
         sandboxMode: requestedSandboxMode,
         payload: executionPayload,
         ...(activeExecPolicy !== undefined
@@ -698,9 +742,11 @@ export class ToolRouter {
             runtimeCallContext,
             {
               approvalPolicy: effectiveApprovalPolicy,
+              requestedApprovalPolicy: opts.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
               requestedSandboxMode,
               sandboxMode: sandbox,
               approvalResolved: dispatchContext.approvalResolved,
+              ...(dispatchContext.mcpNoFsWritesApproved === true ? { mcpNoFsWritesApproved: true } : {}),
               ...(dispatchContext.additionalPermissions !== undefined
                 ? {
                     additionalPermissions:
@@ -775,7 +821,7 @@ export class ToolRouter {
         },
       });
     } catch (err) {
-      return toolDispatchErrorResult(err, invocation.session);
+      return toolDispatchErrorResult(err, invocation.session, spec.tool.name);
     } finally {
       clearApprovalResponseKey(invocation.session, invocation.callId);
     }
@@ -809,6 +855,17 @@ export class ToolRouter {
     toolCall: LLMToolCall,
     opts: LiveToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
+    return withToolTiming(opts.session, toolCall.id, toolCall.name, () =>
+      this.dispatchModelToolCallTimed(toolCall, opts));
+  }
+
+  private async dispatchModelToolCallTimed(
+    toolCall: LLMToolCall,
+    opts: LiveToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    const canonicalName = modelToolAliasTarget(toolCall.name) === undefined ? toolCall.name
+      : resolveModelToolAlias(toolCall.name, this.getSpecs().map(spec => spec.tool.name));
+    if (canonicalName !== toolCall.name) toolCall = { ...toolCall, name: canonicalName };
     const spec = this.findSpec(toolCall.name);
     if (spec === undefined) {
       return this.dispatchModelToolCallUnfenced(toolCall, opts);
@@ -837,7 +894,7 @@ export class ToolRouter {
     const spec = this.findSpec(toolCall.name);
     if (!spec) {
       return {
-        content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
+        content: JSON.stringify({ error: this.unknownToolError(toolCall.name) }),
         isError: true,
       };
     }
@@ -855,6 +912,7 @@ export class ToolRouter {
         callId: toolCall.id,
       });
       emitErrorEvent(opts.session.eventLog, toolCall.id, {
+            callId: toolCall.id,
         cause: "ledger_turn_non_read_only_tool_denied",
         message,
       });
@@ -976,6 +1034,7 @@ export class ToolRouter {
           callId: toolCall.id,
         });
         emitErrorEvent(opts.session.eventLog, toolCall.id, {
+            callId: toolCall.id,
           cause: "pre_hook_denied",
           message,
         });
@@ -1048,6 +1107,7 @@ export class ToolRouter {
             );
           }
           emitErrorEvent(opts.session.eventLog, toolCall.id, {
+            callId: toolCall.id,
             cause:
               guardianPermissionDecision.source === "pre-tool-use-hook"
                 ? "permission_denied:hook"
@@ -1193,8 +1253,12 @@ export class ToolRouter {
       const result = await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx,
+        ...(opts.getActiveTurnId !== undefined
+          ? { getActiveTurnId: opts.getActiveTurnId }
+          : {}),
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         approvalPolicy: effectiveApprovalPolicy,
+        requestedApprovalPolicy: opts.approvalPolicy,
         sandboxMode: opts.sandboxMode,
         payload: executionPayload,
         ...(activeExecPolicy !== undefined
@@ -1265,9 +1329,11 @@ export class ToolRouter {
             runtimeCallContext,
             {
               approvalPolicy: effectiveApprovalPolicy,
+              requestedApprovalPolicy: opts.approvalPolicy,
               requestedSandboxMode: opts.sandboxMode,
               sandboxMode: sandbox,
               approvalResolved: dispatchContext.approvalResolved,
+              ...(dispatchContext.mcpNoFsWritesApproved === true ? { mcpNoFsWritesApproved: true } : {}),
               ...(dispatchContext.additionalPermissions !== undefined
                 ? {
                     additionalPermissions:
@@ -1278,11 +1344,16 @@ export class ToolRouter {
               invocation: dispatchInvocation,
             },
           );
-          return runAdmittedToolCall({
+          const observationTool = await toolStage("sandbox_broker", () => prepareShellObservation(
+            spec.tool, dispatchArgs, opts.turn.cwd, opts.session.services.sandboxExecutionBroker,
+            { owner: opts.session, ordinaryPathSandboxed: sandboxModeRequiresPlatformIsolation(sandbox) }));
+          const executionTool = observationTool ?? spec.tool;
+          const admitted = () => runAdmittedToolCall({
             session: opts.session,
             turnId: opts.turn.subId,
             callId: toolCall.id,
-            tool: spec.tool,
+            tool: executionTool,
+            requireDurable: Boolean(opts.postHooks?.some(hook => !autoFixPostToolHookIsInactive(hook)) || opts.failureHooks?.length),
             args: dispatchArgs,
             signal: toolAbortController.signal,
             ...(orchestrateDispatchAttempt > 1
@@ -1292,7 +1363,7 @@ export class ToolRouter {
               executeToolDispatch(
                 rawDispatchOptions(dispatchRawArgs, {
                   ...withoutPermissionEvaluator(opts),
-                  tool: spec.tool,
+                  tool: executionTool,
                   parsedArgs: dispatchArgs,
                   invocation: dispatchInvocation,
                   preHooks: [],
@@ -1311,6 +1382,11 @@ export class ToolRouter {
                 }),
               ),
           });
+          // A call scheduled next to others as read-only that cannot take the
+          // read-only route may write: it runs only once nothing else runs.
+          return observationTool === undefined && opts.runAloneOffReadOnlyRoute !== undefined
+            ? opts.runAloneOffReadOnlyRoute(admitted)
+            : admitted();
         },
       });
       markLoadedToolNamesDiscovered(
@@ -1328,7 +1404,7 @@ export class ToolRouter {
       ) {
         opts.abortController.abort(err.message);
       }
-      return toolDispatchErrorResult(err, opts.session);
+      return toolDispatchErrorResult(err, opts.session, spec.tool.name);
     } finally {
       opts.signal?.removeEventListener("abort", forwardAbort);
       clearApprovalResponseKey(opts.session, toolCall.id);
@@ -1588,6 +1664,9 @@ function rawDispatchOptions(
     parsedArgs: opts.parsedArgs,
     signal: opts.abortController.signal,
     currentTurnId: opts.turn.subId,
+    ...(opts.getActiveTurnId !== undefined
+      ? { getActiveTurnId: opts.getActiveTurnId }
+      : {}),
     eventLog: opts.session.eventLog,
     subId: opts.subId,
     tool: opts.tool,
@@ -1763,6 +1842,7 @@ export function attachPreflightRuntimeContext(
       classification: call.classification,
     }, {
       approvalPolicy: params.approvalPolicy,
+      requestedApprovalPolicy: params.approvalPolicy,
       requestedSandboxMode: params.sandboxMode,
       sandboxMode: params.sandboxMode,
       approvalResolved: false,
@@ -1792,6 +1872,7 @@ function preflightToolCall(
   });
   if (result !== null) {
     emitErrorEvent(invocation.session.eventLog, invocation.callId, {
+      callId: invocation.callId,
       cause: "schema_validation_failed",
       message: result.content,
     });
@@ -1806,7 +1887,28 @@ function workflowPolicyDenial(session: Session, source: string): Partial<ToolDis
   } : {};
 }
 
-function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchResult {
+async function toolDispatchErrorResult(err: unknown, session?: Session, toolName?: string): Promise<ToolDispatchResult> {
+  if (err instanceof McpFilesystemApprovalRequiredError) {
+    return {
+      content: JSON.stringify({ error: err.message, retryable: false, executed: false }),
+      isError: true,
+      preventContinuation: true,
+      metadata: { retryable: false, executed: false, mcpFilesystemApprovalRequired: err.message },
+    };
+  }
+  const pending = toolName === "exec_command" ? readPendingPhysicalSettlement<ToolDispatchResult>(err) : undefined;
+  if (pending?.callerStop === "abort") {
+    // The admission boundary has already installed its unknown-effect poison
+    // and physical observer. Waiting here cannot defer that safety gate.
+    let reportTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const receipt = await Promise.race([
+        pending.settlement.then(result => result, () => null),
+        new Promise<null>(resolve => { reportTimer = setTimeout(() => resolve(null), 1100); }),
+      ]);
+      err = interruptedExecReport(err, receipt) ?? err;
+    } finally { if (reportTimer !== undefined) clearTimeout(reportTimer); }
+  }
   if (err instanceof LiveEffectMutationBlockedError) {
     // The gate refused a side-effecting call because an earlier effect has an
     // unknown outcome. Unattended runs stop on the first refusal and every
@@ -1838,7 +1940,13 @@ function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchR
         : {}),
       metadata: {
         ...(approvalDenialEndsTurn(err)
-          ? { approvalDenied: true, approvalDeniedStage: err.stage }
+          ? {
+              approvalDenied: true,
+              approvalDeniedStage: err.stage,
+              ...(err.sandboxRefusal !== undefined
+                ? { approvalDeniedSandboxRefusal: err.sandboxRefusal }
+                : {}),
+            }
           : {}),
         approvalFailure: {
           decision: err.decision.kind,
@@ -1885,7 +1993,10 @@ export function routerFromRegistry(
       : {}),
     ...(unavailable?.has(tool.name) === true ? { unavailable: true } : {}),
   }));
-  return new ToolRouter(specs, opts);
+  return new ToolRouter(specs, {
+    ...(registry.toolPolicy !== undefined ? { toolPolicy: registry.toolPolicy } : {}),
+    ...opts,
+  });
 }
 
 /**

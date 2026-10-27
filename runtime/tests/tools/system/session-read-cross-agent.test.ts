@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
 import { Session } from "../../../src/session/session.js";
 import { resolveAgentRuntimeOptions, runWithAgentRuntimeOptions } from "../../../src/session/runtime-options.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../../src/services/extractMemories/memory-paths.js";
+import { createFileWriteTool } from "../../../src/tools/system/file-write.js";
+import { createFileReadTool } from "../../../src/tools/system/file-read.js";
 import { applyPatchText } from "../../../src/tools/apply-patch/runtime.js";
 import { runWithCanonicalSettingsAuthority } from "../../../src/utils/settings/canonicalAuthority.js";
 import { mkSession } from "../../fixtures.js";
@@ -96,6 +99,29 @@ describe("cross-agent conversation read scope", () => {
     } else {
       process.env.AGENC_MAX_SESSION_READ_CONTENT_BYTES = contentBudget;
     }
+  });
+
+
+  it("a background extractor cannot overwrite a foreground memory index it never read", async () => {
+    const memory = sessionDurableMemoryDirectoriesOf(parent, workspaceRoot)!.roots.at(-1)!;
+    mkdirSync(memory, { recursive: true });
+    const path = join(memory, "MEMORY.md");
+    const read = createFileReadTool({ allowedPaths: [memory] });
+    const write = createFileWriteTool({ allowedPaths: [memory] });
+    const args = (session: Session) => ({ file_path: path, __agencSessionId: session.conversationId });
+    // Reproduce ua5: extraction reads a missing index, the foreground saves,
+    // then extraction's stale Write borrows the foreground's post-write read.
+    expect((await inSession(child, () => read.execute(args(child)))).isError).toBe(true);
+    const line = "- [Deploy day](deploy-day.md): Thursdays\n";
+    expect((await inSession(parent, () => write.execute({ ...args(parent), content: line }))).isError).toBeUndefined();
+    const stale = await inSession(child, () => write.execute({ ...args(child), content: "- [Other](other.md): note\n" }));
+    expect(stale.isError).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(line);
+    // A real reread lets the extractor preserve the foreground link and add its own.
+    expect((await inSession(child, () => read.execute(args(child)))).isError).toBeUndefined();
+    expect((await inSession(child, () => write.execute({ ...args(child), content: line + "- [Other](other.md): note\n" }))).isError).toBeUndefined();
+    expect(readFileSync(path, "utf8")).toContain("deploy-day.md");
+    rmSync(path);
   });
 
   it("shares real reads with the parent and siblings", () => {

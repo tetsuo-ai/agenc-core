@@ -14,6 +14,8 @@ const BPF_JMP = 0x05;
 const BPF_JEQ = 0x10;
 const BPF_K = 0x00;
 const BPF_RET = 0x06;
+const BPF_ALU = 0x04;
+const BPF_AND = 0x50;
 
 const SECCOMP_DATA_NR_OFFSET = 0;
 const SECCOMP_DATA_ARCH_OFFSET = 4;
@@ -21,13 +23,15 @@ const SECCOMP_DATA_ARGS_OFFSET = 16;
 const AF_UNIX = 1;
 const AF_INET = 2;
 const AF_INET6 = 10;
+const SOCK_STREAM = 1;
+const SOCK_TYPE_MASK = 0xf;
 const EPERM = 1;
 
 const SECCOMP_RET_KILL_PROCESS = 0x80000000;
 const SECCOMP_RET_ERRNO = 0x00050000;
 const SECCOMP_RET_ALLOW = 0x7fff0000;
 
-export type NetworkSeccompMode = "restricted" | "proxy-routed";
+export type NetworkSeccompMode = "restricted" | "proxy-routed" | "local-only";
 
 export interface SeccompProgramFile {
   readonly fd: number;
@@ -72,11 +76,12 @@ export function networkSeccompMode(
   networkSandboxPolicy: NetworkSandboxPolicy,
   allowNetworkForProxy: boolean,
   proxyRoutedNetwork: boolean,
+  allowLocalBinding = false,
 ): NetworkSeccompMode | null {
   if (!shouldInstallNetworkSeccomp(networkSandboxPolicy, allowNetworkForProxy)) {
     return null;
   }
-  return proxyRoutedNetwork ? "proxy-routed" : "restricted";
+  return proxyRoutedNetwork ? "proxy-routed" : allowLocalBinding ? "local-only" : "restricted";
 }
 
 export function openNetworkSeccompProgramFile(
@@ -139,7 +144,15 @@ export function createNetworkSeccompProgram(
     }
   } else {
     program.allowIpSocketOnly(table.socket);
-    program.denySyscall(table.socketpair);
+    if (mode === "local-only") {
+      // Only safe inside a private network namespace with loopback alone.
+      // Do not allow socket(AF_UNIX): pathname sockets reach host services.
+      // Keep connected stream socketpairs for Node child stdio. Datagram
+      // pairs can reconnect to pathname services, so must stay blocked.
+      program.allowUnixStreamSocketpairOnly(table.socketpair);
+    } else {
+      program.denySyscall(table.socketpair);
+    }
   }
 
   program.ret(SECCOMP_RET_ALLOW);
@@ -273,6 +286,19 @@ class BpfProgram {
     this.jumpEqual(AF_UNIX, 0, 1);
     this.ret(SECCOMP_RET_ALLOW);
     this.ret(SECCOMP_RET_ERRNO | EPERM);
+  }
+
+  allowUnixStreamSocketpairOnly(syscall: number): void {
+    this.jumpEqual(syscall, 0, 8);
+    this.loadWord(SECCOMP_DATA_ARGS_OFFSET);
+    this.jumpEqual(AF_UNIX, 0, 4);
+    this.loadWord(SECCOMP_DATA_ARGS_OFFSET + 8);
+    // SOCK_NONBLOCK and SOCK_CLOEXEC are flags above the socket type bits.
+    this.#instructions.push({ code: BPF_ALU | BPF_AND | BPF_K, jt: 0, jf: 0, k: SOCK_TYPE_MASK });
+    this.jumpEqual(SOCK_STREAM, 0, 1);
+    this.ret(SECCOMP_RET_ALLOW);
+    this.ret(SECCOMP_RET_ERRNO | EPERM);
+    this.loadWord(SECCOMP_DATA_NR_OFFSET);
   }
 
   allowIpSocketOnly(syscall: number): void {

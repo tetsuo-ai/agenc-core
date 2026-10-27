@@ -49,7 +49,7 @@
           "calls": {
             "plannedProviderCalls": 1,
             "executedProviderCalls": 0,
-            "plannedInputTokens": 5052
+            "plannedInputTokens": 5030
           },
           "operationCounts": {
             "sourceSentencesScanned": 59,
@@ -62,7 +62,7 @@
             "chunk_candidate_evaluations": 4,
             "candidate_semantic_units_visited": 12,
             "candidate_source_refs_visited": 12,
-            "candidate_transcript_utf8_bytes": 17105,
+            "candidate_transcript_utf8_bytes": 16941,
             "maximum_candidate_semantic_units": 5,
             "token_estimator_calls": 5,
             "outputUtf8Bytes": 2008
@@ -100,7 +100,7 @@
           "calls": {
             "plannedProviderCalls": 1,
             "executedProviderCalls": 0,
-            "plannedInputTokens": 4955
+            "plannedInputTokens": 4934
           },
           "operationCounts": {
             "sourceSentencesScanned": 57,
@@ -113,7 +113,7 @@
             "chunk_candidate_evaluations": 4,
             "candidate_semantic_units_visited": 12,
             "candidate_source_refs_visited": 12,
-            "candidate_transcript_utf8_bytes": 16717,
+            "candidate_transcript_utf8_bytes": 16565,
             "maximum_candidate_semantic_units": 5,
             "token_estimator_calls": 5,
             "outputUtf8Bytes": 2002
@@ -151,7 +151,7 @@
           "calls": {
             "plannedProviderCalls": 1,
             "executedProviderCalls": 0,
-            "plannedInputTokens": 5127
+            "plannedInputTokens": 5106
           },
           "operationCounts": {
             "sourceSentencesScanned": 57,
@@ -164,7 +164,7 @@
             "chunk_candidate_evaluations": 4,
             "candidate_semantic_units_visited": 12,
             "candidate_source_refs_visited": 12,
-            "candidate_transcript_utf8_bytes": 17414,
+            "candidate_transcript_utf8_bytes": 17266,
             "maximum_candidate_semantic_units": 5,
             "token_estimator_calls": 5,
             "outputUtf8Bytes": 2044
@@ -200,7 +200,7 @@
         "calls": {
           "plannedProviderCalls": 3,
           "executedProviderCalls": 0,
-          "plannedInputTokens": 15134
+          "plannedInputTokens": 15070
         },
         "operationCounts": {
           "sourceSentencesScanned": 173,
@@ -213,14 +213,14 @@
           "chunk_candidate_evaluations": 12,
           "candidate_semantic_units_visited": 36,
           "candidate_source_refs_visited": 36,
-          "candidate_transcript_utf8_bytes": 51236,
+          "candidate_transcript_utf8_bytes": 50772,
           "maximum_candidate_semantic_units": 15,
           "token_estimator_calls": 15,
           "outputUtf8Bytes": 6054
         },
         "localPerformance": {
-          "elapsedMs": 7.951,
-          "rssDeltaBytes": 520192
+          "elapsedMs": 8.877,
+          "rssDeltaBytes": 3735552
         }
       },
       "gates": {
@@ -394,7 +394,7 @@
           "outputUtf8Bytes": 6024
         },
         "localPerformance": {
-          "elapsedMs": 0.145,
+          "elapsedMs": 0.147,
           "rssDeltaBytes": 0
         }
       },
@@ -409,8 +409,8 @@
     }
   ],
   "measurements": {
-    "suiteElapsedMs": 8.355,
-    "rssDeltaBytes": 716800,
+    "suiteElapsedMs": 9.246,
+    "rssDeltaBytes": 3735552,
     "node": "v26.5.0",
     "platform": "linux-x64"
   }

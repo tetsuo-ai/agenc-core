@@ -21,15 +21,41 @@ Related: [gateway](gateway.md) · [onboarding](onboarding.md) ·
 
 ## Prerequisites
 
-Phone remote control is **off by default**. A paired phone gets full control of
-this computer's AgenC: it can start agents in any folder, run tools and change
-permission modes, and anyone who holds that phone's relay ticket gets the same.
-Turn it on for one run with `agenc remote on --full-control` (or
-`/remote on --full-control` in the TUI), or keep it on with
-`AGENC_REMOTE_FULL_CONTROL=1` in the environment. Without either, `agenc remote on`
-and `/remote on` refuse before reading a login, creating a code, calling the
-backend or opening the relay. `status` and `off` never need it. Each start
-prints a one-line warning that says what a paired phone can do.
+Phone remote control is **disabled by default**. The owner must first edit
+`$AGENC_HOME/config.toml` (normally `~/.agenc/config.toml`) outside the agent:
+
+```toml
+config_version = 2
+
+[remote_control]
+enabled = true
+```
+
+The same `[remote_control] enabled` setting in managed `config.toml` or a managed
+`config.d/*.toml` drop-in wins over user configuration, including an explicit
+`false`. Restart the daemon after changing this setting. Projects, local config,
+plugins, profiles, `--config`, CLI overrides and environment variables cannot
+enable the capability. `agenc config set` cannot change this owner-only setting.
+
+When disabled, `agenc remote on` and `/remote on` refuse with one line before
+reading login state, importing the connector, calling the backend or opening a
+relay socket, even with `--full-control`. `AGENC_REMOTE_FULL_CONTROL` is ignored
+with a warning. `/remote` is hidden from help and completion; typing it still
+returns the refusal. `agenc remote status`, `agenc remote off`, `/remote status`
+and `/remote off` remain local and available. A stored `remote/pair.json` never
+authorizes startup or reconnects on its own. The daemon rejects phone bridge
+initialization and does not load the browser relay service when disabled.
+Browser `remote.*` enrollment also requires this switch; Telegram Connections
+retain their separate owner approval.
+
+After the owner enables the capability, existing consent rules still apply.
+A paired phone gets full control of this computer's AgenC: it can start agents
+in any folder, run tools and change permission modes, and anyone who holds that
+phone's relay ticket gets the same. Turn it on for one run with
+`agenc remote on --full-control` (or `/remote on --full-control`), or supply
+`AGENC_REMOTE_FULL_CONTROL=1` for per-run consent. Without either, starts refuse
+before reading a login or using the network. Each start prints the full-control
+warning. This consent cannot override `remote_control.enabled = false`.
 
 The bridge never forwards daemon administration for a phone: daemon lifecycle,
 account login and logout, project trust, plugin settings, session
@@ -66,7 +92,7 @@ agenc remote status              # pair.json fields only; does not probe a live 
 agenc remote off                 # revoke local bridges and remove pair.json
 ```
 
-`--full-control` (or `AGENC_REMOTE_FULL_CONTROL=1`) is the explicit opt-in
+After owner enablement, `--full-control` (or `AGENC_REMOTE_FULL_CONTROL=1`) is the per-run opt-in
 described under Prerequisites; `agenc remote on` alone prints why it is off and
 how to turn it on.
 

@@ -308,6 +308,13 @@ describe("dispatchSlashCommand", () => {
     expect(out.trace.aliasUsed).toBe("stat");
   });
 
+  it.each([["settings", "config"], ["undo", "rewind"]])("guides /%s to /%s", async (input, destination) => {
+    const registry = new CommandRegistry();
+    registry.register(cmd(destination, async () => ({ kind: "skip" }), { userInvocable: true }));
+    const result = await dispatchSlashCommand(parseSlashCommand(`/${input}`)!, stubCtx(), registry);
+    expect(result.result).toMatchObject({ kind: "error", message: expect.stringContaining(`Run /${destination}`) });
+  });
+
   it("returns { kind: 'error' } for unknown commands", async () => {
     const out = await dispatchSlashCommand(
       { name: "does-not-exist", argsRaw: "", isMcp: false },
@@ -316,7 +323,16 @@ describe("dispatchSlashCommand", () => {
     );
     expect(out.result).toEqual({
       kind: "error",
-      message: "Unknown command: /does-not-exist",
+      message: "Unknown command: /does-not-exist. Run /help to see available commands.",
+    });
+  });
+
+  it("points a mistyped command to the available command help", async () => {
+    const out = await dispatchSlashCommand(
+      { name: "hepl", argsRaw: "", isMcp: false }, stubCtx(), registry,
+    );
+    expect(out.result).toEqual({
+      kind: "error", message: "Unknown command: /hepl. Run /help to see available commands.",
     });
   });
 
@@ -360,7 +376,7 @@ describe("dispatchSlashCommand", () => {
 
     expect(out.result).toEqual({
       kind: "error",
-      message: "Unknown command: /review-pr",
+      message: "Unknown command: /review-pr. Run /help to see available commands.",
     });
     expect(out.trace.name).toBe("review-pr");
   });
@@ -391,7 +407,7 @@ describe("dispatchSlashCommand", () => {
 
     expect(out.result).toEqual({
       kind: "error",
-      message: "Unknown command: /hidden",
+      message: "Unknown command: /hidden. Run /help to see available commands.",
     });
     expect(resolveSkill).not.toHaveBeenCalled();
   });

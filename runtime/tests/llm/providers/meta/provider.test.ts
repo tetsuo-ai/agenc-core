@@ -42,6 +42,9 @@ function successfulChat(model: string, content = "ok"): Response {
   );
 }
 
+// Muse Spark is the Chat Completions model; the provider default is Muse Wonder.
+const SPARK_MODEL = "muse-spark-1.3";
+
 describe("MetaProvider", () => {
   const echoTool: LLMTool = {
     type: "function",
@@ -56,13 +59,14 @@ describe("MetaProvider", () => {
     },
   };
 
-  test("factory uses Meta chat completions with bearer auth", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+  test("factory uses Meta chat completions for Muse Spark with bearer auth", async () => {
+    const model = SPARK_MODEL;
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockImplementation(async () => successfulChat(model));
     const provider = createProvider("meta", {
       apiKey: "meta-test",
+      model,
       extra: { fetchImpl },
     });
 
@@ -98,7 +102,7 @@ describe("MetaProvider", () => {
       'data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n' + tail,
       { headers: { "content-type": "text/event-stream" } },
     ));
-    const provider = createProvider("meta", { apiKey: "meta-test", extra: { fetchImpl } });
+    const provider = createProvider("meta", { apiKey: "meta-test", model: SPARK_MODEL, extra: { fetchImpl } });
     const onChunk = vi.fn();
 
     await expect(provider.chatStream(
@@ -127,7 +131,7 @@ describe("MetaProvider", () => {
         `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`,
         { headers: { "content-type": "text/event-stream" } },
       ));
-      const provider = createProvider("meta", { apiKey: "meta-test", tools: [echoTool], extra: { fetchImpl } });
+      const provider = createProvider("meta", { apiKey: "meta-test", model: SPARK_MODEL, tools: [echoTool], extra: { fetchImpl } });
       const onChunk = vi.fn();
 
       await expect(provider.chatStream(
@@ -147,7 +151,7 @@ describe("MetaProvider", () => {
       { headers: { "content-type": "text/event-stream" } },
     ));
     const onChunk = vi.fn();
-    await expect(createProvider("meta", { apiKey: "meta-test", tools: [echoTool], extra: { fetchImpl: streamFetch } })
+    await expect(createProvider("meta", { apiKey: "meta-test", model: SPARK_MODEL, tools: [echoTool], extra: { fetchImpl: streamFetch } })
       .chatStream([{ role: "user", content: "echo ok" }], onChunk))
       .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
     expect(onChunk).not.toHaveBeenCalledWith(expect.objectContaining({ toolCalls: expect.anything() }));
@@ -158,7 +162,7 @@ describe("MetaProvider", () => {
       }] } }] }),
       { headers: { "content-type": "application/json" } },
     ));
-    await expect(createProvider("meta", { apiKey: "meta-test", tools: [echoTool], extra: { fetchImpl: jsonFetch } })
+    await expect(createProvider("meta", { apiKey: "meta-test", model: SPARK_MODEL, tools: [echoTool], extra: { fetchImpl: jsonFetch } })
       .chat([{ role: "user", content: "echo ok" }]))
       .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
   });
@@ -176,7 +180,7 @@ describe("MetaProvider", () => {
         }] }),
         { headers: { "content-type": "application/json" } },
       ));
-      const provider = createProvider("meta", { apiKey: "meta-test", tools: [echoTool], extra: { fetchImpl } });
+      const provider = createProvider("meta", { apiKey: "meta-test", model: SPARK_MODEL, tools: [echoTool], extra: { fetchImpl } });
 
       await expect(provider.chat([{ role: "user", content: "echo ok" }]))
         .rejects.toThrow(/without finish_reason=tool_calls/i);
@@ -185,7 +189,7 @@ describe("MetaProvider", () => {
   );
 
   test("assembles streamed tool arguments and final usage, then replays the tool result", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const model = SPARK_MODEL;
     const wireToolName = encodeMcpToolNameForWire(echoTool.function.name);
     const chunks = [
       { choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_echo", type: "function", function: { name: wireToolName, arguments: '{"text":' } }] }, finish_reason: null }] },
@@ -225,7 +229,8 @@ describe("MetaProvider", () => {
       ]);
   });
 
-  test.each(BUILT_IN_PROVIDER_MODEL_CATALOG.meta)(
+  // Muse Wonder routes to the Responses API (muse-wonder.test.ts).
+  test.each(BUILT_IN_PROVIDER_MODEL_CATALOG.meta.filter((model) => model.startsWith("muse-spark-")))(
     "registers and routes chat model %s",
     async (model) => {
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -284,7 +289,7 @@ describe("MetaProvider", () => {
   );
 
   test("forwards only Meta's accepted reasoning levels", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const model = SPARK_MODEL;
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockImplementation(async () => successfulChat(model));
@@ -367,7 +372,7 @@ describe("MetaProvider", () => {
     expectedToolChoice,
     expectsTools,
   ) => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const model = SPARK_MODEL;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model),
     );
@@ -399,7 +404,7 @@ describe("MetaProvider", () => {
   });
 
   test("strips unsupported stop sequences while keeping parallel tool calls", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const model = SPARK_MODEL;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model),
     );
@@ -430,7 +435,7 @@ describe("MetaProvider", () => {
   });
 
   test("sends direct user image input in Meta's supported schema with tools", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const model = SPARK_MODEL;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model, JSON.stringify({ answer: "ok" })),
     );
@@ -492,7 +497,7 @@ describe("MetaProvider", () => {
   });
 
   test("relays multimodal tool results as supported user image input", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const model = SPARK_MODEL;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model, "A cat is shown."),
     );
@@ -569,7 +574,7 @@ describe("MetaProvider", () => {
   });
 
   test("keeps parallel tool results contiguous before relaying their images", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const model = SPARK_MODEL;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model, "Both images are visible."),
     );

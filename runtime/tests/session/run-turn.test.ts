@@ -1599,6 +1599,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     const appendRollout = vi.fn();
     session.rolloutStore = {
       assertCompactionProjectionReady: () => {},
+      assertToolAdmissionAllowed: () => {},
       append: vi.fn(), appendRollout,
       rolloutPath: "/tmp/checkpoint-projection-test.jsonl",
     } as unknown as Session["rolloutStore"];
@@ -1606,6 +1607,8 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(requests).toBe(2);
     const message = (getState().history as LLMMessage[]).find((item) => item.role === "tool");
     expect(message).toBeDefined();
+    expect(message!.content).toContain("ordinary echo output");
+    expect(message!.runtimeOnly?.toolResultIsError).toBeUndefined();
     expect(message!.runtimeOnly?.toolResultIntegrity).toBeDefined();
     expect(appendRollout.mock.calls.some(([item]) => item.type === "response_item" &&
       item.payload.role === "tool" && item.payload.toolResultIntegrity !== undefined)).toBe(true);
@@ -1729,6 +1732,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       .snapshotHistoryMessages()
       .find((message) => message.role === "user");
     expect(historyUser?.runtimeOnly?.userMessageId).toBe(userEvent?.id);
+    expect(historyUser?.runtimeOnly?.responseItemId).toBe(userEvent?.id);
   });
 
   test("can emit a raw display user_message while running expanded prompt content", async () => {
@@ -2646,6 +2650,25 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     ]);
   });
 
+  test("expands multiple text pastes in drained queued prompts in composer order", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "Typed prefix [Pasted text #2 +1 lines] between [Pasted text #1] suffix",
+      mode: "prompt", priority: "next",
+      pastedContents: {
+        1: { id: 1, type: "text", content: "last paste" },
+        2: { id: 2, type: "text", content: "first paste\nwith [Pasted text #1] quoted" },
+      },
+    });
+    const { provider } = mkSingleToolFollowUpProvider({ seenMessages });
+    const { session } = mkSession({ provider, registry: mkStaticToolRegistry() });
+    await drain(session.runTurn("start", { ctx: mkCtx() }));
+    const text = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(text).toContain("Typed prefix first paste\nwith [Pasted text #1] quoted between last paste suffix");
+    expect(text).not.toContain("[Pasted text #2");
+  });
+
   test("preserves pasted images on drained queued prompts", async () => {
     const seenMessages: LLMMessage[][] = [];
     enqueue({
@@ -2924,6 +2947,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         // user_message event id).
         runtimeOnly: {
           userMessageId: expect.stringMatching(/^user-msg-/),
+          responseItemId: getState().history[0]?.runtimeOnly?.userMessageId,
         },
       },
       { role: "assistant", content: "first answer" },
@@ -2939,10 +2963,16 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     await drain(session.runTurn("second question", { ctx: mkCtx() }));
 
     expect(seenMessages).toHaveLength(2);
+    const firstUserId = getState().history[0]?.runtimeOnly?.userMessageId;
+    const secondUserId = getState().history[2]?.runtimeOnly?.userMessageId;
+    expect(secondUserId).toMatch(/^user-msg-/);
+    expect(secondUserId).not.toBe(firstUserId);
     expect(seenMessages[1]).toEqual([
-      { role: "user", content: "first question" },
+      { role: "user", content: "first question",
+        runtimeOnly: { userMessageId: firstUserId, responseItemId: firstUserId } },
       { role: "assistant", content: "first answer" },
-      { role: "user", content: "second question" },
+      { role: "user", content: "second question",
+        runtimeOnly: { userMessageId: secondUserId, responseItemId: secondUserId } },
     ]);
   });
 
@@ -3792,7 +3822,10 @@ describe("runTurn — live sampling request contract", () => {
 
     await drain(session.runTurn("hello", { ctx, skipCacheWrite: true }));
 
-    expect(seenMessages[0]).toEqual({ role: "user", content: "hello" });
+    const userMessageId = seenMessages[0]?.runtimeOnly?.userMessageId;
+    expect(userMessageId).toMatch(/^user-msg-/);
+    expect(seenMessages[0]).toEqual({ role: "user", content: "hello",
+      runtimeOnly: { userMessageId, responseItemId: userMessageId } });
     expect(seenMessages.some((message) => message.role === "system")).toBe(
       false,
     );
@@ -4365,93 +4398,17 @@ describe("runTurn — live sampling request contract", () => {
     }
   });
 
-  test("plan mode retries when provider returns assistant text without a tool call", async () => {
-    const ctx = { ...mkCtx(), permissionMode: "plan" } as TurnContext;
-
-    const exitPlanTool: LLMTool = {
-      type: "function",
-      function: {
-        name: "ExitPlanMode",
-        description: "exit plan mode",
-        parameters: { type: "object" },
-      },
-    };
-    const seenMessages: LLMMessage[][] = [];
-    let calls = 0;
-    const provider: LLMProvider = {
-      name: "stub-provider",
-      chat: async () => ({
-        content: "",
-        toolCalls: [],
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        model: "test-model",
-        finishReason: "stop",
-      }),
-      chatStream: async (messages) => {
-        seenMessages.push(messages.map((message) => ({ ...message })));
-        calls += 1;
-        if (calls === 1) {
-          return {
-            content:
-              "Questions for you:\n1. Which path should I take?\n\nReply with preferences.",
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "test-model",
-            finishReason: "stop",
-          };
-        }
-        if (calls === 2) {
-          return {
-            content: "",
-            toolCalls: [
-              {
-                id: "exit-plan",
-                name: "ExitPlanMode",
-                arguments: JSON.stringify({ plan: "## Plan\n\nUse tools." }),
-              },
-            ],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "test-model",
-            finishReason: "tool_calls",
-          };
-        }
-        return {
-          content: "Plan mode exited.",
-          toolCalls: [],
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          model: "test-model",
-          finishReason: "stop",
-        };
-      },
-      healthCheck: async () => true,
-    };
-    const registry = {
-      tools: [],
-      toLLMTools: () => [exitPlanTool],
-      dispatch: async (toolCall: LLMToolCall) => {
-        (ctx as { permissionMode: PermissionMode }).permissionMode =
-          "bypassPermissions";
-        return { content: "exited", isError: false };
-      },
-    } as ToolRegistry;
-    const { session } = mkSession({ provider, registry, permissionModeRegistry: new PermissionModeRegistry({
-      ...createEmptyToolPermissionContext(), mode: "plan",
-    }) });
-
-    await drain(session.runTurn("plan this", { ctx }));
-
-    // The stub registry returns a plain tool result instead of running the
-    // real ExitPlanMode side effects, so plan mode remains active and the
-    // retry guard exhausts its bounded retry budget.
-    expect(calls).toBe(5);
-    const secondRequestText = seenMessages[1]
-      ?.map((message) => String(message.content))
-      .join("\n");
-    expect(secondRequestText).toContain(
-      "Plan mode requires this step to end with a tool call.",
-    );
-    expect(secondRequestText).not.toContain("Reply with preferences");
+  test("plan mode accepts a text-only answer without retrying or approving execution", async () => {
+    const provider = mkProvider({ content: "No changes needed." });
+    const chat = vi.spyOn(provider, "chatStream");
+    const registry = { tools: [], toLLMTools: () => [{ type: "function", function: { name: "ExitPlanMode", description: "Present a plan", parameters: { type: "object" } } }], dispatch: vi.fn() } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry, permissionModeRegistry: new PermissionModeRegistry({ ...createEmptyToolPermissionContext(), mode: "plan" }) });
+    await drain(session.runTurn("Just explain; do not change anything.", { ctx: mkCtx({ permissionMode: "plan" }) }));
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(registry.dispatch).not.toHaveBeenCalled();
+    expect(session.permissionModeRegistry.current().mode).toBe("plan");
   });
+
 });
 
 describe("runTurn — model request context ordering", () => {
@@ -4561,7 +4518,10 @@ describe("runTurn — model request context ordering", () => {
     ).toHaveLength(0);
     expect(seenMessages[0]?.role).toBe("user");
     expect(String(seenMessages[0]?.content)).toContain("Plan mode is active");
-    expect(seenMessages.at(-1)).toEqual({ role: "user", content: "hello" });
+    const userMessageId = seenMessages.at(-1)?.runtimeOnly?.userMessageId;
+    expect(userMessageId).toMatch(/^user-msg-/);
+    expect(seenMessages.at(-1)).toEqual({ role: "user", content: "hello",
+      runtimeOnly: { userMessageId, responseItemId: userMessageId } });
   });
 
   test("binds swarm routing to the exact root-human turn", async () => {
@@ -4869,9 +4829,9 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     );
   });
 
-  test("managed wire retries reuse the sampling UUID while tool rounds and new turns receive distinct UUIDs", async () => {
+  test("direct wire retries reuse sampling snapshots without sending account request headers", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
-    const model = "openrouter/openai/gpt-5";
+    const model = "openai/gpt-5";
     const fetchImpl = vi.fn<typeof fetch>(async () => {
       const attempt = fetchImpl.mock.calls.length;
       if (attempt === 1) {
@@ -4892,9 +4852,9 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     });
     const provider = createProvider("openrouter", {
       apiKey: "synthetic-session",
-      baseURL: "https://id.agenc.ag/v1/auth/openrouter/v1",
+      baseURL: "https://openrouter.ai/api/v1",
       model,
-      extra: { managedGateway: true, maxRetries: 0, maxTokens: 100, fetchImpl },
+      extra: { maxRetries: 0, maxTokens: 100, fetchImpl },
     });
     // Adapter retries are disabled: each failed fetch must re-enter through
     // runSamplingRequest's outer reconnect loop using its saved snapshot.
@@ -4914,7 +4874,9 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     await drain(session.runTurn("Another request", { ctx: { ...ctx, subId: "turn-next" } }));
 
     expect(chatStream).toHaveBeenCalledTimes(5);
-    const ids = fetchImpl.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    const wireIds = fetchImpl.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(wireIds).toEqual(Array(5).fill(null));
+    const ids = chatStream.mock.calls.map(([, , options]) => options?.managedRequestId);
     for (const id of ids) expect(id).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
     expect(ids.slice(0, 3)).toEqual(Array(3).fill(ids[0]));
     expect(new Set([ids[0], ids[3], ids[4]]).size).toBe(3);
@@ -4922,7 +4884,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     expect(bodies.slice(0, 3)).toEqual(Array(3).fill(bodies[0]));
     const continuation = JSON.parse(bodies[3]!).messages;
     const toolCallId = continuation.find((message: { role: string }) => message.role === "assistant").tool_calls[0].id;
-    expect(toolCallId).toMatch(/^call_[a-f0-9]{32}$/u);
+    expect(toolCallId).toBe("synthetic-read");
     expect(continuation).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: toolCallId }));
     for (const body of bodies) {
       expect(body).not.toContain("managedRequestId");
@@ -5339,6 +5301,59 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     );
   });
 
+  test.each([
+    ["text", false], ["reasoning", false], ["partial-tool", false], ["complete-tool", false],
+    ["partial-tool", true],
+  ] as const)(
+    "retries a DeepSeek stream cut during %s without tool effects (persistent: %s)",
+    async (cut, persistent) => {
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      const frame = (delta: unknown, finish_reason?: string) =>
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+      const fetchImpl = vi.fn<typeof fetch>(async () => new Response(
+        persistent || fetchImpl.mock.calls.length === 1
+          ? frame(cut === "text" ? { content: "abandoned text" }
+            : cut === "reasoning" ? { reasoning_content: "abandoned reasoning" }
+            : { tool_calls: [{ index: 0, id: "cut-tool", type: "function", function: {
+                name: "stream_write", arguments: cut === "partial-tool" ? '{"path":' : "{}",
+              } }] })
+          : frame({ content: "fresh answer" }) + frame({}, "stop") + "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } },
+      ));
+      const provider = createProvider("deepseek", {
+        apiKey: "synthetic-session", model: "deepseek-flash", extra: { maxRetries: 0, fetchImpl },
+      });
+      const dispatch = vi.fn(async () => ({ content: "unexpected side effect", isError: false }));
+      const { session, events, getState } = mkSession({ provider, registry: {
+        tools: [{ name: "stream_write", description: "write", inputSchema: { type: "object" }, execute: dispatch }],
+        toLLMTools: () => [], dispatch,
+      }, configStoreBase: { provider_outage_wait_ms: 0 }, sessionConfiguration: {
+        provider: { slug: "deepseek" }, collaborationMode: { model: "deepseek-flash" },
+      } });
+      await drain(session.runTurn("hello", { ctx: { ...mkCtx(), modelProviderId: "deepseek",
+        modelInfo: { ...mkCtx().modelInfo, slug: "deepseek-flash" }, collaborationMode: { model: "deepseek-flash" },
+      } }));
+      expect(fetchImpl).toHaveBeenCalledTimes(persistent ? 6 : 2);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(events.some(event => event.msg.type === "tool_call_started")).toBe(false);
+      if (persistent) {
+        expect(events).toContainEqual(expect.objectContaining({ msg: {
+          type: "stream_error", payload: expect.objectContaining({
+            message: expect.stringContaining("Type continue and press Enter"),
+          }),
+        } }));
+        expect(events.some(event => event.msg.type === "turn_failed")).toBe(true);
+        expect(events.some(event => event.msg.type === "turn_complete")).toBe(false);
+      } else {
+        expect(events).toContainEqual(expect.objectContaining({ msg: {
+          type: "turn_complete", payload: expect.objectContaining({ lastAgentMessage: "fresh answer" }),
+        } }));
+      }
+      expect(JSON.stringify(getState().history)).not.toContain("abandoned");
+      expect(JSON.stringify(getState().history)).not.toContain("cut-tool");
+    },
+  );
+
   test("LP-07 clears failed streamed tool state before retrying", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     let attempts = 0;
@@ -5660,7 +5675,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     }
   });
 
-  test("LP-07 cancels queued default streamed tool work in the live turn path", async () => {
+  test("LP-07 retries queued undispatched streamed tool work without side effects", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
 
     let attempts = 0;
@@ -5704,7 +5719,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
           });
         }
         return {
-          content: "should not retry",
+          content: "retry ok",
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "test-model",
@@ -5725,8 +5740,11 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
 
     await drain(session.runTurn("hello", { ctx: mkCtx() }));
 
-    expect(attempts).toBe(1);
+    expect(attempts).toBe(2);
     expect(sideEffects).toBe(0);
+    expect(events).toContainEqual(expect.objectContaining({ msg: {
+      type: "turn_complete", payload: expect.objectContaining({ lastAgentMessage: "retry ok" }),
+    } }));
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
@@ -5734,7 +5752,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
           payload: expect.objectContaining({
             callId: "tool_unsafe",
             isError: true,
-            result: expect.stringContaining("network connection lost"),
+            result: expect.stringContaining("stream disconnected"),
           }),
         },
       }),
@@ -5805,7 +5823,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     );
   });
 
-  test("LP-07 preserves already-started streamed tool results in durable history after retry refusal", async () => {
+  test.each([false, true])("LP-07 preserves already-started streamed tool results after retry refusal (read-only: %s)", async (readOnly) => {
     let attempts = 0;
     let sideEffects = 0;
     let releaseTool!: () => void;
@@ -5821,6 +5839,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
       description: "streamed write",
       inputSchema: { type: "object", additionalProperties: false },
       concurrencyClass: SHARED_READ,
+      ...(readOnly ? { isReadOnly: true, metadata: { mutating: false } } : {}),
       execute: async () => {
         sideEffects += 1;
         markToolStarted();
@@ -5885,6 +5904,11 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
 
     expect(attempts).toBe(1);
     expect(sideEffects).toBe(1);
+    expect(events).toContainEqual(expect.objectContaining({ msg: {
+      type: "turn_failed", payload: expect.objectContaining({
+        message: expect.stringContaining("Type continue and press Enter"),
+      }),
+    } }));
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
@@ -6246,7 +6270,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     expect(sawAbort).toBe(true);
   });
 
-  test("LP-07 does not replay interactive read-only streamed tools", async () => {
+  test("LP-07 retries undispatched interactive tools without prompting", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
 
     let attempts = 0;
@@ -6293,7 +6317,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
           });
         }
         return {
-          content: "should not retry",
+          content: "retry ok",
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "test-model",
@@ -6305,7 +6329,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
 
     await drain(session.runTurn("hello", { ctx: mkCtx() }));
 
-    expect(attempts).toBe(1);
+    expect(attempts).toBe(2);
     expect(prompts).toBe(0);
     expect(events).toContainEqual(
       expect.objectContaining({
@@ -6313,17 +6337,17 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
           type: "stream_error",
           payload: expect.objectContaining({
             cause: "stream_disconnected",
-            message: expect.stringContaining("not retrying"),
+            message: expect.stringContaining("retrying"),
           }),
         },
       }),
     );
-    expect(events).not.toContainEqual(
+    expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
           type: "turn_complete",
           payload: expect.objectContaining({
-            lastAgentMessage: "should not retry",
+            lastAgentMessage: "retry ok",
           }),
         },
       }),
@@ -6907,7 +6931,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     );
     expect(firstTracking).toBeUndefined();
     expect(firstSnipTokensFreed).toBe(0);
-    expect(firstInitialContextInjection).toBe("do_not_inject");
+    expect(firstInitialContextInjection).toBe("before_last_user_message");
   });
 
   test("pre-sampling compact preserves the caller querySource", async () => {
@@ -7016,7 +7040,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         querySource: "repl_main_thread",
       }),
     );
-    expect(calls[0]?.[4]).toBe("do_not_inject");
+    expect(calls[0]?.[4]).toBe("before_last_user_message");
   });
 
   test("autoCompactIfNeeded is NOT called when total usage is below the threshold", async () => {
@@ -7260,13 +7284,14 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         fn({ history, totalTokenUsage: 0 }),
     };
 
-    setAutoCompactImplForTests(async () => ({
+    setAutoCompactImplForTests(async (messages) => ({
       wasCompacted: true,
       compactionResult: {
         message: "POST-COMPACT SUMMARY",
         replacementHistory: [
           { role: "system", content: "POST-COMPACT SUMMARY" },
           { role: "assistant", content: "KEPT TAIL" },
+          ...messages.filter(message => message.role === "user" && Array.isArray(message.content)),
         ],
         preCompactTokens: 999,
         postCompactTokens: 100,
@@ -7326,7 +7351,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     const errors = events.filter(
       (e) =>
         e.msg.type === "warning" &&
-        e.msg.payload.cause === "pre_sampling_compact_failed",
+        e.msg.payload.cause === "mid_turn_compact_failed",
     );
     expect(errors.length).toBeGreaterThanOrEqual(1);
     expect(events).toContainEqual(
@@ -7901,7 +7926,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     expect(cp.taskBudgetRemaining).toBe(9999);
     expect(cp.checkpointVersion).toBe(4);
     expect(cp.toolResultIntegrityVersion).toBe(1);
-    expect(cp.prefixHashVersion).toBe(3);
+    expect(cp.prefixHashVersion).toBe(4);
     expect(
       appendRollout.mock.calls
         .map((call) => call[0])

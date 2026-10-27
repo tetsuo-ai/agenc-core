@@ -83,6 +83,12 @@ export interface ModelInfo {
   readonly defaultReasoningSummary: ReasoningSummary;
   readonly truncationPolicy: TruncationPolicy;
   readonly supportsToolUse?: boolean;
+  readonly supportsImageInput?: boolean;
+  readonly supportsReasoning?: boolean;
+  readonly privacy?: "private" | "anonymized";
+  readonly isDefault?: boolean;
+  /** Unknown for anonymized routes; only documented private routes set true. */
+  readonly zeroDataRetention?: boolean;
   readonly supportsParallelToolCalls?: boolean;
   readonly modelMessages?: ModelMessages;
   readonly supportsPersonality?: boolean;
@@ -357,6 +363,7 @@ export interface SessionConfiguration {
    * `sandbox.allow_gpu`). Kernel attack surface — off by default.
    */
   readonly sandboxAllowGpu?: boolean;
+  readonly sandboxAllowLocalBinding?: boolean;
   readonly sandboxPersistentSession?: boolean;
   readonly collaborationMode: CollaborationMode;
   /**
@@ -522,6 +529,9 @@ export interface Config {
   readonly maxTurns?: number;
   /** Canonical per-session USD cap; checked before every sampling iteration. */
   readonly maxBudgetUsd?: number;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
+  readonly experimentalTaskBudgetProgress?: string;
   /** Canonical durable checkpoint/resume policy captured for this session. */
   readonly durableTurns?: DurableTurnsConfig;
   /** Completion gate policy for non-interactive verification rounds. */
@@ -628,6 +638,8 @@ export interface TurnContext {
 
   /** Reasoning summary mode. */
   readonly reasoningSummary: ReasoningSummary;
+  /** Preserve explicit summary choices when an opt-in provider experiment changes its default. */
+  readonly reasoningSummaryIsDefault?: true;
 
   /** Provider-facing output verbosity hint. */
   readonly modelVerbosity?: "low" | "medium" | "high";
@@ -683,6 +695,10 @@ export interface TurnContext {
 
   /** Network sandbox split policy. */
   readonly networkSandboxPolicy: NetworkSandboxPolicy;
+
+  /** Trusted opt-in for isolated local servers. */
+  readonly sandboxAllowLocalBinding?: boolean;
+  readonly sandboxPersistentSession?: boolean;
 
   /** Optional managed-network proxy. */
   readonly network?: NetworkProxy;
@@ -1302,6 +1318,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     modelProviderId: providerBinding.provider,
     reasoningEffort,
     reasoningSummary,
+    ...(sc.modelReasoningSummary === undefined ? { reasoningSummaryIsDefault: true as const } : {}),
     modelVerbosity: sc.modelVerbosity,
     // Clearing the runtime override restores the configured level. Prompt
     // assembly and the concrete wire adapter decide whether to use this
@@ -1324,6 +1341,8 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     sandboxPolicy: sc.sandboxPolicy,
     fileSystemSandboxPolicy: sc.fileSystemSandboxPolicy,
     networkSandboxPolicy: sc.networkSandboxPolicy,
+    ...(sc.sandboxAllowLocalBinding === true ? { sandboxAllowLocalBinding: true } : {}),
+    ...(sc.sandboxPersistentSession === false ? { sandboxPersistentSession: false } : {}),
     network: opts.network,
     windowsSandboxLevel: sc.windowsSandboxLevel,
     shellEnvironmentPolicy: frozenConfig.permissions.shellEnvironmentPolicy,

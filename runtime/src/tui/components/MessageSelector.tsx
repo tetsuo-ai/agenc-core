@@ -16,8 +16,8 @@ import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, 
 import { unescapeXml } from '../../utils/xml.js';
 import { type OptionWithDescription, Select } from './CustomSelect/select';
 import { Spinner } from './spinner/Spinner.js';
-import { selectableUserMessagesFilter } from './message-selector-filter.js';
-export { selectableUserMessagesFilter } from './message-selector-filter.js';
+import { rewindUserMessagesFilter } from './message-selector-filter.js';
+export { selectableUserMessagesFilter, selectableMessageOrdinal } from './message-selector-filter.js';
 type MessageSelectorTextBlock = {
   type: 'text';
   text: string;
@@ -127,7 +127,7 @@ export function MessageSelector({
 
   // Add current prompt as a virtual message
   const currentUUID = useMemo(randomUUID, []);
-  const messageOptions = useMemo(() => [...messages.filter(selectableUserMessagesFilter), {
+  const messageOptions = useMemo(() => [...messages.filter(rewindUserMessagesFilter), {
     ...createUserMessage({
       content: ''
     }),
@@ -164,6 +164,12 @@ export function MessageSelector({
 
   // Generate options with summarize as input type for inline context
   function getRestoreOptions(canRestoreCode: boolean): OptionWithDescription<RestoreOption>[] {
+    if (messageToRestore?.isVisibleInTranscriptOnly) {
+      return [
+        ...(canRestoreCode ? [{ value: 'code' as const, label: 'Restore code' }] : []),
+        { value: 'nevermind', label: 'Never mind' },
+      ];
+    }
     const baseOptions: OptionWithDescription<RestoreOption>[] = canRestoreCode ? [{
       value: 'both',
       label: 'Restore code and conversation'
@@ -224,7 +230,7 @@ export function MessageSelector({
       onClose();
       return;
     }
-    if (!fileRestoreAvailable) {
+    if (!fileRestoreAvailable && !message_0.isVisibleInTranscriptOnly) {
       await restoreConversationDirectly(message_0);
       return;
     }
@@ -236,6 +242,7 @@ export function MessageSelector({
       diffStats = undefined;
     }
     setMessageToRestore(message_0);
+    setSelectedRestoreOption(message_0.isVisibleInTranscriptOnly ? (diffStats?.filesChanged?.length ? 'code' : 'nevermind') : diffStats?.filesChanged?.length ? 'both' : 'conversation');
     setDiffStatsForRestore(diffStats);
   }
   async function onSelectRestoreOption(option: RestoreOption) {
@@ -305,7 +312,10 @@ export function MessageSelector({
       onClose();
     }
   }
-  const exitState = useExitOnCtrlCDWithKeybindings();
+  const exitState = useExitOnCtrlCDWithKeybindings(onClose, () => {
+    onClose();
+    return true;
+  });
   const handleEscape = useCallback(() => {
     if (messageToRestore && !preselectedMessage) {
       // Go back to message list instead of closing entirely
@@ -389,24 +399,27 @@ export function MessageSelector({
         {!error && messageToRestore && hasMessagesToSelect && <>
             <Text>
               Confirm you want to restore{' '}
-              {!diffStatsForRestore && 'the conversation '}to the point before
+              {messageToRestore.isVisibleInTranscriptOnly ? 'code ' : !diffStatsForRestore && 'the conversation '}to the point before
               you sent this message:
             </Text>
             <Box flexDirection="column" paddingLeft={1} borderStyle="single" borderRight={false} borderTop={false} borderBottom={false} borderLeft={true} borderLeftDimColor>
               <UserMessageOption userMessage={messageToRestore} color="text" isCurrent={false} />
               <Text dimColor>
-                ({formatRelativeTimeAgo(new Date(messageToRestore.timestamp))})
+                ({Number.isFinite(Date.parse(messageToRestore.timestamp))
+                  ? formatRelativeTimeAgo(new Date(messageToRestore.timestamp))
+                  : "time unavailable"})
               </Text>
             </Box>
+            {messageToRestore.isVisibleInTranscriptOnly && <Text dimColor>This prompt is before the current model context. Only code can be restored.</Text>}
+            {!diffStatsForRestore && <Text color="warning">Code checkpoint unavailable for this prompt. It may have been evicted or checkpointing was disabled.</Text>}
             <RestoreOptionDescription selectedRestoreOption={selectedRestoreOption} canRestoreCode={!!canRestoreCode_0} diffStatsForRestore={diffStatsForRestore} />
             {isRestoring && isSummarizeOption(restoringOption) ? <Box flexDirection="row" gap={1}>
                 <Spinner />
                 <Text>Summarizing…</Text>
-              </Box> : <Select isDisabled={isRestoring} options={getRestoreOptions(!!canRestoreCode_0)} defaultFocusValue={canRestoreCode_0 ? 'both' : 'conversation'} onFocus={value => setSelectedRestoreOption(value as RestoreOption)} onChange={value_0 => onSelectRestoreOption(value_0 as RestoreOption)} onCancel={() => preselectedMessage ? onClose() : setMessageToRestore(undefined)} />}
+              </Box> : <Select isDisabled={isRestoring} options={getRestoreOptions(!!canRestoreCode_0)} defaultFocusValue={messageToRestore.isVisibleInTranscriptOnly ? (canRestoreCode_0 ? 'code' : 'nevermind') : canRestoreCode_0 ? 'both' : 'conversation'} onFocus={value => setSelectedRestoreOption(value as RestoreOption)} onChange={value_0 => onSelectRestoreOption(value_0 as RestoreOption)} onCancel={() => preselectedMessage ? onClose() : setMessageToRestore(undefined)} />}
             {canRestoreCode_0 && <Box marginBottom={1}>
                 <Text dimColor>
-                  {figures.warning} Rewinding does not affect files edited
-                  manually or via bash.
+                  {figures.warning} Some shell or manual changes may not be restored.
                 </Text>
               </Box>}
           </>}
@@ -443,7 +456,7 @@ export function MessageSelector({
                                     </> : <>No code changes</>}
                                 </Text>
                               </> : <Text dimColor color="warning">
-                                {figures.warning} No code restore
+                                {figures.warning} Code checkpoint unavailable
                               </Text>}
                           </Box>}
                       </Box>
@@ -468,7 +481,9 @@ function getRestoreOptionConversationText(option: RestoreOption): string {
       return 'Preceding messages will be summarized. This and subsequent messages will remain unchanged. You will stay at the end of the conversation.';
     case 'both':
     case 'conversation':
-      return 'The conversation will be forked.';
+      // Rewind moves this conversation back in place; it does not keep a
+      // second copy, so do not promise a fork.
+      return 'The conversation goes back to this point. Later messages are removed.';
     case 'code':
     case 'nevermind':
       return 'The conversation will be unchanged.';

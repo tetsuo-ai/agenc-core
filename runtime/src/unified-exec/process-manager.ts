@@ -2,6 +2,7 @@ import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-sh
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
+import { protectedCreateExitCode, stopAttachedProtectedCreateMonitor } from "../sandbox/linux-launcher/protected-create-monitor.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
   spawn,
@@ -10,7 +11,12 @@ import {
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
-import { assertReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
+import {
+  assertReadOnlyInspectionInvocation,
+  assertReadOnlyShellInvocation,
+  readOnlyShellRefusal,
+  withSessionPresentationEnvironment,
+} from "../permissions/readonly-inspection.js";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -57,6 +63,8 @@ import {
   retainCurrentWorkspaceOperation,
 } from "../workspace/tool-operation-lifetime.js";
 import {
+  discardPreparedContainedProcessLaunch,
+  prepareContainedProcessLaunch,
   signalProcessTree,
   spawnContainedProcess,
   terminateProcessTreeAndReport,
@@ -402,6 +410,30 @@ function normalizeOwnerId(ownerId: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * A verified read-only inspection keeps its own persistent namespace. Its
+ * no-write, no-network launch policy is part of the namespace key, so sharing
+ * the shell's slot would rebuild a namespace on every switch between the two.
+ * A read-only command line runs with the session environment rather than an
+ * inspection's fixed one, so it has a third slot for the same reason.
+ */
+type SessionSandboxSlot = "shell" | "inspection" | "inspection-shell";
+function sessionSandboxKey(ownerId: string | undefined, slot: SessionSandboxSlot, index = 0): string {
+  const base = slot === "shell" ? ownerId ?? "" : `${ownerId ?? ""}\u0000${slot}`;
+  return index === 0 ? base : `${base}\u0000#${index}`;
+}
+/** Every session sandbox key of one owner: its shell, read-only slots and their pool members. */
+function isOwnerSessionSandboxKey(key: string, ownerId: string | undefined): boolean {
+  const owner = ownerId ?? "";
+  return key === owner || key.startsWith(`${owner}\u0000`);
+}
+/**
+ * Warm namespaces per read-only slot. Read-only calls from one response run
+ * side by side; each takes an idle warm namespace instead of a cold
+ * per-command launch. Workspace-write commands run one at a time and keep one.
+ */
+const READ_ONLY_SESSION_SANDBOX_POOL = 3;
+
 function makeDeferredExit(): {
   readonly promise: Promise<ExitState>;
   readonly resolve: (state: ExitState) => void;
@@ -548,10 +580,26 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     return Object.keys(env).some(name =>
       name === "BASH_ENV" || name === "ENV" || name === "SHELLOPTS" || name === "BASHOPTS" || name.startsWith("BASH_FUNC_"));
   }
+
+  /**
+   * Why a read-only command line cannot run through this manager's shell, or
+   * undefined when it can: the shell must be a system-owned POSIX sh-family
+   * executable, and startup hooks must not redefine the commands the
+   * classification saw.
+   */
+  private readOnlyShellRefusal(): string | undefined {
+    if (this.shellStartupHooksPresent()) return "shell startup hooks can redefine commands";
+    return readOnlyShellRefusal(this.shellPath);
+  }
+
+  readOnlyShellAvailable(): boolean {
+    return this.readOnlyShellRefusal() === undefined;
+  }
   private readonly commandWrapperArgv: readonly string[];
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
+  private readonly prepareContainedLaunches: boolean;
   private readonly oneShotServers = new Map<string, OneShotProcessServer>();
   private oneShotServerFor(ownerId?: string): OneShotProcessServer {
     const key = ownerId ?? "";
@@ -561,7 +609,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
   /** Start only the empty containment boundary; command admission still happens in execCommand. */
   async prepareOneShotCommandBoundary(ownerId: string | undefined, ownerBinding: UnifiedExecOwnerBinding | undefined, signal?: AbortSignal): Promise<void> {
-    if (!oneShotFastModeActive() || process.platform !== "linux") return;
+    if (ownerId === undefined || !oneShotFastModeActive(ownerId) || process.platform !== "linux") return;
     const generation = this.sandboxAuthorityGeneration;
     const validate = (): void => {
       this.assertSandboxAuthorityAdmission(generation);
@@ -577,15 +625,45 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   // Retain failed startup admission across policy drains, Stop and opt-out.
   // Only closing the owner lifetime (or disposing this manager) resets it.
   private readonly sessionSandboxAvailability = new Map<string, SessionSandboxAvailability>();
-  private sessionSandboxFor(ownerId?: string): SessionSandbox {
-    const key = ownerId ?? "";
+  private sessionSandboxFor(ownerId: string | undefined, slot: SessionSandboxSlot, index = 0): SessionSandbox {
+    const key = sessionSandboxKey(ownerId, slot, index);
     let sandbox = this.sessionSandboxes.get(key);
     if (!sandbox) {
-      let availability = this.sessionSandboxAvailability.get(key);
-      if (!availability) { availability = { startupFailed: false }; this.sessionSandboxAvailability.set(key, availability); }
+      // Pool members share their slot's startup availability.
+      const availabilityKey = sessionSandboxKey(ownerId, slot);
+      let availability = this.sessionSandboxAvailability.get(availabilityKey);
+      if (!availability) { availability = { startupFailed: false }; this.sessionSandboxAvailability.set(availabilityKey, availability); }
       sandbox = new SessionSandbox(availability); this.sessionSandboxes.set(key, sandbox);
     }
     return sandbox;
+  }
+  /** Namespaces a launch is starting in; a concurrent launch takes another one. */
+  private readonly sessionSandboxesInUse = new Set<SessionSandbox>();
+  /**
+   * Run in an idle warm namespace of the slot: the first pool member that is
+   * neither running a command nor taken by a concurrent launch. A member that
+   * declines (policy or startup) sends the command to the per-command
+   * launcher, as does a pool with every member busy.
+   */
+  private async spawnInSessionSandbox(
+    ownerId: string | undefined,
+    slot: SessionSandboxSlot,
+    input: { readonly program: string; readonly args: readonly string[]; readonly cwd: string; readonly env: Record<string, string> },
+    validateAdmission: () => void,
+    signal: AbortSignal | undefined,
+  ): Promise<ChildProcessWithoutNullStreams | undefined> {
+    const members = slot === "shell" ? 1 : READ_ONLY_SESSION_SANDBOX_POOL;
+    for (let index = 0; index < members; index += 1) {
+      const sandbox = this.sessionSandboxFor(ownerId, slot, index);
+      if (sandbox.busy || this.sessionSandboxesInUse.has(sandbox)) continue;
+      this.sessionSandboxesInUse.add(sandbox);
+      try {
+        return await sandbox.spawn(input, validateAdmission, signal);
+      } finally {
+        this.sessionSandboxesInUse.delete(sandbox);
+      }
+    }
+    return undefined;
   }
   private async closeSessionSandboxes(): Promise<void> {
     const outcomes = await Promise.allSettled([this.sessionSandboxes, this.oneShotServers].flatMap(map =>
@@ -628,6 +706,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.sandboxAuthorityQuiesceTimeoutMs =
       options.sandboxAuthorityQuiesceTimeoutMs ??
       SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS;
+    this.prepareContainedLaunches = options.prepareContainedLaunches === true;
     if (
       !Number.isFinite(this.sandboxAuthorityQuiesceTimeoutMs) ||
       this.sandboxAuthorityQuiesceTimeoutMs <= 0
@@ -733,8 +812,24 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
 
+    const direct = request.directInvocation;
+    if (direct !== undefined && (request.tty === true || request.login === true || request.shell !== undefined || request.runtimeSandbox !== direct.runtimeSandbox)) {
+      throw new UnifiedExecError("create_process", "Read-only direct execution cannot use shell options or a different sandbox");
+    }
+    const readOnlyShell = request.readOnlyShell;
+    if (readOnlyShell !== undefined) {
+      if (direct !== undefined || request.tty === true || request.login === true || request.shell !== undefined ||
+          request.runtimeSandbox !== readOnlyShell.runtimeSandbox || request.cmd !== readOnlyShell.command ||
+          (request.workdir !== undefined && resolve(request.workdir) !== resolve(readOnlyShell.cwd))) {
+        throw new UnifiedExecError("create_process", "A read-only command line cannot change its command, cwd, shell options or sandbox");
+      }
+      assertReadOnlyShellInvocation(readOnlyShell);
+      const refusal = this.readOnlyShellRefusal();
+      if (refusal !== undefined) throw new UnifiedExecError("create_process", `A read-only command line cannot run here: ${refusal}`);
+    }
+
     const processId = this.allocateProcessId();
-    const cwd = resolve(request.workdir ?? this.cwd);
+    const cwd = resolve(readOnlyShell?.cwd ?? request.workdir ?? this.cwd);
     const shell = resolveShell(request.shell, this.shellPath);
     const command = wrapCommandForShell(
       shell,
@@ -742,15 +837,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       request.cmd,
     );
     const args = commandShellArgs(shell, command, request.login === true);
-    const direct = request.directInvocation;
-    if (direct !== undefined && (request.tty === true || request.login === true || request.shell !== undefined || request.runtimeSandbox !== direct.runtimeSandbox)) {
-      throw new UnifiedExecError("create_process", "Read-only direct execution cannot use shell options or a different sandbox");
-    }
+    const sessionEnv = buildEnv(this.baseEnv, this.env);
     const spawnCommand = this.buildSpawnCommand({
       program: direct?.program ?? shell,
       args: direct?.args ?? args,
       cwd: direct?.cwd ?? cwd,
-      env: direct?.env ?? buildEnv(this.baseEnv, this.env),
+      // An inspection keeps its fixed environment apart from the session's
+      // locale and display settings; a read-only command line runs with the
+      // session environment, as the ordinary path would.
+      env: direct === undefined ? sessionEnv : withSessionPresentationEnvironment(direct.env, sessionEnv),
       ...(request.runtimeSandbox !== undefined
         ? { runtimeSandbox: request.runtimeSandbox }
         : {}),
@@ -762,6 +857,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? request.ownerId.trim()
         : undefined;
     if (direct !== undefined) assertReadOnlyInspectionInvocation(direct);
+    if (readOnlyShell !== undefined) assertReadOnlyShellInvocation(readOnlyShell);
     const entry = await this.spawnProcess({
       processId,
       callId,
@@ -779,7 +875,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(ownerId !== undefined ? { ownerId } : {}),
       ...(request.ownerBinding !== undefined ? { ownerBinding: request.ownerBinding } : {}),
       tty,
-      allowDirectBwrap: direct === undefined && this.commandWrapperArgv.length === 0,
+      // A verified native read-only invocation launches like a shell command:
+      // direct bubblewrap under native containment, or a warm namespace of
+      // its own. The planner still declines unsupported profiles and changed
+      // executable, mount or lifecycle identities; the namespace key carries
+      // the invocation's no-write, no-network policy.
+      allowDirectBwrap: this.commandWrapperArgv.length === 0,
+      sessionSlot: direct !== undefined ? "inspection" : readOnlyShell !== undefined ? "inspection-shell" : "shell",
       startedAt,
       signal: request.__abortSignal,
       sandboxAuthorityGeneration,
@@ -1016,8 +1118,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
     // A current same-owner binding may collect settled output from a prior
     // generation. It cannot write stdin or control a prior live process.
+    // Output polling observes an already-approved process after owner/lifetime
+    // checks above; it neither launches a command nor writes to its stdin.
+    // Requiring the launch profile here forced another escalation just to read
+    // a local server's output. Input still needs the compatible profile.
     if (
-      request.runtimeSandbox !== undefined &&
+      input.length > 0 && request.runtimeSandbox !== undefined &&
       !runtimeSandboxesCompatible(entry.runtimeSandbox, request.runtimeSandbox)
     ) {
       throw new UnifiedExecError(
@@ -1031,7 +1137,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (!entry.tty) {
         throw new UnifiedExecError(
           "stdin_closed",
-          "stdin is closed for this session; rerun exec_command with tty=true to keep stdin open",
+          "This session cannot receive input. Stop it with kill_process and this session_id, poll output with write_stdin and empty chars, or rerun with tty=true if the command needs input.",
         );
       }
       if (entry.exitState !== null) {
@@ -1045,11 +1151,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         if (entry.stored.kind !== "pty") {
           throw new UnifiedExecError(
             "stdin_closed",
-            "stdin is closed for this session; rerun exec_command with tty=true to keep stdin open",
+            "This session cannot receive input. Stop it with kill_process and this session_id, poll output with write_stdin and empty chars, or rerun with tty=true if the command needs input.",
           );
         }
         entry.stored.process.write(input);
-        await delay(100, undefined, { signal: request.__abortSignal });
       } catch (error) {
         if (isAbortError(error)) {
           this.forceTerminate(entry);
@@ -1060,12 +1165,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
-    const collected = await this.collect(entry, {
-      yieldMs: clampWriteYield(request.yield_time_ms, input),
-      signal: request.__abortSignal,
-      maxOutputTokens: request.max_output_tokens,
-      onProgress: request.__onProgress,
-    });
+    const collected = {
+      ...await this.collect(entry, {
+        yieldMs: clampWriteYield(request.yield_time_ms, input),
+        signal: request.__abortSignal,
+        maxOutputTokens: request.max_output_tokens,
+        onProgress: request.__onProgress,
+      }),
+      sandboxApplied: entry.runtimeSandbox !== undefined,
+    };
     if (entry.exitState !== null) {
       this.releaseProcessId(entry.processId);
       return collected;
@@ -1234,6 +1342,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
     this.sandboxAuthorityGeneration += 1;
+    if (this.prepareContainedLaunches) discardPreparedContainedProcessLaunch();
     const sandboxCleanup = this.closeSessionSandboxes();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
@@ -1340,8 +1449,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         Promise.resolve().then(async () => {
           await this.oneShotServers.get(lifetime.ownerId)?.close();
           this.oneShotServers.delete(lifetime.ownerId);
-          await this.sessionSandboxes.get(lifetime.ownerId)?.close();
-          this.sessionSandboxes.delete(lifetime.ownerId);
+          for (const key of [...this.sessionSandboxes.keys()]) {
+            if (!isOwnerSessionSandboxKey(key, lifetime.ownerId)) continue;
+            await this.sessionSandboxes.get(key)?.close();
+            this.sessionSandboxes.delete(key);
+          }
         }),
         ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
@@ -1354,7 +1466,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
       // Keep settled yielded entries for status/output collection and pruning.
       lifetime.closed = true;
-      this.sessionSandboxAvailability.delete(lifetime.ownerId);
+      for (const key of [...this.sessionSandboxAvailability.keys()]) {
+        if (isOwnerSessionSandboxKey(key, lifetime.ownerId)) this.sessionSandboxAvailability.delete(key);
+      }
     });
     return lifetime.closeTask;
   }
@@ -1542,6 +1656,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly argv0?: string;
     readonly tty: boolean;
     readonly allowDirectBwrap: boolean;
+    readonly sessionSlot: SessionSandboxSlot;
     readonly startedAt: number;
     readonly signal?: AbortSignal;
     readonly sandboxAuthorityGeneration: number;
@@ -1610,12 +1725,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
     if (this.sessionSandboxes.size > 0 &&
         (params.runtimeSandbox === undefined || params.runtimeSandbox.persistentSession === false)) {
-      const previousSandbox = this.sessionSandboxes.get(params.ownerId ?? "");
-      if (previousSandbox) {
-        await previousSandbox.close();
-        this.sessionSandboxes.delete(params.ownerId ?? "");
-        this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
-        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+      for (const key of [...this.sessionSandboxes.keys()]) {
+        if (!isOwnerSessionSandboxKey(key, params.ownerId)) continue;
+        const previousSandbox = this.sessionSandboxes.get(key);
+        if (previousSandbox) {
+          await previousSandbox.close();
+          this.sessionSandboxes.delete(key);
+          this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+          this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+        }
       }
     }
 
@@ -1670,20 +1788,22 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
     let probeHint: ReturnType<typeof prepareLinuxSandboxProbeHint>;
     let child: ChildProcessWithoutNullStreams;
+    let containedLaunch = false;
     try {
       const validateAdmission = (): void => {
         this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
         this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
         abortController.signal.throwIfAborted();
       };
-      const oneShot = oneShotFastModeActive() && params.runtimeSandbox === undefined
+      const fastMode = params.ownerId !== undefined && oneShotFastModeActive(params.ownerId);
+      const oneShot = fastMode && params.runtimeSandbox === undefined
         ? await this.oneShotServerFor(params.ownerId).spawn({ program: params.program,
             args: params.args, cwd: params.cwd, env: params.env,
             argv0: params.argv0 ?? basename(params.program) }, validateAdmission, params.signal)
         : undefined;
       const persistent = oneShot ?? (params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
         params.runtimeSandbox.persistentSession !== false
-        ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: params.args,
+        ? await this.spawnInSessionSandbox(params.ownerId, params.sessionSlot, { program: params.program, args: params.args,
             cwd: params.cwd, env: params.env }, () => {
             this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
             this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
@@ -1692,19 +1812,23 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (persistent === undefined && params.runtimeSandbox !== undefined)
         probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
       // A declined server startup may have awaited cleanup while authority changed.
-      if (persistent === undefined && oneShotFastModeActive()) validateAdmission();
+      if (persistent === undefined && fastMode) validateAdmission();
       child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         // The native subreaper remains a complete containment boundary. Avoid
         // probing cgroup delegation for every command in this short run.
-        ...(oneShotFastModeActive() ? { linuxContainment: "subreaper" as const } : {}),
+        ...(fastMode ? { linuxContainment: "subreaper" as const } : {}),
+        ...(this.prepareContainedLaunches ? { usePreparedLaunch: true } : {}),
         cwd: params.cwd,
         env: params.env,
         argv0: params.argv0 ?? basename(params.program),
         ...(params.allowDirectBwrap && params.runtimeSandbox !== undefined ? {
           directBwrap: {
             protocol: "v3",
+            // settleContainedProcess runs the created-path monitor's final
+            // check for a plan that leaves protected paths unmounted.
             prepare: () => prepareDirectBwrapV3Plan({ program: params.program,
-              args: probeHint?.args ?? params.args, cwd: params.cwd, env: params.env }),
+              args: probeHint?.args ?? params.args, cwd: params.cwd, env: params.env,
+              monitorProtectedCreates: true }),
             validateAdmission: () => {
               this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
               this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
@@ -1713,6 +1837,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           },
         } : {}),
       });
+      containedLaunch = persistent === undefined;
     } catch (error) {
       if ((error instanceof SessionSandboxCleanupError || error instanceof OneShotProcessServerCleanupError)) this.poisonSandboxAuthority(error);
       probeHint?.invalidate();
@@ -1743,6 +1868,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     child.stderr.on("data", (data: Buffer) =>
       notifyData("stderr", data.toString("utf8")),
     );
+    if (containedLaunch && this.prepareContainedLaunches && process.platform === "darwin") {
+      // Prepare the next command's launch while this one runs: this event
+      // loop is waiting on the command anyway.
+      const cwd = params.cwd;
+      setImmediate(() => prepareContainedProcessLaunch(cwd));
+    }
     const entry: ProcessEntry = {
       ...entryBase,
       stored: { kind: "pipe", process: child },
@@ -1777,6 +1908,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
               if (command.kind === "unavailable") notifyData("stderr",
                 "Command outcome unavailable after dispatch; cleanup is complete. Do not replay automatically.");
             }
+            // A direct per-command launch's whole process tree is gone: the
+            // created-path monitor's final check cannot miss anything it
+            // created. A protected path it created is removed and a clean exit
+            // fails, exactly as in the per-command launcher. (The session
+            // sandbox runs its own check when the executor reports.)
+            const protectedCreateViolation = stopAttachedProtectedCreateMonitor(child);
+            if (state.exitCode !== null && state.exitCode !== undefined) {
+              state = { ...state, exitCode: protectedCreateExitCode(state.exitCode, protectedCreateViolation) };
+            }
             if (spawnError !== undefined) {
               notifyData("stderr", spawnError.message);
             }
@@ -1785,6 +1925,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           (error) => {
             const cleanupFailure =
               error instanceof Error ? error : new Error(String(error));
+            stopAttachedProtectedCreateMonitor(child);
             probeHint?.invalidate();
             entry.cleanupFailure = cleanupFailure;
             this.poisonSandboxAuthority(cleanupFailure);
@@ -1951,9 +2092,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     },
   ): Promise<ExecCommandToolOutput> {
     let timedOut = true;
+    const deadline = new AbortController();
     try {
       const timeout = delay(options.yieldMs, "timeout" as const, {
-        signal: options.signal,
+        signal: options.signal === undefined
+          ? deadline.signal
+          : AbortSignal.any([options.signal, deadline.signal]),
       });
       const outcome = await Promise.race([
         timeout,
@@ -1979,6 +2123,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       } else {
         throw error;
       }
+    } finally {
+      // A quick exit must not retain a live 30-second Light yield timer.
+      // Promise.race already observes the losing timer's cancellation.
+      deadline.abort();
     }
 
     const chunks = entry.output.drain();

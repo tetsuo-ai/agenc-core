@@ -122,15 +122,42 @@ describe("providers screen", () => {
       expect(first).toContain("in use · key saved");
       expect(first).toContain("groq");
       expect(first).toContain("not set");
+      expect(first).toContain("deepseek: open to choose a model for this conversation.");
 
       await screen.press("g", "r");
       const filtered = screen.screen();
+      expect(filtered).toContain("groq: open to connect your api key.");
       expect(filtered).toContain("filter: gr");
       expect(filtered).toContain("groq");
       expect(filtered).not.toContain("deepseek");
     } finally {
       screen.unmount();
     }
+  });
+
+  it("shows session-only storage guidance in the key dialog after verification", async () => {
+    const services = fakeServices();
+    services.connect.mockResolvedValue({ ok: true, sessionOnly: true,
+      message: "Key active for this session only; it was not saved. Linux Secret Service is unavailable. Set DEEPSEEK_API_KEY before launching AgenC." } as never);
+    const screen = await mount(<ProvidersHubView initial={snapshot} initialProvider="deepseek" services={services} onDone={() => {}} />);
+    try {
+      await screen.press("\x1b[B", "\x1b[B", "\x1b[B", "\r", "test-placeholder", "\r");
+      expect(screen.screen()).toContain("session only");
+      expect(screen.screen()).toContain("secret service is unavailable");
+      expect(screen.screen()).toContain("deepseek_api_key");
+      expect(screen.screen()).not.toContain("test-placeholder");
+    } finally { screen.unmount(); }
+  });
+
+  it("shows an unexpected action rejection instead of silently clearing checking", async () => {
+    const services = fakeServices();
+    services.connect.mockRejectedValue(new Error("test-placeholder"));
+    const screen = await mount(<ProvidersHubView initial={snapshot} initialProvider="deepseek" services={services} onDone={() => {}} />);
+    try {
+      await screen.press("\x1b[B", "\x1b[B", "\x1b[B", "\r", "test-placeholder", "\r");
+      expect(screen.screen()).toContain("could not complete this action");
+      expect(screen.screen()).not.toContain("test-placeholder");
+    } finally { screen.unmount(); }
   });
 
   it("asks for a key on a provider that is not set, then shows its models", async () => {
@@ -179,6 +206,50 @@ describe("providers screen", () => {
     }
   });
 
+  it("shows OpenRouter models without a zero-retention endpoint as unavailable, with the way out", async () => {
+    const openrouter = row({
+      provider: "openrouter",
+      name: "OpenRouter",
+      connection: "current",
+      status: "key saved",
+      model: "x-ai/grok-4.5",
+      keySaved: true,
+    });
+    const services = fakeServices({
+      modelsFor: () => [
+        { model: "x-ai/grok-4.5", displayModel: "x-ai/grok-4.5", current: true, isDefault: true },
+        { model: "google/gemini-2.5-flash", displayModel: "google/gemini-2.5-flash", current: false, isDefault: false, zdrUnavailable: true },
+      ],
+    });
+    const onDone = vi.fn();
+    const screen = await mount(
+      <ProvidersHubView
+        initial={{ currentProvider: "openrouter", currentModel: "x-ai/grok-4.5", rows: [openrouter] }}
+        initialProvider="openrouter"
+        services={services}
+        onDone={onDone}
+      />,
+    );
+    try {
+      const models = screen.screen();
+      expect(models).toMatch(/google\/gemini-2\.5-flash\s+no zdr/u);
+      expect(models).not.toContain("no zero-retention endpoint serves this model");
+
+      // Highlighted, it says why and how to use it anyway; Enter does not use it.
+      await screen.press("\u001b[B");
+      const detail = screen.screen().replace(/\s*│\s*\n\s*│\s*/gu, " ");
+      expect(detail).toContain(
+        "no zero-retention endpoint serves this model. to use it, set zero_data_retention = false under [providers.openrouter].",
+      );
+      await screen.press("\r");
+      await sleep(60);
+      expect(services.choose).not.toHaveBeenCalled();
+      expect(onDone).not.toHaveBeenCalled();
+    } finally {
+      screen.unmount();
+    }
+  });
+
   it("removes a saved key from the model list", async () => {
     const services = fakeServices();
     const screen = await mount(
@@ -186,8 +257,8 @@ describe("providers screen", () => {
     );
     try {
       screen.screen();
-      // deepseek-flash, deepseek-pro, Replace API key, Remove saved key
-      await screen.press("\u001b[B", "\u001b[B", "\u001b[B", "\r");
+      // deepseek-flash, deepseek-pro, Web search, Replace API key, Remove saved key
+      await screen.press("\u001b[B", "\u001b[B", "\u001b[B", "\u001b[B", "\r");
       expect(services.forget).toHaveBeenCalledWith("deepseek");
       expect(screen.screen()).toContain("saved key removed.");
     } finally {
@@ -314,8 +385,8 @@ describe("account sign-in on the providers screen", () => {
       />,
     );
     try {
-      // grok-4.6, Sign out, Use the API key instead
-      await screen.press("\u001b[B", "\u001b[B", "\r");
+      // grok-4.6, Web search, Sign out, Use the API key instead
+      await screen.press("\u001b[B", "\u001b[B", "\u001b[B", "\r");
       await sleep(60);
       expect(services.setAuth).toHaveBeenCalledWith("grok", "api-key");
       expect(screen.screen()).toContain("saved. new sessions use the api key.");
@@ -323,4 +394,26 @@ describe("account sign-in on the providers screen", () => {
       screen.unmount();
     }
   });
+});
+
+
+it("/model has a pinned Web search row that toggles Auto and On", async () => {
+  let mode: "auto" | "on" = "auto";
+  const setWebSearchMode = vi.fn(async (next: "auto" | "on") => {
+    mode = next;
+    return { ok: true as const, message: "Saved." };
+  });
+  const screen = await mount(<ProvidersHubView initial={snapshot} initialProvider="deepseek"
+    services={fakeServices({ webSearchMode: () => mode, setWebSearchMode, deepSeekSearchState: () => "off" })} onDone={() => {}} />);
+  try {
+    expect(screen.screen()).toMatch(/web search\s+auto/);
+    // Preferences precede the existing key actions.
+    await screen.press("\x1b[A", "\x1b[A", "\x1b[A", "\r");
+    expect(setWebSearchMode).toHaveBeenLastCalledWith("on");
+    expect(screen.screen()).toMatch(/web search\s+on/);
+    expect(screen.screen()).toContain("deepseek search: off.");
+    await screen.press("\r");
+    expect(setWebSearchMode).toHaveBeenLastCalledWith("auto");
+    expect(screen.screen()).toMatch(/web search\s+auto/);
+  } finally { screen.unmount(); }
 });

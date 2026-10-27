@@ -53,7 +53,7 @@ The transports wrap the `@modelcontextprotocol/sdk` client transports plus the
 | ------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `stdio`       | `transports/stdio.ts`         | Default for locally-spawned MCP servers used by the daemon. Owns env-var allow-listing, `cwd`/`env` handling, and process-group termination so stale child trees do not leak after disconnect. |
 | `sse`         | `transports/sse.ts`           | Compatibility transport for MCP servers that still speak Server-Sent Events (pre Streamable HTTP). Optional bearer / custom headers on the initial GET. |
-| `http`        | `transports/http.ts`          | Spec-current **Streamable HTTP** transport. Multiplexes request/response pairs over a single long-poll or streaming HTTP connection — preferred for remote MCP servers. |
+| `http`        | `transports/http.ts`          | Spec-current **Streamable HTTP** transport. Multiplexes request/response pairs over a single long-poll or streaming HTTP connection (preferred for remote MCP servers). |
 | `websocket`   | `transports/websocket.ts`     | First-class WebSocket transport (subprotocol `mcp`) for remote MCP servers that prefer a bidirectional socket. Includes graceful-close handling (`WEBSOCKET_CLOSE_WAIT_MS`). |
 
 The dispatcher in `connection.ts` accepts `transport ∈ {"stdio" (default),
@@ -81,7 +81,7 @@ Top-level entries under `runtime/src/mcp-client/`:
 | `_deps/`                         | Per-directory dependency carving: minimal `Logger` and `Tool`/`ToolResult`/`JSONSchema` surfaces re-exported here to keep this subsystem isolated from broader reference modules. |
 | `test-fixtures/`                 | Helper MCP servers for tests (e.g. `stdio-pid-server.cjs` exercised by `manager.stdio-lifecycle.test.ts`). |
 
-Unit tests are not colocated here — they live under `runtime/tests/mcp-client/`
+Unit tests are not colocated here: they live under `runtime/tests/mcp-client/`
 (one suite per module: connection, manager, manager.stdio-lifecycle, tools,
 list-pagination, model-facing-sanitization, resources, prompts, resilient-client, supply-chain,
 tui-connections) and

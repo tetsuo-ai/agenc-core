@@ -10,6 +10,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
   createNodeDaemonCliHost,
+  DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
   readAgenCDaemonPid,
   readAgenCDaemonSpawnStderrTail,
   removeAgenCDaemonPid,
@@ -54,6 +55,7 @@ import {
   canConnectToUnixSocket,
   isAgenCWindowsNamedPipePath,
 } from "./transport/unix-socket.js";
+import { DAEMON_AGENT_HARD_STOP_TIMEOUT_MS, DAEMON_AGENT_STOP_TIMEOUT_MS } from "./operation-deadline.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
@@ -69,7 +71,22 @@ export type AgenCDaemonAutostartStatus = "already-running" | "started";
 export const AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS =
   resolveAgenCDaemonReadyTimeoutMs({});
 
-const AGENC_DAEMON_BUILD_SKEW_STOP_TIMEOUT_MS = 5_000;
+/**
+ * A daemon left running by an older build stops itself when asked: it
+ * suspends its agents (the agent stop budget, then a hard stop), flushes
+ * snapshots and closes state. The replacement waits that long plus a margin.
+ * A daemon with many sessions needs more than a few seconds, and giving up
+ * sooner failed the first launch after an update.
+ */
+const AGENC_DAEMON_BUILD_SKEW_STOP_TIMEOUT_MS =
+  DAEMON_AGENT_STOP_TIMEOUT_MS + DAEMON_AGENT_HARD_STOP_TIMEOUT_MS + 5_000;
+/** Say why startup pauses once the old daemon has been stopping this long. */
+const AGENC_DAEMON_SLOW_STOP_NOTICE_MS = 3_000;
+/**
+ * Linux only: once a daemon has had its whole shutdown window, SIGTERM gets
+ * this long before SIGKILL, never another full window.
+ */
+const AGENC_DAEMON_SIGTERM_GRACE_MS = 5_000;
 const AGENC_DAEMON_ORPHAN_STOP_TIMEOUT_MS = 1_000;
 const AGENC_DAEMON_FORCE_STOP_GRACE_MS = 2_000;
 const AGENC_DAEMON_STOP_POLL_MS = 50;
@@ -231,7 +248,18 @@ export async function resolveAgenCDaemonAutostartConfig(
 export async function ensureAgenCDaemonAutostart(
   options: AgenCDaemonAutostartOptions = {},
 ): Promise<AgenCDaemonAutostartResult> {
-  return ensureAgenCDaemonAutostartCycle(options, 0);
+  // Includes waiting behind another client's restart lifecycle lock. Healthy
+  // resident connections finish before the line is shown. Use stderr so print
+  // mode's response (including JSON output) stays intact.
+  const progress = setTimeout(() => {
+    options.io?.stderr.write("Starting AgenC...\n");
+  }, 1_000);
+  progress.unref?.();
+  try {
+    return await ensureAgenCDaemonAutostartCycle(options, 0);
+  } finally {
+    clearTimeout(progress);
+  }
 }
 
 /**
@@ -345,7 +373,7 @@ async function ensureAgenCDaemonAutostartCycle(
 
     let respawnReason: string | null = null;
     if (pid !== null && !host.isPidRunning(pid)) {
-      respawnReason = `daemon pid ${pid} not running — stale pid file`;
+      respawnReason = `daemon pid ${pid} not running: stale pid file`;
     } else if (pid === null) {
       respawnReason = "no daemon pid recorded";
     }
@@ -440,6 +468,8 @@ async function ensureAgenCDaemonAutostartCycle(
     }
 
     const target = { pid, pidPath };
+    const readinessDeadline = Date.now() +
+      (options.waitTimeoutMs ?? resolveAgenCDaemonReadyTimeoutMs(host.env));
     const waitingForReady = waitForAgenCDaemonReady(target, host, options);
     // Start the existing readiness budget first. Observer work is never awaited
     // and cannot alter lifecycle checks, their failures or connection authority.
@@ -579,6 +609,9 @@ async function ensureAgenCDaemonAutostartCycle(
         runtimeInfoPath,
         host,
         options,
+        // Only this invocation's exact child gets the cold-start allowance.
+        // Existing daemons retain the normal single-shot control probe.
+        identityDeadline: spawnedPid === pid ? readinessDeadline : undefined,
       });
     } catch (error) {
       throw error;
@@ -617,6 +650,9 @@ async function ensureAgenCDaemonAutostartCycle(
           host,
           options,
           gracefulTimeoutMs: AGENC_DAEMON_BUILD_SKEW_STOP_TIMEOUT_MS,
+          onSlowStop: () => io.stderr.write(
+            `agenc: waiting for the previous daemon (pid ${verifiedInstance.identity.pid}) to finish stopping\n`,
+          ),
         });
         await removeVerifiedAgenCDaemonMetadata({
           expected: verifiedInstance,
@@ -1016,10 +1052,18 @@ async function waitForAgenCDaemonPidExit(
   host: AgenCDaemonAutostartHost,
   identity: AgenCDaemonProcessIdentity,
   timeoutMs: number,
+  onSlowStop?: () => void,
 ): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let slowStopReported = false;
   while (Date.now() < deadline) {
     if (!host.isPidRunning(identity.pid)) return true;
+    if (onSlowStop !== undefined && !slowStopReported &&
+      Date.now() - startedAt >= AGENC_DAEMON_SLOW_STOP_NOTICE_MS) {
+      slowStopReported = true;
+      onSlowStop();
+    }
     await host.sleep(AGENC_DAEMON_STOP_POLL_MS);
   }
   if (!host.isPidRunning(identity.pid)) return true;
@@ -1076,6 +1120,7 @@ async function proveRecordedAgenCDaemonInstance(params: {
   readonly runtimeInfoPath: string;
   readonly host: AgenCDaemonAutostartHost;
   readonly options: AgenCDaemonAutostartOptions;
+  readonly identityDeadline?: number;
 }): Promise<BoundAgenCDaemonInstance | null> {
   return proveRecordedResidentInstance({
     expectedPid: params.expectedPid,
@@ -1084,7 +1129,37 @@ async function proveRecordedAgenCDaemonInstance(params: {
     captureProcess: pid => captureAgenCDaemonProcessIdentity(pid, params.host),
     requestIdentity: async pid => {
       const requestIdentity = params.options.requestDaemonInstanceIdentity ?? params.host.requestDaemonInstanceIdentity;
-      return requestIdentity?.({ pid, pidPath: params.pidPath }) ?? requestAgenCDaemonInstanceIdentity(params.host);
+      if (params.identityDeadline === undefined) {
+        return requestIdentity?.({ pid, pidPath: params.pidPath }) ?? requestAgenCDaemonInstanceIdentity(params.host);
+      }
+      // Keep one immutable binding across every initialize attempt. A slow
+      // restore can time out the RPC, but cannot authorize a changed instance.
+      const expected = daemonInstanceIdentityFromRuntimeInfo(readDaemonRuntimeInfo(params.runtimeInfoPath));
+      if (expected === null || expected.pid !== pid) {
+        throw instanceProofFailed(pid, "identity sidecar changed before probe");
+      }
+      let lastTimeout: unknown = instanceProofFailed(pid, "readiness deadline expired before identity probe");
+      while (Date.now() < params.identityDeadline) {
+        const current = daemonInstanceIdentityFromRuntimeInfo(readDaemonRuntimeInfo(params.runtimeInfoPath));
+        const process = await captureAgenCDaemonProcessIdentity(pid, params.host);
+        if (current === null || !sameAgenCDaemonInstanceIdentity(expected, current) ||
+            process?.processStart !== expected.processStart ||
+            (await readAgenCDaemonPid(params.pidPath)) !== pid) {
+          throw instanceProofFailed(pid, "instance identity changed while waiting for initialize");
+        }
+        const remaining = params.identityDeadline - Date.now();
+        if (remaining <= 0) break;
+        try {
+          return await (requestIdentity?.({ pid, pidPath: params.pidPath }) ??
+            requestAgenCDaemonInstanceIdentity(params.host, Math.min(DEFAULT_DAEMON_REQUEST_TIMEOUT_MS, remaining)));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException | undefined)?.code !== "ETIMEDOUT") throw error;
+          lastTimeout = error;
+        }
+        const backoff = Math.min(100, params.identityDeadline - Date.now());
+        if (backoff > 0) await params.host.sleep(backoff);
+      }
+      throw lastTimeout;
     },
     proofError: instanceProofFailed,
   });
@@ -1180,6 +1255,8 @@ async function terminateRecordedAgenCDaemonInstance(params: {
   readonly host: AgenCDaemonAutostartHost;
   readonly options: AgenCDaemonAutostartOptions;
   readonly gracefulTimeoutMs: number;
+  /** Called once if the daemon is still stopping after a few seconds. */
+  readonly onSlowStop?: () => void;
 }): Promise<void> {
   await revalidateRecordedAgenCDaemonInstance({
     expected: params.expected,
@@ -1206,6 +1283,7 @@ async function terminateRecordedAgenCDaemonInstance(params: {
       params.host,
       params.expected.process,
       params.gracefulTimeoutMs,
+      params.onSlowStop,
     ))
   ) {
     return;
@@ -1221,7 +1299,7 @@ async function terminateRecordedAgenCDaemonInstance(params: {
   // is second-resolution, and Windows signalling by PID has the same handle
   // rebinding problem, so neither can safely close the post-proof TOCTOU.
   if (hostPlatform(params.host) !== "linux") {
-    throw daemonSurvivedTermination(params.expected.identity.pid);
+    throw daemonDidNotStop(params.expected.identity.pid, params.gracefulTimeoutMs);
   }
 
   await withAgenCDaemonLifecycleLock(params.host, async () => {
@@ -1239,7 +1317,7 @@ async function terminateRecordedAgenCDaemonInstance(params: {
     await waitForAgenCDaemonPidExit(
       params.host,
       params.expected.process,
-      params.gracefulTimeoutMs,
+      Math.min(params.gracefulTimeoutMs, AGENC_DAEMON_SIGTERM_GRACE_MS),
     )
   ) {
     return;
@@ -1643,6 +1721,13 @@ function hostPlatform(host: AgenCDaemonAutostartHost): NodeJS.Platform {
 function processIdentityUnavailable(pid: number): AgenCDaemonAutostartError {
   return new AgenCDaemonAutostartError(
     `AgenC daemon process identity could not be verified (pid ${pid})`,
+  );
+}
+
+/** Off Linux nothing is signalled: the daemon was asked to stop and is still running. */
+function daemonDidNotStop(pid: number, timeoutMs: number): AgenCDaemonAutostartError {
+  return new AgenCDaemonAutostartError(
+    `AgenC daemon did not stop within ${Math.ceil(timeoutMs / 1000)} s of its shutdown request (pid ${pid})`,
   );
 }
 

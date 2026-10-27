@@ -70,6 +70,7 @@ export interface StartupSessionRestoreSummary {
 
 /** What the daemon dispatcher needs: wait for the restores a request names. */
 export interface AgenCDaemonStartupRestoreGate {
+  readonly unsettled?: number;
   /**
    * A promise that settles once every pending restore the request names has
    * settled, or undefined when it names none. Rejects when the daemon shuts
@@ -167,6 +168,7 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
   #unsettled: number;
   #started = false;
   #stopped = false;
+  #pumpScheduled = false;
   #startedAt: number | undefined;
   readonly #counts = { published: 0, unavailable: 0, failed: 0, abandoned: 0 };
   readonly #settled: Promise<StartupSessionRestoreSummary>;
@@ -382,6 +384,17 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
     }
   }
 
+  #schedulePump(): void {
+    if (this.#pumpScheduled || !this.#started || this.#stopped) return;
+    this.#pumpScheduled = true;
+    // Even immediately completed cold restores must let socket I/O and
+    // cancellation run between batches. Promise chains alone never do.
+    setImmediate(() => {
+      this.#pumpScheduled = false;
+      this.#pump();
+    });
+  }
+
   #run(entry: Entry<Target>): void {
     entry.phase = "restoring";
     entry.startedAt = this.#now();
@@ -408,7 +421,7 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
       }
       this.#running -= 1;
       this.#settle(entry, outcome, error);
-      this.#pump();
+      this.#schedulePump();
     })();
   }
 

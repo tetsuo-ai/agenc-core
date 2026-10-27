@@ -1,3 +1,4 @@
+import { publishedModelCatalogEntries } from "../llm/registry/published-model-catalog.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
@@ -53,6 +54,9 @@ export function buildProviderModelCatalog(
       [...models],
     ]),
   );
+
+  const openrouter = publishedModelCatalogEntries("openrouter");
+  if (openrouter !== undefined) catalog.openrouter = openrouter.map(entry => entry.model);
 
   if (config?.providers) {
     for (const [provider, providerConfig] of Object.entries(config.providers)) {
@@ -121,6 +125,16 @@ function explicitQualification(model: string):
     provider,
     model: qualifiedModel,
   });
+}
+
+/**
+ * Split a `provider:model` value when its prefix names a built-in provider.
+ * Undefined for a bare model id, so callers compare like with like.
+ */
+export function providerQualifiedModel(model: string):
+  | { readonly provider: ProviderSlug; readonly model: string }
+  | undefined {
+  return explicitQualification(model);
 }
 
 function requireSelectionValue(
@@ -230,6 +244,15 @@ function resolveExplicitPair(
   // colon qualification has already been validated above.
   if (projectedModel.includes("/") &&
       ["nvidia-nim", "ollama", "lmstudio", "openai-compatible"].includes(provider)) {
+    return Object.freeze({ provider, model: projectedModel });
+  }
+
+  // Venice's and Ollama Cloud's discovered catalogs can serve bare IDs also
+  // owned by native providers (kimi-k3, glm-5.3, muse-spark-open). A local
+  // Ollama runs whatever tag its user pulled, and Ollama's library uses the
+  // same tags as Ollama Cloud (gpt-oss:20b, gemma4:31b). The explicit
+  // provider/model pair remains the routing authority.
+  if (provider === "venice" || provider === "ollama-cloud" || provider === "ollama") {
     return Object.freeze({ provider, model: projectedModel });
   }
 
@@ -374,7 +397,9 @@ export function resolveProviderModelLayer(
       const defaultModel =
         configuredModel ||
         combined.providers?.[provider]?.default_model?.trim() ||
-        BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
+        (provider === "openrouter" && !catalog[provider]?.includes(BUILT_IN_PROVIDER_DEFAULT_MODELS[provider])
+          ? catalog[provider]?.[0] ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]
+          : BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]);
       selection = resolveExplicitPair(provider, defaultModel, catalog, combined);
     }
   } else if (hasModel) {

@@ -132,11 +132,13 @@ Research was refreshed on 2026-07-30. The load-bearing sources are:
   [macOS x64 rollout inventory](https://raw.githubusercontent.com/actions/runner-images/1d294df93a93fcb193d2c02a4ca0b79de20d5951/images/macos/macos-15-Readme.md),
   [Windows x64 GA inventory](https://raw.githubusercontent.com/actions/runner-images/c7b2e4c4b56f91032a19a30e85395c6e5f7a7784/images/windows/Windows2025-VS2026-Readme.md),
   [Windows x64 rollout inventory](https://raw.githubusercontent.com/actions/runner-images/c4dc17bcd08ff8f08f241504b58ddcd9d4e8cbd1/images/windows/Windows2025-VS2026-Readme.md)
-- Node 26.5.0 is the Current release, carries module ABI 147 and npm 11.17.0,
-  and is scheduled to enter Active LTS on 2026-10-28. Standalone and Homebrew
-  installations bundle this exact runtime instead of depending on the host's
-  Node formula.
-  [Node 26.5.0 archive](https://nodejs.org/en/download/archive/v26.5.0),
+- Node 26.12.1 is the Current release and the 2026-10-21 security release for
+  the 26.x line. It carries module ABI 147, and Node 26 is scheduled to enter
+  Active LTS on 2026-10-28. Standalone and Homebrew installations bundle this
+  exact runtime instead of depending on the host's Node formula. Builds use
+  the pinned npm 11.17.0, not the npm that Node bundles.
+  [Node 26.12.1 archive](https://nodejs.org/en/download/archive/v26.12.1),
+  [October 2026 security releases](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases),
   [Node release schedule](https://github.com/nodejs/Release#release-schedule),
   [Homebrew Node formula](https://formulae.brew.sh/formula/node)
 - Historically, Node's release archive identified 25.9.0 as out of
@@ -149,7 +151,7 @@ Research was refreshed on 2026-07-30. The load-bearing sources are:
 
 ### One committed dependency contract
 
-The root `package-lock.json`, exact npm version, Node 26.5.0 / ABI 147 / Node-API
+The root `package-lock.json`, exact npm version, Node 26.12.1 / ABI 147 / Node-API
 10 contract, base-image
 digests, Buildx binary hashes, BuildKit image digest, Debian snapshot, direct
 runtime packages, and native release toolchains live in reviewed files. Every
@@ -350,7 +352,7 @@ release-matrix responsibilities, not an implied Docker-publication grant.
 `socket._handle.fd` is a Node implementation detail, so the real
 `verifiedBy=peerUid` smoke remains mandatory on every supported Node/platform
 release job. The historical Node 25 bridge remains immutable, while current
-releases use Node 26.5.0 / ABI 147. Homebrew is an active release surface:
+releases use Node 26.12.1 / ABI 147. Homebrew is an active release surface:
 publication waits for the immutable Darwin artifacts, a populated formula, and
 successful Intel and Apple Silicon tap tests, then records its own release
 checkpoint before npm publication.

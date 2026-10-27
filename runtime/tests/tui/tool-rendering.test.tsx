@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
 
 vi.mock("./ink.js", () => {
@@ -159,13 +160,10 @@ describe("TUI tool rendering helpers", () => {
       count: 2,
     });
 
-    expect(summary).toContain('"content":"[6 chars]"');
-    expect(summary).toContain('"old_string":"[3 chars]"');
-    expect(summary).toContain('"new_string":"[4 chars]"');
-    expect(summary).toContain('"reason":"needs spacing"');
-    expect(summary).toContain('"count":2');
+    expect(summary).toBe('content=[6 chars] old_string=[3 chars] new_string=[4 chars]');
     expect(summary).not.toContain("secret");
-    expect(tool.renderToolUseMessage("raw")).toBe('{"value":"raw"}');
+    expect(summary).not.toContain("{");
+    expect(tool.renderToolUseMessage("raw")).toBe('value=raw');
   });
 
   test("BUG 3: TodoWrite header is a readable step count + active item, NOT raw {\"todos\"} JSON", () => {
@@ -315,4 +313,20 @@ describe("TUI tool rendering helpers", () => {
       ),
     ).toBeDefined();
   });
+});
+
+ test.each(["exec_command", "system.bash", "Bash"])("%s abbreviates home paths without modifying executed input", (name) => {
+  const command = `ls "${homedir()}/.agenc/memory/MEMORY.md"`;
+  const input = { command };
+  expect(createTuiTool(name).renderToolUseMessage(input)).toBe('ls "~/.agenc/memory/MEMORY.md"');
+  expect(input.command).toBe(command);
+});
+
+ test("abbreviates result and error displays while retaining the original tool result", () => {
+  const content = `File does not exist: ${homedir()}/.agenc/memory/MEMORY.md`;
+  const tool = createTuiTool("custom_tool");
+  expect(tool.renderToolResultMessage(content, undefined, { verbose: true }).props.children.props.children)
+    .toBe("File does not exist: ~/.agenc/memory/MEMORY.md");
+  expect(ToolErrorView({ content }).props.children).toContain("~/.agenc/memory/MEMORY.md");
+  expect(tool.mapToolResultToToolResultBlockParam(content, "id").content).toBe(content);
 });

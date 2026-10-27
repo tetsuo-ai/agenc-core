@@ -34,7 +34,7 @@ import {
   type CompactionTransactionHarness,
 } from "../../helpers/compaction-transaction-harness.js";
 
-const SOURCE_MESSAGE_COUNT = 8;
+const SOURCE_MESSAGE_COUNT = 20;
 const SOURCE_MESSAGE_BYTES = 4_000;
 
 describe("automatic compaction rollback boundary contract", () => {

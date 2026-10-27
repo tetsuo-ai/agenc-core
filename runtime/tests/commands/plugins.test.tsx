@@ -6,6 +6,12 @@ import { pluginsCommand } from "./plugins.js";
 import type { SlashCommandContext } from "./types.js";
 import { ConfigStore } from "../config/store.js";
 
+const inventory = vi.hoisted(() => vi.fn(async () => ({ plugins: [], errors: [] })));
+vi.mock("../plugins/cli/pluginOperations.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../plugins/cli/pluginOperations.js")>(),
+  listInstalledPlugins: inventory,
+}));
+
 function makeCtx(
   appState?: SlashCommandContext["appState"],
 ): SlashCommandContext {
@@ -37,6 +43,14 @@ function makeCtx(
 }
 
 describe("pluginsCommand", () => {
+  it("shows private installed plugins even when daemon AppState inventory is empty", async () => {
+    inventory.mockResolvedValueOnce({ plugins: [{ id: "private-check", name: "Private check", root: "/private/plugins/check", enabled: false }] as never[], errors: [] });
+    const result = await pluginsCommand.execute(makeCtx({ getAppState: () => ({ plugins: { enabled: [], disabled: [], errors: [] } }) }));
+    expect(result).toMatchObject({ kind: "text", text: expect.stringContaining("Private check") });
+    if (result.kind === "text") expect(result.text).toContain("0 enabled · 1 disabled");
+    expect(inventory).toHaveBeenCalledWith(expect.objectContaining({ workspaceRoot: "/tmp/project" }));
+  });
+
   it("falls back to text when plugin AppState is unavailable", async () => {
     const result = await pluginsCommand.execute(makeCtx());
 

@@ -59,6 +59,8 @@ const MINIMAL_NAMES = [
   "openai-logout",
   "cost",
   "model",
+  "update",
+  "budget",
   "provider",
   "effort",
   "resolve",
@@ -70,6 +72,7 @@ const MINIMAL_NAMES = [
   "tasks",
   "todos",
   "config",
+  "theme",
   "keybindings",
   "hooks",
   "skills",
@@ -178,9 +181,9 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("output-style")).toBe(true);
     expect(names.has("style")).toBe(true);
     expect(names.has("claim")).toBe(true);
+    expect(names.has("theme")).toBe(true);
     expect(names.has("files")).toBe(false);
     expect(names.has("reload-plugins")).toBe(false);
-    expect(names.has("theme")).toBe(false);
     expect(names.has("color")).toBe(false);
     expect(names.has("ide")).toBe(false);
     expect(names.has("install-github-app")).toBe(false);
@@ -448,6 +451,23 @@ describe("AgenC command surface compatibility", () => {
     }
   });
 
+  it("records a successfully expanded user skill for the skills listing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-skill-invoked-"));
+    try {
+      const home = join(root, "home");
+      await writeFileAt(join(home, "skills", "private-check", "SKILL.md"), "---\ndescription: Private check\n---\nUSER-SKILL-OK");
+      const services = createLocalSkillsServices({ agencHome: home, pluginStorageRoot: join(home, "plugins"), workspaceRoot: root });
+      const command = (await getCommands(root, { pluginStorageRoot: join(home, "plugins"), skillsManager: services.skillsManager }))
+        .find(command => command.name === "private-check");
+      expect(command).toBeDefined();
+      await command?.getPromptForCommand?.("", {} as never);
+      const outcome = await services.skillsManager.skillsForConfig({}, null);
+      expect(outcome.invokedSkills).toContain("private-check");
+      const record = services.skillsManager.getInvokedSkillsForAgent().get("private-check");
+      expect(record?.content).toContain("USER-SKILL-OK");
+    } finally { clearCommandMemoizationCaches(); await rm(root, { recursive: true, force: true }); }
+  });
+
   it("projects repository skills as framed guidance without authority metadata", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-project-skill-boundary-"));
     const previousHome = process.env.AGENC_HOME;
@@ -649,7 +669,7 @@ describe("AgenC command surface compatibility", () => {
 
     expect(outcome.result).toEqual({
       kind: "error",
-      message: "Unknown command: /project-skill",
+      message: "Unknown command: /project-skill. Run /help to see available commands.",
     });
   });
 

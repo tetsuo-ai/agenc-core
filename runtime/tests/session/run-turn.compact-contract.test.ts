@@ -1,3 +1,4 @@
+import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { LLMMessage, LLMResponse } from "../llm/types.js";
 import {
@@ -70,7 +71,12 @@ describe("runTurn compact contract", () => {
     await drain(runTurn(session, mkCtx(), "hello"));
 
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toEqual([{ role: "user", content: "hello" }]);
+    const userMessageId = seen[0]?.[0]?.runtimeOnly?.userMessageId;
+    expect(userMessageId).toMatch(/^user-msg-/);
+    expect(seen[0]).toEqual([{
+      role: "user", content: "hello",
+      runtimeOnly: { userMessageId, responseItemId: userMessageId },
+    }]);
   });
 
   test("pre-turn auto compact leaves history intact without a rollout owner", async () => {
@@ -104,6 +110,7 @@ describe("runTurn compact contract", () => {
     const provider = mkProvider({}, {
       onChatStream: (messages) => seen.push(messages),
     });
+    installPreparedCompactionPressure(provider, request => request.messages.length > 1 ? 18_130 : 100);
     provider.chatStream = async (messages): Promise<LLMResponse> => {
       seen.push(messages.map((message) => ({ ...message })));
       streamCount += 1;
@@ -156,13 +163,13 @@ describe("runTurn compact contract", () => {
     const { session } = mkSession({
       provider,
       totalTokenUsage: 1_000,
-      modelInfo: { autoCompactTokenLimit: 1 } as never,
+      modelInfo: { autoCompactTokenLimit: 1_000 } as never,
     });
 
     await drain(runTurn(session, mkCtx({
       modelInfo: {
         ...mkCtx().modelInfo,
-        autoCompactTokenLimit: 1,
+        autoCompactTokenLimit: 1_000,
       } as never,
     }), "start"));
 
@@ -185,6 +192,7 @@ describe("runTurn compact contract", () => {
     const provider = mkProvider({}, {
       onChatStream: (messages) => seen.push(messages),
     });
+    installPreparedCompactionPressure(provider, request => request.messages.length > 1 ? 18_130 : 100);
     provider.chatStream = async (messages): Promise<LLMResponse> => {
       seen.push(messages.map((message) => ({ ...message })));
       streamCount += 1;
@@ -270,6 +278,7 @@ describe("runTurn compact contract", () => {
   test("mid-turn compact skip ends the turn without a run-fatal error event", async () => {
     let streamCount = 0;
     const provider = mkProvider({});
+    installPreparedCompactionPressure(provider, request => request.messages.length > 1 ? 18_130 : 100);
     provider.chatStream = async (): Promise<LLMResponse> => {
       streamCount += 1;
       return {
@@ -286,7 +295,7 @@ describe("runTurn compact contract", () => {
     setAutoCompactImplForTests(compactImpl);
     const { session, events } = mkSession({
       provider,
-      modelInfo: { autoCompactTokenLimit: 1 } as never,
+      modelInfo: { autoCompactTokenLimit: 1_000 } as never,
     });
 
     const yielded: Array<{ type?: string; stopReason?: string }> = [];
@@ -295,7 +304,7 @@ describe("runTurn compact contract", () => {
       mkCtx({
         modelInfo: {
           ...mkCtx().modelInfo,
-          autoCompactTokenLimit: 1,
+          autoCompactTokenLimit: 1_000,
         } as never,
       }),
       "start",
@@ -337,6 +346,7 @@ describe("runTurn compact contract", () => {
     // compaction runs at the post-tool gate, after the result is in.
     let streamCount = 0;
     const provider = mkProvider({});
+    installPreparedCompactionPressure(provider, request => request.messages.length > 1 ? 18_130 : 100);
     provider.chatStream = async (): Promise<LLMResponse> => {
       streamCount += 1;
       if (streamCount === 1) {

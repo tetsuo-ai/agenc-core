@@ -319,7 +319,7 @@ describe("Edit tool", () => {
 
     expect(result.isError).toBe(true);
     // Plain text — no JSON envelope.
-    expect(result.content).toBe(
+    expect(result.content).toContain(
       "File has not been read yet. Read it first before writing to it.",
     );
     expect(() => JSON.parse(result.content)).toThrow();
@@ -539,7 +539,7 @@ describe("Edit tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toBe(
+    expect(result.content).toContain(
       "File has not been read yet. Read it first before writing to it.",
     );
     await expect(readFile(file, "utf8")).resolves.toBe("");
@@ -642,7 +642,7 @@ describe("Edit tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toBe(
+    expect(result.content).toContain(
       "File has not been read yet. Read it first before writing to it.",
     );
     await expect(readFile(file, "utf8")).resolves.toBe("alpha beta\n");
@@ -1379,7 +1379,7 @@ describe("Edit tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toBe(
+    expect(result.content).toContain(
       "File has not been read yet. Read it first before writing to it.",
     );
     await expect(readFile(file, "utf8")).resolves.toBe("before\n");

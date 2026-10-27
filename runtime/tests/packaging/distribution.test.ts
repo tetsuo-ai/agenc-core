@@ -25,8 +25,8 @@ describe("docker packaging", () => {
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain("ENV AGENC_HOME=/data/.agenc");
     expect(dockerfile).toContain('VOLUME ["/data"]');
-    expect(dockerfile).toMatch(/FROM node:26\.5\.0-bookworm@sha256:[0-9a-f]{64}/);
-    expect(dockerfile).toMatch(/FROM node:26\.5\.0-bookworm-slim@sha256:[0-9a-f]{64}/);
+    expect(dockerfile).toMatch(/FROM node:26\.12\.1-bookworm@sha256:[0-9a-f]{64}/);
+    expect(dockerfile).toMatch(/FROM node:26\.12\.1-bookworm-slim@sha256:[0-9a-f]{64}/);
     expect(dockerfile).toContain("npm ci --no-audit --no-fund");
     expect(dockerfile).toContain("build:runtime-tarball");
     expect(dockerfile).toContain('AGENC_BUILD_COMMIT="${AGENC_BUILD_COMMIT}"');

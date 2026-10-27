@@ -12,6 +12,7 @@ import { createListAgentsTool } from "../../src/agents/v2/list-agents.js";
 import type { MultiAgentV2Options } from "../../src/agents/v2/common.js";
 import type { Session } from "../../src/session/session.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
+import * as rolloutItemModule from "../../src/session/rollout-item.js";
 import type { Event, SubagentTurnOutcomeEvent } from "../../src/session/event-log.js";
 import { openStateDatabases, resolveStateDatabasePaths } from "../../src/state/sqlite-driver.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
@@ -310,6 +311,40 @@ describe("durable child results after daemon restart", () => {
     expect(second).toMatchObject({ timed_out: true });
     expect(second.updates).toBeUndefined();
     if (worktree) expect(existsSync(childLogsPath)).toBe(false);
+  });
+
+  test("parses unchanged parent terminal evidence once across descendant checks", () => {
+    const parent = open("parent");
+    edge(parent, "first");
+    edge(parent, "second");
+    const first = open("first");
+    const second = open("second");
+    finishRun(first);
+    close(first);
+    parent.setThreadSpawnEdgeStatus("first", "closed");
+    parent.setThreadSpawnEdgeStatus("second", "closed");
+    parent.appendRollout({ type: "response_item", payload: { role: "user", content: "qs-root-history" } }, { durable: true });
+    const parse = rolloutItemModule.parseRolloutLine;
+    let rootParses = 0;
+    const parser = vi.spyOn(rolloutItemModule, "parseRolloutLine").mockImplementation((line) => {
+      if (line.includes("qs-root-history")) rootParses += 1;
+      return parse(line);
+    });
+
+    // The second child is still open. A shared snapshot cannot make a
+    // missing terminal eligible, even when another descendant is complete.
+    expect(parent.rootHasOnlyTerminalDescendants("parent")).toBe(false);
+    expect(rootParses).toBe(1);
+
+    finishRun(second);
+    close(second);
+    // Child evidence remains fresh even when the parent bytes are unchanged.
+    expect(parent.rootHasOnlyTerminalDescendants("parent")).toBe(true);
+    expect(rootParses).toBe(1);
+    parent.appendRollout({ type: "response_item", payload: { role: "user", content: "qs-root-history-new" } }, { durable: true });
+    expect(parent.rootHasOnlyTerminalDescendants("parent")).toBe(true);
+    expect(rootParses).toBe(3);
+    parser.mockRestore();
   });
 
   test.each(["absent", "corrupt"])("discovers terminal worktree evidence with %s unused logs", (logs) => {

@@ -154,7 +154,7 @@ export function getSchemaValidationErrorOverride(
     ) {
       return (
         'sandbox_permissions must be the plain string "default", ' +
-        '"require_escalated" or "with_additional_permissions" — not an object. ' +
+        '"require_escalated" or "with_additional_permissions", not an object. ' +
         'Scoped permissions belong in additional_permissions alongside ' +
         '"with_additional_permissions", for example ' +
         '{"network":{"enabled":true}}. The command was not run.'
@@ -194,7 +194,7 @@ export function buildSchemaNotSentHint(
   if (!isDeferredTool(tool)) return null;
   if (discoveredToolNames && discoveredToolNames.has(tool.name)) return null;
   return (
-    `\n\nThis tool's schema was not sent to the provider — it was not in ` +
+    `\n\nThis tool's schema was not sent to the provider: it was not in ` +
     `the discovered-tool set derived from message history. Without the ` +
     `schema in your prompt, typed parameters (arrays, numbers, booleans) ` +
     `get emitted as strings and the client-side parser rejects them. ` +

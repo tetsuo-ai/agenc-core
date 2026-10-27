@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { compareCodeUnits, nonEmptyString } from "../../src/utils/stringUtils.js";
+import { compareCodeUnits, nonEmptyString, withoutTrailingPeriod } from "../../src/utils/stringUtils.js";
 
 describe("string utilities", () => {
   it("returns original strings that contain non-whitespace content", () => {
@@ -39,5 +39,19 @@ describe("compareCodeUnits", () => {
     expect(["a", "ä", "z"].sort(compareCodeUnits)).toEqual(["a", "z", "ä"]);
     expect(["a", "ä", "z"].sort((left, right) => left.localeCompare(right, "de")))
       .toEqual(["a", "ä", "z"]);
+  });
+});
+
+describe("withoutTrailingPeriod", () => {
+  it("drops the trailing periods and whitespace an embedding sentence would double", () => {
+    expect(withoutTrailingPeriod("Set XAI_API_KEY or GROK_API_KEY.")).toBe("Set XAI_API_KEY or GROK_API_KEY");
+    expect(withoutTrailingPeriod("select danger-full-access deliberately. \n")).toBe("select danger-full-access deliberately");
+    expect(withoutTrailingPeriod("wait...")).toBe("wait");
+  });
+
+  it("keeps other text, inner periods and other final punctuation", () => {
+    expect(withoutTrailingPeriod("v0.19.7 failed")).toBe("v0.19.7 failed");
+    expect(withoutTrailingPeriod("is the daemon running?")).toBe("is the daemon running?");
+    expect(withoutTrailingPeriod("")).toBe("");
   });
 });

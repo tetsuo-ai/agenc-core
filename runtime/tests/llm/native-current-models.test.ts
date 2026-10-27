@@ -19,13 +19,18 @@ const messages = [{ role: "user" as const, content: "Call echo with ok" }];
 describe("current native provider catalog", () => {
   test.each([...OPENAI_CURRENT_MODEL_CATALOG, ...NVIDIA_CURRENT_MODEL_CATALOG])("registers $provider/$model with an explicit output ceiling", entry => {
     expect(resolveRegisteredModelCatalogEntry(entry)).toEqual(entry);
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG[entry.provider]).toContain(entry.model);
+    // NVIDIA retired moonshotai/kimi-k3 on 2026-10-15 (HTTP 410). Its row stays registered for old
+    // sessions (visibility "none") but is not offered; every other row must still be in the picker.
+    if (entry.visibility === "none") expect(BUILT_IN_PROVIDER_MODEL_CATALOG[entry.provider]).not.toContain(entry.model);
+    else expect(BUILT_IN_PROVIDER_MODEL_CATALOG[entry.provider]).toContain(entry.model);
     expect(entry.maxOutputTokensUpperLimit).toBeGreaterThan(0);
   });
   test("preserves provider defaults and excludes retired picker aliases", () => {
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-5");
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.gemini).toBe("gemini-3.8-flash");
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"]?.[0]).toBe("openai/gpt-oss-120b");
+    // openai/gpt-oss-120b used to lead the NIM list. NVIDIA ended it on 2026-09-03 (HTTP 410) and no
+    // longer lists it, so it is now one of the retired picker aliases this test excludes.
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"]).not.toContain("openai/gpt-oss-120b");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openai).not.toContain("gpt-5.1-codex");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.gemini).not.toContain("gemini-3-pro-preview");
   });
@@ -106,7 +111,8 @@ describe("provider-specific price resolution", () => {
   test.each([["openai", "gpt-4-turbo", 0.04], ["openai", "chat-latest", 0.035], ["gemini", "gemini-3.1-pro-preview-customtools", 0.014], ["gemini", "gemma-4-31b-it", 0], ["gemini", "gemini-robotics-er-2-preview", 0.006]] as const)("prices %s/%s independently", (provider, model, expected) => {
     expect(computeUsdCostWithResolution(usage(provider, model), DEFAULT_MODEL_COSTS).costUsd).toBeCloseTo(expected, 7);
   });
-  test.each(NVIDIA_CURRENT_MODEL_CATALOG)("keeps unpublished NIM price unknown for $model", entry => {
-    expect(computeUsdCostWithResolution(usage(entry.provider, entry.model), DEFAULT_MODEL_COSTS)).toMatchObject({ known: false, costEstimated: true });
+  // NVIDIA's hosted NIM endpoints are free to Developer Program members; nothing bills per token.
+  test.each(NVIDIA_CURRENT_MODEL_CATALOG)("prices NIM model $model as the free tier", entry => {
+    expect(computeUsdCostWithResolution(usage(entry.provider, entry.model), DEFAULT_MODEL_COSTS)).toMatchObject({ known: true, costUsd: 0 });
   });
 });

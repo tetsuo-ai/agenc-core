@@ -16,7 +16,8 @@ vi.mock('../../../src/utils/config.js', () => ({
   updateRuntimeState: mocks.updateRuntimeState,
 }))
 
-vi.mock('../../../src/utils/terminalBackground.js', () => ({
+vi.mock('../../../src/utils/terminalBackground.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   getTerminalBackground: mocks.getTerminalBackground,
 }))
 
@@ -217,7 +218,8 @@ describe('ThemeProvider coverage swarm row 091', () => {
 
       setTheme?.('auto')
       await waitFor(() => {
-        expect(snapshots.at(-1)).toEqual({ setting: 'auto', theme: 'dark' })
+        // On a dark terminal, auto shows the olive theme.
+        expect(snapshots.at(-1)).toEqual({ setting: 'auto', theme: 'olive' })
       })
 
       expect(onThemeSave).toHaveBeenCalledWith('auto')

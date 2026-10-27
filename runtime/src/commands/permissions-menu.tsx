@@ -1,7 +1,6 @@
 import React from "react";
 
 import {
-  PERMISSION_BEHAVIORS,
   PERMISSION_RULE_SOURCES,
   USER_ADDRESSABLE_PERMISSION_MODES,
   type PermissionBehavior,
@@ -10,11 +9,11 @@ import {
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import {
-  permissionModeShortTitle,
-  permissionModeTitle,
+  permissionModePlainDescription,
+  permissionModePlainLabel,
 } from "../permissions/mode-display.js";
 import { canonicalizeBypassPermissionsCwd } from "../permissions/bypass-consent-state.js";
-import { Box, useInput } from "../tui/ink.js";
+import { useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
@@ -70,106 +69,32 @@ function rulesFor(
   return bucket[source] ?? [];
 }
 
-function modeDescription(mode: PermissionMode): string {
-  switch (mode) {
-    case "default":
-      return "ask for ambiguous tools";
-    case "acceptEdits":
-      return "auto-accept file edits";
-    case "plan":
-      return "read-only planning";
-    case "bypassPermissions":
-      return "DANGER: bypass approvals";
-    case "dontAsk":
-      return "suppress prompts";
-    case "auto":
-      return "auto-approve allowlisted tools";
-    case "unattended":
-      return "background-agent mode";
-    case "bubble":
-      return "nested permission bubbling";
-  }
-}
+/** Everyday modes first; the two advanced ones follow. */
+const MODE_ORDER: readonly PermissionMode[] = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+  "dontAsk",
+  "auto",
+];
 
 function permissionRows(ctx: ToolPermissionContext): readonly PermissionRow[] {
-  const rows: PermissionRow[] = [];
-  for (const mode of USER_ADDRESSABLE_PERMISSION_MODES) {
-    rows.push({
-      kind: "mode",
-      mode,
-      behavior: "mode",
-      source: "runtime",
-      count: mode === ctx.mode ? 1 : 0,
-      detail: modeDescription(mode),
-    });
-  }
-  for (const behavior of PERMISSION_BEHAVIORS) {
-    for (const source of PERMISSION_RULE_SOURCES) {
-      const rules = rulesFor(ctx, behavior, source);
-      if (rules.length === 0) continue;
-      rows.push({
-        kind: "rule",
-        behavior,
-        source,
-        count: rules.length,
-        detail: rules.slice(0, 3).join(", "),
-      });
-    }
-  }
-  if (ctx.additionalWorkingDirectories.size > 0) {
-    rows.push({
-      kind: "directory",
-      behavior: "directory",
-      source: "workspace",
-      count: ctx.additionalWorkingDirectories.size,
-      detail: [...ctx.additionalWorkingDirectories.values()]
-        .slice(0, 3)
-        .map(entry => entry.path)
-        .join(", "),
-    });
-  }
-  return rows;
+  const addressable = new Set<PermissionMode>(USER_ADDRESSABLE_PERMISSION_MODES);
+  return MODE_ORDER.filter(mode => addressable.has(mode)).map(mode => ({
+    kind: "mode" as const,
+    mode,
+    behavior: "mode" as const,
+    source: "runtime" as const,
+    count: mode === ctx.mode ? 1 : 0,
+    detail: permissionModePlainDescription(mode),
+  }));
 }
 
-function behaviorColor(
-  row: PermissionRow,
-  currentMode: PermissionMode,
-): "success" | "error" | "worker" | "agenc" | "planMode" | "inactive" | "warning" {
-  if (row.kind === "mode") {
-    if (row.mode === currentMode) return "success";
-    if (row.mode === "bypassPermissions" || row.mode === "dontAsk") return "error";
-    if (row.mode === "plan") return "planMode";
-    if (row.mode === "auto" || row.mode === "acceptEdits") return "warning";
-    return "inactive";
-  }
-  switch (row.behavior) {
-    case "allow":
-      return "success";
-    case "deny":
-      return "error";
-    case "ask":
-      return "worker";
-    case "directory":
-      return "agenc";
-  }
-}
-
-function behaviorGlyph(row: PermissionRow, currentMode: PermissionMode): string {
-  if (row.kind === "mode") {
-    if (row.mode === currentMode) return "◆";
-    if (row.mode === "bypassPermissions") return "!";
-    return "◇";
-  }
-  switch (row.behavior) {
-    case "allow":
-      return "◆";
-    case "deny":
-      return "!";
-    case "ask":
-      return "?";
-    case "directory":
-      return "◇";
-  }
+function ruleCounts(ctx: ToolPermissionContext): { allow: number; deny: number; ask: number } {
+  const count = (behavior: PermissionBehavior): number =>
+    PERMISSION_RULE_SOURCES.reduce((total, source) => total + rulesFor(ctx, behavior, source).length, 0);
+  return { allow: count("allow"), deny: count("deny"), ask: count("ask") };
 }
 
 function bypassAccepted(ctx: ToolPermissionContext, workspacePath: string): boolean {
@@ -180,59 +105,6 @@ function bypassAccepted(ctx: ToolPermissionContext, workspacePath: string): bool
   } catch {
     return false;
   }
-}
-
-function ConfirmBypassView({
-  buffer,
-  message,
-}: {
-  readonly buffer: string;
-  readonly message: string | null;
-}): React.ReactNode {
-  return (
-    <MenuModal
-      title="permissions"
-      count="bypass"
-      summary="explicit confirmation required"
-      headerRight="danger"
-      columns={[18, 60]}
-      headers={["field", "value"]}
-      items={[
-        { field: "target", value: "bypassPermissions" },
-        { field: "required", value: "type bypass" },
-        { field: "typed", value: buffer.length > 0 ? buffer : "(empty)" },
-      ]}
-      activeIndex={1}
-      renderRow={(row) => [
-        <ThemedText key="field" color="inactive" wrap="truncate-end">
-          {row.field}
-        </ThemedText>,
-        <ThemedText key="value" color={row.field === "target" ? "error" : "text2"} wrap="truncate-end">
-          {row.value}
-        </ThemedText>,
-      ]}
-      preview={
-        <Box flexDirection="column" gap={1}>
-          <ThemedText color="error">Bypass Permissions</ThemedText>
-          <ThemedText color="text2" wrap="wrap">
-            This mode bypasses approval prompts for this workspace. It must be
-            confirmed before the mode switch is applied.
-          </ThemedText>
-          {message ? (
-            <ThemedText color="warning" wrap="wrap">
-              {message}
-            </ThemedText>
-          ) : null}
-        </Box>
-      }
-      footer={[
-        { keyName: "type", label: "bypass" },
-        { keyName: "enter", label: "confirm" },
-        { keyName: "esc", label: "cancel" },
-      ]}
-      hint="risky mode confirmation"
-    />
-  );
 }
 
 function PermissionsMenuView({
@@ -261,8 +133,6 @@ function PermissionsMenuView({
   const [mode, setMode] = React.useState<PermissionMode>(permissionContext.mode);
   const [message, setMessage] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [confirmBypass, setConfirmBypass] = React.useState(false);
-  const [confirmBuffer, setConfirmBuffer] = React.useState("");
 
   const applyMode = React.useCallback((target: PermissionMode) => {
     if (!controller) {
@@ -270,7 +140,7 @@ function PermissionsMenuView({
       return;
     }
     setBusy(true);
-    setMessage(`Switching mode to ${target}...`);
+    setMessage(`Switching to ${permissionModePlainLabel(target)}...`);
     void controller.setMode(target).then(
       result => {
         setBusy(false);
@@ -284,14 +154,13 @@ function PermissionsMenuView({
     );
   }, [controller]);
 
-  const confirmAndApplyBypass = React.useCallback(() => {
+  const acceptAndApplyRiskyMode = React.useCallback((target: PermissionMode) => {
     if (!controller) {
       setMessage("Bypass confirmation requires a live permission controller.");
-      setConfirmBypass(false);
       return;
     }
     setBusy(true);
-    setMessage("Recording bypass confirmation...");
+    setMessage("Recording workspace consent...");
     void controller.acceptBypass().then(
       accept => {
         if (!accept.ok) {
@@ -299,11 +168,9 @@ function PermissionsMenuView({
           setMessage(accept.message);
           return;
         }
-        void controller.setMode("bypassPermissions").then(
+        void controller.setMode(target).then(
           result => {
             setBusy(false);
-            setConfirmBypass(false);
-            setConfirmBuffer("");
             setMessage(`${accept.message}\n${result.message}`);
             if (result.ok && result.nextMode !== undefined) setMode(result.nextMode);
           },
@@ -322,30 +189,6 @@ function PermissionsMenuView({
 
   useInput((input, key) => {
     if (busy) return;
-    if (confirmBypass) {
-      if (key.escape) {
-        setConfirmBypass(false);
-        setConfirmBuffer("");
-        return;
-      }
-      if (key.backspace || key.delete) {
-        setConfirmBuffer(value => value.slice(0, -1));
-        return;
-      }
-      if (key.return) {
-        if (confirmBuffer === "bypass") {
-          confirmAndApplyBypass();
-        } else {
-          setMessage('Type "bypass" exactly to confirm bypassPermissions.');
-        }
-        return;
-      }
-      if (input.length > 0) {
-        setConfirmBuffer(value => `${value}${input}`.slice(0, 16));
-      }
-      return;
-    }
-
     if (key.escape || input === "q") {
       onDone();
       return;
@@ -358,101 +201,59 @@ function PermissionsMenuView({
       setActiveIndex(index => nextMenuIndex(index, displayRows.length));
       return;
     }
-    if (input === "b") {
-      setConfirmBypass(true);
-      setConfirmBuffer("");
-      setMessage("Type bypass to confirm bypassPermissions.");
-      return;
-    }
     if (key.return) {
       const selectedRow = displayRows[activeIndex];
       if (selectedRow?.kind !== "mode") return;
       if (
-        selectedRow.mode === "bypassPermissions" &&
+        (selectedRow.mode === "bypassPermissions" || selectedRow.mode === "dontAsk") &&
         !bypassAccepted(permissionContext, workspacePath)
       ) {
-        setConfirmBypass(true);
-        setConfirmBuffer("");
-        setMessage("Type bypass to confirm bypassPermissions.");
+        acceptAndApplyRiskyMode(selectedRow.mode);
         return;
       }
       applyMode(selectedRow.mode);
     }
   });
 
-  if (confirmBypass) {
-    return <ConfirmBypassView buffer={confirmBuffer} message={message} />;
-  }
 
-  const selected = displayRows[activeIndex] ?? displayRows[0];
-  const totalRules = rows
-    .filter(row => row.kind !== "mode")
-    .reduce((total, row) => total + row.count, 0);
+  const rules = ruleCounts(permissionContext);
+  const ruleParts = [
+    rules.allow > 0 ? `${rules.allow} allow` : null,
+    rules.deny > 0 ? `${rules.deny} deny` : null,
+    rules.ask > 0 ? `${rules.ask} ask` : null,
+  ].filter((part): part is string => part !== null);
+  const extraFolders = permissionContext.additionalWorkingDirectories.size;
   return (
     <MenuModal
       title="permissions"
-      count={`${totalRules}`}
-      summary={`mode ${mode}`}
-      headerRight={permissionContext.isBypassPermissionsModeAvailable ? "bypass available" : "guarded"}
-      columns={[3, 16, 18, 8, 64]}
-      headers={["", "behavior", "source", "count", "rules"]}
+      summary={permissionModePlainLabel(mode)}
+      columns={[2, 14, 56]}
+      headers={["", "mode", "how much can the agent do without asking?"]}
       items={displayRows}
       activeIndex={activeIndex}
       renderRow={(row, _index, active) => {
-        const color = behaviorColor(row, mode);
+        const current = row.kind === "mode" && row.mode === mode;
+        const risky = row.kind === "mode" && (row.mode === "bypassPermissions" || row.mode === "dontAsk");
+        const advanced = row.kind === "mode" && (row.mode === "dontAsk" || row.mode === "auto");
+        const nameColor = current ? "success" : risky ? "error" : advanced ? "subtle" : "text";
         return [
-          <ThemedText key="mark" color={color}>
-            {behaviorGlyph(row, mode)}
+          <ThemedText key="mark" color={current ? "success" : "subtle"}>
+            {current ? "●" : " "}
           </ThemedText>,
-          <ThemedText key="behavior" color={color} wrap="truncate-end">
-            {row.kind === "mode" ? row.mode : row.behavior}
+          <ThemedText key="name" color={nameColor} bold={active} wrap="truncate-end">
+            {row.kind === "mode" ? permissionModePlainLabel(row.mode) : row.behavior}
           </ThemedText>,
-          <ThemedText key="source" color={active ? "agenc" : "text2"} wrap="truncate-end">
-            {row.source}
-          </ThemedText>,
-          <ThemedText key="count" color="subtle">
-            {String(row.count)}
-          </ThemedText>,
-          <ThemedText key="detail" color="subtle" wrap="truncate-end">
+          <ThemedText key="detail" color={risky && active ? "error" : active ? "text" : "subtle"} wrap="truncate-end">
             {row.detail}
           </ThemedText>,
         ];
       }}
-      preview={
-        <Box flexDirection="column" gap={1}>
-          <ThemedText color="agenc">Permission Rules</ThemedText>
-          <ThemedText color="text2" wrap="wrap">
-            Mode changes, rules, workspace trust, and bypass confirmation stay
-            on this v2 surface. Rule edits use /permissions add or remove.
-          </ThemedText>
-          <ThemedText color="subtle" wrap="wrap">
-            Current mode: {permissionModeTitle(mode)} ({permissionModeShortTitle(mode)})
-          </ThemedText>
-          <ThemedText color={selected?.kind === "mode" ? behaviorColor(selected, mode) : "subtle"} wrap="wrap">
-            Selected: {selected?.kind === "mode" ? selected.mode : selected?.behavior ?? "none"} / {selected?.source ?? "none"}
-          </ThemedText>
-          <ThemedText color="subtle" wrap="wrap">
-            Extra directories: {permissionContext.additionalWorkingDirectories.size}
-          </ThemedText>
-          {mode === "bypassPermissions" ? (
-            <ThemedText color="error" wrap="wrap">
-              bypassPermissions is active. Risky actions are no longer prompted.
-            </ThemedText>
-          ) : null}
-          {message ? (
-            <ThemedText color={message.startsWith("Mode:") || message.includes("accepted") ? "success" : "warning"} wrap="wrap">
-              {message}
-            </ThemedText>
-          ) : null}
-        </Box>
-      }
       footer={[
-        { keyName: "up/down", label: "navigate" },
-        { keyName: "enter", label: "set mode" },
-        { keyName: "b", label: "confirm bypass" },
-        { keyName: "q", label: "close" },
+        { keyName: "↑↓", label: "choose" },
+        { keyName: "enter", label: "apply" },
+        { keyName: "esc", label: "close" },
       ]}
-      hint="/permissions add|remove|mode"
+      hint={message ?? `${ruleParts.length > 0 ? `rules: ${ruleParts.join(", ")}` : "no custom rules"}${extraFolders > 0 ? ` · extra folders: ${extraFolders}` : ""} · /permissions add|remove`}
     />
   );
 }

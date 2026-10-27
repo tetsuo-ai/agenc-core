@@ -31,17 +31,23 @@ export interface QwenCurrentRate {
   readonly cached?: number;
 }
 
+// Rates for deepseek-v4-flash-0731, deepseek-v4-pro-0813, deepseek-v4.1-flash,
+// qwen3-omni-flash, qwen-plus and ZHIPU/GLM-5.3 read 2026-10-17 from
+// https://www.alibabacloud.com/help/en/model-studio/model-pricing and the model
+// pages. The DeepSeek rows bill by time of day: these are the busy-hour rates
+// (UTC+8 08:00-22:00), idle hours cost half. qwen-plus carries its non-thinking
+// output rate, since thinking is off by default on commercial Qwen3 models.
 export const QWEN_CURRENT_MODELS: readonly QwenCurrentModel[] = Object.freeze([
   {"model": "qwen3-coder-plus-2025-09-23", "displayName": "Qwen3 Coder Plus (2025-09-23 snapshot)", "contextWindow": 1000000, "maxOutputTokens": 65536, "vision": false, "thinking": "none", "totalOutputCap": false, "rates": [{"aboveInputTokens": 0, "input": 1, "output": 5}, {"aboveInputTokens": 32000, "input": 1.8, "output": 9}, {"aboveInputTokens": 128000, "input": 3, "output": 15}, {"aboveInputTokens": 256000, "input": 6, "output": 60}]},
   {"model": "qwen3.5-plus-2026-04-20", "displayName": "Qwen3.5 Plus (2026-04-20 snapshot)", "contextWindow": 1000000, "maxOutputTokens": 65536, "vision": true, "thinking": "hybrid", "totalOutputCap": true, "bufferedChat": true, "rates": [{"aboveInputTokens": 0, "input": 0.4, "output": 2.4}, {"aboveInputTokens": 256000, "input": 0.5, "output": 3}]},
   {"model": "qwen3.8-max-0902", "displayName": "Qwen3.8 Max (0902 snapshot)", "contextWindow": 1000000, "maxOutputTokens": 131072, "vision": true, "thinking": "hybrid", "totalOutputCap": true, "reasoningLevels": ["low", "medium", "xhigh"], "defaultReasoningLevel": "xhigh", "rates": [{"aboveInputTokens": 0, "input": 2, "output": 6, "cached": 0.25}]},
-  {"model": "deepseek-v4-flash-0731", "displayName": "deepseek-v4-flash-0731 (snapshot)", "contextWindow": 1000000, "maxOutputTokens": 393216, "vision": false, "thinking": "hybrid", "totalOutputCap": true, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "high"},
-  {"model": "deepseek-v4-pro-0813", "displayName": "deepseek-v4-pro-0813 (snapshot)", "contextWindow": 1000000, "maxOutputTokens": 393216, "vision": false, "thinking": "hybrid", "totalOutputCap": true, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "high"},
+  {"model": "deepseek-v4-flash-0731", "displayName": "deepseek-v4-flash-0731 (snapshot)", "contextWindow": 1000000, "maxOutputTokens": 393216, "vision": false, "thinking": "hybrid", "totalOutputCap": true, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "high", "rates": [{"aboveInputTokens": 0, "input": 0.44, "output": 1.32, "cached": 0.044}]},
+  {"model": "deepseek-v4-pro-0813", "displayName": "deepseek-v4-pro-0813 (snapshot)", "contextWindow": 1000000, "maxOutputTokens": 393216, "vision": false, "thinking": "hybrid", "totalOutputCap": true, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "high", "rates": [{"aboveInputTokens": 0, "input": 1.32, "output": 3.96, "cached": 0.132}]},
   {"model": "qwen3.7-max-2026-06-08", "displayName": "Qwen3.7 Max Vision (2026-06-08 snapshot)", "contextWindow": 1000000, "maxOutputTokens": 131072, "vision": true, "thinking": "hybrid", "totalOutputCap": true, "rates": [{"aboveInputTokens": 0, "input": 2.5, "output": 7.5, "cached": 0.5}]},
   {"model": "qwen3.7-max-preview", "displayName": "Qwen3.7 Max Preview", "contextWindow": 1000000, "maxOutputTokens": 131072, "vision": false, "thinking": "always", "totalOutputCap": true, "rates": [{"aboveInputTokens": 0, "input": 2.5, "output": 7.5}]},
   {"model": "glm-5.3-prime", "displayName": "GLM-5.3 Prime", "vision": false, "thinking": "always", "totalOutputCap": true, "toolStream": true, "rates": [{"aboveInputTokens": 0, "input": 2.8, "output": 8.8, "cached": 0.56}]},
   {"model": "glm-5.3", "displayName": "GLM-5.3", "contextWindow": 1048576, "maxOutputTokens": 131072, "vision": false, "thinking": "always", "totalOutputCap": true, "bufferedChat": false, "toolStream": true, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "max", "rates": [{"aboveInputTokens": 0, "input": 1.4, "output": 4.4, "cached": 0.28}]},
-  {"model": "deepseek-v4.1-flash", "displayName": "DeepSeek-v4.1-flash", "contextWindow": 1000000, "maxOutputTokens": 393216, "vision": true, "thinking": "hybrid", "totalOutputCap": true, "bufferedChat": false, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "high"},
+  {"model": "deepseek-v4.1-flash", "displayName": "DeepSeek-v4.1-flash", "contextWindow": 1000000, "maxOutputTokens": 393216, "vision": true, "thinking": "hybrid", "totalOutputCap": true, "bufferedChat": false, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "high", "rates": [{"aboveInputTokens": 0, "input": 0.3, "output": 1.2, "cached": 0.03}]},
   {"model": "kimi-k3", "displayName": "Kimi-k3", "contextWindow": 1048576, "maxOutputTokens": 1048576, "vision": true, "thinking": "always", "totalOutputCap": true, "bufferedChat": false, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "max", "rates": [{"aboveInputTokens": 0, "input": 3.0, "output": 15.0, "cached": 0.3}]},
   {"model": "glm-5.2-fast-preview", "displayName": "GLM-5.2-fast-preview", "contextWindow": 1048576, "maxOutputTokens": 131072, "vision": false, "thinking": "hybrid", "totalOutputCap": true, "bufferedChat": false, "toolStream": true, "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"], "defaultReasoningLevel": "high", "rates": [{"aboveInputTokens": 0, "input": 2.8, "output": 8.8, "cached": 0.56}]},
   {"model": "kimi-k2.7-code", "displayName": "Kimi-k2.7-code", "contextWindow": 262144, "maxOutputTokens": 16384, "vision": true, "thinking": "always", "totalOutputCap": true, "bufferedChat": false, "rates": [{"aboveInputTokens": 0, "input": 0.95, "output": 4.0, "cached": 0.19}]},
@@ -63,7 +69,7 @@ export const QWEN_CURRENT_MODELS: readonly QwenCurrentModel[] = Object.freeze([
   {"model": "qwen3.5-plus", "displayName": "Qwen3.5-plus", "contextWindow": 1000000, "maxOutputTokens": 65536, "vision": true, "thinking": "hybrid", "totalOutputCap": true, "bufferedChat": true, "rates": [{"aboveInputTokens": 0, "input": 0.4, "output": 2.4}, {"aboveInputTokens": 256000, "input": 0.5, "output": 3.0}]},
   {"model": "qwen-flash", "displayName": "Qwen-flash", "contextWindow": 1000000, "maxOutputTokens": 32768, "vision": false, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": false, "rates": [{"aboveInputTokens": 0, "input": 0.05, "output": 0.4, "cached": 0.01}, {"aboveInputTokens": 256000, "input": 0.25, "output": 2.0, "cached": 0.05}]},
   {"model": "qwen3-vl-flash", "displayName": "Qwen3-vl-flash", "contextWindow": 262144, "maxOutputTokens": 32768, "vision": true, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": true, "rates": [{"aboveInputTokens": 0, "input": 0.05, "output": 0.4, "cached": 0.01}, {"aboveInputTokens": 32000, "input": 0.075, "output": 0.6, "cached": 0.015}, {"aboveInputTokens": 128000, "input": 0.12, "output": 0.96, "cached": 0.024}]},
-  {"model": "qwen3-omni-flash", "displayName": "Qwen3-omni-flash", "contextWindow": 65536, "maxOutputTokens": 16384, "vision": true, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": true},
+  {"model": "qwen3-omni-flash", "displayName": "Qwen3-omni-flash", "contextWindow": 65536, "maxOutputTokens": 16384, "vision": true, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": true, "rates": [{"aboveInputTokens": 0, "input": 0.43, "output": 1.66}]},
   {"model": "qwen-coder-plus", "displayName": "Qwen-coder-plus", "contextWindow": 131072, "maxOutputTokens": 8192, "vision": false, "thinking": "none", "totalOutputCap": false, "bufferedChat": false},
   {"model": "qwen3-8b", "displayName": "Qwen3-8b", "contextWindow": 131072, "maxOutputTokens": 8192, "vision": false, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": true},
   {"model": "qwen3-30b-a3b", "displayName": "Qwen3-30b-a3b", "contextWindow": 131072, "maxOutputTokens": 8192, "vision": false, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": true},
@@ -83,9 +89,9 @@ export const QWEN_CURRENT_MODELS: readonly QwenCurrentModel[] = Object.freeze([
   {"model": "qwen3-next-80b-a3b-thinking", "displayName": "Qwen3-next-80b-a3b-thinking", "contextWindow": 131072, "maxOutputTokens": 32768, "vision": false, "thinking": "always", "totalOutputCap": false, "bufferedChat": true, "rates": [{"aboveInputTokens": 0, "input": 0.15, "output": 1.2}]},
   {"model": "qwen3-next-80b-a3b-instruct", "displayName": "Qwen3-next-80b-a3b-instruct", "contextWindow": 131072, "maxOutputTokens": 32768, "vision": false, "thinking": "none", "totalOutputCap": false, "bufferedChat": true, "rates": [{"aboveInputTokens": 0, "input": 0.15, "output": 1.2}]},
   {"model": "qwen-max", "displayName": "Qwen-max", "contextWindow": 32768, "maxOutputTokens": 8192, "vision": false, "thinking": "none", "totalOutputCap": false, "bufferedChat": false, "rates": [{"aboveInputTokens": 0, "input": 1.6, "output": 6.4, "cached": 0.32}]},
-  {"model": "qwen-plus", "displayName": "Qwen-plus", "contextWindow": 1000000, "maxOutputTokens": 32768, "vision": false, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": false},
+  {"model": "qwen-plus", "displayName": "Qwen-plus", "contextWindow": 1000000, "maxOutputTokens": 32768, "vision": false, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": false, "rates": [{"aboveInputTokens": 0, "input": 0.4, "output": 1.2, "cached": 0.08}, {"aboveInputTokens": 256000, "input": 1.2, "output": 3.6, "cached": 0.24}]},
   {"model": "qwen-turbo", "displayName": "Qwen-turbo", "contextWindow": 131072, "maxOutputTokens": 16384, "vision": false, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": false},
-  {"model": "ZHIPU/GLM-5.3", "displayName": "GLM-5.3 (Zhipu)", "vision": false, "thinking": "always", "totalOutputCap": false, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "max"},
+  {"model": "ZHIPU/GLM-5.3", "displayName": "GLM-5.3 (Zhipu)", "vision": false, "thinking": "always", "totalOutputCap": false, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "max", "rates": [{"aboveInputTokens": 0, "input": 1.4, "output": 4.4, "cached": 0.26}]},
   {"model": "kimi/kimi-k3", "displayName": "Kimi K3 (Moonshot, Beijing)", "vision": true, "thinking": "always", "totalOutputCap": false, "reasoningLevels": ["max"], "defaultReasoningLevel": "max"},
 ]);
 
@@ -93,6 +99,15 @@ export function resolveQwenCurrentModel(model: string | undefined): QwenCurrentM
   const normalized = model?.trim().toLowerCase();
   return QWEN_CURRENT_MODELS.find((entry) => entry.model.toLowerCase() === normalized);
 }
+
+/**
+ * Retired by Alibaba on 2026-10-10 and no longer listed by the international
+ * Models API (checked 2026-10-17): kept for old sessions, hidden from the picker.
+ * https://www.alibabacloud.com/en/notice/model_studio_notice_on_the_postponed_retirement_of_selected_legacy_models_7d0
+ */
+const QWEN_RETIRED_MODELS: ReadonlySet<string> = new Set([
+  "qwen-coder-plus", "qwen3-8b", "qwen3-14b", "qwen3-30b-a3b", "qwen3-235b-a22b", "qwen-turbo",
+]);
 
 export const QWEN_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = Object.freeze(
   QWEN_CURRENT_MODELS.map((entry, priority) => Object.freeze({
@@ -108,7 +123,8 @@ export const QWEN_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] 
     supportsReasoningSummaries: false, defaultReasoningSummary: "none" as const,
     supportedReasoningLevels: entry.reasoningLevels ?? [],
     ...(entry.defaultReasoningLevel ? {defaultReasoningLevel: entry.defaultReasoningLevel} : {}),
-    additionalSpeedTiers: [], priority: priority + 12, visibility: entry.model === "kimi/kimi-k3" ? "none" as const : "list" as const,
+    additionalSpeedTiers: [], priority: priority + 12,
+    visibility: entry.model === "kimi/kimi-k3" || QWEN_RETIRED_MODELS.has(entry.model) ? "none" as const : "list" as const,
   })),
 );
 

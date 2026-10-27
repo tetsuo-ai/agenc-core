@@ -41,6 +41,7 @@ import type {
   PermissionModeRegistry,
 } from "../../permissions/permission-mode.js";
 import type { Session } from "../../session/session.js";
+import { createToolResultIntegrity } from "../../session/tool-result-integrity.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 
@@ -229,6 +230,7 @@ async function hydrateRecoveredSessionHistory(
     }
   ).state;
   if (typeof stateLock?.with !== "function") return;
+  const runId = (session as { readonly conversationId?: unknown }).conversationId;
   await stateLock.with((state) => {
     const current = Array.isArray(state.history) ? state.history : [];
     const next =
@@ -240,8 +242,45 @@ async function hydrateRecoveredSessionHistory(
               (message) => !historyContainsRecoveredMessage(current, message),
             ),
           ];
-    state.history = next.map(cloneRecoveredLlmMessage);
+    state.history = next.map((message) =>
+      sealRecoveredToolResult(cloneRecoveredLlmMessage(message), runId),
+    );
   });
+}
+
+/**
+ * Recovered tool results reach history without the turn's persistence step,
+ * which is where a result normally gets its integrity seal. The next turn
+ * treats all prior history as already persisted and never seals it, so one
+ * unsealed result fails that turn's first durable checkpoint ("checkpoint v2
+ * requires every tool result to be sealed"). Seal it here under the session's
+ * run id, as the turn would. A result that already has a seal, in either the
+ * live or the persisted shape, is left as it is.
+ */
+function sealRecoveredToolResult(message: LLMMessage, runId: unknown): LLMMessage {
+  if (
+    message.role !== "tool" ||
+    typeof runId !== "string" ||
+    runId.length === 0 ||
+    typeof message.toolCallId !== "string" ||
+    message.toolCallId.trim().length === 0 ||
+    message.runtimeOnly?.toolResultIntegrity !== undefined ||
+    (message as { readonly toolResultIntegrity?: unknown }).toolResultIntegrity !==
+      undefined
+  ) {
+    return message;
+  }
+  return {
+    ...message,
+    runtimeOnly: {
+      ...message.runtimeOnly,
+      toolResultIntegrity: createToolResultIntegrity({
+        runId,
+        toolCallId: message.toolCallId,
+        content: message.content,
+      }),
+    },
+  };
 }
 
 function historyContainsRecoveredMessage(

@@ -173,7 +173,7 @@ describe('UserToolRejectMessage swarm-145 coverage', () => {
     )
 
     expect(output.replace(/\s+/g, ' ')).toContain(
-      'rejected runtime/src/delegated.ts parsed:true columns:117 progress:1 style:condensed theme:dark transcript:true verbose:true',
+      'rejected runtime/src/delegated.ts parsed:true columns:117 progress:1 style:condensed theme:olive transcript:true verbose:true',
     )
     expect(renderToolUseRejectedMessage).toHaveBeenCalledTimes(1)
     expect(renderToolUseRejectedMessage.mock.calls[0]?.[1]).toMatchObject({
@@ -181,7 +181,7 @@ describe('UserToolRejectMessage swarm-145 coverage', () => {
       messages: [],
       progressMessagesForMessage: [progressMessagesForMessage[1]],
       style: 'condensed',
-      theme: 'dark',
+      theme: 'olive',
       tools,
       verbose: true,
       isTranscriptMode: true,

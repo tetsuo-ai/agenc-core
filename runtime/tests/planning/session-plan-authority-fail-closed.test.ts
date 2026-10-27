@@ -132,6 +132,10 @@ describe("isSessionPlanMutation", () => {
     expect(isSessionPlanMutation(filesystemTool("FileRead"), input, session)).toBe(false);
     expect(isSessionPlanMutation(filesystemTool("apply_patch"), input, session)).toBe(false);
     expect(isSessionPlanMutation(filesystemTool("Write"), { file_path: join(root, "other.md") }, session)).toBe(false);
+    const batch = { path: planPath, edits: [{ oldText: "a", newText: "b" }] };
+    expect(isSessionPlanMutation(filesystemTool("Edit"), batch, session)).toBe(true);
+    expect(isSessionPlanMutation(filesystemTool("Edit"), { ...batch, path: join(root, "other.md") }, session)).toBe(false);
+    expect(isSessionPlanMutation(filesystemTool("Write"), { path: planPath, content: "x" }, session)).toBe(false);
     expect(isSessionPlanMutation({ name: "Write" }, input, session)).toBe(false);
     expect(isSessionPlanMutation(
       { name: "Write", metadata: { source: "plugin", family: "filesystem" } },

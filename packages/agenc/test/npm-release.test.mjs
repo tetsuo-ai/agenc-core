@@ -178,10 +178,12 @@ function fakeNpm(
     existingBytes,
     publishError,
     latestVersion = launcherVersion,
+    audits = [],
   } = {},
 ) {
   let publishedBytes = existingBytes;
   let publishInvocations = 0;
+  let auditInvocations = 0;
   const run = (args) => {
     if (args[0] === "--version") {
       return { stdout: `${releaseToolchain.npmVersion}\n`, stderr: "" };
@@ -213,15 +215,20 @@ function fakeNpm(
     }
     if (args[0] === "install") return { status: 0, stdout: "", stderr: "" };
     if (args[0] === "audit" && args[1] === "signatures") {
+      // Each scripted audit answer is used once; later audits verify cleanly.
+      const scripted = audits[auditInvocations];
+      auditInvocations += 1;
+      if (scripted instanceof Error) throw scripted;
       return {
         status: 0,
-        stdout: `${JSON.stringify({ invalid: [], missing: [] })}\n`,
+        stdout: `${JSON.stringify(scripted ?? { invalid: [], missing: [] })}\n`,
         stderr: "",
       };
     }
     throw new Error(`unexpected npm invocation: ${args.join(" ")}`);
   };
   run.publishInvocations = () => publishInvocations;
+  run.auditInvocations = () => auditInvocations;
   return run;
 }
 
@@ -447,6 +454,90 @@ test("publish uploads an immutable snapshot with provenance and no repack", asyn
   } finally {
     rmSync(work.root, { recursive: true, force: true });
   }
+});
+
+function attestationNotFound() {
+  // runNpmDefault's message when the attestations endpoint lags a publish (0.19.4).
+  return new Error(
+    "npm audit failed (1):\nnpm error code E404\nnpm error 404 Not Found - GET " +
+      `https://registry.npmjs.org/-/npm/v1/attestations/@tetsuo-ai%2fagenc@${launcherVersion} - Not found`,
+  );
+}
+
+async function publishWithAudits(audits, extra = {}) {
+  const work = await packedFixture();
+  const waits = [];
+  const runNpm = fakeNpm(() => {}, { audits });
+  try {
+    const published = await publishRelease({
+      tarball: work.artifactPath,
+      receiptPath: work.receiptPath,
+      cwd: work.source,
+      packageRoot: work.source,
+      nodeVersion: releaseToolchain.nodeVersion,
+      git: fakeGit(),
+      runNpm,
+      validateManifest: skipManifestValidation,
+      waitForRegistry: async (ms) => { waits.push(ms); },
+      ...extra,
+    });
+    return { published, audits: runNpm.auditInvocations(), waits };
+  } catch (error) {
+    error.audits = runNpm.auditInvocations();
+    error.waits = waits;
+    throw error;
+  } finally {
+    rmSync(work.root, { recursive: true, force: true });
+  }
+}
+
+test("publish keeps auditing while the registry has not served attestations yet", async () => {
+  const { published, audits, waits } = await publishWithAudits([
+    attestationNotFound(),
+    { invalid: [], missing: [{ name: "@tetsuo-ai/agenc" }] },
+  ]);
+  assert.equal(published.published, true);
+  assert.deepEqual(published.signatureAudit, { invalid: 0, missing: 0 });
+  assert.equal(audits, 3);
+  assert.deepEqual(waits, [15_000, 15_000]);
+});
+
+test("publish never retries an invalid registry signature", async () => {
+  await assert.rejects(
+    publishWithAudits([{ invalid: [{ name: "@tetsuo-ai/agenc" }], missing: [] }]),
+    (error) => {
+      assert.match(error.message, /did not verify every registry artifact/);
+      assert.equal(error.audits, 1);
+      assert.deepEqual(error.waits, []);
+      return true;
+    },
+  );
+});
+
+test("publish does not retry audit errors other than absent attestations", async () => {
+  await assert.rejects(
+    publishWithAudits([new Error("npm audit failed (1):\nnpm error code EAUDITSIG")]),
+    (error) => {
+      assert.match(error.message, /EAUDITSIG/);
+      assert.equal(error.audits, 1);
+      return true;
+    },
+  );
+});
+
+test("publish stops auditing absent attestations after its attempt budget", async () => {
+  await assert.rejects(
+    publishWithAudits(
+      [attestationNotFound(), attestationNotFound(), attestationNotFound(), attestationNotFound()],
+      { registrySignatureAttempts: 3 },
+    ),
+    (error) => {
+      assert.match(error.message, /E404/);
+      assert.equal(error.audits, 3);
+      assert.equal(error.waits.length, 2);
+      return true;
+    },
+  );
 });
 
 test("publish accepts npm's percent-encoded scoped attestation URL", async () => {

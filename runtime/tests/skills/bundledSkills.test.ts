@@ -59,3 +59,50 @@ test('bundled agenc-marketplace-kit-installer skill registers with the safe inst
     'forbids hand-authoring signer policy JSON',
   )
 })
+
+test('the kit installer is unlisted by default and listed once the marketplace is enabled', async () => {
+  const { isBundledSkillListed } = await import('./bundledSkills.js')
+  const installer = 'agenc-marketplace-kit-installer'
+
+  assert.equal(isBundledSkillListed(installer, undefined), false)
+  assert.equal(isBundledSkillListed(installer, {}), false)
+  assert.equal(isBundledSkillListed(installer, { protocol: { enabled: false } }), false)
+  // Only a real boolean turns it on.
+  assert.equal(isBundledSkillListed(installer, { protocol: { enabled: 'true' } }), false)
+  assert.equal(isBundledSkillListed(installer, { protocol: 'enabled' }), false)
+  assert.equal(
+    isBundledSkillListed(installer, {
+      protocol: { enabled: true, adapter: 'marketplace-cli' },
+    }),
+    true,
+  )
+  // It stays loadable by name: it is registered, only unlisted.
+  const { getBundledSkills } = await import('./bundledSkills.js')
+  assert.ok(getBundledSkills().some((command) => command.name === installer))
+})
+
+test('other bundled skills stay listed regardless of config', async () => {
+  const { isBundledSkillListed } = await import('./bundledSkills.js')
+
+  assert.equal(isBundledSkillListed('browser-automation', undefined), true)
+  assert.equal(isBundledSkillListed('browser-automation', { protocol: { enabled: false } }), true)
+  assert.equal(isBundledSkillListed('not-registered', {}), true)
+})
+
+test('registerBundledSkill honours listedByDefault: false and clearBundledSkills forgets it', async () => {
+  const { registerBundledSkill, isBundledSkillListed, clearBundledSkills } = await import(
+    './bundledSkills.js'
+  )
+  const definition = {
+    description: 'test skill',
+    getPromptForCommand: async () => [],
+  }
+  registerBundledSkill({ ...definition, name: 'test-hidden-skill', listedByDefault: false })
+  registerBundledSkill({ ...definition, name: 'test-shown-skill', listedByDefault: true })
+
+  assert.equal(isBundledSkillListed('test-hidden-skill', {}), false)
+  assert.equal(isBundledSkillListed('test-shown-skill', {}), true)
+
+  clearBundledSkills()
+  assert.equal(isBundledSkillListed('test-hidden-skill', {}), true)
+})

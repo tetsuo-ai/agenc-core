@@ -1,3 +1,5 @@
+// Reload shared directory-sync helpers before installing filesystem race injection.
+vi.hoisted(() => vi.resetModules());
 const artifactCleanupFailure = vi.hoisted(() => ({ path: "", failOnce: false, beforeRemove: undefined as undefined | (() => void), afterRemove: undefined as undefined | (() => void) }));
 const publicationMove = vi.hoisted(() => ({ afterArtifactFsync: undefined as undefined | (() => void), linked: false }));
 const registryReclaimRace = vi.hoisted(() => ({ path: "", beforeRemove: undefined as undefined | (() => void) }));
@@ -597,6 +599,31 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     } finally {
       active.close();
       archived.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves no session directory behind once the rollout moved, and unarchive restores it", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-archive-dir-"));
+    const rollout = openStore({ cwd, sessionId: "archive-dir" });
+    const sessionDir = rollout.store.sessionDir;
+    try {
+      const store = new FileThreadStore({ agencHome, cwd });
+      store.createThread({ threadId: "archive-dir", rolloutStore: rollout });
+      store.appendItems({ threadId: "archive-dir", items: [responseItem("a", "alpha")] });
+      store.shutdownThread("archive-dir");
+      rollout.close();
+      expect(existsSync(join(sessionDir, "index.json"))).toBe(true);
+
+      store.archiveThread({ threadId: "archive-dir" });
+      expect(existsSync(sessionDir)).toBe(false);
+
+      const restored = store.unarchiveThread({ threadId: "archive-dir" });
+      expect(dirname(restored.rolloutPath!)).toBe(sessionDir);
+      expect(rolloutLineCount(restored.rolloutPath!)).toBeGreaterThan(1);
+      store.close();
+    } finally {
+      rollout.close();
       rmSync(cwd, { recursive: true, force: true });
     }
   });

@@ -12,6 +12,7 @@ import { readStartupCliFlags, type StartupCliFlags } from "./startup-cli-flags.j
 import { ensureAgenCDaemonAutostart, resolveAgenCDaemonAutostartEnabled, type AgenCDaemonAutostartOptions } from "../app-server/daemon-autostart.js";
 import type { ProvisionalDaemonStart } from "../app-server/daemon-provisional-start.js";
 import { resolveCliCwdForStartup, writeUnavailableCliCwd } from "./cli-cwd.js";
+import type { WindowsSandboxChoiceOptions } from "./windows-sandbox-choice.js";
 
 export interface DefaultCliRouteAdapters {
   readonly bootTUIEntry: (args: BootTUIArgs, flags: StartupCliFlags) => Promise<number>;
@@ -25,6 +26,18 @@ export interface DefaultCliRouteAdapters {
   readonly prepareProvisionalDaemon?: () => Promise<ProvisionalDaemonStart | null>;
   /** Invocation-owned identity transport, only for fresh print without a provisional child. */
   readonly requestPrintDaemonIdentity?: AgenCDaemonAutostartOptions["requestDaemonInstanceIdentity"];
+}
+
+/**
+ * On Windows, ask once whether to run without a sandbox before an interactive
+ * session (see windows-sandbox-choice.ts). Elsewhere this loads nothing.
+ */
+export async function requireWindowsSandboxChoiceBeforeTui(
+  options: WindowsSandboxChoiceOptions,
+): Promise<boolean> {
+  if ((options.platform ?? process.platform) !== "win32") return true;
+  const { requireWindowsSandboxChoiceForTui } = await import("./windows-sandbox-choice.js");
+  return requireWindowsSandboxChoiceForTui(options);
 }
 
 function isInteractiveTuiRoutePlan(
@@ -66,6 +79,19 @@ export async function runDefaultCliRoute(
     if (routePlan.kind === "oneShotCLI" && !process.stdin.isTTY && !process.stdout.isTTY &&
         process.platform === "linux" && process.env.TUI_E2E_DEBUG !== "1") {
       provisional = await prepareProvisionalDaemon?.() ?? null;
+    }
+    // Before the trust card, so its note already reflects the answer, and
+    // before the daemon starts.
+    if (
+      isInteractiveTuiRoutePlan(routePlan) &&
+      !(await requireWindowsSandboxChoiceBeforeTui({
+        env: process.env,
+        argv,
+        startupCliFlags,
+        ...(routeCwd?.ok === true ? { cwd: routeCwd.cwd } : {}),
+      }))
+    ) {
+      return 1;
     }
     if (routeNeedsToolTrust) {
       const { requireProjectTrustForTui } = await import("./project-trust-preflight.js");

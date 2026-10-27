@@ -4,7 +4,7 @@
  * Auth: Authorization: Bearer <key>
  */
 
-import type { SearchInput, SearchProvider } from './types.js'
+import type { SearchInput, SearchProvider, SearchProviderContext } from './types.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
@@ -19,17 +19,17 @@ import {
 export const jinaProvider: SearchProvider = {
   name: 'jina',
 
-  isConfigured() {
-    return Boolean(getSelectedProviderEnvironment().JINA_API_KEY)
+  isConfigured(environment = getSelectedProviderEnvironment()) {
+    return Boolean(environment.JINA_API_KEY)
   },
 
-  async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
+  async search(input: SearchInput, signal?: AbortSignal, context?: SearchProviderContext): Promise<ProviderOutput> {
     const start = performance.now()
-    const environment = getSelectedProviderEnvironment()
+    const environment = context?.environment ?? getSelectedProviderEnvironment()
 
-    const url = new URL('https://s.jina.ai/')
+    const url = new URL(context?.endpoint ?? 'https://s.jina.ai/')
     url.searchParams.set('q', input.query)
-    url.searchParams.set('count', '10')
+    url.searchParams.set('count', String(input.max_results ?? 10))
 
     const res = await fetch(url.toString(), {
       headers: {
@@ -37,11 +37,12 @@ export const jinaProvider: SearchProvider = {
         Accept: 'application/json',
       },
       signal,
+      redirect: 'error',
       ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {
-      throw new Error(`Jina search error ${res.status}: ${await res.text().catch(() => '')}`)
+      throw new Error(`Jina search error ${res.status}`)
     }
 
     const data = await readSearchProviderJson(res, 'Jina search API')

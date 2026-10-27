@@ -755,7 +755,7 @@ describe("A3b atomic legacy publication", () => {
           payload: {
             checkpointVersion: 4,
             toolResultIntegrityVersion: 1,
-            prefixHashVersion: 3,
+            prefixHashVersion: 4,
           },
         },
       },
@@ -833,7 +833,7 @@ describe("A3b atomic legacy publication", () => {
                 type: "turn_checkpoint",
                 payload: expect.objectContaining({
                   checkpointVersion: 4,
-                  prefixHashVersion: 3,
+                  prefixHashVersion: 4,
                 }),
               }),
             }),

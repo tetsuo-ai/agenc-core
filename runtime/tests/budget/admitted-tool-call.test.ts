@@ -1,8 +1,10 @@
+import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+import { itOnDarwin } from "../helpers/platform-registration.js";
 
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import { createAllowAdmissionHarness } from "./admission-test-harness.js";
@@ -19,6 +21,7 @@ import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
 import { attachPendingPhysicalSettlement } from "../../src/tools/physical-settlement.js";
 import { createFileEditTool } from "../../src/tools/system/file-edit.js";
+import { createFileReadTool } from "../../src/tools/system/file-read.js";
 import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
 import { createWriteStdinTool } from "../../src/tools/system/write-stdin.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
@@ -70,7 +73,7 @@ function toolHarness() {
 }
 
 describe("runAdmittedToolCall", () => {
-  it.runIf(process.platform === "darwin")("settles a real pre-read CronDelete refusal and admits the next prompt's mutation", async () => {
+  itOnDarwin("settles a real pre-read CronDelete refusal and admits the next prompt's mutation", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-cron-delete-settlement-"));
     const state = toolHarness();
     const metadata = join(root, ".agenc");
@@ -289,6 +292,41 @@ describe("runAdmittedToolCall", () => {
       type: "effect_result",
       payload: { outcome: "cancelled" },
     });
+  });
+
+  it("reports an interrupted started shell with its partial output instead of an admission denial", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-started-interrupt-"));
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+    const state = toolHarness();
+    const began = Promise.withResolvers<void>();
+    const exec = bindExplicitDangerBoundary(createExecCommandTool({ cwd: root, unifiedExecManager: manager, execObserver: { onBegin: () => began.resolve() } }));
+    const running = runAdmittedToolCall({
+      session: state.session, turnId: "turn-1", callId: "started-shell", tool: exec,
+      args: { cmd: "printf PARTIAL_BEFORE_ESC; sleep 30", yield_time_ms: 100000 },
+      invoke: async ({ signal, crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return exec.execute({ cmd: "printf PARTIAL_BEFORE_ESC; sleep 30", yield_time_ms: 100000, __abortSignal: signal });
+      },
+    }).catch(error => error);
+    try {
+      const early = await Promise.race([running.then(error => ({ error })),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 100))]);
+      expect(early, early && String(early.error)).toBeNull();
+      await began.promise;
+      await new Promise(resolve => setTimeout(resolve, 100));
+      state.leaseController.abort(new AdmissionDeniedError("interrupted", "cancelled"));
+      const error = await running;
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(AdmissionDeniedError);
+      expect(error.message).toContain("started");
+      expect(error.message).toContain("interrupted by the user");
+      expect(error.message).toContain("PARTIAL_BEFORE_ESC");
+      expect(error.message).toContain("exit status");
+      expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+    } finally {
+      await manager.closeAll();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects a late tool success after durable cancellation", async () => {
@@ -1526,5 +1564,126 @@ describe("runAdmittedToolCall", () => {
     expect(
       state.effectEvents.filter((event) => event.msg.type === "effect_result"),
     ).toHaveLength(0);
+  });
+});
+
+
+it("does not lend a parent's fast scope to a child mutation #3011", async () => {
+  const state = toolHarness();
+  const tool = { name: "child_write", description: "mutation", inputSchema: { type: "object" }, recoveryCategory: "side-effecting", admissionEstimate: zeroAdmissionEstimate, execute: async () => ({ content: "done" }) } as Tool;
+  await withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "child-turn", callId: "child-call", tool, args: {}, invoke: async () => ({ content: "done" }) }), "parent-session");
+  expect(state.session.rolloutStore!.assertToolAdmissionAllowed).toHaveBeenCalledOnce();
+  expect(state.acquire).toHaveBeenCalledOnce();
+});
+
+
+it.each([undefined, "parent-session"])("enforces the durable unknown-outcome gate without this session's fast authority (%s) #3011", async scopeOwner => {
+  const state = toolHarness();
+  const invoke = vi.fn(async () => ({ content: "must not execute" }));
+  vi.mocked(state.session.rolloutStore!.assertToolAdmissionAllowed).mockImplementation(() => { throw new Error("durable_unknown_outcome"); });
+  const tool = { name: "child_write", description: "mutation", inputSchema: { type: "object" }, recoveryCategory: "side-effecting", admissionEstimate: zeroAdmissionEstimate } as Tool;
+  await expect(withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "child-turn", callId: "child-call", tool, args: {}, invoke }), scopeOwner)).rejects.toThrow("durable_unknown_outcome");
+  expect(invoke).not.toHaveBeenCalled();
+  expect(state.acquire).not.toHaveBeenCalled();
+});
+
+it("keeps the explicitly bound parent's uncapped fast path", async () => {
+  const state = toolHarness();
+  const tool = { name: "read", description: "read", inputSchema: { type: "object" }, recoveryCategory: "idempotent", admissionEstimate: zeroAdmissionEstimate } as Tool;
+  const result = await withOneShotFastMode(() => runAdmittedToolCall({ session: state.session, turnId: "parent-turn", callId: "parent-call", tool, args: {}, invoke: async () => ({ content: "fast" }) }), String(state.session.conversationId));
+  expect(result.content).toBe("fast");
+  expect(state.acquire).not.toHaveBeenCalled();
+  expect(state.session.rolloutStore!.assertToolAdmissionAllowed).not.toHaveBeenCalled();
+});
+
+describe("verified side-effect-free observations", () => {
+  async function readFixture(options: { readonly capacity?: boolean } = {}) {
+    const root = await mkdtemp(join(tmpdir(), "agenc-observation-read-"));
+    await writeFile(join(root, "input.txt"), "source bytes\n");
+    const state = toolHarness();
+    const lease = new AbortController();
+    const release = vi.fn();
+    const tryAcquireObservation = vi.fn(() => options.capacity === false ? undefined : { signal: lease.signal, release });
+    Object.assign(state.session.services.executionAdmission!, { tryAcquireObservation });
+    const tool = createFileReadTool({ allowedPaths: [root], maxTokens: 1000 });
+    const args = { file_path: join(root, "input.txt") };
+    const invoke = (overrides: { readonly requireDurable?: boolean; readonly tool?: Tool; readonly afterRead?: () => void } = {}) =>
+      runAdmittedToolCall({
+        session: state.session, turnId: "turn-1", callId: "read-1", tool: overrides.tool ?? tool, args,
+        ...(overrides.requireDurable !== undefined ? { requireDurable: overrides.requireDurable } : {}),
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          const result = await (overrides.tool ?? tool).execute(args);
+          overrides.afterRead?.();
+          return result;
+        },
+      });
+    const effectTypes = () => state.effectEvents.map(event => event.msg.type).filter(type => type.startsWith("effect_"));
+    return { root, state, lease, release, tryAcquireObservation, tool, invoke, effectTypes };
+  }
+
+  it("reads with live capacity but no durable admission or effect records", async () => {
+    const f = await readFixture();
+    try {
+      const result = await f.invoke();
+      expect(result.content).toContain("source bytes");
+      expect(f.tryAcquireObservation).toHaveBeenCalledWith(expect.objectContaining({
+        stepId: "tool:turn-1:read-1", kind: "tool_exec", maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0,
+      }), undefined);
+      expect(f.release).toHaveBeenCalledTimes(1);
+      expect(f.state.acquire).not.toHaveBeenCalled();
+      expect(f.effectTypes()).toEqual([]);
+      expect(f.state.session.rolloutStore!.assertToolAdmissionAllowed).toHaveBeenCalledWith("idempotent");
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+
+  it("returns a finished read when cancellation arrives afterwards, like the durable idempotent path", async () => {
+    const f = await readFixture();
+    try {
+      const result = await f.invoke({ afterRead: () => f.lease.abort(new Error("turn cancelled")) });
+      expect(result.content).toContain("source bytes");
+      expect(f.release).toHaveBeenCalledTimes(1);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+
+  it("refuses to start a read whose observation was already cancelled", async () => {
+    const f = await readFixture();
+    try {
+      f.lease.abort(new Error("turn cancelled"));
+      await expect(f.invoke()).rejects.toThrow("turn cancelled");
+      expect(f.release).toHaveBeenCalledTimes(1);
+      expect(f.effectTypes()).toEqual([]);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+
+  it("keeps the durable path when effect-capable hooks require it", async () => {
+    const f = await readFixture();
+    try {
+      await f.invoke({ requireDurable: true });
+      expect(f.tryAcquireObservation).not.toHaveBeenCalled();
+      expect(f.state.acquire).toHaveBeenCalledTimes(1);
+      expect(f.effectTypes()).toEqual(["effect_intent", "effect_result"]);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+
+  it("uses the durable fair queue when no observation capacity is free", async () => {
+    const f = await readFixture({ capacity: false });
+    try {
+      await f.invoke();
+      expect(f.tryAcquireObservation).toHaveBeenCalledTimes(1);
+      expect(f.state.acquire).toHaveBeenCalledTimes(1);
+      expect(f.effectTypes()).toEqual(["effect_intent", "effect_result"]);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+
+  it("grants the fast path only to the reviewed implementation, never to copied metadata", async () => {
+    const f = await readFixture();
+    try {
+      const lookalike = { ...f.tool, execute: async (args: Record<string, unknown>) => f.tool.execute(args) } as Tool;
+      await f.invoke({ tool: lookalike });
+      expect(f.tryAcquireObservation).not.toHaveBeenCalled();
+      expect(f.state.acquire).toHaveBeenCalledTimes(1);
+      expect(f.effectTypes()).toEqual(["effect_intent", "effect_result"]);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
   });
 });

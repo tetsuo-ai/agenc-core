@@ -42,6 +42,18 @@ import {
 } from "../types/permissions.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { canonicalizeBypassPermissionsCwd } from "./bypass-consent-state.js";
+import {
+  frozenPermissionModeMessage,
+  isWiderPermissionMode,
+} from "./session-tool-policy.js";
+
+/** A pure mode validation failed before registry or authority publication. */
+export class PermissionModeTransitionPrecommitError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PermissionModeTransitionPrecommitError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Mode constants + predicates
@@ -872,6 +884,7 @@ export class PermissionModeRegistry {
   private publicationCoordinator:
     | PermissionContextPublicationCoordinator
     | undefined;
+  private modeCeilingValue: PermissionMode | undefined;
   private externalAuthorityGeneration = 0;
   private publishedExternalAuthorityGeneration = 0;
   private pendingExternalAuthorityGeneration: number | undefined;
@@ -890,6 +903,27 @@ export class PermissionModeRegistry {
       throw new PermissionAuthorityUnavailableError();
     }
     return this.ctx;
+  }
+
+  /**
+   * The widest mode this registry will publish, or undefined when none is
+   * set. A frozen session (`agent.create` `toolPolicy.frozenPermissionMode`)
+   * sets it once; every publication path (the mode RPC, ExitPlanMode, config
+   * reload, restore) is checked here, so none can widen the session.
+   */
+  get modeCeiling(): PermissionMode | undefined {
+    return this.modeCeilingValue;
+  }
+
+  /** Fix the widest publishable mode. It can be set once and never raised. */
+  freezeModeCeiling(ceiling: PermissionMode): void {
+    if (
+      this.modeCeilingValue !== undefined &&
+      isWiderPermissionMode(ceiling, this.modeCeilingValue)
+    ) {
+      throw new Error("a frozen permission mode ceiling cannot be raised");
+    }
+    this.modeCeilingValue = ceiling;
   }
 
   /**
@@ -1052,6 +1086,12 @@ export class PermissionModeRegistry {
     transactionPreparedUpdate?: PermissionContextPreparedUpdate,
   ): Promise<() => void> {
     this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
+    if (
+      this.modeCeilingValue !== undefined &&
+      isWiderPermissionMode(newCtx.mode, this.modeCeilingValue)
+    ) {
+      throw new Error(frozenPermissionModeMessage(newCtx.mode, this.modeCeilingValue));
+    }
     const current = this.ctx;
     const oldMode = current.mode;
     const preparedResult = await this.beforeUpdateHook?.(

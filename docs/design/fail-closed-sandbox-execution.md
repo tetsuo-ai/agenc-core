@@ -62,7 +62,12 @@ and adding a boundary regression test.
   rejected. A workspace that contains the user's home (the default for a bare
   `agenc` in a fresh terminal) cannot satisfy that containment rule; the
   probe still refuses, but remediation names the home workspace and points at
-  a project directory instead of a reinstall. The helper's own argv parser
+  a project directory instead of a reinstall. When `AGENC_HOME` itself sits
+  under a writable workspace or session temp ancestor, that home is reserved
+  read-only for sandboxed children; Landlock cannot express the reservation
+  and refuses with `[sandbox_policy_unexpressible]`. See
+  [tools-permissions-sandbox.md](../reference/tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots).
+  The helper's own argv parser
   (`linux-launcher/cli.ts`) also fails closed: policy cwd is required and
   never inferred, value flags are accepted once, unknown profile fields and
   NUL bytes are rejected, and `globScanMaxDepth` cannot exceed 128. Landlock
@@ -73,7 +78,10 @@ and adding a boundary regression test.
 - macOS requires `/usr/bin/sandbox-exec` and a bounded restricted-process probe.
 - Native Windows restricted-token isolation is not implemented, so restricted
   execution fails closed. Operators can use WSL2, an explicit external sandbox,
-  or deliberately select danger-full-access.
+  or deliberately select danger-full-access. The interactive TUI asks once
+  before the first session; Continue is that deliberate selection, saved as
+  `sandbox_mode = "danger-full-access"` in the user config. It never replaces
+  a sandbox mode a user, profile or repository chose.
 
 Probe results are cached per session. Daemon `commandExec` applies the same
 behavioral probe before transform/spawn. A successful probe does not weaken the

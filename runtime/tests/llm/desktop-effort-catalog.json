@@ -37,6 +37,7 @@
   {"provider": "gemini","model": "gemini-3.5-flash-lite","levels": ["minimal","low","medium","high"]},
   {"provider": "gemini","model": "gemini-3.1-flash-lite","levels": ["minimal","low","medium","high"]},
   {"provider": "meta","model": "muse-spark-1.3","levels": ["minimal","low","medium","high","xhigh","max"],"defaultLevel": "medium"},
+  {"provider": "meta","model": "muse-wonder-1.0","levels": ["minimal","low","medium","high","xhigh","max"],"defaultLevel": "high"},
   {"provider": "meta","model": "muse-spark-1.3-contributor","levels": ["minimal","low","medium","high","xhigh"],"defaultLevel": "medium"},
   {"provider": "meta","model": "muse-spark-1.2","levels": ["minimal","low","medium","high","xhigh"],"defaultLevel": "medium"},
   {"provider": "meta","model": "muse-spark-1.2-contributor","levels": ["minimal","low","medium","high","xhigh"],"defaultLevel": "medium"},

@@ -80,6 +80,45 @@ describe("auto-mode attachment producer", () => {
     _resetAttachmentTrackingStateForTest(opts.sessionKey);
   });
 
+  test("no pulse when the permission instructions already state Light's bypass autonomy", async () => {
+    // permissionInstructionsStateLightAutonomy (session/permission-instructions.ts)
+    // sets the flag when the request's permission text carries
+    // LIGHT_BYPASS_AUTONOMY_NOTE, which says what the pulse says.
+    for (const messages of [[], [humanTurn("one"), humanTurn("two"), humanTurn("three"),
+      humanTurn("four"), humanTurn("five"), humanTurn("six")]]) {
+      const opts = makeOpts({
+        lightMode: true,
+        autonomyStatedInPermissions: true,
+        permissionContext: { mode: "bypassPermissions" } as ToolPermissionContext,
+        messages,
+      });
+      const tracking = getAttachmentTrackingState(opts.sessionKey);
+      expect(await autoModeProducer(opts, tracking)).toEqual([]);
+      _resetAttachmentTrackingStateForTest(opts.sessionKey);
+    }
+    // Without the note (another mode's text, or a routine) the Light pulse still fires.
+    const without = makeOpts({
+      lightMode: true,
+      autonomyStatedInPermissions: false,
+      permissionContext: { mode: "acceptEdits" } as ToolPermissionContext,
+    });
+    const out = await autoModeProducer(without, getAttachmentTrackingState(without.sessionKey));
+    expect(out).toEqual([{ kind: "auto_mode", variant: "light" }]);
+    _resetAttachmentTrackingStateForTest(without.sessionKey);
+  });
+
+  test("the exit reminder still fires after a Light bypass session leaves the autonomous family", async () => {
+    const opts = makeOpts({
+      lightMode: true,
+      autonomyStatedInPermissions: true,
+      permissionContext: { mode: "default" } as ToolPermissionContext,
+    });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    tracking.needsAutoModeExitAttachment = true;
+    expect(await autoModeProducer(opts, tracking)).toEqual([{ kind: "auto_mode_exit" }]);
+    _resetAttachmentTrackingStateForTest(opts.sessionKey);
+  });
+
   test("first auto-mode turn fires variant: full (acceptEdits)", async () => {
     const opts = makeOpts({
       permissionContext: { mode: "acceptEdits" } as ToolPermissionContext,

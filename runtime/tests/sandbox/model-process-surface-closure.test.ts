@@ -341,11 +341,9 @@ describe("model-controlled helper process sandbox closure", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("match.ts");
-    await expect(readCapture(probeCapture)).resolves.toEqual({
-      cwd: root,
-      sentinel: "sentinel-grep-probe",
-      argv0: "agenc-grep-probe",
-    });
+    // The availability probe still authenticates through the transform but
+    // is never launched: the bound search is its own probe.
+    await expect(readCapture(probeCapture)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readCapture(searchCapture)).resolves.toEqual({
       cwd: root,
       sentinel: "sentinel-grep-search",

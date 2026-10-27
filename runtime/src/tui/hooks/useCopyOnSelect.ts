@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useTheme } from '../components/design-system/ThemeProvider'
 import type { useSelection } from '../ink/hooks/use-selection.js'
-import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
+import { useSettings } from './useSettings.js'
 import { getTheme } from '../../utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type Selection = ReturnType<typeof useSelection>
@@ -28,6 +28,11 @@ export function useCopyOnSelect(
   isActive: boolean,
   onCopied?: (text: string) => void,
 ): void {
+  // Mouse notifications run outside execution authority. Read this display
+  // preference from the live TUI projection, including configuration reloads.
+  const enabled = useSettings().tui?.copyOnSelect ?? true
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
   // Tracks whether the *previous* notification had a visible selection with
   // isDragging=false (i.e., we already auto-copied it). Without this, the
   // finish→clear transition would look like a fresh selection-gone-idle
@@ -65,9 +70,7 @@ export function useCopyOnSelect(
       // finds no native selection (mouse tracking disabled it). Auto-copy
       // on mouse-up makes cmd+c a no-op that leaves the clipboard intact
       // with the right content, so paste works as expected.
-      const enabled =
-        getExecutionAuthoritySettings().tui?.copyOnSelect ?? true
-      if (!enabled) return
+      if (!enabledRef.current) return
 
       const text = selection.copySelectionNoClear()
       // Whitespace-only (e.g., blank-line multi-click) — not worth a

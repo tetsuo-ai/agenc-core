@@ -14,14 +14,16 @@ import {
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
   confirmedNoEffectDisposition,
+  execEscalationGrant,
   runtimeSandboxForExec,
   SANDBOX_PERMISSION_INPUT_PROPERTIES,
 } from "./exec-command.js";
 import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
-import { sandboxEscalationAvailable } from "./exec-sandbox-denial.js";
+import { execSandboxDenialNotice } from "./exec-sandbox-denial.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
+import { notifyExecEscalationDiscovery } from "../exec-session-discovery.js";
 
 export interface WriteStdinToolConfig {
   readonly lightMode?: boolean;
@@ -30,6 +32,12 @@ export interface WriteStdinToolConfig {
   readonly env?: Record<string, string>;
   readonly maxTimeoutMs?: number;
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
+  /**
+   * A sandbox notice on this result tells the model to retry the session's
+   * exec_command with sandbox_permissions: present exec_command's full
+   * schema on the next request.
+   */
+  readonly onEscalationAdvised?: () => void;
 }
 
 function asString(value: unknown): string | undefined {
@@ -99,7 +107,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
   return {
     name: "write_stdin",
     description:
-      "Interact with a live exec_command session by session_id. Pass chars='' to poll for more output from ANY still-running session (background commands included — tty not required). Sending non-empty input requires the session to have been started with tty=true.",
+      "Poll or write to a session exec_command left running, by session_id. chars='' polls any running session for new output; sending input needs a session started with tty=true and matching sandbox_permissions. Empty polls only read already-approved output and need no new sandbox escalation.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -110,8 +118,15 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
       deferred: false,
     },
     // TOOL-02: non-empty stdin is a second shell channel; require approval
-    // under on_request (empty poll still hits approval once — safer than opt-out).
+    // under on_request. Empty polls only observe the already-admitted process.
     requiresApproval: true,
+    checkPermissions(input) {
+      const args = input as Record<string, unknown>;
+      if (args.chars === undefined || args.chars === "") {
+        return { behavior: "allow", updatedInput: args, decisionReason: { type: "other", reason: "polling output of an existing execution session" } };
+      }
+      return { behavior: "passthrough", message: "Writing input to an execution session requires approval." };
+    },
     concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
     // Unified exec owns the bounded polling yield. The generic executor
@@ -136,13 +151,11 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
       properties: {
         session_id: {
           type: "number",
-          description:
-            "The session_id returned by exec_command for a still-running process.",
+          description: "session_id from exec_command.",
         },
         chars: {
           type: "string",
-          description:
-            "Characters to write. Include newlines for shell commands. Use an empty string to poll output.",
+          description: "Input to send, with newlines for shell commands; empty to poll.",
         },
         yield_time_ms: {
           type: "number",
@@ -156,7 +169,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         sandbox_permissions: {
           ...SANDBOX_PERMISSION_INPUT_PROPERTIES.sandbox_permissions,
           description:
-            "Sandbox escalation mode. A session started by exec_command with sandbox_permissions runs in that sandbox; pass the same value here to reach it.",
+            "For non-empty input, match the sandbox_permissions value the session was started with. Empty polls need no escalation.",
         },
       },
       required: ["session_id"],
@@ -238,20 +251,32 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           (output.exitCode === null && !stillAlive);
         const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
         const runtimeContext = readToolRuntimeContext(args);
-        const notice = execNetworkFailureNotice({
+        const denial = execSandboxDenialNotice({
           output: execContent,
           exitCode: output.exitCode,
-          runtimeSandbox,
-          escalationAvailable: runtimeContext !== undefined &&
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
-              sandboxMode: runtimeContext.requestedSandboxMode,
-              session: runtimeContext.invocation.session,
-            }),
+          sandboxApplied: output.sandboxApplied ?? runtimeSandbox !== undefined,
+          session: runtimeContext?.invocation.session,
+          escalation: execEscalationGrant(args, "with_approval"),
         });
+        const networkEscalation = execEscalationGrant(args, "unavailable");
+        const networkNotice = denial === null
+          ? execNetworkFailureNotice({
+              output: execContent,
+              exitCode: output.exitCode,
+              runtimeSandbox: output.sandboxApplied === false ? undefined : runtimeSandbox,
+              escalation: networkEscalation,
+            })
+          : null;
+        // The retry the notice asks for is the session's exec_command launch:
+        // present that tool's sandbox_permissions on the next request.
+        if (denial?.advisesEscalation === true || (networkNotice !== null && networkEscalation !== "unavailable")) {
+          notifyExecEscalationDiscovery(args, config?.onEscalationAdvised);
+        }
+        const notice = denial?.notice ?? networkNotice;
         return {
           content: notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,
-          codeModeResult: unifiedExecCodeModeResult(output),
+          codeModeResult: unifiedExecCodeModeResult(output, notice),
           // Ordinary terminal receipts settle this call without claiming
           // command success. Missing authenticated outcomes remain unknown
           // even when descendant cleanup has independently completed.

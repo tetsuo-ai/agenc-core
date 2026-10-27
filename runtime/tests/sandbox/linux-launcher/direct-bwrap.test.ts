@@ -20,7 +20,13 @@ afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force
 function fixture(network = "disabled") {
   const cwd = path.join(root, "work"), temp = path.join(root, "temp");
   fs.mkdirSync(cwd, { recursive: true }); fs.mkdirSync(temp, { recursive: true });
-  for (const name of [".git", ".agenc", ".agents"]) fs.mkdirSync(path.join(cwd, name), { recursive: true });
+  // A non-git workspace: .agenc/.agents are whole-directory read-only binds
+  // (zero protected-create targets), so the immutable direct path applies. A
+  // narrowed .git is covered separately ("declines the direct path for a
+  // narrowed .git workspace"): its missing hooks/config/pointer carve-outs are
+  // watched by the created-path monitor, which the per-command launcher runs,
+  // so git workspaces deliberately use the non-direct launcher.
+  for (const name of [".agenc", ".agents"]) fs.mkdirSync(path.join(cwd, name), { recursive: true });
   const profile = { fileSystem: { kind: "restricted", entries: [
     { path: { kind: "special", value: { kind: "root" } }, access: "read" },
     { path: { kind: "path", path: cwd }, access: "write" },
@@ -44,6 +50,18 @@ function decode(payload: Buffer) {
 }
 
 describe.runIf(process.platform === "linux")("guarded immutable direct bwrap planning", () => {
+  it("keeps local-only BPF and network isolation in the direct launcher", () => {
+    const f = fixture();
+    f.args.splice(1, 0, "--allow-local-binding");
+    const prepared = prepareDirectBwrapPlan(f);
+    expect(prepared).toBeDefined();
+    const plan = consumeDirectBwrapPlan(prepared!);
+    try {
+      const decoded = decode(plan.payload);
+      expect(decoded.args).toContain("--unshare-net");
+      expect(decoded.bpf).toEqual(createNetworkSeccompProgram("local-only"));
+    } finally { plan.dispose(); }
+  });
   it("prepares V3 against the packaged reserved artifact without changing task policy or BPF", () => {
     const f = fixture();
     const legacy = consumeDirectBwrapPlan(prepareDirectBwrapPlan(f)!);
@@ -124,13 +142,12 @@ describe.runIf(process.platform === "linux")("guarded immutable direct bwrap pla
   );
 
   it("still rebuilds actual confinement when paths change after proc evidence was prepared", () => {
-    // Keep repository authority after the nested .git disappears, so the
-    // missing protected path needs monitoring rather than ceasing to be a repo.
-    fs.mkdirSync(path.join(root, ".git"));
     const { f, prepared } = withPreparedProbe();
-    // Removing an existing protected carveout now requires a create monitor.
-    // The direct route must refuse even with valid proc-probe evidence.
-    fs.rmdirSync(path.join(f.cwd, ".git"));
+    // A narrowed .git appears after the proc evidence was prepared. Its missing
+    // hooks/config/pointer carve-outs need a create monitor, so the direct
+    // route must refuse (re-plan) even with valid proc-probe evidence rather
+    // than reuse stale evidence that predates the repository.
+    fs.mkdirSync(path.join(f.cwd, ".git"));
     expect(prepareDirectBwrapPlan({ ...f, args: prepared.args })).toBeUndefined();
     expect(fs.readdirSync(f.temp)).toEqual([]);
   });
@@ -217,20 +234,46 @@ describe.runIf(process.platform === "linux")("guarded immutable direct bwrap pla
 
   it("requires zero protected-create targets across every writable root", () => {
     const f = fixture();
-    fs.mkdirSync(path.join(root, ".git"));
+    // An ancestor .agenc makes a missing .agenc below it a watched create
+    // target (not a placeholder). Use .agenc, not .git, so this exercises the
+    // zero-protected-create-target invariant without turning the workspace into
+    // a narrowed-.git one (that case is covered by its own test below).
+    fs.mkdirSync(path.join(root, ".agenc"));
     const extra = path.join(root, "other"); fs.mkdirSync(extra);
     const profileIndex = f.args.indexOf("--permission-profile") + 1;
     const profile = JSON.parse(f.args[profileIndex]!);
     profile.fileSystem.entries.push({ path: { kind: "path", path: extra }, access: "write" });
     f.args[profileIndex] = JSON.stringify(profile);
+    // extra has no .agenc yet, so its creation is watched: a protected-create
+    // target exists and the direct route declines.
     expect(prepareDirectBwrapPlan(f)).toBeUndefined();
     expect(fs.readdirSync(f.temp)).toEqual([]);
-    fs.mkdirSync(path.join(extra, ".git"));
+    for (const name of [".agenc", ".agents"]) fs.mkdirSync(path.join(extra, name));
     const accepted = prepareDirectBwrapPlan(f);
     expect(accepted).toBeDefined();
     consumeDirectBwrapPlan(accepted!).dispose();
-    fs.rmdirSync(path.join(f.cwd, ".git"));
+    fs.rmdirSync(path.join(extra, ".agenc"));
     expect(prepareDirectBwrapPlan(f)).toBeUndefined();
+  });
+
+  // A narrowed .git (real .git directory) keeps its hooks/config/pointer
+  // surface read-only; the missing ones are watched by the created-path
+  // monitor, so the writable root carries protected-create targets and the
+  // immutable direct/session path (which has no per-command monitor) must
+  // decline, leaving git workspaces to the non-direct per-command launcher
+  // that runs the monitor. This is the deliberate behavior change from the
+  // .git narrowing: a correctness/safety choice, at a per-command cost, never
+  // the direct path running a writable .git with its surface unprotected.
+  it("declines the direct path for a narrowed .git workspace", () => {
+    const f = fixture();
+    expect(prepareDirectBwrapPlan(f)).toBeDefined();
+    fs.mkdirSync(path.join(f.cwd, ".git"));
+    expect(prepareDirectBwrapPlan(f)).toBeUndefined();
+    expect(fs.readdirSync(f.temp)).toEqual([]);
+    // No host entry is created inside the workspace .git while planning.
+    expect(fs.readdirSync(path.join(f.cwd, ".git"))).toEqual([]);
+    fs.rmdirSync(path.join(f.cwd, ".git"));
+    expect(prepareDirectBwrapPlan(f)).toBeDefined();
   });
 
   it("keeps the bounded platform helpers equivalent to the unchanged launcher", () => {

@@ -23,10 +23,11 @@ import type {
   BlockedRequestObserver,
   NetworkPolicyDecider,
 } from "../../sandbox/network-policy.js";
-import type {
-  AvailableApprovalDecision,
-  NetworkApprovalContext,
-  ParsedApprovalCommand,
+import {
+  RUN_WITHOUT_SANDBOX_PERMISSION,
+  type AvailableApprovalDecision,
+  type NetworkApprovalContext,
+  type ParsedApprovalCommand,
 } from "../../sandbox/escalation/approvals.js";
 import type {
   ExecPolicyAmendment,
@@ -41,6 +42,7 @@ import {
   type PermissionDecisionHookInput,
 } from "../../tools/hooks.js";
 import { buildShellApprovalKey, canonicalJsonKey } from "../approval-cache.js";
+import { resolve as resolvePath } from "node:path";
 import {
   defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
   type ApprovalPolicy as PermissionsApprovalPolicy,
@@ -241,6 +243,8 @@ export function defaultExecApprovalRequirement(
 }
 
 export interface ApprovalCtx {
+  /** A human-only filesystem attestation; cached separately from tool-use approvals. */
+  readonly mcpFilesystemApproval?: import("../../tools/runtimes/mcp-filesystem-approval.js").McpFilesystemApprovalScope;
   readonly invocation: ToolInvocation;
   readonly callId: string;
   /** Canonical identity of this permission occurrence, not the tool invocation. */
@@ -254,6 +258,13 @@ export interface ApprovalCtx {
   readonly signal?: AbortSignal;
   readonly guardianReviewId?: string;
   readonly retryReason?: string;
+  /**
+   * Approving runs the call without the OS sandbox: the separate question the
+   * orchestrator asks after the sandbox refused a call. Clients show it as
+   * that question, never as an ordinary tool approval, and a session grant
+   * of it never answers for the sandboxed call (or the reverse).
+   */
+  readonly runsWithoutSandbox?: boolean;
   readonly cwd?: string;
   readonly command?: readonly string[];
   readonly parsedCommand?: ParsedApprovalCommand;
@@ -484,7 +495,8 @@ async function resolveApproval(
   opts: RequestApprovalOpts,
 ): Promise<RequestApprovalResult> {
   const signal = opts.signal ?? opts.ctx.signal;
-  const requiresUserInteraction = opts.ctx.requiresUserInteraction === true;
+  const mcpFilesystemApproval = opts.ctx.mcpFilesystemApproval;
+  const requiresUserInteraction = opts.ctx.requiresUserInteraction === true || mcpFilesystemApproval !== undefined;
   if (alreadyAborted(signal)) {
     return { decision: { kind: "abort" }, source: "aborted" };
   }
@@ -567,19 +579,25 @@ async function resolveApproval(
     // Automatic reviewers may only grant the current call. Session grants and
     // policy amendments require an authoritative human resolver, and a prior
     // automatic decision must never be replayed for a later call.
-    const approvalCache = shouldUseGuardian || requiresUserInteraction
+    const approvalCache = shouldUseGuardian || (requiresUserInteraction && mcpFilesystemApproval === undefined)
       ? null
       : resolveApprovalCache(opts.ctx.invocation);
     const approvalKeys =
-      approvalCache !== null
-        ? buildApprovalCacheKeys(
-            toolFromApprovalCtx(opts.ctx),
-            opts.ctx.invocation,
-            opts.args ?? {},
+      mcpFilesystemApproval !== undefined
+        ? [{ kind: "mcp_no_fs_writes", ...mcpFilesystemApproval }]
+        : approvalCache !== null
+        ? approvalCacheKeysForRequest(
+            opts.ctx,
+            buildApprovalCacheKeys(
+              toolFromApprovalCtx(opts.ctx),
+              opts.ctx.invocation,
+              opts.args ?? {},
+            ),
           )
         : [];
     let fetchedResult: RequestApprovalResult | undefined;
     const fetchApprovalResult = async (): Promise<RequestApprovalResult> => {
+      if (alreadyAborted(signal)) return { decision: { kind: "abort" }, source: "aborted" };
       if (!activeApprovalTurnStillMatches(opts.ctx, opts.getActiveTurnId)) {
         throw new ModalApprovalError("stale_modal_decision");
       }
@@ -722,7 +740,10 @@ function beginDurableApprovalJournal(
             : {}),
           turnId: opts.ctx.turnId,
           permissions: opts.ctx.approvalKind === "cross_provider_spawn"
-            ? ["cross_provider_spawn"] : ["tool.use"],
+            ? ["cross_provider_spawn"]
+            : opts.ctx.runsWithoutSandbox === true
+              ? ["tool.use", RUN_WITHOUT_SANDBOX_PERMISSION]
+              : ["tool.use"],
           ...(opts.ctx.retryReason !== undefined
             ? { reason: opts.ctx.retryReason }
             : {}),
@@ -1086,8 +1107,9 @@ export async function requestToolUserApproval(
       ? buildApprovalCacheKeys(opts.tool, opts.invocation, opts.args)
       : [];
 
-  const fetchModalDecision = async (): Promise<ModalDecision> =>
-    await new Promise<ModalDecision>((resolve) => {
+  const fetchModalDecision = async (): Promise<ModalDecision> => {
+    if (opts.signal.aborted) return { behavior: "abort", decisionAtTurnId: opts.currentTurnId };
+    return await new Promise<ModalDecision>((resolve) => {
       let settled = false;
       const onAbort = () => {
         if (settled) return;
@@ -1130,6 +1152,7 @@ export async function requestToolUserApproval(
         },
       );
     });
+  };
 
   let fetchedReviewDecision: ReviewDecision | undefined;
   const resolveModalReviewDecision = async (): Promise<ReviewDecision> => {
@@ -1346,6 +1369,20 @@ function resolveApprovalCache(
   return store && typeof store.withCachedApproval === "function" ? store : null;
 }
 
+/**
+ * A session grant of a request to run a call without the sandbox is kept apart
+ * from grants of the call itself: approving the sandboxed call for the session
+ * never answers a later request to run it unsandboxed, nor the reverse.
+ */
+function approvalCacheKeysForRequest(
+  ctx: ApprovalCtx,
+  keys: readonly unknown[],
+): readonly unknown[] {
+  return ctx.runsWithoutSandbox === true
+    ? keys.map((key) => ({ runWithoutSandbox: key }))
+    : keys;
+}
+
 function buildApprovalCacheKeys(
   tool: Tool,
   invocation: ToolInvocation,
@@ -1402,13 +1439,27 @@ function buildApprovalCacheKeys(
       ];
     }
   }
+  let scopedArgs = args;
+  if ((tool.name === "Write" || tool.name === "Edit") &&
+      typeof args.file_path === "string" && args.file_path.length > 0) {
+    // The card promises this tool on this file for the session. Replacement
+    // text is the operation, not its permission scope. Retain other options,
+    // cwd and execution policies so a grant cannot authorize another action.
+    scopedArgs = { ...args, file_path: resolvePath(cwd, args.file_path) };
+    if (tool.name === "Write") delete scopedArgs.content;
+    else {
+      delete scopedArgs.old_string;
+      delete scopedArgs.new_string;
+      delete scopedArgs.replace_all;
+    }
+  }
   return [
     {
       toolName: tool.name,
       cwd,
       sandboxMode: invocation.turn.sandboxPolicy.value,
       approvalPolicy: invocation.turn.approvalPolicy.value,
-      args,
+      args: scopedArgs,
     },
   ];
 }

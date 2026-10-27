@@ -37,6 +37,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isRetryableStreamError } from "../session/run-turn.js";
 import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
+import { promptCacheScopeKeyForHome } from "../llm/prompt-cache-key.js";
+import { getAgencHomeDir } from "../session/session-store.js";
 
 const streamedDispatchCalls: string[] = [];
 
@@ -106,6 +108,7 @@ vi.mock("./execute-tools.js", () => ({
 
 import {
   streamModel,
+  buildProviderOptions,
   type StreamModelRequestContract,
   StreamModelError,
 } from "./stream-model.js";
@@ -316,6 +319,7 @@ describe("streamModel — live assistant text sanitization", () => {
     const dispatch = vi.fn(async () => ({
       content: "ok",
       toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
       model,
       finishReason: "stop" as const,
     }));
@@ -540,6 +544,19 @@ describe("streamModel — live assistant text sanitization", () => {
     });
   });
 
+  test("forwards the captured distinction between default and explicitly disabled summaries", () => {
+    const ctx = mkCtx("chat");
+    const { session } = mkSession(mkProvider(async () => ({
+      content: "ok", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "test-model", finishReason: "stop",
+    })));
+    const request = mkRequest([{ role: "user", content: "hello" }]);
+    const signal = new AbortController().signal;
+    expect(buildProviderOptions(request, ctx, signal, session).reasoningSummaryIsDefault).toBeUndefined();
+    (ctx as TurnContext & { reasoningSummaryIsDefault?: true }).reasoningSummaryIsDefault = true;
+    expect(buildProviderOptions(request, ctx, signal, session).reasoningSummaryIsDefault).toBe(true);
+  });
+
   test("routes every provider request with the session conversation id as the prompt cache key", async () => {
     // xAI prefix caching is routed by `prompt_cache_key`; without it 77 of
     // 220 calls in the reviewed desktop session lost part of the cached
@@ -586,7 +603,86 @@ describe("streamModel — live assistant text sanitization", () => {
       .toEqual(["child-luna-session", "child-luna-session"]);
   });
 
-  test("the default ten-minute stream watchdog aborts a stalled provider with a retryable stream_idle", async () => {
+  test("Luna sessions of one AgenC home share one cache scope, another home gets its own, and the tail leads", async () => {
+    // oa Luna race: with a key per conversation no first request read the
+    // prefix the previous session had just written, and the tail trailing
+    // the input was never cached.
+    const home = mkdtempSync(join(tmpdir(), "agenc-cache-scope-"));
+    const otherHome = mkdtempSync(join(tmpdir(), "agenc-cache-scope-"));
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return openAiSseResponse([
+        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: {
+          id: `resp_${bodies.length}`, status: "completed", model: "gpt-6-luna",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+          usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
+        } })}\n\n`,
+      ]);
+    }) as typeof fetch;
+    try {
+      for (const [conversationId, sessionHome] of [
+        ["conv-first", home], ["conv-second", home], ["conv-other-home", otherHome],
+      ] as const) {
+        const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-6-luna", fetchImpl });
+        const { session } = mkSession(provider);
+        Object.assign(session, { conversationId });
+        (session.services as { configStore?: unknown }).configStore = {
+          current: () => ({}),
+          homeContext: { path: sessionHome },
+        };
+        const ctx = mkCtx("chat");
+        await streamModel(mkState(ctx), ctx, session, {
+          ...mkRequest([{ role: "user", content: "hello" }]),
+          baseInstructions: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nWorkspace: /workspace",
+        });
+      }
+      expect(bodies).toHaveLength(3);
+      const scope = promptCacheScopeKeyForHome(getAgencHomeDir(home));
+      const otherScope = promptCacheScopeKeyForHome(getAgencHomeDir(otherHome));
+      expect(scope).toMatch(/^agenc-[0-9a-f]{32}$/u);
+      expect(otherScope).not.toBe(scope);
+      expect(bodies.map((body) => body.prompt_cache_key)).toEqual([scope, scope, otherScope]);
+      for (const body of bodies) {
+        expect(body.instructions).toBe("STATIC_HEAD");
+        const input = body.input as Array<Record<string, unknown>>;
+        expect(input[0]).toEqual({
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text: "Workspace: /workspace" }],
+        });
+        expect(input.at(-1)).toMatchObject({ type: "message", role: "user" });
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(otherHome, { recursive: true, force: true });
+    }
+  });
+
+  test("only OpenAI sessions carry the prompt cache scope", () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-cache-scope-"));
+    try {
+      const scopes = ["openai", "grok", "deepseek"].map((name) => {
+        const { session } = mkSession({ ...mkProvider(async () => ({
+          content: "ok", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model", finishReason: "stop",
+        })), name });
+        (session.services as { configStore?: unknown }).configStore = {
+          current: () => ({}),
+          homeContext: { path: home },
+        };
+        const options = buildProviderOptions(mkRequest([{ role: "user", content: "hello" }]), mkCtx("chat"),
+          new AbortController().signal, session);
+        expect(options.promptCacheKey).toBe("conv-stream");
+        return options.promptCacheScopeKey;
+      });
+      expect(scopes).toEqual([promptCacheScopeKeyForHome(getAgencHomeDir(home)), undefined, undefined]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the default twenty-minute stream watchdog aborts a stalled provider with a retryable stream_idle", async () => {
     vi.useFakeTimers();
     try {
       const ctx = mkCtx("chat");
@@ -619,7 +715,7 @@ describe("streamModel — live assistant text sanitization", () => {
         (error: unknown) => error,
       );
 
-      await vi.advanceTimersByTimeAsync(600_000 - 1);
+      await vi.advanceTimersByTimeAsync(1_200_000 - 1);
       expect(events.some((event) => event.msg.type === "stream_error")).toBe(
         false,
       );
@@ -635,14 +731,14 @@ describe("streamModel — live assistant text sanitization", () => {
         }),
       );
       expect(error).toBeInstanceOf(StreamModelError);
-      expect((error as Error).message).toMatch(/^stream_idle: no progress for 600000ms/);
+      expect((error as Error).message).toMatch(/^stream_idle: no bytes for 1200000ms/);
       expect(isRetryableStreamError(error)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("a stream warns despite byte heartbeats and aborts from its last meaningful progress", async () => {
+  test("a stream warns despite byte heartbeats and remains alive until cancellation", async () => {
     vi.useFakeTimers();
     const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     const external = new AbortController();
@@ -667,7 +763,7 @@ describe("streamModel — live assistant text sanitization", () => {
       );
       const { session, events } = mkSession(provider);
       (session.services as { configStore?: unknown }).configStore = {
-        current: () => ({ stream_watchdog_timeout_ms: 100 }),
+        current: () => ({ stream_watchdog_timeout_ms: 100, stream_quiet_warning_ms: 50 }),
       };
 
       const outcome = streamModel(
@@ -693,14 +789,11 @@ describe("streamModel — live assistant text sanitization", () => {
       expect(providerSignal?.aborted).toBe(false);
 
       await vi.advanceTimersByTimeAsync(200);
-      expect(providerSignal?.aborted).toBe(true);
-      expect(providerSignal?.reason).toBe(STREAM_IDLE_ABORT_REASON);
-      expect(
-        events.some((event) => event.msg.type === "stream_error"),
-      ).toBe(true);
-
-      const error = await outcome;
-      expect((error as Error).message).toMatch(/^stream_idle: no progress for 100ms/);
+      expect(providerSignal?.aborted).toBe(false);
+      expect(events.some(event => event.msg.type === "stream_error")).toBe(false);
+      external.abort("user stop");
+      await outcome;
+      expect(providerSignal?.reason).toBe("user stop");
     } finally {
       monotonicClock.mockRestore();
       vi.useRealTimers();
@@ -888,7 +981,7 @@ describe("streamModel — live assistant text sanitization", () => {
   });
 
   test("a configured watchdog that matches the default value is honoured by provenance", async () => {
-    // The value alone cannot separate "operator wrote 600000" from "nobody
+    // The value alone cannot separate "operator wrote 1200000" from "nobody
     // wrote anything"; the config store's provenance can, and names the layer.
     // A key attributed to a real layer is an operator choice and applies even
     // inside a session that owns its own deadline.
@@ -1163,7 +1256,7 @@ describe("streamModel — live assistant text sanitization", () => {
     }
   });
 
-  test("requires a tool choice in plan mode when tools are available", async () => {
+  test("allows a direct answer in plan mode when tools are available", async () => {
     const ctx = mkCtx("plan");
     const state = mkState(ctx);
     const registry = mkRegistry([
@@ -1203,7 +1296,7 @@ describe("streamModel — live assistant text sanitization", () => {
       },
     );
 
-    expect(seenOptions[0]?.toolChoice).toBe("required");
+    expect(seenOptions[0]?.toolChoice).toBeUndefined();
   });
 
   test("does not require tool choice outside plan mode", async () => {

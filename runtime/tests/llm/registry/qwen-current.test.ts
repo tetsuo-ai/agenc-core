@@ -15,13 +15,16 @@ const tool: LLMTool = { type: "function", function: {
 const entry = (model: string, provider = "qwen") => resolveRegisteredModelCatalogEntry({ provider, model });
 const messages = [{ role: "user" as const, content: "Call echo." }];
 
+// Retired by Alibaba on 2026-10-10: hidden from the picker.
+const RETIRED = new Set(["qwen-coder-plus", "qwen3-8b", "qwen3-14b", "qwen3-30b-a3b", "qwen3-235b-a22b", "qwen-turbo"]);
+
 describe("Qwen current native and hosted chat models", () => {
   it("keeps reviewed PAYG routes on the selected provider through catalog and runtime resolution", () => {
     const catalog = buildProviderModelCatalog({});
     for (const { model } of QWEN_CURRENT_MODELS) {
-      const config = model === "kimi/kimi-k3"
-        ? { providers: { qwen: { default_model: model } } } : {};
-      if (model === "kimi/kimi-k3") expect(catalog.qwen).not.toContain(model);
+      const hidden = model === "kimi/kimi-k3" || RETIRED.has(model);
+      const config = hidden ? { providers: { qwen: { default_model: model } } } : {};
+      if (hidden) expect(catalog.qwen).not.toContain(model);
       else expect(catalog.qwen).toContain(model);
       expect(catalog["qwen-token-plan"]).not.toContain(model);
       expect(resolveProviderModelInput(config, "qwen", model)).toEqual({ provider: "qwen", model });
@@ -116,8 +119,19 @@ describe("Qwen current native and hosted chat models", () => {
     }
     expect(DEFAULT_MODEL_COSTS["qwen:glm-5.3"]?.cachedInputUsdPer1K).toBeCloseTo(.00028);
     expect(DEFAULT_MODEL_COSTS["zai:glm-5.3"]?.cachedInputUsdPer1K).toBeCloseTo(.00026);
-    expect(resolveModelCostEntry({ provider: "qwen-token-plan", model: "glm-5.3" }, DEFAULT_MODEL_COSTS)).toBeNull();
-    for (const model of ["deepseek-v4.1-flash", "qwen3-8b", "qwen3-omni-flash", "ZHIPU/GLM-5.3", "kimi/kimi-k3"]) {
+    // The Token Plan never takes the PAYG rate: it is a flat subscription.
+    expect(resolveModelCostEntry({ provider: "qwen-token-plan", model: "glm-5.3" }, DEFAULT_MODEL_COSTS)?.entry)
+      .toMatchObject({ inputUsdPer1K: 0, outputUsdPer1K: 0, label: "plan", localZeroCost: true });
+    // Singapore rates read 2026-10-17 (DeepSeek at its busy-hour rate).
+    for (const [model, input, output] of [
+      ["deepseek-v4.1-flash", .0003, .0012], ["qwen3-omni-flash", .00043, .00166], ["ZHIPU/GLM-5.3", .0014, .0044],
+    ] as const) {
+      const priced = resolveModelCostEntry({ provider: "qwen", model }, DEFAULT_MODEL_COSTS)?.entry;
+      expect(priced?.inputUsdPer1K).toBeCloseTo(input, 12);
+      expect(priced?.outputUsdPer1K).toBeCloseTo(output, 12);
+    }
+    // Retired, or hosted only in China: no published Singapore price.
+    for (const model of ["qwen3-8b", "kimi/kimi-k3"]) {
       expect(resolveModelCostEntry({ provider: "qwen", model }, DEFAULT_MODEL_COSTS)).toBeNull();
     }
   });

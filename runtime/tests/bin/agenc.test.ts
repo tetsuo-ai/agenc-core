@@ -28,6 +28,8 @@ import {
   __setDaemonCliDepsForTest,
   __setActiveInkUnmountForTest,
   bootTUIEntry,
+  exitOrResumeAfterTui,
+  ResumeTuiOpenError,
   attachAgentTuiEntry,
   detectStartupShortCircuit,
   formatUnavailableCliCwdMessage,
@@ -50,10 +52,12 @@ import {
   validateAgencHome,
   type ConfigReloadLatch,
 } from "./agenc-main.js";
+import { setPendingResumeSessionId, resetPendingResumeSessionIdForTestingOnly } from "../../src/tui/pending-resume.js";
 import { ConfigStore } from "../config/store.js";
 import { defaultConfig } from "../config/schema.js";
 import {
   assembleSystemPrompt,
+  resolveMemoryOnRequest,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "../prompts/system-prompt.js";
 import {
@@ -235,12 +239,16 @@ function installDaemonCliDepsForTest(
     readonly createConnectedTuiClientError?: Error;
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
+    readonly liveSessionMetadata?: Readonly<Record<string, unknown>>;
     readonly liveAgentPath?: string;
     readonly runtimeOptions?: AgentRuntimeOptions;
     readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
+    readonly model?: string;
     readonly resumePromptAgentError?: Error;
     readonly requestErrors?: Partial<Record<string, Error | readonly Error[]>>;
     readonly mcpManager?: unknown;
+    /** config.toml `light_mode` as the TUI context's loaded config reports it. */
+    readonly lightModeConfig?: boolean;
   } = {},
 ): {
   readonly agentId: string;
@@ -278,7 +286,7 @@ function installDaemonCliDepsForTest(
       bypassPermissionsModeAvailable: false,
       bypassPermissionsWorkspace: null,
       bypassPermissionsConsentWorkspace: null,
-      model: "grok-4.3",
+      model: options.model ?? "grok-4.3",
       provider: "grok",
       profile: null,
       reasoningEffort: null,
@@ -365,6 +373,7 @@ function installDaemonCliDepsForTest(
             {
               sessionId,
               agentId,
+              metadata: options.liveSessionMetadata ?? {},
               status: "idle",
               createdAt: "2026-05-06T00:00:00.000Z",
               cwd,
@@ -595,8 +604,11 @@ function installDaemonCliDepsForTest(
         env: params.env ?? {},
         base: {
           ...defaultConfig(),
-          model: "grok-4.3",
+          model: options.model ?? "grok-4.3",
           model_provider: "grok",
+          ...(options.lightModeConfig !== undefined
+            ? { light_mode: options.lightModeConfig }
+            : {}),
         },
       });
       const config = configStore.current();
@@ -633,7 +645,7 @@ function installDaemonCliDepsForTest(
           nextInternalSubId: () => "daemon-test-sub",
           listMcpClients: () => [],
         },
-        model: "grok-4.3",
+        model: options.model ?? "grok-4.3",
         workspaceRoot: params.cwd,
       };
     },
@@ -1465,7 +1477,10 @@ describe("prepareTurnRuntimeInputs", () => {
   it("reloads MCP instructions while leaving workspace instructions to Session.runTurn", async () => {
     const repoRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-turn-inputs-"));
     const nested = join(repoRoot, "pkg");
-    const memoryDir = join(repoRoot, ".agenc-memory");
+    const home = join(repoRoot, "session-home");
+    // The session's global memory index, with content: an interactive session
+    // whose memory is empty gets the rules on request instead (next test).
+    const memoryDir = join(home, "memory");
     const memoryMdPath = join(memoryDir, "MEMORY.md");
     await mkdir(nested, { recursive: true });
     await mkdir(memoryDir, { recursive: true });
@@ -1474,7 +1489,6 @@ describe("prepareTurnRuntimeInputs", () => {
     await writeFile(memoryMdPath, "MEMORY-ONE\n", "utf8");
 
     let instructionText = "MCP-ONE";
-    const home = join(repoRoot, "session-home");
     const store = new ConfigStore({ home, cwd: nested, env: { HOME: repoRoot, AGENC_HOME: home } });
     await store.reload();
     const load = vi.spyOn(memoryPrompt, "loadMemoryPrompt");
@@ -1505,8 +1519,9 @@ describe("prepareTurnRuntimeInputs", () => {
       registry: { tools: [{ name: "bash" }] },
     });
     expect(first).not.toHaveProperty("projectInstructions");
-    // Auto memory is on by default: the cacheable instructions and the
-    // per-session directory block both come out of the turn inputs.
+    // Auto memory is on by default and this memory has content: the cacheable
+    // instructions and the per-session directory block both come out of the
+    // turn inputs.
     expect(first.memoryInstructionsText).toContain("# auto memory");
     expect(first.memoryPromptText).toContain("# Memory directories");
     expect(first.memoryPromptText).toContain(join(home, "memory"));
@@ -1541,6 +1556,48 @@ describe("prepareTurnRuntimeInputs", () => {
     ]);
 
     await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it("leaves the memory rules to the on-request reminder while an interactive session's memory is empty", async () => {
+    const repoRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-turn-inputs-empty-"));
+    onTestFinished(() => rm(repoRoot, { recursive: true, force: true }));
+    const nested = join(repoRoot, "pkg");
+    const home = join(repoRoot, "session-home");
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(repoRoot, "package.json"), "{}", "utf8");
+    const store = new ConfigStore({ home, cwd: nested, env: { HOME: repoRoot, AGENC_HOME: home } });
+    await store.reload();
+    const sessionWith = (runtimeOptions: Record<string, unknown>) => ({
+      services: {
+        configStore: store,
+        runtimeOptions,
+        mcpManager: { effectiveServers: vi.fn(async () => new Map()) },
+      },
+    } as unknown as Session);
+    const inputsOf = (session: Session) => prepareTurnRuntimeInputs({
+      session,
+      configStore: store,
+      workspaceRoot: nested,
+      memoryDir: join(home, "memory"),
+      memoryMdPath: join(home, "memory", "MEMORY.md"),
+      registry: { tools: [{ name: "bash" }] },
+    });
+
+    // The fixed prefix leaves both halves out; the reminder carries the same
+    // rules and the session's directories with the first message about memory.
+    const interactive = sessionWith({ simpleMode: false, remoteMode: false });
+    const inputs = await inputsOf(interactive);
+    expect(inputs.memoryInstructionsText).toBe("");
+    expect(inputs.memoryPromptText).toBe("");
+    const onRequest = await resolveMemoryOnRequest(interactive, nested);
+    expect(onRequest).toContain("# auto memory");
+    expect(onRequest).toContain("# Memory directories");
+    expect(onRequest).toContain(join(home, "memory"));
+
+    // A run without a human keeps the rules in its prompt.
+    const unattended = await inputsOf(sessionWith({ simpleMode: false, remoteMode: false, nonInteractive: true }));
+    expect(unattended.memoryInstructionsText).toContain("# auto memory");
+    expect(unattended.memoryPromptText).toContain(join(home, "memory"));
   });
 });
 
@@ -2361,7 +2418,7 @@ describe("main() smoke", () => {
         expect(stderr()).not.toContain("retry 1/");
         expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
         expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
-          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_failed" });
       });
     });
 
@@ -2479,7 +2536,7 @@ describe("main() smoke", () => {
         expect(stderr()).toContain("retryable rather than a task failure");
         expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
         expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
-          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_failed" });
       });
     });
 
@@ -2661,7 +2718,7 @@ describe("main() smoke", () => {
     // event.session_event records, and turn_failed is delivered as an
     // event.session_event, never as an agent_status. The client must classify
     // that session event, write the message to stderr, settle with code 1
-    // within a bounded time, and stop the daemon agent with one_shot_complete.
+    // within a bounded time, and stop the daemon agent with one_shot_failed.
     const agentId = "agent_auth_failed";
     const sessionId = "session_auth_failed";
     const turnId = "sub-conv-auth-3";
@@ -2718,7 +2775,7 @@ describe("main() smoke", () => {
     expect(outcome.stderr).toContain(failureMessage);
     expect(outcome.stdout).toBe("");
     const stop = outcome.daemon.requests.find((request) => request.method === "agent.stop");
-    expect(stop?.params).toEqual({ agentId, reason: "one_shot_complete" });
+    expect(stop?.params).toEqual({ agentId, reason: "one_shot_failed" });
     expect(outcome.daemon.stopPromptAgent).not.toHaveBeenCalled();
     expect(outcome.daemon.client.close).toHaveBeenCalled();
   });
@@ -4209,6 +4266,48 @@ describe("main() smoke", () => {
     }
   });
 
+  it("resumeTUIEntry retains text captured while a large transcript is attaching", async () => {
+    const { seedEarlyInput, consumeEarlyInput } = await import("../../src/utils/earlyInput.js");
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-input-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-input-cwd-"));
+    const prevEnv = { ...process.env };
+    const conversationId = "conv-resumeinput1";
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const rolloutPath = await writeResumeRolloutForTest(tmpCwd, conversationId, tmpHome);
+    const identity = await lstat(rolloutPath, { bigint: true });
+    const daemon = installDaemonCliDepsForTest({
+      agentId: conversationId, sessionId: conversationId, cwd: tmpCwd,
+      liveAgent: true, liveAgentPath: "/root",
+      liveAgentMetadata: {
+        agentPath: "/root", canonicalRolloutPath: rolloutPath,
+        canonicalRolloutDev: identity.dev.toString(10), canonicalRolloutIno: identity.ino.toString(10),
+      },
+    });
+    const createContext = daemon.createTuiContext.getMockImplementation()!;
+    daemon.createTuiContext.mockImplementation(async (...args) => {
+      // Input arrives after resume resolution, during the slow attach window.
+      seedEarlyInput("Keep this new resume draft 😅\n");
+      return createContext(...args);
+    });
+    const boot = vi.fn(async () => ({ unmount: vi.fn(), waitUntilExit: vi.fn(async () => undefined) }));
+    vi.doMock("../tui/main.js", () => ({ bootTUI: boot }));
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(resumeTUIEntry({ resumeId: conversationId })).resolves.toBe(0);
+      expect(boot).toHaveBeenCalledWith(expect.objectContaining({ initialComposerText: "Keep this new resume draft 😅\n" }));
+      expect(consumeEarlyInput()).toBe("");
+    } finally {
+      consumeEarlyInput();
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) if (!(key in prevEnv)) delete process.env[key];
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("resumeTUIEntry attaches a matching live agent that wins the cold-resume race", async () => {
     const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-raced-resume-home-"));
     const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-raced-resume-cwd-"));
@@ -4438,6 +4537,7 @@ describe("main() smoke", () => {
     const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode: true });
     const daemon = installDaemonCliDepsForTest({
       agentId: "agent_bare_attach",
+      model: "grok-4.6",
       sessionId: "session_bare_attach",
       cwd: tmpCwd,
       runtimeOptions,
@@ -4475,14 +4575,14 @@ describe("main() smoke", () => {
           runtimeOptions,
           runtimeSettings: expect.objectContaining({
             permissionMode: "default",
-            model: "grok-4.3",
+            model: "grok-4.6",
             provider: "grok",
           }),
         }),
       );
       expect(observedBareMode).toEqual([true, true]);
       expect(observedTranscript).toEqual([
-        { id: "snapshot:test_epoch:prior_user", type: "user_message", payload: { message: "Earlier request" } },
+        { id: "snapshot:test_epoch:prior_user", type: "user_message", payload: { message: "Earlier request", canonicalUserMessageId: "prior_user" } },
         { id: "snapshot:test_epoch:prior_assistant", type: "agent_message", payload: { message: "Earlier answer" } },
       ]);
       await expect(
@@ -4513,6 +4613,28 @@ describe("main() smoke", () => {
         "attach-time provider openai disagrees with live daemon provider grok",
       );
       expect(daemon.createTuiContext).toHaveBeenCalledOnce();
+      const attachWithModel = (clientId: string, model: string) =>
+        attachAgentTuiEntry({
+          agentId: "agent_bare_attach",
+          clientId,
+          env: {
+            AGENC_HOME: tmpHome,
+            AGENC_WORKSPACE: tmpCwd,
+            HOME: tmpHome,
+          },
+          startupCliFlags: { model },
+        });
+      await expect(attachWithModel("client_qualified_provider", "openai:gpt-6.1-sol")).rejects.toThrow(
+        "attach-time provider openai disagrees with live daemon provider grok",
+      );
+      await expect(attachWithModel("client_qualified_model", "grok:grok-4.7")).rejects.toThrow(
+        "attach-time model grok-4.7 disagrees with live daemon model grok-4.6",
+      );
+      expect(daemon.createTuiContext).toHaveBeenCalledOnce();
+      // Rerunning the same `--model provider:id` command with --continue
+      // names the live session's model and attaches.
+      await expect(attachWithModel("client_qualified_same", "grok:grok-4.6")).resolves.toBe(0);
+      expect(daemon.createTuiContext).toHaveBeenCalledTimes(2);
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
@@ -4836,6 +4958,49 @@ describe("main() smoke", () => {
     }
   });
 
+  it.each([0, 1, 130])("preserves mounted resumed TUI exit code %s without reopening", async (code) => {
+    const resumeTui = vi.fn(async () => code);
+    const createTuiContext = vi.fn(async () => { throw new Error("unexpected idle reboot"); });
+    __setDaemonCliDepsForTest({ resumeTui, createTuiContext });
+    setPendingResumeSessionId("conv-resumed-exit");
+    try {
+      await expect(exitOrResumeAfterTui(0, {})).resolves.toBe(code);
+      expect(resumeTui).toHaveBeenCalledWith({ resumeId: "conv-resumed-exit" }, {}, { throwOnOpenFailure: true });
+      expect(createTuiContext).not.toHaveBeenCalled();
+    } finally {
+      resetPendingResumeSessionIdForTestingOnly();
+      __setDaemonCliDepsForTest(null);
+    }
+  });
+
+  it("does not mistake a resumed renderer failure for a resume open failure", async () => {
+    const error = new Error("mounted renderer failed");
+    __setDaemonCliDepsForTest({ resumeTui: async () => { throw error; } });
+    setPendingResumeSessionId("conv-renderer-failure");
+    try {
+      await expect(exitOrResumeAfterTui(0, {})).rejects.toBe(error);
+    } finally {
+      resetPendingResumeSessionIdForTestingOnly();
+      __setDaemonCliDepsForTest(null);
+    }
+  });
+
+  it("reports an unmounted resume resolution failure with its typed open error", async () => {
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-missing-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-missing-cwd-"));
+    const prevEnv = { ...process.env };
+    Object.assign(process.env, { AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_CLI_ENTRY_DISABLE: "1" });
+    try {
+      await expect(resumeTUIEntry({ resumeId: "conv-missing" }, {}, { throwOnOpenFailure: true })).rejects.toBeInstanceOf(ResumeTuiOpenError);
+      await expect(resumeTUIEntry({ resumeId: "conv-missing" }, {})).resolves.toBe(1);
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in prevEnv)) delete process.env[key];
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true });
+      await rm(tmpCwd, { recursive: true });
+    }
+  });
+
   it("bootTUIEntry opens an idle daemon-backed TUI without starting a prompt agent", async () => {
     const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-idle-home-"));
     const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-idle-cwd-"));
@@ -5012,6 +5177,226 @@ describe("main() smoke", () => {
       ]);
     } finally {
       vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      process.argv = prevArgv;
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["no flag and no light_mode starts Light", [] as string[], undefined, true],
+    ["--standard starts standard", ["--standard"], undefined, false],
+    ["light_mode = false starts standard", [] as string[], false, false],
+    ["--light wins over light_mode = false", ["--light"], false, true],
+  ])("bootTUIEntry settles a new idle TUI session's mode: %s", async (_label, flags, lightModeConfig, expected) => {
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mode-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mode-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+
+    process.argv = ["node", "agenc", ...flags];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_mode",
+      sessionId: "session_tui_mode",
+      cwd: tmpCwd,
+      ...(lightModeConfig !== undefined ? { lightModeConfig } : {}),
+    });
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    let capturedSession: {
+      submit?: (message: string) => Promise<void>;
+      services?: { runtimeOptions?: { lightMode?: boolean } };
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount: vi.fn(), waitUntilExit };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const pending = bootTUIEntry({});
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
+      // The footer reads this before the first prompt creates the session.
+      expect(session.services?.runtimeOptions?.lightMode).toBe(expected);
+      await session.submit?.("hello daemon");
+      resolveExit?.();
+      await expect(pending).resolves.toBe(0);
+      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ lightMode: expected }),
+        }),
+      );
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      process.argv = prevArgv;
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["no light_mode starts Light", undefined, [] as string[], true],
+    ["light_mode = false starts standard", false, [] as string[], false],
+    ["--light wins over light_mode = false", false, ["--light"], true],
+  ])("bootTUIEntry settles a new TUI session started with a prompt: %s", async (_label, configured, flags, expected) => {
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mode-prompt-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mode-prompt-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+
+    process.argv = ["node", "agenc", ...flags, "inspect"];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    if (configured !== undefined) {
+      await writeFile(join(tmpHome, "config.toml"), `config_version = 2\nlight_mode = ${configured}\n`);
+    }
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_mode_prompt",
+      sessionId: "session_tui_mode_prompt",
+      cwd: tmpCwd,
+    });
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => ({
+        unmount: vi.fn(),
+        waitUntilExit: vi.fn().mockResolvedValue(undefined),
+      })),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(bootTUIEntry({ initialPrompt: "inspect" })).resolves.toBe(0);
+      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ lightMode: expected }),
+        }),
+      );
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      process.argv = prevArgv;
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bootTUIEntry provisions the daemon session while an interactive user types", async () => {
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-prewarm-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-prewarm-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+    const ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+
+    process.argv = [
+      "node",
+      "agenc",
+      "--provider",
+      "grok",
+      "--model",
+      "grok-4.3",
+    ];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    process.env.AGENC_ONBOARDING = "0";
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_prewarm",
+      sessionId: "session_tui_prewarm",
+      cwd: tmpCwd,
+    });
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    const unmount = vi.fn();
+    let capturedSession: {
+      submit?: (message: string) => Promise<void>;
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount, waitUntilExit };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const pending = bootTUIEntry({});
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
+      // Before any input, the session the first prompt needs is provisioned.
+      await waitForValue("prewarmed attach", () =>
+        daemon.requests.some((request) => request.method === "agent.attach")
+          ? true
+          : null,
+      );
+      expect(daemon.startPromptAgent).toHaveBeenCalledOnce();
+      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: "Interactive session",
+          cwd: tmpCwd,
+          provider: "grok",
+          model: "grok-4.3",
+          deferInitialTurn: true,
+        }),
+      );
+
+      await session.submit?.("hello daemon");
+
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      // The first prompt starts its turn on that session: no second create.
+      expect(daemon.startPromptAgent).toHaveBeenCalledOnce();
+      const stream = daemon.requests.find(
+        (request) => request.method === "message.stream",
+      );
+      expect(stream?.params).toMatchObject({
+        sessionId: "session_tui_prewarm",
+        content: "hello daemon",
+      });
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      if (ttyDescriptor === undefined) {
+        Reflect.deleteProperty(process.stdin, "isTTY");
+      } else {
+        Object.defineProperty(process.stdin, "isTTY", ttyDescriptor);
+      }
       for (const key of Object.keys(process.env)) {
         if (!(key in prevEnv)) delete process.env[key];
       }
@@ -5786,4 +6171,22 @@ describe("main() smoke", () => {
       }
     },
   );
+  it.each(["taskTokenBudget", "taskMaxCalls"] as const)("attaches a live session with retained disabled %s", async (key) => {
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "budget-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "budget-attach-cwd-"));
+    const daemon = installDaemonCliDepsForTest({ cwd: tmpCwd, liveSessionMetadata: { [key]: 0 } });
+    vi.doMock("../tui/main.js", () => ({ bootTUI: vi.fn(async () => ({ unmount: vi.fn(), waitUntilExit: async () => undefined })) }));
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(attachAgentTuiEntry({ agentId: daemon.agentId, clientId: "budget-zero", env: {
+        AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, HOME: tmpHome,
+      } })).resolves.toBe(0);
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+
 });

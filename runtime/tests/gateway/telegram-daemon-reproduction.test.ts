@@ -35,8 +35,8 @@ it("reproduces Telegram session creation through an isolated real daemon and fak
     spawnDetachedDaemon: () => { throw Error("No spawn"); }, terminatePid: () => {}, sleep: async () => {} };
   let logs = "";
   const sink = { write: (chunk: any) => { logs += String(chunk); writeFileSync(join(root, "daemon.log"), logs); return true; } };
-  // Bootstrap revalidates stale provider capabilities with GET /models.
-  // Keep that probe offline while exercising the real daemon and provider.
+  // Keep provider access offline while exercising the real daemon and provider.
+  // Known DeepSeek sessions start from the catalog without a health probe.
   const providerFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -80,14 +80,9 @@ it("reproduces Telegram session creation through an isolated real daemon and fak
     expect(fixture.responses[1].result.sessionId).toEqual(expect.any(String));
     await expect.poll(() => fixture.replies.length).toBe(2);
     expect(fixture.replies[1]).toContain("New workspace session ready");
-    // /new can probe provider health, but must not request inference. Check
-    // outside the mock because healthCheck deliberately catches fetch errors.
-    expect(providerFetch).toHaveBeenCalled();
-    for (const [input, init] of providerFetch.mock.calls) {
-      expect(input instanceof Request ? input.url : String(input)).toBe("https://api.deepseek.com/v1/models");
-      expect(init?.method ?? (input instanceof Request ? input.method : "GET")).toBe("GET");
-      expect(init?.body).toBeUndefined();
-    }
+    // Session creation needs neither live discovery nor inference. Check outside
+    // the mock because provider health checks deliberately catch fetch errors.
+    expect(providerFetch).not.toHaveBeenCalled();
     const scan = (directory: string): void => {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);

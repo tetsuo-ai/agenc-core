@@ -57,8 +57,36 @@ Precedence: **env > config.toml > built-in defaults** (`browser/config.ts`).
 | `AGENC_BROWSER_HEADLESS` | on | Headless Chromium |
 | `AGENC_BROWSER_ALLOW_PRIVATE_NETWORK` | off | Permit private/loopback destinations (cloud-metadata stays blocked) |
 | `AGENC_BROWSER_PROFILE_DIR` | Per-project profile under `$AGENC_HOME/browser/profiles/` | Explicit shared profile directory when set |
-| `AGENC_BROWSER_NO_SANDBOX` | off | Pass Chromium `--no-sandbox` (some containers) |
+| `AGENC_BROWSER_NO_SANDBOX` | off | Pass Chromium `--no-sandbox` outside AgenC's sandbox (some containers). Inside it the flag is always on, see below. |
 | `AGENC_BROWSER_NAV_TIMEOUT_MS` | `30000` | Navigation timeout (clamped 1s–300s) |
+
+## Sandbox
+
+Inside AgenC's sandbox (the `workspace_write` and `read_only` modes) Chromium's
+own sandbox cannot start: macOS refuses to set up a second sandbox in a
+sandboxed process, and the Linux sandbox has neither Chromium's setuid helper
+nor nested user namespaces. AgenC therefore launches the browser there with
+`--no-sandbox`, and AgenC's sandbox confines it: the browser writes only where
+the session's sandbox allows and to its own profile, and its network goes
+through the SSRF proxy.
+
+On macOS the browser's sandbox profile also allows the system services
+Chromium needs to start (LaunchServices, the window server, fonts, logging)
+and the Mach names Chromium registers for its own processes. The clipboard,
+AppleEvents, the keychain and credential services, location, Spotlight,
+iCloud, notifications and the GPU stay blocked; pages render in software. No
+other command gets these rules.
+
+On Linux, snap packages cannot start inside AgenC's sandbox: a `/snap/bin`
+entry is a link to the `snap` launcher, and `snap run` cannot create its
+systemd scope from inside the sandbox. Auto-detection passes over snaps there,
+including Ubuntu's `chromium-browser` script that runs the Chromium snap. A
+configured snap, or a snap that is the only browser found, fails before launch
+with an error that says so. Install Google Chrome or a non-snap Chromium, or
+set `executable_path` to one.
+
+Outside AgenC's sandbox (`danger_full_access`) Chromium keeps its own sandbox
+unless `no_sandbox = true`.
 
 ## SSRF / security posture
 
@@ -77,13 +105,15 @@ Precedence: **env > config.toml > built-in defaults** (`browser/config.ts`).
 
 ## Operator checklist
 
-1. Install a Chromium-family browser (or set `AGENC_BROWSER_EXECUTABLE`).
+1. Install a Chromium-family browser (or set `AGENC_BROWSER_EXECUTABLE`). On
+   Linux with AgenC's sandbox, use one that is not a snap (see Sandbox).
 2. Leave headless on unless you need a visible window for debugging.
 3. Keep private-network off in production / untrusted workspaces.
 4. Confirm the agent can call `Browser` under your permission mode
    (`agenc` default is on-request for acting actions).
-5. For containers that require it, set `no_sandbox` carefully and prefer a
-   constrained container runtime over blanket host privileges.
+5. Outside AgenC's sandbox, for containers that require it, set `no_sandbox`
+   carefully and prefer a constrained container runtime over blanket host
+   privileges. Inside AgenC's sandbox it is not needed (see Sandbox).
 
 ## Not this surface
 

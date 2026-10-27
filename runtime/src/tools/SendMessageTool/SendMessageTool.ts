@@ -629,7 +629,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         return {
           result: false,
           message:
-            'to must be a bare teammate name or "*" — there is only one team per session',
+            'to must be a bare teammate name or "*"; there is only one team per session',
           errorCode: 9,
         }
       }
@@ -641,7 +641,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           return {
             result: false,
             message:
-              'structured messages cannot be sent cross-session — only plain text',
+              'structured messages cannot be sent cross-session: only plain text',
             errorCode: 9,
           }
         }
@@ -653,7 +653,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           return {
             result: false,
             message:
-              'Remote Control is not connected — cannot send to a bridge: target. Reconnect with /remote-control first.',
+              'Remote Control is not connected: cannot send to a bridge: target. Reconnect with /remote-control first.',
             errorCode: 9,
           }
         }
@@ -691,7 +691,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         return {
           result: false,
           message:
-            'structured messages cannot be sent cross-session — only plain text',
+            'structured messages cannot be sent cross-session: only plain text',
           errorCode: 9,
         }
       }

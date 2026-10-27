@@ -27,63 +27,6 @@ import {
   WelcomeColdPanel,
 } from './primitives.js'
 
-const BRAILLE_ALPHA_THRESHOLD = 0.22
-const BRAILLE_DOT_BITS = [
-  [0x01, 0x08],
-  [0x02, 0x10],
-  [0x04, 0x20],
-  [0x40, 0x80],
-] as const
-
-function renderLogoBraille(
-  raster: Buffer,
-  columns: number,
-  rows: number,
-): readonly string[] {
-  const sampleColumns = columns * 2
-  const sampleRows = rows * 4
-
-  function sampleAlpha(sampleColumn: number, sampleRow: number): boolean {
-    const xStart = Math.floor(
-      (sampleColumn * AGENC_LOGO_RASTER_SIZE) / sampleColumns,
-    )
-    const xEnd = Math.floor(
-      ((sampleColumn + 1) * AGENC_LOGO_RASTER_SIZE) / sampleColumns,
-    )
-    const yStart = Math.floor(
-      (sampleRow * AGENC_LOGO_RASTER_SIZE) / sampleRows,
-    )
-    const yEnd = Math.floor(
-      ((sampleRow + 1) * AGENC_LOGO_RASTER_SIZE) / sampleRows,
-    )
-    let alpha = 0
-    let pixels = 0
-
-    for (let y = yStart; y < yEnd; y += 1) {
-      for (let x = xStart; x < xEnd; x += 1) {
-        alpha += raster[(y * AGENC_LOGO_RASTER_SIZE + x) * 4 + 3] ?? 0
-        pixels += 1
-      }
-    }
-
-    return alpha / (pixels * 255) >= BRAILLE_ALPHA_THRESHOLD
-  }
-
-  return Array.from({ length: rows }, (_, row) =>
-    Array.from({ length: columns }, (_, column) => {
-      let dots = 0
-      for (let dotRow = 0; dotRow < 4; dotRow += 1) {
-        for (let dotColumn = 0; dotColumn < 2; dotColumn += 1) {
-          if (sampleAlpha(column * 2 + dotColumn, row * 4 + dotRow)) {
-            dots |= BRAILLE_DOT_BITS[dotRow]![dotColumn]!
-          }
-        }
-      }
-      return String.fromCodePoint(0x2800 + dots)
-    }).join(''),
-  )
-}
-
 describe('v2 primitives', () => {
   it('renders the runtime-bound mode switcher state with the current mode selected', async () => {
     const output = await renderToString(
@@ -95,17 +38,19 @@ describe('v2 primitives', () => {
       96,
     )
 
-    expect(output).toContain('permission mode')
-    expect(output).toContain('default')
-    expect(output).toContain('acceptEdits')
-    expect(output).toContain('plan')
-    expect(output).toContain('auto')
-    expect(output).toContain('bypassPermissions')
-    expect(output).toContain('read-only · propose plans')
-    expect(output).toContain('bypassPermissions')
-    expect(output).toContain('shift+tab')
-    // The advertised digit range must match the number of visible modes.
-    expect(output).toContain('1–5 pick · ⇧⇥ cycle · esc')
+    expect(output).toContain('permissions')
+    expect(output).toContain('asks first')
+    expect(output).toContain('edits freely')
+    expect(output).toContain('plan only')
+    expect(output).toContain('auto approve')
+    expect(output).toContain('never asks')
+    expect(output).toContain('Reads and plans. Changes nothing.')
+    expect(output).toContain('now · plan only')
+    expect(output).toContain('shift+tab or option+m: next mode')
+    // Digits are not mode picks: nothing on the popup may suggest them.
+    expect(output).toContain('esc close')
+    expect(output).not.toContain('pick')
+    expect(output).not.toContain('[1]')
   })
 
   it('hides unavailable cycle targets', async () => {
@@ -118,12 +63,11 @@ describe('v2 primitives', () => {
       96,
     )
 
-    expect(output).toContain('acceptEdits')
-    expect(output).toContain('auto-accept file edits')
-    expect(output).not.toContain('auto-approve everything')
-    expect(output).not.toContain('bypassPermissions')
-    // The advertised digit range shrinks with the hidden modes.
-    expect(output).toContain('1–3 pick')
+    expect(output).toContain('edits freely')
+    expect(output).toContain('Edits without asking. Asks before')
+    expect(output).not.toContain('auto approve')
+    expect(output).not.toContain('never asks')
+    expect(output).not.toContain('pick')
   })
 
   it('renders body overlays without requiring modal content in chat flow', async () => {
@@ -189,21 +133,33 @@ describe('v2 primitives', () => {
     expect(raster.includes(Buffer.from([255, 255, 255, 255]))).toBe(true)
   })
 
-  it('derives both portable logo sizes from the official raster', () => {
-    const raster = inflateSync(
-      Buffer.from(AGENC_LOGO_RGBA_ZLIB_BASE64, 'base64'),
-    )
-
-    expect(AGENC_LOGO_MARK_LINES).toEqual(renderLogoBraille(raster, 16, 8))
-    expect(AGENC_LOGO_MARK_COMPACT_LINES).toEqual(
-      renderLogoBraille(raster, 14, 6),
-    )
-    expect(AGENC_LOGO_MARK_LINES.every(line => stringWidth(line) === 16)).toBe(
-      true,
-    )
-    expect(
-      AGENC_LOGO_MARK_COMPACT_LINES.every(line => stringWidth(line) === 14),
-    ).toBe(true)
+  it('preserves the selected Braille geometry and both portable logo sizes', () => {
+    // The clearer mark replaces the old 0.22 alpha-average preview. Pin all
+    // dots of the selected geometry; the exact RGBA raster is checked above.
+    expect(AGENC_LOGO_MARK_LINES).toEqual([
+      '⢀⣴⡷⠰⣿⠆⢾⣦⡀⠀⠀⢀⣴⡷⠰⣿⠆⢾⣦⡀',
+      '⢙⡋⠀⠀⠀⠀⠀⠙⢿⣦⣴⡿⠋⠀⠀⠀⠀⠀⢙⡋',
+      '⠻⠟⠀⠀⠀⠀⠀⢀⣼⣿⣿⣧⡀⠀⠀⠀⠀⠀⠻⠟',
+      '⠺⣷⣄⠀⠀⢀⣴⣿⠟⠁⠈⠻⣿⣦⡀⠀⠀⣠⣾⠗',
+      '⠀⠈⠻⣷⣶⣿⠟⠁⠀⠀⠀⠀⠈⠻⣿⣶⣾⠟⠁⠀',
+      '⠀⢀⣴⡿⠿⣿⣦⡀⠀⠀⠀⠀⢀⣴⣿⠿⢿⣦⡀⠀',
+      '⢴⡿⠋⠀⠀⠈⠻⣿⣦⡀⢀⣴⣿⠟⠁⠀⠀⠙⢿⡦',
+      '⣴⣦⠀⠀⠀⠀⠀⠈⢻⣿⣿⡟⠁⠀⠀⠀⠀⠀⣴⣦',
+      '⣨⣅⠀⠀⠀⠀⠀⣠⣾⠟⠻⣷⣄⠀⠀⠀⠀⠀⣨⣅',
+      '⠈⠻⡷⠰⣿⠆⢾⠟⠁⠀⠀⠈⠻⡷⠰⣿⠆⢾⠟⠁',
+    ])
+    expect(AGENC_LOGO_MARK_COMPACT_LINES).toEqual([
+      '⠴⠃⠚⠘⢷⣄⣠⡾⠃⠓⠘⠦',
+      '⣚⠀⠀⠀⣠⡿⢿⣄⠀⠀⠀⣓',
+      '⠙⢷⣤⡾⠋⠀⠀⠙⢷⣤⡾⠋',
+      '⣠⡾⠛⢷⣄⠀⠀⣠⡾⠛⢷⣄',
+      '⢭⠀⠀⠀⠙⣷⣾⠋⠀⠀⠀⡭',
+      '⠲⡄⢤⢠⡾⠋⠙⢷⡄⡤⢠⠖',
+    ])
+    expect(AGENC_LOGO_MARK_LINES).toHaveLength(10)
+    expect(AGENC_LOGO_MARK_COMPACT_LINES).toHaveLength(6)
+    expect(AGENC_LOGO_MARK_LINES.every(line => stringWidth(line) === 20)).toBe(true)
+    expect(AGENC_LOGO_MARK_COMPACT_LINES.every(line => stringWidth(line) === 12)).toBe(true)
   })
 
   it('detects Kitty directly but keeps multiplexers and other terminals on the fallback', () => {
@@ -234,12 +190,29 @@ describe('v2 primitives', () => {
       `s=160,v=160,c=${columns},r=${rows},i=16777215;`,
     )
     expect(upload).toMatch(/\x1b\\$/)
-    expect(columns).toBe(16)
+    expect(columns).toBe(20)
+    expect(rows).toBe(10)
     expect(placeholders).toHaveLength(rows)
     expect(placeholders.every(row => stringWidth(row) === columns)).toBe(true)
     expect(compactPlaceholders).toHaveLength(
       AGENC_LOGO_MARK_COMPACT_LINES.length,
     )
+    expect(compactPlaceholders.every(row => stringWidth(row) === 12)).toBe(true)
+    const maximumGrid = kittyLogoPlaceholderRows(20, 20)
+    expect(maximumGrid).toHaveLength(20)
+    expect(maximumGrid.every(row => stringWidth(row) === 20)).toBe(true)
+    expect(new Set(maximumGrid)).toHaveProperty('size', 20)
+    expect(() => kittyLogoPlaceholderRows(21, 20)).toThrow(RangeError)
+    expect(() => kittyLogoPlaceholderRows(20, 21)).toThrow(RangeError)
+    expect(() => kittyLogoPlaceholderRows(0, 10)).toThrow(RangeError)
+  })
+
+  it.each([19, 20])('chooses the correct logo size at terminal height %i', async rows => {
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows })
+    const expected = rows < 20 ? AGENC_LOGO_MARK_COMPACT_LINES : AGENC_LOGO_MARK_LINES
+    const other = rows < 20 ? AGENC_LOGO_MARK_LINES : AGENC_LOGO_MARK_COMPACT_LINES
+    expect(output).toContain(expected[0])
+    expect(output).not.toContain(other[0])
   })
 
   it('fabricates no session data and repeats no status fact', async () => {
@@ -269,8 +242,8 @@ describe('v2 primitives', () => {
   it('drops whole hint segments on a narrow pane instead of cutting mid-word', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 44, rows: 24 })
 
-    expect(output).toContain(AGENC_LOGO_MARK_COMPACT_LINES[0])
-    expect(output).not.toContain(AGENC_LOGO_MARK_LINES[0])
+    expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
+    expect(output).not.toContain(AGENC_LOGO_MARK_COMPACT_LINES[0])
     // The first segment always survives…
     expect(output).toContain('/ commands')
     // …and narrower panes lose trailing segments whole, with no mid-word
@@ -279,17 +252,17 @@ describe('v2 primitives', () => {
     expect(output).not.toContain('…')
   })
 
-  it('centers the compact mark above the name and the keys at 80 columns', async () => {
+  it('centers the full mark above the name and the keys at 80 columns', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 80, rows: 30 })
     const lines = output.split(/\r?\n/u)
     const brandRowIndex = lines.findIndex(line =>
-      line.includes(AGENC_LOGO_MARK_COMPACT_LINES[0]),
+      line.includes(AGENC_LOGO_MARK_LINES[0]),
     )
     const nameRowIndex = lines.findIndex(line => line.includes('agenc'))
     const keysRowIndex = lines.findIndex(line => line.includes('/ commands'))
 
     expect(brandRowIndex).toBeGreaterThanOrEqual(0)
-    expect(lines[brandRowIndex]!.indexOf(AGENC_LOGO_MARK_COMPACT_LINES[0])).toBeGreaterThan(20)
+    expect(lines[brandRowIndex]!.indexOf(AGENC_LOGO_MARK_LINES[0])).toBeGreaterThan(20)
     expect(nameRowIndex).toBeGreaterThan(brandRowIndex)
     expect(keysRowIndex).toBeGreaterThan(nameRowIndex)
   })
@@ -342,9 +315,43 @@ describe('v2 primitives', () => {
 
     expect(output).toContain('item-18')
     expect(output).toContain('▌')
-    expect(output).toContain('scroll 16-22/30')
+    // 12 rows: 7 for the popup chrome and column headers, 5 for the list.
+    expect(output).toContain('scroll 17-21/30')
     expect(output).not.toContain('item-00')
     expect(output).not.toContain('item-29')
+  })
+
+  it('keeps the column headers and every windowed row on screen while a long list scrolls', async () => {
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      status: 'available',
+      name: `item-${String(index).padStart(2, '0')}`,
+    }))
+
+    const output = await renderToString(
+      <MenuModal
+        title="models"
+        count={`${rows.length}`}
+        columns={[12, 12]}
+        headers={['status', 'name']}
+        items={rows}
+        activeIndex={18}
+        footer={[{ keyName: 'enter', label: 'use' }]}
+        renderRow={row => [
+          <Text key="status">{row.status}</Text>,
+          <Text key="name">{row.name}</Text>,
+        ]}
+      />,
+      { columns: 100, rows: 20 },
+    )
+
+    expect(output).toMatch(/status\s+name/)
+    expect(output).toContain('scroll 13-25/30')
+    for (let index = 12; index <= 24; index += 1) {
+      expect(output).toContain(`item-${String(index).padStart(2, '0')}`)
+    }
+    expect(output).not.toContain('item-11')
+    expect(output).not.toContain('item-25')
+    expect(output.trimEnd().split('\n')).toHaveLength(20)
   })
 })
 

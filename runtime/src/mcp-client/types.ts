@@ -113,6 +113,12 @@ export interface MCPServerConfig {
    * no model-directed filesystem writes. Untrusted config scopes are ignored.
    */
   readonly virtual_no_fs_write_tools?: readonly string[];
+  /**
+   * Runtime-owned: raw tool names the session's `toolPolicy.noFsWriteTools`
+   * grants to this session-attached server. Never accepted from JSON or
+   * persisted config.
+   */
+  readonly toolPolicyNoFsWriteTools?: readonly string[];
   /** Per raw MCP tool approval settings. */
   readonly tools?: Readonly<Record<string, PerToolConfig>>;
   /** Canonical SHA-256 digest pin for the server's exposed tool catalog. */

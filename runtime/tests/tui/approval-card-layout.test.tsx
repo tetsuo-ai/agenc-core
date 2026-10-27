@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import React from 'react'
 import { describe, expect, test } from 'vitest'
 
@@ -122,6 +123,15 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
     expect(tight).toContain('approve once')
   })
 
+  test('(C) a 40x12 terminal keeps every decision and cancellation visible', async () => {
+    const out = await renderWriteApproval(12, 40)
+    expect(out).toContain('1  approve once')
+    expect(out).toContain('2  approve for session')
+    expect(out).toContain('3  deny')
+    expect(out).toContain('esc cancel')
+    expect(out.split('\n').filter(line => line.length > 0).length).toBeLessThanOrEqual(12)
+  })
+
   test('(A) a non-bash tool is never relabeled as bash', async () => {
     const out = await renderToString(
       <ApprovalCard
@@ -243,3 +253,37 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
     expect(out).toContain('confirmation required')
   })
 })
+
+describe('literal approval inputs', () => {
+  test('preserves quoted absolute home paths in the shell command byte for byte', async () => {
+    const command = `rm -rf '${homedir()}/'`;
+    const output = await renderToString(
+      <ApprovalCard risk="high" title="tool · shell · needs approval"
+        command={command} facts={[]} confirmLabel="enter approve" />,
+      { columns: 400, rows: 40 },
+    );
+    expect(output).toContain(`$ ${command}`);
+    expect(output).not.toContain("'~/'");
+  });
+
+  test('preserves bare paths, permission notes, fact values and diff filenames', async () => {
+    const path = `${homedir()}/.agenc/memory/MEMORY.md`;
+    const output = await renderToString(
+      <ApprovalCard risk="low" title="tool · read · needs approval"
+        command={path} commandIsShell={false} facts={[{ label: 'path', value: path }]}
+        note={`Read ${path}`} confirmLabel="enter approve" />,
+      { columns: 400, rows: 40 },
+    );
+    expect(output).toContain(path);
+    expect(output).toContain(`note · Read ${path}`);
+    expect(output).not.toContain('~');
+    const diff = await renderToString(
+      <ApprovalCard risk="low" title="tool · write · needs approval"
+        command={path} commandIsShell={false} facts={[]} confirmLabel="enter approve"
+        diffPreview={{ file: path, stats: '(+1)', lines: [{ kind: 'add', code: 'hello' }], remaining: 0 }} />,
+      { columns: 400, rows: 40 },
+    );
+    expect(diff).toContain(path);
+    expect(diff).not.toContain('~');
+  });
+});

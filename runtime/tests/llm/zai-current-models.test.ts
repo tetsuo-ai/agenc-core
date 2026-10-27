@@ -12,7 +12,8 @@ import type { LLMMessage, LLMTool } from "../../src/llm/types.js";
 const MODELS = [
   ["glm-5.2", 1_000_000, 131_072, 1.4, 4.4, .26],
   ["glm-5.1", undefined, 131_072, 1.4, 4.4, .26],
-  ["glm-5-turbo", undefined, 131_072, undefined, undefined, undefined],
+  // OpenRouter's z-ai/glm-5-turbo price (served by Z.AI): Z.AI's own page lists none.
+  ["glm-5-turbo", undefined, 131_072, 1.2, 4, 0.24],
   ["glm-5", undefined, 131_072, 1, 3.2, .2],
   ["glm-4.7", undefined, 131_072, .6, 2.2, .11],
   ["glm-4.6", undefined, 131_072, .6, 2.2, .11],
@@ -45,7 +46,8 @@ describe("current ZAI PAYG generations", () => {
       expect(resolved?.entry.cachedInputUsdPer1K).toBeCloseTo(cached! / 1000, 10);
       expect(resolved?.entry.cachedInputIncludedInInputTokens).toBe(true);
     }
-    expect(resolveModelCostEntry({ provider: "nvidia-nim", model }, DEFAULT_MODEL_COSTS)).toBeNull();
+    // NIM never borrows the Z.AI price: its hosted endpoints are a free tier.
+    expect(resolveModelCostEntry({ provider: "nvidia-nim", model }, DEFAULT_MODEL_COSTS)).toMatchObject({ key: "nvidia-nim", entry: { inputUsdPer1K: 0, outputUsdPer1K: 0, localZeroCost: true } });
   });
   test.each(MODELS)("sends %s through Core without borrowing unsupported effort", async (model) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ id: "fixture", model, choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "echo", arguments: '{"value":"ok"}' } }] } }], usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 } }));

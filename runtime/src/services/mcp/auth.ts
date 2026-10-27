@@ -909,7 +909,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       if (!clientId || !clientConfig?.clientSecret) {
         logMCPDebug(
           this.serverName,
-          'XAA: missing clientId or clientSecret in config — skipping silent refresh',
+          'XAA: missing clientId or clientSecret in config: skipping silent refresh',
         )
         return undefined // shouldn't happen if `mcp add` was correct
       }

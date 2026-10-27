@@ -21,7 +21,6 @@ import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import { RemoteAuthBackend } from "../auth/backends/remote.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
-import { subscriptionManagedDefaultModelForTier } from "./subscription-managed-models.js";
 import { modelCommand } from "./model.js";
 
 const TEST_ENVIRONMENT: EnvSnapshot = Object.freeze({
@@ -594,15 +593,15 @@ describe("providerCommand", () => {
     );
     Object.assign(session, { applyProviderModelSelection });
 
-    await providerCommand.execute(mkctx(session, "openai"));
+    await providerCommand.execute(mkctx(session, "openai-compatible"));
     await modelCommand.execute(mkctx(session, "private-openai-model"));
 
     expect(applyProviderModelSelection).toHaveBeenNthCalledWith(1, {
-      provider: "openai",
-      model: "gpt-5",
+      provider: "openai-compatible",
+      model: "local-model",
     });
     expect(applyProviderModelSelection).toHaveBeenNthCalledWith(2, {
-      provider: "openai",
+      provider: "openai-compatible",
       model: "private-openai-model",
     });
   });
@@ -957,113 +956,6 @@ describe("providerCommand", () => {
     },
   );
 
-  it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", async () => {
-    await withProAuthSession(({ configStore, environment }) => {
-      const snapshot = readProviderMenuSnapshot(
-        mkctx(
-          stubSession({
-            provider: "openrouter",
-            model: "x-ai/grok-4.3",
-            configStore,
-            environment,
-          }),
-          "",
-        ),
-      );
-      const openrouter = snapshot.rows.find(
-        (row) => row.provider === "openrouter",
-      );
-
-      expect(openrouter).toMatchObject({
-        authState: "managed",
-        auth: "subscription",
-      });
-      expect(openrouter?.models.slice(0, 20)).toEqual([
-        "x-ai/grok-4.5",
-        "x-ai/grok-4.3",
-        "x-ai/grok-build-0.1",
-        "openai/gpt-4o-mini",
-        "openai/gpt-5-nano",
-        "openai/gpt-4.1-nano",
-        "openai/gpt-oss-120b",
-        "anthropic/claude-haiku-4.5",
-        "google/gemini-2.5-flash",
-        "google/gemini-2.5-flash-lite",
-        "deepseek/deepseek-v4-flash",
-        "deepseek/deepseek-v3.2",
-        "qwen/qwen3-coder-30b-a3b-instruct",
-        "qwen/qwen3-235b-a22b-2507",
-        "mistralai/mistral-small-3.2-24b-instruct",
-        "meta-llama/llama-3.3-70b-instruct",
-        "meta-llama/llama-4-scout",
-        "minimax/minimax-m2.5",
-        "z-ai/glm-4.7-flash",
-        "cohere/north-mini-code:free",
-      ]);
-      expect(openrouter?.models).not.toContain("openrouter/free");
-      expect(openrouter?.models).toContain("openai/gpt-oss-20b:free");
-      expect(openrouter?.models.length).toBeGreaterThan(20);
-      expect(openrouter?.credentialSource).toBe(
-        "authenticated AgenC account",
-      );
-    });
-  });
-
-  it("keeps the current provider selected for paid managed sessions", async () => {
-    await withProAuthSession(({ configStore, environment }) => {
-      const snapshot = readProviderMenuSnapshot(
-        mkctx(
-          stubSession({
-            provider: "grok",
-            model: "grok-4.3",
-            configStore,
-            environment,
-          }),
-          "",
-        ),
-      );
-
-      expect(snapshot.rows[0]).toMatchObject({
-        provider: "grok",
-        model: "grok-4.3",
-        status: "current",
-      });
-      expect(snapshot.rows[snapshot.activeIndex]?.provider).toBe("grok");
-      expect(snapshot.currentProvider).toBe("grok");
-      expect(snapshot.rows.find((row) => row.provider === "openrouter")).toMatchObject({
-        authState: "managed",
-        auth: "subscription",
-        model: "x-ai/grok-4.5",
-      });
-    });
-  });
-
-  it("keeps the free managed route as explicit policy over provider defaults", async () => {
-    await withAuthSession("free", async ({ configStore, environment }) => {
-      const session = stubSession({
-        provider: "grok",
-        model: "grok-4.3",
-        configStore,
-        environment,
-      });
-      const managedDefault = subscriptionManagedDefaultModelForTier(
-        "openrouter",
-        "free",
-      );
-      if (managedDefault === undefined) {
-        throw new Error("OpenRouter free managed default is missing");
-      }
-
-      await providerCommand.execute(mkctx(session, "openrouter"));
-
-      expect(
-        (session as unknown as { pendingProviderSwitch: unknown })
-          .pendingProviderSwitch,
-      ).toEqual({ provider: "openrouter", model: managedDefault });
-      expect(managedDefault).not.toBe("x-ai/grok-4.5");
-    });
-  });
-
   it("keeps menu and direct selection on BYOK config during a managed session", async () => {
     await withProAuthSession(async ({ configStore, environment }) => {
       const byokEnvironment = Object.freeze({
@@ -1124,27 +1016,6 @@ describe("providerCommand", () => {
     expect(openai?.auth).toContain("OPENAI_API_KEY");
     expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
     expect(openai?.credentialSource).not.toContain("subscription-managed key");
-  });
-
-  it("shows the required AgenC sign-in action instead of optional provider auth", () => {
-    const snapshot = readProviderMenuSnapshot(
-      mkctx(
-        stubSession({
-          provider: "grok",
-          model: "grok-4.3",
-          configStore: commandConfigStore(TEST_HOME),
-        }),
-      ),
-    );
-    const agenc = snapshot.rows.find((row) => row.provider === "agenc");
-
-    expect(agenc).toMatchObject({
-      runtimeState: "unauthenticated",
-      authState: "missing",
-      auth: "AgenC sign-in required",
-      credentialSource:
-        'Provider switch to "agenc" blocked: sign in with AgenC using /login.',
-    });
   });
 
   it("labels daemon-admitted credential checks as unverified", () => {
@@ -1215,36 +1086,7 @@ describe("providerCommand", () => {
     expect(pending).toEqual({ provider: "lmstudio", model: "gpt-4o-mini" });
   });
 
-  it("blocks direct provider switches to providers without subscription-managed routes or BYOK", async () => {
-    const configStore = commandConfigStore(TEST_HOME, {
-      auth: { managedKeys: { enabled: true } },
-    });
-    const res = await providerCommand.execute(
-      mkctx(
-        stubSession({
-          provider: "grok",
-          model: "grok-4.3",
-          configStore,
-        }),
-        "openai",
-      ),
-    );
-
-    expect(res).toEqual({
-      kind: "text",
-      text: expect.stringContaining(
-        "hosted subscription access is available through OpenRouter",
-      ),
-    });
-  });
-
   it.each([
-    {
-      name: "no credentials",
-      environment: {},
-      missing:
-        "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
-    },
     {
       name: "access only",
       environment: { AWS_ACCESS_KEY_ID: "access" },

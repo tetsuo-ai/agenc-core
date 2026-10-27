@@ -34,8 +34,16 @@ const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 const MAX_PACKAGE_ENTRIES = 512;
 const RUNTIME_MANIFEST_PATH = "generated/agenc-runtime-manifest-v2.json";
 const PUBLIC_REGISTRY = "https://registry.npmjs.org/";
-const REGISTRY_RECEIPT_ATTEMPTS = 8;
-const REGISTRY_RECEIPT_RETRY_MS = 2_000;
+// npm answers "may take a few minutes to become available" after a publish;
+// 0.19.0 and 0.19.1 both appeared after the former 16 s window closed.
+// Poll for up to five minutes before declaring the receipt missing.
+const REGISTRY_RECEIPT_ATTEMPTS = 60;
+const REGISTRY_RECEIPT_RETRY_MS = 5_000;
+// The attestations endpoint lags the package: on 0.19.4 it still answered
+// 404 two and a half minutes after the publish and served both attestations
+// later. Keep auditing for up to ten minutes while attestations are absent.
+const REGISTRY_SIGNATURE_ATTEMPTS = 40;
+const REGISTRY_SIGNATURE_RETRY_MS = 15_000;
 
 function utf8Compare(left, right) {
   return Buffer.compare(Buffer.from(left), Buffer.from(right));
@@ -754,7 +762,26 @@ async function verifyLatestDistTag({
   );
 }
 
-function verifyRegistrySignatures({ identity, cwd, runNpm }) {
+/** True when the registry has not published the attestations yet. */
+function attestationsNotYetServed(error, audit) {
+  if (audit !== undefined) {
+    return Array.isArray(audit.invalid) && audit.invalid.length === 0 &&
+      Array.isArray(audit.missing) && audit.missing.length > 0;
+  }
+  const message = String(error?.message ?? error);
+  return /\bE404\b/u.test(message) && message.includes("/-/npm/v1/attestations/");
+}
+
+async function verifyRegistrySignatures({
+  identity,
+  cwd,
+  runNpm,
+  wait = delay,
+  attempts = REGISTRY_SIGNATURE_ATTEMPTS,
+}) {
+  if (!Number.isSafeInteger(attempts) || attempts <= 0) {
+    throw new TypeError("registry signature attempts must be a positive safe integer");
+  }
   const work = mkdtempSync(join(tmpdir(), "agenc-npm-provenance-"));
   try {
     writeFileSync(join(work, "package.json"), `${JSON.stringify({
@@ -771,18 +798,29 @@ function verifyRegistrySignatures({ identity, cwd, runNpm }) {
       `--registry=${PUBLIC_REGISTRY}`,
       `${identity.name}@${identity.version}`,
     ], { cwd: work, capture: true });
-    const result = runNpm([
-      "audit",
-      "signatures",
-      "--json",
-      `--registry=${PUBLIC_REGISTRY}`,
-    ], { cwd: work, capture: true });
-    const audit = parseJson(result.stdout.trim(), "npm signature audit response");
-    if (!Array.isArray(audit?.invalid) || audit.invalid.length !== 0 ||
-        !Array.isArray(audit?.missing) || audit.missing.length !== 0) {
-      throw new Error("npm signature/provenance audit did not verify every registry artifact");
+    for (let attempt = 1; ; attempt += 1) {
+      let audit;
+      try {
+        const result = runNpm([
+          "audit",
+          "signatures",
+          "--json",
+          `--registry=${PUBLIC_REGISTRY}`,
+        ], { cwd: work, capture: true });
+        audit = parseJson(result.stdout.trim(), "npm signature audit response");
+        if (Array.isArray(audit?.invalid) && audit.invalid.length === 0 &&
+            Array.isArray(audit?.missing) && audit.missing.length === 0) {
+          return { invalid: 0, missing: 0 };
+        }
+        // An invalid signature is final. Only absent attestations are retried.
+        if (!attestationsNotYetServed(undefined, audit) || attempt >= attempts) {
+          throw new Error("npm signature/provenance audit did not verify every registry artifact");
+        }
+      } catch (error) {
+        if (audit !== undefined || !attestationsNotYetServed(error) || attempt >= attempts) throw error;
+      }
+      await wait(REGISTRY_SIGNATURE_RETRY_MS);
     }
-    return { invalid: 0, missing: 0 };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -996,6 +1034,7 @@ export async function publishRelease({
   args = [],
   waitForRegistry = delay,
   registryReceiptAttempts = REGISTRY_RECEIPT_ATTEMPTS,
+  registrySignatureAttempts = REGISTRY_SIGNATURE_ATTEMPTS,
   ...inspectionOptions
 } = {}) {
   const publishOptions = parsePublishOptions(args);
@@ -1033,7 +1072,13 @@ export async function publishRelease({
         wait: waitForRegistry,
         attempts: registryReceiptAttempts,
       });
-      const signatureAudit = verifyRegistrySignatures({ identity, cwd, runNpm });
+      const signatureAudit = await verifyRegistrySignatures({
+        identity,
+        cwd,
+        runNpm,
+        wait: waitForRegistry,
+        attempts: registrySignatureAttempts,
+      });
       return {
         artifactPath,
         receiptPath,
@@ -1073,7 +1118,13 @@ export async function publishRelease({
       }
       throw verificationError;
     }
-    const signatureAudit = verifyRegistrySignatures({ identity, cwd, runNpm });
+    const signatureAudit = await verifyRegistrySignatures({
+      identity,
+      cwd,
+      runNpm,
+      wait: waitForRegistry,
+      attempts: registrySignatureAttempts,
+    });
     const distTags = await verifyLatestDistTag({
       identity,
       cwd,

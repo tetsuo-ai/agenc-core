@@ -63,6 +63,7 @@ vi.mock('../../src/utils/secureStorage/index.js', () => {
     return storageFor(home, key)
   }
   return {
+    withSecureStorageDisplaySnapshot: (_home: Home, operation: () => unknown) => operation(),
     getSecureStorage: vi.fn((home?: Home) => storageFor(home)),
     getSecureStorageForMigration: vi.fn(
       (home: Home, identity: Identity) => migrationStorageFor(home, identity),

@@ -7,6 +7,7 @@ import {
 import {
   readStrictConfigLayer,
   trustActivatedRepositoryKeys,
+  workspaceConfigDirIsAgenCHome,
 } from "../../config/repository.js";
 import type {
   AgenCConfig,
@@ -38,6 +39,12 @@ export interface ProjectTrustReviewOptions {
   readonly projectRoot: string;
   /** The effective config, used for the user's own hooks and status line. */
   readonly config: AgenCConfig;
+  /**
+   * The AgenC home. When the root's `.agenc` folder is this home (a session
+   * in the home folder), its files are the user's own config: trusting the
+   * root turns none of them on, so the review lists none of them.
+   */
+  readonly agencHome?: string;
 }
 
 const REPOSITORY_LAYERS = [
@@ -146,7 +153,11 @@ function toItems(
 
 async function reviewRepositorySettings(
   projectRoot: string,
+  agencHome: string | undefined,
 ): Promise<ProjectTrustItem[]> {
+  if (agencHome !== undefined && workspaceConfigDirIsAgenCHome(projectRoot, agencHome)) {
+    return [];
+  }
   const rows = new Map<string, string[]>();
   for (const { scope, segments, label: layerLabel } of REPOSITORY_LAYERS) {
     // Read the files fresh rather than from a loaded store, so the review sees
@@ -207,7 +218,7 @@ export async function reviewProjectTrust(
   options: ProjectTrustReviewOptions,
 ): Promise<ProjectTrustReview> {
   return {
-    repoItems: await reviewRepositorySettings(options.projectRoot),
+    repoItems: await reviewRepositorySettings(options.projectRoot, options.agencHome),
     userItems: reviewUserExtensions(options.config),
   };
 }

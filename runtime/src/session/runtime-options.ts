@@ -45,6 +45,8 @@ export interface AgentRuntimeOptions {
   readonly simpleMode: boolean;
   /** Deferred tool exposure; preserves canonical instructions, schemas and execution policy. */
   readonly lightMode?: boolean;
+  /** Host-selected root TUI presence; background budget caps remain hard. */
+  readonly interactiveTaskBudget?: boolean;
   /**
    * Immutable startup authority selected only by
    * `--dangerously-bypass-approvals-and-sandbox`.
@@ -383,6 +385,7 @@ function resolveAgentRuntimeOptionsAtIngress(
   const resolved: AgentRuntimeOptions = {
     simpleMode: overrides.simpleMode ?? false,
     ...(overrides.lightMode !== undefined ? { lightMode: overrides.lightMode } : {}),
+    ...(overrides.interactiveTaskBudget !== undefined ? { interactiveTaskBudget: overrides.interactiveTaskBudget } : {}),
     dangerouslyBypassApprovalsAndSandbox:
       overrides.dangerouslyBypassApprovalsAndSandbox ?? false,
     nonInteractive: overrides.nonInteractive ?? false,
@@ -582,6 +585,7 @@ export function validateAgentRuntimeOptions(
   const allowed = new Set([
     "simpleMode",
     "lightMode",
+    "interactiveTaskBudget",
     "dangerouslyBypassApprovalsAndSandbox",
     "nonInteractive",
     "exactOutput",
@@ -617,6 +621,9 @@ export function validateAgentRuntimeOptions(
     throw new AgentRuntimeOptionsError(
       "runtimeOptions.simpleMode is required and must be boolean",
     );
+  }
+  if (input.interactiveTaskBudget !== undefined && typeof input.interactiveTaskBudget !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.interactiveTaskBudget must be boolean");
   }
   if (input.lightMode !== undefined && typeof input.lightMode !== "boolean") {
     throw new AgentRuntimeOptionsError("runtimeOptions.lightMode must be boolean");

@@ -15,6 +15,7 @@ import {
   BUILT_IN_PROVIDER_MODEL_CATALOG,
 } from "../config/resolve-provider.js";
 import { BudgetTracker } from "../conversation/token-budget.js";
+import { monotonicMs } from "../../src/utils/monotonic.js";
 
 const ZERO_COST_DEFAULT_PROVIDERS = new Set([
   "lmstudio",
@@ -362,18 +363,22 @@ describe("cost helpers", () => {
         turns: 1,
       };
 
-      expect(resolveModelCostEntry(usage, DEFAULT_MODEL_COSTS)?.entry).toMatchObject({
-        inputUsdPer1K: model.endsWith("-contributor") ? 0.0001 : 0.00125,
-        outputUsdPer1K: model.endsWith("-contributor") ? 0.0002 : 0.00425,
-        cachedInputUsdPer1K: model.endsWith("-contributor") ? 0.000002 : 0.00015,
-      });
+      expect(resolveModelCostEntry(usage, DEFAULT_MODEL_COSTS)?.entry).toMatchObject(
+        model === "muse-wonder-1.0"
+          ? { inputUsdPer1K: 0.004, outputUsdPer1K: 0.02, cachedInputUsdPer1K: 0.0002 }
+          : {
+            inputUsdPer1K: model.endsWith("-contributor") ? 0.0001 : 0.00125,
+            outputUsdPer1K: model.endsWith("-contributor") ? 0.0002 : 0.00425,
+            cachedInputUsdPer1K: model.endsWith("-contributor") ? 0.000002 : 0.00015,
+          },
+      );
       expect(computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS))
         .toMatchObject({ known: true });
     },
   );
 
   test.each(
-    (["qwen", "qwen-token-plan"] as const).flatMap((provider) =>
+    (["qwen"] as const).flatMap((provider) =>
       BUILT_IN_PROVIDER_MODEL_CATALOG[provider].filter(model => provider !== "qwen" || DEFAULT_MODEL_COSTS[`qwen:${model}`] === undefined).map((model) => [
         provider,
         model,
@@ -408,7 +413,16 @@ describe("cost helpers", () => {
   ] as const)("prices Qwen PAYG %s without assigning rates to Token Plan", (model, input, output, cached) => {
     expect(resolveModelCostEntry({ provider: "qwen", model }, DEFAULT_MODEL_COSTS)?.entry)
       .toMatchObject({ inputUsdPer1K: input, outputUsdPer1K: output, cachedInputUsdPer1K: cached });
-    expect(resolveModelCostEntry({ provider: "qwen-token-plan", model }, DEFAULT_MODEL_COSTS)).toBeNull();
+    // The Token Plan is a flat subscription: never the PAYG rate, a known $0 per call.
+    expect(resolveModelCostEntry({ provider: "qwen-token-plan", model }, DEFAULT_MODEL_COSTS)?.entry)
+      .toMatchObject({ inputUsdPer1K: 0, outputUsdPer1K: 0, label: "plan", localZeroCost: true });
+  });
+
+  test.each(BUILT_IN_PROVIDER_MODEL_CATALOG["qwen-token-plan"])("prices Token Plan model %s as included in the plan", (model) => {
+    expect(computeUsdCostWithResolution({
+      provider: "qwen-token-plan", model, inputTokens: 1_000, outputTokens: 500, cachedInputTokens: 0,
+      cacheCreationInputTokens: 0, reasoningOutputTokens: 0, webSearchRequests: 0, totalTokens: 1_500, turns: 1,
+    }, DEFAULT_MODEL_COSTS)).toMatchObject({ known: true, costUsd: 0 });
   });
 
   test("uses the current official Cerebras token rates", () => {
@@ -457,9 +471,9 @@ describe("cost helpers", () => {
         },
       },
     });
-    expect(codingPlan.hasUnknownModelCost()).toBe(true);
-    expect(codingPlan.getUnknownCostModels())
-      .toContain("zai-coding-plan:glm-5.3");
+    // The GLM Coding Plan is a flat subscription: calls are included, never unknown.
+    expect(codingPlan.hasUnknownModelCost()).toBe(false);
+    expect(codingPlan.getTotalCostUsd()).toBe(0);
   });
 
   test("uses the official Moonshot global Kimi token rates", () => {
@@ -788,7 +802,11 @@ describe("CostSidecar", () => {
         },
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    // A timer callback does not prove that two monotonic milliseconds elapsed.
+    const toolStartedAt = monotonicMs();
+    while (monotonicMs() - toolStartedAt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
     sidecar.onEvent({
       id: "tool-end",
       seq: 2,

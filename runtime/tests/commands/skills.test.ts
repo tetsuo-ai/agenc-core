@@ -29,7 +29,9 @@ function stubSession(opts: {
     readonly name: string;
     readonly description?: string;
     readonly scope?: string;
+    readonly root?: string;
     readonly loadedFrom?: string;
+    readonly pluginId?: string;
     readonly userInvocable?: boolean;
     readonly disableModelInvocation?: boolean;
     readonly aliases?: readonly string[];
@@ -69,6 +71,41 @@ function nonBundled(
 }
 
 describe("skillsCommand", () => {
+  it("lists plugin skills using their invocable namespace", async () => {
+    const snapshot = await collectSkillsSnapshot(stubSession({
+      availableSkills: [
+        { name: "check", description: "Private check", scope: "plugin", loadedFrom: "plugin", pluginId: "private-plugin" },
+        { name: "nested:Review", scope: "plugin", loadedFrom: "plugin", pluginId: "private-plugin" },
+      ],
+    }));
+    expect(nonBundled(snapshot).map(skill => skill.name)).toEqual([
+      "private-plugin:check", "private-plugin:nested:review",
+    ]);
+    const text = formatSkillsSnapshot(snapshot);
+    expect(text).toContain("$private-plugin:check - Private check [plugin]");
+    expect(text).not.toContain("    $check");
+  });
+
+  it("uses canonical plugin IDs without hiding a local skill of the same name", async () => {
+    const snapshot = await collectSkillsSnapshot(stubSession({
+      availableSkills: [
+        { name: "check", loadedFrom: "skills", scope: "user" },
+        { name: "check", loadedFrom: "plugin", scope: "plugin", pluginId: "private@market" },
+      ],
+    }));
+    expect(nonBundled(snapshot).map(skill => skill.name)).toEqual(["check", "p_private_40market:check"]);
+  });
+
+  it("reports the loaded user skill scope and root without plugins", async () => {
+    const snapshot = await collectSkillsSnapshot(stubSession({
+      availableSkills: [{ name: "private", description: "Private skill", scope: "user", loadedFrom: "skills", root: "/private/home/skills" }],
+    }));
+    expect(snapshot.effectiveSkillRoots).toContain("/private/home/skills");
+    const text = formatSkillsSnapshot(snapshot);
+    expect(text).toContain("$private - Private skill [user]");
+    expect(text).toContain("skill roots: /private/home/skills");
+  });
+
   it("collects sorted available skills, invoked skills, and plugin roots", async () => {
     const snapshot = await collectSkillsSnapshot(
       stubSession({
@@ -173,7 +210,7 @@ describe("skillsCommand", () => {
         "  use: $skill-name [args] (slash commands use /, file mentions use @)",
         "  available: none",
         "  invoked: none",
-        "  plugin roots: none",
+        "  skill roots: none",
       ].join("\n"),
     );
   });
@@ -246,7 +283,7 @@ describe("skillsCommand", () => {
         "    $debug - Debug a failing workflow [skills]",
         "    $mcp__Docs_Server__reviewer - Remote review skill [mcp]",
         "  invoked: $debug",
-        "  plugin roots: /skills",
+        "  skill roots: /skills",
       ].join("\n"),
     );
   });
@@ -392,7 +429,7 @@ describe("skillsCommand", () => {
     if (result.kind === "text") {
       expect(result.text).toContain("$debug");
       expect(result.text).toContain("invoked: $debug");
-      expect(result.text).toContain("plugin roots: /skills");
+      expect(result.text).toContain("skill roots: /skills");
     }
   });
 

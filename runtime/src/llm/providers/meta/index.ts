@@ -3,7 +3,11 @@ import type { OpenAIProviderConfig } from "../openai/types.js";
 
 export type MetaProviderConfig = OpenAIProviderConfig;
 
-/** Meta Model API adapter over its OpenAI-compatible chat-completions wire. */
+/**
+ * Meta Model API adapter. Muse Spark uses the OpenAI-compatible Chat
+ * Completions wire; Muse Wonder uses the Responses wire, the only Meta
+ * surface that replays reasoning between turns (see `meta-models.ts`).
+ */
 export class MetaProvider extends OpenAIProvider {
   constructor(config: MetaProviderConfig) {
     super({

@@ -1,3 +1,6 @@
+import { openRouterMenuCatalog } from "./openrouter-menu-models.js";
+import { OPENROUTER_CATALOG_FALLBACK_NOTE } from "../llm/registry/openrouter-live-catalog.js";
+import { withSecureStorageDisplaySnapshot } from "../utils/secureStorage/index.js";
 import {
   buildProviderModelCatalog,
   type ProviderSlug,
@@ -13,10 +16,12 @@ import {
 } from "../llm/registry/provider-info.js";
 import { isModelAllowed } from "../utils/model/modelAllowlist.js";
 import type { AgenCConfig } from "../config/schema.js";
-import { readCommandConfig } from "./config-context.js";
+import { readCommandConfig, requireCommandConfigStore } from "./config-context.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import { createProviderCommandAccessOverlay } from "./provider-command-access.js";
 import type { SlashCommandContext } from "./types.js";
+import { readVeniceMenuModels } from "./venice-menu-models.js";
+import { readOllamaMenuModels } from "./ollama-menu-models.js";
 
 export type ModelRowStatus =
   | "current"
@@ -40,9 +45,9 @@ export type ModelMenuSnapshot = {
   readonly currentModel: string;
   readonly configuredModel?: string;
   readonly defaultModel: string;
-  readonly managedKeysEnabled: boolean;
   readonly rows: readonly ModelMenuRow[];
   readonly activeIndex: number;
+  readonly catalogNote?: string;
   readonly providerCounts: Readonly<Record<string, number>>;
 };
 
@@ -89,22 +94,7 @@ function rowStatus(params: {
 function rowDetailForRoute(
   status: ModelRowStatus,
   provider: ProviderSlug,
-  managedRoute: boolean,
 ): string {
-  if (managedRoute) {
-    switch (status) {
-      case "current":
-        return "active hosted subscription model";
-      case "configured":
-        return "configured hosted subscription model";
-      case "default":
-        return "default hosted subscription model";
-      case "available":
-        return "hosted subscription model";
-      case "unavailable":
-        return "no hosted models configured";
-    }
-  }
   switch (status) {
     case "current":
       return "active session model";
@@ -147,7 +137,6 @@ function providerRows(params: {
   readonly currentModel: string;
   readonly config?: AgenCConfig;
   readonly catalogModels: readonly string[];
-  readonly managedRoute?: boolean;
 }): readonly ModelMenuRow[] {
   const configuredModel =
     params.config !== undefined
@@ -179,8 +168,7 @@ function providerRows(params: {
     if (trimmed.length === 0) continue;
     // `visibility: "hide"` models (e.g. internal review models) stay resolvable
     // via the flat catalog but must not be offered as new picker selections.
-    // Current/configured/default candidates bypass visibility filtering, but
-    // every candidate still passes through managed model policy above.
+    // Current/configured/default candidates bypass visibility filtering.
     if (isHiddenCatalogModel(params.provider, trimmed)) continue;
     addCandidate(trimmed, true);
   }
@@ -198,7 +186,6 @@ function providerRows(params: {
           ? rowDetailForRoute(
               "unavailable",
               params.provider,
-              params.managedRoute === true,
             )
           : "no models allowed by managed policy",
     }];
@@ -223,13 +210,17 @@ function providerRows(params: {
       detail: rowDetailForRoute(
         status,
         params.provider,
-        params.managedRoute === true,
       ),
     };
   });
 }
 
 export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapshot {
+  return withSecureStorageDisplaySnapshot(requireCommandConfigStore(ctx).homeContext, () => readModelMenuSnapshotFromStorage(ctx));
+}
+
+function readModelMenuSnapshotFromStorage(ctx: SlashCommandContext): ModelMenuSnapshot {
+  const openrouter = openRouterMenuCatalog(ctx).read();
   const config = readCommandConfig(ctx);
   const sessionSelection = readBuiltInSessionSelection(ctx.session, {
     includePending: true,
@@ -240,7 +231,15 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
   const currentModel = sessionSelection.model;
   const configuredModel =
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
-  const catalog = buildProviderModelCatalog(config);
+  // Venice's own list replaces its bundled snapshot once the menu has read it,
+  // and so do the models installed on the local Ollama server.
+  const veniceModels = readVeniceMenuModels(ctx);
+  const ollamaModels = readOllamaMenuModels(ctx);
+  const catalog: Readonly<Record<string, readonly string[]>> = {
+    ...buildProviderModelCatalog(config),
+    ...(veniceModels === undefined ? {} : { venice: veniceModels.map(entry => entry.model) }),
+    ...(ollamaModels === undefined ? {} : { ollama: ollamaModels.map(entry => entry.model) }),
+  };
   const accessOverlay = createProviderCommandAccessOverlay(ctx);
   const accessFor = (catalogProvider: ProviderSlug, model: string) =>
     accessOverlay.inspect({ provider: catalogProvider, model });
@@ -249,31 +248,17 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     model: string,
   ): boolean => {
     const access = accessFor(catalogProvider, model);
+    if (catalogProvider === "agenc") return false;
     if (access.effect === "unchanged") return true;
     if (access.effect === "blocked" || access.route === "unavailable") {
       return false;
     }
-    if (access.route !== "subscription") return true;
-    const localModel = providerLocalModelIdFromCatalog(catalogProvider, model);
-    return access.managed.visibleModels.some(
-      managedModel =>
-        providerLocalModelIdFromCatalog(catalogProvider, managedModel) ===
-        localModel,
-    );
+    return true;
   };
   const rows = providerOrder(catalog, provider)
     .flatMap(catalogProvider => {
-      const seedModel =
-        catalogProvider === provider
-          ? currentModel
-          : defaultModelForProvider(catalogProvider);
-      const managedModels = accessFor(
-        catalogProvider,
-        seedModel,
-      ).managed.visibleModels;
       const visibleModels = [
         ...(catalog[catalogProvider] ?? []),
-        ...managedModels,
       ].filter((model, index, candidates) =>
         candidates.indexOf(model) === index &&
         isVisibleSelection(catalogProvider, model),
@@ -296,13 +281,10 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
       return projectedRows.flatMap(row => {
         if (!isVisibleSelection(row.provider, row.model)) return [];
         const access = accessFor(row.provider, row.model);
-        const managedRoute =
-          access.route === "subscription" ||
-          access.route === "provider-managed";
         return [{
           ...row,
           selectable: access.effect !== "blocked",
-          detail: rowDetailForRoute(row.status, row.provider, managedRoute),
+          detail: rowDetailForRoute(row.status, row.provider),
         }];
       });
     });
@@ -326,10 +308,10 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     currentModel,
     ...(configuredModel !== undefined ? { configuredModel } : {}),
     defaultModel,
-    managedKeysEnabled: accessOverlay.managedKeysEnabled,
     rows,
     activeIndex,
     providerCounts,
+    ...(provider === "openrouter" && openrouter.source === "bundled" ? { catalogNote: OPENROUTER_CATALOG_FALLBACK_NOTE } : {}),
   };
 }
 
@@ -338,8 +320,8 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
     "Model selection",
     `Provider: ${snapshot.provider}`,
     `Current: ${snapshot.currentModel}`,
-    `Managed keys: ${snapshot.managedKeysEnabled ? "on" : "off"}`,
     "",
+    ...(snapshot.catalogNote === undefined ? [] : [snapshot.catalogNote]),
     "Available models:",
   ];
   for (const row of snapshot.rows) {
@@ -350,7 +332,7 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
   lines.push(
     "",
     "Run /model <model-name> or /model <provider>:<model-name> to switch.",
-    "Run /provider to see whether that provider uses BYOK or subscription-managed keys.",
+    "Run /provider to configure your provider credentials.",
   );
   return lines.join("\n");
 }

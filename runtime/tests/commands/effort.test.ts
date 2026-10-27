@@ -11,6 +11,12 @@ vi.mock("../../src/utils/settings/settings.js", () => ({
   updateSettingsForSource: settings.update,
 }));
 
+// /effort reads Venice's, Ollama Cloud's and OpenRouter's live lists first;
+// these cases judge the bundled and published rows, never the network.
+vi.mock("../../src/commands/live-model-catalog.js", () => ({
+  ensureLiveModelCatalog: vi.fn(async () => {}),
+}));
+
 import { effortCommand } from "../../src/commands/effort.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../../src/contracts/run-contracts.js";
 import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
@@ -123,6 +129,31 @@ describe("/effort Gemini catalog levels", () => {
   });
 });
 
+describe("/effort on a local Ollama model", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test.each(["low", "medium", "high"])("gpt-oss takes %s, Ollama's own think level", async (level) => {
+    const { context, getAppState } = commandContext("gpt-oss:20b", level, { provider: "ollama" });
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "text" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: level });
+    expect(getAppState()).toMatchObject({ effortValue: level });
+  });
+
+  test("gpt-oss has no level above high", async () => {
+    const { context } = commandContext("gpt-oss:120b", "max", { provider: "ollama" });
+    const result = await effortCommand.execute(context);
+    expect(result).toMatchObject({ kind: "error" });
+    if (result.kind === "error") expect(result.message).toContain("Available: low, medium, high");
+    expect(settings.update).not.toHaveBeenCalled();
+  });
+
+  test("a model without levels still says so", async () => {
+    const { context } = commandContext("qwen3:8b", "high", { provider: "ollama" });
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "error" });
+    expect(settings.update).not.toHaveBeenCalled();
+  });
+});
+
 describe("/effort Grok catalog levels", () => {
   beforeEach(() => {
     settings.update.mockClear();
@@ -204,6 +235,31 @@ describe("/effort Grok catalog levels", () => {
 describe("/effort picker and live session", () => {
   beforeEach(() => settings.update.mockClear());
 
+  test("unsupported saved effort reads the effective wire default on every surface", () => {
+    const auth = { ...TEST_REMOTE_AUTH_SESSION_CONTEXT, provider: "deepseek" };
+    expect(getSessionEffortLabelForContext("deepseek-flash", "medium", auth)).toBe("high effort");
+    expect(getEffortNotificationText("medium", "deepseek-flash", auth)).toContain("high · /effort");
+    expect(getSessionEffortLabelForContext("deepseek-flash", "xhigh", auth)).toBe("max effort");
+  });
+
+  test("starts on the effective row and unchanged Enter preserves an unsupported saved choice", async () => {
+    const { context } = commandContext("deepseek-flash", "", { provider: "deepseek", effortValue: "medium" });
+    const setToolJSX = vi.fn();
+    const applyDaemonConfig = vi.fn();
+    (context as { appState: Record<string, unknown> }).appState.setToolJSX = setToolJSX;
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+    await effortCommand.execute(context);
+    const { snapshot, onSelect } = setToolJSX.mock.calls[0]![0].jsx.props;
+    expect(snapshot.rows[snapshot.activeIndex].choice).toBe("high");
+    expect(snapshot.rows[0].detail).toContain("high");
+    expect(await onSelect("high")).toMatchObject({ shouldClose: true });
+    expect(settings.update).not.toHaveBeenCalled();
+    expect(applyDaemonConfig).not.toHaveBeenCalled();
+    await onSelect("default");
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: undefined });
+    expect(applyDaemonConfig).toHaveBeenCalledWith({ reasoningEffort: null });
+  });
+
   test("opens a picker of the current model's levels", async () => {
     const { context } = commandContext("gemini-3.1-pro-preview", "", { provider: "gemini" });
     const setToolJSX = vi.fn();
@@ -250,6 +306,48 @@ describe("/effort picker and live session", () => {
 
     expect(result).toMatchObject({ kind: "error" });
     if (result.kind === "error") expect(result.message).toContain("read-only settings");
+  });
+});
+
+describe("/effort off where the live list offers it (Ollama Cloud)", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test("turns thinking off: the session takes none and new sessions save it", async () => {
+    const { context, getAppState } = commandContext("deepseek-v4.1-flash", "off", { provider: "ollama-cloud" });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+    const result = await effortCommand.execute(context);
+    expect(result).toEqual({ kind: "text", text: "Thinking off for deepseek-v4.1-flash." });
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: "none" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: "none" });
+    expect(getAppState().effortValue).toBe("none");
+    expect(getSessionEffortLabelForContext("deepseek-v4.1-flash", "none", { provider: "ollama-cloud" } as never)).toBe("effort off");
+  });
+
+  test("names off in the usage line, and refuses it for a model that cannot stop thinking", async () => {
+    const usage = await effortCommand.execute(commandContext("kimi-k2.6", "bogus", { provider: "ollama-cloud" }).context);
+    expect(usage).toMatchObject({ kind: "error" });
+    if (usage.kind === "error") expect(usage.message).toBe("Usage: /effort <high, off>, or /effort default.");
+    const refused = await effortCommand.execute(commandContext("gpt-oss:120b", "off", { provider: "ollama-cloud" }).context);
+    expect(refused).toMatchObject({ kind: "error" });
+    if (refused.kind === "error") expect(refused.message).toContain("cannot turn thinking off");
+  });
+
+  test("the picker offers Off beside the levels", async () => {
+    const { context } = commandContext("kimi-k2.6", "", { provider: "ollama-cloud" });
+    let rows: readonly { readonly choice: string; readonly label: string }[] = [];
+    (context as { appState: Record<string, unknown> }).appState.setToolJSX = vi.fn();
+    const menu = await import("../../src/commands/effort-menu.js");
+    const open = vi.spyOn(menu, "openEffortMenu").mockImplementation((_ctx, snapshot) => {
+      rows = snapshot.rows;
+      return true;
+    });
+    try {
+      await effortCommand.execute(context);
+    } finally {
+      open.mockRestore();
+    }
+    expect(rows.map(row => row.label)).toEqual(["Default", "Off", "High"]);
   });
 });
 

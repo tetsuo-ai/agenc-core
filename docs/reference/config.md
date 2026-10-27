@@ -62,9 +62,12 @@ disagreement with existing canonical keybindings block the migration.
 
 Theme is an operator preference at `tui.theme` in `config.toml`. Accepted values are
 `auto`, `dark`, `light`, `light-daltonized`, `dark-daltonized`, `light-ansi`,
-and `dark-ansi`; `system` is not a value. `auto` first uses `$COLORFGBG` when
-available, otherwise starts with a dark fallback, and an OSC 11 terminal
-background response can then update the detected light/dark palette.
+`dark-ansi`, and `olive` (the default); `system` is not a value. `auto` shows
+olive on a dark terminal and light on a light one: it first uses `$COLORFGBG`
+when available, otherwise starts with a dark fallback, and an OSC 11 terminal
+background response can then update the detected light/dark palette. In the
+TUI, `/theme` previews the themes and saves the choice here; the open TUI
+also follows `/config reload` after a hand edit.
 
 `--bare` is the CLI ingress for the typed `runtimeOptions.simpleMode` value;
 embedding clients carry the same required typed value on the daemon protocol.
@@ -111,7 +114,7 @@ Directory synchronization support depends on the operating system and
 filesystem. An unsupported directory sync does not establish power-loss
 durability. A sync failure before publication stops the update; a failure
 after publication preserves artifacts not yet cleaned up and reports an
-indeterminate commit durability. See the [Node.js file synchronization contract](https://nodejs.org/download/release/v26.5.0/docs/api/fs.html#fsfsyncsyncfd).
+indeterminate commit durability. See the [Node.js file synchronization contract](https://nodejs.org/download/release/v26.12.1/docs/api/fs.html#fsfsyncsyncfd).
 
 The canonical JSON schema remains `state_version = 1`. After successful
 cleanup, the prior release can read the document. Finish any pending
@@ -310,7 +313,6 @@ otherwise.
 | `approvals_reviewer` | `user` |
 | `agent_max_depth` | `1` |
 | `auth.backend` | `remote` |
-| `auth.managedKeys.enabled` | `true` |
 | `plugins.enabled` | `false` |
 | `plugins.allowlist` | `[]` (empty means no filter; only a non-empty list restricts) |
 | `mcp.server.enabled` | `false` |
@@ -327,12 +329,13 @@ otherwise.
 | `providers.grok.enable_image_search` | `true` |
 | `providers.grok.enable_image_understanding` | `true` |
 | `providers.grok.enable_video_understanding` | `true` |
-| `tui.theme` | `dark` |
+| `tui.theme` | `olive` |
 | `tui.showTurnDuration` | `true` |
 | `tui.terminalProgressBarEnabled` | `true` |
 | `tui.copyOnSelect` | `true` |
 | `tui.flickerFreeMode` | `true` |
 | `tui.prStatusFooterEnabled` | `true` |
+| `tui.gitStatusEnabled` | `true` |
 | `ideConnector.autoInstallExtension` | `true` |
 | `teammates.mode` | `auto` |
 | `teammates.preferTmuxOverIterm2` | `false` |
@@ -344,7 +347,7 @@ otherwise.
 | `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. Enabling it is the user's consent for the providers in `allowed_providers`: a spawn to one of them runs without a question. This consent also covers unattended runs (goals, routines, workflows, `agenc -p`, and turns resumed after a restart), nested children, and `send_message` or `assign_task` to an existing child. Once any child in a session reports that its provider is out of funds, settings consent ends for the rest of that session, also after `/clear` and a daemon restart. Every later cross-provider spawn then asks, even after the user picks Allow for session. So does every `send_message` or `assign_task` to an existing child. An unattended run, or a run with no client that can answer, gets `consent_unavailable` instead of a question. The stop is kept in that session's own journal. A new session starts with settings consent again, including the reviewed session that `/compact-rollback --branch` creates. A nested child's stop recorded by a build before [#2704](https://github.com/tetsuo-ai/agenc-core/pull/2704) is not read back. A change to any `agents` setting reaches open sessions when the daemon reloads its config. Desktop does that when you save, and so does `agenc daemon reload`. Each open session reads these settings from its own config sources, so its `--config` file and managed config still apply. Its next spawn then follows the new settings. For `cross_provider_enabled`, `allowed_providers` and `cross_provider_ask_each_spawn` so does its next message to an existing child, and a child running on a provider that is no longer allowed stops. `cross_provider_auto` and `subagent_limits` apply to new sub-agents: a child already running keeps its provider, effort and tier, and `send_message` or `assign_task` reach it as it is. A consent card that was open during the reload grants nothing once its provider is no longer allowed. A session may fail to read its settings again, for example because a `.mcp.json` file or an invalid project `config.toml` now blocks its config load, or not finish within one second. That session fails closed for what the save took away. The daemon compares its own settings before and after the save. It reads them from user and managed config and its own profile, never from a workspace. The session loses each provider the save removed there, turns the feature or automatic choice off if the save turned it off, asks at each spawn if the save started asking, and lowers any sub-agent limit the save lowered. It keeps the rest, such as what its own `--config` file, profile or `-c` allows, and it never gains a provider this way. A save that took nothing away leaves it as it was. The reload result lists it in `crossProviderSettings.failed`, with `timedOut: true` when it only ran out of time, and `agenc daemon reload` prints it. It takes its own settings again once a later read succeeds. A read that ran out of time still runs once the session's config is free. A session that is still starting during the reload reads the settings again when it registers for approvals, before its first cross-provider decision. If that read fails, only the daemon log reports it. Other session settings, such as the model, still apply to new sessions. |
 | `agents.allowed_providers` | `[]`. Built-in provider names permitted for cross-provider subagents. |
 | `agents.cross_provider_ask_each_spawn` | `false`. Set `true` to be asked before every cross-provider spawn, as before. Repository config cannot change it. |
-| `agents.cross_provider_auto` | `false`. Whether the agent may choose an allowed provider on its own. Off, a sub-agent runs on another provider only when the message that started the current turn names that provider or one of its models: its name, its display name, a common alias such as GPT or Claude, or the model's name. Only a message a person sends counts. The conversation's history does not, so messages from sub-agents, compaction summaries and earlier messages are not read, and a turn that a schedule, a goal, a resumed run or a sub-agent's report starts names no provider. So the user names the provider in the message that asks for the work. New sub-agents start on it only during that turn: none do after it ends or in a later turn whose message does not name it, and the ones already running keep working. Some names are ordinary words and do not count: `github` is named by Copilot, GitHub Copilot or one of its models, `meta` by Llama, Meta AI or one of its models, and AgenC never by its own name. A managed AgenC child counts as named when the provider its route resolves to is named. "OpenAI-compatible" does not name OpenAI. Any other cross-provider spawn returns `not_requested`, and the agent continues the subtask itself. On, the tool description lists each allowed model's API price per 1M input and output tokens, so the agent can weigh cost when it picks one. A sign-in route (ChatGPT, X) bills the user's subscription instead. With `cross_provider_enabled` also on, a spawn that names no provider or model gets its model chosen locally. The candidates are the parent's own model, which needs no entry in `allowed_providers` or routing profile, and the models of the allowed providers that have local credentials and a maintained routing profile. Each must meet what the task needs (tools, image input, context size, reasoning). A model with a routing profile must also meet the quality its kind and complexity need, the parent's model included; a parent model without a profile stays the default. The child keeps the parent's model while it is rated for the task, unless outcomes that a host's independent checks verified show another candidate does this kind of task better, or `routing_preference` is `economy` and, under a dollar cap (`max_cost_usd` or a session budget), an adequate candidate saves much of that cap. `balanced`, the default, and `quality` treat a cap only as a limit. Without a cap, price never moves a child off the parent's model. A task the parent's model is not rated for, such as a hard one, or cannot run within the cap goes to the least expensive candidate that is rated for it, so a cap never makes the child more expensive; only verified outcomes can justify a more expensive candidate. When no candidate qualifies, the child keeps the parent's model. The outcomes of earlier sub-agents are kept in `~/.agenc/state/child-routing-outcomes.json`. `routing_preference = "fast"` prefers quicker models. A requirement the agent states, such as `requires_vision` or `context_tokens`, still applies to that child. `spawn_agent` offers `routing`, `routing_preference`, `task_kind`, `complexity`, `requires_vision`, `context_tokens` and `max_cost_usd` only while both settings are on. `max_cost_usd` caps that child's task, including the sub-agents it starts during the task. After a daemon restart, such a sub-agent that is restored while its parent is idle or on another task no longer counts against that cap. The parent's own caps and the workspace caps still apply to it. A chosen child on another provider is limited to 32 model calls, as any cross-provider child is. On the parent's provider it has no such limit. `routing = "inherit"` keeps the parent's model, and so does a fork of the full conversation. If a chosen child fails on a provider error before its first tool call, up to two retries can start on other providers while the parent's turn lasts. The child gives up its own retries of that provider only while such a retry can still start without asking anyone. Repository config cannot change it. |
+| `agents.cross_provider_auto` | `false`. Whether the agent may choose an allowed provider on its own. Off, a sub-agent runs on another provider only when the message that started the current turn names that provider or one of its models: its name, its display name, a common alias such as GPT or Claude, or the model's name. Only a message a person sends counts. The conversation's history does not, so messages from sub-agents, compaction summaries and earlier messages are not read, and a turn that a schedule, a goal, a resumed run or a sub-agent's report starts names no provider. So the user names the provider in the message that asks for the work. New sub-agents start on it only during that turn: none do after it ends or in a later turn whose message does not name it, and the ones already running keep working. Some names are ordinary words and do not count: `github` is named by Copilot, GitHub Copilot or one of its models, `meta` by Llama, Meta AI or one of its models, and AgenC never by its own name. "OpenAI-compatible" does not name OpenAI. Any other cross-provider spawn returns `not_requested`, and the agent continues the subtask itself. On, the tool description lists each allowed model's API price per 1M input and output tokens, so the agent can weigh cost when it picks one. A sign-in route (ChatGPT, X) bills the user's subscription instead. With `cross_provider_enabled` also on, a spawn that names no provider or model gets its model chosen locally. The candidates are the parent's own model, which needs no entry in `allowed_providers` or routing profile, and the models of the allowed providers that have local credentials and a maintained routing profile. Each must meet what the task needs (tools, image input, context size, reasoning). A model with a routing profile must also meet the quality its kind and complexity need, the parent's model included; a parent model without a profile stays the default. The child keeps the parent's model while it is rated for the task, unless outcomes that a host's independent checks verified show another candidate does this kind of task better, or `routing_preference` is `economy` and, under a dollar cap (`max_cost_usd` or a session budget), an adequate candidate saves much of that cap. `balanced`, the default, and `quality` treat a cap only as a limit. Without a cap, price never moves a child off the parent's model. A task the parent's model is not rated for, such as a hard one, or cannot run within the cap goes to the least expensive candidate that is rated for it, so a cap never makes the child more expensive; only verified outcomes can justify a more expensive candidate. When no candidate qualifies, the child keeps the parent's model. The outcomes of earlier sub-agents are kept in `~/.agenc/state/child-routing-outcomes.json`. `routing_preference = "fast"` prefers quicker models. A requirement the agent states, such as `requires_vision` or `context_tokens`, still applies to that child. `spawn_agent` offers `routing`, `routing_preference`, `task_kind`, `complexity`, `requires_vision`, `context_tokens` and `max_cost_usd` only while both settings are on. `max_cost_usd` caps that child's task, including the sub-agents it starts during the task. After a daemon restart, such a sub-agent that is restored while its parent is idle or on another task no longer counts against that cap. The parent's own caps and the workspace caps still apply to it. A chosen child on another provider is limited to 32 model calls, as any cross-provider child is. On the parent's provider it has no such limit. `routing = "inherit"` keeps the parent's model, and so does a fork of the full conversation. If a chosen child fails on a provider error before its first tool call, up to two retries can start on other providers while the parent's turn lasts. The child gives up its own retries of that provider only while such a retry can still start without asking anyone. Repository config cannot change it. |
 | `agents.subagent_limits` | none. The effort and speed limits for sub-agents, one table per built-in provider. A provider without a table runs its sub-agents at each model's lowest effort other than none, at standard speed, which sends no service tier. Repository config cannot change it. |
 | `agents.subagent_limits.<name>` | none. The limits for every new sub-agent that runs on provider `<name>`, on the parent's provider or another one, however it starts: `spawn_agent`, `spawn_agents_on_csv` workers and workflow agents. A sub-agent runs at its limit, not at its parent's effort or tier. Its request (`reasoning_effort`, `service_tier`) or its role may ask for less effort or for the flex tier, never for more. A managed AgenC child runs at the limits of the provider its route resolves to. A fork of the full conversation (`fork_turns` `all`) keeps the parent's model, effort and tier, so it can reuse the parent's prompt cache, and its request cannot set them. |
 | `agents.subagent_limits.<name>.effort` | the model's lowest level other than `none`. One of `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. `minimal` is the same as unset. Sub-agents run at this effort, as the model's nearest level at or below it. A model that lists no reasoning levels has no effort to limit. |
@@ -374,6 +377,23 @@ in-process owner can repair storage and retry close. Daemon shutdown reports a
 nonzero exit status but does not wait indefinitely for storage repair. Memory
 cannot survive process exit; if storage failed before a recovery file became
 durable, shutdown or a forced kill can still lose that unpersisted state.
+
+Clear information requests (such as MCP data queries or explanations) can finish without a workspace checklist when the turn has successful tool results and no commands or recorded workspace writes. Requests mentioning implementation, execution or output artifacts retain verification, as do ambiguous tasks, explicit checklists and verification rounds already in progress. The gate records this applicability decision as `skipped` with reason `answer_only`; it does not certify answer correctness or change tool permissions.
+
+Completion review reuses current evidence and asks for at most five grouped
+lines, rather than an item for every trivial property. Explicit literal-file
+write/read-back tasks can finish with their content-only answer when a narrow
+runtime check matches the successful write, complete read and requested
+content. Unknown wording or commands, extra requirements and substantive work
+retain the full evidence check. See [CLI completion behavior](cli.md).
+
+In addition to the three-prompt hard cap, verification has a checkpointed
+allowance of six model samples. Tool continuations and recovery consume it;
+transport retries use their existing retry limits. Every gated request is
+capped at 8,192 output tokens and never raises a lower configured limit.
+A tool loop that exhausts this allowance stops with `max_turns` and a warning
+that verification is incomplete. This is separate from settling an existing
+final answer at the checklist round cap below.
 
 `max_turns` is unset by default; an unset turn cap does not impose a
 synthetic stop. `completion_gate` defaults to `mode = "auto"` with
@@ -419,6 +439,29 @@ existing stop reason and exit code; text-mode `agenc -p` prints the
 warning to stderr, and structured output includes the warning event.
 `mode = "never"` turns the gate off, `mode = "always"` applies it to
 interactive sessions too.
+
+Turns whose caller requires the exact final answer (`agenc -p
+--output-format json` or `stream-json`, or `exactOutput` on a turn or
+session) skip the gate by default (`completion_gate.exact_output = "skip"`):
+the final answer is the model's first one. `completion_gate.exact_output =
+"verify"` verifies them the same way, as internal work. The first answer that
+draws a request is held; the checklist rounds stay in history and reach a
+structured-output client only as ordinary agent messages and tool calls (the
+gate's decisions are `completion_gate` records in the rollout), and the turn
+ends with the held answer byte for byte. A verification reply can end with a
+line containing only `<final_answer_changed/>`; the runtime then asks once
+for the corrected final answer in the task's own form, and that reply is the
+final answer. If such a turn runs out of its six verification samples, it
+ends with the held answer and the `completion_gate_exhausted` warning instead
+of `max_turns`.
+
+With a run deadline (`agenc -p --deadline`) the gate does not start a
+verification round that cannot finish before the reserve: when the time left
+before the reserve is shorter than one round, estimated as two model calls at
+the turn's mean pace so far and at least one minute, the answer is accepted
+and recorded as `skipped` with reason `deadline_reserve`, as inside the
+reserve.
+
 `compaction` controls the degraded compaction ladder. When automatic
 compaction at the context limit declines to shrink the history (the
 summary would not save enough, or the summarizer failed), the runtime
@@ -454,12 +497,24 @@ each time the remaining reservation halves and re-arms once a request fits
 again, so a long tool loop that is walking toward the context window is
 visible in the transcript and the rollout before the provider refuses a
 request. The fit itself is unchanged.
-`stream_watchdog_timeout_ms` defaults to `600000` (ten
-minutes of provider silence): the runtime warns at half that time and aborts
-the stream with a retryable `stream_idle` error at the deadline. Set it to
-`0` to permit provider silence indefinitely. The *default* applies to session
+`stream_quiet_warning_ms` defaults to `600000` (ten minutes without a model
+delta). It emits a `warning` event with cause `stream_idle_warning`; the TUI
+status shows "no output from the model for N minutes", the
+reasoning effort captured from the active request, and the interrupt hint.
+This warning never ends a turn.
+Keepalives do not reset it; text, reasoning, and tool-input deltas do.
+Set it to `0` to disable the warning.
+
+`stream_watchdog_timeout_ms` defaults to `1200000` (twenty minutes without
+any HTTP stream bytes). The runtime observes bytes before parsing SSE, so
+comments, keepalives, partial frames, and reasoning frames all refresh
+liveness even when there is no visible output. A completely silent connection
+is aborted with a retryable `stream_idle` error and uses the existing finite
+reconnect ladder. This is an idle interval, with no total turn deadline.
+Set it to `0` to permit byte silence indefinitely; the soft warning still works.
+The *default* applies to session
 turns only: a one-shot review delegate (`/review`, guardian approval review)
-carries its own deadline, so the ten-minute default is not layered on top of
+carries its own deadline, so the twenty-minute default is not layered on top of
 it. A value you configure yourself is still honoured inside a review delegate.
 
 `provider_outage_wait_ms` and `provider_outage_retry_ms` govern what happens
@@ -510,11 +565,11 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `model` | Configured startup model slug. A live session selection is separate. |
 | `model_provider` | Configured startup canonical provider slug. Strict v2 rejects the retired `xai`, `custom`, and `openai_compatible` selector spellings. |
 | `approval_policy` | `untrusted`, `on-failure`, `on-request`, or `never`. |
-| `sandbox_mode` | `read-only`, `workspace-write`, or `danger-full-access`. |
-| `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`. |
-| `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
+| `sandbox_mode` | `read-only`, `workspace-write`, or `danger-full-access`. `read-only` and `workspace-write` reserve `AGENC_HOME` when it sits under a writable ancestor. `danger-full-access` skips the reservation. See [tools-permissions-sandbox.md](tools-permissions-sandbox.md#agenc-home-under-writable-sandbox-roots). |
+| `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
+| `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. When unset, `gpt-6-luna` on the OpenAI platform API leaves summaries off while retaining encrypted reasoning replay. Other OpenAI replay routes, including ChatGPT sign-in, default to `auto`. An explicit setting takes precedence. |
 | `approvals_reviewer` | `user` or `auto_review`. |
-| `model_verbosity` | `low`, `medium`, or `high`. Sets response detail via the native verbosity parameter on supported direct OpenAI models; other routes (including DeepSeek, GLM, Anthropic and ChatGPT subscription models) use a Response Detail instruction. Applies at the top level or in a profile. A runtime response-detail override takes precedence; clearing it restores the configured value. Unset adds no response-detail instruction or native verbosity parameter. This controls user-facing prose, not the work, checks, or required error reporting. |
+| `model_verbosity` | `low`, `medium`, or `high`. Sets response detail via the native verbosity parameter on supported direct OpenAI models; other routes (including DeepSeek, GLM, Anthropic and ChatGPT subscription models) use a Response Detail instruction. Applies at the top level or in a profile. A runtime response-detail override takes precedence; clearing it restores the configured value. Without an explicit setting, `DEFAULT_MODEL_VERBOSITY` in `runtime/src/config/runtime-defaults.ts` supplies the release default. When that switch is undefined, no response-detail instruction or native verbosity parameter is added. This controls user-facing prose, not the work, checks, or required error reporting. |
 | `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price), Anthropic fast mode on Claude Opus 5.5, Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic), and xAI priority processing on Grok 4.7 and Grok 4.6 (`service_tier: "priority"`, 2x price, API-key billing only; a session signed in with X does not send it). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
 | `personality` | `none`, `friendly`, or `pragmatic`. |
 | `agent_max_threads` | Positive concurrent-agent thread cap. |
@@ -529,7 +584,12 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `max_budget_usd` | Positive shared cost cap for the session and its child agents. |
 | `autonomous_mode` | Boolean autonomous runtime mode. |
 | `coordinator_mode` | Boolean coordinator-only main-session behavior. |
-| `stream_watchdog_timeout_ms` | Non-negative inter-chunk idle timeout; default `600000`, `0` disables. |
+| `light_mode` | Mode for new sessions. Unset or `true`: Light, where a session starts with core tools and loads the rest through `system.searchTools`. `false`: standard. `--light` and `--standard` override it for one session. A resumed session keeps the mode it started with. Sessions created without a mode (`agenc agent start`, `agenc run start`, SDK and API clients that omit `lightMode`, phone and Telegram sessions, routines) use the daemon's own value, read at daemon start and on `agenc daemon reload`. See [cli.md](cli.md#session-mode). |
+| `defer_rare_tools` | Load rarely needed built-in tools (delegation, process, web, rare tools) through `system.searchTools` instead of sending them with every request. Unset: on for standard sessions, off for Light. `AGENC_DEFER_RARE_TOOLS` in the session environment overrides it. |
+| `lean_system_prompt` | Use the lean static head of the system prompt. Unset: on for OpenAI and Grok sessions. `AGENC_LEAN_SYSTEM_PROMPT` in the session environment overrides it. |
+| `stream_degenerate_guard` | Stop disordered short-vocabulary model output; default `true`. Set `false` for intentional random text. A stopped partial is marked unreliable; one automatic retry is allowed only before streamed tool work. |
+| `stream_watchdog_timeout_ms` | Non-negative byte-idle timeout; default `1200000`, `0` disables. Keepalives refresh it. |
+| `stream_quiet_warning_ms` | Non-negative no-delta soft warning interval; default `600000`, `0` disables. Never ends a turn. |
 | `provider_outage_wait_ms` | Non-negative total time a turn keeps waiting for a provider outage to end once the reconnect ladder is spent; default `1800000` (30 minutes), `0` ends the turn as soon as the ladder is exhausted. |
 | `provider_outage_retry_ms` | Positive first slow-retry delay during a provider outage, doubling up to ten times this value; default `30000`. |
 
@@ -630,7 +690,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `sandbox.network.allowManagedDomainsOnly` | Use only managed allowed-domain inputs. |
 | `sandbox.network.allowUnixSockets` | Allowed Unix-socket path string array. |
 | `sandbox.network.allowAllUnixSockets` | Boolean opt-out from Unix-socket blocking. |
-| `sandbox.network.allowLocalBinding` | Allow binding local listening sockets. |
+| `sandbox.network.allowLocalBinding` | Allow local listening sockets. On Linux with restricted networking, requires bubblewrap and keeps servers inside a private loopback network namespace. Host access and external networking remain blocked. On Linux, start and test the server in the same command; a separate tool call can use a different network namespace and cannot reach that listener. Default: off. |
 | `sandbox.network.httpProxyPort` | HTTP proxy TCP port, integer `1..65535`. |
 | `sandbox.network.socksProxyPort` | SOCKS proxy TCP port, integer `1..65535`. |
 | `sandbox.filesystem` | Filesystem-policy block. Unknown fields are rejected. |
@@ -648,12 +708,21 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 
 ### Authentication, providers, and profiles
 
+Catalogued DeepSeek models can start a cold session with built-in limits while
+endpoint metadata refreshes in the background. Once that refresh completes, the
+next turn adopts the live context window and output limit, including smaller
+limits advertised by a proxy. Compaction and request budgets use that turn's
+limits; an already running turn keeps its snapshot. Set
+`providers.deepseek.context_window_tokens` and
+`providers.deepseek.max_output_tokens` when a proxy needs specific limits from
+the first turn. Explicitly configured DeepSeek limits take precedence over
+discovered metadata.
+
 | Paths | Type / meaning |
 | --- | --- |
 | `auth` | Authentication policy block. |
 | `auth.backend` | `local` or `remote`. |
-| `auth.managedKeys` | Managed-key block. |
-| `auth.managedKeys.enabled` | Boolean managed-key enablement. |
+| `auth.managed_keys`, `auth.managedKeys` | Retired. Accepted and ignored with one notice that AgenC accounts no longer provide models. |
 | `providers`, `providers.<provider>` | Provider definitions keyed only by canonical built-in provider slug. Unknown and retired names are rejected. Provider credentials use each provider's documented canonical environment variable or native secure storage; the retired `api_key_env` indirection is rejected. |
 | `providers.<provider>.base_url` | Provider API base URL. |
 | `providers.<provider>.default_model` | Provider fallback model. |
@@ -665,11 +734,12 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `providers.<provider>.capability_overrides.supportsImageInput`, `providers.<provider>.capability_overrides.supportsAudioInput`, `providers.<provider>.capability_overrides.supportsAudioOutput` | Boolean media capabilities. |
 | `providers.<provider>.capability_overrides.supportsProviderNativeWebSearch`, `providers.<provider>.capability_overrides.supportsExtendedThinking` | Boolean native search/thinking capabilities. |
 | `providers.<provider>.capability_overrides.acceptsImageHistory`, `providers.<provider>.capability_overrides.acceptsAudioHistory`, `providers.<provider>.capability_overrides.acceptsThinkingHistory`, `providers.<provider>.capability_overrides.acceptsReasoningEffort` | Boolean accepted-history/effort capabilities. |
-| `providers.<provider>.web_search`, `providers.<provider>.x_search`, `providers.<provider>.code_execution` | Grok-only native web, X, and code capabilities; rejected on every other provider. |
+| `providers.<provider>.web_search` | Native web search. Grok: the server-side `web_search` tool. DeepSeek: WebSearch through DeepSeek's Search API; unset means on only for DeepSeek's own API host when no `tools_config.web_search_endpoint` is set, `true` also uses a custom base URL and goes first, `false` never (`AGENC_DEEPSEEK_WEB_SEARCH` wins). Rejected on every other provider. |
+| `providers.<provider>.x_search`, `providers.<provider>.code_execution` | Grok-only native X and code capabilities; rejected on every other provider. |
 | `providers.<provider>.enable_image_search`, `providers.<provider>.enable_image_understanding`, `providers.<provider>.enable_video_understanding` | Grok-only native media capabilities; rejected on every other provider. |
 | `providers.<provider>.incremental_continuation` | Grok-only boolean (`AGENC_XAI_INCREMENTAL`) for Responses `previous_response_id` continuation on streaming turns; on for Grok unless set to `false`. |
 | `providers.<provider>.auth` | OpenAI and Grok only: `auto` (default), `oauth`, or `api-key`. Which credential to use when both an account sign-in and an API key are present; `auto` prefers the sign-in. `OPENAI_AUTH_MODE` / `GROK_AUTH_MODE` in the environment win over it. Applies to new sessions; `/providers` writes it. Rejected under every other provider table. |
-| `providers.<provider>.zero_data_retention` | OpenRouter-only boolean. Every request carries `provider.zdr = true`, so OpenRouter routes only to endpoints with a zero-data-retention policy and refuses a model that has none instead of serving it elsewhere. Rejected under every other provider table: those providers control retention per account, project or team on their own console (see [providers.md](providers.md#zero-data-retention)). |
+| `providers.<provider>.zero_data_retention` | OpenRouter-only boolean, on unless set to `false`. Every request carries `provider.zdr = true`, so OpenRouter routes only to endpoints with a zero-data-retention policy and refuses a model that has none instead of serving it elsewhere. `false` allows endpoints that may keep data. Rejected under every other provider table: those providers control retention by policy or per account, project or team on their own console (see [providers.md](providers.md#zero-data-retention)). |
 | `providers.<provider>.collections` | Grok-only native collection-search block. |
 | `providers.<provider>.collections.enabled`, `providers.<provider>.collections.max_num_results`, `providers.<provider>.collections.vector_store_ids` | Collection enablement, positive result cap, and vector-store ID list. |
 | `providers.<provider>.remote_mcp` | Grok-only server-side MCP block. |
@@ -686,6 +756,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary`, `profiles.<profile>.reasoning_cap_policy` | Reasoning overrides. |
 | `profiles.<profile>.approvals_reviewer`, `profiles.<profile>.model_verbosity`, `profiles.<profile>.service_tier`, `profiles.<profile>.personality` | Reviewer/presentation overrides. |
 | `profiles.<profile>.tools_config` | Profile-local tool block with the same fields as `tools_config`. |
+| `profiles.<profile>.tools_config.web_search_provider` | Live search adapter selection, with the same values and environment precedence as `tools_config.web_search_provider`. |
 | `profiles.<profile>.tools_config.web_search_endpoint`, `profiles.<profile>.tools_config.web_search_endpoint_kind` | Search URL and `duckduckgo`/`searxng`/`brave`/`json` decoder. |
 | `profiles.<profile>.tools_config.enabled_tools`, `profiles.<profile>.tools_config.disabled_tools` | Exact tool-name allow/disable arrays. |
 | `profiles.<profile>.tools_config.<tool>.default_permission_mode` | Exact-name per-tool approval default. |
@@ -695,7 +766,8 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | Paths | Type / meaning |
 | --- | --- |
 | `tools_config` | Tool policy block. There is no `[tools]` alias in v2. |
-| `tools_config.web_search_endpoint` | Search backend URL. |
+| `tools_config.web_search_provider` | Live WebSearch backend after session-native search: `auto` (default), `firecrawl`, `tavily`, `exa`, `you`, `jina`, `bing`, `mojeek`, `linkup`, `custom`, `ddg`, or `native`. `WEB_SEARCH_PROVIDER` wins; keys come from session env. Auto tries configured keys before DuckDuckGo; explicit names fail without switching backend. |
+| `tools_config.web_search_endpoint` | Search backend URL. With an explicitly named provider, overrides its HTTP endpoint using that provider's auth and decoder. In `auto`, uses the generic decoder below and precedes keyed adapters. `AGENC_WEB_SEARCH_ENDPOINT` wins. |
 | `tools_config.web_search_endpoint_kind` | `duckduckgo`, `searxng`, `brave`, or `json`. |
 | `tools_config.enabled_tools`, `tools_config.disabled_tools` | Exact tool-name arrays. |
 | `tools_config.<tool>` | Exact dispatch-name block for any registered tool. Quote names containing dots in TOML, for example `[tools_config."system.bash"]`. |
@@ -731,9 +803,9 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `xaa_idp.issuer`, `xaa_idp.client_id` | HTTPS OIDC issuer and registered client ID. Loopback HTTP is accepted only for local development. |
 | `xaa_idp.callback_port` | Optional fixed loopback callback TCP port (`1..65535`). |
 | `protocol` | Marketplace protocol transport block. |
-| `protocol.enabled` | Boolean master switch, default false. |
+| `protocol.enabled` | Boolean master switch, default false. `true` also lists the bundled `agenc-marketplace-kit-installer` skill, which is unlisted otherwise. |
 | `protocol.adapter` | Must be `marketplace-cli` exactly when `protocol.enabled = true`; omit it when disabled. |
-| `protocol.cli_path` | Trusted local marketplace CLI path. |
+| `protocol.cli_path` | Trusted local marketplace CLI path. Without it (and without `AGENC_MARKETPLACE_CLI`) the adapter uses the installer's `~/.agenc/bin/agenc-marketplace` when that file and its directory belong to the current user and are not world-writable. The working directory is never searched. On Windows, where ownership cannot be checked, set `cli_path` or `AGENC_MARKETPLACE_CLI`. The binary runs with a minimal environment (`PATH`, `HOME`, locale, temp dirs, proxy and certificate settings, `AGENC_HOME`, `AGENC_RPC_URL`), never the full session environment. |
 
 ### Hooks
 
@@ -789,9 +861,10 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | Paths | Type / meaning |
 | --- | --- |
 | `tui` | TUI block. |
-| `tui.theme` | `auto`, `dark`, `light`, one of the daltonized palettes, or one of the ANSI palettes. |
+| `tui.theme` | `auto`, `dark`, `light`, `olive`, one of the daltonized palettes, or one of the ANSI palettes. Set it from the TUI with `/theme`. |
 | `tui.showTurnDuration`, `tui.terminalProgressBarEnabled`, `tui.copyOnSelect` | Turn-duration display, terminal progress, and selection-copy switches. |
 | `tui.flickerFreeMode`, `tui.prStatusFooterEnabled` | Flicker reduction and pull-request footer switches. |
+| `tui.gitStatusEnabled` | Show the git branch, changed file count, and upstream ahead/behind counts above the composer. Default `true`. Set to `false` to hide it. Hidden outside a git work tree. |
 | `tui.keybindings`, `tui.keybindings[]` | Ordered canonical keybinding override blocks. This is operator-only: user config may set it and the final managed layer may replace and lock the complete array; plugin/project/local layers are ignored with diagnostics. |
 | `tui.keybindings[].context` | Required registered TUI context such as `Chat` or `Global`. |
 | `tui.keybindings[].bindings` | Chord-to-action map. `command:<name>` is accepted only in `Chat`. |
@@ -853,7 +926,7 @@ keybinding file or watcher.
 | `durableTurns` | Durable-turn block. |
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. `enabled` defaults to `true`. When false, restart reports `no-checkpoint` and opens a fresh turn. `minIntervalMs` throttles ordinary `iteration` and `postAssistant` writes. It does not defer the forced pre-admission checkpoint after `modelSampleOrdinal` advances. |
 | `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. Automatic continuation applies only to a root whose descendant edges are all closed with recorded terminal outcomes. Turns with unfinished workers follow the ordinary bootstrap path; resuming them is follow-up work. When false, startup opens a fresh turn with reason `disabled`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
-| `completion_gate`, `completion_gate.mode`, `completion_gate.max_rounds` | Non-interactive verification round. `mode` is `auto` (default: only sessions created with `runtimeOptions.nonInteractive`), `always`, or `never`; `max_rounds` is `1..10`, default `3`. See [Built-in defaults](#built-in-defaults). |
+| `completion_gate`, `completion_gate.mode`, `completion_gate.max_rounds`, `completion_gate.exact_output` | Non-interactive verification round. `mode` is `auto` (default: only sessions created with `runtimeOptions.nonInteractive`), `always`, or `never`; `max_rounds` is clamped to `1..3`, default `3`; `exact_output` is `skip` (default: no check for exact-output turns) or `verify` (they are checked as internal work and keep their final answer). See [Built-in defaults](#built-in-defaults). |
 | `goal`, `goal.max_rounds`, `goal.stall_rounds`, `goal.judge_model`, `goal.verify_timeout_ms` | Policy for `/goal`. `max_rounds` is how many continuations a goal may use before it stops as `budget_exhausted` (`1..100`, default `20`); `stall_rounds` is how many rounds in a row may end without a successful tool call before the goal stalls (default `3`); `judge_model` pins the independent reviewer's model (default: the session model); `verify_timeout_ms` bounds each verification command the runtime runs (default `600000`). See [goal.md](goal.md). |
 | `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The switches enable or disable individual guards. They do not select an idempotent replay policy. |
 
@@ -945,3 +1018,98 @@ agenc config validate
 
 The TUI command is `/config`.
 Environment overrides and removed names are cataloged in [env.md](env.md).
+
+### Per-task token and call allocation
+
+`experimental_task_budget_progress` is an optional host-owned JSON registration
+string for the isolated adaptive-budget experiment. Its fields are `initialTokens`,
+`nonce`, `publicKey`, `receiptPath`, and `commandDigest`; `receiptPath` identifies
+the signed host progress receipt. It is unset by default and is not part of the
+named budget levels or a production progress policy.
+
+Choose a named token allocation with `budget_level = "eco"` (1,000,000 tokens),
+`budget_level = "balanced"` (2,400,000), or `budget_level = "max"` (no token cap).
+The CLI equivalent is `--budget eco|balanced|max`. `/budget` opens a picker
+for the current session with eco, balanced, max, and Custom choices. `/budget balanced`
+applies that choice immediately and saves it for new sessions. Custom accepts a whole
+token number such as `3000000`, `3m`, `3M`, or `500k`. `/budget 3m` also applies
+and saves a custom cap. `0` and `max` both remove the task token cap. Existing usage and reservations are retained. Explicit
+CLI and project settings still override the saved user choice, and the confirmation
+states the effective allowance. Independent call and cost limits still apply to `max`.
+
+A higher configuration layer replaces a lower layer's named or numeric choice.
+An explicit `task_token_budget` wins over `budget_level` in the same layer,
+including zero. The CLI rejects passing both `--budget` and
+`--task-token-budget`. `/status` shows the current allocation. The default allocation is selected by `DEFAULT_TASK_BUDGET_LEVEL` in
+`runtime/src/config/runtime-defaults.ts`; explicit choices override it.
+
+`task_token_budget` limits total model input and output tokens, including reasoning
+and cached input once. `task_max_calls` optionally limits model wire attempts.
+The token budget uses the same named default in every mode; the call limit is off
+unless configured. Both accept non-negative integers; `0` explicitly disables that
+limit. CLI overrides are
+`--task-token-budget <tokens>` and `--task-max-calls <calls>`. For example,
+`--task-token-budget 500000` raises the allowance; `--task-token-budget 0`
+disables it. To remove a configured call limit too, use `--task-max-calls 0`.
+
+The allocation belongs to the session/run, including retries, auxiliary model
+calls, and delegated agents. Model-call reservations share the root allocation
+atomically; undispatched reservations are refunded, while dispatched attempts
+with unknown usage remain charged across restart. Restoring a session cannot
+raise its persisted call ceiling. Use a fresh session for each independent task.
+
+Interactive TUI sessions treat the token allowance as a checkpoint. One quiet
+warning appears at 80% of each allowance. Before a model request would cross the
+remaining allowance, the turn pauses with its history and admitted tool results
+intact. The card shows recorded token usage and approximate recorded cost, then
+lets you choose Continue (one more allowance), Remove the limit for this task,
+or Stop here. Enter selects Continue by default; Esc stops with a partial result.
+Continue asks again at the next checkpoint. Removing the limit lasts for this
+task and does not save a new default. Level `max` has no token checkpoints.
+Independent call, cost, provider-overrun, child and calendar limits still apply.
+
+Headless print runs, goals, routines, autonomous runs and delegated/background
+sessions keep the hard cap and partial-result behavior. At 80% of either
+allocation, or earlier when remaining tokens fit at most two recent-size
+requests, the model receives one reminder to finish the decisive check and
+report. Requests that cannot fit their input and maximum output are refused
+before dispatch, so these runs can end below the cap.
+Input counts are estimates. Reported model usage replaces the reservation; a
+token-estimate miss does not abort an otherwise admitted response. If actual
+usage reaches a hard task cap, admitted tools finish before the partial summary,
+and no further model call is admitted without an operator budget update. A response can therefore put actual usage
+above the cap. Independent monetary limits remain enforced.
+In-flight tools finish before a local partial-result summary is emitted. No extra
+model call is spent generating that summary. Unknown usage retains its reserved
+amount. Provider-reported overruns remain subject to execution admission policy.
+
+A permission-blocked routine names the mode that refused it; there is no
+`config.toml` override for those strings:
+[agents.md](agents.md#permission-blocked-explanation).
+
+## Remote control owner switch
+
+`remote_control` is a home/managed-only table. `remote_control.enabled` is a
+boolean, default `false`:
+
+```toml
+[remote_control]
+enabled = false
+```
+
+The owner can set `enabled = true` by editing `$AGENC_HOME/config.toml` outside
+the agent. Managed `config.toml` and sorted `config.d/*.toml` drop-ins override
+that choice; managed `false` cannot be overridden by user configuration.
+Project/local files, plugins, profiles, `--config`, CLI patches, and environment
+variables have no authority over this setting. `agenc config set/unset` refuses
+the table; use the owner editor and restart the daemon. Agent file tools and
+shell write checks protect the home file and managed sources, including custom
+home paths, symlink targets and managed drop-ins, in every permission mode.
+
+When false, phone starts refuse before connector imports, account checks or
+network access; `/remote` is hidden from help/completion, bridge initialization
+is denied by the daemon, and stored pairings do not reconnect. Local status and
+off still work. `AGENC_REMOTE_FULL_CONTROL` is ignored with a warning. When true,
+the existing full-control consent and sign-in checks still apply. Browser
+`remote.*` enrollment uses the same switch; Telegram Connections have separate
+owner authority. See [remote control](../remote-control.md).

@@ -62,11 +62,17 @@ describe("context image budget in the turn loop", () => {
     vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "6500");
     const seen: LLMMessage[][] = [];
     const provider = mkProvider({ content: "seen" }, { onChatStream: (messages) => seen.push(messages) });
-    const { session } = mkSession({ provider });
+    // This nondurable fixture measures image byte-budget batching. Unknown
+    // synthetic PNG dimensions use conservative token bounds; give the model
+    // enough declared room so those bounds do not invoke durable compaction.
+    const { session } = mkSession({ provider, modelInfo: { contextWindow: 1_048_576 } });
+    // All twelve turns must run to exercise both image-retention batches.
+    Object.assign(session.config, { taskTokenBudget: 0 });
     for (let turn = 0; turn < 12; turn += 1) {
-      await drain(runTurn(session, mkCtx(), shot(`screen ${turn}`, 1000).content as LLMContentPart[]));
+      await drain(runTurn(session, mkCtx({ modelInfo: session.modelInfo }), shot(`screen ${turn}`, 1000).content as LLMContentPart[]));
     }
 
+    expect(seen).toHaveLength(12);
     const imagesSent = seen.map((messages) => messages.flatMap((message) =>
       Array.isArray(message.content) ? message.content.filter((part) => part.type === "image_url") : []).length);
     expect(imagesSent).toEqual([1, 2, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4]);

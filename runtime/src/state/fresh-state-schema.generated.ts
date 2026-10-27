@@ -148,6 +148,10 @@ export const FRESH_STATE_MIGRATIONS = [
   {
     "version": 37,
     "name": "workflow_pause"
+  },
+  {
+    "version": 38,
+    "name": "task_model_call_budget"
   }
 ] as const;
 
@@ -912,7 +916,7 @@ CREATE TABLE execution_admission_allocations (
   held_cost_nanos INTEGER NOT NULL DEFAULT 0,
   blocked_by_provider_overrun INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, max_model_calls INTEGER CHECK (max_model_calls IS NULL OR max_model_calls >= 0),
   CHECK (length(scope_key) > 0),
   CHECK (length(owner_run_id) > 0),
   CHECK (max_tokens IS NULL OR max_tokens >= 0),
@@ -2458,6 +2462,9 @@ VALUES (36, 'canonical_projection_marker');
 
 INSERT INTO "schema_migrations" ("version", "name")
 VALUES (37, 'workflow_pause');
+
+INSERT INTO "schema_migrations" ("version", "name")
+VALUES (38, 'task_model_call_budget');
 
 INSERT INTO "workflow_handoff_quota_global" ("singleton", "artifact_count", "artifact_bytes")
 VALUES (1, 0, 0);

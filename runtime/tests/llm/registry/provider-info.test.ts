@@ -21,9 +21,11 @@ describe("built-in provider info", () => {
       ["lmstudio", "LM Studio", "gpt-4o-mini", "http://localhost:1234/v1", "api-key", ["LMSTUDIO_API_KEY"], ["LMSTUDIO_BASE_URL"], 50, "local", false],
       ["openai-compatible", "OpenAI-compatible", "local-model", "http://localhost:8000/v1", "api-key", ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"], ["OPENAI_COMPATIBLE_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"], 60, "local", false],
       ["openrouter", "OpenRouter", "x-ai/grok-4.5", "https://openrouter.ai/api/v1", "api-key", ["OPENROUTER_API_KEY"], ["OPENROUTER_BASE_URL"], 70, "api-key", true],
+      ["venice", "Venice AI", "zai-org-glm-5-2", "https://api.venice.ai/api/v1", "api-key", ["VENICE_API_KEY"], ["VENICE_BASE_URL"], 85, "api-key", false],
+      ["abliteration", "abliteration.ai", "abliterated-model-large-v2", "https://api.abliteration.ai/v1", "api-key", ["ABLIT_KEY", "ABLITERATION_API_KEY"], ["ABLITERATION_BASE_URL"], 86, "api-key", false],
       ["groq", "Groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", "api-key", ["GROQ_API_KEY"], ["GROQ_BASE_URL"], 80, "api-key", false],
       ["deepseek", "DeepSeek", "deepseek-flash", "https://api.deepseek.com/v1", "api-key", ["DEEPSEEK_API_KEY"], ["DEEPSEEK_BASE_URL"], 90, "api-key", false],
-      ["meta", "Meta", "muse-spark-1.3", "https://api.meta.ai/v1", "api-key", ["MODEL_API_KEY"], ["META_BASE_URL"], 95, "api-key", false],
+      ["meta", "Meta", "muse-wonder-1.0", "https://api.meta.ai/v1", "api-key", ["MODEL_API_KEY"], ["META_BASE_URL"], 95, "api-key", false],
       ["qwen", "QwenCloud Pay-As-You-Go", "qwen3.8-max", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "api-key", ["DASHSCOPE_API_KEY", "QWEN_API_KEY"], ["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"], 97, "api-key", false],
       ["qwen-token-plan", "QwenCloud Token Plan", "qwen3.8-max", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "api-key", ["QWEN_TOKEN_PLAN_API_KEY", "DASHSCOPE_TOKEN_PLAN_API_KEY"], ["QWEN_TOKEN_PLAN_BASE_URL", "DASHSCOPE_TOKEN_PLAN_BASE_URL"], 98, "api-key", false],
       ["ollama-cloud", "Ollama Cloud", "deepseek-v4.1-flash", "https://ollama.com/v1", "api-key", ["OLLAMA_API_KEY"], [], 99, "api-key", false],
@@ -33,11 +35,12 @@ describe("built-in provider info", () => {
       ["gemini", "Gemini", "gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta", "api-key", ["GEMINI_API_KEY", "GOOGLE_API_KEY"], ["GEMINI_BASE_URL"], 100, "api-key", false],
       ["kimi", "Kimi (Moonshot)", "kimi-k3", "https://api.moonshot.ai/v1", "api-key", ["MOONSHOT_API_KEY"], [], 101, "api-key", false],
       ["mistral", "Mistral", "mistral-medium-latest", "https://api.mistral.ai/v1", "api-key", ["MISTRAL_API_KEY"], ["MISTRAL_BASE_URL"], 110, "api-key", false],
-      ["nvidia-nim", "NVIDIA NIM", "nvidia/llama-3.1-nemotron-70b-instruct", "https://integrate.api.nvidia.com/v1", "api-key", ["NVIDIA_API_KEY"], ["NVIDIA_BASE_URL"], 120, "api-key", false],
+      // Default moved off nvidia/llama-3.1-nemotron-70b-instruct on 2026-10-17: still listed by
+      // GET /v1/models, but every chat call answered HTTP 404. See nvidia-nim-catalog.test.ts.
+      ["nvidia-nim", "NVIDIA NIM", "nvidia/nemotron-3-super-120b-a12b", "https://integrate.api.nvidia.com/v1", "api-key", ["NVIDIA_API_KEY"], ["NVIDIA_BASE_URL"], 120, "api-key", false],
       ["minimax", "MiniMax", "MiniMax-M3", "https://api.minimax.io/v1", "api-key", ["MINIMAX_API_KEY"], ["MINIMAX_BASE_URL"], 130, "api-key", false],
       ["github", "GitHub Copilot", "gpt-5.3-codex", "https://api.githubcopilot.com", "api-key", ["GITHUB_TOKEN", "GH_TOKEN"], ["GITHUB_BASE_URL"], 140, "api-key", false],
       ["amazon-bedrock", "Amazon Bedrock", "amazon.nova-pro-v1:0", "https://bedrock-runtime.us-east-1.amazonaws.com", "aws-sigv4", [], ["AWS_BEDROCK_BASE_URL"], 150, "environment", false],
-      ["agenc", "AgenC", "agenc", "https://id.agenc.ag/v1", "none", [], ["AGENC_BASE_URL"], 160, "managed", false],
     ] as const;
 
     expect(
@@ -53,9 +56,8 @@ describe("built-in provider info", () => {
         provider.baseURLEnvVars,
         provider.onboarding.order,
         provider.onboarding.access,
-        provider.onboarding.supportsManagedKeyAccess,
       ]),
-    ).toEqual(expected);
+    ).toEqual(expected.map(row => row.slice(0, -1)));
     for (const provider of listBuiltInProviderInfo()) {
       expect(Object.isFrozen(BUILT_IN_PROVIDER_DEFINITIONS[provider.id])).toBe(true);
       expect(Object.isFrozen(provider.credentials)).toBe(true);
@@ -85,9 +87,7 @@ describe("built-in provider info", () => {
       expect(provider.supportsApiKeylessAuth).toBe(
         provider.id === "openai" || provider.id === "gemini",
       );
-      expect(provider.requiresManagedAuth).toBe(
-        provider.onboarding.access === "managed",
-      );
+
     }
   });
 

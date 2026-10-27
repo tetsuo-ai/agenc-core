@@ -1,3 +1,5 @@
+import { buildChatCompletionsRequest } from "../../src/llm/wire/chat-completions.js";
+import type { LLMMessage } from "../../src/llm/types.js";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,9 +24,13 @@ function setup(fast: boolean, calls: boolean, hooks = {}, completion = false) {
    recoveryCategory: "idempotent" as const, inputSchema: { type: "object" as const }, execute };
  const registry = buildToolRegistry({ workspaceRoot: "/tmp", requireAdmission: false, extraTools: [tool] });
  const provider = mkProvider(); let count = 0;
- const requests: unknown[] = [];
- provider.chatStream = async messages => {
+ const requests: LLMMessage[][] = [];
+ const wireRequests: string[] = [];
+ provider.chatStream = async (messages, _onChunk, options) => {
    requests.push(JSON.parse(JSON.stringify(messages)));
+   wireRequests.push(JSON.stringify(buildChatCompletionsRequest({
+     model: "test-model", messages, tools: options?.tools ?? [], options,
+   })));
    const call = calls && count++ === 0;
    return { content: call ? "" : "Done.", toolCalls: call ? [{ id: "fixture-call", name: tool.name, arguments: "{}" }] : [],
      finishReason: call ? "tool_calls" : "stop", model: "test-model",
@@ -36,7 +42,7 @@ function setup(fast: boolean, calls: boolean, hooks = {}, completion = false) {
    ...f.session.permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true }) });
  const ctx = mkCtx({ permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
    config: { ...mkCtx().config, bypassFastMode: fast, completionGate: { mode: completion ? "always" : "never", max_rounds: 1 } } });
- return { ...f, ctx, execute, requests, provider };
+ return { ...f, ctx, execute, requests, wireRequests, provider };
 }
 
 test.each([false,true])("RV stop hook is invoked at terminal (fast=%s)", async fast => {
@@ -136,12 +142,23 @@ test("completion verification keeps request bytes and usage equal after fast too
   const f = setup(fast, true, {}, true);
   try {
    const result = await collect(runTurn(f.session, f.ctx, "Inspect the fixture and verify it is correct."));
-   return { requests: f.requests, terminal: result.find(e => e.type === "turn_complete"),
+   return { requests: f.requests, wireRequests: f.wireRequests, terminal: result.find(e => e.type === "turn_complete"),
      gates: f.events.filter(e => e.msg.type === "completion_gate").map(e => e.msg) };
   } finally { await f.session.shutdown(); }
  };
  const normal = await run(false), fast = await run(true);
- expect(fast.requests).toEqual(normal.requests);
+ // Independent turns have distinct local identities. Compare the actual
+ // provider wire bytes, and separately require the identities to survive
+ // every sample in each turn.
+ for (const run of [normal, fast]) {
+   const userMessageId = run.requests[0]?.find(message => message.runtimeOnly?.userMessageId !== undefined)?.runtimeOnly?.userMessageId;
+   expect(userMessageId).toMatch(/^user-msg-/);
+   for (const request of run.requests) {
+     expect(request.find(message => message.runtimeOnly?.userMessageId === userMessageId)?.runtimeOnly)
+       .toEqual({ userMessageId, responseItemId: userMessageId });
+   }
+ }
+ expect(fast.wireRequests).toEqual(normal.wireRequests);
  expect(fast.requests).toHaveLength(3);
  expect(fast.terminal).toEqual(normal.terminal);
  expect(fast.gates).toEqual(normal.gates);

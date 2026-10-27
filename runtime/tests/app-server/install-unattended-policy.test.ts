@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { installUnattendedPermissionPolicy } from "../../src/app-server/background-agent-runner/runtime-settings.js";
+import {
+  freezeSessionPermissionMode,
+  installUnattendedPermissionPolicy,
+} from "../../src/app-server/background-agent-runner/runtime-settings.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 
@@ -58,5 +61,65 @@ describe("installUnattendedPermissionPolicy", () => {
     ).rejects.toThrow("removed unattended tool name 'Read'");
     expect(untouched.current().mode).toBe("default");
     expect(untouched.current().unattendedPolicy).toBeUndefined();
+  });
+});
+
+describe("a session tool policy", () => {
+  const policy = { enabledTools: ["FileRead"], frozenPermissionMode: true } as const;
+
+  test("records its allowlist on the permission floor without turning the session unattended", async () => {
+    const created = registry();
+    await installUnattendedPermissionPolicy(created, undefined, undefined, undefined, policy);
+    expect(created.current().mode).toBe("default");
+    expect(created.current().unattendedPolicy).toEqual({
+      allowlist: [],
+      denylist: [],
+      readOnly: false,
+      enabledTools: ["FileRead"],
+    });
+  });
+
+  test("keeps an explicit user mode too", async () => {
+    const bypass = registry("bypassPermissions");
+    await installUnattendedPermissionPolicy(bypass, [], [], undefined, policy);
+    expect(bypass.current().mode).toBe("bypassPermissions");
+    expect(bypass.current().unattendedPolicy?.enabledTools).toEqual(["FileRead"]);
+  });
+
+  test("behaves as an unattended policy when the run also declares allow or deny lists", async () => {
+    const both = registry();
+    await installUnattendedPermissionPolicy(both, ["FileRead"], undefined, undefined, policy);
+    expect(both.current().mode).toBe("unattended");
+    expect(both.current().unattendedPolicy).toMatchObject({
+      allowlist: ["FileRead"],
+      enabledTools: ["FileRead"],
+    });
+  });
+
+  test("freezes the mode at the ceiling it started in and refuses to widen it", async () => {
+    const created = registry("acceptEdits");
+    expect(freezeSessionPermissionMode(created, policy, undefined)).toBe("acceptEdits");
+    expect(created.modeCeiling).toBe("acceptEdits");
+    await expect(
+      created.update(createEmptyToolPermissionContext({ mode: "bypassPermissions" })),
+    ).rejects.toThrow(/frozen by this session's toolPolicy/);
+    await created.update(createEmptyToolPermissionContext({ mode: "plan" }));
+    expect(created.current().mode).toBe("plan");
+  });
+
+  test("freezes at the recorded ceiling on restore, and refuses a session already past it", () => {
+    const narrowed = registry("plan");
+    expect(freezeSessionPermissionMode(narrowed, policy, "default")).toBe("default");
+    expect(narrowed.modeCeiling).toBe("default");
+    expect(() => freezeSessionPermissionMode(registry("bypassPermissions"), policy, "default")).toThrow(
+      /frozen by this session's toolPolicy/,
+    );
+  });
+
+  test("freezes nothing for a policy that does not ask for it, or no policy", () => {
+    const open = registry();
+    expect(freezeSessionPermissionMode(open, { enabledTools: ["FileRead"] }, undefined)).toBeUndefined();
+    expect(freezeSessionPermissionMode(open, undefined, undefined)).toBeUndefined();
+    expect(open.modeCeiling).toBeUndefined();
   });
 });

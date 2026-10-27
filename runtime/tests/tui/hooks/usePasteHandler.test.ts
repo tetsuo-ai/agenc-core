@@ -299,6 +299,43 @@ describe('usePasteHandler', () => {
     }
   })
 
+  test('submits once after a paste finishes when Enter arrives during buffering', async () => {
+    const calls: string[] = []
+    const onPaste = vi.fn(text => calls.push(`paste:${text}`))
+    const onInput = vi.fn(input => calls.push(`input:${input}`))
+    const rendered = await renderPasteHandler({ onInput, onPaste })
+    try {
+      const handler = rendered.latest().wrappedOnInput
+      handler('first prompt', key(), inputEvent(true))
+      handler('\r', key({ return: true }), inputEvent(false))
+      handler('\r', key({ return: true }), inputEvent(false))
+      expect(onInput).not.toHaveBeenCalled()
+      await waitForPasteFlush()
+      expect(onPaste).toHaveBeenCalledExactlyOnceWith('first prompt')
+      expect(onInput).toHaveBeenCalledExactlyOnceWith('\r', expect.objectContaining({ return: true }))
+      expect(calls).toEqual(['paste:first prompt', 'input:\r'])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('cancellation discards Enter deferred during a paste without losing the draft', async () => {
+    const onPaste = vi.fn()
+    const onInput = vi.fn()
+    const rendered = await renderPasteHandler({ onInput, onPaste })
+    try {
+      const handler = rendered.latest().wrappedOnInput
+      handler('keep this draft', key(), inputEvent(true))
+      handler('\r', key({ return: true }), inputEvent(false))
+      handler('c', key({ ctrl: true }), inputEvent(false))
+      await waitForPasteFlush()
+      expect(onPaste).toHaveBeenCalledExactlyOnceWith('keep this draft')
+      expect(onInput).toHaveBeenCalledExactlyOnceWith('c', expect.objectContaining({ ctrl: true }))
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('preserves callback ordering while a paste continuation is pending', async () => {
     const calls: string[] = []
     const onInput = vi.fn(input => calls.push(`input:${input}`))

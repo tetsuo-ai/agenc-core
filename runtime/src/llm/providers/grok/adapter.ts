@@ -8,6 +8,7 @@
  */
 
 import { observeInitialHttpResponse, withInitialHttpRejection } from "../../initial-http-rejection.js";
+import { observeStreamTransportActivity } from "../../stream-transport-activity.js";
 import { normalizePromptCacheKey } from "../../prompt-cache-key.js";
 import type {
   LLMChatOptions,
@@ -2321,7 +2322,8 @@ export class GrokProvider implements LLMProvider {
         timeout: this.config.timeoutMs,
         maxRetries: this.config.maxRetries ?? 2,
         fetch: ((...args: Parameters<typeof fetch>) =>
-          (this.config.fetchImpl ?? fetch)(...args).then(observeInitialHttpResponse)) as typeof fetch,
+          (this.config.fetchImpl ?? fetch)(...args)
+            .then(observeInitialHttpResponse).then(observeStreamTransportActivity)) as typeof fetch,
       });
       installAgenCManagedSdkFetch(client);
       return client;
@@ -2677,7 +2679,7 @@ export class GrokProvider implements LLMProvider {
     }
 
     if (allowedToolNames.length === 0) {
-      console.warn("[GrokProvider] Tool allowlist resolved to empty set — all tools suppressed for this call");
+      console.warn("[GrokProvider] Tool allowlist resolved to empty set: all tools suppressed for this call");
       return {
         tools: [],
         chars: 0,
@@ -2752,7 +2754,7 @@ export class GrokProvider implements LLMProvider {
       // clear error to the operator. The previous behavior shipped under
       // `fallback_full_catalog_no_matches` is removed.
       console.warn(
-        `[GrokProvider] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog — suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
+        `[GrokProvider] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog: suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
       );
       return {
         tools: [],

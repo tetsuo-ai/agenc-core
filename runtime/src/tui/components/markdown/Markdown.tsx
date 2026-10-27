@@ -5,8 +5,10 @@ import { useSettings } from '../../hooks/useSettings.js';
 import { Ansi, Box, useTheme } from '../../ink.js';
 import { type CliHighlight, getCliHighlightPromise } from '../../../utils/cliHighlight.js';
 import { hashContent } from '../../../utils/hash.js';
+import { abbreviateStreamingHomePaths } from '../../../utils/home-path-display.js';
 import { configureMarked, formatToken } from '../../../utils/markdown.js';
 import { stripPromptXMLTags } from '../../../utils/messages.js';
+import { color } from '../design-system/color.js';
 import { MarkdownTable } from './MarkdownTable.js';
 
 type Props = {
@@ -148,7 +150,7 @@ function MarkdownBody(t0: Props & { highlight: CliHighlight | null }): React.Rea
         // is scoped to the markdown body (non-table assistant/user text) — code
         // blocks render via <HighlightedCode>'s own <Ansi> without this prop, so
         // their significant leading whitespace is preserved.
-        elements.push(<AnsiComponent key={elements.length} dimColor={dimColor} wrap="wrap-trim">{nonTableContent.trim()}</AnsiComponent>);
+        elements.push(<AnsiComponent key={elements.length} dimColor={dimColor} wrap="wrap-trim">{color('text', theme)(nonTableContent.trim())}</AnsiComponent>);
         nonTableContent = "";
       }
     };
@@ -211,7 +213,7 @@ export function StreamingMarkdown({
   // (line 29). When a closing tag arrives, stripped(N+1) is not a prefix
   // of stripped(N), but the startsWith reset below handles that with a
   // one-time re-lex on the smaller stripped string.
-  const stripped = stripPromptXMLTags(children);
+  const stripped = abbreviateStreamingHomePaths(stripPromptXMLTags(children));
   const stablePrefixRef = useRef('');
 
   // Reset if text was replaced (defensive; normally unmount handles this)

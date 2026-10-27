@@ -19,6 +19,7 @@ import {
 } from "../utils/messageQueueManager.js";
 import { wrapCommandText } from "../utils/messages.js";
 import { asRecord } from "../utils/record.js";
+import { expandPastedTextRefs } from "../utils/pasteReferences.js";
 import type { TurnState } from "./turn-state.js";
 import { buildAgenCToolUseContext } from "./agenc-tool-use-context.js";
 
@@ -88,7 +89,9 @@ function imagePartsFromQueuedPastes(
 function queuedCommandContent(
   command: QueuedCommand,
 ): string | LLMContentPart[] {
-  const text = textFromQueuedCommandValue(command.value);
+  const text = expandPastedTextRefs(
+    textFromQueuedCommandValue(command.value), command.pastedContents ?? {},
+  );
   const origin =
     command.origin ??
     (command.mode === "task-notification"
@@ -200,7 +203,7 @@ function drainQueuedCommandsAfterTools(params: {
           : // Durable prompts emit a `user_message` event with `id: uuid`
             // below — stamp the same id so file-history rewind can find
             // the sidecar's barrier snapshot for this message.
-            { userMessageId: uuid }),
+            { userMessageId: uuid, responseItemId: uuid }),
       },
     });
     if (durableUserPrompt) {

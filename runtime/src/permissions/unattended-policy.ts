@@ -31,11 +31,24 @@ export interface UnattendedPermissionPolicy {
    * bypassPermissions. The routine's own workspace, never the daemon's.
    */
   readonly workspaceRoots?: readonly string[];
+  /**
+   * The session's fixed tool allowlist (`agent.create` `toolPolicy`). Unlike
+   * the allow/deny lists above, which hold normalized risk families, this
+   * holds exact dispatch names: every tool outside it is denied. It is the
+   * complement of a denied set, so it also covers tools that appear later
+   * (MCP servers connecting after startup). Present only when set.
+   */
+  readonly enabledTools?: readonly string[];
 }
 
 export type UnattendedPermissionDecision =
   | { readonly behavior: "allow"; readonly toolName: string }
-  | { readonly behavior: "deny"; readonly toolName: string }
+  | {
+      readonly behavior: "deny";
+      readonly toolName: string;
+      /** Set when the deny comes from the session tool allowlist. */
+      readonly reason?: "tool_policy";
+    }
   | { readonly behavior: "pause"; readonly toolName: string };
 
 export const DEFAULT_UNATTENDED_ALLOWLIST = Object.freeze([] as const);
@@ -89,6 +102,7 @@ export interface UnattendedPermissionPolicyOptions {
   readonly readOnly?: boolean;
   readonly noApprover?: boolean;
   readonly workspaceRoots?: readonly string[];
+  readonly enabledTools?: readonly string[];
 }
 
 export function createUnattendedPermissionPolicy(
@@ -115,6 +129,9 @@ export function createUnattendedPermissionPolicy(
           noApprover: true as const,
           workspaceRoots: Object.freeze([...workspaceRoots]),
         }
+      : {}),
+    ...(opts.enabledTools !== undefined
+      ? { enabledTools: Object.freeze([...opts.enabledTools]) }
       : {}),
   });
 }
@@ -159,14 +176,25 @@ export function applyUnattendedPermissionPolicyToContext(
   // took effect — plan mode was unusable in the daemon TUI. The unattended
   // policy itself (allowlist/denylist) is still recorded for any subset logic
   // that wants to consult it, but the mode stays at the user's explicit choice.
+  const policy = createUnattendedPermissionPolicy(opts);
+  // A session tool allowlist alone declares nothing about approvals. It rides
+  // the policy only for its bypass-immune deny floor, so the session keeps the
+  // mode it was created in instead of being turned into an unattended one.
+  const onlyToolAllowlist =
+    policy.enabledTools !== undefined &&
+    policy.allowlist.length === 0 &&
+    policy.denylist.length === 0 &&
+    !policy.readOnly &&
+    policy.noApprover !== true;
   const preserveMode =
     context.mode === "bypassPermissions" ||
     context.mode === "plan" ||
-    context.mode === "acceptEdits";
+    context.mode === "acceptEdits" ||
+    onlyToolAllowlist;
   return immutableToolPermissionContext({
     ...context,
     mode: preserveMode ? context.mode : "unattended",
-    unattendedPolicy: createUnattendedPermissionPolicy(opts),
+    unattendedPolicy: policy,
   });
 }
 
@@ -175,6 +203,11 @@ export function resolveUnattendedPermissionDecision(
   toolName: string,
 ): UnattendedPermissionDecision {
   const policy = unattendedPolicyForContext(context);
+  // Exact dispatch names, before risk-family collapsing: allowing `Write` must
+  // not allow `Edit`, and denying `Edit` must not deny `Write`.
+  if (policy.enabledTools !== undefined && !policy.enabledTools.includes(toolName)) {
+    return { behavior: "deny", toolName, reason: "tool_policy" };
+  }
   const canonical = canonicalUnattendedToolName(toolName);
   if (policy.denylist.includes(canonical)) {
     return { behavior: "deny", toolName: canonical };
@@ -210,6 +243,19 @@ export function unattendedDenyDecision(
     decisionReason: {
       type: "other",
       reason: `unattended denylist: ${toolName}`,
+    },
+  };
+}
+
+export function toolPolicyDenyDecision(
+  toolName: string,
+): PermissionDenyDecision {
+  return {
+    behavior: "deny",
+    message: `Permission to use ${toolName} was denied: it is not enabled for this session.`,
+    decisionReason: {
+      type: "other",
+      reason: `session tool policy: ${toolName} is not enabled`,
     },
   };
 }

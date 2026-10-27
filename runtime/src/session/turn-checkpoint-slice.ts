@@ -28,6 +28,7 @@ export const LEGACY_TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
 export const TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
   ...LEGACY_TURN_CHECKPOINT_SLICE_KEYS,
   "completionGateRound",
+  "completionGateSampleStart",
   // Retired with the embedded editor; still accepted so checkpoints written
   // by older runtimes stay readable. Never written or restored.
   "editorToolCallsAdmitted",
@@ -66,6 +67,7 @@ export interface TurnCheckpointSliceLine {
   readonly stopHookBlockingCount: number;
   readonly planToolRequiredRetryCount?: number;
   readonly completionGateRound?: number;
+  readonly completionGateSampleStart?: number;
   readonly pendingAdmissionFallback?: PendingAdmissionFallbackSlice;
   readonly modelSampleOrdinal?: number;
   readonly modelSampleResumePrompt?: "continuation_nudge" | "empty_response" | "text_tool_call_correction";
@@ -86,7 +88,7 @@ export interface TurnCheckpointSliceLine {
 
 export type LegacyTurnCheckpointSliceLine = Omit<
   TurnCheckpointSliceLine,
-  "completionGateRound" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection" | "reasoningOnlyRecoveryPending" | "reasoningOnlyRecoveryCount" | "reasoningCapPolicy"
+  "completionGateSampleStart" | "completionGateRound" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection" | "reasoningOnlyRecoveryPending" | "reasoningOnlyRecoveryCount" | "reasoningCapPolicy"
 > & {
   readonly pendingAdmissionFallback?: never;
 };

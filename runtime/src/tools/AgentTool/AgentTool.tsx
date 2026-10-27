@@ -459,7 +459,7 @@ export const AgentTool = buildTool({
     );
     if (isTeammate() && teamName && name) {
       throw new Error(
-        "Teammates cannot spawn other teammates — the team roster is flat. To spawn a subagent instead, omit the `name` parameter.",
+        "Teammates cannot spawn other teammates: the team roster is flat. To spawn a subagent instead, omit the `name` parameter.",
       );
     }
     // In-process teammates cannot spawn background agents (their lifecycle is

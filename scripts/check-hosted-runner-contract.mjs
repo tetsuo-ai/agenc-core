@@ -10,8 +10,23 @@ const INVENTORY_REPOSITORY = "actions/runner-images";
 const MAX_INVENTORY_BYTES = 1024 * 1024;
 const MAX_RELEASE_INDEX_BYTES = 8 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
-const RELEASE_INDEX_URL =
-  "https://api.github.com/repos/actions/runner-images/releases?per_page=100&page=1";
+// GitHub lists runner-images releases newest first, 100 to a page. An image
+// GitHub no longer refreshes often (macos-15 Intel: its stable release of
+// 2026-08-24 had left the first page by 2026-10-22) is still the image the
+// runner serves, so the index is read page by page until every target has a
+// stable release, within a fixed page budget.
+const RELEASE_INDEX_PAGE_SIZE = 100;
+const MAX_RELEASE_INDEX_PAGES = 10;
+function releaseIndexUrl(page) {
+  return `https://api.github.com/repos/actions/runner-images/releases?per_page=${RELEASE_INDEX_PAGE_SIZE}&page=${page}`;
+}
+// GitHub's own rollout feed per image label: the badge source in the
+// actions/runner-images README. It reads {"label":"<deployed>","message":
+// "Deployed"} or {"label":"<deployed>","message":"Deploying to <next>"}.
+const ROLLOUT_STATUS_ROOT =
+  "https://gist.githubusercontent.com/hosted-runners-images-bot/79267492faab096d04cdd25ce7014cec/raw/";
+const MAX_ROLLOUT_STATUS_BYTES = 4 * 1024;
+const RUNNER_RELEASE_VERSION_RE = /^\d{8}\.\d{3,4}$/u;
 const HASH_RE = /^[0-9a-f]{64}$/u;
 const COMMIT_RE = /^[0-9a-f]{40}$/u;
 // The trailing component is GitHub's image revision, not always 1: a respin
@@ -26,6 +41,7 @@ const TARGET_CONTRACTS = Object.freeze({
     runnerArch: "ARM64",
     path: "images/macos/macos-15-arm64-Readme.md",
     releasePrefix: "macos-15-arm64/",
+    rolloutStatus: "macos-15-arm64.json",
     kind: "macos",
   }),
   "darwin-x64": Object.freeze({
@@ -34,6 +50,7 @@ const TARGET_CONTRACTS = Object.freeze({
     runnerArch: "X64",
     path: "images/macos/macos-15-Readme.md",
     releasePrefix: "macos-15/",
+    rolloutStatus: "macos-15.json",
     kind: "macos",
   }),
   "win-x64": Object.freeze({
@@ -42,6 +59,7 @@ const TARGET_CONTRACTS = Object.freeze({
     runnerArch: "X64",
     path: "images/windows/Windows2025-VS2026-Readme.md",
     releasePrefix: "win25-vs2026/",
+    rolloutStatus: "win25-vs2026.json",
     kind: "windows",
   }),
 });
@@ -208,16 +226,51 @@ function runnerReleaseVersion(tag, prefix) {
     // revision is GitHub's, not ours, so match on the build and let the
     // pinned profile carry whichever revision the fleet actually serves.
     imageVersionPrefix: `${suffix}.`,
+    version: suffix,
     date: Number(match[1]),
     build: Number(match[2]),
   };
+}
+
+/**
+ * Parse one rollout feed document. Returns null for anything that is not
+ * exactly the two shapes the feed publishes, so callers fail closed.
+ */
+export function parseRolloutStatus(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const { label, message } = value;
+  if (typeof label !== "string" || !RUNNER_RELEASE_VERSION_RE.test(label)) {
+    return null;
+  }
+  if (message === "Deployed") return { deployed: label, deploying: null };
+  const deploying =
+    typeof message === "string" ? /^Deploying to (\S+)$/u.exec(message)?.[1] : undefined;
+  if (deploying === undefined || !RUNNER_RELEASE_VERSION_RE.test(deploying)) {
+    return null;
+  }
+  return { deployed: label, deploying };
 }
 
 function compareReleaseVersion(left, right) {
   return left.date - right.date || left.build - right.build;
 }
 
-export function requiredHostedRunnerReleases(contracts, releases) {
+/**
+ * The latest stable release of each image label, plus every newer prerelease
+ * that GitHub actually serves. A prerelease is served when the rollout feed
+ * names it as deployed or as the deployment target. Without a usable feed
+ * (missing, unreadable, or naming a version absent from the release index)
+ * every newer prerelease stays required: the feed can only relax the check
+ * for a prerelease GitHub has not started rolling out. The release preflight
+ * on each hosted runner still rejects an image without a reviewed profile.
+ */
+export function requiredHostedRunnerReleases(
+  contracts,
+  releases,
+  { rolloutStatuses = {}, onSkippedPrerelease } = {},
+) {
   if (!Array.isArray(releases)) {
     fail("official runner release index must be an array");
   }
@@ -270,14 +323,26 @@ export function requiredHostedRunnerReleases(contracts, releases) {
         `official runner release index has no stable ${expected.releasePrefix} release`,
       );
     }
-    const active = [
-      stable,
-      ...candidates.filter(
-        (candidate) =>
-          candidate.prerelease &&
-          compareReleaseVersion(candidate, stable) > 0,
-      ),
-    ].sort(compareReleaseVersion);
+    const status = rolloutStatuses[target] ?? null;
+    const knownVersions = new Set(candidates.map(({ version }) => version));
+    const statusUsable =
+      status !== null &&
+      knownVersions.has(status.deployed) &&
+      (status.deploying === null || knownVersions.has(status.deploying));
+    const served = (candidate) =>
+      !statusUsable ||
+      candidate.version === status.deployed ||
+      candidate.version === status.deploying;
+    const newerPrereleases = candidates.filter(
+      (candidate) =>
+        candidate.prerelease && compareReleaseVersion(candidate, stable) > 0,
+    );
+    for (const candidate of newerPrereleases) {
+      if (!served(candidate)) onSkippedPrerelease?.(target, candidate.tag, status);
+    }
+    const active = [stable, ...newerPrereleases.filter(served)].sort(
+      compareReleaseVersion,
+    );
     for (const release of active) {
       const profile = contracts[target].imageProfiles.find(({ imageVersion }) =>
         imageVersion.startsWith(release.imageVersionPrefix),
@@ -495,11 +560,12 @@ async function readBoundedBytes(response, maximumBytes, label) {
   return bytes;
 }
 
-async function fetchOfficialReleaseIndex(fetchImpl) {
+async function fetchReleaseIndexPage(fetchImpl, page) {
+  const url = releaseIndexUrl(page);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(RELEASE_INDEX_URL, {
+    const response = await fetchImpl(url, {
       headers: {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -511,7 +577,7 @@ async function fetchOfficialReleaseIndex(fetchImpl) {
     if (!response.ok || response.status !== 200) {
       fail(`official runner release index returned HTTP ${response.status}`);
     }
-    if (response.url && response.url !== RELEASE_INDEX_URL) {
+    if (response.url && response.url !== url) {
       fail("official runner release index response URL changed");
     }
     const bytes = await readBoundedBytes(
@@ -519,11 +585,102 @@ async function fetchOfficialReleaseIndex(fetchImpl) {
       MAX_RELEASE_INDEX_BYTES,
       "official runner release index",
     );
+    let releases;
     try {
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      releases = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch {
       fail("official runner release index is not valid UTF-8 JSON");
     }
+    if (!Array.isArray(releases)) {
+      fail("official runner release index must be an array");
+    }
+    return releases;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function hasStableReleaseForEveryTarget(releases) {
+  return Object.values(TARGET_CONTRACTS).every(({ releasePrefix }) =>
+    releases.some(
+      (release) =>
+        release !== null &&
+        typeof release === "object" &&
+        typeof release.tag_name === "string" &&
+        release.tag_name.startsWith(releasePrefix) &&
+        release.draft === false &&
+        release.prerelease === false,
+    ),
+  );
+}
+
+/**
+ * The release index up to the page that holds a stable release of every
+ * target. Newer prereleases sort before their image's stable release, so
+ * they are already read by then. A release published between two page reads
+ * pushes the list down by one, so an entry seen on an earlier page can come
+ * back unchanged at the top of the next one; that copy is dropped. A changed
+ * copy, or a duplicate within one page, is kept and fails the index checks.
+ */
+async function fetchOfficialReleaseIndex(fetchImpl) {
+  const releases = [];
+  const seen = new Map();
+  for (let page = 1; page <= MAX_RELEASE_INDEX_PAGES; page += 1) {
+    const batch = await fetchReleaseIndexPage(fetchImpl, page);
+    for (const release of batch) {
+      const earlier =
+        typeof release?.tag_name === "string" ? seen.get(release.tag_name) : undefined;
+      if (
+        earlier !== undefined &&
+        earlier.draft === release.draft &&
+        earlier.prerelease === release.prerelease &&
+        earlier.target_commitish === release.target_commitish
+      ) {
+        continue;
+      }
+      releases.push(release);
+    }
+    for (const release of batch) {
+      if (typeof release?.tag_name === "string" && !seen.has(release.tag_name)) {
+        seen.set(release.tag_name, release);
+      }
+    }
+    if (
+      batch.length < RELEASE_INDEX_PAGE_SIZE ||
+      hasStableReleaseForEveryTarget(releases)
+    ) {
+      break;
+    }
+  }
+  return releases;
+}
+
+/** Returns the parsed rollout feed for one target, or null on any failure. */
+async function fetchRolloutStatus(fetchImpl, target) {
+  const url = `${ROLLOUT_STATUS_ROOT}${TARGET_CONTRACTS[target].rolloutStatus}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "agenc-hosted-runner-contract",
+      },
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response.ok || response.status !== 200) return null;
+    if (response.url && response.url !== url) return null;
+    const bytes = await readBoundedBytes(
+      response,
+      MAX_ROLLOUT_STATUS_BYTES,
+      `${target} rollout status`,
+    );
+    return parseRolloutStatus(
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+    );
+  } catch {
+    return null;
   } finally {
     clearTimeout(timeout);
   }
@@ -558,13 +715,25 @@ async function fetchProfile(fetchImpl, target, profile) {
 export async function verifyHostedRunnerInventories({
   toolchain,
   fetchImpl = globalThis.fetch,
+  onSkippedPrerelease,
 } = {}) {
   if (typeof fetchImpl !== "function") {
     fail("fetch is unavailable");
   }
   const contracts = validateHostedRunnerInventoryConfig(toolchain);
   const releases = await fetchOfficialReleaseIndex(fetchImpl);
-  requiredHostedRunnerReleases(contracts, releases);
+  const rolloutStatuses = Object.fromEntries(
+    await Promise.all(
+      Object.keys(TARGET_CONTRACTS).map(async (target) => [
+        target,
+        await fetchRolloutStatus(fetchImpl, target),
+      ]),
+    ),
+  );
+  requiredHostedRunnerReleases(contracts, releases, {
+    rolloutStatuses,
+    onSkippedPrerelease,
+  });
   const tasks = [];
   for (const [target, contract] of Object.entries(contracts)) {
     for (const profile of contract.imageProfiles) {
@@ -603,7 +772,14 @@ async function main() {
   const toolchain = JSON.parse(
     await readFile(resolve(repoRoot, "release-toolchain.json"), "utf8"),
   );
-  const verified = await verifyHostedRunnerInventories({ toolchain });
+  const verified = await verifyHostedRunnerInventories({
+    toolchain,
+    onSkippedPrerelease: (target, tag, status) => {
+      console.log(
+        `[hosted-runner-contract] ${target} prerelease ${tag} not required: GitHub's rollout feed reports ${status.deployed} ${status.deploying === null ? "deployed" : `deploying to ${status.deploying}`}`,
+      );
+    },
+  });
   for (const record of verified) {
     console.log(
       `[hosted-runner-contract] ${record.target} ${record.imageVersion}: ${record.bytes} bytes sha256:${record.sha256}`,

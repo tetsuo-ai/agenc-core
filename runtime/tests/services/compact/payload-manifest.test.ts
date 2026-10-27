@@ -233,6 +233,20 @@ describe("compaction canonical payload manifests", () => {
     } as const;
     expect(readCompactionPersistedCommittedV1(commit)).toEqual(commit);
 
+    const shortAccounting = { ...commit.accounting, source_tokens: 2_000, candidate_tokens: 1_500 };
+    const shortManual = { ...commit, minimum_reader_runtime: "0.19.0",
+      accounting: { ...shortAccounting, savings_policy: "manual_proportional" } };
+    expect(readCompactionPersistedCommittedV1(shortManual)).toEqual(shortManual);
+    expect(() => readCompactionPersistedCommittedV1({
+      ...shortManual, minimum_reader_runtime: "0.14.0",
+    })).toThrow(/reader capability/i);
+    expect(() => readCompactionPersistedCommittedV1({
+      ...shortManual, accounting: shortAccounting,
+    })).toThrow(/bounded shrink/i);
+    expect(() => readCompactionPersistedCommittedV1({
+      ...shortManual, accounting: { ...shortManual.accounting, candidate_tokens: 1_900 },
+    })).toThrow(/bounded shrink/i);
+
     const rollback = {
       ...eventBase(intent.attempt_id, 20),
       commit_sha256: DIGEST,

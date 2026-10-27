@@ -1,3 +1,4 @@
+import { COMMAND_WRAPPERS, readWrapperOptions, wrapperCommandIndex, wrapperOnlyInspects, type CommandWrapper, type WrapperOptions } from "../utils/shell/transparent-wrappers.js";
 import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import {
@@ -16,7 +17,20 @@ import {
   lexShellCommand,
   type ShellToken,
 } from "../utils/shell/command-line.js";
+import { readShellSubstitutions } from "../utils/shell/substitutions.js";
 import { analyzeSedWrites } from "../utils/shell/sed-writes.js";
+import {
+  parseWriteCommandOperands,
+  type WriteCommand,
+  type WriteCommandOperands,
+} from "../utils/shell/write-command-options.js";
+
+import {
+  checkProtectedPathSafety,
+  DANGEROUS_DIRECTORIES,
+  DANGEROUS_FILES,
+  hasSuspiciousWindowsPathPattern,
+} from "../permissions/protected-paths.js";
 
 const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
   "exec_command",
@@ -55,18 +69,9 @@ const WORKSPACE_GENERATED_ROOTS = new Set([
  */
 const DELETE_COMMANDS = new Set(["rm", "rmdir", "unlink"]);
 /** Path segments that mark a path as protected from shell removal. */
-const PROTECTED_DELETION_SEGMENTS = new Set([".git", ".agenc", ".agents"]);
+const PROTECTED_DELETION_SEGMENTS = new Set<string>(DANGEROUS_DIRECTORIES);
 /** Shell and git configuration files a shell command may not remove. */
-const PROTECTED_DELETION_FILES = new Set([
-  ".gitconfig",
-  ".gitmodules",
-  ".bashrc",
-  ".bash_profile",
-  ".zshrc",
-  ".zprofile",
-  ".profile",
-  ".ripgreprc",
-]);
+const PROTECTED_DELETION_FILES = new Set<string>(DANGEROUS_FILES);
 /**
  * The file tools a refused shell write is pointed at, in the order a refusal
  * names them. Edit and Write come first; MultiEdit and apply_patch are named
@@ -149,6 +154,8 @@ export interface ShellWorkspaceWritePolicyInput {
    * approval path.
    */
   readonly allowWorkspaceDeletions?: boolean;
+  /** Workspace content writes are permitted by the mode or this call's approval. */
+  readonly allowWorkspaceWrites?: boolean;
   /** Extra roots (the AgenC home) that a shell command may never remove. */
   readonly protectedRoots?: readonly string[];
   /** Resolve current protected roots only when the command has mutation targets. */
@@ -336,12 +343,6 @@ function collectOperandTargets(
   return collection;
 }
 
-function collectDeletionTargets(
-  args: readonly string[],
-  cwd: string,
-): ShellWriteTargetCollection {
-  return asDeletions(collectOperandTargets(args, cwd));
-}
 
 function isWorkspaceGeneratedOutputPath(
   workspaceRoot: string,
@@ -555,69 +556,28 @@ function collectEvalWriteTargets(params: {
   return collection;
 }
 
-function collectTeeTargets(
-  args: readonly string[],
-  cwd: string,
-): ShellWriteTargetCollection {
-  return collectOperandTargets(args, cwd);
+/** Options do not reveal which implementation is installed on a BSD host. */
+function readWriteOperands(command: WriteCommand, args: readonly string[], bsd: boolean): WriteCommandOperands {
+  return parseWriteCommandOperands(command, args,
+    bsd ? ["gnu", "gnu-posix", "uutils", "bsd"] : ["gnu", "gnu-posix", "uutils"]);
 }
 
-function collectTouchTargets(
-  args: readonly string[],
-  cwd: string,
-): ShellWriteTargetCollection {
-  return collectOperandTargets(args, cwd);
-}
-
-interface DestinationOperands {
-  readonly operands: readonly string[];
-  readonly targetDirectory?: string;
-  /** `-T`: the destination is the file written, even when it is a directory. */
-  readonly noTargetDirectory: boolean;
-  /** install's `-d`: every operand is a directory it creates. */
-  readonly createsDirectories: boolean;
-}
-
-function parseDestinationOperands(args: readonly string[]): DestinationOperands {
-  const operands: string[] = [];
-  let targetDirectory: string | undefined;
-  let noTargetDirectory = false;
-  let createsDirectories = false;
-  let treatRemainingAsOperands = false;
-  for (let i = 0; i < args.length; i += 1) {
-    const token = args[i];
-    if (!token) continue;
-    if (!treatRemainingAsOperands && token === "--") {
-      treatRemainingAsOperands = true;
-      continue;
-    }
-    if (!treatRemainingAsOperands) {
-      if (token === "-t" || token === "--target-directory") {
-        const value = args[i + 1];
-        if (typeof value === "string") {
-          targetDirectory = value;
-          i += 1;
-        }
-        continue;
-      }
-      if (token.startsWith("--target-directory=")) {
-        targetDirectory = token.slice("--target-directory=".length);
-        continue;
-      }
-      if (token.startsWith("-")) {
-        noTargetDirectory ||= token === "--no-target-directory" || /^-[^-]*T/u.test(token);
-        createsDirectories ||= token === "--directory" || /^-[^-]*d/u.test(token);
-        continue;
-      }
-    }
-    operands.push(token);
+/** Keep every possible path even when option parsing stopped before it. */
+function collectUnclassifiedWriteTargets(parsed: WriteCommandOperands, cwd: string): ShellWriteTargetCollection {
+  const collection = indeterminateTargetCollection();
+  for (const word of parsed.fallbackTargets) {
+    mergeTargetCollections(collection, normalizeConcreteTargetPath(word, cwd));
   }
-  return {
-    operands,
-    ...(targetDirectory === undefined ? {} : { targetDirectory }),
-    noTargetDirectory,
-    createsDirectories,
-  };
+  return collection;
+}
+
+function collectParsedOperandTargets(parsed: WriteCommandOperands, cwd: string): ShellWriteTargetCollection {
+  if (parsed.indeterminate) return collectUnclassifiedWriteTargets(parsed, cwd);
+  const collection = emptyTargetCollection();
+  for (const word of [...parsed.operands, ...parsed.extraTargets]) {
+    mergeTargetCollections(collection, normalizeConcreteTargetPath(word, cwd));
+  }
+  return collection;
 }
 
 /**
@@ -625,10 +585,11 @@ function parseDestinationOperands(args: readonly string[]): DestinationOperands 
  * the sources go into: one written with a trailing `/`, `.` or `..`, or one
  * that exists as a directory, through a symlink as cp and mv follow it.
  */
-function isDirectoryDestination(raw: string, cwd: string): boolean {
+function isDirectoryDestination(raw: string, cwd: string, noDereference = false): boolean {
   if (raw.endsWith("/") || /(?:^|\/)\.{1,2}$/u.test(raw)) return true;
   try {
-    return statSync(kernelPath(cwd, expandLeadingHome(raw))).isDirectory();
+    const path = kernelPath(cwd, expandLeadingHome(raw));
+    return (noDereference ? lstatSync(path) : statSync(path)).isDirectory();
   } catch {
     return false;
   }
@@ -668,11 +629,14 @@ function collectDestinationDirectoryTarget(
  * single operand links it into the working directory.
  */
 function collectDestinationTarget(
-  command: string,
+  command: "cp" | "install" | "ln",
   args: readonly string[],
   cwd: string,
+  bsd: boolean,
 ): ShellWriteTargetCollection {
-  const parsed = parseDestinationOperands(args);
+  const parsed = readWriteOperands(command, args, bsd);
+  if (parsed.indeterminate) return collectUnclassifiedWriteTargets(parsed, cwd);
+  if (parsed.createsDirectories) return collectParsedOperandTargets(parsed, cwd);
   const { operands, targetDirectory } = parsed;
   let sources: readonly string[] = operands.slice(0, -1);
   let destinationRaw = operands[operands.length - 1];
@@ -686,20 +650,18 @@ function collectDestinationTarget(
     destinationRaw = ".";
     intoDirectory = true;
   } else if (command === "install" && operands.length <= 1) {
-    return emptyTargetCollection();
-  } else if (command === "install" && parsed.createsDirectories) {
-    // install -d creates its operands; the last one is judged, as it always was.
-    return normalizeConcreteTargetPath(destinationRaw!, cwd);
+    return collectParsedOperandTargets({ ...parsed, operands: [] }, cwd);
   } else if (destinationRaw !== undefined && sources.length > 0) {
     intoDirectory =
       !parsed.noTargetDirectory &&
-      (sources.length > 1 || isDirectoryDestination(destinationRaw, cwd));
+      (sources.length > 1 || isDirectoryDestination(destinationRaw, cwd, parsed.noDereferenceDestination));
   }
   if (destinationRaw === undefined) return emptyTargetCollection();
   const destination = normalizeConcreteTargetPath(destinationRaw, cwd);
   const directory = destination.targets[0];
+  for (const target of parsed.extraTargets) mergeTargetCollections(destination, normalizeConcreteTargetPath(target, cwd));
   if (!intoDirectory || directory === undefined) return destination;
-  const collection = emptyTargetCollection();
+  const collection = collectParsedOperandTargets({ ...parsed, operands: [] }, cwd);
   for (const source of sources) collectDestinationDirectoryTarget(collection, directory, source);
   if (sources.length === 0) pushUnique(collection.targets, directory);
   return collection;
@@ -716,8 +678,15 @@ function collectDestinationTarget(
 function collectMoveTargets(
   args: readonly string[],
   cwd: string,
+  bsd: boolean,
 ): ShellWriteTargetCollection {
-  const parsed = parseDestinationOperands(args);
+  const parsed = readWriteOperands("mv", args, bsd);
+  if (parsed.indeterminate) {
+    const collection = collectUnclassifiedWriteTargets(parsed, cwd);
+    // An unreadable move may also remove any of these paths.
+    mergeTargetCollections(collection, asDeletions({ ...collection, deletions: [] }));
+    return collection;
+  }
   const { operands, targetDirectory } = parsed;
   const collection = emptyTargetCollection();
   let destinationRaw: string | undefined;
@@ -732,7 +701,7 @@ function collectMoveTargets(
     sourceRaws = operands.slice(0, -1);
     intoDirectory =
       !parsed.noTargetDirectory &&
-      (sourceRaws.length > 1 || isDirectoryDestination(destinationRaw!, cwd));
+      (sourceRaws.length > 1 || isDirectoryDestination(destinationRaw!, cwd, parsed.noDereferenceDestination));
   } else {
     destinationRaw = operands[0];
     sourceRaws = [];
@@ -764,6 +733,7 @@ function collectMoveTargets(
 
 /** Where the command runs, as far as the targets depend on it. */
 interface ShellWriteEnvironment {
+  readonly substitutionDepth?: number;
   /** `sed` may be BSD sed on this host (macOS and the BSDs). */
   readonly bsdSed: boolean;
   readonly workspaceRoot: string;
@@ -937,225 +907,21 @@ function collectCommandWordWriteTargets(
   });
 }
 
-/** env's long options that take no argument, or only an attached one. */
-const ENV_LONG_FLAGS = new Set([
-  "block-signal",
-  "debug",
-  "default-signal",
-  "ignore-environment",
-  "ignore-signal",
-  "list-signal-handling",
-  "null",
-]);
-
-/**
- * `env [option]... [NAME=VALUE]... [command [argument]...]` runs the command
- * with a changed environment, so it writes what the command writes. An
- * option that moves or rebuilds the command (`-C`, `-S`), an option env does
- * not document, and a command or option the shell still expands leave the
- * command unknown.
- */
-function collectEnvCommandWriteTargets(params: CommandArguments): ShellWriteTargetCollection {
-  const { args } = params;
-  const expands = (index: number): boolean => params.argsRequiringExpansion?.[index] === true;
-  let index = 0;
-  let assigning = false;
-  words: for (; index < args.length; index += 1) {
-    const token = args[index]!;
-    if (ENV_ASSIGNMENT_RE.test(token)) {
-      assigning = true;
-      continue;
-    }
-    // Options come before the assignments; `-` is `-i`.
-    if (assigning || !token.startsWith("-")) break;
-    if (expands(index)) return indeterminateTargetCollection();
-    if (token === "-") continue;
-    if (token === "--") {
-      index += 1;
-      break;
-    }
-    if (token.startsWith("--")) {
-      const equals = token.indexOf("=");
-      const name = token.slice(2, equals < 0 ? undefined : equals);
-      if (ENV_LONG_FLAGS.has(name)) continue;
-      if (name === "unset" || name === "argv0") {
-        if (equals < 0) index += 1;
-        continue;
-      }
-      if (name === "help" || name === "version") return emptyTargetCollection();
-      return indeterminateTargetCollection();
-    }
-    for (let at = 1; at < token.length; at += 1) {
-      const option = token[at]!;
-      if (option === "i" || option === "0" || option === "v") continue;
-      if (option === "u" || option === "P" || option === "a") {
-        if (at + 1 === token.length) index += 1;
-        continue words;
-      }
-      return indeterminateTargetCollection();
-    }
-  }
-  // Without a command, env only prints the environment.
-  return collectCommandWordWriteTargets(params, index);
-}
-
-/** One option a wrapper's words set. */
-interface WrapperOption {
-  /** Its letter, or its long name when it has none. */
-  readonly name: string;
-  readonly value?: string;
-}
-
-/** A wrapper's options, and the index of the first word after them. */
-interface WrapperOptions {
-  readonly options: readonly WrapperOption[];
-  readonly end: number;
-}
-
-/**
- * The options of a program or builtin that runs the command written after
- * them, read the way getopt reads them. Each letter of `short` is an option:
- * one followed by `:` takes an argument, attached or in the next word, and
- * one followed by `::` an optional argument that only comes attached. Each
- * long option gives, the same way, the letter it stands for (if any) and its
- * arity: `"kill-after": "k:"`, `help: ""`. A long option may be shortened to
- * any prefix that names only it.
- */
-interface CommandWrapper {
-  readonly short: string;
-  readonly long?: Readonly<Record<string, string>>;
-  /** Letters of options after which the wrapper prints and runs nothing (`command -v`). */
-  readonly inspects?: string;
-  /** nice's `-N`, `--N` and `-+N`: an adjustment written as an option. */
-  readonly numericAdjustment?: boolean;
-  /** sudo's `NAME=value` words, which may come among the options. */
-  readonly assignments?: boolean;
-  /** What runs after the options; the next word as a command when absent. */
-  readonly collect?: (params: CommandArguments, read: WrapperOptions) => ShellWriteTargetCollection;
-}
-
-/** GNU's `--help` and `--version`, which print and run nothing. */
-const GNU_STANDARD_OPTIONS: Readonly<Record<string, string>> = { help: "", version: "" };
-
-/** The arity a short option letter has in a getopt string; undefined when it is not an option. */
-function shortOptionArity(short: string, letter: string): string | undefined {
-  const at = short.indexOf(letter);
-  if (letter === ":" || at < 0) return undefined;
-  if (short.startsWith("::", at + 1)) return "::";
-  return short[at + 1] === ":" ? ":" : "";
-}
-
-/**
- * The long option a `--name` word names, exactly or by a prefix only it
- * has: the letter it stands for, or its own name, and its arity.
- */
-function longOption(
-  long: Readonly<Record<string, string>>,
-  written: string,
-): { readonly name: string; readonly arity: string } | undefined {
-  const candidates = Object.hasOwn(long, written)
-    ? [written]
-    : Object.keys(long).filter((option) => option.startsWith(written));
-  if (written.length === 0 || candidates.length !== 1) return undefined;
-  const name = candidates[0]!;
-  const spec = long[name]!;
-  return /^[^:]/u.test(spec)
-    ? { name: spec[0]!, arity: spec.slice(1) }
-    : { name, arity: spec };
-}
-
-function wrapperOption(name: string, value?: string): WrapperOption {
-  return value === undefined ? { name } : { name, value };
-}
-
-/**
- * The options one word sets (`-vk5`, `--signal=KILL`) and how many words
- * they take: two when the last one's argument is the next word. Undefined
- * when the word is an option the wrapper does not take, which includes one
- * the shell still expands (`-$FLAGS`).
- */
-function readOptionWord(
-  wrapper: CommandWrapper,
-  word: string,
-  next: string | undefined,
-): { readonly options: readonly WrapperOption[]; readonly words: number } | undefined {
-  if (wrapper.numericAdjustment === true && /^-[-+]?\d/u.test(word)) {
-    return { options: [wrapperOption("n", word.slice(1))], words: 1 };
-  }
-  if (word.startsWith("--")) {
-    const equals = word.indexOf("=");
-    const named = longOption(wrapper.long ?? {}, word.slice(2, equals < 0 ? undefined : equals));
-    if (named === undefined) return undefined;
-    if (equals >= 0) {
-      return named.arity === ""
-        ? undefined
-        : { options: [wrapperOption(named.name, word.slice(equals + 1))], words: 1 };
-    }
-    return named.arity === ":"
-      ? { options: [wrapperOption(named.name, next)], words: 2 }
-      : { options: [wrapperOption(named.name)], words: 1 };
-  }
-  const options: WrapperOption[] = [];
-  for (let at = 1; at < word.length; at += 1) {
-    const letter = word[at]!;
-    const arity = shortOptionArity(wrapper.short, letter);
-    if (arity === undefined) return undefined;
-    if (arity === "") {
-      options.push(wrapperOption(letter));
-      continue;
-    }
-    const attached = word.slice(at + 1);
-    if (attached.length > 0 || arity === "::") {
-      options.push(wrapperOption(letter, attached.length > 0 ? attached : undefined));
-      return { options, words: 1 };
-    }
-    options.push(wrapperOption(letter, next));
-    return { options, words: 2 };
-  }
-  return { options, words: 1 };
-}
-
-/**
- * The options at the start of a wrapper's words, up to `--` or the first
- * word that is not an option: the command, or an operand before it.
- * Undefined when one is an option the wrapper does not take. A missing
- * argument makes the wrapper fail before it runs anything, which reads as
- * no command.
- */
-function readWrapperOptions(
-  wrapper: CommandWrapper,
-  args: readonly string[],
-): WrapperOptions | undefined {
-  const options: WrapperOption[] = [];
-  let index = 0;
-  while (index < args.length) {
-    const word = args[index]!;
-    if (word === "--") return { options, end: index + 1 };
-    if (word.length > 1 && word.startsWith("-")) {
-      const read = readOptionWord(wrapper, word, args[index + 1]);
-      if (read === undefined) return undefined;
-      options.push(...read.options);
-      index += read.words;
-    } else if (wrapper.assignments === true && isSudoAssignment(word)) {
-      index += 1;
-    } else {
-      break;
-    }
-  }
-  return { options, end: Math.min(index, args.length) };
-}
-
-/** A word sudo reads as `NAME=value`: one with `=` that starts with neither `/` nor `=`. */
-function isSudoAssignment(word: string): boolean {
-  return word.includes("=") && !word.startsWith("/") && !word.startsWith("=");
-}
-
-/** timeout's duration comes before its command. */
-function collectTimeoutWriteTargets(
-  params: CommandArguments,
-  read: WrapperOptions,
-): ShellWriteTargetCollection {
-  return collectCommandWordWriteTargets(params, read.end + 1);
+/** env's command shares the wrapper grammar; cwd and split-string affect its targets. */
+function collectEnvCommandWriteTargets(params: CommandArguments, wrapper: CommandWrapper): ShellWriteTargetCollection {
+  const read = readWrapperOptions(wrapper, params.args);
+  if (!read) return indeterminateTargetCollection();
+  if (wrapperOnlyInspects(wrapper, read)) return emptyTargetCollection();
+  const chdir = read.options.findLast(option => option.name === "C");
+  const cwd = chdir?.value === undefined ? params.cwd : resolvePath(params.cwd, chdir.value);
+  const split = read.options.find(option => option.name === "S");
+  const result = split?.value === undefined
+    ? collectCommandWordWriteTargets({ ...params, cwd }, read.end)
+    : collectEvalWriteTargets({ ...params, cwd, args: ["env", split.value, ...params.args.slice(read.end)] });
+  // env -S has its own expansion language. Keep the existing fail-closed routing
+  // while also checking every protected target visible in the literal command.
+  result.indeterminate ||= split !== undefined || chdir !== undefined;
+  return result;
 }
 
 /** The time program writes its report to the file `-o` names, then runs the command. */
@@ -1241,81 +1007,6 @@ function collectSudoWriteTargets(
  * Programs that run the command written after their own options, with the
  * GNU and the BSD options of each together.
  */
-const WRAPPER_PROGRAMS: readonly (readonly [string, CommandWrapper])[] = [
-  ["nice", {
-    short: "n:",
-    long: { adjustment: "n:", ...GNU_STANDARD_OPTIONS },
-    numericAdjustment: true,
-  }],
-  ["nohup", { short: "", long: GNU_STANDARD_OPTIONS }],
-  ["stdbuf", {
-    short: "e:i:o:",
-    long: { error: "e:", input: "i:", output: "o:", ...GNU_STANDARD_OPTIONS },
-  }],
-  ["time", {
-    short: "af:hlo:pqvV",
-    long: {
-      append: "a", format: "f:", help: "", "output-file": "o:",
-      portability: "p", quiet: "q", verbose: "v", version: "V",
-    },
-    inspects: "V",
-    collect: collectTimeWriteTargets,
-  }],
-  ["timeout", {
-    short: "fk:ps:v",
-    long: {
-      foreground: "f", "kill-after": "k:", "preserve-status": "p",
-      signal: "s:", verbose: "v", ...GNU_STANDARD_OPTIONS,
-    },
-    collect: collectTimeoutWriteTargets,
-  }],
-  ["xargs", {
-    short: "0a:d:E:e::I:i::J:L:l::n:oP:pR:rS:s:tx",
-    long: {
-      "arg-file": "a:", delimiter: "d:", eof: "e::", exit: "x",
-      interactive: "p", "max-args": "n:", "max-chars": "s:",
-      "max-lines": "l::", "max-procs": "P:", "no-run-if-empty": "r",
-      null: "0", "open-tty": "o", "process-slot-var": ":", replace: "I::",
-      "show-limits": "", verbose: "t", ...GNU_STANDARD_OPTIONS,
-    },
-    collect: collectXargsWriteTargets,
-  }],
-];
-
-/**
- * Builtins and programs that run the command written after their own
- * options, so they write what it writes. A `g`-prefixed program is GNU's,
- * installed next to a BSD one.
- */
-const COMMAND_WRAPPERS: ReadonlyMap<string, CommandWrapper> = new Map([
-  // Shell builtins and zsh's precommand modifiers.
-  ["-", { short: "" }],
-  ["builtin", { short: "" }],
-  ["command", { short: "pvV", inspects: "vV" }],
-  ["exec", { short: "a:cl" }],
-  ["nocorrect", { short: "" }],
-  ["noglob", { short: "" }],
-  ...WRAPPER_PROGRAMS,
-  ...WRAPPER_PROGRAMS.map(([name, wrapper]) => [`g${name}`, wrapper] as const),
-  // sudo's `-h` is a host or, alone, help; reading it as a host never misses a command.
-  ["sudo", {
-    short: "Aa:BbC:c:D:Eeg:Hh:iKklNnPp:R:r:SsT:t:U:u:Vv",
-    long: {
-      askpass: "A", "auth-type": "a:", background: "b", bell: "B",
-      chdir: "D:", chroot: "R:", "close-from": "C:", "command-timeout": "T:",
-      edit: "e", group: "g:", help: "", host: ":", list: "l", login: "i",
-      "login-class": "c:", "no-update": "N", "non-interactive": "n",
-      "other-user": "U:", "preserve-env": "::", "preserve-groups": "P",
-      prompt: "p:", "remove-timestamp": "K", "reset-timestamp": "k",
-      role: "r:", "set-home": "H", shell: "s", stdin: "S", type: "t:",
-      user: "u:", validate: "v", version: "V",
-    },
-    inspects: "KlVv",
-    assignments: true,
-    collect: collectSudoWriteTargets,
-  }],
-]);
-
 /**
  * What a wrapper's command writes: `nohup rm x`, `sudo -u root rm x`,
  * `command rm x`. An option the wrapper does not take leaves the command
@@ -1327,14 +1018,14 @@ function collectWrappedCommandWriteTargets(
 ): ShellWriteTargetCollection {
   const read = readWrapperOptions(wrapper, params.args);
   if (read === undefined) return indeterminateTargetCollection();
-  const prints = read.options.some(
-    (option) =>
-      option.name === "help" ||
-      option.name === "version" ||
-      (option.name.length === 1 && (wrapper.inspects ?? "").includes(option.name)),
-  );
-  if (prints) return emptyTargetCollection();
-  return wrapper.collect?.(params, read) ?? collectCommandWordWriteTargets(params, read.end);
+  if (wrapperOnlyInspects(wrapper, read)) return emptyTargetCollection();
+  if (wrapper.kind === "time") return collectTimeWriteTargets(params, read);
+  if (wrapper.kind === "xargs") return collectXargsWriteTargets(params, read);
+  if (wrapper.kind === "sudo") return collectSudoWriteTargets(params, read);
+  if (wrapper.kind === "watch" && !read.options.some(option => option.name === "x")) {
+    return collectEvalWriteTargets({ ...params, args: params.args.slice(read.end), argsRequiringExpansion: params.argsRequiringExpansion?.slice(read.end) });
+  }
+  return collectCommandWordWriteTargets(params, wrapperCommandIndex(wrapper, read, params.args));
 }
 
 /**
@@ -1536,7 +1227,12 @@ function readFindCommandLine(
       FIND_FILE_PRIMARIES.get(name) ??
       FIND_PRIMARY_ARGUMENTS.get(name) ??
       (name === "-files0-from" || FIND_NEWER_RE.test(name) ? 1 : undefined);
-    if (arity === undefined || index + arity > args.length) {
+    if (arity === undefined) {
+      // An unknown literal primary makes find fail. It cannot introduce a
+      // write; continue reading so explicit actions still get checked.
+      continue;
+    }
+    if (index + arity > args.length) {
       unread = true;
       continue;
     }
@@ -1699,10 +1395,8 @@ function collectDirectCommandWriteTargets(
   params: CommandArguments & { readonly command: string },
 ): ShellWriteTargetCollection {
   const command = basename(params.command);
-  if (command === "env") {
-    return collectEnvCommandWriteTargets(params);
-  }
   const wrapper = COMMAND_WRAPPERS.get(command);
+  if (wrapper?.kind === "env") return collectEnvCommandWriteTargets(params, wrapper);
   if (wrapper !== undefined) {
     return collectWrappedCommandWriteTargets(wrapper, params);
   }
@@ -1712,26 +1406,25 @@ function collectDirectCommandWriteTargets(
   if (command === "eval") {
     return collectEvalWriteTargets(params);
   }
-  if (command === "tee") {
-    return collectTeeTargets(params.args, params.cwd);
-  }
-  if (command === "touch") {
-    return collectTouchTargets(params.args, params.cwd);
+  if (command === "tee" || command === "touch" || command === "truncate") {
+    return collectParsedOperandTargets(readWriteOperands(command, params.args, params.environment.bsdSed), params.cwd);
   }
   if (command === "mv") {
-    return collectMoveTargets(params.args, params.cwd);
+    return collectMoveTargets(params.args, params.cwd, params.environment.bsdSed);
   }
   if (command === "cp" || command === "install" || command === "ln") {
-    return collectDestinationTarget(command, params.args, params.cwd);
+    return collectDestinationTarget(command, params.args, params.cwd, params.environment.bsdSed);
   }
   if (command === "mkdir") {
-    return emptyTargetCollection();
+    const parsed = readWriteOperands(command, params.args, params.environment.bsdSed);
+    return parsed.indeterminate ? collectUnclassifiedWriteTargets(parsed, params.cwd) : emptyTargetCollection();
   }
   if (DELETE_COMMANDS.has(command)) {
-    return collectDeletionTargets(params.args, params.cwd);
-  }
-  if (command === "truncate") {
-    return collectOperandTargets(params.args, params.cwd);
+    const parsed = readWriteOperands(command as "rm" | "rmdir" | "unlink", params.args, params.environment.bsdSed);
+    const collection = collectParsedOperandTargets(parsed, params.cwd);
+    const deletions = asDeletions(collection);
+    if (parsed.indeterminate) mergeTargetCollections(deletions, collection);
+    return deletions;
   }
   if (command === "dd") {
     const collection = emptyTargetCollection();
@@ -2411,6 +2104,32 @@ function walkList(
   return current;
 }
 
+// These programs only read or print, or have a dedicated mutation analyzer
+// above. An unknown program inside a substitution stays indeterminate even
+// when it names no targets: an interpreter may hide arbitrary file writes.
+const KNOWN_SUBSTITUTION_COMMANDS = new Set([
+  ":", "pwd", "whoami", "id", "echo", "printf", "ls", "cat", "head", "tail",
+  "wc", "basename", "dirname", "readlink", "realpath", "cd",
+  "touch", "truncate", "tee", "cp", "mv", "install", "ln", "rm", "rmdir", "unlink", "dd",
+]);
+function substitutionCommandsAreKnown(command: string): boolean {
+  const parsed = lexShellCommand(command);
+  if (parsed.malformed || parsed.hasComment) return false;
+  let segment: ShellToken[] = [];
+  const known = (): boolean => {
+    const words = stripRedirections(segment);
+    segment = [];
+    if (words.length === 0) return true;
+    const word = words[writeCommandWordIndex(words)];
+    return word !== undefined && !word.requiresExpansion && KNOWN_SUBSTITUTION_COMMANDS.has(basename(word.value));
+  };
+  for (const token of parsed.tokens) {
+    if (isShellCommandSeparator(token)) { if (!known()) return false; }
+    else segment.push(token);
+  }
+  return known();
+}
+
 /**
  * The targets of a command line that changes directory, each command read
  * in every directory it may run in: `cd x && cmd` runs cmd in x, `cd x; cmd`
@@ -2475,13 +2194,29 @@ function collectShellCommandWriteTargets(
   cwd: string,
   environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
-  const parsed = lexShellCommand(commandLine);
+  let parsed = lexShellCommand(commandLine);
+  const substitutions = emptyTargetCollection();
+  if (parsed.hasCommandSubstitution) {
+    const read = readShellSubstitutions(commandLine);
+    const depth = environment.substitutionDepth ?? 0;
+    substitutions.indeterminate = !read.complete || read.commands.length === 0 || depth >= 16;
+    if (depth < 16) {
+      for (const command of read.commands) {
+        const child = collectShellCommandWriteTargets(command, cwd, { ...environment, substitutionDepth: depth + 1 });
+        mergeTargetCollections(substitutions, child);
+        substitutions.indeterminate ||= !substitutionCommandsAreKnown(command);
+      }
+    }
+    if (lineChangesDirectory(parsed.tokens) && writesAnything(substitutions)) substitutions.indeterminate = true;
+    parsed = { ...parsed, hasCommandSubstitution: substitutions.indeterminate };
+  }
   const homeMayChange = environment.homeMayChange === true || lineMayChangeHome(parsed.tokens);
   const collection = collectLineWriteTargets(
     parsed,
     cwd,
     homeMayChange ? { ...environment, homeMayChange } : environment,
   );
+  mergeTargetCollections(collection, substitutions);
   if (
     homeMayChange &&
     parsed.tokens.some((token) => LEADING_HOME_RE.test(token.value)) &&
@@ -2565,10 +2300,7 @@ function isProtectedWriteTarget(
 ): boolean {
   const relation = workspaceRelation(workspaceRoot, absolutePath);
   const named = relation === "outside" ? absolutePath : relative(workspaceRoot, absolutePath);
-  if (named.split(/[\\/]/).some((segment) => PROTECTED_DELETION_SEGMENTS.has(segment))) {
-    return true;
-  }
-  if (PROTECTED_DELETION_FILES.has(basename(absolutePath))) return true;
+  if (!checkProtectedPathSafety(absolutePath, [named]).safe) return true;
   return protectedRoots.some(
     (root) =>
       (absolutePath === root || isStrictlyUnder(root, absolutePath)) &&
@@ -2605,7 +2337,7 @@ function globMayMatchProtectedName(pattern: string): boolean {
     }
   }
   try {
-    const matcher = new RegExp(`^${source}$`, "u");
+    const matcher = new RegExp(`^${source}$`, "iu");
     return PROTECTED_NAMES.some((name) => matcher.test(name));
   } catch {
     return true;
@@ -2642,6 +2374,9 @@ function expandingTargetIsProtected(
   workspaceRoot: string,
   protectedRoots: readonly string[],
 ): boolean {
+  // A tilde in an 8.3 alias is not a safe dynamic target. Classify the
+  // original spelling before shell expansion handling can discard it.
+  if (hasSuspiciousWindowsPathPattern(path)) return true;
   const { directory, components } = splitExpandingTarget(path);
   if (directory !== undefined && isProtectedWriteTarget(directory, workspaceRoot, protectedRoots)) {
     return true;
@@ -2649,7 +2384,7 @@ function expandingTargetIsProtected(
   return components.some((component) =>
     DYNAMIC_SHELL_TARGET_RE.test(component)
       ? globMayMatchProtectedName(component)
-      : PROTECTED_NAMES.includes(component),
+      : PROTECTED_NAMES.includes(component.toLowerCase()),
   );
 }
 
@@ -3024,6 +2759,9 @@ export function classifyShellWorkspaceWritePolicy(
   }
   const routedTargets = writes.filter(
     (target) =>
+      params.allowWorkspaceWrites !== true &&
+      params.bypassesApprovalsAndSandbox !== true &&
+      params.validationPhase !== "preflight" &&
       !protectedTargets.includes(target) &&
       workspaceRelation(workspaceRoot, target) === "inside" &&
       !isWorkspaceGeneratedOutputPath(workspaceRoot, target),
@@ -3101,7 +2839,8 @@ export function classifyShellWorkspaceWritePolicy(
   // has a prompt or a kernel boundary to be routed to; refusing it only made
   // the model rewrite `echo "$(id)"` and `for f in *; do ... done` until they
   // parsed. The decision still reports `indeterminate` for callers.
-  if (collected.indeterminate && !bypassesApprovalsAndSandbox) {
+  if (collected.indeterminate && !bypassesApprovalsAndSandbox &&
+    params.validationPhase !== "preflight" && params.allowWorkspaceWrites !== true) {
     messages.push(buildIndeterminatePolicyMessage(observedTargets, fileWriteTools()));
   }
 
@@ -3131,6 +2870,25 @@ export function collectShellWorkspaceDeletionTargets(params: {
   const decision = classifyShellWorkspaceWritePolicy({
     ...params,
     allowWorkspaceDeletions: true,
+    allowWorkspaceWrites: true,
   });
   return decision.blocked ? [] : decision.deletionTargets;
+}
+
+/** Literal workspace mutations for the file-history sidecar, including new files. */
+export function collectShellWorkspaceMutationTargets(params: {
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+  readonly workspaceRoot: string;
+}): readonly string[] {
+  const decision = classifyShellWorkspaceWritePolicy({
+    ...params,
+    allowWorkspaceDeletions: true,
+    allowWorkspaceWrites: true,
+  });
+  return decision.observedTargets.filter((target) =>
+    !decision.blockedTargets.includes(target) &&
+    !decision.blockedDeletions.includes(target) &&
+    workspaceRelation(params.workspaceRoot, target) === "inside",
+  );
 }

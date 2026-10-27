@@ -94,6 +94,7 @@ function makeRunnerHarness(opts: {
   };
   const rolloutItems: unknown[] = [];
   let lastSeq = 0;
+  let internalEventId = 0;
   const configStore = {
     projectRoot: process.cwd(),
     stateRepository: {
@@ -162,6 +163,7 @@ function makeRunnerHarness(opts: {
     ),
   });
   const session = {
+    nextInternalSubId: () => `config-context-${++internalEventId}`,
     abortController: new AbortController(),
     abortTerminal: vi.fn(),
     conversationId,
@@ -303,10 +305,113 @@ function makeRunnerHarness(opts: {
     argv: ["node", "agenc"],
     now: () => "2026-05-09T00:00:00.000Z",
   });
-  return { runner, session, stateObject };
+  return { runner, session, stateObject, bootstrap };
 }
 
 describe("daemon config/model state refresh + atomicity", () => {
+  it("retains a live model choice when an unrelated reload still resolves the startup model", async () => {
+    const config = { model_provider: "deepseek", model: "deepseek-flash", swarmMode: true };
+    const { runner, session } = makeRunnerHarness({
+      configStore: { current: () => config, reload: async () => ({ ...config, swarmMode: false }) },
+      sessionConfiguration: { provider: { slug: "deepseek" }, collaborationMode: { model: "deepseek-v4-pro" } },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    const result = await runner.applyAgentConfig("parent-session", { sessionId: "session_1", reload: true });
+    expect(result).toMatchObject({ applied: true, model: "deepseek-v4-pro" });
+    expect(session.pendingProviderSwitch).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+  });
+
+  it.each(["high", undefined])("retains live effort %s when an unrelated reload leaves configured effort unchanged", async (reasoningEffort) => {
+    const config = { model_provider: "deepseek", model: "deepseek-flash", reasoning_effort: "max", swarmMode: true };
+    const { runner, stateObject } = makeRunnerHarness({
+      configStore: { current: () => config, reload: async () => ({ ...config, swarmMode: false }) },
+      sessionConfiguration: {
+        provider: { slug: "deepseek" },
+        collaborationMode: { model: "deepseek-flash", ...(reasoningEffort ? { reasoningEffort } : {}) },
+        ...(reasoningEffort ? {} : { reasoningEffortCleared: true }),
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    await runner.applyAgentConfig("parent-session", { sessionId: "session_1", reload: true });
+    expect(stateObject.sessionConfiguration.collaborationMode.reasoningEffort).toBe(reasoningEffort);
+    if (!reasoningEffort) expect(stateObject.sessionConfiguration.reasoningEffortCleared).toBe(true);
+  });
+
+  it("applies a configured effort changed by a reload", async () => {
+    let config = { model_provider: "deepseek", model: "deepseek-flash", reasoning_effort: "max" };
+    const { runner, stateObject } = makeRunnerHarness({
+      configStore: { current: () => config, reload: async () => (config = { ...config, reasoning_effort: "high" }) },
+      sessionConfiguration: { provider: { slug: "deepseek" }, collaborationMode: { model: "deepseek-flash", reasoningEffort: "low" } },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    await runner.applyAgentConfig("parent-session", { sessionId: "session_1", reload: true });
+    expect(stateObject.sessionConfiguration.collaborationMode.reasoningEffort).toBe("high");
+  });
+
+  it("still applies a model changed in the freshly resolved configuration", async () => {
+    const config = { model_provider: "deepseek", model: "deepseek-v4-pro" };
+    const { runner, session } = makeRunnerHarness({
+      configStore: { current: () => config, reload: async () => ({ ...config, model: "deepseek-flash" }) },
+      sessionConfiguration: { provider: { slug: "deepseek" }, collaborationMode: { model: "deepseek-v4-pro" } },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    await runner.applyAgentConfig("parent-session", { sessionId: "session_1", reload: true });
+    expect(session.pendingProviderSwitch).toMatchObject({ model: "deepseek-flash" });
+  });
+
+  it("an explicit profile can replace a live model even when the base configuration is unchanged", async () => {
+    const config = { model_provider: "deepseek", model: "deepseek-flash", profiles: { reset: { model: "deepseek-flash", model_provider: "deepseek" } } };
+    const { runner, session } = makeRunnerHarness({
+      configStore: { current: () => config, reload: async () => config },
+      sessionConfiguration: { provider: { slug: "deepseek" }, collaborationMode: { model: "deepseek-v4-pro" } },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    await runner.applyAgentConfig("parent-session", { sessionId: "session_1", reload: true, profile: "reset" });
+    expect(session.pendingProviderSwitch).toMatchObject({ model: "deepseek-flash", profile: "reset" });
+  });
+
+  it.each([{ taskBudgetLevel: "eco", tokens: 1_000_000 }, { taskBudgetLevel: "balanced", tokens: 2_400_000 }, { taskBudgetLevel: "max", tokens: 0 }, { taskTokenBudget: 3_000_000, tokens: 3_000_000 }])("applies saved $tokens tokens with an immutable root config and no model change", async ({ tokens, ...update }) => {
+    const { runner, session, stateObject } = makeRunnerHarness({ configStore: {
+      current: () => ({ task_token_budget: 2_400_000 }), reload: async () => ({ task_token_budget: tokens }),
+    } });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    const original = Object.freeze({ taskTokenBudget: 219_000 });
+    Object.assign(session, { config: original });
+    const before = stateObject.sessionConfiguration;
+    const result = await runner.applyAgentConfig("parent-session", { sessionId: "session_1", ...update } as never);
+    expect(result).toMatchObject({ applied: true, taskTokenBudget: tokens });
+    expect(session.config.taskTokenBudget).toBe(tokens);
+    expect(original.taskTokenBudget).toBe(219_000);
+    expect(stateObject.sessionConfiguration).toBe(before);
+  });
+
+  it("keeps an explicit task budget override when the saved user choice changes", async () => {
+    const { runner, session } = makeRunnerHarness({ configStore: {
+      current: () => ({ task_token_budget: 500 }), reload: async () => ({ task_token_budget: 500 }),
+    } });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    Object.assign(session, { config: { taskTokenBudget: 500 } });
+    const result = await runner.applyAgentConfig("parent-session", { sessionId: "session_1", taskBudgetLevel: "max" });
+    expect(result).toMatchObject({ taskTokenBudget: 500, summary: expect.stringContaining("override") });
+    expect(session.config.taskTokenBudget).toBe(500);
+  });
+
+  it.each([undefined, { nonInteractive: false }])("marks root TUI sessions for checkpoints even though daemon admission is autonomous (%j)", async runtimeOptions => {
+    const { runner, bootstrap } = makeRunnerHarness({ configStore: { current: () => ({}) } });
+    await runner.startAgent({ objective: "work", cwd: "/workspace", metadata: { mode: "tui" }, runtimeOptions: runtimeOptions as never });
+    expect(bootstrap.mock.calls[0]?.[0]).toMatchObject({ executionAdmissionAutonomous: true, runtimeOptions: { interactiveTaskBudget: true } });
+  });
+
+  it("marks a rejected auto transition as precommit and permits a subsequent default transition", async () => {
+    const { runner, session } = makeRunnerHarness({ configStore: { current: () => ({ disable_auto_mode: true }) } });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    await runner.setAgentPermissionMode("parent-session", { sessionId: "session_1", mode: "plan" });
+    await expect(runner.setAgentPermissionMode("parent-session", { sessionId: "session_1", mode: "auto" })).rejects.toMatchObject({ name: "PermissionModeTransitionPrecommitError" });
+    expect(session.permissionModeRegistry.current().mode).toBe("plan");
+    await runner.setAgentPermissionMode("parent-session", { sessionId: "session_1", mode: "default" });
+    expect(session.permissionModeRegistry.current().mode).toBe("default");
+  });
+
   // GAP #12: an unknown profile must be a true no-op — the shared config store
   // must NOT have been reloaded (mutated + subscribers fired) before the
   // unknown-profile error surfaces.

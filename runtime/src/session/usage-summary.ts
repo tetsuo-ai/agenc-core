@@ -18,6 +18,14 @@ function isUsageTotals(value: unknown): value is AdmissionUsageTotals {
 export function isAdmissionUsageSummary(value: unknown): value is AdmissionUsageSummary {
   const record = asRecord(value);
   return record !== null && isUsageTotals(record) &&
+    (record.unpricedCallCount === undefined ||
+      (typeof record.unpricedCallCount === "number" && Number.isSafeInteger(record.unpricedCallCount) && record.unpricedCallCount >= 0)) &&
+    (record.unpricedCalls === undefined || (Array.isArray(record.unpricedCalls) && record.unpricedCalls.length <= 20 && record.unpricedCalls.every((entry: unknown) => {
+      const call = asRecord(entry);
+      return call !== null && ["reservationId", "runId", "stepId", "kind", "reason"].every(key => typeof call[key] === "string") &&
+        (call.model === undefined || typeof call.model === "string") &&
+        (call.provider === undefined || typeof call.provider === "string");
+    }))) &&
     typeof record.runId === "string" && record.runId.length > 0 &&
     typeof record.sequence === "number" && Number.isSafeInteger(record.sequence) && record.sequence >= 0 &&
     Array.isArray(record.models) && record.models.every((entry: unknown) => {

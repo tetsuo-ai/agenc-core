@@ -145,7 +145,7 @@ across two independent filesystem pathnames.
 
 ## Commands
 
-Use Node 26.5.0 and npm 11.17.0. Capture into temporary paths so a local run
+Use Node 26.12.1 and npm 11.17.0. Capture into temporary paths so a local run
 cannot silently replace the reviewed artifact:
 
 ```sh
@@ -161,7 +161,7 @@ npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --plan
 
 `--source-revision` must resolve to an ancestor of both `HEAD` and the
 repository default branch (`origin/HEAD`, else `origin/main`, else
-`main` / `master`) whose
+`origin/master`, else local `main` / `master`) whose
 complete `runtime/src` tree exactly matches the checkout. Capture refuses a
 dirty worktree, including staged, unstaged, ignored, and ordinary untracked
 files, before it writes artifacts. Use the default-branch parent when the
@@ -172,6 +172,26 @@ dependency to a revision that remains reachable after a squash merge.
 The fresh-clone lane bundles named `HEAD` and default-branch refs. Passing
 raw object IDs to `git bundle create` produces an empty bundle, so the
 lane reinstalls `main` and `origin/HEAD` in the clone before `--check`.
+
+Linked worktrees, including worktrees of a bare repository, need at least one
+of those default-branch refs in their shared Git repository. A bare mirror
+that stores the upstream branch only under a custom name will fail the
+baseline contract with `could not resolve the repository default branch`.
+An absent `origin/HEAD` alone is harmless when another listed ref exists.
+Provision `refs/remotes/origin/main` from the independently verified upstream
+default branch before running the contract, for example in an isolated clone:
+
+```sh
+git fetch <upstream-url> refs/heads/main:refs/remotes/origin/main
+```
+
+Use the actual upstream default-branch name when it differs. If the verified
+commit is already available offline, `git update-ref refs/remotes/origin/main
+<verified-upstream-main-commit>` supplies the same prerequisite without a
+fetch. Refs are shared by linked worktrees, so coordinate this setup with the
+repository owner or use an isolated clone. Do not substitute the topic's
+`HEAD` or disable the ancestry check: either would erase the independent
+default-branch provenance check.
 
 Compare runs made on the same pinned runtime and machine state. Review raw
 samples, median absolute deviation, operation counts, and relative scaling.

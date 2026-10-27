@@ -221,6 +221,9 @@ export function createAgenCPortalAgentCreateRequest(
     ...(options.unattendedDeny !== undefined
       ? { unattendedDeny: options.unattendedDeny }
       : {}),
+    ...(options.toolPolicy !== undefined
+      ? { toolPolicy: options.toolPolicy }
+      : {}),
     ...(options.metadata !== undefined ? { metadata: options.metadata } : {}),
   };
   return {

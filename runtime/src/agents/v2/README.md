@@ -15,7 +15,7 @@ This directory owns the model-facing v2 agent tools.
 | `message-tool.ts` | shared message dispatch |
 
 The previous `followup_task` compatibility alias (`followup-task.ts`) has been
-deleted — `assign_task` is the only trigger-turn spelling. Historical
+deleted: `assign_task` is the only trigger-turn spelling. Historical
 transcripts that recorded `followup_task` calls still render via the
 transcript's collab-tool suppression set.
 

@@ -32,131 +32,131 @@ export const GEMINI_MODEL_DEFAULTS = {
 
 export const AGENC_3_7_SONNET_CONFIG = {
   firstParty: 'claude-3-7-sonnet-20250219',
-  bedrock: 'us.anthropic.agenc-3-7-sonnet-20250219-v1:0',
+  bedrock: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
   vertex: 'claude-3-7-sonnet@20250219',
   foundry: 'claude-3-7-sonnet',
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.0-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_3_5_V2_SONNET_CONFIG = {
   firstParty: 'claude-3-5-sonnet-20241022',
-  bedrock: 'anthropic.agenc-3-5-sonnet-20241022-v2:0',
+  bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
   vertex: 'claude-3-5-sonnet-v2@20241022',
   foundry: 'claude-3-5-sonnet',
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.0-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_3_5_HAIKU_CONFIG = {
   firstParty: 'claude-3-5-haiku-20241022',
-  bedrock: 'us.anthropic.agenc-3-5-haiku-20241022-v1:0',
+  bedrock: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
   vertex: 'claude-3-5-haiku@20241022',
   foundry: 'claude-3-5-haiku',
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.0-flash-lite',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_HAIKU_4_5_CONFIG = {
   firstParty: 'claude-haiku-4-5-20251001',
-  bedrock: 'us.anthropic.agenc-haiku-4-5-20251001-v1:0',
+  bedrock: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
   vertex: 'claude-haiku-4-5@20251001',
   foundry: 'claude-haiku-4-5',
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.0-flash-lite',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_SONNET_4_CONFIG = {
   firstParty: 'claude-sonnet-4-20250514',
-  bedrock: 'us.anthropic.agenc-sonnet-4-20250514-v1:0',
+  bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
   vertex: 'claude-sonnet-4@20250514',
   foundry: 'claude-sonnet-4',
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.0-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_SONNET_4_5_CONFIG = {
   firstParty: 'claude-sonnet-4-5-20250929',
-  bedrock: 'us.anthropic.agenc-sonnet-4-5-20250929-v1:0',
+  bedrock: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   vertex: 'claude-sonnet-4-5@20250929',
   foundry: 'claude-sonnet-4-5',
   openai: 'gpt-4o',
   gemini: 'gemini-2.0-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_OPUS_4_CONFIG = {
   firstParty: 'claude-opus-4-20250514',
-  bedrock: 'us.anthropic.agenc-opus-4-20250514-v1:0',
+  bedrock: 'us.anthropic.claude-opus-4-20250514-v1:0',
   vertex: 'claude-opus-4@20250514',
   foundry: 'claude-opus-4',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_OPUS_4_1_CONFIG = {
   firstParty: 'claude-opus-4-1-20250805',
-  bedrock: 'us.anthropic.agenc-opus-4-1-20250805-v1:0',
+  bedrock: 'us.anthropic.claude-opus-4-1-20250805-v1:0',
   vertex: 'claude-opus-4-1@20250805',
   foundry: 'claude-opus-4-1',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_OPUS_4_5_CONFIG = {
   firstParty: 'claude-opus-4-5-20251101',
-  bedrock: 'us.anthropic.agenc-opus-4-5-20251101-v1:0',
+  bedrock: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
   vertex: 'claude-opus-4-5@20251101',
   foundry: 'claude-opus-4-5',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_OPUS_4_6_CONFIG = {
   firstParty: 'claude-opus-4-6',
-  bedrock: 'us.anthropic.agenc-opus-4-6-v1',
+  bedrock: 'us.anthropic.claude-opus-4-6-v1',
   vertex: 'claude-opus-4-6',
   foundry: 'claude-opus-4-6',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
   mistral: 'mistral-medium-latest',
   xai: 'grok-4.3',
@@ -164,27 +164,27 @@ export const AGENC_OPUS_4_6_CONFIG = {
 
 export const AGENC_OPUS_4_7_CONFIG = {
   firstParty: 'claude-opus-4-7',
-  bedrock: 'us.anthropic.agenc-opus-4-7-v1',
+  bedrock: 'us.anthropic.claude-opus-4-7-v1',
   vertex: 'claude-opus-4-7',
   foundry: 'claude-opus-4-7',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_OPUS_4_8_CONFIG = {
   firstParty: 'claude-opus-4-8',
-  bedrock: 'us.anthropic.agenc-opus-4-8-v1',
+  bedrock: 'us.anthropic.claude-opus-4-8-v1',
   vertex: 'claude-opus-4-8',
   foundry: 'claude-opus-4-8',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -196,27 +196,27 @@ export const AGENC_OPUS_4_8_CONFIG = {
 // convention).
 export const AGENC_FABLE_5_CONFIG = {
   firstParty: 'claude-fable-5',
-  bedrock: 'us.anthropic.agenc-fable-5-v1',
+  bedrock: 'us.anthropic.claude-fable-5-v1',
   vertex: 'claude-fable-5',
   foundry: 'claude-fable-5',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
 export const AGENC_SONNET_4_6_CONFIG = {
   firstParty: 'claude-sonnet-4-6',
-  bedrock: 'us.anthropic.agenc-sonnet-4-6',
+  bedrock: 'us.anthropic.claude-sonnet-4-6',
   vertex: 'claude-sonnet-4-6',
   foundry: 'claude-sonnet-4-6',
   openai: 'gpt-4o',
   gemini: 'gemini-2.0-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -225,14 +225,14 @@ export const AGENC_SONNET_4_6_CONFIG = {
 // overview (Bedrock `anthropic.claude-<model>`, the others the API id).
 export const AGENC_FABLE_5_1_CONFIG = {
   firstParty: 'claude-fable-5-1',
-  bedrock: 'us.anthropic.agenc-fable-5-1-v1',
+  bedrock: 'us.anthropic.claude-fable-5-1-v1',
   vertex: 'claude-fable-5-1',
   foundry: 'claude-fable-5-1',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
@@ -243,40 +243,40 @@ export const AGENC_FABLE_5_1_CONFIG = {
 // bedrock value below spells in this file's inference-profile convention.
 export const AGENC_OPUS_5_5_CONFIG = {
   firstParty: 'claude-opus-5-5',
-  bedrock: 'us.anthropic.agenc-opus-5-5-v1',
+  bedrock: 'us.anthropic.claude-opus-5-5-v1',
   vertex: 'claude-opus-5-5',
   foundry: 'claude-opus-5-5',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
 export const AGENC_OPUS_5_CONFIG = {
   firstParty: 'claude-opus-5',
-  bedrock: 'us.anthropic.agenc-opus-5-v1',
+  bedrock: 'us.anthropic.claude-opus-5-v1',
   vertex: 'claude-opus-5',
   foundry: 'claude-opus-5',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-pro',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
 export const AGENC_SONNET_5_CONFIG = {
   firstParty: 'claude-sonnet-5',
-  bedrock: 'us.anthropic.agenc-sonnet-5-v1',
+  bedrock: 'us.anthropic.claude-sonnet-5-v1',
   vertex: 'claude-sonnet-5',
   foundry: 'claude-sonnet-5',
   openai: 'gpt-4o',
   gemini: 'gemini-2.0-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 

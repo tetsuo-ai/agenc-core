@@ -11,7 +11,7 @@ vi.mock('bun:bundle', () => ({
 }))
 
 describe('PromptInputFooterSuggestions wave200-122 coverage', () => {
-  test('renders an inferred agent overlay window with overflow markers', async () => {
+  test('renders a windowed agent list under a fullscreen row budget', async () => {
     const suggestions: SuggestionItem[] = Array.from({ length: 8 }, (_, index) => ({
       id: index === 1 ? `dm-user-${index}` : `agent-${index}`,
       displayText: `Agent ${index}`,
@@ -22,18 +22,21 @@ describe('PromptInputFooterSuggestions wave200-122 coverage', () => {
       <PromptInputFooterSuggestions
         suggestions={suggestions}
         selectedSuggestion={4}
-        overlay={true}
+        availableRows={5}
       />,
       { columns: 80, rows: 20 },
     )
+    const rows = output.split('\n').filter(line => line.trim().length > 0)
 
-    expect(output).toContain('AGENTS')
-    expect(output).toContain('8 matches')
-    expect(output).toContain('↑↓ navigate · ↵ message')
-    expect(output).toContain('↑ 2 more above')
-    expect(output).toContain('↓ 1 more below')
-    expect(output).toContain('* Agent 4 - Handles phase 4')
+    expect(rows).toHaveLength(5)
+    expect(output).toContain('› * Agent 4 - Handles phase 4')
+    expect(output).toContain('Agent 2')
+    expect(output).toContain('Agent 6')
     expect(output).not.toContain('Agent 0')
     expect(output).not.toContain('Agent 7')
+    expect(output).not.toContain('AGENTS')
+    expect(output).not.toContain('matches')
+    expect(output).not.toContain('more above')
+    expect(output).not.toContain('more below')
   })
 })

@@ -274,6 +274,15 @@ export function parseMultipleKeypresses(
       if (inPaste) {
         pasteBuffer += token.value
       } else if (
+        token.value.includes('\n') &&
+        /[^\r\n\t]/u.test(token.value) &&
+        !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(token.value)
+      ) {
+        // Some terminals strip bracketed-paste markers. A printable multiline
+        // burst is still one draft, not a series of Enter submissions. Keep
+        // standalone LF and control shortcuts on their normal key paths.
+        keys.push(createPasteKey(token.value))
+      } else if (
         /^\[<\d+;\d+;\d+[Mm]$/.test(token.value) ||
         /^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)
       ) {

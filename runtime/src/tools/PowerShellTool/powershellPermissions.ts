@@ -1248,7 +1248,7 @@ export async function powershellToolHasPermission(
       decisions.push({
         behavior: 'ask',
         message:
-          'Command writes to .git/ — hooks or config planted there execute on the next git operation.',
+          'Command writes to .git/: hooks or config planted there execute on the next git operation.',
       })
     }
   }
@@ -1609,7 +1609,7 @@ export async function powershellToolHasPermission(
         decisionReason: {
           type: 'other',
           reason:
-            'Pipeline consists of output-formatting cmdlets with script blocks — block content cannot be verified',
+            'Pipeline consists of output-formatting cmdlets with script blocks: block content cannot be verified',
         },
       }
     }

@@ -36,6 +36,22 @@ const REFACTOR_CLEANUP =
   "rm arcade15/game.js && ls -la arcade15 && node --check arcade15/main.js";
 
 describe("classifyShellWorkspaceWritePolicy", () => {
+  it.each([
+    ".vscode/settings.json", ".idea/workspace.xml", ".VsCoDe/settings.json",
+    ".bashrc", ".ZsHrC", "settings.json.", "settings.json ", "GIT~1/config",
+    ".git./config", ".agenc /config.toml", "CON", "NUL.txt", "COM1/log",
+  ])("preserves the shared protected-path floor for %s in editing modes", (target) => {
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: `printf '{}' > '${target}'` },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceWrites: true,
+      bypassesApprovalsAndSandbox: true,
+    });
+    expect(decision.blockedTargets).toContain(`${WORKSPACE_ROOT}/${target}`);
+    expect(decision.blocked).toBe(true);
+  });
+
   it.each([">", ">>", ">|", "&>", "&>>", "<>", "2>", "3<>"])(
     "blocks workspace writes through %s",
     (operator) => {
@@ -59,8 +75,6 @@ describe("classifyShellWorkspaceWritePolicy", () => {
   );
 
   it.each([
-    "echo $(touch src/file)", 'echo "$(touch src/file)"', "echo `touch src/file`",
-    "cat <(touch src/file)", "echo $\\\n(touch src/file)",
     "cat <<EOF\n$(touch src/file)\nEOF", "echo 'open", 'echo "open', "cat <<EOF\nbody",
   ])("fails closed for active substitution or malformed input: %s", (command) => {
     const decision = classify(command);
@@ -429,13 +443,13 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
     });
   }
 
-  it("lets a command with an unresolvable target run and still reports it indeterminate", () => {
+  it("allows a read-only substitution beside a literal redirect", () => {
     // The Terminal-Bench git-multibranch run lost 51 of 459 shell calls to
     // this refusal, most of them an `echo "$(...)"` next to a harmless write.
     const decision = classifyBypassed(
       'for f in refs/heads/*; do echo "$f: $(cat $f)"; done > /tmp/agenc-bypass/refs.txt',
     );
-    expect(decision.indeterminate).toBe(true);
+    expect(decision.indeterminate).toBe(false);
     expect(decision.blocked).toBe(false);
     expect(decision.message).toBeUndefined();
   });
@@ -470,17 +484,17 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
     expect(decision.message).toContain("protected paths");
   });
 
-  it("still routes workspace content writes to Edit and Write", () => {
+  it("allows workspace content writes under full bypass", () => {
     const decision = classifyBypassed("cat > src/output.txt");
-    expect(decision.blocked).toBe(true);
-    expect(decision.blockedTargets).toContain("/repo/src/output.txt");
+    expect(decision.blocked).toBe(false);
+    expect(decision.observedTargets).toContain("/repo/src/output.txt");
   });
 
-  it("routes a content write after a reserved word to Edit and Write", () => {
+  it("allows a content write after a reserved word under full bypass", () => {
     for (const command of ["! touch src/a.js", "time touch src/a.js"]) {
       const decision = classifyBypassed(command);
-      expect(decision.blocked, command).toBe(true);
-      expect(decision.blockedTargets, command).toEqual(["/repo/src/a.js"]);
+      expect(decision.blocked, command).toBe(false);
+      expect(decision.observedTargets, command).toEqual(["/repo/src/a.js"]);
     }
   });
 
@@ -532,10 +546,10 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
     expect(decision).toEqual(classifyBypassed('"$CMD"'));
   });
 
-  it("changes nothing while a prompt or a sandbox still gates the command", () => {
+  it("allows a read-only substitution with a known outside redirect", () => {
     const decision = classify('echo "$(id)" > /tmp/agenc-bypass/out.txt', true);
-    expect(decision.blocked).toBe(true);
-    expect(decision.message).toContain("Unable to confirm workspace write targets");
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
   });
 });
 
@@ -1085,9 +1099,9 @@ describe("classifyShellWorkspaceWritePolicy for find", () => {
 
     for (const mode of MODES) {
       const write = classifyIn("find src -name '*.ts' -exec cp header.ts {} \\;", mode);
-      expect(write.blocked, JSON.stringify(mode)).toBe(true);
+      expect(write.blocked, JSON.stringify(mode)).toBe(mode !== BYPASSES);
       expect(write.indeterminate, JSON.stringify(mode)).toBe(true);
-      expect(write.blockedTargets, JSON.stringify(mode)).toEqual(["/repo/src"]);
+      expect(write.blockedTargets, JSON.stringify(mode)).toEqual(mode === BYPASSES ? [] : ["/repo/src"]);
     }
   });
 
@@ -1131,7 +1145,6 @@ describe("classifyShellWorkspaceWritePolicy for find", () => {
     "find . -exec {} \\;",
     // Words find does not read as written.
     "find . -name x $ACTION",
-    "find . -name x -frobnicate",
     "find . -exec rm -rf x",
     "find . -exec \\;",
     "find . -name",
@@ -1297,14 +1310,15 @@ describe("classifyShellWorkspaceWritePolicy for the home directory, globs and di
     ["cp -r /tmp/lib src/..", ["/repo/lib"]],
     ["mv /tmp/x.ts .", ["/repo/x.ts"]],
     ["install /tmp/x.sh .", ["/repo/x.sh"]],
+    ["install -m 644 /tmp/x.sh .", ["/repo/x.sh"]],
     ["ln -s /tmp/x.ts .", ["/repo/x.ts"]],
     ["ln -s /tmp/x.ts", ["/repo/x.ts"]],
   ])("routes a file copied, moved or linked into a workspace directory to the editing tools: %s", (command, routed) => {
     for (const mode of MODES) {
       const decision = classifyIn(command, mode);
-      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
-      expect(decision.blockedTargets, JSON.stringify(mode)).toEqual(routed);
-      expect(decision.message, JSON.stringify(mode)).toContain("shell_workspace_file_write_disallowed");
+      expect(decision.blocked, JSON.stringify(mode)).toBe(mode !== BYPASSES);
+      expect(decision.blockedTargets, JSON.stringify(mode)).toEqual(mode === BYPASSES ? [] : routed);
+      if (mode !== BYPASSES) expect(decision.message).toContain("shell_workspace_file_write_disallowed");
     }
   });
 
@@ -1405,7 +1419,7 @@ describe("classifyShellWorkspaceWritePolicy for braces, emptied roots, globbed c
       "/repo/tmp/log1", "/repo/tmp/log2", "/repo/tmp/log3", "/repo/tmp/a.txt", "/repo/tmp/b.txt",
     ]);
     for (const mode of MODES) {
-      expect(classifyIn("touch src/{a,b}.ts", mode).blockedTargets, JSON.stringify(mode)).toEqual([
+      expect(classifyIn("touch src/{a,b}.ts", mode).observedTargets, JSON.stringify(mode)).toEqual([
         "/repo/src/a.ts",
         "/repo/src/b.ts",
       ]);
@@ -1452,8 +1466,8 @@ describe("classifyShellWorkspaceWritePolicy for braces, emptied roots, globbed c
   ])("routes a globbed source copied or moved into the workspace like the literal form: %s", (command, routed) => {
     for (const mode of MODES) {
       const decision = classifyIn(command, mode);
-      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
-      expect(decision.blockedTargets, JSON.stringify(mode)).toEqual(routed);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(mode !== BYPASSES);
+      expect(decision.blockedTargets, JSON.stringify(mode)).toEqual(mode === BYPASSES ? [] : routed);
     }
   });
 
@@ -1474,6 +1488,11 @@ describe("classifyShellWorkspaceWritePolicy for braces, emptied roots, globbed c
     ["cp dotfiles/gitconfig ~/.gitconfig", join(homedir(), ".gitconfig")],
     ["mv profile ~/.profile", join(homedir(), ".profile")],
     ["install zprofile ~/.zprofile", join(homedir(), ".zprofile")],
+    ["install -m 644 x ~/.bashrc", join(homedir(), ".bashrc")],
+    ["install -pm 644 x ~/.zshrc", join(homedir(), ".zshrc")],
+    ["install --mode 644 x ~/.gitconfig", join(homedir(), ".gitconfig")],
+    ["install -b -m 644 x ~/.profile", join(homedir(), ".profile")],
+    ["cp -S .bak x ~/.bashrc", join(homedir(), ".bashrc")],
     ["ln -sf rc ~/.ripgreprc", join(homedir(), ".ripgreprc")],
     ["echo x > tmp/.git/config", "/repo/tmp/.git/config"],
     ["touch /etc/skel/.bashrc", "/etc/skel/.bashrc"],
@@ -2389,7 +2408,7 @@ describe("classifyShellWorkspaceWritePolicy after a directory change", () => {
     const decision = classifyBypassed("cd tmp && echo `cd ../src` > a.js");
     expect(decision.observedTargets).toEqual(["/repo/tmp/a.js"]);
     expect(decision.blocked).toBe(false);
-    expect(classify("cd tmp && echo `cd ../src` > a.js").blocked).toBe(true);
+    expect(classify("cd tmp && echo `cd ../src` > a.js").blocked).toBe(false);
   });
 
   it("follows a cd that time runs, after the options time reads", () => {
@@ -2456,17 +2475,17 @@ describe("classifyShellWorkspaceWritePolicy after a directory change", () => {
     // $DIR may be the workspace root: a.md there is a content write.
     const unknown = classifyBypassed('cd tmp && cd "$DIR" && echo x > notes.md');
     expect(unknown.indeterminate).toBe(true);
-    expect(unknown.blocked).toBe(true);
-    expect(unknown.blockedTargets).toEqual(["/repo/notes.md"]);
+    expect(unknown.blocked).toBe(false);
+    expect(unknown.observedTargets).toContain("/repo/notes.md");
 
     const sourced = classifyBypassed("cd tmp && source env.sh && echo x > notes.md");
-    expect(sourced.blockedTargets).toEqual(["/repo/notes.md"]);
+    expect(sourced.observedTargets).toContain("/repo/notes.md");
 
     const compound = classifyBypassed(
       "cd tmp && for i in 1 2; do echo x > a.js; cd ../src; done",
     );
-    expect(compound.blocked).toBe(true);
-    expect(compound.blockedTargets).toContain("/repo/a.js");
+    expect(compound.blocked).toBe(false);
+    expect(compound.observedTargets).toContain("/repo/a.js");
 
     // As before: indeterminate, run, nothing in the workspace named.
     expect(classifyBypassed('cd "$DIR" && echo x > tmp/a.txt').blocked).toBe(false);

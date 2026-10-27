@@ -36,6 +36,7 @@ function goal(overrides: Partial<SessionGoal> = {}): SessionGoal {
     startedAt: NOW,
     startCostUsd: 1,
     baseCommit: "abc1234",
+    worktreeBaseline: { version: 1, trackedChanges: [], untrackedFiles: [] },
     ...overrides,
   };
 }

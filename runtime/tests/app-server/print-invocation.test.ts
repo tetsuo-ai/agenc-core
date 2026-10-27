@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { format } from "node:util";
+import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrintInvocation, validatePrintInvokeParams } from "../../src/app-server/print-invocation.js";
 import { runDefaultCliRoute } from "../../src/bin/default-cli-route.js";
@@ -49,6 +51,19 @@ function requests() {
     return { jsonrpc: "2.0", id: "nested", result } as AgenCDaemonResponse;
   });
 }
+function normalizeResultDuration(stdout: string): string {
+  // Independent runs have different elapsed times. Keep the original bytes,
+  // including nested event durations, instead of parsing and reserializing JSON.
+  return stdout.replace(/^\{"type":"result",.*$/gm, line => {
+    let depth = 0;
+    return line.replace(/("durationMs":)\d+(?=[,}])|"(?:[^"\\]|\\.)*"|[{}[\]]/g, (token, durationKey: string | undefined) => {
+      if (token === "{" || token === "[") depth++;
+      else if (token === "}" || token === "]") depth--;
+      else if (depth === 1 && durationKey) return `${durationKey}0`;
+      return token;
+    });
+  });
+}
 async function canonical(argv: string[], deny = false, replay = events(deny)) {
   let stdout = "", stderr = "";
   const out = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { stdout += String(chunk); return true; });
@@ -73,7 +88,7 @@ async function canonical(argv: string[], deny = false, replay = events(deny)) {
     });
   } catch (error) { stderr += `agenc: ${cliStartupErrorMessage(error)}\n`; }
   finally { out.mockRestore(); err.mockRestore(); warn.mockRestore(); }
-  return { stdout, stderr, exitCode, call };
+  return { stdout: normalizeResultDuration(stdout), stderr, exitCode, call };
 }
 function resident(request: PrintInvokeParams, { deny = false, admit = true, complete = true } = {}) {
   let stdout = "", stderr = "";
@@ -102,10 +117,19 @@ function resident(request: PrintInvokeParams, { deny = false, admit = true, comp
       return response;
     },
   }, request);
-  return { invocation, call, admission, challenge: () => challenge, output: () => ({ stdout, stderr }) };
+  return { invocation, call, admission, challenge: () => challenge, output: () => ({ stdout: normalizeResultDuration(stdout), stderr }) };
 }
 
 describe("canonical/resident print byte and exit parity", () => {
+  it("normalizes only top-level result duration while preserving every other byte", () => {
+    const event = '{"type":"event","durationMs":17,"message":"π🌍"}\n';
+    const prefix = '{"type":"result","events":[{"durationMs":23}],"finalMessage":"{\\"durationMs\\":31}",';
+    const suffix = ', "remainingDeadlineMs":456,"usableFinalAnswer":false,"metadata":{"durationMs":47}}\n';
+    expect(normalizeResultDuration(`${event}${prefix}"durationMs":123${suffix}`))
+      .toBe(`${event}${prefix}"durationMs":0${suffix}`);
+    const withoutDuration = '{"type":"result","exitCode":0}\n';
+    expect(normalizeResultDuration(withoutDuration)).toBe(withoutDuration);
+  });
   const cases = [
     ["-p", "hello"], ["-p", "--light", "hello"], ["-p", "--bare", "hello"],
     ["-p", "--full-durability", "hello"],
@@ -202,21 +226,33 @@ describe("canonical/resident print byte and exit parity", () => {
 // Use a fresh process with the client environment installed BEFORE module
 // import. An in-process thin call would reuse this test daemon's captured OS
 // temp fallback and hide the production A-daemon/B-client regression.
+let thinRuntimeAuthorityScript: string | undefined;
 function thinRuntimeAuthority(env: Readonly<Record<string, string>>):
   { options: AgentRuntimeOptions } | { error: string } {
-  const moduleUrl = new URL("../../src/session/runtime-options.ts", import.meta.url).href;
+  const modulePath = fileURLToPath(new URL("../../src/session/runtime-options.ts", import.meta.url));
   const script = `
-    import { resolveAgentRuntimeOptions } from ${JSON.stringify(moduleUrl)};
+    import { resolveAgentRuntimeOptions } from ${JSON.stringify(modulePath)};
     try {
+      // A fresh print with no --light/--standard and no light_mode starts in
+      // Light, the default mode, exactly like the thin CLI process.
       const options = resolveAgentRuntimeOptions(process.env, {
-        nonInteractive: true, exactOutput: false, relaxedOneShot: true,
+        lightMode: true, nonInteractive: true, exactOutput: false, relaxedOneShot: true,
       });
       process.stdout.write(JSON.stringify({ options }));
     } catch (error) { process.stdout.write(JSON.stringify({ error: error.message })); }
   `;
+  // Compile without evaluating the product modules, then use plain Node.
+  // Loading tsx in the child attempts an IPC connection beneath os.tmpdir(),
+  // which is deliberately relative, whitespace-prefixed or symlinked here.
+  thinRuntimeAuthorityScript ??= buildSync({
+    stdin: { contents: script, resolveDir: import.meta.dirname },
+    bundle: true, platform: "node", format: "esm", write: false,
+  }).outputFiles[0]!.text;
+  const probe = join(home, "thin-runtime-authority.mjs");
+  writeFileSync(probe, thinRuntimeAuthorityScript);
   return JSON.parse(execFileSync(process.execPath,
-    ["--import", "tsx", "--input-type=module", "-e", script],
-    { env: { ...env, TSX_DISABLE_CACHE: "1" }, encoding: "utf8", timeout: 20_000 }));
+    [probe],
+    { env: { ...env }, encoding: "utf8", timeout: 20_000 }));
 }
 
 function clientEnvironment(): Record<string, string> {

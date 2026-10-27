@@ -35,6 +35,8 @@ import {
   responseItemToLlmMessage,
 } from "../session/message-history-conversion.js";
 import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
+import { interruptedToolCallResultContent } from "../session/recovery-tool-result.js";
+export { interruptedToolCallResultContent } from "../session/recovery-tool-result.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import {
   reconstructFromRollout,
@@ -838,18 +840,6 @@ function historyResponseItem(item: unknown): ResponseItem | undefined {
   return typeof role === "string" ? (item as ResponseItem) : undefined;
 }
 
-/** Model-facing body of a result synthesized for an interrupted tool call. */
-export function interruptedToolCallResultContent(call: {
-  readonly id: string;
-  readonly name: string;
-}): string {
-  return JSON.stringify({
-    tool_use_id: call.id,
-    is_error: true,
-    content: `<tool_use_error>interrupted: the runtime restarted before ${call.name} completed and no result was recorded; call it again if the result is still needed</tool_use_error>`,
-  });
-}
-
 /**
  * Close the trailing dangling tool calls of a restored history with sealed,
  * persisted error results so the resumed session can accept its next message.
@@ -1412,6 +1402,16 @@ export async function resumeTurnFromCheckpoint(
   const { turn, reason } = selectResumableTurn(currentReconstruction, cfg);
   if (turn === undefined || reason !== undefined) {
     return reason !== undefined ? { resumed: false, reason } : { resumed: false };
+  }
+  // The continuation pairs each call its checkpoint left open. When durable
+  // history already holds a result for one of them that the reconstruction
+  // could not place after the checkpoint, the pairing would stay out of
+  // durable history, and every checkpoint the turn writes would hash a
+  // history other than the persisted one; the next open would refuse the
+  // session (#2603). Leave the turn to the user instead.
+  if (turn.danglingToolUses.some((call) =>
+    session.rolloutStore?.liveToolCallResolved?.(call.callId) === true)) {
+    return { resumed: false, reason: "integrity-deferred" };
   }
 
   const leaseAttempt = acquireDurableResumeLease(

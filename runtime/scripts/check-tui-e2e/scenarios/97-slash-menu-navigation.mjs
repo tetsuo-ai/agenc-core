@@ -23,8 +23,8 @@ function selectedCommand(frame) {
   return match?.[1] ?? null;
 }
 
-async function waitForSelectedCommand(session, predicate, label) {
-  const deadline = Date.now() + 5_000;
+async function waitForSelectedCommand(session, predicate, label, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
     last = selectedCommand(session.latestFrame);
@@ -39,9 +39,12 @@ export default async function (session) {
   await session.waitForPrompt({ timeout: 15_000 });
 
   await session.type("/");
-  await session.waitFor(/SLASH COMMANDS/, { timeout: 10_000, label: "slash menu" });
-
-  const initial = await waitForSelectedCommand(session, () => true, "initial selection");
+  const initial = await waitForSelectedCommand(
+    session,
+    () => true,
+    "slash list opened",
+    10_000,
+  );
   session.send("\x1b[B");
   const afterDown = await waitForSelectedCommand(
     session,

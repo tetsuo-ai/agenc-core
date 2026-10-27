@@ -273,7 +273,6 @@ function MemoryCommand({
 
   return <MenuModal
       title="memory"
-      count={`${memoryOptions.length} entries`}
       summary="AGENC.md, imports, and agent memory"
       headerRight="↑↓ select · ⏎ open · q close"
       columns={[3, 10, 12, 24, 46]}

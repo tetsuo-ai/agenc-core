@@ -302,7 +302,6 @@ export function PluginsMenuView({
     return (
       <MenuModal
         title="plugins · marketplaces"
-        count={`${marketplaceItems.length}`}
         headerRight={headerRight}
         columns={[20, 8, 48]}
         headers={["name", "plugins", "manifest"]}
@@ -360,7 +359,6 @@ export function PluginsMenuView({
     return (
       <MenuModal
         title={`plugins · install from ${screen.marketplace.name}`}
-        count={`${installable.length}`}
         headerRight={headerRight}
         columns={[20, 8, 48]}
         headers={["name", "type", "source"]}
@@ -414,7 +412,6 @@ export function PluginsMenuView({
   return (
     <MenuModal
       title="plugins"
-      count={`${rows.length}`}
       summary={`${enabledCount} enabled · ${disabledCount} disabled`}
       headerRight={headerRight}
       columns={[3, 12, 18, 12, 36]}

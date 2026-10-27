@@ -183,7 +183,7 @@ describe("ToolRouter", () => {
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
-  test("dispatchModelToolCall rejects removed Read alias", async () => {
+  test("dispatchModelToolCall resolves Read through the canonical tool", async () => {
     const execute = vi.fn(async (args: Record<string, unknown>) => ({
       content: `read ${String(args.file_path)}`,
     }));
@@ -216,11 +216,9 @@ describe("ToolRouter", () => {
       },
     );
 
-    expect(result).toEqual({
-      content: JSON.stringify({ error: "unknown tool: Read" }),
-      isError: true,
-    });
-    expect(execute).not.toHaveBeenCalled();
+    expect(result.content).toBe("read main.c");
+    expect(result.isError).not.toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   test("dispatchModelToolCall strips model-supplied __agenc* keys before tool.execute", async () => {

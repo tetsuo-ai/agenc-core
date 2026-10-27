@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { makeRuntimeScratch } from "../helpers/runtime-scratch.js";
 
 const source = new URL("../../src/utils/lazy-runtime-packages.ts", import.meta.url);
 
 describe("lazy installed runtime packages", () => {
-  it("loads nothing on import, propagates failures and preserves the ESM exports", () => {
-    const directory = mkdtempSync(join(process.cwd(), ".lazy-package-"));
+  it("loads nothing on import, propagates failures and preserves the ESM exports", async () => {
+    const { directory, cleanup } = await makeRuntimeScratch("agenc-lazy-package-");
     try {
       const file = join(directory, "control.mjs");
       writeFileSync(file, `
@@ -59,6 +60,6 @@ describe("lazy installed runtime packages", () => {
       const result = spawnSync(process.execPath, [file], { encoding: "utf8", timeout: 30_000 });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout.trim()).toBe("lazy-runtime-package-identity-ok");
-    } finally { rmSync(directory, { recursive: true, force: true }); }
+    } finally { await cleanup(); }
   });
 });

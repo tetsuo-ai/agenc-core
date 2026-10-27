@@ -555,8 +555,8 @@ describe("Windows cron storage uses private-path persistence", () => {
       ["session-listed", false],
     ]);
     const rendered = CronListTool.mapToolResultToToolResultBlockParam(legacy.data, "list").content;
-    expect(rendered).toMatch(/^kept .*\[dormant: not scheduled on this host\]/mu);
-    expect(rendered).not.toMatch(/^session-listed .*dormant/mu);
+    expect(rendered).toMatch(/^kept: .*\[dormant: not scheduled on this host\]/mu);
+    expect(rendered).not.toMatch(/^session-listed: .*dormant/mu);
     expect(await readFile(join(workspace, ".agenc", "scheduled_tasks.json"), "utf8")).toBe(body);
   });
 

@@ -171,7 +171,13 @@ describe("provider metadata identity", () => {
     });
 
     expect(resolved.contextWindow).toBe(32768);
+    // Discovery also reads Ollama's own list; both requests stay on
+    // ollama.com with the Ollama key and nothing else.
     expect(calls).toEqual([{
+      url: "https://ollama.com/api/tags",
+      method: "GET",
+      authorization: "Bearer ollama-cloud-key",
+    }, {
       url: "https://ollama.com/api/show",
       method: "POST",
       body: JSON.stringify({ model: "unlisted-model" }),
@@ -549,6 +555,70 @@ describe("local providers resolve the real context window", () => {
     });
 
     expect(resolved.contextWindow).toBe(32768);
+  });
+
+  test("local Ollama admits against the window Core runs it at, not the trained length", async () => {
+    // gpt-oss:20b reports 131,072; Core sends num_ctx 32,768 and must plan
+    // against the same number, or Ollama drops the oldest messages silently.
+    for (const [trained, expected] of [[131_072, 32_768], [262_144, 32_768], [8_192, 8_192]] as const) {
+      const { impl } = recordingFetch({
+        "http://127.0.0.1:11434/api/show": { json: { model_info: { "gptoss.context_length": trained } } },
+      });
+      const resolved = await new ModelMetadataResolver({
+        fetchImpl: impl,
+        env: { OLLAMA_BASE_URL: "http://127.0.0.1:11434" },
+      }).resolve({ provider: "ollama", model: "gpt-oss:20b", config: EMPTY_CONFIG });
+      expect(resolved.contextWindow, String(trained)).toBe(expected);
+    }
+    // A configured window still wins.
+    const { impl } = recordingFetch({
+      "http://127.0.0.1:11434/api/show": { json: { model_info: { "gptoss.context_length": 131_072 } } },
+    });
+    const configured = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OLLAMA_BASE_URL: "http://127.0.0.1:11434" },
+    }).resolve({
+      provider: "ollama", model: "gpt-oss:20b",
+      config: mergeConfigs(defaultConfig(), { providers: { ollama: { context_window_tokens: 65_536 } } }) as AgenCConfig,
+    });
+    expect(configured.contextWindow).toBe(65_536);
+  });
+
+  test("Ollama Cloud and compatible endpoints on Ollama's port keep the trained length", async () => {
+    // Core sends num_ctx only from the native local provider. Ollama Cloud
+    // serves its models at their full length, and the OpenAI-compatible
+    // surface takes no num_ctx, so neither is capped at 32,768.
+    const longShow = {
+      capabilities: ["completion", "tools"],
+      model_info: { "general.architecture": "kimi", "kimi.context_length": 262_144 },
+    };
+    const cloud = recordingFetch({ "https://ollama.com/api/show": { json: longShow } });
+    const cloudResolved = await new ModelMetadataResolver({
+      fetchImpl: cloud.impl,
+      env: { OLLAMA_API_KEY: "ollama-cloud-key" },
+    }).resolve({ provider: "ollama-cloud", model: "unlisted-long-model", config: EMPTY_CONFIG });
+    expect(cloudResolved.contextWindow).toBe(262_144);
+    expect(cloud.calls.map((call) => call.url)).toContain("https://ollama.com/api/show");
+
+    for (
+      const [provider, envKey] of [
+        ["openai-compatible", "OPENAI_COMPATIBLE_BASE_URL"],
+        ["lmstudio", "LMSTUDIO_BASE_URL"],
+      ] as const
+    ) {
+      const compatible = recordingFetch({
+        "http://127.0.0.1:11434/v1/models": { json: OLLAMA_V1_MODELS },
+        "http://127.0.0.1:11434/api/show": { json: longShow },
+      });
+      const resolved = await new ModelMetadataResolver({
+        fetchImpl: compatible.impl,
+        env: { [envKey]: "http://127.0.0.1:11434/v1" },
+      }).resolve({ provider, model: "qwen2.5-coder:1.5b", config: EMPTY_CONFIG });
+      expect(resolved.contextWindow, provider).toBe(262_144);
+      expect(compatible.calls.map((call) => call.url), provider).toContain(
+        "http://127.0.0.1:11434/api/show",
+      );
+    }
   });
 
   test("a malformed context length is ignored rather than trusted", async () => {

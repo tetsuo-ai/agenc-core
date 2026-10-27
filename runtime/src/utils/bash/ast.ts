@@ -451,7 +451,7 @@ export function parseForSecurityFromAst(
     return {
       kind: 'too-complex',
       reason:
-        'Parser aborted (timeout or resource limit) — possible adversarial input',
+        'Parser aborted (timeout or resource limit): possible adversarial input',
       nodeType: 'PARSE_ABORT',
     }
   }
@@ -648,7 +648,7 @@ function collectCommands(
           ) {
             return {
               kind: 'too-complex',
-              reason: `declare positional '${arg}' contains array subscript — bash evaluates $(cmd) in subscripts`,
+              reason: `declare positional '${arg}' contains array subscript: bash evaluates $(cmd) in subscripts`,
               nodeType: 'declaration_command',
             }
           }
@@ -1846,7 +1846,7 @@ function walkVariableAssignment(
   if (name === 'IFS') {
     return {
       kind: 'too-complex',
-      reason: 'IFS assignment changes word-splitting — cannot model statically',
+      reason: 'IFS assignment changes word-splitting: cannot model statically',
       nodeType: 'variable_assignment',
     }
   }
@@ -1880,14 +1880,14 @@ function walkVariableAssignment(
       return {
         kind: 'too-complex',
         reason:
-          'PS4 += cannot be statically verified — combine into a single PS4= assignment',
+          'PS4 += cannot be statically verified: combine into a single PS4= assignment',
         nodeType: 'variable_assignment',
       }
     }
     if (containsAnyPlaceholder(value)) {
       return {
         kind: 'too-complex',
-        reason: 'PS4 value derived from cmdsub/variable — runtime unknowable',
+        reason: 'PS4 value derived from cmdsub/variable: runtime unknowable',
         nodeType: 'variable_assignment',
       }
     }
@@ -1899,7 +1899,7 @@ function walkVariableAssignment(
       return {
         kind: 'too-complex',
         reason:
-          'PS4 value outside safe charset — only ${VAR} refs and [A-Za-z0-9 _+:.=/[]-] allowed',
+          'PS4 value outside safe charset: only ${VAR} refs and [A-Za-z0-9 _+:.=/[]-] allowed',
         nodeType: 'variable_assignment',
       }
     }
@@ -1914,7 +1914,7 @@ function walkVariableAssignment(
   if (value.includes('~')) {
     return {
       kind: 'too-complex',
-      reason: 'Tilde in assignment value — bash may expand at assignment time',
+      reason: 'Tilde in assignment value: bash may expand at assignment time',
       nodeType: 'variable_assignment',
     }
   }
@@ -2309,7 +2309,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           // Fail closed — mirrors the timeout-duration fail-closed above.
           return {
             ok: false,
-            reason: `nice argument '${a[1]}' contains expansion — cannot statically determine wrapped command`,
+            reason: `nice argument '${a[1]}' contains expansion: cannot statically determine wrapped command`,
           }
         } else {
           a = a.slice(1) // bare `nice cmd`
@@ -2395,7 +2395,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
     if (name === '') {
       return {
         ok: false,
-        reason: 'Empty command name — argv[0] may not reflect what bash runs',
+        reason: 'Empty command name: argv[0] may not reflect what bash runs',
       }
     }
 
@@ -2433,7 +2433,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
         if (dangerFlags.has(arg) && a[i + 1]?.includes('[')) {
           return {
             ok: false,
-            reason: `'${name} ${arg}' operand contains array subscript — bash evaluates $(cmd) in subscripts`,
+            reason: `'${name} ${arg}' operand contains array subscript: bash evaluates $(cmd) in subscripts`,
           }
         }
         // Combined short flags: `-ra` is bash shorthand for `-r -a`.
@@ -2450,7 +2450,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
               if (a[i + 1]?.includes('[')) {
                 return {
                   ok: false,
-                  reason: `'${name} ${flag}' (combined in '${arg}') operand contains array subscript — bash evaluates $(cmd) in subscripts`,
+                  reason: `'${name} ${flag}' (combined in '${arg}') operand contains array subscript: bash evaluates $(cmd) in subscripts`,
                 }
               }
             }
@@ -2467,7 +2467,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           ) {
             return {
               ok: false,
-              reason: `'${name} ${flag}' (fused) operand contains array subscript — bash evaluates $(cmd) in subscripts`,
+              reason: `'${name} ${flag}' (fused) operand contains array subscript: bash evaluates $(cmd) in subscripts`,
             }
           }
         }
@@ -2489,7 +2489,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
         if (a[i - 1]?.includes('[') || a[i + 1]?.includes('[')) {
           return {
             ok: false,
-            reason: `'[[ ... ${a[i]} ... ]]' operand contains array subscript — bash arithmetically evaluates $(cmd) in subscripts`,
+            reason: `'[[ ... ${a[i]} ... ]]' operand contains array subscript: bash arithmetically evaluates $(cmd) in subscripts`,
           }
         }
       }
@@ -2533,7 +2533,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
         if (arg.includes('[')) {
           return {
             ok: false,
-            reason: `'${name}' positional NAME '${arg}' contains array subscript — bash evaluates $(cmd) in subscripts`,
+            reason: `'${name}' positional NAME '${arg}' contains array subscript: bash evaluates $(cmd) in subscripts`,
           }
         }
       }
@@ -2547,7 +2547,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
     if (SHELL_KEYWORDS.has(name)) {
       return {
         ok: false,
-        reason: `Shell keyword '${name}' as command name — tree-sitter mis-parse`,
+        reason: `Shell keyword '${name}' as command name: tree-sitter mis-parse`,
       }
     }
 

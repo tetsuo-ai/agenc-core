@@ -48,6 +48,12 @@ describe("unknown startup options", () => {
     expect(stripRoutingFlags([option, "hello"])).toEqual(["hello"]);
   });
 
+  it.each(["--light", "--standard"])("accepts the session mode flag %s without sending it to the model", (option) => {
+    expect(classifyCLI({ argv: [...executable, "-p", option, "hello"], isTTY: false, isStdoutTTY: false })).toEqual({ kind: "oneShotCLI", userMessage: "hello" });
+    expect(classifyCLI({ argv: [...executable, option], isTTY: true, isStdoutTTY: true })).toEqual({ kind: "bootTUI", args: {} });
+    expect(stripRoutingFlags([option, "hello"])).toEqual(["hello"]);
+  });
+
   it("consumes debug-file values before validating the next option", () => {
     expect(classifyCLI({ argv: [...executable, "-p", "--debug-file", "/tmp/debug.log", "--wrong"], isTTY: false, isStdoutTTY: false })).toMatchObject({ kind: "errorAndExit", exitCode: 2 });
     expect(stripRoutingFlags(["--debug-file", "/tmp/debug.log", "hello"])).toEqual(["hello"]);

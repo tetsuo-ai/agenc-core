@@ -84,6 +84,8 @@ import type {
   ResumeRolloutDescriptorLease,
 } from "../../session/session-store.js";
 import type { AgentRuntimeOptions } from "../../session/runtime-options.js";
+import type { SessionToolPolicy } from "../../permissions/session-tool-policy.js";
+import type { PermissionMode } from "../../permissions/types.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly signal?: AbortSignal;
@@ -93,13 +95,19 @@ export interface AgenCBackgroundAgentStartParams {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
+  /** Expanded human input for first-turn decisions, before skill/hook transforms. */
+  readonly initialUserPromptText?: string;
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
+  /** Fixed tool allowlist for this session (`agent.create` `toolPolicy`). */
+  readonly toolPolicy?: SessionToolPolicy;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -129,6 +137,11 @@ export interface AgenCBackgroundAgentStartResult {
   readonly rolloutPath?: string;
   readonly rolloutDev?: string;
   readonly rolloutIno?: string;
+  /**
+   * Widest permission mode a frozen session (`toolPolicy.frozenPermissionMode`)
+   * may reach. The lifecycle persists it so a restore keeps the same ceiling.
+   */
+  readonly toolPolicyModeCeiling?: PermissionMode;
 }
 
 export interface AgenCBackgroundAgentRestoreParams {
@@ -140,6 +153,8 @@ export interface AgenCBackgroundAgentRestoreParams {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
@@ -290,6 +305,7 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly content: MessageContent;
   readonly originalContent: MessageContent;
   readonly displayUserMessage?: string | null;
+  readonly userPromptText?: string;
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
@@ -306,10 +322,7 @@ export interface AgenCBackgroundAgentMessageResult {
   readonly terminal?: AgenCBackgroundAgentMessageTerminal;
 }
 
-export interface AgenCBackgroundAgentMessageTerminal extends JsonObject {
-  readonly code: 0 | 1 | 130;
-  readonly message?: string;
-}
+export type AgenCBackgroundAgentMessageTerminal = import("../protocol/index.js").MessageSendTerminalResult;
 
 export type AgenCBackgroundAgentMessageErrorCode =
   | "TURN_IN_PROGRESS"
@@ -379,6 +392,7 @@ export interface AgenCBackgroundAgentExtendCompactionRetentionParams {
 
 export interface AgenCBackgroundAgentConversationRewindParams {
   readonly sessionId: string;
+  readonly userMessageId?: string;
   readonly messageOrdinal: number;
   /** When aborted (request.cancel), refuse mid-flight rewind work (todo-108). */
   readonly signal?: AbortSignal;
@@ -446,6 +460,8 @@ export interface AgenCBackgroundAgentSetHooksDisabledResult {
 }
 
 export interface AgenCBackgroundAgentApplyConfigParams {
+  readonly taskBudgetLevel?: "eco" | "balanced" | "max";
+  readonly taskTokenBudget?: number;
   readonly sessionId: string;
   /** Null clears the session's effort so it follows the model default. */
   readonly reasoningEffort?: string | null;
@@ -455,6 +471,7 @@ export interface AgenCBackgroundAgentApplyConfigParams {
 }
 
 export interface AgenCBackgroundAgentApplyConfigResult {
+  readonly taskTokenBudget?: number;
   readonly applied: boolean;
   readonly provider?: string;
   readonly model?: string;
@@ -558,6 +575,8 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: ResolveDurableEffectReviewOptions,
   ): Promise<ResolveDurableEffectReviewResult>;
+  /** Canonical root and durably recorded descendants this agent may review. */
+  effectReviewSessionIds?(agentId: string): readonly string[];
   addMcpServer?(
     agentId: string,
     params: AgenCBackgroundAgentMcpAddServerParams,
@@ -571,6 +590,10 @@ export interface AgenCBackgroundAgentRunner {
     params: AgenCBackgroundAgentMcpServerByNameParams,
   ): Promise<McpServerMutationResult>;
   disableMcpServer?(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult>;
+  removeMcpServer?(
     agentId: string,
     params: AgenCBackgroundAgentMcpServerByNameParams,
   ): Promise<McpServerMutationResult>;
@@ -599,6 +622,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentConversationRewindParams,
   ): Promise<SessionRewindFilesToMessageResult>;
+  setAgentProviderKey?(
+    agentId: string,
+    params: { readonly provider: string; readonly apiKey: string },
+  ): Promise<void>;
   setAgentModel?(
     agentId: string,
     params: AgenCBackgroundAgentSetModelParams,

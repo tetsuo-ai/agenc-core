@@ -471,18 +471,19 @@ describe("consent from settings", () => {
     } finally { fixture.close(); }
   });
 
-  it("does not grant a managed child whose route provider the settings no longer allow", async () => {
-    // Its requests go through agenc to the destination, so dispatch needs
-    // both allowed. A message to it reuses the plan made when both were.
+  it("does not grant a retired account child even when settings allow it", async () => {
     const both = interactiveFixture({ agents: { ...SETTINGS_CONSENT, allowed_providers: ["agenc", "deepseek"] } });
     try {
-      expect((await authorizeChildExecutionPlan(both.session, managedPlan, { fresh: true })).kind).toBe("granted");
+      expect(await authorizeChildExecutionPlan(both.session, managedPlan, { fresh: true })).toMatchObject({
+        kind: "consent_unavailable", reason: expect.stringContaining("no longer provide models"),
+      });
+      await expect(assertChildExecutionPlan(both.session, managedPlan)).rejects.toThrow("no longer provide models");
     } finally { both.close(); }
     const fixture = interactiveFixture({ agents: SETTINGS_CONSENT });
     try {
       for (const options of [{}, { fresh: true }]) {
         await expect(authorizeChildExecutionPlan(fixture.session, managedPlan, options)).resolves.toMatchObject({
-          kind: "consent_unavailable", reason: expect.stringContaining("Provider `agenc` is not allowed"),
+          kind: "consent_unavailable", reason: expect.stringContaining("no longer provide models"),
         });
       }
       expect(fixture.broker.list("root-session")).toHaveLength(0);
@@ -631,7 +632,7 @@ describe("consent from settings", () => {
       // a card for them would fail at dispatch.
       for (const [task, provider] of [[openaiPlan, "openai"], [managedPlan, "agenc"]] as const) {
         await expect(authorizeChildExecutionPlan(fixture.session, task, { fresh: true })).resolves.toMatchObject({
-          kind: "consent_unavailable", reason: expect.stringContaining(`Provider \`${provider}\` is not allowed`),
+          kind: "consent_unavailable", reason: expect.stringContaining(provider === "agenc" ? "no longer provide models" : `Provider \`${provider}\` is not allowed`),
         });
       }
       expect(fixture.broker.list("root-session")).toHaveLength(0);
@@ -871,7 +872,7 @@ describe("settings changed while a session is open", () => {
       // The removed provider stops, and the added one is not gained.
       for (const [task, provider] of [[openaiPlan, "openai"], [grokPlan, "grok"]] as const) {
         await expect(authorizeChildExecutionPlan(fixture.session, task, { fresh: true })).resolves.toMatchObject({
-          kind: "consent_unavailable", reason: expect.stringContaining(`Provider \`${provider}\` is not allowed`),
+          kind: "consent_unavailable", reason: expect.stringContaining(provider === "agenc" ? "no longer provide models" : `Provider \`${provider}\` is not allowed`),
         });
       }
       // The next save asks at each spawn. This session asks too, and here
@@ -1162,52 +1163,5 @@ describe("settings changed while a session is open", () => {
       fast.dispose();
       busy.dispose();
     }
-  });
-
-  it("refuses a managed child's plan when the settings change while its destination resolves", async () => {
-    // run-agent subscribes to setting changes only after this last check, so
-    // the check must see a change made during its own awaits.
-    const settings = await openSettings(['model_provider = "grok"', 'model = "grok-4.6"',
-      ...agentsToml(true, ["agenc", "deepseek"])]);
-    let gate: Promise<void> | undefined;
-    let arrived!: () => void;
-    const atGate = new Promise<void>((resolve) => { arrived = resolve; });
-    const fixture = interactiveFixture({ configStore: settings.store, nonInteractive: true, answerable: false });
-    Object.assign(fixture.session, {
-      modelInfo: { slug: "grok-4.6" },
-      sessionConfiguration: { cwd: settings.home, collaborationMode: { model: "grok-4.6" } },
-      providerService: {
-        current: () => ({ provider: "grok", model: "grok-4.6" }),
-        resolveManagedChildDestination: async () => {
-          if (gate !== undefined) { arrived(); await gate; }
-          return { provider: "deepseek", model: "deepseek-v4-pro" };
-        },
-        previewChildDestination: async (_selection: unknown, concrete: { provider: string } | undefined) => ({
-          endpoint: concrete?.provider === "agenc" ? "https://id.agenc.ag/v1" : "https://api.deepseek.com/v1",
-          authProfile: "managed", billingSource: "managed" }),
-      },
-    });
-    Object.assign(fixture.session.services, {
-      modelsManager: { tryListModels: () => [{ slug: "grok-4.6" }], listModels: async () => [{ slug: "grok-4.6" }] },
-    });
-    try {
-      const proposed = await createChildExecutionPlan({ session: fixture.session,
-        selection: { provider: "agenc", model: "agenc" },
-        modelInfo: { slug: "agenc", supportsToolUse: true } as Session["modelInfo"],
-        parentPath: "/root", taskId: "managed-task", taskName: "worker", taskText: "inspect",
-        toolFree: false, forkedHistory: false });
-      const granted = await authorizeChildExecutionPlan(fixture.session, proposed);
-      if (granted.kind !== "granted") throw new Error(`fixture spawn was not granted: ${granted.reason}`);
-      let release!: () => void;
-      gate = new Promise<void>((resolve) => { release = resolve; });
-      const check = assertChildExecutionPlan(fixture.session, granted.plan);
-      await atGate;
-      settings.save(['model_provider = "grok"', 'model = "grok-4.6"', ...agentsToml(false, ["agenc", "deepseek"])]);
-      await expect(fixture.broker.refreshCrossProviderPolicy({
-        previous: agentsView(true, ["agenc", "deepseek"]), next: agentsView(false, ["agenc", "deepseek"]) }))
-        .resolves.toEqual({ changed: ["root-session"], failed: [] });
-      release();
-      await expect(check).rejects.toThrow(/policy changed/u);
-    } finally { fixture.close(); settings.dispose(); }
   });
 });

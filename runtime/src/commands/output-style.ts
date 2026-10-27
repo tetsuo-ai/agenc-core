@@ -14,7 +14,7 @@ import type {
   OutputStyleMenuRow,
   OutputStyleMenuSnapshot,
 } from "./output-style-menu.js";
-import { requireCommandConfigStore } from "./config-context.js";
+import { configStoreFromCommandContext, readCommandConfig, requireCommandConfigStore } from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -22,11 +22,22 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 
+/** TUI commands run outside the model's runtime scope, so use captured authority. */
+function loadCommandOutputStyles(ctx: SlashCommandContext): Promise<StyleMap> {
+  return getAllOutputStyles(
+    ctx.cwd,
+    ctx.session.services.runtimeOptions?.pluginStorageRoot,
+    readCommandConfig(ctx),
+  );
+}
+
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+
 type StyleMap = { readonly [styleName: string]: OutputStyleConfig | null };
 
-function configuredOutputStyle(_ctx: SlashCommandContext): string {
+function configuredOutputStyle(ctx: SlashCommandContext): string {
   return (
-    getExecutionAuthoritySettings().outputStyle?.trim() ??
+    (readCommandConfig(ctx) ?? getExecutionAuthoritySettings()).outputStyle?.trim() ??
     DEFAULT_OUTPUT_STYLE_NAME
   );
 }
@@ -90,7 +101,7 @@ function buildRows(
 export async function readOutputStyleMenuSnapshot(
   ctx: SlashCommandContext,
 ): Promise<OutputStyleMenuSnapshot> {
-  const styles = await getAllOutputStyles(ctx.cwd);
+  const styles = await loadCommandOutputStyles(ctx);
   const configured = configuredOutputStyle(ctx);
   const effective = effectiveOutputStyle(styles, configured);
   const rows = buildRows(styles, configured, effective.name);
@@ -183,11 +194,17 @@ function updateOutputStyleChrome(
   });
 }
 
-export async function applyOutputStyleSwitch(
+export function applyOutputStyleSwitch(ctx: SlashCommandContext, targetRaw: string): Promise<string> {
+  const store = configStoreFromCommandContext(ctx);
+  const switchStyle = () => applyOutputStyleSwitchWithAuthority(ctx, targetRaw);
+  return store === null ? switchStyle() : runWithCanonicalSettingsAuthority(store, switchStyle);
+}
+
+async function applyOutputStyleSwitchWithAuthority(
   ctx: SlashCommandContext,
   targetRaw: string,
 ): Promise<string> {
-  const styles = await getAllOutputStyles(ctx.cwd);
+  const styles = await loadCommandOutputStyles(ctx);
   const resolved = resolveStyleName(targetRaw, styles);
   if (resolved.error !== undefined) return resolved.error;
   const target = resolved.name!;
@@ -199,8 +216,22 @@ export async function applyOutputStyleSwitch(
     return `Output style switch failed: ${result.error.message}`;
   }
 
+  const bridge = ctx.session as unknown as {
+    applyDaemonConfig?: (params: { reload: boolean }) => Promise<{ applied: boolean; sessionId?: string; summary?: string }>;
+  };
+  if (typeof bridge.applyDaemonConfig === "function") {
+    try {
+      const applied = await bridge.applyDaemonConfig({ reload: true });
+      if (!applied.applied && applied.sessionId !== "pending") {
+        throw new Error(applied.summary ?? "daemon did not accept the style reload");
+      }
+    } catch (error) {
+      return `Output style saved as "${target}", but this session did not take it: ${error instanceof Error ? error.message : String(error)}. Run /config reload to retry.`;
+    }
+  }
+
   clearAllOutputStylesCache();
-  const nextStyles = await getAllOutputStyles(ctx.cwd);
+  const nextStyles = await loadCommandOutputStyles(ctx);
   const persisted = configuredOutputStyle(ctx);
   if (persisted !== target) {
     return `Output style switch failed: trusted user settings still resolve to "${persisted}".`;

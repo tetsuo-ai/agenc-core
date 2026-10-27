@@ -1052,3 +1052,19 @@ it("forwards Light mode as session runtime authority and rejects older daemons b
   expect(older.requests.find(request => request.method === "agent.create")?.params).toMatchObject({ runtimeOptions: VALID_ATTACH_RUNTIME_OPTIONS });
   expect((older.requests.find(request => request.method === "agent.create")?.params as { runtimeOptions?: object }).runtimeOptions).not.toHaveProperty("lightMode");
 });
+
+it("sends an explicit standard choice to a Light-capable daemon and leaves an omitted mode to the daemon default", async () => {
+  const transport = new PromptTransport();
+  transport.attachRuntimeOptions = { ...VALID_ATTACH_RUNTIME_OPTIONS, lightMode: false };
+  const client = await initializedClient(transport);
+  await client.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, lightMode: false, envOverrides: {} });
+  const created = transport.requests.find(request => request.method === "agent.create");
+  // Since Light became the default, an omitted mode no longer means standard.
+  expect(created?.params).toMatchObject({ runtimeOptions: { lightMode: false, simpleMode: false } });
+
+  const omitted = new PromptTransport();
+  omitted.attachRuntimeOptions = { ...VALID_ATTACH_RUNTIME_OPTIONS, lightMode: true };
+  const omittedClient = await initializedClient(omitted);
+  await omittedClient.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, envOverrides: {} });
+  expect((omitted.requests.find(request => request.method === "agent.create")?.params as { runtimeOptions?: object }).runtimeOptions).not.toHaveProperty("lightMode");
+});

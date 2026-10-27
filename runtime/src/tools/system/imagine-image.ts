@@ -7,6 +7,9 @@
  * 3. Z.AI reasoning sessions prefer GLM-Image + ZAI_API_KEY.
  * 4. Any reasoning provider may use independent xAI credentials.
  * 5. Direct Grok sessions retain their session bearer/base URL compatibility.
+ * 6. OpenRouter and Venice sessions generate with their own key only
+ *    (OpenRouter's Image API, Venice's OpenAI-compatible image route); the
+ *    managed AgenC route never lends its credential to media.
  *
  * @module
  */
@@ -33,6 +36,14 @@ import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
+import {
+  cachedVeniceMediaModels,
+  loadVeniceMediaModels,
+  veniceDefaultTier,
+  veniceImagePrice,
+  veniceImageTier,
+  type VeniceMediaModel,
+} from "./venice-media-models.js";
 
 export interface ImagineImageToolOptions {
   readonly workspaceRoot: string;
@@ -181,6 +192,39 @@ const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_DOWNLOAD_REDIRECTS = 5;
 const ZAI_GLM_IMAGE_COST_USD = 0.015;
 const ZAI_COGVIEW_IMAGE_COST_USD = 0.01;
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_VENICE_BASE_URL = "https://api.venice.ai/api/v1";
+/**
+ * Reviewed OpenRouter image models and the highest per-image price any of
+ * their endpoints lists (USD; GET /api/v1/images/models/<id>/endpoints,
+ * 2026-10-20). The ceiling bounds admission; each response's `usage.cost`
+ * is what the call is charged.
+ */
+const OPENROUTER_IMAGE_MODELS: ReadonlyMap<string, number> = new Map([
+  // 0.008 at 768 px to 0.036 at 4K; 1K is 0.009.
+  ["black-forest-labs/flux-3-image-klein", 0.036],
+  ["recraft/recraft-v4.1-flash", 0.007],
+  ["qwen/qwen-image-2.1-turbo", 0.0184],
+  ["bytedance-seed/seedream-5-0-flash", 0.018],
+  // Billed per output token: about 0.039 for one 1K image.
+  ["google/gemini-2.5-flash-image", 0.06],
+]);
+const OPENROUTER_DEFAULT_IMAGE_MODEL = "black-forest-labs/flux-3-image-klein";
+/**
+ * Venice image models AgenC can price without the live list (USD per image;
+ * GET /api/v1/models?type=image, 2026-10-20). Any model in Venice's live
+ * list is accepted at its listed price (venice-media-models); these only
+ * answer while the list cannot be read. Venice substitutes its default model
+ * for an unknown name, so a name neither knows is never sent.
+ */
+const VENICE_IMAGE_MODELS: ReadonlyMap<string, number> = new Map([
+  ["z-image-turbo", 0.01],
+  ["venice-sd35", 0.01],
+  ["qwen-image-2-1-turbo", 0.02],
+  ["flux-2-pro", 0.03],
+  ["grok-imagine-image", 0.04],
+]);
+const VENICE_DEFAULT_IMAGE_MODEL = "z-image-turbo";
 
 type ImageBackend =
   | {
@@ -211,6 +255,16 @@ type ImageBackend =
     }
   | {
       readonly kind: "minimax";
+      readonly baseURL: string;
+      readonly bearer: string;
+    }
+  | {
+      readonly kind: "openrouter";
+      readonly baseURL: string;
+      readonly bearer: string;
+    }
+  | {
+      readonly kind: "venice";
       readonly baseURL: string;
       readonly bearer: string;
     };
@@ -256,6 +310,9 @@ const IMAGE_DOWNLOAD_HOSTS: Readonly<
   xai: ["x.ai"],
   openai: [],
   minimax: [],
+  // Both answer with base64 images and are never asked for a URL.
+  openrouter: [],
+  venice: [],
 });
 
 function validatedImageDownloadUrl(value: string, backend: ImageBackend): URL {
@@ -442,6 +499,38 @@ function minimaxEnvironmentBackend(
 }
 
 /**
+ * An OpenRouter or Venice session's own image route: its own factory key or
+ * that provider's canonical environment key, and its own base URL. The
+ * managed AgenC route (an OpenRouter-shaped gateway on AgenC's credential)
+ * is not a user key and gets no media backend here.
+ */
+function gatewayImageBackend(
+  kind: "openrouter" | "venice",
+  provider: unknown,
+  env: NodeJS.ProcessEnv,
+): ImageBackend | undefined {
+  const factory = readProviderFactoryOptions(provider as never);
+  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
+    return undefined;
+  }
+  const bearer =
+    typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
+      ? factory.apiKey.trim()
+      : resolveProviderApiKeyEnvironment(kind, env)?.value;
+  if (bearer === undefined) return undefined;
+  const baseURL =
+    factory.baseURL ??
+    resolveProviderBaseURLEnvironment(kind, env)?.value ??
+    (kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL);
+  try {
+    new URL(baseURL);
+  } catch {
+    return undefined;
+  }
+  return { kind, baseURL: withoutTrailingSlash(baseURL), bearer };
+}
+
+/**
  * Media credentials are intentionally independent from the reasoning
  * provider. A Meta/OpenAI/etc session key must never become an xAI bearer.
  * Direct Grok sessions retain their existing session-bearer compatibility.
@@ -538,6 +627,16 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
 
   if (providerIdentity === "minimax") {
     const backend = minimaxEnvironmentBackend(env);
+    if (backend !== undefined) return { backend };
+  }
+
+  // An OpenRouter or Venice session generates with its own key and nobody
+  // else's; neither is offered to sessions of other providers.
+  if (
+    (providerIdentity === "openrouter" || providerIdentity === "venice") &&
+    provider !== undefined
+  ) {
+    const backend = gatewayImageBackend(providerIdentity, provider, env);
     if (backend !== undefined) return { backend };
   }
 
@@ -724,6 +823,16 @@ function zaiImageSize(model: string, aspectRatio: string | undefined): string {
   return sizes[normalizedAspect] ?? sizes["1:1"]!;
 }
 
+/** The file type the bytes declare (PNG, JPEG, WebP, GIF), if recognisable. */
+function imageExtensionFromBytes(bytes: Buffer): string | undefined {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpg";
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString("latin1") === "RIFF" &&
+      bytes.subarray(8, 12).toString("latin1") === "WEBP") return "webp";
+  if (bytes.length >= 6 && /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString("latin1"))) return "gif";
+  return undefined;
+}
+
 function extensionForImageContentType(
   contentType: string,
   fallback: string,
@@ -782,6 +891,10 @@ function defaultImageModel(backend: ImageBackend): string {
       return "gpt-image-2";
     case "minimax":
       return "image-01";
+    case "openrouter":
+      return OPENROUTER_DEFAULT_IMAGE_MODEL;
+    case "venice":
+      return VENICE_DEFAULT_IMAGE_MODEL;
     case "xai":
       return "grok-imagine-image";
   }
@@ -800,6 +913,10 @@ function imageBackendLabel(backend: ImageBackend): string {
       return "GPT Image";
     case "minimax":
       return "MiniMax image";
+    case "openrouter":
+      return "OpenRouter image";
+    case "venice":
+      return "Venice image";
     case "xai":
       return "Imagine";
   }
@@ -842,6 +959,12 @@ function defaultImageExtension(
     case "minimax":
       // MiniMax Image returns JPEG.
       return "jpg";
+    case "openrouter":
+      // Each image names its media_type; PNG when it does not.
+      return "png";
+    case "venice":
+      // Asked for PNG (output_format).
+      return "png";
     case "xai":
       return "jpg";
   }
@@ -852,6 +975,10 @@ function maxImagesPerRequest(backend: ImageBackend, model: string): number {
   if (backend.kind === "qwen") {
     return /^wan2\.7-image(?:-pro)?$/i.test(model) ? 4 : 6;
   }
+  // Venice generates one image per request; OpenRouter's reviewed models
+  // take at most four in one call.
+  if (backend.kind === "venice") return 1;
+  if (backend.kind === "openrouter") return 4;
   return backend.kind === "minimax" ? 9 : 10;
 }
 
@@ -905,7 +1032,8 @@ function decideImageQuality(
     }
     return { kind: "use", value: translated };
   }
-  // Meta, QwenCloud, MiniMax and xAI have no quality control at all.
+  // Meta, QwenCloud, MiniMax, xAI, OpenRouter's reviewed models and Venice
+  // have no quality control at all.
   return { kind: "ignore" };
 }
 
@@ -957,9 +1085,59 @@ function initialImageRequestBody(
           ? { aspect_ratio: aspectRatio }
           : {}),
       };
+    case "openrouter":
+      return {
+        model,
+        prompt,
+        n,
+        ...(aspectRatio !== undefined && aspectRatio !== "auto"
+          ? { aspect_ratio: aspectRatio }
+          : {}),
+      };
+    case "venice":
+      return {
+        model,
+        prompt,
+        n: 1,
+        size: orientedImageSize(aspectRatio),
+        output_format: "png",
+        response_format: "b64_json",
+      };
     case "xai":
       return { model, prompt, n, response_format: "b64_json" };
   }
+}
+
+/**
+ * The resolution tier a Venice image request from this tool lands in: the
+ * oriented sizes are all 1K-class, unless the model lists no 1K tier.
+ */
+function veniceRequestTier(model: VeniceMediaModel, aspectRatio: string | undefined): string {
+  const [width, height] = orientedImageSize(aspectRatio).split("x").map(Number);
+  const tier = veniceImageTier(width!, height!);
+  const tiers = model.constraints.resolutions;
+  return Array.isArray(tiers) && tiers.length > 0 && !tiers.includes(tier) ? veniceDefaultTier(model) : tier;
+}
+
+/**
+ * The per-image price of an OpenRouter model (reviewed ceiling) or a Venice
+ * model (Venice's live list first, the reviewed table while it is unread).
+ */
+function gatewayImagePrice(
+  backend: ImageBackend,
+  model: string,
+  aspectRatio?: string,
+): number | undefined {
+  if (backend.kind === "openrouter") return OPENROUTER_IMAGE_MODELS.get(model);
+  if (backend.kind === "venice") {
+    const listed = cachedVeniceMediaModels(backend.baseURL);
+    const live = listed?.get(model);
+    if (live !== undefined) {
+      return live.type === "image" ? veniceImagePrice(live, veniceRequestTier(live, aspectRatio)) : undefined;
+    }
+    return listed === undefined ? VENICE_IMAGE_MODELS.get(model) : undefined;
+  }
+  return undefined;
 }
 
 function imagineImageDescription(backend: ImageBackend | undefined): string {
@@ -978,8 +1156,12 @@ function imagineImageDescription(backend: ImageBackend | undefined): string {
       return "Generate images with OpenAI GPT Image and save them under the workspace. Select dimensions with aspect_ratio and detail with quality.";
     case "minimax":
       return "Generate up to nine images with MiniMax Image and save them under the workspace. Select dimensions with aspect_ratio; MiniMax does not accept a resolution tier.";
+    case "openrouter":
+      return "Generate up to four images with OpenRouter's Image API on this session's OpenRouter key and save them under the workspace. Select dimensions with aspect_ratio and resolution.";
+    case "venice":
+      return "Generate one image with any Venice image model on this session's Venice key and save it under the workspace. Select dimensions with aspect_ratio.";
     default:
-      return "Generate images with the configured QwenCloud, Meta, Z.AI, OpenAI, MiniMax, or xAI media backend and save them under the workspace.";
+      return "Generate images with the configured QwenCloud, Meta, Z.AI, OpenAI, MiniMax, OpenRouter, Venice, or xAI media backend and save them under the workspace.";
   }
 }
 
@@ -1106,6 +1288,38 @@ function imagineImageInputSchema(
         },
       });
       break;
+    case "openrouter":
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          enum: [...OPENROUTER_IMAGE_MODELS.keys()],
+          description: `OpenRouter image model (default ${OPENROUTER_DEFAULT_IMAGE_MODEL}).`,
+        },
+        n: {
+          type: "integer",
+          minimum: 1,
+          maximum: 4,
+          description: "Number of images to generate, from 1 to 4 (default 1).",
+        },
+        aspect_ratio: aspectRatio,
+        resolution: {
+          type: "string",
+          enum: ["1k", "2k"],
+          description: "Output resolution tier (default: the model's own).",
+        },
+      });
+      break;
+    case "venice":
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          description:
+            `A Venice image model id from Venice's model list (default ${VENICE_DEFAULT_IMAGE_MODEL}; ` +
+            `others include ${[...VENICE_IMAGE_MODELS.keys()].filter(id => id !== VENICE_DEFAULT_IMAGE_MODEL).join(", ")}).`,
+        },
+        aspect_ratio: aspectRatio,
+      });
+      break;
     case "xai":
       Object.assign(properties, {
         model: {
@@ -1187,6 +1401,12 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       : undefined;
   const deferredUntilDiscovered =
     opts.getSession() === null;
+  // Venice prices any model from its live list; read it now so a call's
+  // admission finds the price.
+  if (advertisedBackend?.kind === "venice" && cachedVeniceMediaModels(advertisedBackend.baseURL) === undefined) {
+    void loadVeniceMediaModels(advertisedBackend.baseURL, advertisedBackend.bearer, opts.fetchImpl ?? fetch)
+      .catch(() => undefined);
+  }
   return {
     name: "ImagineImage",
     description: imagineImageDescription(advertisedBackend),
@@ -1212,9 +1432,26 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
       const resolution = resolveImageBackend(opts);
-      const model = stringValue(args.model) ?? "glm-image";
+      const gateway = "backend" in resolution &&
+        (resolution.backend.kind === "openrouter" || resolution.backend.kind === "venice")
+        ? resolution.backend
+        : undefined;
+      const model = stringValue(args.model) ??
+        (gateway !== undefined ? defaultImageModel(gateway) : "glm-image");
+      const requestedImages = typeof args.n === "number" && Number.isFinite(args.n)
+        ? Math.max(1, Math.floor(args.n)) : 1;
+      if (gateway?.kind === "venice" && cachedVeniceMediaModels(gateway.baseURL) === undefined) {
+        void loadVeniceMediaModels(gateway.baseURL, gateway.bearer, opts.fetchImpl ?? fetch).catch(() => undefined);
+      }
+      const gatewayPrice = gateway === undefined
+        ? undefined
+        : gatewayImagePrice(gateway, model, stringValue(args.aspect_ratio));
       const maxCostUsd =
-        "backend" in resolution && resolution.backend.kind === "zai"
+        gateway !== undefined
+          ? gatewayPrice === undefined
+            ? null
+            : gatewayPrice * Math.min(requestedImages, maxImagesPerRequest(gateway, model))
+          : "backend" in resolution && resolution.backend.kind === "zai"
           ? model === "glm-image"
             ? ZAI_GLM_IMAGE_COST_USD
             : model === "cogview-4-250304"
@@ -1280,6 +1517,26 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
               error: `MiniMax image model must be one of ${[...MINIMAX_IMAGE_MODELS].join(", ")}`,
             });
         }
+      } else if (backend.kind === "openrouter") {
+        if (!OPENROUTER_IMAGE_MODELS.has(model)) {
+          return refusal({
+            error: `${imageBackendLabel(backend)} model must be one of ${[...OPENROUTER_IMAGE_MODELS.keys()].join(", ")}`,
+          });
+        }
+      } else if (backend.kind === "venice") {
+        // Venice's own list decides; the reviewed table answers only while
+        // the list cannot be read.
+        const listed = await loadVeniceMediaModels(backend.baseURL, backend.bearer, opts.fetchImpl ?? fetch, admittedSignal);
+        const live = listed?.get(model);
+        const known = listed === undefined ? VENICE_IMAGE_MODELS.has(model) : live?.type === "image";
+        if (!known || gatewayImagePrice(backend, model, stringValue(args.aspect_ratio)) === undefined) {
+          const names = listed === undefined
+            ? [...VENICE_IMAGE_MODELS.keys()]
+            : [...listed.values()].filter(entry => entry.type === "image").map(entry => entry.id);
+          return refusal({
+            error: `${imageBackendLabel(backend)} model must be a priced Venice image model: ${names.join(", ")}`,
+          });
+        }
       } else if (
         model !== "grok-imagine-image" &&
         model !== "grok-imagine-image-2.0" &&
@@ -1323,10 +1580,12 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         resolution !== undefined &&
         (backend.kind === "openai" ||
           backend.kind === "minimax" ||
-          backend.kind === "zai")
+          backend.kind === "zai" ||
+          backend.kind === "venice")
       ) {
         ignoredControls.push("resolution");
       }
+      if (backend.kind === "venice" && nRaw > 1) ignoredControls.push("n");
       // MiniMax takes a shorter list of ratios than this tool's shared
       // vocabulary; an unsupported one falls back to MiniMax's own default.
       const minimaxRejectsAspect =
@@ -1360,6 +1619,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         if (aspect_ratio !== undefined) body.aspect_ratio = aspect_ratio;
         if (resolution !== undefined) body.resolution = resolution;
       }
+      // OpenRouter's normalized tiers are upper case (1K, 2K).
+      if (backend.kind === "openrouter" && resolution !== undefined) {
+        body.resolution = resolution.toUpperCase();
+      }
 
       const fetchImpl = opts.fetchImpl ?? fetch;
       const timeoutSignal = AbortSignal.timeout(180_000);
@@ -1370,7 +1633,9 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         let endpoint =
           backend.kind === "minimax"
             ? `${backend.baseURL}/image_generation`
-            : `${backend.baseURL}/images/generations`;
+            : backend.kind === "openrouter"
+              ? `${backend.baseURL}/images`
+              : `${backend.baseURL}/images/generations`;
         const headers: Record<string, string> = {
           authorization: `Bearer ${backend.bearer}`,
           "content-type": "application/json",
@@ -1431,8 +1696,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         });
         let payload = (await res.json()) as {
           data?:
-            | readonly { b64_json?: string; url?: string }[]
+            | readonly { b64_json?: string; url?: string; media_type?: string }[]
             | { image_base64?: readonly string[] };
+          // OpenRouter reports what the call cost (USD).
+          usage?: { cost?: number };
           error?: string | { message?: string };
           code?: string;
           message?: string;
@@ -1529,7 +1796,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             }
           }
         }
-        const images: readonly { b64_json?: string; url?: string }[] =
+        const images: readonly { b64_json?: string; url?: string; media_type?: string }[] =
           backend.kind === "qwen"
             ? [
                 ...(payload.output?.choices ?? []).flatMap((choice) =>
@@ -1559,7 +1826,9 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         await mkdir(outDir, { recursive: true });
         const paths: string[] = [];
         for (const image of images) {
-          let extension = defaultImageExtension(backend, payload.output_format);
+          let extension = image.media_type !== undefined
+            ? extensionForImageContentType(image.media_type, defaultImageExtension(backend, payload.output_format))
+            : defaultImageExtension(backend, payload.output_format);
           let bytes: Buffer | undefined;
           if ("b64_json" in image && image.b64_json) {
             bytes = Buffer.from(image.b64_json, "base64");
@@ -1580,6 +1849,9 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             );
           }
           if (bytes !== undefined) {
+            // A provider can answer in another format than the one asked for
+            // (Venice's grok-imagine-image-quality returns JPEG for png).
+            extension = imageExtensionFromBytes(bytes) ?? extension;
             const filename = `imagine-${randomUUID()}.${extension}`;
             const path = join(outDir, filename);
             await writeFile(path, bytes, { signal: requestSignal });
@@ -1592,16 +1864,33 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             true,
           );
         }
-        return json({
-          backend:
-            backend.kind === "qwen" ? backend.provider : backend.kind,
-          model,
-          paths,
-          path: paths[0],
-          n: paths.length,
-          // Named so the model can tell the user what it did not honour.
-          ...(ignoredControls.length > 0 ? { ignoredControls } : {}),
-        });
+        // OpenRouter charges what its response reports; Venice charges its
+        // published per-image price. Both are recorded with the call.
+        const price = gatewayImagePrice(backend, model, aspect_ratio);
+        const reportedCost = typeof payload.usage?.cost === "number" &&
+          Number.isFinite(payload.usage.cost) && payload.usage.cost >= 0
+          ? payload.usage.cost : undefined;
+        const costUsd = backend.kind === "openrouter"
+          ? reportedCost ?? (price === undefined ? undefined : price * images.length)
+          : backend.kind === "venice" && price !== undefined
+            ? price * images.length
+            : undefined;
+        return {
+          ...json({
+            backend:
+              backend.kind === "qwen" ? backend.provider : backend.kind,
+            model,
+            paths,
+            path: paths[0],
+            n: paths.length,
+            ...(costUsd === undefined ? {} : { costUsd }),
+            // Named so the model can tell the user what it did not honour.
+            ...(ignoredControls.length > 0 ? { ignoredControls } : {}),
+          }),
+          ...(costUsd === undefined ? {} : {
+            admissionUsage: { inputTokens: 0, outputTokens: 0, costUsd },
+          }),
+        };
       } catch (error) {
         admittedSignal?.throwIfAborted();
         return json(

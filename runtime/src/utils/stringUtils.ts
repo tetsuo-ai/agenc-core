@@ -47,6 +47,14 @@ export function firstLineOf(s: string): string {
 }
 
 /**
+ * Drops trailing periods and whitespace, so an error message can sit inside a
+ * sentence that adds its own period ("...: <reason>. Fix the cause...").
+ */
+export function withoutTrailingPeriod(text: string): string {
+  return text.replace(/[.\s]+$/u, '')
+}
+
+/**
  * Returns the original string when it contains non-whitespace content.
  */
 export function nonEmptyString(value: unknown): string | undefined {

@@ -23,14 +23,6 @@ export interface SSEFrame {
   data?: string;
 }
 
-function findFrameSeparator(buffer: string, fromIndex: number): number {
-  const lf = buffer.indexOf("\n\n", fromIndex);
-  const crlf = buffer.indexOf("\r\n\r\n", fromIndex);
-  if (lf === -1) return crlf;
-  if (crlf === -1) return lf;
-  return Math.min(lf, crlf);
-}
-
 export function parseSSEFrames(
   buffer: string,
   providerName = "provider",
@@ -40,9 +32,14 @@ export function parseSSEFrames(
 } {
   const frames: SSEFrame[] = [];
   let position = 0;
+  // Search both accepted separators together. Two independent indexOf calls
+  // rescan the whole suffix for the absent separator on every frame, making
+  // a large chunk containing only LF frames quadratic in its frame count.
+  const separators = /\n\n|\r\n\r\n/g;
 
   while (true) {
-    const separator = findFrameSeparator(buffer, position);
+    const separatorMatch = separators.exec(buffer);
+    const separator = separatorMatch?.index ?? -1;
     if (separator === -1) {
       const remaining = buffer.slice(position);
       if (remaining.length > MAX_SSE_FRAME_BYTES) {
@@ -54,7 +51,7 @@ export function parseSSEFrames(
       return { frames, remaining };
     }
     const rawFrame = buffer.slice(position, separator).replace(/\r/g, "");
-    position = separator + (buffer[separator] === "\r" ? 4 : 2);
+    position = separator + separatorMatch![0].length;
     if (rawFrame.trim().length === 0) {
       continue;
     }

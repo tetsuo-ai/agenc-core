@@ -45,6 +45,7 @@ describe("stream-watchdog", () => {
     const handle = installStreamWatchdog({
       abortController,
       timeoutMs: 100,
+      warningMs: 50,
       onWarning: (info) => warnings.push(info),
       onFired: (info) => fired.push(info),
     });
@@ -77,6 +78,7 @@ describe("stream-watchdog", () => {
     const handle = installStreamWatchdog({
       abortController,
       timeoutMs: 100,
+      warningMs: 50,
       onWarning: (info) => warnings.push(info),
       onFired: (info) => fired.push(info),
     });
@@ -113,6 +115,7 @@ describe("stream-watchdog", () => {
     const handle = installStreamWatchdog({
       abortController,
       timeoutMs: 100,
+      warningMs: 50,
       onWarning: (info) => warnings.push(info),
       onFired: (info) => fired.push(info),
     });
@@ -146,6 +149,7 @@ describe("stream-watchdog", () => {
     const handle = installStreamWatchdog({
       abortController,
       timeoutMs: 100,
+      warningMs: 50,
       onWarning,
       onFired,
     });
@@ -168,7 +172,7 @@ describe("stream-watchdog", () => {
     expect(streamChunkHasDelta(stub)).toBe(false);
   });
 
-  test("quiet warning shares the default abort half-timeout", () => {
+  test("quiet warning is independent of the abort timeout", () => {
     expect(
       resolveStreamIdleWarningMs({
         timeoutMs: DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS,
@@ -264,6 +268,7 @@ describe("stream-watchdog", () => {
     installStreamWatchdog({
       abortController: deadAbort,
       timeoutMs: 100,
+      warningMs: 50,
       onWarning: (info) => deadWarnings.push(info.reason),
       onFired: (info) => deadFired.push(info.reason),
     });
@@ -279,6 +284,7 @@ describe("stream-watchdog", () => {
     const quiet = installStreamWatchdog({
       abortController: quietAbort,
       timeoutMs: 100,
+      warningMs: 50,
       onWarning: (info) => quietWarnings.push(info.reason),
       onFired: (info) => quietFired.push(info.reason),
     });

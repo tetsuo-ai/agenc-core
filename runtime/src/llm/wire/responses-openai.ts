@@ -39,7 +39,11 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
-import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
+import {
+  openAiAcceptsSamplingTemperature,
+  openAiModelDefaultsToNoReasoning,
+  openAiModelScopesPromptCacheByKey,
+} from "../registry/openai-reasoning-models.js";
 import { resolveRegisteredModelCatalogEntry } from "../registry/model-catalog.js";
 
 export interface OpenAIResponsesRequestOptions {
@@ -56,13 +60,69 @@ export interface OpenAIResponsesRequestOptions {
    */
   readonly chatgptBackend?: boolean;
   /**
-   * Provider that encrypted reasoning is kept for and replayed to (opt-in,
-   * `AGENC_OPENAI_REASONING_REPLAY`). Each reasoning output item of a
+   * Provider that encrypted reasoning is kept for and replayed to (default
+   * on for OpenAI reasoning calls; `AGENC_OPENAI_REASONING_REPLAY=0` opts out).
+   * Each reasoning output item of a
    * response is kept with the assistant message it preceded, and a later
    * request to the same provider and `model` sends it back. Stateless
    * requests only: a stored response keeps its reasoning server side.
    */
   readonly reasoningReplayProvider?: string;
+  /**
+   * The item id the provider issued for a call id (see
+   * `responses-function-call-ids.ts`). A `function_call` history item carries
+   * the id this returns and no id when it returns none; the wire never
+   * invents one.
+   */
+  readonly functionCallItemId?: (callId: string) => string | undefined;
+  /**
+   * `auto_only`: the destination accepts no tool choice but `auto` (Meta
+   * Model API). `required` and named choices go out as `auto`, and `none`
+   * goes out as a request without tools.
+   */
+  readonly toolChoicePolicy?: "auto_only";
+  /**
+   * Tag the text of an assistant turn that also called tools with
+   * `phase: "commentary"`. Meta's Responses guide requires the tag on
+   * intermediate text replayed before a function call and says a dropped
+   * phase can degrade quality.
+   */
+  readonly assistantCommentaryPhase?: boolean;
+  /** Reasoning effort values the destination accepts; others are omitted. */
+  readonly reasoningEffortAllowedValues?: ReadonlySet<string>;
+}
+
+/**
+ * Whether a `tool_choice: "none"` request goes out without its tools, which
+ * is how an `auto_only` destination is asked not to call one.
+ */
+function omitsToolsForChoice(request: OpenAIResponsesRequestOptions): boolean {
+  return request.toolChoicePolicy === "auto_only" &&
+    request.options?.toolChoice === "none";
+}
+
+/**
+ * The canonical tool names a request advertised. Returned calls decode only
+ * against these, so a call to a tool the request left out does not resolve.
+ */
+export function advertisedResponsesToolNames(
+  request: OpenAIResponsesRequestOptions,
+): string[] {
+  return omitsToolsForChoice(request)
+    ? []
+    : request.tools.map((tool) => tool.function.name);
+}
+
+/** The requested effort when the destination accepts it. */
+function acceptedReasoningEffort(
+  request: OpenAIResponsesRequestOptions,
+): LLMChatOptions["reasoningEffort"] {
+  const effort = request.options?.reasoningEffort;
+  return effort !== undefined &&
+    request.reasoningEffortAllowedValues !== undefined &&
+    !request.reasoningEffortAllowedValues.has(effort)
+    ? undefined
+    : effort;
 }
 
 // A type alias rather than an interface so an item is a plain wire record.
@@ -181,33 +241,32 @@ function positiveInteger(value: number | undefined): number | undefined {
   return normalized > 0 ? normalized : undefined;
 }
 
-function normalizeFunctionCallId(toolCallId: string | undefined): {
-  readonly id: string;
-  readonly callId: string;
-} {
+/**
+ * The `call_id` a history item answers. A tool call id that is itself an
+ * item id (`fc_...`, kept when a provider omitted `call_id`) maps to the call
+ * id derived from it, as before.
+ */
+function normalizeFunctionCallCallId(toolCallId: string | undefined): string {
   const value = (toolCallId ?? "").trim();
-  if (!value) {
-    return {
-      id: "fc_unknown",
-      callId: "call_unknown",
-    };
-  }
-  if (value.startsWith("call_")) {
-    return {
-      id: `fc_${value.slice("call_".length)}`,
-      callId: value,
-    };
-  }
-  if (value.startsWith("fc_")) {
-    return {
-      id: value,
-      callId: `call_${value.slice("fc_".length)}`,
-    };
-  }
-  return {
-    id: `fc_${value}`,
-    callId: value,
-  };
+  if (!value) return "call_unknown";
+  if (value.startsWith("fc_")) return `call_${value.slice("fc_".length)}`;
+  return value;
+}
+
+/**
+ * The item id a `function_call` history item carries: one the provider
+ * issued, or none. It is never derived from the call id, because such an id
+ * names an item the provider did not issue (see
+ * `responses-function-call-ids.ts` for what that costs).
+ */
+function issuedFunctionCallItemId(
+  input: OpenAIResponsesRequestOptions,
+  toolCallId: string | undefined,
+): string | undefined {
+  const value = (toolCallId ?? "").trim();
+  // Prefixes are not provenance. Restored or foreign calls may also use fc_.
+  const id = input.functionCallItemId?.(value);
+  return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
 
@@ -351,6 +410,28 @@ function resolveResponsesFinishReason(
   return toolCalls.length > 0 ? "tool_calls" : normalizeFinishReason(status);
 }
 
+/**
+ * The `prompt_cache_key` a request carries. GPT-5.6 and later on the platform
+ * API get the user's cache scope, so a session reads what the previous
+ * session of the same user wrote; every other route (older models, the
+ * ChatGPT subscription backend, other Responses destinations) keeps the
+ * conversation key.
+ */
+function responsesPromptCacheKey(
+  input: OpenAIResponsesRequestOptions,
+): string | undefined {
+  const scope = input.options?.promptCacheScopeKey?.trim();
+  if (
+    scope !== undefined && scope.length > 0 &&
+    input.chatgptBackend !== true &&
+    openAiModelScopesPromptCacheByKey(input.model)
+  ) {
+    return scope;
+  }
+  const key = input.options?.promptCacheKey;
+  return key ? key : undefined;
+}
+
 export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
@@ -360,10 +441,11 @@ export function buildOpenAIResponsesRequest(
     catalogEntry?.model.toLowerCase() === input.model.trim().toLowerCase() &&
     catalogEntry.supportsVerbosity;
   const fallbackVerbosity = !nativeVerbosity ? input.options?.modelVerbosity : undefined;
-  // Prefix-cache split: only the cross-turn-stable head of the system
-  // prompt goes into `instructions` (part of the cached prefix); the
-  // volatile tail is appended as the LAST input item below so the
-  // request prefix stays byte-identical across turns.
+  // Prefix-cache split: the static head of the system prompt goes into
+  // `instructions`; the session tail (workspace, memory directories,
+  // permission section) becomes the FIRST input item below. Both are the same
+  // on every request of a session, so each request extends the previous one
+  // byte for byte and the provider reads all of it from cache.
   const {
     staticPrefix: staticSystemPrompt,
     sessionSuffix: sessionSystemPrompt,
@@ -414,16 +496,20 @@ export function buildOpenAIResponsesRequest(
         responseInput.push({
           type: "message",
           role: "assistant",
+          ...(input.assistantCommentaryPhase === true && toolCalls.length > 0
+            ? { phase: "commentary" }
+            : {}),
           content,
         });
       }
       if (toolCalls.length > 0) responseInput.push(...reasoning);
       for (const toolCall of toolCalls) {
-        const normalizedId = normalizeFunctionCallId(toolCall.id);
+        const callId = normalizeFunctionCallCallId(toolCall.id);
+        const itemId = issuedFunctionCallItemId(input, toolCall.id);
         responseInput.push({
           type: "function_call",
-          id: normalizedId.id,
-          call_id: normalizedId.callId,
+          ...(itemId !== undefined ? { id: itemId } : {}),
+          call_id: callId,
           // Internal `mcp.<server>.<tool>` form has dots; the
           // strict-regex `function_call.name` rejects them. Encode at
           // the wire boundary; the response parser decodes back.
@@ -437,7 +523,7 @@ export function buildOpenAIResponsesRequest(
     if (message.role === "tool") {
       responseInput.push({
         type: "function_call_output",
-        call_id: normalizeFunctionCallId(message.toolCallId).callId,
+        call_id: normalizeFunctionCallCallId(message.toolCallId),
         output: toResponsesToolOutput(message.content),
       });
       continue;
@@ -461,7 +547,17 @@ export function buildOpenAIResponsesRequest(
   }
 
   if (dynamicSystemPrompt !== undefined && input.chatgptBackend !== true) {
-    responseInput.push({
+    // The tail leads the input instead of trailing it. As the last item it
+    // moved behind the new history on every request, so the provider never
+    // cached it (GPT-5.6 and later write the cache up to the last user
+    // message or tool output, never through a trailing system item): 283
+    // uncached tokens on every Light call of the oa Luna race. First, it is
+    // part of the cached prefix from the first request on, and the end of a
+    // leading system item is a cache boundary, where the next session of the
+    // same workspace and permission mode starts reading. A changed tail
+    // (another permission mode, reloaded project instructions) changes this
+    // first item, so that one request is written to the cache again.
+    responseInput.unshift({
       type: "message",
       role: "system",
       content: [{ type: "input_text", text: dynamicSystemPrompt }],
@@ -485,22 +581,26 @@ export function buildOpenAIResponsesRequest(
   if (instructions.length > 0) {
     body.instructions = instructions;
   }
-  const tools = toOpenAIResponsesTools(input.tools);
+  const omitTools = omitsToolsForChoice(input);
+  const tools = toOpenAIResponsesTools(omitTools ? [] : input.tools);
   if (tools.length > 0) body.tools = tools;
-  if (input.options?.toolChoice !== undefined) {
+  if (input.options?.toolChoice !== undefined && !omitTools) {
     // Responses uses a flat named choice; Chat Completions nests function.name.
     // https://developers.openai.com/api/docs/guides/function-calling#tool-choice
     const choice = input.options.toolChoice;
-    body.tool_choice = typeof choice === "string" ? choice : {
-      type: "function",
-      name: encodeMcpToolNameForWire(choice.name),
-    };
+    body.tool_choice = input.toolChoicePolicy === "auto_only"
+      ? "auto"
+      : typeof choice === "string" ? choice : {
+        type: "function",
+        name: encodeMcpToolNameForWire(choice.name),
+      };
   }
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
-  if (input.options?.promptCacheKey) {
-    body.prompt_cache_key = normalizePromptCacheKey(input.options.promptCacheKey);
+  const promptCacheKey = responsesPromptCacheKey(input);
+  if (promptCacheKey !== undefined) {
+    body.prompt_cache_key = normalizePromptCacheKey(promptCacheKey);
   }
   if (input.options?.serviceTier !== undefined) {
     body.service_tier = input.options.serviceTier;
@@ -524,23 +624,37 @@ export function buildOpenAIResponsesRequest(
   ) {
     body.include = ["reasoning.encrypted_content"];
   }
-  if (input.options?.reasoningEffort !== undefined) {
+  const reasoningEffort = acceptedReasoningEffort(input);
+  if (reasoningEffort !== undefined) {
     body.reasoning = {
       ...(body.reasoning && typeof body.reasoning === "object"
         ? (body.reasoning as Record<string, unknown>)
         : {}),
-      effort: input.options.reasoningEffort,
+      effort: reasoningEffort,
     };
   }
-  if (
-    input.options?.reasoningSummary !== undefined &&
-    input.options.reasoningSummary !== "none"
-  ) {
+  // Luna's API can spend additional time producing automatic summaries even
+  // for short tool turns. Its encrypted reasoning replays with an empty
+  // summary, so keep the model's summary default instead of forcing `auto`.
+  // Explicit summary choices, other models and ChatGPT keep their behavior.
+  const preserveLunaSummaryDefault = replayProvider === "openai" &&
+    input.chatgptBackend !== true &&
+    input.model.trim().toLowerCase() === "gpt-6-luna";
+  // An omitted effort can still run reasoning at the model's default tier.
+  const useReplaySummaryDefault = !preserveLunaSummaryDefault &&
+    replayProvider !== undefined &&
+    reasoningEffort !== "none" &&
+    (reasoningEffort !== undefined ||
+      !openAiModelDefaultsToNoReasoning(input.model)) &&
+    (input.options?.reasoningSummary === undefined ||
+      input.options.reasoningSummaryIsDefault === true);
+  const reasoningSummary = useReplaySummaryDefault ? "auto" : input.options?.reasoningSummary;
+  if (reasoningSummary !== undefined && reasoningSummary !== "none") {
     body.reasoning = {
       ...(body.reasoning && typeof body.reasoning === "object"
         ? (body.reasoning as Record<string, unknown>)
         : {}),
-      summary: input.options.reasoningSummary,
+      summary: reasoningSummary,
     };
   }
   if (nativeVerbosity && input.options?.modelVerbosity !== undefined) {
@@ -618,7 +732,7 @@ export function parseOpenAIResponsesResponse(
   const incompleteToolCalls = initialFinishReason === "length"
     ? functionCalls.flatMap((item, index) => {
       const name = decodeMcpToolNameFromWire(String(item.name ?? "").trim(),
-        request.tools.map((tool) => tool.function.name));
+        advertisedResponsesToolNames(request));
       if (!name || name.length > 256) return [];
       const id = String(item.call_id ?? item.id ?? "").trim() || `incomplete-${index}`;
       return [{ id, name }];
@@ -628,7 +742,7 @@ export function parseOpenAIResponsesResponse(
       id: String(item.call_id ?? item.id ?? ""),
       // Decode the strict-regex wire name before dispatch.
       name: decodeMcpToolNameFromWire(String(item.name ?? ""),
-        request.tools.map((tool) => tool.function.name)),
+        advertisedResponsesToolNames(request)),
       arguments: String(item.arguments ?? "{}"),
     })),
     "OpenAI Responses response emitted invalid function_call",

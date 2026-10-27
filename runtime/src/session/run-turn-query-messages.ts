@@ -93,13 +93,11 @@ function getAgenCPreparedTerminal(
 function messagesAfterAgenCBoundary(
   messages: readonly LLMMessage[],
 ): LLMMessage[] {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (isAuthenticatedCompactionBoundary(message)) {
-      return messages.slice(index + 1).map((item) => ({ ...item }));
-    }
-  }
-  return messages.map((item) => ({ ...item }));
+  // The canonical transaction has already replaced the selected history.
+  // Retained user requests and invocation channels can precede its marker;
+  // slicing here discarded those authenticated retained messages on the wire.
+  return messages.filter((message) => !isAuthenticatedCompactionBoundary(message))
+    .map((item) => ({ ...item }));
 }
 
 async function prepareAgenCQueryMessages(params: {
@@ -357,9 +355,8 @@ function boundInMemoryToolResultContent(
   // The decision now belongs to the OUTBOUND projection alone. This function
   // may only:
   //   - adopt, byte for byte, content the request that just went out already
-  //     carried in shrunken form (zero delta by construction), or
-  //   - clear results before the newest authenticated compaction boundary,
-  //     which no future request will ever carry again (free).
+  //     carried in shrunken form (zero delta by construction).
+  // Retained results before a compaction marker are still active context.
   // Anything the wire still carries in full stays full here.
   const outboundContentByCallId = new Map<string, LLMMessage["content"]>();
   for (const message of outboundMessages ?? []) {
@@ -367,38 +364,6 @@ function boundInMemoryToolResultContent(
     const callId = message.toolCallId;
     if (callId === undefined) continue;
     outboundContentByCallId.set(callId, message.content);
-  }
-  // Messages at or after this index are still reachable by future requests.
-  let boundaryIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message !== undefined && isAuthenticatedCompactionBoundary(message)) {
-      boundaryIndex = index;
-      break;
-    }
-  }
-  let clearedBeforeBoundary = 0;
-  // Everything before the newest boundary is sliced away by
-  // `messagesAfterAgenCBoundary` on every future projection, so no request
-  // will ever carry it again. Clearing there is free, which is why it needs
-  // none of the eligibility rules below: no keep-recent window, no
-  // compactable-tool list, no path retention. The durable rollout still holds
-  // the full bytes for resume.
-  const preBoundaryLimit = Math.min(boundaryIndex, boundUpToIndex);
-  for (let index = 0; index < preBoundaryLimit; index += 1) {
-    const message = messages[index];
-    if (message === undefined || !isToolResultMessage(message)) continue;
-    if (message.content === IN_MEMORY_TOOL_RESULT_CLEARED_MARKER) continue;
-    if (
-      toolResultContentLength(message.content) < IN_MEMORY_TOOL_RESULT_MAX_CHARS
-    ) {
-      continue;
-    }
-    messages[index] = {
-      ...message,
-      content: IN_MEMORY_TOOL_RESULT_CLEARED_MARKER,
-    };
-    clearedBeforeBoundary += 1;
   }
   // Compactability is keyed off the assistant `toolCalls` that requested each
   // tool, exactly like microcompact's `collectCompactableToolUseIds` — the
@@ -502,7 +467,7 @@ function boundInMemoryToolResultContent(
     // a future projection may still carry it, so it stays whole. (Anything
     // before the boundary was already handled by the free pass above.)
   }
-  return cleared + clearedBeforeBoundary;
+  return cleared;
 }
 
 // Shared with run-turn.ts and its sibling modules.
@@ -510,5 +475,6 @@ export {
   prepareAgenCTurnContext,
   prepareAgenCQueryMessages,
   getAgenCPreparedTerminal,
+  messagesAfterAgenCBoundary,
   boundInMemoryToolResultContent,
 };

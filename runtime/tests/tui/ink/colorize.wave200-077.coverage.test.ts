@@ -1,11 +1,12 @@
 import chalk from 'chalk'
 import stripAnsi from 'strip-ansi'
-import { afterEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 type ColorizeModule = typeof import('./colorize.js')
 
 const ORIGINAL_ENV = {
   AGENC_TMUX_TRUECOLOR: process.env.AGENC_TMUX_TRUECOLOR,
+  NO_COLOR: process.env.NO_COLOR,
   TERM_PROGRAM: process.env.TERM_PROGRAM,
   TMUX: process.env.TMUX,
 }
@@ -26,12 +27,39 @@ async function loadColorize(): Promise<ColorizeModule> {
 }
 
 describe('colorize coverage', () => {
+  beforeEach(() => {
+    // Color fixtures opt in explicitly, independently of the runner's terminal.
+    delete process.env.NO_COLOR
+  })
+
   afterEach(() => {
     restoreEnv('AGENC_TMUX_TRUECOLOR')
+    restoreEnv('NO_COLOR')
     restoreEnv('TERM_PROGRAM')
     restoreEnv('TMUX')
     chalk.level = ORIGINAL_CHALK_LEVEL
     vi.resetModules()
+  })
+
+  test('honors NO_COLOR before terminal color-depth overrides and text styling', async () => {
+    process.env.NO_COLOR = '1'
+    process.env.TERM_PROGRAM = 'vscode'
+    process.env.TMUX = '/tmp/tmux-1000/default,1,0'
+    process.env.AGENC_TMUX_TRUECOLOR = '1'
+    chalk.level = 3
+
+    const { applyTextStyles, CHALK_BOOSTED_FOR_XTERMJS, CHALK_CLAMPED_FOR_TMUX } =
+      await loadColorize()
+
+    expect(chalk.level).toBe(0)
+    expect(CHALK_BOOSTED_FOR_XTERMJS).toBe(false)
+    expect(CHALK_CLAMPED_FOR_TMUX).toBe(false)
+    expect(applyTextStyles('plain', {
+      color: 'rgb(255,255,255)',
+      backgroundColor: 'rgb(0,0,0)',
+      bold: true,
+      dim: true,
+    })).toBe('plain')
   })
 
   test('applies every supported raw color format for foreground and background output', async () => {

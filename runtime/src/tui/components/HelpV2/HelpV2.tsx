@@ -60,7 +60,10 @@ export function HelpV2(t0: Props): React.ReactNode {
     t2 = $[2];
   }
   useKeybinding("help:dismiss", close, t2);
-  const exitState = useExitOnCtrlCDWithKeybindings(close);
+  const exitState = useExitOnCtrlCDWithKeybindings(close, () => {
+    close();
+    return true;
+  });
   const dismissShortcut = useShortcutDisplay("help:dismiss", "Help", "esc");
   let builtinCommands;
   let t3;

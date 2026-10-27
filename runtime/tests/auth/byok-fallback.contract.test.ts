@@ -79,7 +79,7 @@ describe("BYOK fallback", () => {
     }
   });
 
-  it("points at auth.managedKeys.enabled when managed vending is disabled for the live OpenRouter route", async () => {
+  it("requires the user OpenRouter key when legacy account model config is present", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-ws-"));
     const calls: string[] = [];
@@ -99,7 +99,7 @@ describe("BYOK fallback", () => {
           },
         }),
       ).rejects.toThrow(
-        /openrouter provider requires credentials.*OPENROUTER_API_KEY.*auth\.managedKeys\.enabled/,
+        /openrouter provider requires credentials.*OPENROUTER_API_KEY/,
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-no-key-openrouter"]);
     } finally {

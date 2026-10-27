@@ -50,11 +50,30 @@ export interface SecurityAuditContext {
   readonly gatewayConfig?: GatewayConfig;
   readonly gatewayHooksTokenStatus: "present" | "missing" | "not-inspected";
   readonly applyFixes: boolean;
+  readonly platform: NodeJS.Platform;
 }
 
 type SecurityCheck = (ctx: SecurityAuditContext) => SecurityFinding[];
 
 const GROUP_WORLD_BITS = 0o077;
+
+/**
+ * Windows controls file access with ACLs. Node reports synthetic POSIX modes
+ * there (0666, or 0444 for read-only files), so mode checks would flag every
+ * Windows home as world accessible and suggest a chmod that changes nothing.
+ */
+function windowsModeCheckNotApplicable(id: string, title: string): SecurityFinding[] {
+  return [
+    {
+      id,
+      title,
+      severity: "ok",
+      detail:
+        "Windows controls access with ACLs; Node's POSIX mode bits there are synthetic and say nothing about who can read these files.",
+      fixable: false,
+    },
+  ];
+}
 
 function modeOf(path: string): { mode: number; isDirectory: boolean } | null {
   try {
@@ -117,6 +136,12 @@ const checkDaemonWsExposure: SecurityCheck = (ctx) => {
 };
 
 const checkHomeDirPerms: SecurityCheck = (ctx) => {
+  if (ctx.platform === "win32") {
+    return windowsModeCheckNotApplicable(
+      "home-dir-perms",
+      "AgenC home permissions are not checked on Windows",
+    );
+  }
   const stat = modeOf(ctx.agencHome);
   if (stat === null) {
     return [
@@ -176,6 +201,12 @@ const KNOWN_SENSITIVE_ENTRIES = [
 ];
 
 const checkSensitiveFilePerms: SecurityCheck = (ctx) => {
+  if (ctx.platform === "win32") {
+    return windowsModeCheckNotApplicable(
+      "sensitive-file-perms",
+      "Sensitive file permissions are not checked on Windows",
+    );
+  }
   const candidates = new Set(KNOWN_SENSITIVE_ENTRIES);
   try {
     for (const entry of readdirSync(ctx.agencHome)) {
@@ -375,6 +406,8 @@ export interface SecurityAuditOptions {
   readonly applyFixes?: boolean;
   /** Startup uses config/filesystem checks only so credential prompts cannot block it. */
   readonly inspectNativeCredentials?: boolean;
+  /** Test seam: the platform whose permission model applies. */
+  readonly platform?: NodeJS.Platform;
 }
 
 export async function buildSecurityAuditReport(
@@ -442,6 +475,7 @@ export async function buildSecurityAuditReport(
       : {}),
     gatewayHooksTokenStatus,
     applyFixes: options.applyFixes === true,
+    platform: options.platform ?? process.platform,
   };
   const findings = runSecurityChecks(ctx);
   return {

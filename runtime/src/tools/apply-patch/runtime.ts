@@ -11,6 +11,8 @@
  *     allowed roots used by AgenC's file tools.
  */
 
+import { readBeforeWriteMessage } from "../system/read-before-write.js";
+import { mayProvePrintedRead, provePrintedRead } from "../system/printed-read-proof.js";
 import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { loadDiff } from "../../utils/lazy-runtime-packages.js";
@@ -118,9 +120,6 @@ export interface ApplyPatchResult {
 // partial offset/limit read authorizes it; only an absent read or a
 // synthetic partial view is rejected), and it must not have drifted on
 // disk since that read.
-const READ_BEFORE_WRITE_ERROR =
-  "File has not been read yet. Read it first before writing to it.";
-
 const FILE_UNEXPECTEDLY_MODIFIED_ERROR =
   "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
 
@@ -522,7 +521,7 @@ async function assertReadBeforeWriteGate(
 
   const recordedSnapshot = getSessionReadSnapshot(sessionId, pathAbs);
   if (!isAuthorizingSessionRead(recordedSnapshot)) {
-    throw new ApplyPatchRuntimeError(READ_BEFORE_WRITE_ERROR);
+    throw new ApplyPatchRuntimeError(readBeforeWriteMessage([pathAbs]));
   }
 
   const recordedTs = recordedSnapshot?.timestamp;
@@ -794,6 +793,20 @@ async function applyHunksToFilesInner(
     string,
     { readonly deleted: boolean; readonly content: string }
   >();
+  const proveReadIfNeeded = async (pathAbs: string): Promise<void> => {
+    const sessionId = opts.sessionId;
+    if (
+      sessionId !== undefined &&
+      !isAuthorizingSessionRead(getSessionReadSnapshot(sessionId, pathAbs)) &&
+      mayProvePrintedRead(sessionId, pathAbs)
+    ) {
+      // As with Edit/Write, a whole file already shown through the shell
+      // counts as read. Prove it before loading the transaction's input
+      // bytes so the ordinary drift gate still catches later changes.
+      await provePrintedRead(sessionId, pathAbs, opts.allowedPaths, opts.rawArgs ?? {});
+      assertApplyPatchActive(control, "printed-read validation");
+    }
+  };
   const planRead = async (pathAbs: string): Promise<string> => {
     assertApplyPatchActive(control, "source reading");
     const pending = overlay.get(pathAbs);
@@ -805,6 +818,7 @@ async function applyHunksToFilesInner(
       }
       return pending.content;
     }
+    await proveReadIfNeeded(pathAbs);
     const content = await readFileToUpdate(pathAbs, control);
     assertApplyPatchActive(control, "source reading");
     return content;
@@ -820,6 +834,7 @@ async function applyHunksToFilesInner(
         : { existed: true, content: pending.content };
     }
     try {
+      await proveReadIfNeeded(pathAbs);
       const bytes = await readBoundedFile(pathAbs, control);
       assertApplyPatchActive(control, "source reading");
       const content = decodeApplyPatchFile(bytes, pathAbs);

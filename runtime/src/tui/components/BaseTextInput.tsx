@@ -65,17 +65,10 @@ export function BaseTextInput(t0: BaseTextInputComponentProps) {
       }
       onInput(input, key);
     },
-    onImagePaste: props.onImagePaste
+    onImagePaste: props.onImagePaste,
+    onIsPastingChange: props.onIsPastingChange
   });
   const isPasting = t3;
-  const {
-    onIsPastingChange
-  } = props;
-  React.useEffect(() => {
-    if (onIsPastingChange) {
-      onIsPastingChange(isPasting);
-    }
-  }, [isPasting, onIsPastingChange]);
   const {
     showPlaceholder,
     renderedPlaceholder

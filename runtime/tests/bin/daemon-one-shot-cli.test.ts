@@ -66,11 +66,29 @@ it("refuses trust before connecting or creating a session", async () => {
   expect(mocks.ready).not.toHaveBeenCalled(); expect(mocks.connect).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled();
 });
 
+it("keeps a transport failure distinct from completed one-shot cleanup and JSON output", async () => {
+  process.argv = ["node", "agenc", "-p", "--light", "--output-format", "json", "hello"];
+  mocks.connect.mockResolvedValue({ request, close, subscribeToConnectionState: () => () => {},
+    subscribeToSessionEvents: (_id: string, callback: (event: unknown) => void) => {
+      queueMicrotask(() => callback({ params: { sessionId: "session", event: { type: "turn_failed", payload: {
+        turnId: "failed-turn", code: "transport_error", message: "model stream interrupted",
+        durationMs: 125, remainingDeadlineMs: 500, usableFinalAnswer: false,
+        transportFailure: { category: "http_5xx", status: 502 },
+      } } } }));
+      return () => {};
+    },
+  });
+  expect(await oneShotCLI("hello")).toBe(1);
+  expect(request).toHaveBeenCalledWith("agent.stop", { agentId: "agent", reason: "one_shot_failed" });
+  expect(JSON.parse(writes.join(""))).toMatchObject({ exitCode: 1, failureCode: "transport_error",
+    durationMs: 125, remainingDeadlineMs: 500, usableFinalAnswer: false, transportFailure: { category: "http_5xx", status: 502 } });
+});
+
 it("loads continuation only for the existing resume selector and forwards its exact prepared inputs", async () => {
   const selector = { kind: "latest" as const };
-  expect(await oneShotCLI("next turn", [], { permissionMode: "plan", model: "explicit-model" }, selector)).toBe(23);
+  expect(await oneShotCLI("next turn", [], { permissionMode: "plan", model: "grok-4.7" }, selector)).toBe(23);
   expect(mocks.continuation).toHaveBeenCalledWith(expect.objectContaining({
-    continueSession: selector, prompt: "next turn", initialContent: "next turn", permissionMode: "plan", model: "explicit-model",
+    continueSession: selector, prompt: "next turn", initialContent: "next turn", permissionMode: "plan", model: "grok-4.7",
     runtimeOptions: expect.objectContaining({ relaxedOneShot: false }),
   }));
   expect(mocks.connect).not.toHaveBeenCalled();
@@ -79,7 +97,7 @@ it("loads continuation only for the existing resume selector and forwards its ex
 function invocationFixture(label: string, format = "text", autoComplete = true) {
   const callerHome = join(home, label), callerCwd = join(callerHome, "repo");
   mkdirSync(callerCwd, { recursive: true });
-  writeFileSync(join(callerHome, "config.toml"), `config_version = 2\nmodel = "model-${label}"\nmodel_provider = "deepseek"\n`);
+  writeFileSync(join(callerHome, "config.toml"), `config_version = 2\nmodel = "model-${label}"\nmodel_provider = "openai-compatible"\n`);
   const input = Object.assign(new PassThrough(), { isTTY: false });
   const output = Object.assign(new PassThrough(), { isTTY: false });
   const errors = Object.assign(new PassThrough(), { isTTY: false });
@@ -174,4 +192,110 @@ it("routes preparation errors to the invocation and refuses continuation before 
   expect(await oneShotCLI("next", [], {}, { kind: "latest" }, f.overrides, f.context)).toBe(1);
   expect(f.output().stderr).toContain("invocation-scoped print cannot continue");
   expect(mocks.continuation).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("forwards CLI task budgets into daemon creation (bypass=%s)", async bypass => {
+  process.argv = ["node", "agenc", "-p", "--task-token-budget", "219000",
+    "--task-max-calls", "17", ...(bypass ? ["--dangerously-bypass-approvals-and-sandbox"] : []), "--", "hello"];
+  expect(await oneShotCLI("hello")).toBe(0);
+  expect(request).toHaveBeenCalledWith("agent.create", expect.objectContaining({
+    taskTokenBudget: 219000, taskMaxCalls: 17,
+  }), expect.anything());
+});
+
+it("leaves task budgets absent by default on daemon creation", async () => {
+  expect(await oneShotCLI("hello")).toBe(0);
+  const create = request.mock.calls.find(([method]) => method === "agent.create")![1];
+  expect(create).not.toHaveProperty("taskTokenBudget");
+  expect(create).not.toHaveProperty("taskMaxCalls");
+});
+
+it.each([false, true])("prints the budget explanation once when terminal text is truncated=%s", async truncated => {
+  const summary = "Partial result: stopped at the task budget.\n\nThe task used 0 of 1 tokens (0 model calls).\n\n" + "Verified findings. ".repeat(truncated ? 180 : 1);
+  const client = await mocks.connect();
+  client.subscribeToSessionEvents = (_: string, callback: (event: unknown) => void) => {
+    queueMicrotask(() => {
+      callback({ method: "event.message_chunk", params: { sessionId: "session", delta: summary } });
+      callback({ method: "event.agent_status", params: { sessionId: "session", status: "idle", turnEvent: { type: "turn_failed", payload: { turnId: "budget-turn", code: "task_budget", message: truncated ? summary.slice(0, 2000) : summary } } } });
+    });
+    return () => {};
+  };
+  expect(await oneShotCLI("check", [], { lightMode: true })).toBe(1);
+  expect(writes.join("")).toContain(summary);
+  const stderr = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+  expect(stderr).not.toContain("Partial result: stopped at the task budget.");
+});
+
+
+it("qv honors an invocation-scoped custom endpoint during startup model validation", async () => {
+  vi.stubEnv("OPENAI_BASE_URL", "");
+  const f = invocationFixture("custom-startup-env");
+  writeFileSync(join(f.context.env.AGENC_HOME!, "config.toml"), 'config_version = 2\nmodel = "private-deployment"\nmodel_provider = "openai"\n');
+  f.context.env.OPENAI_BASE_URL = "http://localhost:8765/v1";
+  const code = await f.run();
+  expect(f.output().stderr).not.toContain("unknown model");
+  expect(code).toBe(0);
+  expect(f.call).toHaveBeenCalledWith("agent.create", expect.objectContaining({ model: "private-deployment" }), expect.anything());
+});
+
+
+it.each([false, true])("starts an uncatalogued saved model without an explicit model flag (profile=%s)", async profile => {
+  const f = invocationFixture("saved-model");
+  writeFileSync(join(f.context.env.AGENC_HOME!, "config.toml"),
+    'config_version = 2\nmodel_provider = "deepseek"\n' +
+    (profile ? 'model = "deepseek-flash"\n[profiles.legacy]\n' : '') +
+    'model = "retired-deepseek-model"\n');
+  const context = { ...f.context, argv: [...f.context.argv.slice(0, -1), ...(profile ? ["--profile", "legacy"] : []), "saved-model"] };
+  expect(await oneShotCLI("saved-model", [], undefined, undefined, f.overrides, context)).toBe(0);
+  expect(f.output().stderr).not.toContain("unknown model");
+  expect(f.call).toHaveBeenCalledWith("agent.create", expect.objectContaining({ model: "retired-deepseek-model" }), expect.anything());
+});
+
+it.each(["deepseek-flsh", "deepseek:deepseek-flsh"])("refuses an explicit launch typo %s before agent creation", async model => {
+  const f = invocationFixture("explicit-typo");
+  const context = { ...f.context, argv: [...f.context.argv.slice(0, -1), "--provider", "deepseek", "--model", model, "explicit-typo"] };
+  expect(await oneShotCLI("explicit-typo", [], undefined, undefined, f.overrides, context)).toBe(1);
+  expect(f.output().stderr).toContain("did you mean 'deepseek-flash'?");
+  expect(f.call).not.toHaveBeenCalled();
+});
+
+it("accepts an explicit private launch model at the invocation-scoped endpoint", async () => {
+  vi.stubEnv("OPENAI_BASE_URL", "");
+  const f = invocationFixture("explicit-custom");
+  f.context.env.OPENAI_BASE_URL = "http://localhost:8765/v1";
+  const context = {
+    ...f.context,
+    argv: [...f.context.argv.slice(0, -1), "--provider", "openai", "--model", "private-deployment", "explicit-custom"],
+  };
+  expect(await oneShotCLI("explicit-custom", [], undefined, undefined, f.overrides, context)).toBe(0);
+  expect(f.output().stderr).not.toContain("unknown model");
+  expect(f.call).toHaveBeenCalledWith("agent.create", expect.objectContaining({ model: "private-deployment" }), expect.anything());
+});
+
+it.each([
+  ["no flag and no light_mode starts Light", [] as string[], undefined, true],
+  ["--light alone is the default, Light", ["--light"], undefined, true],
+  ["--standard starts standard", ["--standard"], undefined, false],
+  ["light_mode = false starts standard", [], false, false],
+  ["light_mode = true starts Light", [], true, true],
+  ["--light wins over light_mode = false", ["--light"], false, true],
+  ["--standard wins over light_mode = true", ["--standard"], true, false],
+])("settles a fresh print session's mode: %s", async (_label, flags, configured, expected) => {
+  if (configured !== undefined) {
+    writeFileSync(join(home, "config.toml"), `config_version = 2\nlight_mode = ${configured}\n`);
+  }
+  process.argv = ["node", "agenc", "-p", ...flags, "hello"];
+  expect(await oneShotCLI("hello")).toBe(0);
+  const created = request.mock.calls.find(([method]) => method === "agent.create");
+  expect(created?.[1]).toMatchObject({ runtimeOptions: expect.objectContaining({ lightMode: expected }) });
+});
+
+it("sends only an explicit mode flag when continuing, so the session keeps its recorded mode", async () => {
+  writeFileSync(join(home, "config.toml"), "config_version = 2\nlight_mode = false\n");
+  process.argv = ["node", "agenc", "-c", "-p", "next"];
+  expect(await oneShotCLI("next", [], undefined, { kind: "latest" })).toBe(23);
+  expect(mocks.continuation.mock.calls[0]?.[0].runtimeOptions).not.toHaveProperty("lightMode");
+  process.argv = ["node", "agenc", "-c", "-p", "--standard", "next"];
+  expect(await oneShotCLI("next", [], undefined, { kind: "latest" })).toBe(23);
+  expect(mocks.continuation.mock.calls[1]?.[0].runtimeOptions).toMatchObject({ lightMode: false });
 });

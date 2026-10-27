@@ -5,6 +5,7 @@ import {
   resetStartupSandboxBypassNoticeForTests,
   resolveStartupSandboxBypass,
   sandboxUnavailableNotice,
+  sandboxUnavailableTuiNotice,
   writeStartupSandboxBypassNotice,
 } from "../../src/bin/bypass-approvals.js";
 import { classifyCLI, stripRoutingFlags } from "../../src/bin/route.js";
@@ -120,6 +121,19 @@ describe("resolveStartupSandboxBypass", () => {
     );
     expect(resolution.notice).toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(resolution.notice).not.toContain("\u2014");
+    // The TUI owns the terminal, so the same fact also goes to its footer.
+    expect(resolution.tuiNotice).toBe(
+      "No sandbox on Windows: commands run with your full Windows permissions.",
+    );
+  });
+
+  it("names the reason in the TUI notice on other hosts", () => {
+    const unavailable = status("unavailable", "bubblewrap was not found in a trusted system directory");
+    expect(sandboxUnavailableTuiNotice(unavailable, "linux")).toBe(
+      "No sandbox on this host (bubblewrap was not found in a trusted system directory): " +
+        "commands run with your full permissions. Run agenc doctor to repair it.",
+    );
+    expect(sandboxUnavailableTuiNotice(unavailable, "linux")).not.toContain("\u2014");
   });
 
   it("writes the notice once per process and nothing when there is none", () => {

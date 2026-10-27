@@ -1,4 +1,5 @@
-/** Native DeepSeek API metadata, verified 2026-09-29.
+/** Native DeepSeek API metadata, verified 2026-10-17: `deepseek-flash` now serves
+ * DeepSeek-V4.1-Flash-1017 (same id, limits and prices) and `deepseek-v4-pro` serves V4-Pro-0813.
  * https://api-docs.deepseek.com/api/list-models/
  * https://api-docs.deepseek.com/quick_start/pricing/
  * https://api-docs.deepseek.com/guides/thinking_mode/
@@ -8,7 +9,7 @@
 export const DEEPSEEK_REASONING_LEVELS = ["low", "high", "max"] as const;
 export const DEEPSEEK_FLASH_MODEL = "deepseek-flash";
 export const DEEPSEEK_MODELS = [
-  { model: DEEPSEEK_FLASH_MODEL, label: "DeepSeek V4.1 Flash", vision: true },
+  { model: DEEPSEEK_FLASH_MODEL, label: "DeepSeek V4.1 Flash-1017", vision: true },
   { model: "deepseek-v4-pro", label: "DeepSeek V4 Pro", vision: false },
 ].map(entry => ({
   ...entry,
@@ -19,7 +20,7 @@ export const DEEPSEEK_MODELS = [
   defaultEffort: "high" as const,
 }));
 
-// DeepSeek now serves V4.1 for these retired native Flash names. Keep saved
+// DeepSeek now serves V4.1-Flash-1017 for these retired native Flash names. Keep saved
 // sessions readable without presenting aliases as additional selectable models.
 export const DEEPSEEK_MODEL_ALIASES = [
   "deepseek-v4-flash",

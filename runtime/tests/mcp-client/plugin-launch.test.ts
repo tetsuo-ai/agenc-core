@@ -135,8 +135,10 @@ it.skipIf(process.platform === "win32")("rejects the path-qualified Windows exec
   await writeFile(executable, "program");
   // POSIX treats the Windows spellings as literal names. Mirror the broker's
   // host-path lookup under a temporary fixture directory for this probe.
-  const baseCwd = `\\snapshot-${process.pid}`;
-  const shimDir = join(process.cwd(), baseCwd); roots.push(shimDir);
+  // Keep the fixture under the temporary home: the release test boundary
+  // mounts the repository read-only.
+  const baseCwd = join(home, `\\snapshot-${process.pid}`);
+  const shimDir = baseCwd;
   await mkdir(shimDir);
   const command = `C:\\bin\\agenc-win-program-${process.pid}`;
   const link = join(shimDir, `${command}.EXE`);

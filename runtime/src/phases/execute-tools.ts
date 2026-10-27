@@ -1,3 +1,4 @@
+import { withCompletedToolTiming } from "../tools/stage-timing.js";
 import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 /**
  * Phase 5 — Execute Tools.
@@ -96,6 +97,8 @@ import {
 } from "../tools/untrusted-tool-result-framing.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { createToolResultIntegrity, createDeferredTextToolResultIntegrity } from "../session/tool-result-integrity.js";
+import { execCommandRunsConcurrently } from "../tools/read-only-shell-concurrency.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 import { stampToolResultRemaining } from "../session/run-deadline.js";
 
 export function toolResultMessage(
@@ -116,6 +119,7 @@ export function toolResultMessage(
     toolName,
     content,
     runtimeOnly: {
+      ...(result.isError === true ? { toolResultIsError: true as const } : {}),
       toolResultIntegrity: (deferTextIntegrity ? createDeferredTextToolResultIntegrity : createToolResultIntegrity)({
         runId,
         toolCallId: callId,
@@ -237,15 +241,53 @@ function createNoopTracker() {
   };
 }
 
-function toolCallStartedEvent(call: LLMToolCall) {
+function toolCallStartedEvent(call: LLMToolCall, session: Session, cwd: string | undefined) {
+  const recoveryCategory = startedCallRecoveryCategory(call, session, cwd);
   return {
     type: "tool_call_started" as const,
     payload: {
       callId: call.id,
       toolName: call.name,
       args: call.arguments,
+      ...(recoveryCategory !== undefined ? { recoveryCategory } : {}),
     },
   };
+}
+
+/**
+ * The recovery category the daemon's in-flight tool index records for a call
+ * when it starts: the tool's own category, and idempotent for a literal
+ * read-only exec_command inspection (the call the read-only fast path runs
+ * without an effect journal, as an idempotent observation). A call the effect
+ * journal records keeps the journal's category in recovery. Unknown tools and
+ * unparsable arguments send nothing, which the index treats as side-effecting.
+ */
+function startedCallRecoveryCategory(
+  call: LLMToolCall,
+  session: Session,
+  cwd: string | undefined,
+): ToolRecoveryCategory | undefined {
+  const tool = session.services.registry?.tools.find(
+    (candidate) => candidate.name === call.name,
+  );
+  if (tool === undefined) return undefined;
+  const declared = isRecoveryCategory(tool.recoveryCategory) ? tool.recoveryCategory : undefined;
+  if (tool.name !== "exec_command") return declared;
+  let args: unknown;
+  try {
+    args = JSON.parse(call.arguments ?? "{}");
+  } catch {
+    return undefined;
+  }
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return undefined;
+  return execCommandRunsConcurrently(args as Record<string, unknown>, cwd ?? process.cwd())
+    ? "idempotent"
+    : declared;
+}
+
+/** Only the journal's own categories; anything else sends no category. */
+function isRecoveryCategory(value: unknown): value is ToolRecoveryCategory {
+  return value === "idempotent" || value === "side-effecting" || value === "interactive";
 }
 
 function emitMalformedToolCallFailures(
@@ -585,7 +627,7 @@ export function queueStreamingToolCall(
   block: ToolUseBlock,
   call: LLMToolCall,
   session: Session,
-  _ctx?: TurnContext,
+  ctx?: TurnContext,
   state?: TurnState,
 ): boolean {
   const alreadyQueued = executor
@@ -599,13 +641,25 @@ export function queueStreamingToolCall(
   if (state !== undefined && isRepeatedFailingCall(state, call)) return false;
   session.emit({
     id: session.nextInternalSubId(),
-    msg: toolCallStartedEvent(call),
+    msg: toolCallStartedEvent(call, session, ctx?.cwd),
   });
   executor.addTool(block, call);
   return true;
 }
 
 function recordCompletedToolCall(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  toolCall: LLMToolCall,
+  result: ToolDispatchResult,
+  durationMs?: number,
+): CompletedToolResultRecord {
+  return withCompletedToolTiming(session, toolCall.id, () =>
+    recordCompletedToolCallTimed(state, ctx, session, toolCall, result, durationMs));
+}
+
+function recordCompletedToolCallTimed(
   state: TurnState,
   ctx: TurnContext,
   session: Session,
@@ -821,7 +875,7 @@ export async function executeTools(
     if (blocked !== null) {
       session.emit({
         id: session.nextInternalSubId(),
-        msg: toolCallStartedEvent(call),
+        msg: toolCallStartedEvent(call, session, ctx.cwd),
       });
       const completed = recordCompletedToolCall(state, ctx, session, call, blocked);
       completedThisPass.set(completed.callId, completed);

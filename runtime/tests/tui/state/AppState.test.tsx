@@ -5,6 +5,7 @@ import { renderToString } from "../../utils/staticRender.js";
 import { Text } from "../ink.js";
 import {
   AppStateProvider,
+  getDefaultAppStateForProviderEnvironment,
   useAppState,
   type AppState,
 } from "./AppState.js";
@@ -67,6 +68,10 @@ function AllocatingSelectorProbe(): React.ReactNode {
 }
 
 describe("AppState", () => {
+  test("captures the configured effort before the first daemon turn", () => {
+    const state = getDefaultAppStateForProviderEnvironment({} as never, { reasoning_effort: "low" } as never);
+    expect(state.effortValue).toBe("low");
+  });
   test("provides selected state from the absorbed TUI state entrypoint", async () => {
     const initialState = {
       statusLineText: "state-ready",

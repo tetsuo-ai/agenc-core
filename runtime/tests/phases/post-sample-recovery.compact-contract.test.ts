@@ -35,7 +35,7 @@ function seedMessages(): LLMMessage[] {
 function overflowRecoveryFixture() {
   const messages = seedMessages().map((message, index) => ({
     ...message,
-    content: index === 0 ? `start ${"x".repeat(8_000)}` : message.content,
+    content: index === 0 ? `start ${"x".repeat(60_000)}` : message.content,
   }));
   const harness = createCompactionTransactionHarness(
     messages as RuntimeMessage[],
@@ -114,7 +114,7 @@ describe("post-sample context-collapse recovery contract", () => {
       content: "ok",
     });
     state.messagesForQuery = [
-      { role: "user", content: `old ${"x".repeat(8_000)}` },
+      { role: "user", content: `old ${"x".repeat(60_000)}` },
       { role: "assistant", content: "old answer" },
       { role: "user", content: "read file" },
       {
@@ -152,17 +152,13 @@ describe("post-sample context-collapse recovery contract", () => {
       payload: {
         summary: {
           body: {
-            tool_pairs: [{
-              tool_call_id: "tc-collapse",
-              result_sha256: toolIntegrity.original.digest.replace(
-                /^sha256:/u,
-                "",
-              ),
-            }],
+            tool_pairs: [],
           },
         },
       },
     });
+    expect(state.messagesForQuery).toContainEqual(expect.objectContaining({ role: "tool", toolCallId: "tc-collapse", content: "ok" }));
+    expect(state.messagesForQuery).toContainEqual(expect.objectContaining({ role: "assistant", toolCalls: [{ id: "tc-collapse", name: "Read", arguments: "{}" }] }));
     harness.close();
   });
 
@@ -174,7 +170,7 @@ describe("post-sample context-collapse recovery contract", () => {
     });
     const sessionId = "overflow-tool-edge";
     state.messagesForQuery = [
-      { role: "user", content: `old ${"x".repeat(8_000)}` },
+      { role: "user", content: `old ${"x".repeat(60_000)}` },
       {
         role: "assistant",
         content: "",
@@ -329,7 +325,7 @@ describe("413 collapse walks the compaction ladder", () => {
   test("a failed standard collapse steps down to the model-free emergency tier and the turn resamples", async () => {
     const messages = seedMessages().map((message, index) => ({
       ...message,
-      content: index === 0 ? `start ${"x".repeat(8_000)}` : message.content,
+      content: index === 0 ? `start ${"x".repeat(60_000)}` : message.content,
     }));
     const harness = createCompactionTransactionHarness(
       messages as RuntimeMessage[],

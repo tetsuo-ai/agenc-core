@@ -22,9 +22,13 @@ async function fixture(external = false, aliased = false) {
   mkdirSync(project);
   const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: project, encoding: "utf8" });
   git(["init", "-q"]);
+  // Worktree reflogs also need an identity after the broker scrubs GIT_* env.
+  // Configure the fixture so Git never resolves the hostname for a default email.
+  git(["config", "user.name", "AgenC Test"]);
+  git(["config", "user.email", "test@example.invalid"]);
   writeFileSync(join(project, "tracked.txt"), "preserve me\n");
   git(["add", "tracked.txt"]);
-  git(["-c", "user.name=AgenC Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "seed"]);
+  git(["commit", "-qm", "seed"]);
   const broker = explicitDangerBroker.forkForCwd(project);
   const worktree = await getOrCreateWorktree({ gitRoot: project, slug: "target", ...(external ? { workspaceRoot: join(root, "external") } : {}), sandboxExecutionBroker: broker });
   const admin = readFileSync(join(worktree.path, ".git"), "utf8").trim().slice("gitdir: ".length);

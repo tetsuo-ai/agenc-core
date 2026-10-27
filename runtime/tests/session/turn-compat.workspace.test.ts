@@ -55,6 +55,21 @@ describe('turn compatibility exec lifetime', () => {
     return { parent, manager, toolUseContext, create, launch }
   }
 
+  it('does not inherit a root print loss window into a compatibility child #3011', async () => {
+    const f = fixture()
+    Object.assign(f.parent.services, { runtimeOptions: { ...f.parent.services.runtimeOptions, relaxedOneShot: true } })
+    try {
+      const child = await f.create()
+      expect(child.session.services.runtimeOptions.relaxedOneShot).toBe(false)
+      expect(f.parent.services.runtimeOptions.relaxedOneShot).toBe(true)
+      await child.session.shutdown()
+      await child.disposeOwnedProvider()
+    } finally {
+      await f.parent.shutdown()
+      await f.manager.closeAll()
+    }
+  })
+
   it('retains yielded work across turns, closes descendants, and keeps the parent reusable', async () => {
     const f = fixture()
     try {

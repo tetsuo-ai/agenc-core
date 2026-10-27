@@ -19,6 +19,7 @@ import {
   createNew as taskCreateNew,
   listWithUnresolved as taskListWithUnresolved,
   loadOne as taskLoadOne,
+  tasksDir,
   updateOne as taskUpdateOne,
   type StoredTask,
   type TaskStatus,
@@ -189,6 +190,19 @@ function tryAutoExpandTaskPanel(opts: TaskToolOptions): void {
 
 export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
   const storeOpts = taskStoreOpts(opts);
+  /**
+   * Where the mutating board tools write: the project store
+   * `<agenc-home>/projects/<slug>/tasks`, chosen from this tool set's own
+   * workspace root and AgenC home. Every write in task-store.ts (task files
+   * named by the store's own numeric ids, `.highwatermark`, `.lock`) lands
+   * inside it; no argument is a path, and a taskId that is not a bare number
+   * never reaches a file name. Declaring the store lets the runtime sandbox
+   * verify the real target instead of refusing a mutating tool with no path
+   * argument as unverifiable ("could not verify write targets for
+   * TaskCreate"), which made the board unusable under the default
+   * workspace_write sandbox.
+   */
+  const taskStoreWriteTargets = (): readonly string[] => [tasksDir(storeOpts)];
 
   return [
     {
@@ -198,6 +212,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         mutating: true,
         deferred: true,
         keywords: ["task", "create", "coordination", "subagent"],
+        fixedWriteTargets: taskStoreWriteTargets,
       }),
       concurrencyClass: TASK_CONCURRENCY,
       recoveryCategory: "side-effecting",
@@ -289,6 +304,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         mutating: true,
         deferred: true,
         keywords: ["task", "update", "coordination", "dependencies"],
+        fixedWriteTargets: taskStoreWriteTargets,
       }),
       concurrencyClass: TASK_CONCURRENCY,
       recoveryCategory: "side-effecting",

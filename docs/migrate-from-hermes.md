@@ -7,7 +7,7 @@ fail-closed permissions), state auditability, and engineering rigor (typed
 daemon protocol, eval-regression gate, large test suite). This guide maps the
 surfaces, including what AgenC does not have yet.
 
-**AgenC 0.18.0.** Related: [quickstart](quickstart.md) ·
+**AgenC 0.19.19.** Related: [quickstart](quickstart.md) ·
 [onboarding](onboarding.md) · [gateway](gateway.md) ·
 [OpenClaw migrate](migrate-from-openclaw.md).
 
@@ -34,7 +34,7 @@ agenc onboard autonomy     # budget → heartbeat → cron → hooks
 |---|---|---|
 | `hermes gateway` | `agenc daemon` + `agenc gateway` | Daemon is loopback-only by default; channel gateway is a separate always-on client (`install-service`) |
 | Ink TUI / curses CLI | TUI (`agenc`) | Custom react-reconciler TUI |
-| Model providers (~30 plugins) | 17 built-in providers | Anthropic/OpenAI/Grok/Meta/Gemini/Bedrock/OpenRouter/Groq/DeepSeek/…, local via Ollama/LM Studio/openai-compatible; managed OpenRouter + free `:free` routes; per-session `--provider`/`--model` |
+| Model providers (~30 plugins) | 17 built-in providers | Anthropic/OpenAI/Grok/Meta/Gemini/Bedrock/OpenRouter/Groq/DeepSeek/…, local via Ollama/LM Studio/openai-compatible; OpenRouter including free `:free` routes with your own key; per-session `--provider`/`--model` |
 | Skills + Skills Hub | Skills + plugins | Local + bundled skills, plugin marketplaces via `agenc plugin`; no public hub until publishing is signed + attested (deliberate) |
 | Curator (self-created skills) | Roadmap — auditable by design | Planned as reviewed, git-versioned, eval-gated proposals; never silent self-modification. The eval harness that gates it already ships |
 | FTS session search | Roadmap | Sessions already persist to SQLite; cross-session search is planned |
@@ -47,7 +47,7 @@ agenc onboard autonomy     # budget → heartbeat → cron → hooks
 | Cron / hooks | **Shipped** | Cron delivery to channels; loopback `POST /hooks/agent` with header-only bearer |
 | ACP (Zed/IDE) | IDE-as-MCP seam | No shipped editor extension yet |
 | `hermes update` | `agenc update` / launcher-managed | Runtime tarballs are sha256-verified on install |
-| Cost `/usage` | `/cost` / `/usage` | Per-agent cost attribution; managed OpenRouter allowance via `/usage` after login |
+| Cost `/usage` | `/cost` / `/usage` | Per-agent cost attribution; connected provider balances and usage via `/usage` |
 | Batch/trajectory research tooling | `agenc trajectories export` | SFT/DPO JSONL export with redaction re-applied per row |
 
 ## Two design disagreements, stated plainly

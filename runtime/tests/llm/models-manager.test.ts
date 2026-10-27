@@ -120,9 +120,12 @@ describe("StaticModelsManager", () => {
     }
   });
 
-  it("uses the exact OpenRouter contract for its vendor-qualified Opus ID", async () => {
+  it("caps the OpenRouter Opus default while retaining its catalog ceiling and effort contract", async () => {
     expect(await claudeManager().getModelInfo("anthropic/claude-opus-5.5")).toMatchObject({
-      contextWindow: 1_000_000, maxOutputTokens: 128_000,
+      contextWindow: 1_000_000, maxOutputTokens: 32_000,
+      maxOutputTokensUpperLimit: 128_000,
+      maxOutputTokensExplicit: false,
+      maxOutputTokensCappedDefault: true,
       supportedReasoningLevels: ["max", "xhigh", "high", "medium", "low"],
       defaultReasoningLevel: "high",
     });
@@ -722,7 +725,10 @@ describe("StaticModelsManager", () => {
 
     const info = await manager.getModelInfo("openrouter:x-ai/grok-code-fast-1");
     expect(info.contextWindow).toBe(256_000);
-    expect(info.maxOutputTokens).toBe(64_000);
+    expect(info.maxOutputTokens).toBe(32_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(64_000);
+    expect(info.maxOutputTokensExplicit).toBe(false);
+    expect(info.maxOutputTokensCappedDefault).toBe(true);
     expect(info.usedFallbackModelMetadata).toBe(false);
   });
 
@@ -1050,5 +1056,101 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokens).toBe(12_000);
     expect(info.maxOutputTokensExplicit).toBe(true);
     expect(info.maxOutputTokensCappedDefault).toBe(false);
+  });
+
+  // With a custom DeepSeek base URL (a proxy or gateway) a catalogued model
+  // starts from its registered limits while a background refresh reads the live
+  // /models listing, which reports DeepSeek's 393,216-token ceiling, and later
+  // turns use the refreshed result. Whether that listing beats the 1 s metadata
+  // timeout used to decide each session's cap: 393,216 when it answered in time,
+  // 64,000 when it was aborted. Both outcomes must keep the 64k default.
+  const deepSeekListing = {
+    object: "list",
+    data: [{
+      id: "deepseek-flash",
+      object: "model",
+      owned_by: "deepseek",
+      context_window: 1_048_576,
+      max_output_tokens: 393_216,
+    }],
+  };
+  const resolveDeepSeekAfterRefresh = async (
+    fetchImpl: typeof fetch,
+    config: Parameters<typeof mergeConfigs>[1] = {},
+    env: Record<string, string> = {},
+  ) => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "deepseek",
+        model: "deepseek-flash",
+        ...config,
+      }),
+      fallbackProvider: "deepseek",
+      metadata: {
+        fetchImpl,
+        timeoutMs: 50,
+        env: {
+          DEEPSEEK_API_KEY: "test-placeholder",
+          DEEPSEEK_BASE_URL: "https://deepseek-proxy.invalid/v1",
+          ...env,
+        },
+      },
+    });
+    const first = await manager.getModelInfo("deepseek-flash");
+    // The refresh publishes into the session cache once the listing settles.
+    await vi.waitFor(() => {
+      expect(manager.tryGetModelInfoForProvider("deepseek", "deepseek-flash")).toBeDefined();
+    });
+    return { first, refreshed: await manager.getModelInfo("deepseek-flash") };
+  };
+
+  it.each([
+    ["answers before the metadata timeout", false],
+    ["loses the race to the metadata timeout", true],
+  ] as const)("keeps the native DeepSeek 64k default when the live listing %s", async (
+    _outcome,
+    stalls,
+  ) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("https://deepseek-proxy.invalid/v1/models");
+      if (!stalls) return jsonResponse(deepSeekListing);
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError")));
+      });
+    });
+
+    const { first, refreshed } = await resolveDeepSeekAfterRefresh(fetchImpl);
+    const contract = {
+      contextWindow: 1_048_576,
+      maxOutputTokens: 64_000,
+      maxOutputTokensUpperLimit: 393_216,
+      maxOutputTokensExplicit: false,
+      maxOutputTokensCappedDefault: true,
+    };
+    expect(refreshed).toMatchObject(contract);
+    expect(first).toMatchObject(contract);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["max_output_tokens", { max_output_tokens: 393_216 }, {}],
+    ["AGENC_MAX_OUTPUT_TOKENS", {}, { AGENC_MAX_OUTPUT_TOKENS: "393216" }],
+  ] as const)("lets an explicit %s reach the native DeepSeek ceiling", async (
+    _setting,
+    config,
+    env,
+  ) => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(deepSeekListing));
+
+    const { first, refreshed } = await resolveDeepSeekAfterRefresh(fetchImpl, config, env);
+    const explicit = {
+      maxOutputTokens: 393_216,
+      maxOutputTokensUpperLimit: 393_216,
+      maxOutputTokensExplicit: true,
+      maxOutputTokensCappedDefault: false,
+    };
+    expect(refreshed).toMatchObject(explicit);
+    expect(first).toMatchObject(explicit);
   });
 });

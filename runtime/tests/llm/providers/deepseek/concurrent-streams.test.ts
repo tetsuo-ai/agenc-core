@@ -6,9 +6,8 @@ import { expect, test } from "vitest";
 
 import { DeepSeekProvider } from "../../../../src/llm/providers/deepseek/index.js";
 import { createProvider } from "../../../../src/llm/provider.js";
-import type { AuthBackend } from "../../../../src/auth/backend.js";
 
-test.each(["direct", "agenc"])("a second %s DeepSeek POST finishes while the first HTTPS stream remains open", async (route) => {
+test.each(["direct", "factory"])("a second %s DeepSeek POST finishes while the first HTTPS stream remains open", async (route) => {
   // Public test-only credentials, never used outside this loopback server.
   const cert = readFileSync(new URL("./fixtures/localhost.crt", import.meta.url));
   const key = readFileSync(new URL("./fixtures/localhost.key", import.meta.url));
@@ -17,7 +16,7 @@ test.each(["direct", "agenc"])("a second %s DeepSeek POST finishes while the fir
   let releaseFirst: (() => void) | undefined;
   let firstStarted!: () => void;
   const started = new Promise<void>((resolve) => { firstStarted = resolve; });
-  const model = route === "direct" ? "deepseek-v4-pro" : "deepseek/deepseek-v4-flash-0731";
+  const model = "deepseek-v4-pro";
   const frame = (text: string, finishReason: string | null = null) =>
     `data: ${JSON.stringify({ id: "concurrent", model, choices: [{ index: 0, delta: { content: text }, finish_reason: finishReason }] })}\n\n`;
   server.on("request", (request, response) => {
@@ -45,20 +44,11 @@ test.each(["direct", "agenc"])("a second %s DeepSeek POST finishes while the fir
   let first: Promise<unknown> | undefined;
   try {
     const baseURL = `https://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-    const authBackend: AuthBackend = {
-      kind: "remote", login: () => ({ authenticated: true }), logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true }), getSubscriptionTier: () => "free",
-      getLlmUsage: () => ({ managedModelsEnabled: true, subscriptionTier: "free",
-        modelAllowance: { status: "active", duration: "promotion", allowedModelCount: 1 } }),
-      inferAgencModel: () => ({ provider: "openrouter", model }),
-      vendKey: (provider, sessionId) => ({ kind: "api-key", provider, sessionId,
-        apiKey: "synthetic-capability", baseUrl: baseURL }),
-    };
     const provider = route === "direct" ? new DeepSeekProvider({
       apiKey: "local-test-only",
       model,
       baseURL,
-    }) : createProvider("agenc", { model, extra: { authBackend, sessionId: "synthetic", subscriptionTier: "free" } });
+    }) : createProvider("deepseek", { model, apiKey: "local-test-only", baseURL });
     const options = { reasoningEffort: "low", singleWireAttempt: true, signal: controller.signal };
     let firstFinished = false;
     first = provider.chatStream([{ role: "user", content: "first" }], () => undefined, options)

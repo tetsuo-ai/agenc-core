@@ -16,6 +16,7 @@ import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 
 // Buffer for early input characters
 let earlyInputBuffer = ''
+let pendingEscape = ''
 // Flag to track if we're currently capturing
 let isCapturing = false
 // Reference to the readable handler so we can remove it later
@@ -43,6 +44,7 @@ export function startCapturingEarlyInput(): void {
 
   isCapturing = true
   earlyInputBuffer = ''
+  pendingEscape = ''
 
   // Set stdin to raw mode and use 'readable' event like Ink does
   // This ensures compatibility with how the REPL will handle stdin later
@@ -72,19 +74,18 @@ export function startCapturingEarlyInput(): void {
  * Process a chunk of input data
  */
 function processChunk(str: string): void {
+  str = pendingEscape + str
+  pendingEscape = ''
   let i = 0
   while (i < str.length) {
     const char = str[i]!
     const code = char.charCodeAt(0)
 
-    // Ctrl+C (code 3) - stop capturing and exit immediately.
-    // We use process.exit here instead of gracefulShutdown because at this
-    // early stage of startup, the shutdown machinery isn't initialized yet.
+    // Cancellation and double-press exit belong to the ready composer. During
+    // startup/resume, keep the captured draft until it can be safely delivered.
     if (code === 3) {
-      stopCapturingEarlyInput()
-      // eslint-disable-next-line custom-rules/no-process-exit
-      process.exit(130) // Standard exit code for Ctrl+C
-      return
+      i++
+      continue
     }
 
     // Ctrl+D (code 4) - EOF, stop capturing
@@ -103,18 +104,19 @@ function processChunk(str: string): void {
       continue
     }
 
-    // Skip escape sequences (arrow keys, function keys, focus events, etc.)
-    // All escape sequences start with ESC (0x1B) and end with a byte in 0x40-0x7E
+    // Ignore complete terminal reports and paste wrappers, even when the
+    // sequence is split across chunks. Keep the text inside a pasted block.
     if (code === 27) {
-      i++ // Skip the ESC character
-      // Skip until the terminating byte (@ to ~) or end of string
-      while (
-        i < str.length &&
-        !(str.charCodeAt(i) >= 64 && str.charCodeAt(i) <= 126)
-      ) {
+      const rest = str.slice(i)
+      const sequence = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~]|\][^\x07]*(?:\x07|\x1b\\))/.exec(rest)
+      if (sequence) {
+        i += sequence[0].length
+      } else if (/^\x1b(?:\[[0-?]*[ -/]*|O|\][^\x07]*)?$/.test(rest)) {
+        pendingEscape = rest
+        break
+      } else {
         i++
       }
-      if (i < str.length) i++ // Skip the terminating byte
       continue
     }
 
@@ -147,6 +149,7 @@ export function stopCapturingEarlyInput(): void {
   }
 
   isCapturing = false
+  pendingEscape = ''
 
   if (readableHandler) {
     process.stdin.removeListener('readable', readableHandler)
@@ -163,9 +166,18 @@ export function stopCapturingEarlyInput(): void {
  * Returns the captured input and clears the buffer.
  * Automatically stops capturing when called.
  */
-export function consumeEarlyInput(): string {
+export function consumeEarlyInput(options: {
+  readonly restoreRawMode?: boolean
+  readonly preserveWhitespace?: boolean
+} = {}): string {
   stopCapturingEarlyInput()
-  const input = earlyInputBuffer.trim()
+  if (options.restoreRawMode && process.stdin.isTTY) {
+    try {
+      process.stdin.setRawMode(false)
+      process.stdin.unref()
+    } catch { /* revoked terminal */ }
+  }
+  const input = options.preserveWhitespace ? earlyInputBuffer : earlyInputBuffer.trim()
   earlyInputBuffer = ''
   return input
 }

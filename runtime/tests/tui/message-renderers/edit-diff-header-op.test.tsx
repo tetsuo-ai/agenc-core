@@ -57,7 +57,7 @@ import { renderToString } from "../../../src/utils/staticRender.js";
 const tools = createTuiTools(["Write", "Edit", "MultiEdit"]) as unknown as Tools;
 
 /** Render a finished (resolved, successful) edit step as Message.tsx does. */
-function renderStep(name: string, input: unknown): Promise<string> {
+function renderStep(name: string, input: unknown, fileMutation?: unknown): Promise<string> {
   const id = `tu_${name}`;
   const param: AgenCToolUseBlockParam = { type: "tool_use", id, name, input };
   return renderToString(
@@ -73,6 +73,7 @@ function renderStep(name: string, input: unknown): Promise<string> {
       shouldShowDot={false}
       lookups={
         {
+          toolResultByToolUseID: new Map([[id, { type: "user", fileMutation }]]),
           resolvedToolUseIDs: new Set([id]),
           erroredToolUseIDs: new Set(),
           inProgressHookCounts: new Map(),
@@ -92,6 +93,15 @@ function render(node: React.ReactNode): Promise<string> {
 }
 
 describe("edit step operation verb", () => {
+  it("uses the completed Write diff against previous content", async () => {
+    const output = await renderStep("Write", { file_path: "invoice/calc.py", content: "unchanged\n".repeat(17) + "new\n".repeat(15) }, {
+      kind: "file_mutation", filePath: "invoice/calc.py", operation: "write", additions: 15, removals: 2,
+    });
+    expect(output).toContain("+15 -2");
+    expect(output).not.toContain("+32 -0");
+    expect(output).not.toContain("unchanged");
+  });
+
   it("a Write (new file) step says Wrote, not Edited", async () => {
     const out = await renderStep("Write", {
       file_path: "src/new-thing.ts",

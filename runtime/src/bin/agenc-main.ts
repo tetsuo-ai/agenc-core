@@ -1,7 +1,10 @@
 import "../bootstrap/node-env.js";
+import { readLocalByokCredential } from "../auth/native-credentials.js";
+import { readCompactionProgressEvent } from "../services/compact/progress.js";
+import type { CompactionProgressEvent } from "../services/compact/types.js";
 import type { OneShotContinueSession } from "./route.js";
 import { reproveResumeDescriptor, type ResumeCwdProof, openResumeCwdProof, assertResumeCwdProof, assertLiveAgentMatchesResumeDescriptor, isCanonicalSessionAlreadyActiveError } from "./daemon-one-shot-continue.js";
-import { runDefaultCliRoute } from "./default-cli-route.js";
+import { requireWindowsSandboxChoiceBeforeTui, runDefaultCliRoute } from "./default-cli-route.js";
 import { readProcessCwdSafely, resolveCliCwdForStartup, writeUnavailableCliCwd } from "./cli-cwd.js";
 import { requireProjectTrustForTui } from "./project-trust-preflight.js";
 import { prepareCliRuntime } from "./cli-runtime.js";
@@ -21,6 +24,7 @@ import type { PhaseEvent } from "../phases/events.js";
 import { type Session, type IdleInputAdmission, type IdleInputOwnership, type McpSurfaceSnapshot } from "../session/session.js";
 import { AUTONOMOUS_SUBMIT_SOURCE, AutonomousKeepaliveScheduler, isAutonomousModeEnabled, type SessionSubmitOptions } from "../session/autonomous-mode.js";
 import { resolveAgentRuntimeOptions, runWithAgentRuntimeOptions, validateAgentRuntimeOptions, type AgentRuntimeOptions } from "../session/runtime-options.js";
+import { withDefaultLightMode } from "../session/light-mode-default.js";
 import type { Terminal } from "../session/turn-state.js";
 import { SchemaMismatchError, SessionLockedError } from "../session/session-store.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
@@ -28,14 +32,16 @@ import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveAgencHome, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
+import { canonicalProviderApiKeyEnvVar } from "../llm/registry/provider-ingress.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import { logForDebugging } from "../utils/debug.js";
 import { recentOomSnapshotNotice, startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 import type { AgenCConfig } from "../config/schema.js";
+import { providerQualifiedModel } from "../config/provider-model-authority.js";
 import type { PreparedTurnRuntimeInputs, RunSingleTurnOpts } from "./local-turn-runtime.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
-import { resolveLatestSessionId, resolveResumeSessionId, reproveResumeSessionAfterDaemonReady, type ResolvedResumeSession } from "./resume-session.js";
+import { resolveInitialResumeSession, resolveLatestSessionId, resolveResumeSessionId, reproveResumeSessionAfterDaemonReady, reproveResumeSessionAllowingAppend, type ResolvedResumeSession } from "./resume-session.js";
 import { formatAgenCDaemonCliHelpText, parseAgenCDaemonCliArgs, runAgenCDaemonCli } from "../app-server/daemon-control.js";
 import { captureRemoteCliRuntimeContext, formatAgenCRemoteCliHelpText, parseAgenCRemoteCliArgs, runAgenCRemoteCli } from "./remote-cli.js";
 import { parseAgenCDaemonProxyCliArgs, runAgenCDaemonProxyCli } from "./daemon-proxy-cli.js";
@@ -68,11 +74,18 @@ import { createRecoveryMutationAdapter } from "../state/recovery-mutations.js";
 import { formatAgenCTrajectoriesCliHelpText, parseAgenCTrajectoriesCliArgs } from "./trajectories-cli-args.js";
 import { prepareUserPromptForTurn } from "../hooks/user-prompt-ingress.js";
 import { readStartupCliFlags, resolveCanonicalStartupSelection, resolvedStartupProfileName, startupConfigLayerOptions, type StartupCliFlags } from "./startup-selection.js";
-import { resolveStartupSandboxBypass, writeStartupSandboxBypassNotice } from "./bypass-approvals.js";
+import {
+  resolveStartupSandboxBypass,
+  writeStartupSandboxBypassNotice,
+  type StartupSandboxBypass,
+} from "./bypass-approvals.js";
 import { setIsRemoteMode } from "../bootstrap/state.js";
 import { isRecord } from "../utils/record.js";
+import { withoutTrailingPeriod } from "../utils/stringUtils.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
 import { createWorkflowApprovalControls, type WorkflowApprovalControls } from "../tui/workflow-approval-controls.js";
+import { queueTuiStartupNotice } from "../tui/startup-notices.js";
+import { UNUSED_TUI_PREWARM_STOP_REASON } from "../app-server/agent-stop-reasons.js";
 import { oneShotCLI as runDaemonOneShotCLI, type AgenCDaemonCliDeps, startupImageMessagesFromInputs, startupContentFromInputs, validateAgencHome, stopDaemonAgentBestEffort, type OneShotDeadlineBackstopGlobal, startupPermissionMode } from "./daemon-one-shot-cli.js";
 export { parseStreamJsonPrompt, validateAgencHome, oneShotFinalMessageRemainder, type PrintModeGoal, parsePrintModeGoal } from "./daemon-one-shot-cli.js";
 
@@ -97,8 +110,8 @@ const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
   findAgentBySessionId: findAgenCDaemonAgentBySessionId,
   createTuiContext: createAgenCDaemonOnlyTuiContext,
   ensureDaemonReady: defaultEnsureDaemonReady,
-  resumeTui: (args: ResumeTUIArgs, startupCliFlags?: StartupCliFlags) =>
-    resumeTUIEntry(args, startupCliFlags),
+  resumeTui: (args, startupCliFlags, options) =>
+    resumeTUIEntry(args, startupCliFlags, options),
 };
 
 
@@ -195,11 +208,15 @@ export function formatCliHelpText(): string {
     "  --full-durability                       Sync every print-run commit (safe continuation after a crash)",
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
+    "  --budget <eco|balanced|max>              Task token budget: 1M, 2.4M, or unlimited",
+    "  --task-token-budget <tokens>            Override the default task allocation (0 disables)",
+    "  --task-max-calls <calls>                Optional per-task model call cap (0 disables)",
     "  --deadline <+seconds|ISO-8601>           Print mode: stop the run by this time (exit 5)",
     "  --deadline-reserve <seconds>             Print mode: time before the deadline to wrap up",
     "  --no-tui                                 Force one-shot CLI mode",
     "  --bare                                   Run reduced startup and suppress all session hook extensions",
-    "  --light                                  Experimental: start with core tools and discover more",
+    "  --light                                  Start with core tools and discover more (default)",
+    "  --standard                               Start with the standard tool set instead of Light",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --profile <name>                         Use a named config profile",
@@ -832,6 +849,7 @@ async function loadBootTUI(): Promise<
     initialComposerText?: string;
     initialUserMessages?: readonly LLMMessage[];
     stdinMode?: "readable" | "data";
+    beforeTerminalLossExit?: () => Promise<void>;
   }) => Promise<{ unmount: () => void; waitUntilExit: () => Promise<void> }>
 > {
   // The path is relative to the *compiled* output layout (both
@@ -852,6 +870,7 @@ async function loadBootTUI(): Promise<
       initialComposerText?: string;
       initialUserMessages?: readonly LLMMessage[];
       stdinMode?: "readable" | "data";
+      beforeTerminalLossExit?: () => Promise<void>;
     }) => Promise<{
       unmount: () => void;
       waitUntilExit: () => Promise<void>;
@@ -891,7 +910,19 @@ export async function exitOrResumeAfterTui(
 ): Promise<number> {
   const resumeId = await consumePendingResumeSessionId();
   if (resumeId === null) return exitCode;
-  return daemonCliDeps().resumeTui({ resumeId }, startupCliFlags);
+  try {
+    return await daemonCliDeps().resumeTui({ resumeId }, startupCliFlags, {
+      throwOnOpenFailure: true,
+    });
+  } catch (error) {
+    if (!(error instanceof ResumeTuiOpenError)) throw error;
+    process.stderr.write(`agenc: unable to resume session: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  // The previous renderer has already detached. Keep an idle TUI available
+  // so a failed picker selection can be corrected without restarting the CLI.
+  return bootTUIEntry({
+    resumeFailureMessage: "Could not open that conversation. Choose another with /resume.",
+  }, startupCliFlags);
 }
 
 
@@ -951,6 +982,7 @@ type EarlyInputCapture = {
   readonly startCapturingEarlyInput?: () => void;
   readonly consumeEarlyInput?: (options?: {
     readonly restoreRawMode?: boolean;
+    readonly preserveWhitespace?: boolean;
   }) => string;
   readonly stopCapturingEarlyInput?: (options?: {
     readonly restoreRawMode?: boolean;
@@ -958,11 +990,11 @@ type EarlyInputCapture = {
 };
 
 
-async function startTuiEarlyInputCapture(): Promise<() => string> {
+async function startTuiEarlyInputCapture(preserveWhitespace = false): Promise<() => string> {
   try {
     const mod = (await import("../utils/earlyInput.js")) as EarlyInputCapture;
     mod.startCapturingEarlyInput?.();
-    return () => mod.consumeEarlyInput?.({ restoreRawMode: true }) ?? "";
+    return () => mod.consumeEarlyInput?.({ restoreRawMode: true, preserveWhitespace }) ?? "";
   } catch {
     return () => "";
   }
@@ -1031,6 +1063,7 @@ type TuiSessionShape = Pick<
   rollbackIdleInputAdmission?: (token: string) => boolean;
   commitIdleInputAdmission?: (token: string) => boolean;
   subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+  subscribeToCompactProgress?: (cb: (event: CompactionProgressEvent) => void) => () => void;
   emit?: (event: unknown) => void;
   emitPhaseEvent?: (event: PhaseEvent) => void;
   cancelActiveTurn?: (reason?: string) => Promise<void>;
@@ -1045,17 +1078,32 @@ type TuiSessionShape = Pick<
     readonly feedback?: string;
     readonly signal?: AbortSignal;
   }) => Promise<unknown>;
+  rollbackCompaction?: (params: {
+    readonly attemptId: string;
+    readonly reviewedBranchTargetSessionId?: string;
+  }) => Promise<unknown>;
+  extendCompactionRollbackRetention?: (params: {
+    readonly attemptId: string;
+    readonly extendedUntilMs: number;
+  }) => Promise<unknown>;
+  rewindConversationToMessage?: (params: { readonly messageOrdinal: number }) => Promise<unknown>;
+  previewFileRewind?: (params: { readonly messageOrdinal: number }) => Promise<unknown>;
+  rewindFilesToMessage?: (params: { readonly messageOrdinal: number }) => Promise<unknown>;
   setPendingProviderSwitch?: (
     pending: { provider: string; model: string; profile?: string } | null,
   ) => void;
+  useSessionProviderKey?: (provider: string, apiKey: string) => Promise<void>;
   applyProviderModelSelection?: (selection: {
     readonly provider: string;
     readonly model: string;
   }) => Promise<ProviderModelSelectionOutcome>;
   setDaemonPermissionMode?: (mode: string) => Promise<unknown>;
+  mutateDaemonPermissionRule?: AgenCTuiBridgeSession["mutateDaemonPermissionRule"];
   getDaemonHooksStatus?: () => Promise<unknown>;
   setDaemonHooksDisabled?: (disabled: boolean) => Promise<unknown>;
   applyDaemonConfig?: (params: {
+    taskBudgetLevel?: "eco" | "balanced" | "max";
+    readonly taskTokenBudget?: number;
     profile?: string;
     reload?: boolean;
   }) => Promise<unknown>;
@@ -1144,6 +1192,14 @@ async function handleLocalTuiSlashCommand(params: {
 }
 
 
+/**
+ * The objective a speculatively provisioned TUI session carries until its
+ * first prompt: the daemon's label for an interactive session that has not
+ * been messaged yet (the desktop app creates its sessions the same way). The
+ * rollout's canonical objective is still whatever the user types first.
+ */
+const SPECULATIVE_TUI_SESSION_LABEL = "Interactive session";
+
 async function createDeferredDaemonPromptTuiSession(params: {
   readonly baseSession: unknown;
   readonly deps: AgenCDaemonCliDeps;
@@ -1156,11 +1212,24 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   readonly permissionMode?: AgentCreateParams["permissionMode"];
+  readonly initialNotice?: string;
 }): Promise<{
   readonly session: unknown;
+  /**
+   * Create the turn-deferred daemon session in the background while the user
+   * types, so the first prompt starts its turn at once. Safe to skip.
+   */
+  readonly prewarm: () => void;
+  /**
+   * The terminal went away: retire the speculative session if no prompt used
+   * it. A used session keeps running in the daemon and is not waited for.
+   */
+  readonly retireUnusedOnTerminalLoss: () => Promise<void>;
   readonly close: () => Promise<void>;
 }> {
   const configStore = requireTuiSessionConfigStore(params.baseSession);
@@ -1174,6 +1243,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   let pendingProvider = params.provider;
   let pendingProfile = params.profile;
   let pendingPermissionMode = params.permissionMode;
+  const sessionProviderKeys: Record<string, string> = {};
   let liveSession: TuiSessionShape | null = null;
   let liveSessionPromise: Promise<TuiSessionShape | null> | null = null;
   let liveAgentId: string | null = null;
@@ -1183,6 +1253,18 @@ async function createDeferredDaemonPromptTuiSession(params: {
   // lifecycle hooks, so the TUI must continue owning daemon teardown.
   let liveSessionAwaitingFirstTurn = false;
   let liveSessionStartupDeferred = false;
+  // Speculative provisioning (`prewarm`): while the user types the first
+  // prompt, create the turn-deferred daemon session that prompt would
+  // otherwise create after Enter. Every other entry point waits for it
+  // first, so it is either the session they would have used or, when it
+  // fails or a staged change outdates it, invisible.
+  let speculativeStartup: Promise<void> | null = null;
+  let speculativeSession: TuiSessionShape | null = null;
+  let speculativeStale = false;
+  const speculativeDiscards = new Set<Promise<void>>();
+  // Unused speculative agents whose stop no daemon has taken yet (the daemon
+  // was restarting). Retried on the next daemon session and at close.
+  const pendingRetirements = new Set<string>();
   let daemonClient: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   > | null = null;
@@ -1469,6 +1551,14 @@ async function createDeferredDaemonPromptTuiSession(params: {
   const baseServices = isRecord(base.services) ? base.services : {};
   const deferredServices = {
     ...baseServices,
+    // The options this session is created with, its settled Light or
+    // standard mode included, so the TUI shows what the daemon runs.
+    runtimeOptions: params.runtimeOptions,
+    get providerEnvironment() {
+      return liveSession?.services?.providerEnvironment ?? snapshotProviderEnvironment({
+        ...params.env, ...sessionProviderKeys,
+      });
+    },
     mcpManager: deferredMcpManager,
   };
   const liveBridgeBaseSession = {
@@ -1657,7 +1747,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
     firstMessage: string,
     firstSubmitOptions?: SessionSubmitOptions,
     deferInitialTurn = false,
+    speculative = false,
   ): Promise<TuiSessionShape | null> => {
+    if (!speculative) await awaitSpeculativeStartup();
     if (deferredSessionClosed) {
       throw new Error("Deferred TUI session is already closed.");
     }
@@ -1715,20 +1807,16 @@ async function createDeferredDaemonPromptTuiSession(params: {
         return null;
       }
       const prompt = deferInitialTurn
-        ? "AgenC Editor workspace"
+        ? (speculative ? SPECULATIVE_TUI_SESSION_LABEL : "AgenC Editor workspace")
         : preparedFirstMessage.trim().length > 0
           ? preparedFirstMessage
           : "Multimodal AgenC startup";
       let startedAgentId: string | null = null;
-      // Propagate --dangerously-bypass-approvals-and-sandbox from the user's argv into the daemon-spawned
-      // agent's session config so the deferred TUI mirrors the bootTUI
-      // path. See GAP-PE-GUARDIAN-YOLO-LEAK.
-      const isBypassDeferred = params.permissionMode === "bypassPermissions";
       let startupClient: ConnectedDaemonTuiClient | null = null;
       try {
         const started = await params.deps.startPromptAgent({
           prompt,
-          env: params.env,
+          env: { ...params.env, ...sessionProviderKeys },
           runtimeOptions: params.runtimeOptions,
           cwd: params.cwd,
           ...(pendingModel !== undefined ? { model: pendingModel } : {}),
@@ -1736,6 +1824,12 @@ async function createDeferredDaemonPromptTuiSession(params: {
             ? { provider: pendingProvider }
             : {}),
           ...(pendingProfile !== undefined ? { profile: pendingProfile } : {}),
+          ...(params.taskTokenBudget !== undefined
+            ? { taskTokenBudget: params.taskTokenBudget }
+            : {}),
+          ...(params.taskMaxCalls !== undefined
+            ? { taskMaxCalls: params.taskMaxCalls }
+            : {}),
           ...(params.configPath !== undefined
             ? { configPath: params.configPath }
             : {}),
@@ -1750,21 +1844,27 @@ async function createDeferredDaemonPromptTuiSession(params: {
                     ? content[0].text
                     : content,
               }),
+          ...(!deferInitialTurn && firstSubmitOptions?.userPromptText !== undefined
+            ? { initialUserPromptText: firstSubmitOptions.userPromptText }
+            : {}),
           ...(firstSubmitOptions?.displayUserMessage !== undefined
             ? {
                 initialDisplayUserMessage:
                   firstSubmitOptions.displayUserMessage,
               }
             : {}),
-          // Pre-first-turn `/permissions mode` / `/plan` stage their choice in
-          // `pendingPermissionMode`; an explicit `--dangerously-bypass-approvals-and-sandbox` argv still wins so the
-          // bootTUI-parity bypass behavior is preserved.
-          ...(isBypassDeferred
-            ? { permissionMode: "bypassPermissions" as const }
-            : pendingPermissionMode !== undefined
-              ? { permissionMode: pendingPermissionMode }
-              : {}),
+          // Startup flags seed this value. A later explicit TUI choice is the
+          // mode the first task must enforce, including when leaving bypass.
+          ...(pendingPermissionMode !== undefined
+            ? { permissionMode: pendingPermissionMode }
+            : {}),
           metadata: { mode: "tui" },
+        }).catch((error: unknown) => {
+          const reason = withoutTrailingPeriod(error instanceof Error ? error.message : String(error));
+          throw new Error(
+            `Cannot start daemon session: ${reason}. Fix the cause, run agenc daemon start in another shell, then press Enter to retry.`,
+            { cause: error },
+          );
         });
         startedAgentId = started.agentId;
         if (deferredSessionClosed) {
@@ -1774,6 +1874,16 @@ async function createDeferredDaemonPromptTuiSession(params: {
           env: params.env,
         });
         daemonClient = startupClient;
+        if (speculative) {
+          // Subscribed before the session's own listeners, so a dropped
+          // connection retires the unused session before it can report.
+          const client = startupClient;
+          client.subscribeToConnectionState?.((state) => {
+            if (state.status !== "connected") {
+              retireSpeculativeSessionAfterGap(client);
+            }
+          });
+        }
         if (deferredSessionClosed) {
           throw new Error("Deferred TUI session is already closed.");
         }
@@ -1823,6 +1933,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         liveAgentId = started.agentId;
         liveSessionAwaitingFirstTurn = deferInitialTurn;
         liveSessionStartupDeferred = deferInitialTurn;
+        if (speculative) speculativeSession = liveSession;
         if (deferredSessionClosed) {
           throw new Error("Deferred TUI session is already closed.");
         }
@@ -1846,24 +1957,35 @@ async function createDeferredDaemonPromptTuiSession(params: {
         queuedInputBytes -= submittedInputBytes;
         inFlightQueuedInputs = null;
         for (const subscriber of subscribers) {
-          const unsubscribe = liveSession.subscribeToEvents?.(subscriber);
+          const unsubscribe = subscribeLiveEvents(liveSession, subscriber);
           if (unsubscribe !== undefined) {
             liveUnsubscribers.set(subscriber, unsubscribe);
           }
         }
         attachLiveMcpSurfaceSubscribers(liveSession);
+        // Unused speculative agents a restarting daemon could not take yet.
+        if (pendingRetirements.size > 0) {
+          void flushPendingRetirements(startupClient);
+        }
         return liveSession;
       } catch (error) {
         inFlightQueuedInputs = null;
         for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
         liveUnsubscribers.clear();
         clearLiveMcpSurfaceSubscriptions();
+        if (speculative && speculativeSession === liveSession) {
+          speculativeSession = null;
+        }
         liveSession = null;
         liveAgentId = null;
         liveSessionAwaitingFirstTurn = false;
         liveSessionStartupDeferred = false;
         if (daemonClient === startupClient) daemonClient = null;
-        if (startedAgentId !== null) {
+        if (startedAgentId !== null && speculative) {
+          // Nobody waits on a speculative startup's cleanup: the first prompt
+          // must not, and close() collects it.
+          trackSpeculativeCleanup(retireUnusedAgent(startedAgentId, startupClient));
+        } else if (startedAgentId !== null) {
           await stopDaemonAgentBestEffort({
             deps: params.deps,
             daemonClient: startupClient,
@@ -1884,6 +2006,174 @@ async function createDeferredDaemonPromptTuiSession(params: {
     } finally {
       if (liveSessionPromise === startupPromise) liveSessionPromise = null;
     }
+  };
+
+  /** The barrier every entry point passes before it reads the live session. */
+  const awaitSpeculativeStartup = async (): Promise<void> => {
+    const pending = speculativeStartup;
+    if (pending !== null) await pending;
+  };
+
+  /** Speculative cleanup runs in the background; close() still waits for it. */
+  const trackSpeculativeCleanup = (cleanup: Promise<void>): void => {
+    speculativeDiscards.add(cleanup);
+    void cleanup.finally(() => speculativeDiscards.delete(cleanup));
+  };
+
+  /**
+   * Stop an unused speculative agent with the reason that also archives its
+   * untouched thread. A daemon that cannot take the stop now (it is
+   * restarting) gets it again on the next daemon session or at close.
+   */
+  const retireUnusedAgent = async (
+    agentId: string,
+    client?: ConnectedDaemonTuiClient | null,
+  ): Promise<void> => {
+    pendingRetirements.add(agentId);
+    const stop = { agentId, reason: UNUSED_TUI_PREWARM_STOP_REASON };
+    try {
+      if (client !== undefined && client !== null) {
+        try {
+          await client.request("agent.stop", stop);
+          pendingRetirements.delete(agentId);
+          return;
+        } catch (error) {
+          if (isDaemonSessionGoneError(error)) {
+            pendingRetirements.delete(agentId);
+            return;
+          }
+          /* fall through to a fresh connection */
+        }
+      }
+      await params.deps.stopPromptAgent({ ...stop, env: params.env });
+      pendingRetirements.delete(agentId);
+    } catch (error) {
+      // Nothing is left to retire once the daemon no longer knows the agent
+      // or its thread; any other failure keeps it pending.
+      if (isDaemonSessionGoneError(error)) pendingRetirements.delete(agentId);
+    }
+  };
+
+  const flushPendingRetirements = async (
+    client?: ConnectedDaemonTuiClient | null,
+  ): Promise<void> => {
+    await Promise.all(
+      [...pendingRetirements].map((agentId) => retireUnusedAgent(agentId, client)),
+    );
+  };
+
+  /**
+   * Forward a live session's events to a TUI subscriber. An unused
+   * speculative session's daemon-connection notices stay hidden: before the
+   * first prompt a daemon restart is as invisible as it is without one.
+   */
+  const subscribeLiveEvents = (
+    live: TuiSessionShape,
+    subscriber: (event: unknown) => void,
+  ): (() => void) | undefined =>
+    live.subscribeToEvents?.((event) => {
+      if (
+        live === speculativeSession &&
+        speculativeSessionUnused() &&
+        isDaemonConnectionNotice(event)
+      ) {
+        return;
+      }
+      subscriber(event);
+    });
+
+  /**
+   * The daemon connection under the unused speculative session dropped (a
+   * daemon restart, for one). Detach at once, so the TUI hears nothing from
+   * this session and its client stops reconnecting, then retire the agent and
+   * its untouched thread. The first prompt creates its session on demand, as
+   * it would have without the speculative one.
+   */
+  const retireSpeculativeSessionAfterGap = (
+    client: ConnectedDaemonTuiClient,
+  ): void => {
+    if (
+      deferredSessionClosed ||
+      daemonClient !== client ||
+      !speculativeSessionUnused()
+    ) {
+      return;
+    }
+    const agentId = liveAgentId;
+    speculativeSession = null;
+    void detachLiveSession();
+    if (agentId !== null) trackSpeculativeCleanup(retireUnusedAgent(agentId));
+  };
+
+  /**
+   * Any other use (a shell command, rule edit or goal) makes the speculative
+   * session the ordinary turn-deferred session that use would have created.
+   */
+  const claimLiveSession = (
+    live: TuiSessionShape | null,
+  ): TuiSessionShape | null => {
+    if (live !== null && live === speculativeSession) speculativeSession = null;
+    return live;
+  };
+
+  /** The speculative session exists and no first prompt has used it. */
+  const speculativeSessionUnused = (): boolean =>
+    speculativeSession !== null &&
+    liveSession === speculativeSession &&
+    liveSessionAwaitingFirstTurn &&
+    liveSessionStartupDeferred;
+
+  /**
+   * Return to the cold state a staged startup change expects: detach now,
+   * then stop the unused agent with the reason a TUI closed before its first
+   * prompt uses. The next prompt creates its session as it would have.
+   */
+  const discardSpeculativeSession = (): void => {
+    const agentId = liveAgentId;
+    const client = daemonClient;
+    daemonClient = null;
+    speculativeSession = null;
+    const detached = detachLiveSession();
+    trackSpeculativeCleanup((async () => {
+      await detached;
+      if (agentId !== null) await retireUnusedAgent(agentId, client);
+      await client?.close().catch(() => {
+        /* best effort */
+      });
+    })());
+  };
+
+  const prewarm = (): void => {
+    if (
+      deferredSessionClosed ||
+      liveSession !== null ||
+      liveSessionPromise !== null ||
+      speculativeStartup !== null
+    ) {
+      return;
+    }
+    speculativeStale = false;
+    const startup = (async () => {
+      let created: TuiSessionShape | null;
+      try {
+        created = await ensureLiveSession("", undefined, true, true);
+      } catch {
+        // Invisible: the first prompt starts its session as before.
+        return;
+      }
+      if (
+        created !== null &&
+        speculativeStale &&
+        created === speculativeSession &&
+        speculativeSessionUnused()
+      ) {
+        discardSpeculativeSession();
+      }
+    })();
+    speculativeStartup = startup;
+    void startup.finally(() => {
+      if (speculativeStartup === startup) speculativeStartup = null;
+    });
   };
 
   const submitToDeferredFirstTurn = async (
@@ -2027,6 +2317,26 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // to the daemon-backed session after attach and exposes only empty passive
     // state before then; it intentionally replaces any bootstrap manager.
     services: deferredServices,
+    useSessionProviderKey: async (provider, apiKey) => {
+      await awaitSpeculativeStartup();
+      if (deferredSessionClosed || liveSessionPromise !== null) {
+        throw new Error("Wait for session startup to finish, then try again.");
+      }
+      const envVar = canonicalProviderApiKeyEnvVar(provider);
+      if (envVar === undefined || !apiKey.trim() || /\s/u.test(apiKey)) {
+        throw new Error("A provider API key must be a single non-empty token.");
+      }
+      if (liveSession !== null) {
+        if (liveSession.useSessionProviderKey === undefined) {
+          throw new Error("This daemon cannot replace session credentials.");
+        }
+        await liveSession.useSessionProviderKey(provider, apiKey);
+      }
+      // Before the first prompt, no daemon agent exists. Stage only the
+      // provider ingress snapshot for agent.create; hooks and process.env
+      // keep their original environment. Nothing persists this secret.
+      sessionProviderKeys[envVar] = apiKey;
+    },
     mcpSurfaceSnapshot: currentMcpSurfaceSnapshot,
     refreshMcpSurface: refreshCurrentMcpSurface,
     // Process polling is observational: opening /tasks must not provision an
@@ -2043,6 +2353,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         (goalParams.action === "set"
           ? await ensureLiveSession("", undefined, true)
           : null);
+      if (goalParams.action === "set") claimLiveSession(live);
       if (live === null) return { ok: false, message: "No goal is set." };
       if (typeof live.updateDaemonSessionGoal !== "function") {
         throw new Error("This daemon session does not support /goal.");
@@ -2081,8 +2392,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // ambiguous transport failure is never replayed against a new session.
     executeShellCommand: async (shellParams) => {
       shellParams.signal?.throwIfAborted();
-      const live =
-        liveSession ?? (await ensureLiveSession("", undefined, true));
+      const live = claimLiveSession(
+        liveSession ?? (await ensureLiveSession("", undefined, true)),
+      );
       const execute = live?.executeShellCommand;
       if (live === null || typeof execute !== "function") {
         throw new Error(
@@ -2174,7 +2486,49 @@ async function createDeferredDaemonPromptTuiSession(params: {
       }
       return live.partialCompactFromMessage(compactParams);
     },
+    rewindConversationToMessage: async (rewindParams) => {
+      const live = liveSession;
+      if (live === null || typeof live.rewindConversationToMessage !== "function") {
+        throw new Error("No live conversation is available to rewind.");
+      }
+      return live.rewindConversationToMessage(rewindParams);
+    },
+    previewFileRewind: async (rewindParams) => {
+      const live = liveSession;
+      if (live === null || typeof live.previewFileRewind !== "function") {
+        throw new Error("No live conversation is available to preview a file rewind.");
+      }
+      return live.previewFileRewind(rewindParams);
+    },
+    rewindFilesToMessage: async (rewindParams) => {
+      const live = liveSession;
+      if (live === null || typeof live.rewindFilesToMessage !== "function") {
+        throw new Error("No live conversation is available to restore files.");
+      }
+      return live.rewindFilesToMessage(rewindParams);
+    },
+    rollbackCompaction: async (rollbackParams) => {
+      const live = liveSession;
+      if (live === null) {
+        throw new Error("No conversation has started. There is no compaction to roll back.");
+      }
+      if (typeof live.rollbackCompaction !== "function") {
+        throw new Error("Compaction rollback is not supported by this daemon session.");
+      }
+      return live.rollbackCompaction(rollbackParams);
+    },
+    extendCompactionRollbackRetention: async (retentionParams) => {
+      const live = liveSession;
+      if (live === null) {
+        throw new Error("No conversation has started. There is no compaction to retain.");
+      }
+      if (typeof live.extendCompactionRollbackRetention !== "function") {
+        throw new Error("Compaction retention is not supported by this daemon session.");
+      }
+      return live.extendCompactionRollbackRetention(retentionParams);
+    },
     applyProviderModelSelection: async (selection) => {
+      await awaitSpeculativeStartup();
       const live = liveSession as TuiSessionShape | null;
       if (live !== null) {
         if (typeof live.applyProviderModelSelection !== "function") {
@@ -2198,6 +2552,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // Once a live daemon session exists every caller must use the awaited
     // authority above so rejection and disconnects cannot be hidden.
     setPendingProviderSwitch: (pending) => {
+      // A synchronous staging site cannot wait for speculative startup. The
+      // staged choice is for a session that does not exist yet, so retire
+      // the unused speculative one (now, or when its startup lands).
+      if (pending !== null) {
+        if (speculativeStartup !== null) speculativeStale = true;
+        else if (speculativeSessionUnused()) discardSpeculativeSession();
+      }
       const live = liveSession as TuiSessionShape | null;
       if (live !== null) {
         throw new Error(
@@ -2215,6 +2576,14 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // synthetic SessionSetPermissionModeResult so `/permissions mode` and
     // `/plan` report honest success instead of throwing / silently faking.
     setDaemonPermissionMode: async (mode) => {
+      await awaitSpeculativeStartup();
+      // A cold rule edit or shell command may already have dispatched startup
+      // with the old mode. Wait for that session and commit through its live
+      // authority; staging now would be overwritten by the attach snapshot.
+      const pendingStartup = liveSessionPromise;
+      if (liveSession === null && pendingStartup !== null) {
+        await pendingStartup;
+      }
       if (liveSession === null) {
         if (
           !(USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
@@ -2239,8 +2608,11 @@ async function createDeferredDaemonPromptTuiSession(params: {
           }
         ).services?.permissionModeRegistry;
         const previousMode = registry?.current?.().mode ?? "default";
-        // Validated above against USER_ADDRESSABLE_PERMISSION_MODES, which is a
-        // subset of the daemon prompt-agent permissionMode union.
+        if (registry?.update !== undefined && registry.current !== undefined) {
+          await registry.update({ ...registry.current(), mode });
+        }
+        // Stage only a successfully published choice. A rejected local update
+        // must leave the first task's startup mode unchanged.
         pendingPermissionMode = mode as
           | "default"
           | "plan"
@@ -2248,9 +2620,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
           | "bypassPermissions"
           | "dontAsk"
           | "auto";
-        if (registry?.update !== undefined && registry.current !== undefined) {
-          await registry.update({ ...registry.current(), mode });
-        }
         return {
           sessionId: "",
           applied: previousMode !== mode,
@@ -2265,6 +2634,18 @@ async function createDeferredDaemonPromptTuiSession(params: {
         );
       }
       return live.setDaemonPermissionMode(mode);
+    },
+    // Rule edits must reach the daemon even through this outer lazy wrapper.
+    // Create a turn-free session for a cold edit, so no first model turn can
+    // start before the daemon has acknowledged its permission rules.
+    mutateDaemonPermissionRule: async (ruleParams) => {
+      const live = claimLiveSession(
+        liveSession ?? (await ensureLiveSession("", undefined, true)),
+      );
+      if (typeof live?.mutateDaemonPermissionRule !== "function") {
+        throw new Error("Permission-rule editing is not supported by this daemon session.");
+      }
+      return live.mutateDaemonPermissionRule(ruleParams);
     },
     // `/hooks` reads the daemon session's REAL configured-hooks runtime
     // through liveSession.getDaemonHooksStatus. Hooks live on the daemon
@@ -2306,6 +2687,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // session. Before the first turn, stage the profile and reload only the
     // daemon-global snapshot used by Editor prediction.
     applyDaemonConfig: async (configParams) => {
+      await awaitSpeculativeStartup();
       if (liveSession === null) {
         if (configParams.profile !== undefined) {
           pendingProfile = configParams.profile;
@@ -2326,6 +2708,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         return {
           sessionId: "pending",
           applied: false,
+          ...((configParams.taskBudgetLevel !== undefined || configParams.taskTokenBudget !== undefined) ? { taskTokenBudget: configStore.current().task_token_budget ?? 0 } : {}),
           summary:
             staged.length > 0
               ? `${staged.join("; ")}; the first conversation will use it.`
@@ -2357,6 +2740,10 @@ async function createDeferredDaemonPromptTuiSession(params: {
       if (deferredSessionClosed) {
         throw new Error("Deferred TUI session is already closed.");
       }
+      await awaitSpeculativeStartup();
+      if (deferredSessionClosed) {
+        throw new Error("Deferred TUI session is already closed.");
+      }
       const activatesAgentStartup =
         opts?.source !== AUTONOMOUS_SUBMIT_SOURCE &&
         !isLocalSlashCommandInput(message);
@@ -2385,7 +2772,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
               })
             : { kind: "prompt" as const, content: message };
         if (firstMessage.kind === "handled") return;
-        const submissionSession = liveSession;
+        // From here the session carries the user's prompt: it is no longer
+        // speculative, and its daemon notices reach the TUI as usual.
+        const submissionSession = claimLiveSession(liveSession);
         try {
           await submitToDeferredFirstTurn(
             firstMessage.content,
@@ -2658,7 +3047,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
       subscribers.add(cb);
       try {
         if (liveSession !== null) {
-          const unsubscribe = liveSession.subscribeToEvents?.(cb);
+          const unsubscribe = subscribeLiveEvents(liveSession, cb);
           if (unsubscribe !== undefined) liveUnsubscribers.set(cb, unsubscribe);
         }
       } catch (error) {
@@ -2671,24 +3060,43 @@ async function createDeferredDaemonPromptTuiSession(params: {
         liveUnsubscribers.delete(cb);
       };
     },
-    getInitialTranscriptEvents: () =>
-      liveSession?.getInitialTranscriptEvents?.() ??
+    subscribeToCompactProgress: (cb: (event: CompactionProgressEvent) => void): (() => void) =>
+      session.subscribeToEvents!((event) => {
+        const progress = readCompactionProgressEvent(event);
+        if (progress !== undefined) cb(progress);
+      }),
+    getInitialTranscriptEvents: () => [
+      ...(liveSession?.getInitialTranscriptEvents?.() ??
       (typeof base.getInitialTranscriptEvents === "function"
         ? (base.getInitialTranscriptEvents as () => readonly unknown[])()
-        : []),
+        : [])),
+      ...(params.initialNotice === undefined ? [] : [{
+        type: "slash_result", result: { kind: "error", message: params.initialNotice },
+      }]),
+    ],
   };
 
   return {
     session,
+    prewarm,
+    retireUnusedOnTerminalLoss: async () => {
+      await awaitSpeculativeStartup();
+      if (speculativeSessionUnused()) discardSpeculativeSession();
+      await Promise.all(speculativeDiscards);
+    },
     close: async () => {
       deferredSessionClosed = true;
+      await awaitSpeculativeStartup();
+      await Promise.all(speculativeDiscards);
       const pendingLiveSession = liveSessionPromise;
       if (pendingLiveSession !== null) {
         await pendingLiveSession.catch(() => {
           /* late startup performs its own agent/client cleanup */
         });
       }
-      if (liveSessionStartupDeferred && liveAgentId !== null) {
+      if (speculativeSessionUnused() && liveAgentId !== null) {
+        await retireUnusedAgent(liveAgentId, daemonClient);
+      } else if (liveSessionStartupDeferred && liveAgentId !== null) {
         await stopDaemonAgentBestEffort({
           deps: params.deps,
           daemonClient,
@@ -2700,6 +3108,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
         });
       }
       await detachLiveSession();
+      // Unused speculative agents a restarting daemon could not take yet.
+      await flushPendingRetirements();
       const pendingControlClient = daemonControlClientPromise;
       if (pendingControlClient !== null) {
         await pendingControlClient.catch(() => {
@@ -2733,6 +3143,26 @@ export const __createDeferredDaemonPromptTuiSessionForTest =
 function isLocalSlashCommandInput(message: string): boolean {
   const trimmed = message.trimStart();
   return trimmed.startsWith("/") && !/[\r\n]/.test(message);
+}
+
+
+/**
+ * A daemon session's report that its daemon connection dropped, is coming
+ * back, or could not bring the session back after a restart.
+ */
+function isDaemonConnectionNotice(event: unknown): boolean {
+  if (!isRecord(event)) return false;
+  if (
+    typeof event.id === "string" &&
+    event.id.startsWith("daemon-runtime-settings-authority-failed-")
+  ) {
+    return true;
+  }
+  return (
+    event.type === "warning" &&
+    isRecord(event.payload) &&
+    event.payload.cause === "daemon_connection_state"
+  );
 }
 
 
@@ -2846,7 +3276,16 @@ export const __wrapDaemonTuiSessionWithPromptPreparationForTest =
   wrapDaemonTuiSessionWithPromptPreparation;
 
 
-type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
+/** The TUI owns the terminal, so a dropped sandbox is also shown in its footer. */
+function queueSandboxBypassTuiNotice(sandboxBypass: StartupSandboxBypass): void {
+  if (sandboxBypass.tuiNotice === undefined) return;
+  queueTuiStartupNotice({ key: "sandbox-unavailable", text: sandboxBypass.tuiNotice });
+}
+
+type BootTUIEntryArgs = BootTUIArgs & {
+  readonly resumeId?: string;
+  readonly resumeFailureMessage?: string;
+};
 
 
 async function resumeColdDaemonSession(params: {
@@ -2861,9 +3300,14 @@ async function resumeColdDaemonSession(params: {
     env: sessionEnv,
   });
   writeStartupSandboxBypassNotice(sandboxBypass);
+  queueSandboxBypassTuiNotice(sandboxBypass);
+  // Only an explicit --light/--standard travels: the daemon keeps the mode
+  // the session recorded and never applies the new-session default here.
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupFlags.simpleMode === true,
-    ...(startupFlags.lightMode === true ? { lightMode: true } : {}),
+    ...(startupFlags.lightMode !== undefined
+      ? { lightMode: startupFlags.lightMode }
+      : {}),
     dangerouslyBypassApprovalsAndSandbox:
       sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
   });
@@ -2893,6 +3337,12 @@ async function resumeColdDaemonSession(params: {
     ...(startupFlags.profile !== undefined
       ? { profile: startupFlags.profile }
       : {}),
+    ...(startupFlags.taskTokenBudget !== undefined
+      ? { taskTokenBudget: startupFlags.taskTokenBudget }
+      : {}),
+    ...(startupFlags.taskMaxCalls !== undefined
+      ? { taskMaxCalls: startupFlags.taskMaxCalls }
+      : {}),
     ...(startupLayers.flagConfigPath !== undefined
       ? { configPath: startupLayers.flagConfigPath }
       : {}),
@@ -2903,6 +3353,33 @@ async function resumeColdDaemonSession(params: {
   });
 }
 
+
+async function prewarmDeferredTuiSession(
+  deferred: { readonly prewarm: () => void },
+  context: { readonly agencHome: string; readonly env: NodeJS.ProcessEnv },
+): Promise<void> {
+  // Only an interactive terminal has a user still typing the first prompt;
+  // driven input arrives at once and takes the cold path unchanged.
+  if (process.stdin.isTTY !== true) return;
+  try {
+    const { shouldShowFirstRunOnboarding } = await import(
+      "../onboarding/projectOnboardingState.js"
+    );
+    if (
+      shouldShowFirstRunOnboarding({
+        agencHome: context.agencHome,
+        env: context.env,
+        hasInitialPrompt: false,
+        isInteractive: process.stdin.isTTY === true,
+      })
+    ) {
+      return;
+    }
+    deferred.prewarm();
+  } catch {
+    // Provisioning ahead of the first prompt is an optimization only.
+  }
+}
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
 export async function bootTUIEntry(
@@ -2917,9 +3394,15 @@ export async function bootTUIEntry(
     env: sessionEnv,
   });
   writeStartupSandboxBypassNotice(sandboxBypass);
+  queueSandboxBypassTuiNotice(sandboxBypass);
+  // An explicit --light/--standard only. A new session settles an unset mode
+  // from config.toml `light_mode` and the Light default once config is
+  // loaded below; a resumed session keeps the mode it recorded.
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupCliFlags.simpleMode === true,
-    ...(startupCliFlags.lightMode === true ? { lightMode: true } : {}),
+    ...(startupCliFlags.lightMode !== undefined
+      ? { lightMode: startupCliFlags.lightMode }
+      : {}),
     dangerouslyBypassApprovalsAndSandbox:
       sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
   });
@@ -2936,6 +3419,7 @@ export async function bootTUIEntry(
         argv: process.argv,
         startupCliFlags,
         cwd: cliCwd.cwd,
+        sandboxBypass,
       }))
     ) {
       return 1;
@@ -3014,10 +3498,16 @@ export async function bootTUIEntry(
             ? { provider: startupCliFlags.provider }
             : {}),
           ...(startupCliFlags.model !== undefined
-            ? { model: startupCliFlags.model }
+            ? { model: startupCliFlags.model, explicitModel: startupCliFlags.model }
             : {}),
           ...(startupCliFlags.profile !== undefined
             ? { profile: startupCliFlags.profile }
+            : {}),
+          ...(startupCliFlags.taskTokenBudget !== undefined
+            ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+            : {}),
+          ...(startupCliFlags.taskMaxCalls !== undefined
+            ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
             : {}),
           ...(startupLayers.flagConfigPath !== undefined
             ? { configPath: startupLayers.flagConfigPath }
@@ -3027,12 +3517,20 @@ export async function bootTUIEntry(
             : {}),
         });
         const configStore = baseSession.services.configStore;
+        // The new session's mode: the flag, then config.toml `light_mode`,
+        // then Light. The footer and the daemon session read this one value.
+        const sessionRuntimeOptions = withDefaultLightMode(
+          runtimeOptions,
+          configStore.current().light_mode,
+        );
         const deferred = await createDeferredDaemonPromptTuiSession({
           baseSession,
+          ...(args.resumeFailureMessage !== undefined
+            ? { initialNotice: args.resumeFailureMessage } : {}),
           deps,
           agencHome: configStore.agencHome,
           env: sessionEnv,
-          runtimeOptions,
+          runtimeOptions: sessionRuntimeOptions,
           cwd: workspaceRoot,
           clientId: `agenc-tui-${process.pid}`,
           ...(startupCliFlags.provider !== undefined
@@ -3043,6 +3541,12 @@ export async function bootTUIEntry(
             : {}),
           ...(startupCliFlags.profile !== undefined
             ? { profile: startupCliFlags.profile }
+            : {}),
+          ...(startupCliFlags.taskTokenBudget !== undefined
+            ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+            : {}),
+          ...(startupCliFlags.taskMaxCalls !== undefined
+            ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
             : {}),
           ...(startupLayers.flagConfigPath !== undefined
             ? { configPath: startupLayers.flagConfigPath }
@@ -3058,10 +3562,22 @@ export async function bootTUIEntry(
             ? { permissionMode: idlePermissionMode }
             : {}),
         });
-        const boot = await loadBootTUI();
+        // Provision the daemon session while the TUI boots and the user types
+        // the first prompt (the workspace is already trusted), except when
+        // first-run onboarding may still choose the provider and model that
+        // session must start with. The daemon does that work in parallel with
+        // the TUI loading and rendering.
+        void prewarmDeferredTuiSession(deferred, {
+          agencHome: configStore.agencHome,
+          env: sessionEnv,
+        });
         try {
+          const boot = await loadBootTUI();
           const handle = await boot({
             session: deferred.session,
+            // A closed terminal exits from the TUI's stdin-loss path, before
+            // the close below: retire an unused speculative session there.
+            beforeTerminalLossExit: () => deferred.retireUnusedOnTerminalLoss(),
             model,
             stdinMode:
               runtimeOptions.stdinDataMode === true ? "data" : "readable",
@@ -3093,12 +3609,22 @@ export async function bootTUIEntry(
         onWarn: (message) => process.stderr.write(`${message}\n`),
       });
       const config = await configStore.reload();
+      const sessionRuntimeOptions = withDefaultLightMode(
+        runtimeOptions,
+        config.light_mode,
+      );
       const profileName = resolvedStartupProfileName(
         startupCliFlags,
         sessionEnv,
       );
       const startup = resolveCanonicalStartupSelection({
         config,
+        env: sessionEnv,
+        metadata: {
+          catalogHome: configStore.homeContext.path,
+          readSavedApiKey: provider => readLocalByokCredential(configStore.homeContext, provider)?.apiKey,
+        },
+        ...(startupCliFlags.model !== undefined ? { explicitModel: startupCliFlags.model } : {}),
         ...(profileName !== undefined ? { profileName } : {}),
       });
       const initialContent = startupContentFromInputs(
@@ -3117,12 +3643,18 @@ export async function bootTUIEntry(
       const started = await deps.startPromptAgent({
         prompt: objective,
         env: sessionEnv,
-        runtimeOptions,
+        runtimeOptions: sessionRuntimeOptions,
         cwd: daemonCwd,
         model: startup.model,
         provider: startup.provider,
         ...(startup.profileName !== undefined
           ? { profile: startup.profileName }
+          : {}),
+        ...(startupCliFlags.taskTokenBudget !== undefined
+          ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+          : {}),
+        ...(startupCliFlags.taskMaxCalls !== undefined
+          ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
           : {}),
         ...(startupLayers.flagConfigPath !== undefined
           ? { configPath: startupLayers.flagConfigPath }
@@ -3141,7 +3673,7 @@ export async function bootTUIEntry(
           agentId: started.agentId,
           clientId: `agenc-tui-${process.pid}`,
           startupCliFlags,
-          runtimeOptions,
+          runtimeOptions: sessionRuntimeOptions,
           initialComposerText:
             args.initialPrompt === undefined ? capturedEarlyInput : "",
         });
@@ -3191,6 +3723,7 @@ export interface AttachAgentTuiEntryArgs {
   readonly daemonClient?: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   >;
+  readonly onMounted?: () => void;
 }
 
 
@@ -3204,6 +3737,7 @@ export async function attachAgentTuiEntry(
   let daemonClient: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   > | null = null;
+  let consumeAttachInput: (() => string) | null = null;
   try {
     validateAgencHome(env);
     daemonClient =
@@ -3226,6 +3760,7 @@ export async function attachAgentTuiEntry(
     ) {
       return 1;
     }
+    consumeAttachInput = await startTuiEarlyInputCapture(true);
     const attachment = await daemonClient.request("agent.attach", {
       agentId: args.agentId,
       clientId: args.clientId,
@@ -3296,26 +3831,46 @@ export async function attachAgentTuiEntry(
           ? value.trim()
           : undefined;
       };
+      const attachedTaskBudget: { taskTokenBudget?: number; taskMaxCalls?: number } = {};
+      for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+        const retained = attachedMetadata?.[key];
+        if (retained !== undefined) {
+          if (typeof retained !== "number" || !Number.isSafeInteger(retained) || retained < 0) {
+            throw new Error(`invalid retained ${key}`);
+          }
+          attachedTaskBudget[key] = retained;
+        }
+        if (startupCliFlags[key] !== undefined && startupCliFlags[key] !== retained) {
+          throw new Error(`cannot change ${key} when attaching to a live session; start a new session`);
+        }
+      }
       const retainedConfigPath = metadataString("configPath");
       if (retainedConfigPath !== undefined && !isAbsolute(retainedConfigPath)) {
         throw new Error("daemon session metadata configPath must be absolute");
       }
       const liveSettings = attachment.runtimeSettings;
       const requestedPermissionMode = startupPermissionMode(startupCliFlags);
+      // `--model provider:id` names the same session model as the bare id the
+      // daemon reports; compare the provider and the model separately.
+      const qualifiedModel = startupCliFlags.model === undefined
+        ? undefined
+        : providerQualifiedModel(startupCliFlags.model);
+      const requestedProvider = startupCliFlags.provider ?? qualifiedModel?.provider;
+      const requestedModel = qualifiedModel?.model ?? startupCliFlags.model;
       if (
-        startupCliFlags.provider !== undefined &&
-        startupCliFlags.provider !== liveSettings.provider
+        requestedProvider !== undefined &&
+        requestedProvider !== liveSettings.provider
       ) {
         throw new Error(
-          `attach-time provider ${startupCliFlags.provider} disagrees with live daemon provider ${liveSettings.provider}`,
+          `attach-time provider ${requestedProvider} disagrees with live daemon provider ${liveSettings.provider}`,
         );
       }
       if (
-        startupCliFlags.model !== undefined &&
-        startupCliFlags.model !== liveSettings.model
+        requestedModel !== undefined &&
+        requestedModel !== liveSettings.model
       ) {
         throw new Error(
-          `attach-time model ${startupCliFlags.model} disagrees with live daemon model ${liveSettings.model}`,
+          `attach-time model ${requestedModel} disagrees with live daemon model ${liveSettings.model}`,
         );
       }
       if (
@@ -3363,6 +3918,7 @@ export async function attachAgentTuiEntry(
         ...(attachProvider !== undefined ? { provider: attachProvider } : {}),
         ...(attachModel !== undefined ? { model: attachModel } : {}),
         ...(attachProfile !== undefined ? { profile: attachProfile } : {}),
+        ...attachedTaskBudget,
         ...(attachConfigPath !== undefined
           ? { configPath: attachConfigPath }
           : {}),
@@ -3407,18 +3963,20 @@ export async function attachAgentTuiEntry(
             )
           : [];
       try {
+        // Capture until the transcript, context and renderer are ready. Enter
+        // during loading leaves a draft for review; it never auto-submits.
+        const initialComposerText = (args.initialComposerText ?? "") + (consumeAttachInput?.() ?? "");
+        consumeAttachInput = null;
         const handle = await boot({
           session: preparedDaemonSession,
           model,
           stdinMode:
             runtimeOptions.stdinDataMode === true ? "data" : "readable",
-          ...(args.initialComposerText !== undefined &&
-          args.initialComposerText.length > 0
-            ? { initialComposerText: args.initialComposerText }
-            : {}),
+          ...(initialComposerText.length > 0 ? { initialComposerText } : {}),
           ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
         });
         activeInkUnmount = handle.unmount;
+        args.onMounted?.();
         await handle.waitUntilExit();
       } finally {
         activeInkUnmount = null;
@@ -3442,6 +4000,7 @@ export async function attachAgentTuiEntry(
     }
     throw error;
   } finally {
+    consumeAttachInput?.();
     await daemonClient?.close().catch(() => {
       /* best effort */
     });
@@ -3450,46 +4009,81 @@ export async function attachAgentTuiEntry(
 
 
 /** Resume a daemon-owned session through the TUI. */
-export async function resumeTUIEntry(
-  args: ResumeTUIArgs,
-  startupCliFlags: StartupCliFlags = readStartupCliFlags(process.argv),
-): Promise<number> {
-  const cliCwd = resolveCliCwdForStartup(process.env);
-  if (!cliCwd.ok) {
-    return writeUnavailableCliCwd();
-  }
-  const workspaceRoot = cliCwd.cwd;
-  const agencHome = resolveAgencHome(process.env);
-  const resolved = resolveResumeSessionId(
-    workspaceRoot,
-    args.resumeId,
-    agencHome,
-  );
-  switch (resolved.kind) {
-    case "ok":
-      return resumeResolvedTUIEntry(resolved, args.resumeId, {
-        agencHome,
-        startupCliFlags,
-      });
-    case "ambiguous":
-      process.stderr.write(
-        `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
-      );
-      return 1;
-    case "none":
-    case "not_found":
-      process.stderr.write(
-        `agenc: session not found in either legacy or hashed project layout: ${args.resumeId}\n`,
-      );
-      return 1;
-    case "search_incomplete":
-      process.stderr.write(
-        `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit; narrow the session id and retry\n`,
-      );
-      return 1;
+export class ResumeTuiOpenError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ResumeTuiOpenError";
   }
 }
 
+export async function resumeTUIEntry(
+  args: ResumeTUIArgs,
+  startupCliFlags: StartupCliFlags = readStartupCliFlags(process.argv),
+  options?: { readonly throwOnOpenFailure?: boolean },
+): Promise<number> {
+  let opened = false;
+  try {
+    const exitCode = await resumeTUIEntryAttempt(args, startupCliFlags, () => {
+      opened = true;
+    });
+    if (!opened && options?.throwOnOpenFailure === true) {
+      throw new ResumeTuiOpenError("The selected conversation could not be opened.");
+    }
+    return exitCode;
+  } catch (error) {
+    if (!opened && options?.throwOnOpenFailure === true && !(error instanceof ResumeTuiOpenError)) {
+      throw new ResumeTuiOpenError(error instanceof Error ? error.message : String(error), { cause: error });
+    }
+    throw error;
+  }
+}
+
+async function resumeTUIEntryAttempt(
+  args: ResumeTUIArgs,
+  startupCliFlags: StartupCliFlags,
+  onMounted: () => void,
+): Promise<number> {
+  const consumeResumeInput = await startTuiEarlyInputCapture(true);
+  try {
+    const cliCwd = resolveCliCwdForStartup(process.env);
+    if (!cliCwd.ok) {
+      return writeUnavailableCliCwd();
+    }
+    const workspaceRoot = cliCwd.cwd;
+    const agencHome = resolveAgencHome(process.env);
+    const resolved = await resolveInitialResumeSession(() => resolveResumeSessionId(
+      workspaceRoot,
+      args.resumeId,
+      agencHome,
+    ));
+    switch (resolved.kind) {
+      case "ok":
+        return await resumeResolvedTUIEntry(resolved, args.resumeId, {
+          agencHome,
+          startupCliFlags,
+          onMounted,
+        });
+      case "ambiguous":
+        process.stderr.write(
+          `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
+        );
+        return 1;
+      case "none":
+      case "not_found":
+        process.stderr.write(
+          `agenc: session not found in either legacy or hashed project layout: ${args.resumeId}\n`,
+        );
+        return 1;
+      case "search_incomplete":
+        process.stderr.write(
+          `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit; narrow the session id and retry\n`,
+        );
+        return 1;
+    }
+  } finally {
+    consumeResumeInput();
+  }
+}
 
 async function resumeResolvedTUIEntry(
   descriptor: ResolvedResumeSession,
@@ -3499,6 +4093,7 @@ async function resumeResolvedTUIEntry(
     readonly startupCliFlags?: StartupCliFlags;
     readonly initialComposerText?: string;
     readonly startupImages?: readonly string[];
+    readonly onMounted?: () => void;
   },
 ): Promise<number> {
   const startupCliFlags =
@@ -3529,7 +4124,9 @@ async function resumeResolvedTUIEntry(
     let authoritative: ResolvedResumeSession;
     try {
       assertResumeCwdProof(descriptor.cwd, cwdProof);
-      authoritative = reproveResumeDescriptor(descriptor, options.agencHome);
+      // A daemon may still be appending to this session (a terminal closed mid-reply): appends
+      // only. The exact descriptor is reproved again before any cold resume.
+      authoritative = reproveResumeSessionAllowingAppend(descriptor, options.agencHome);
     } catch (error) {
       process.stderr.write(
         `agenc: unable to resume session '${displayId}': ${
@@ -3554,6 +4151,7 @@ async function resumeResolvedTUIEntry(
       );
       return 1;
     }
+    process.stderr.write(`Restoring session ${displayId}...\n`);
     const daemonClient = await deps.createConnectedTuiClient();
     let transferred = false;
     try {
@@ -3605,6 +4203,7 @@ async function resumeResolvedTUIEntry(
         clientId: `agenc-tui-${process.pid}`,
         daemonClient,
         startupCliFlags,
+        ...(options.onMounted !== undefined ? { onMounted: options.onMounted } : {}),
         ...(options.initialComposerText !== undefined
           ? { initialComposerText: options.initialComposerText }
           : {}),
@@ -3637,7 +4236,7 @@ export async function continueTUIEntry(
   }
   const workspaceRoot = cliCwd.cwd;
   const agencHome = resolveAgencHome(process.env);
-  const resolved = resolveLatestSessionId(workspaceRoot, agencHome);
+  const resolved = await resolveInitialResumeSession(() => resolveLatestSessionId(workspaceRoot, agencHome));
   if (resolved.kind === "search_incomplete") {
     process.stderr.write(
       `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit; retry with an exact session id\n`,
@@ -3779,6 +4378,16 @@ export async function main(): Promise<number> {
         env: process.env,
         cwd: agentStartCwd,
         ensureDaemonReady: async () => {
+          if (
+            !(await requireWindowsSandboxChoiceBeforeTui({
+              env: process.env,
+              argv: process.argv,
+              cwd: agentStartCwd,
+              useEnvWorkspace: false,
+            }))
+          ) {
+            throw new Error("running without a sandbox on Windows was not accepted");
+          }
           if (
             !(await requireProjectTrustForTui({
               env: process.env,

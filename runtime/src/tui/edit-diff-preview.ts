@@ -58,7 +58,7 @@ interface EditPair {
 
 /**
  * Extract the diffable old/new pairs from a tool-use input.
- *  - Edit:      one pair from `old_string`/`new_string`.
+ *  - Edit:      one pair from `old_string`/`new_string`, or each `oldText`/`newText` in `edits[]`.
  *  - MultiEdit: one pair per entry in `edits[]`.
  *  - Write:     one pair from `""` -> `content` (whole-file add).
  * Returns null when the input carries no usable change (so the caller can skip
@@ -78,14 +78,14 @@ export function editPairsFromInput(
     return { file, pairs: [{ oldString: "", newString: content }] };
   }
 
-  if (toolName === "MultiEdit") {
+  if (toolName === "MultiEdit" || (toolName === "Edit" && Array.isArray(input.edits))) {
     const rawEdits = Array.isArray(input.edits) ? input.edits : [];
     const pairs: EditPair[] = [];
     for (const edit of rawEdits) {
       if (!isRecord(edit)) continue;
       pairs.push({
-        oldString: asString(edit.old_string),
-        newString: asString(edit.new_string),
+        oldString: asString(toolName === "Edit" ? edit.oldText : edit.old_string),
+        newString: asString(toolName === "Edit" ? edit.newText : edit.new_string),
       });
     }
     if (pairs.length === 0) return null;
@@ -117,10 +117,27 @@ export function editPairsFromInput(
 export function buildEditDiffPreview(
   toolName: string,
   input: unknown,
+  fileMutation?: unknown,
+  maxLines = EDIT_PREVIEW_MAX_LINES,
 ): EditDiffPreview | null {
   const extracted = editPairsFromInput(toolName, input);
   if (extracted === null) return null;
   const { file, pairs } = extracted;
+  // Completed Write receipts know the previous file contents. Input alone
+  // cannot distinguish an overwrite from a new file, so use the real counts
+  // and avoid displaying unchanged lines as additions for an overwrite.
+  if (toolName === "Write" && isRecord(fileMutation) &&
+      fileMutation.kind === "file_mutation" &&
+      (fileMutation.operation === "write" || fileMutation.operation === "create") &&
+      Number.isSafeInteger(fileMutation.additions) && Number.isSafeInteger(fileMutation.removals) &&
+      (fileMutation.additions as number) >= 0 && (fileMutation.removals as number) >= 0) {
+    const additions = fileMutation.additions as number;
+    const removals = fileMutation.removals as number;
+    if (fileMutation.operation === "write") {
+      return { file, additions, removals, stats: `+${additions} -${removals}`, lines: [], remaining: 0 };
+    }
+  }
+
 
   const lines: DiffPreviewLine[] = [];
   let additions = 0;
@@ -169,14 +186,14 @@ export function buildEditDiffPreview(
   }
 
   const stats = `+${additions} -${removals}`;
-  if (lines.length <= EDIT_PREVIEW_MAX_LINES) {
+  if (lines.length <= maxLines) {
     return { file, stats, lines, remaining: 0, additions, removals };
   }
   return {
     file,
     stats,
-    lines: lines.slice(0, EDIT_PREVIEW_MAX_LINES),
-    remaining: lines.length - EDIT_PREVIEW_MAX_LINES,
+    lines: lines.slice(0, maxLines),
+    remaining: lines.length - maxLines,
     additions,
     removals,
   };

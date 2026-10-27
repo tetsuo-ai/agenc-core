@@ -110,7 +110,6 @@ import { ConfigStore } from "../config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { SessionProviderService } from "./provider-service.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
-import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "../prompts/system-prompt-boundary.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
@@ -343,19 +342,7 @@ function buildSession(
         });
         return {
           requested: runtimeRequest.requested,
-          runtime: {
-            managedKeysEnabled:
-              currentConfig.auth?.managedKeys?.enabled === true,
-            freeManagedCredential:
-              services.authSubscriptionTier === "free" &&
-              isFreeSubscriptionManagedModel(
-                selection.provider,
-                selection.model,
-              ),
-            applyManagedDefaultOutputCap:
-              selection.provider === "openrouter" &&
-              runtimeRequest.settings?.maxOutputTokens === undefined,
-          },
+
         };
       },
     });
@@ -1734,176 +1721,6 @@ describe("Session.consumePendingProviderSwitch", () => {
     ).toBeUndefined();
   });
 
-  it("caps managed OpenRouter switches to the hosted output-token default", async () => {
-    await withEnv(
-      {
-        OPENROUTER_API_KEY: undefined,
-      },
-      async () => {
-        const calls: string[] = [];
-        const authBackend: AuthBackend = {
-          kind: "remote",
-          login: () => ({ authenticated: true, provider: "remote" }),
-          logout: () => ({ authenticated: false }),
-          whoami: () => ({ authenticated: true, provider: "remote" }),
-          vendKey: (provider, sessionId) => {
-            calls.push(`vendKey:${provider}:${sessionId}`);
-            return {
-              kind: "api-key",
-              provider,
-              sessionId,
-              apiKey: "managed-openrouter-key",
-              baseUrl: "https://llm.agenc.tech",
-            };
-          },
-          inferAgencModel: () => ({
-            provider: "openrouter",
-            model: "openai/gpt-5-nano",
-          }),
-          getSubscriptionTier: () => "team",
-        };
-        const session = buildSession({
-          services: {
-            provider: createProvider("openai", {
-              apiKey: "test-key",
-              model: "gpt-5",
-            }),
-            authBackend,
-            authSubscriptionTier: "team",
-            configStore: {
-              current: () => ({
-                auth: { managedKeys: { enabled: true } },
-              }),
-            },
-            modelsManager: {
-              getModelInfo: async (model: string) => ({
-                ...mkModelInfo(),
-                slug: model,
-                contextWindow: 128_000,
-                maxOutputTokens: 128_000,
-                maxOutputTokensUpperLimit: 128_000,
-              }),
-            },
-          },
-        });
-        session.setPendingProviderSwitch({
-          provider: "openrouter",
-          model: "openai/gpt-5-nano",
-        });
-
-        const applied = await consumePendingProviderSwitch(session);
-
-        expect(applied).toEqual({
-          applied: true,
-          provider: "openrouter",
-          model: "openai/gpt-5-nano",
-        });
-        expect(calls).toEqual([]);
-        expect(
-          readProviderFactoryOptions(session.services.provider),
-        ).toMatchObject({
-          model: "openai/gpt-5-nano",
-          extra: {
-            managedCredential: true,
-            maxTokens: 2048,
-          },
-        });
-        expect(
-          readProviderFactoryOptions(session.services.provider),
-        ).not.toHaveProperty("apiKey");
-        expect(
-          readProviderFactoryOptions(session.services.provider),
-        ).not.toHaveProperty("baseURL");
-        expect(session.modelInfo.maxOutputTokens).toBe(2048);
-        expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
-        expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
-      },
-    );
-  });
-
-  it("caps direct managed OpenRouter key switches to the hosted output-token default", async () => {
-    await withEnv(
-      {
-        OPENROUTER_API_KEY: undefined,
-      },
-      async () => {
-        const calls: string[] = [];
-        const authBackend: AuthBackend = {
-          kind: "remote",
-          login: () => ({ authenticated: true, provider: "remote" }),
-          logout: () => ({ authenticated: false }),
-          whoami: () => ({ authenticated: true, provider: "remote" }),
-          vendKey: (provider, sessionId) => {
-            calls.push(`vendKey:${provider}:${sessionId}`);
-            return {
-              kind: "api-key",
-              provider,
-              sessionId,
-              apiKey: "managed-openrouter-key",
-            };
-          },
-          inferAgencModel: () => ({
-            provider: "openrouter",
-            model: "openai/gpt-5-nano",
-          }),
-          getSubscriptionTier: () => "team",
-        };
-        const session = buildSession({
-          services: {
-            provider: createProvider("openai", {
-              apiKey: "test-key",
-              model: "gpt-5",
-            }),
-            authBackend,
-            authSubscriptionTier: "team",
-            configStore: {
-              current: () => ({
-                auth: { managedKeys: { enabled: true } },
-              }),
-            },
-            modelsManager: {
-              getModelInfo: async (model: string) => ({
-                ...mkModelInfo(),
-                slug: model,
-                contextWindow: 128_000,
-                maxOutputTokens: 128_000,
-                maxOutputTokensUpperLimit: 128_000,
-              }),
-            },
-          },
-        });
-        session.setPendingProviderSwitch({
-          provider: "openrouter",
-          model: "openai/gpt-5-nano",
-        });
-
-        const applied = await consumePendingProviderSwitch(session);
-
-        expect(applied).toEqual({
-          applied: true,
-          provider: "openrouter",
-          model: "openai/gpt-5-nano",
-        });
-        expect(calls).toEqual([]);
-        expect(
-          readProviderFactoryOptions(session.services.provider),
-        ).toMatchObject({
-          model: "openai/gpt-5-nano",
-          extra: {
-            managedCredential: true,
-            maxTokens: 2048,
-          },
-        });
-        expect(
-          readProviderFactoryOptions(session.services.provider),
-        ).not.toHaveProperty("apiKey");
-        expect(session.modelInfo.maxOutputTokens).toBe(2048);
-        expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
-        expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
-      },
-    );
-  });
-
   it("does not vend managed keys for local LM Studio switches", async () => {
     await withEnv(
       {
@@ -2014,7 +1831,7 @@ describe("Session.consumePendingProviderSwitch", () => {
         const applied = await consumePendingProviderSwitch(session);
 
         expect(applied.applied).toBe(false);
-        expect(applied.reason).toMatch(/Managed provider keys require/);
+        expect(applied.reason).toMatch(/openrouter provider requires credentials/);
         expect(vendKey).not.toHaveBeenCalled();
         expect(session.services.provider).toBe(startingProvider);
         expect(session.pendingProviderSwitch).toBeNull();
@@ -2060,7 +1877,7 @@ describe("Session.consumePendingProviderSwitch", () => {
     const applied = await consumePendingProviderSwitch(session);
 
     expect(applied.applied).toBe(false);
-    expect(applied.reason).toMatch(/Hosted AgenC model routing/);
+    expect(applied.reason).toMatch(/AgenC accounts no longer provide models/);
     expect(vendKey).not.toHaveBeenCalled();
     expect(session.services.provider).toBe(startingProvider);
   });
@@ -2893,6 +2710,26 @@ describe("Session.partialCompactFromMessage", () => {
 });
 
 describe("Session.rewindConversationToMessage", () => {
+  it("keeps the first Write when selecting the second after hidden goal feedback", async () => {
+    const session = buildSession();
+    const retained = [
+      { role: "user" as const, content: "goal prompt", runtimeOnly: { userMessageId: "goal-prompt", responseItemId: "goal-prompt" } },
+      { role: "user" as const, content: '<goal_gate round="1" of="1">\nContinue.\n</goal_gate>' },
+      { role: "user" as const, content: "Write ONE", runtimeOnly: { userMessageId: "one-prompt", responseItemId: "one-prompt" } },
+      { role: "assistant" as const, content: "Created ONE" },
+    ];
+    session.rolloutStore = { isDegraded: false, appendRollout: vi.fn() } as unknown as Session["rolloutStore"];
+    await session.state.with((state) => {
+      state.history = [...retained,
+        { role: "user", content: "Write TWO", runtimeOnly: { userMessageId: "two-prompt", responseItemId: "two-prompt" } },
+        { role: "assistant", content: "Wrote TWO" },
+      ];
+    });
+    const result = await session.rewindConversationToMessage({ messageOrdinal: 2 });
+    expect(result.ok).toBe(true);
+    expect(session.snapshotHistoryMessages()).toEqual(retained);
+  });
+
   it("commits a durable replacement history before the selected active message", async () => {
     const appendRollout = vi.fn();
     const session = buildSession();
@@ -3303,6 +3140,38 @@ describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () =>
     });
     return { session, file };
   }
+
+  it("previews and restores a durable checkpoint after its prompt leaves compacted history", async () => {
+    const { session, file } = await buildFileRewindFixture();
+    session.rolloutStore = { readAll: () => [{ type: "event_msg", payload: {
+      id: "user-msg-1", msg: { type: "user_message", payload: { message: "rewind target" } },
+    } }] } as unknown as Session["rolloutStore"];
+    await session.state.with(state => { state.history = [{ role: "user", content: "new prompt" }]; });
+    const preview = await session.previewFileRewind({ messageOrdinal: 0, userMessageId: "user-msg-1" });
+    expect(preview).toMatchObject({ ok: true, canRestoreFiles: true, filesChanged: [file] });
+    expect(readFileSync(file, "utf8")).toBe("modified-by-turn");
+    const restored = await session.rewindFilesToMessage({ messageOrdinal: 0, userMessageId: "user-msg-1" });
+    expect(restored.ok).toBe(true);
+    expect(readFileSync(file, "utf8")).toBe("original");
+  });
+
+  it("does not resurrect a checkpoint retired by an explicit transcript reset", async () => {
+    const { session } = await buildFileRewindFixture();
+    await session.state.with(state => { state.history = []; });
+    session.rolloutStore = { readAll: () => [
+      { type: "event_msg", payload: { id: "user-msg-1", msg: { type: "user_message", payload: { message: "old" } } } },
+      { type: "event_msg", payload: { id: "reset", msg: { type: "history_cleared", payload: {} } } },
+    ] } as unknown as Session["rolloutStore"];
+    expect(await session.previewFileRewind({ messageOrdinal: 0, userMessageId: "user-msg-1" }))
+      .toMatchObject({ ok: false, code: "MESSAGE_NOT_FOUND" });
+  });
+
+  it("never falls back to an ordinal when a durable checkpoint id is unknown", async () => {
+    const { session, file } = await buildFileRewindFixture();
+    const preview = await session.previewFileRewind({ messageOrdinal: 0, userMessageId: "missing-id" });
+    expect(preview).toMatchObject({ ok: false, code: "MESSAGE_NOT_FOUND" });
+    expect(readFileSync(file, "utf8")).toBe("modified-by-turn");
+  });
 
   it("previewFileRewind reports restorable files without touching disk", async () => {
     const { session, file } = await buildFileRewindFixture();

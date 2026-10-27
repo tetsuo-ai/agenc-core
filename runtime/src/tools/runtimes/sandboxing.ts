@@ -1,4 +1,6 @@
+import { isRemoteControlAuthorityPath, protectRemoteControlAuthority } from "../../sandbox/remote-control-protection.js";
 import { realpathSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   externalFileSystemPolicy,
@@ -29,7 +31,16 @@ import {
   matchesSessionPlanFile,
   sessionPlanFileAuthority,
 } from "../../planning/session-plan-authority.js";
-import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
+import { isDurableMemoryWritePath, isUnderMemoryRoots } from "../../permissions/path-validation.js";
+import {
+  sessionDurableMemoryWriteRoots,
+  type LiveSessionMemoryServices,
+} from "../../services/extractMemories/memory-paths.js";
+import {
+  LOGS_DATABASE_FILENAME,
+  STATE_DATABASE_FILENAME,
+  WORKFLOW_HANDOFF_STORE_DIRNAME,
+} from "../../state/database-paths.js";
 import type { SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
 import type { ToolRuntimeAttemptContext } from "./context.js";
@@ -38,10 +49,11 @@ import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
-import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { canonicalAuthorityPath, desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
 import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
 import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
+import { McpFilesystemApprovalRequiredError, type McpFilesystemApprovalScope } from "./mcp-filesystem-approval.js";
 
 export interface RuntimeSandboxProfileOptions {
   readonly cwd: string;
@@ -222,7 +234,10 @@ function linuxSandboxStatus(
   },
 ): RuntimePlatformSandboxStatus {
   const candidate = stringValue(turn.agencLinuxSandboxExe) ??
-    stringValue(turn.config?.agencLinuxSandboxExe);
+    stringValue(turn.config?.agencLinuxSandboxExe) ??
+    // A session started in bypass has no helper in its startup snapshot.
+    // After a mode change, the live broker owns the restored sandbox.
+    context.invocation.session?.services?.sandboxExecutionBroker?.status().helperPath;
   if (candidate === undefined) {
     return {
       available: false,
@@ -304,6 +319,7 @@ export function permissionProfileForRuntimeContext(
 function basePermissionProfileForRuntimeContext(
   context: ToolRuntimeAttemptContext,
   options: RuntimeSandboxProfileOptions,
+  includeRemoteReservations = true,
 ): PermissionProfile {
   if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
     return applyRuntimeAdditionalPermissions(
@@ -322,10 +338,13 @@ function basePermissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  const protectedProfile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+  const baseProtectedProfile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
   )));
+  const protectedProfile = includeRemoteReservations
+    ? protectRemoteControlAuthority(baseProtectedProfile)
+    : baseProtectedProfile;
   return routineRunOptions(context.invocation.session) === undefined
     ? protectedProfile
     : confineRoutineProfile(protectedProfile);
@@ -387,7 +406,30 @@ function applyRuntimeAdditionalPermissions(
   return effectivePermissionProfile(profile, normalized);
 }
 
+/** Refusals this gate made: each was made before the tool ran. */
+const REFUSED_BEFORE_RUNNING = new WeakSet<object>();
+
+/**
+ * Whether the sandbox refused this call before the tool ran, at this gate,
+ * rather than from inside a tool that had already started. Only the gate
+ * brands its own errors; nothing a model sends can carry the brand.
+ */
+export function sandboxRefusedBeforeRunning(error: unknown): boolean {
+  return typeof error === "object" && error !== null && REFUSED_BEFORE_RUNNING.has(error);
+}
+
 export function enforceRuntimeSandboxAttempt(
+  input: RuntimeSandboxEnforcementInput,
+): void {
+  try {
+    enforceRuntimeSandboxAttemptChecks(input);
+  } catch (error) {
+    if (error instanceof SandboxDeniedError) REFUSED_BEFORE_RUNNING.add(error);
+    throw error;
+  }
+}
+
+function enforceRuntimeSandboxAttemptChecks(
   input: RuntimeSandboxEnforcementInput,
 ): void {
   const cwd = runtimeCwd(input.context);
@@ -412,6 +454,7 @@ export function enforceRuntimeSandboxAttempt(
     sessionTempRoot,
   );
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
+    if (toolMayMutate(input.tool)) enforceRemoteControlWritePaths(input.context, analyzeWrites(input.tool, input.args, cwd).targets, policy);
     return;
   }
   const shellAccess = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
@@ -481,6 +524,7 @@ export function enforceRuntimeSandboxAttempt(
         denial: "filesystem", target, policy,
       });
     }
+    enforceRemoteControlWritePaths(input.context, [target], policy);
     if (overlapsDesktopAuthority(target, authorityRoot)) {
       throw new SandboxDeniedError("Desktop authority records are reserved for the native host", {
         denial: "filesystem", target, policy,
@@ -488,6 +532,13 @@ export function enforceRuntimeSandboxAttempt(
     }
   }
   if (writes.indeterminate) {
+    const mcpScope = indeterminateMcpWriteScope(input.tool, input.args, cwd);
+    if (mcpScope !== undefined) {
+      // This is an attestation for one MCP tool, never an unsandboxed retry
+      // or a grant to explicit paths. Model arguments cannot set this context.
+      if (input.context.mcpNoFsWritesApproved === true && input.context.approvalResolved) return;
+      throw new McpFilesystemApprovalRequiredError(mcpScope);
+    }
     if (
       policy.kind === "workspace_write" &&
       canDeferIndeterminateWritesToPlatformSandbox(input, cwd)
@@ -515,11 +566,14 @@ export function enforceRuntimeSandboxAttempt(
     );
   }
 
-  // Only the existing file-tool plan/memory and fixed runtime-output exceptions
-  // may bypass the home reservation. Evaluate them against the original profile
-  // so operator denies and the other non-grantable reservations still win.
+  // Only the existing file-tool plan/memory, declared project-store and fixed
+  // runtime-output exceptions may bypass the home reservation. Evaluate them
+  // against the original profile so operator denies and the other
+  // non-grantable reservations still win.
+  // Remote config targets were rejected above. Its kernel-only reservation of
+  // a missing leaf's parent must not swallow these native file exceptions.
   const fileToolProfile = shellAccess === null
-    ? basePermissionProfileForRuntimeContext(input.context, { cwd })
+    ? basePermissionProfileForRuntimeContext(input.context, { cwd }, false)
     : profile;
   for (const target of writes.targets) {
     if (
@@ -531,7 +585,9 @@ export function enforceRuntimeSandboxAttempt(
       ) &&
       !(shellAccess === null &&
         (isActiveSessionPlanFile(input.context, target) ||
-          isDurableMemoryWritePath(target)) &&
+          isSessionDurableMemoryWrite(input.context, target, cwd) ||
+          ((writes.declared ?? []).includes(target) &&
+            isSessionProjectStore(input.context, target))) &&
         agencHomeCarveOutAllowsWrite(fileToolProfile.fileSystem, target, cwd, sessionTempRoot)) &&
       !(shellAccess === null &&
         (writes.declared ?? []).includes(target) &&
@@ -549,12 +605,38 @@ export function enforceRuntimeSandboxAttempt(
   }
 }
 
+const REMOTE_OWNER_ONLY = "Remote control configuration is owner-only and reserved for the native host; edit it outside the agent.";
+
+/** This owner boundary must reject before hooks, classifiers or approval UI. */
+export function remoteControlWriteRefusal(tool: Tool, args: Record<string, unknown>, context?: ToolRuntimeAttemptContext): string | undefined {
+  if (!toolMayMutate(tool)) return undefined;
+  const targets = analyzeWrites(tool, args, context === undefined ? process.cwd() : runtimeCwd(context)).targets;
+  return remoteControlWriteTarget(context, targets) === undefined ? undefined : REMOTE_OWNER_ONLY;
+}
+
+function remoteControlWriteTarget(context: ToolRuntimeAttemptContext | undefined, targets: readonly string[]): string | undefined {
+  const session = context?.invocation.session as { services?: { configStore?: { homeContext?: { path?: string }; managedPaths?: { root?: string } } } } | undefined;
+  const store = session?.services?.configStore;
+  return targets.find(target => isRemoteControlAuthorityPath(target, { home: store?.homeContext?.path, managedRoot: store?.managedPaths?.root, includeAncestors: true }));
+}
+
+function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], policy: SandboxPolicy): void {
+  const target = remoteControlWriteTarget(context, targets);
+  if (target !== undefined) {
+    const message = policy.kind === "workspace_write"
+      ? `sandbox workspace_write blocked write outside workspace: ${target}. ${REMOTE_OWNER_ONLY}`
+      : REMOTE_OWNER_ONLY;
+    throw new SandboxDeniedError(message, { denial: "filesystem", target, policy });
+  }
+}
+
 /**
  * Whether a restricted policy admits a write to one of the AgenC-home paths
- * the file tools may take outside the workspace: the owning session's plan
- * file and the durable memory roots. The root read entry is treated as a
- * write entry so the target's own deny entries still decide. Shell writes
- * never reach this: `shellAccess === null` gates the callers.
+ * the native tools may take outside the workspace: the owning session's plan
+ * file, the durable memory roots and the runtime-owned project stores a
+ * native tool declared (see DECLARABLE_PROJECT_STORES). The root read entry
+ * is treated as a write entry so the target's own deny entries still decide.
+ * Shell writes never reach this: `shellAccess === null` gates the callers.
  */
 export function agencHomeCarveOutAllowsWrite(
   policy: EngineFileSystemSandboxPolicy,
@@ -563,7 +645,10 @@ export function agencHomeCarveOutAllowsWrite(
   sessionTempRoot: string,
 ): boolean {
   if (policy.kind !== "restricted") return false;
-  return canWritePathWithCwd({
+  // The caller already verified a native plan/memory/project-store target.
+  // Skip generic workspace metadata protection (e.g. HOME as workspace with
+  // AGENC_HOME=HOME/.agenc), but retain explicit denies and reservations.
+  return canWriteRuntimeOwnedPathWithCwd({
     ...policy,
     entries: policy.entries.map((entry) =>
       entry.access === "read" && entry.path.kind === "special" &&
@@ -574,11 +659,97 @@ export function agencHomeCarveOutAllowsWrite(
   }, target, cwd, sessionTempRoot);
 }
 
+/**
+ * Whether `target` lies under a durable memory directory the file tools of the
+ * session that owns `services` may write at `cwd`: the global root and the
+ * project directory the session's memory prompt names, resolved from the
+ * session (its ConfigStore, cwd and runtime options). Process-wide state
+ * cannot stand in for it: a daemon's own working directory keys its project
+ * memory, so in a daemon session that named another project's directory and
+ * every memory save was refused. A session without that authority keeps the
+ * process-wide roots. The runtime check below and the background memory
+ * extraction's pre-check both ask this, so they admit the same writes.
+ */
+export function isSessionDurableMemoryWritePath(
+  services: LiveSessionMemoryServices | undefined,
+  target: string,
+  cwd: string,
+): boolean {
+  const roots = sessionDurableMemoryWriteRoots(services, cwd);
+  return roots === undefined
+    ? isDurableMemoryWritePath(target)
+    : isUnderMemoryRoots(target, roots);
+}
+
+function isSessionDurableMemoryWrite(
+  context: ToolRuntimeAttemptContext,
+  target: string,
+  cwd: string,
+): boolean {
+  const services = (context.invocation.session as {
+    readonly services?: LiveSessionMemoryServices;
+  } | undefined)?.services;
+  return isSessionDurableMemoryWritePath(services, target, cwd);
+}
+
 function isActiveSessionPlanFile(
   context: ToolRuntimeAttemptContext,
   target: string,
 ): boolean {
   return matchesSessionPlanFile(target, sessionPlanFileAuthority(context.invocation.session));
+}
+
+/** One storage-key segment, as `projectStorageKey` spells it. */
+const PROJECT_STORE_KEY = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The runtime-owned stores directly under `<agenc-home>/projects/<key>/`
+ * that a native tool may declare as its write target, each named by the
+ * tools that write it: the task board's store (TaskCreate, TaskUpdate), the
+ * project state database (the CSV job result and review tools, WorkflowTool)
+ * and logs database (WorkflowTool opens both), and WorkflowTool's handoff
+ * artifact store. Sessions, memory, file history and every other entry of the
+ * project directory stay outside the workspace sandbox.
+ */
+const DECLARABLE_PROJECT_STORES: ReadonlySet<string> = new Set([
+  "tasks",
+  STATE_DATABASE_FILENAME,
+  LOGS_DATABASE_FILENAME,
+  WORKFLOW_HANDOFF_STORE_DIRNAME,
+]);
+
+/**
+ * Whether `target` is one of the runtime-owned project stores,
+ * `<agenc-home>/projects/<key>/<store>`, under the AgenC home bound to this
+ * session's ConfigStore. Callers apply it only to a target a native tool
+ * declared through `fixedWriteTargets`, never to a path the model wrote.
+ * Both sides are compared canonically, so a store that resolves elsewhere
+ * through a link is not one. Without a bound home there is no authority to
+ * admit anything.
+ */
+function isSessionProjectStore(
+  context: ToolRuntimeAttemptContext,
+  target: string,
+): boolean {
+  const session = context.invocation.session as {
+    readonly services?: { readonly configStore?: { readonly homeContext?: { readonly path?: unknown } } };
+  } | undefined;
+  const home = session?.services?.configStore?.homeContext?.path;
+  if (typeof home !== "string" || !path.isAbsolute(home)) return false;
+  let relative: string;
+  try {
+    relative = path.relative(
+      path.join(canonicalAuthorityPath(home), "projects"),
+      canonicalAuthorityPath(target),
+    );
+  } catch {
+    return false;
+  }
+  if (path.isAbsolute(relative)) return false;
+  const [projectKey, store, ...rest] = relative.split(path.sep);
+  return rest.length === 0 &&
+    projectKey !== undefined && PROJECT_STORE_KEY.test(projectKey) &&
+    store !== undefined && DECLARABLE_PROJECT_STORES.has(store);
 }
 
 function canDeferIndeterminateWritesToPlatformSandbox(
@@ -674,6 +845,25 @@ function analyzeWrites(
     knownSafeWhenTargetless: false,
     declared,
   };
+}
+
+const mcpFilesystemApprovalIdentities = new WeakMap<Tool, string>();
+
+export function indeterminateMcpWriteScope(
+  tool: Tool,
+  args: Record<string, unknown>,
+  cwd: string,
+): McpFilesystemApprovalScope | undefined {
+  const info = tool.mcpInfo;
+  if (info === undefined || typeof info.serverName !== "string" || typeof info.toolName !== "string" ||
+      tool.serverId !== info.serverName || tool.name !== `mcp.${info.serverName}.${info.toolName}` ||
+      !toolMayMutate(tool) || !analyzeWrites(tool, args, cwd).indeterminate) return undefined;
+  let toolIdentity = mcpFilesystemApprovalIdentities.get(tool);
+  if (toolIdentity === undefined) {
+    toolIdentity = randomUUID();
+    mcpFilesystemApprovalIdentities.set(tool, toolIdentity);
+  }
+  return { serverName: info.serverName, toolName: info.toolName, toolIdentity };
 }
 
 function runtimeCwd(context: ToolRuntimeAttemptContext): string {

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { useEffect, useMemo, useReducer } from "react";
+import { selectableUserMessagesFilter } from "./components/message-selector-filter.js";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
+import { getInkInstance } from "./ink/instances.js";
 
 import type { LLMMessage, StreamingToolUse } from "../llm/types.js";
 import {
@@ -10,13 +12,20 @@ import {
 import type { Event } from "../session/event-log.js";
 import type { AdmissionUsageSummary } from "../budget/admission-types.js";
 import { latestSessionUsage } from "../session/usage-summary.js";
+import {
+  EMPTY_PROMPT_CACHE_TALLY,
+  addPromptCacheUsage,
+  promptCacheSharePercent,
+  type PromptCacheTally,
+} from "../session/prompt-cache-share.js";
 import type {
   HistoryReplacedEvent,
   RuntimeTranscriptMessage,
 } from "../session/transcript-replacement.js";
 import type { AgenCBridgeSession } from "./session-types.js";
-import { clampMarkerLine, looksLikeRawToolError, summarizeToolError } from "./tool-error-text.js";
+import { clampMarkerLine, looksLikeRawToolError, summarizeToolError, unwrapToolError } from "./tool-error-text.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
+import { modelToolAliasTarget } from "../tools/model-tool-aliases.js";
 import { formatRealtimeItemSummary } from "./realtime/state.js";
 import {
   isPermissionDeniedToolResult,
@@ -87,6 +96,8 @@ export interface AdaptedTranscript {
    * `turn_start`.
    */
   readonly turnStreamedChars: number;
+  /** Authoritative per-attempt warning; cleared by output or a request boundary. */
+  readonly streamQuietWarning?: string | null;
   /**
    * Most recent provider-reported usage from a `token_count` event, in the
    * assistant-message usage-block shape the context-percentage derivation
@@ -296,6 +307,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   // User action / configuration
   "mcp_auth_required",
   "model_token_limit_config",
+  "task_budget_near_limit",
   "user_prompt_submit_hook_blocked",
   "user_prompt_submit_hook_stopped",
   "user_prompt_submit_hook_threw",
@@ -305,8 +317,8 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "mid_turn_compact_failed",
   "pre_sampling_compact_failed",
   "auto_compact_failed",
-  "auto_compact_degraded",
   "output_reservation_squeezed",
+  "context_fit_shortened",
   "effect_review_required",
   "empty_response_retry",
   "deadline_reserve",
@@ -326,10 +338,15 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "goal_blocked",
   "goal_impossible",
   "goal_judge_unavailable",
-  // Provider / mode change the user just observed
-  "provider_switched",
+  "goal_worktree_baseline_unavailable",
+  // Successful model switches already have command feedback. Raw provider
+  // transition diagnostics stay in the event log, including no-op switches.
+  // Rejections and resumed-model changes still need user-visible guidance.
   "provider_switch_rejected",
   "mode_changed",
+  "permission_mode_queued",
+  "permission_mode_unconfirmed",
+  "permission_mode_sync_failed",
   "resumed_with_different_model",
   // Input mutation
   "file_mention_attachment_dropped",
@@ -338,7 +355,6 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "schema_validation_failed",
   "malformed_tool_call",
   "daemon_connection_state",
-  "stream_idle_warning",
 ]);
 
 /**
@@ -503,7 +519,7 @@ function plainGlobProjection(result: string): {
  * virtual list's height cache (M-TUI-1). The optional `uuid` param keeps
  * external callers unchanged.
  */
-export function makeUserMessage(content: unknown, uuid: string = randomUUID()): any {
+export function makeUserMessage(content: unknown, uuid: string = randomUUID(), messageTimestamp: string = timestamp()): any {
   return {
     type: "user",
     message: {
@@ -511,7 +527,7 @@ export function makeUserMessage(content: unknown, uuid: string = randomUUID()): 
       content: textFromContent(content) || "(empty)",
     },
     uuid,
-    timestamp: timestamp(),
+    timestamp: messageTimestamp,
   };
 }
 
@@ -797,6 +813,18 @@ function pushToolUse(
   out.push(makeToolUseMessage(callId, toolName, input, nextUuid()));
 }
 
+function isInterruptedAdmissionResult(value: unknown): boolean {
+  const parsed = typeof value === "string" ? safeJson(value) : value;
+  const message = typeof parsed === "string" ? parsed : payloadRecord(parsed).error;
+  return typeof message === "string" && /^(?:AdmissionDeniedError: )?execution admission cancelled: interrupted$/u.test(message);
+}
+
+function truncatedToolArgumentsError(value: unknown): string | null {
+  const parsed = payloadRecord(typeof value === "string" ? safeJson(value) : value);
+  return parsed.code === "tool_arguments_truncated" && parsed.executed === false &&
+    typeof parsed.error === "string" ? parsed.error : null;
+}
+
 function pushToolResult(
   out: any[],
   openTools: Set<string>,
@@ -806,6 +834,7 @@ function pushToolResult(
   nextUuid: () => string,
   isError = false,
   rawResult: unknown = result,
+  metadata?: Record<string, unknown>,
 ): void {
   if (!openTools.has(callId)) {
     settledToolCallIds.add(callId);
@@ -837,7 +866,7 @@ function pushToolResult(
     // "without matching start" phrasing from the user-facing lead-in.
     out.push(
       makeSystemMessage(
-        `A tool result arrived out of order and was recovered: ${stringResult(rawResult)}`,
+        `A tool result arrived out of order and was recovered: ${isError ? summarizeToolError(stringResult(rawResult)) : stringResult(rawResult)}`,
         isError ? "error" : "warning",
         nextUuid(),
       ),
@@ -846,7 +875,9 @@ function pushToolResult(
   }
   openTools.delete(callId);
   settledToolCallIds.add(callId);
-  out.push(makeToolResultMessage(callId, result, isError, nextUuid()));
+  const message = makeToolResultMessage(callId, result, isError, nextUuid());
+  if (!isError && metadata?.ui !== undefined) message.fileMutation = metadata.ui;
+  out.push(message);
 }
 
 function streamedToolInput(entry: StreamingToolUse): unknown {
@@ -1057,6 +1088,11 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
     singleCall: true,
     // A turn served in fast mode bills at the model's fast-mode rates.
     ...(payload.speed === "fast" ? { speed: "fast" as const } : {}),
+    // The provider's own charge for the call, when it reported one.
+    ...(typeof payload.providerCostUsd === "number" && Number.isFinite(payload.providerCostUsd) &&
+      payload.providerCostUsd >= 0
+      ? { providerCostUsd: payload.providerCostUsd }
+      : {}),
   };
 }
 
@@ -1065,6 +1101,14 @@ function tokenCountCostUsd(event: SessionTranscriptEvent): number {
   if (unwrapped.type !== "token_count") return 0;
   const usage = usageFromTokenCountPayload(payloadRecord(unwrapped.payload));
   return computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS).costUsd;
+}
+
+/** The session's prompt-cache tally after one event; only `token_count` adds. */
+function promptCacheAfter(tally: PromptCacheTally, event: SessionTranscriptEvent): PromptCacheTally {
+  const unwrapped = unwrap(event);
+  return unwrapped.type === "token_count"
+    ? addPromptCacheUsage(tally, payloadRecord(unwrapped.payload))
+    : tally;
 }
 
 function compactWhitespace(value: string): string {
@@ -1425,6 +1469,10 @@ export function formatStructuredToolResult(
   eventType: string,
   payload: Record<string, unknown>,
 ): readonly { readonly type: "text"; readonly text: string }[] {
+  toolName = modelToolAliasTarget(toolName) ?? toolName;
+  if (payload.isError === true && eventType === "tool_call_completed") {
+    return [{ type: "text", text: unwrapToolError(stringResult(payload.result)) }];
+  }
   // Skill loads return the ENTIRE skill prompt as the tool result — 12k+
   // characters of instructions for the model, not conversation. Rendering it
   // verbatim buries the chat under the full skill text on every invocation
@@ -1711,7 +1759,9 @@ export function formatStructuredToolResult(
     }
   }
 
-  return [{ type: "text", text: clampGenericToolResult(stringResult(result)) }];
+  // Keep the bounded result body available to the expanded transcript.
+  // Renderers summarize it for the ordinary chat view.
+  return [{ type: "text", text: stringResult(result) }];
 }
 
 /**
@@ -1831,7 +1881,9 @@ function collapseRepeatedSystemLines(messages: any[]): any[] {
     if (
       isNotice &&
       repeatedContent === message.content &&
-      previous?.level === message.level
+      previous?.level === message.level &&
+      message.content !== "Turn interrupted." &&
+      message.content !== "Tool execution cancelled: interrupted."
     ) {
       count += 1;
       collapsed[collapsed.length - 1] = {
@@ -1846,6 +1898,12 @@ function collapseRepeatedSystemLines(messages: any[]): any[] {
   }
   return collapsed;
 }
+
+const STREAM_WARNING_RESET_EVENTS = new Set([
+  "turn_start", "turn_started", "turn_complete", "turn_completed",
+  "turn_failed", "turn_aborted", "history_cleared", "history_replaced",
+  "stream_error", "tool_call_started", "tool_input_block_start",
+]);
 
 export function adaptTranscriptEvents(
   events: readonly SessionTranscriptEvent[],
@@ -1862,6 +1920,7 @@ export function adaptTranscriptEvents(
   const toolNames = new Set<string>();
   const runningToolNames = new Map<string, string>();
   const settledToolCallIds = new Set<string>();
+  const directShellErrorCallIds = new Set<string>();
   const suppressedToolResults = new Set<string>();
   const suppressedStreamingToolCallIds = new Set<string>();
   const suppressedStreamingToolInputIndexes = new Map<number, string>();
@@ -1870,8 +1929,10 @@ export function adaptTranscriptEvents(
   const collabAgents = new Map<string, CollabAgentDisplay>();
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
+  const provisionalTextUuids = new Set<string>();
   let realtimeStreamingText = "";
   let turnStreamedChars = 0;
+  let streamQuietWarning: string | null = null;
   let latestUsage: AdaptedTranscript["latestUsage"] = null;
   let sessionCostUsd = 0;
   let sessionUsage: AdmissionUsageSummary | null = null;
@@ -1886,6 +1947,17 @@ export function adaptTranscriptEvents(
   let lastAssistantText = "";
   let lastAssistantTextForActiveTurn = "";
   let isStreaming = false;
+  const interruptionNotices = new Set<string>();
+  let admissionCancellationNoticeUuid: string | null = null;
+  let pendingTaskBudgetNotice: { message: string; uuid: string } | null = null;
+  let nextActiveUserOrdinal: number | undefined;
+
+  const flushPendingTaskBudgetNotice = (): void => {
+    if (pendingTaskBudgetNotice !== null) {
+      out.push(makeSystemMessage(pendingTaskBudgetNotice.message, "warning", pendingTaskBudgetNotice.uuid));
+      pendingTaskBudgetNotice = null;
+    }
+  };
 
   const persistAssistantText = (
     content: string,
@@ -1902,7 +1974,9 @@ export function adaptTranscriptEvents(
   };
 
   const flushStreamingText = (nextUuid: () => string): void => {
+    const previousLength = out.length;
     persistAssistantText(streamingText, nextUuid);
+    if (out.length > previousLength) provisionalTextUuids.add(out[out.length - 1].uuid);
     streamingText = "";
   };
 
@@ -1924,6 +1998,7 @@ export function adaptTranscriptEvents(
     }
   };
 
+  let pendingUserTimestampIndex: number | undefined;
   for (const raw of orderedEvents) {
     const event = unwrap(raw);
     if (seen.has(event.key)) continue;
@@ -1940,11 +2015,25 @@ export function adaptTranscriptEvents(
     let blockIndex = 0;
     const nextUuid = (): string => `${event.key}:${blockIndex++}`;
 
+    if (STREAM_WARNING_RESET_EVENTS.has(event.type) ||
+      (event.type === "execution_admission" && payload.event === "dispatched") ||
+      ((event.type === "agent_message_delta" || event.type === "assistant_thinking_delta") &&
+        typeof payload.delta === "string" && payload.delta.length > 0) ||
+      (event.type === "tool_input_delta" &&
+        ((typeof payload.partialJson === "string" && payload.partialJson.length > 0) ||
+         (typeof payload.partial_json === "string" && payload.partial_json.length > 0))) ||
+      (event.type === "assistant_text" && typeof payload.content === "string" && payload.content.length > 0)) {
+      streamQuietWarning = null;
+    }
     switch (event.type) {
       case "session_usage":
         sessionUsage = latestSessionUsage(sessionUsage, event);
         break;
       case "history_cleared":
+        pendingUserTimestampIndex = undefined;
+        provisionalTextUuids.clear();
+        nextActiveUserOrdinal = undefined;
+        pendingTaskBudgetNotice = null;
         out.length = 0;
         seen.clear();
         seen.add(event.key);
@@ -1952,6 +2041,7 @@ export function adaptTranscriptEvents(
         toolNames.clear();
         runningToolNames.clear();
         settledToolCallIds.clear();
+        directShellErrorCallIds.clear();
         suppressedToolResults.clear();
         suppressedStreamingToolCallIds.clear();
         suppressedStreamingToolInputIndexes.clear();
@@ -1970,6 +2060,10 @@ export function adaptTranscriptEvents(
         isStreaming = false;
         break;
       case "history_replaced": {
+        pendingUserTimestampIndex = undefined;
+        provisionalTextUuids.clear();
+        nextActiveUserOrdinal = undefined;
+        pendingTaskBudgetNotice = null;
         out.length = 0;
         seen.clear();
         seen.add(event.key);
@@ -1977,6 +2071,7 @@ export function adaptTranscriptEvents(
         toolNames.clear();
         runningToolNames.clear();
         settledToolCallIds.clear();
+        directShellErrorCallIds.clear();
         suppressedToolResults.clear();
         suppressedStreamingToolCallIds.clear();
         suppressedStreamingToolInputIndexes.clear();
@@ -2023,9 +2118,13 @@ export function adaptTranscriptEvents(
       }
       case "turn_start":
       case "turn_started":
+        provisionalTextUuids.clear();
         if (typeof payload.turnId !== "string" || payload.turnId !== currentTurnId) {
+          flushPendingTaskBudgetNotice();
           lastAssistantText = "";
           lastAssistantTextForActiveTurn = "";
+          interruptionNotices.clear();
+          admissionCancellationNoticeUuid = null;
         }
         isStreaming = true;
         streamingText = "";
@@ -2033,6 +2132,10 @@ export function adaptTranscriptEvents(
         currentTurnId =
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
         currentTurnTimestamp = timestampFromUnixMillis(payload.startedAt);
+        if (pendingUserTimestampIndex !== undefined) {
+          out[pendingUserTimestampIndex].timestamp = currentTurnTimestamp ?? "";
+          pendingUserTimestampIndex = undefined;
+        }
         currentTurnAssistantMessageIndexes = [];
         currentTurnModelCalls = 0;
         // Clear streaming tool state when a new turn boundary arrives. Any
@@ -2164,11 +2267,30 @@ export function adaptTranscriptEvents(
         suppressedStreamingToolCallIds.clear();
         suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
-        out.push(event.type === "turn_failed"
-          ? makeSystemMessage(stringResult(payload.message), "error", nextUuid())
-          : makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
+        if (event.type === "turn_failed" && payload.code === "task_budget" && lastAssistantText.startsWith("Partial result: stopped at the task budget.")) {
+          pendingTaskBudgetNotice = null;
+        } else if (event.type === "turn_aborted" && payload.reason === "interrupted") {
+          if (!interruptionNotices.has("turn")) {
+            interruptionNotices.add("turn");
+            out.push(makeSystemMessage("Turn interrupted.", "warning", nextUuid()));
+          }
+        } else {
+          out.push(event.type === "turn_failed"
+            ? makeSystemMessage(stringResult(payload.message), "error", nextUuid())
+            : makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
+        }
         break;
       case "execution_admission":
+        if (payload.event === "denied" && payload.kind === "model_turn" && payload.reason === "budget_exceeded") {
+          const details = payloadRecord(payload.details);
+          const used = typeof details.usedTokens === "number" ? details.usedTokens + (typeof details.heldTokens === "number" ? details.heldTokens : 0) : null;
+          const max = typeof details.maxTokens === "number" ? details.maxTokens : null;
+          pendingTaskBudgetNotice = { uuid: nextUuid(), message:
+            used !== null && max !== null
+              ? `The task used ${used} of ${max} tokens. Type /budget to raise or remove the cap for this session, then continue.`
+              : "A budget limit stopped this task. Type /budget to review the task allowance, then continue. Independent spending limits still apply." };
+          break;
+        }
         if (payload.event === "dispatched" && payload.kind === "model_turn") {
           currentTurnModelCalls += 1;
         }
@@ -2194,7 +2316,10 @@ export function adaptTranscriptEvents(
           );
         }
         break;
-      case "user_message":
+      case "user_message": {
+        flushPendingTaskBudgetNotice();
+        interruptionNotices.clear();
+        admissionCancellationNoticeUuid = null;
         // A submitted user message is a hard visible turn boundary. Some
         // daemon streams can miss or de-dupe lifecycle events between prompts,
         // so close any live assistant text here before accumulating the next
@@ -2203,9 +2328,25 @@ export function adaptTranscriptEvents(
         lastAssistantText = "";
         if (typeof payload.queuedCommandUuid === "string") {
           durableQueuedPromptUuids.add(payload.queuedCommandUuid);
+          const text = payload.displayText ?? payload.message;
+          // The canonical failed tool row already displays this shell error.
+          // Keep its durable user-shell context without a second visible row.
+          if (directShellErrorCallIds.has(payload.queuedCommandUuid) &&
+              typeof text === "string" && text.startsWith("<bash-stdout>")) break;
         }
-        out.push(makeUserMessage(payload.displayText ?? payload.message, nextUuid()));
+        const userMessage = {
+          ...makeUserMessage(payload.displayText ?? payload.message, nextUuid(),
+            typeof payload.acceptedAt === "string" && Number.isFinite(Date.parse(payload.acceptedAt))
+              ? payload.acceptedAt : ""),
+          canonicalUserMessageId: payload.canonicalUserMessageId ?? payload.messageId ?? payload.queuedCommandUuid ?? (raw as { id?: string }).id,
+        };
+        if (nextActiveUserOrdinal !== undefined && selectableUserMessagesFilter(userMessage)) {
+          userMessage.activeConversationOrdinal = nextActiveUserOrdinal++;
+        }
+        pendingUserTimestampIndex = userMessage.timestamp === "" ? out.length : undefined;
+        out.push(userMessage);
         break;
+      }
       case "queued_command":
         if (
           typeof payload.uuid === "string" &&
@@ -2334,6 +2475,8 @@ export function adaptTranscriptEvents(
         realtimeStreamingText = "";
         break;
       case "agent_message":
+        provisionalTextUuids.clear();
+        if (typeof payload.message === "string" && payload.message.startsWith("Partial result: stopped at the task budget.")) pendingTaskBudgetNotice = null;
         if (typeof payload.message === "string" && payload.message !== lastAssistantText) {
           const subagent = parseSubagentNotification(payload.message);
           if (subagent !== null) {
@@ -2352,6 +2495,7 @@ export function adaptTranscriptEvents(
         streamingText = "";
         break;
       case "tool_call":
+        flushStreamingText(nextUuid);
         if (
           "toolCall" in raw &&
           raw.toolCall &&
@@ -2394,6 +2538,7 @@ export function adaptTranscriptEvents(
       case "tool_call_started":
       case "mcp_tool_call_begin":
       case "exec_command_begin": {
+        flushStreamingText(nextUuid);
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
@@ -2438,6 +2583,7 @@ export function adaptTranscriptEvents(
         break;
       }
       case "tool_input_block_start": {
+        flushStreamingText(nextUuid);
         // Provider-emitted (R6) when a tool_use content
         // block begins streaming. Matches the content_block_start case in
         // messages.ts:3024-3037 that appends a new element to the
@@ -2571,6 +2717,30 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
+        // A capped argument stream never reached execution. It has no durable
+        // tool start (and collaboration input cells are deliberately hidden),
+        // so settle it explicitly instead of reporting reordering or losing
+        // the retry notice behind collaboration-row suppression.
+        // Result data may contain the same fields. Only the runtime's error
+        // completion without a durable start represents an unexecuted handoff.
+        // Collaboration starts live in suppressedToolResults, not openTools.
+        const truncatedArguments = event.type === "tool_call_completed" &&
+          payload.isError === true && !openTools.has(callId) &&
+          !suppressedToolResults.has(callId)
+          ? truncatedToolArgumentsError(payload.result)
+          : null;
+        if (truncatedArguments !== null) {
+          if (!settledToolCallIds.has(callId)) {
+            out.push(makeSystemMessage(truncatedArguments, "warning", nextUuid()));
+          }
+          openTools.delete(callId);
+          runningToolNames.delete(callId);
+          suppressedToolResults.delete(callId);
+          discardStreamingToolUse(callId);
+          clearSuppressedStreamingToolInput(callId);
+          settledToolCallIds.add(callId);
+          break;
+        }
         if (
           suppressedToolResults.has(callId) ||
           suppressedStreamingToolCallIds.has(callId)
@@ -2609,7 +2779,25 @@ export function adaptTranscriptEvents(
             : event.type === "mcp_tool_call_end"
               ? "MCP"
               : "tool");
-        const result = formatStructuredToolResult(toolName, event.type, payload);
+        if (settledToolCallIds.has(callId)) break;
+        if (isError && payloadRecord(payload.metadata).source === "direct") {
+          directShellErrorCallIds.add(callId);
+        }
+        const interruptedAdmission = isError && isInterruptedAdmissionResult(payload.result);
+        if (interruptedAdmission) {
+          interruptionNotices.add("admission");
+          // The failed tool row owns this notice. Remove a standalone error
+          // that arrived earlier, so either delivery order produces one row.
+          if (admissionCancellationNoticeUuid !== null) {
+            const index = out.findIndex(message => message.uuid === admissionCancellationNoticeUuid);
+            if (index !== -1) {
+              out.splice(index, 1);
+              currentTurnAssistantMessageIndexes = currentTurnAssistantMessageIndexes.map(value => value > index ? value - 1 : value);
+            }
+            admissionCancellationNoticeUuid = null;
+          }
+        }
+        const result = interruptedAdmission ? "Tool execution cancelled: interrupted." : formatStructuredToolResult(toolName, event.type, payload);
         // The EnterPlanMode tool result carries the full plan-mode
         // instructions for the MODEL ("In plan mode, you should: … DO NOT
         // write or edit any files except the plan file"). Rendering that
@@ -2627,7 +2815,8 @@ export function adaptTranscriptEvents(
           displayResult,
           nextUuid,
           isError,
-          payload.result,
+          interruptedAdmission ? result : payload.result,
+          metadataRecord(payload),
         );
         runningToolNames.delete(callId);
         // Remove the matching streaming-tool-use element so the
@@ -2640,9 +2829,25 @@ export function adaptTranscriptEvents(
         clearSuppressedStreamingToolInput(callId);
         break;
       }
-      case "context_compacted":
-        out.push(makeSystemMessage("Context compacted", "info", nextUuid()));
+      case "active_conversation":
+      case "context_compacted": {
+        if (Array.isArray(payload.activeUserMessageIds) &&
+            payload.activeUserMessageIds.every((id: unknown) => typeof id === "string")) {
+          const ids = payload.activeUserMessageIds as string[];
+          for (let i = 0; i < out.length; i++) {
+            const message = out[i];
+            if (message?.type !== "user" || message.isMeta || message.isCompactSummary) continue;
+            const ordinal = ids.indexOf(message.canonicalUserMessageId);
+            out[i] = { ...message, isVisibleInTranscriptOnly: ordinal < 0,
+              activeConversationOrdinal: ordinal < 0 ? undefined : ordinal };
+          }
+          nextActiveUserOrdinal = ids.length;
+        }
+        if (event.type === "context_compacted") {
+          out.push(makeSystemMessage(typeof payload.displayText === "string" ? payload.displayText : "Context compacted", "info", nextUuid()));
+        }
         break;
+      }
       case "token_count":
         sessionCostUsd += computeUsdCostWithResolution(
           usageFromTokenCountPayload(payload),
@@ -2671,6 +2876,19 @@ export function adaptTranscriptEvents(
         break;
       }
       case "warning": {
+        if (payload.cause === "stream_idle_resumed") {
+          streamQuietWarning = null;
+          break;
+        }
+        if (payload.cause === "stream_idle_warning") {
+          const effort = payloadRecord(payload.details).reasoningEffort;
+          const effortLabel = typeof effort === "string" &&
+            ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
+              ? ` (${effort === "none" ? "effort off" : `${effort} effort`})`
+              : "";
+          streamQuietWarning = `${stringResult(payload.message)}${effortLabel}`;
+          break;
+        }
         // Allow-list of warning causes that surface to the user's
         // transcript. Every other cause stays in the daemon log and
         // observability sinks only — most of the 89 causes the
@@ -2689,7 +2907,10 @@ export function adaptTranscriptEvents(
             ? ((payload as { cause: string }).cause)
             : undefined;
         if (!cause || !USER_VISIBLE_WARNING_CAUSES.has(cause)) break;
-        out.push(makeSystemMessage(stringResult(payload.message), "warning", nextUuid()));
+        const message = ["auto_compact_failed", "mid_turn_compact_failed", "pre_sampling_compact_failed"].includes(cause)
+          ? "The conversation could not be shortened enough for the next reply. Try /compact, or start a new conversation with /clear."
+          : stringResult(payload.message);
+        out.push(makeSystemMessage(message, "warning", nextUuid()));
         break;
       }
       case "background_agent_status":
@@ -2697,9 +2918,44 @@ export function adaptTranscriptEvents(
         out.push(makeSystemMessage(formatBackgroundAgentStatus(payload), "info", nextUuid()));
         break;
       case "error":
-      case "stream_error":
-        out.push(makeSystemMessage(stringResult(payload.message), "error", nextUuid()));
+      case "stream_error": {
+        if (event.type === "stream_error" && payload.cause === "stream_attempt_discarded") {
+          // A tool input may have flushed provisional text into a row. Drop
+          // those rows too, while retaining earlier committed model output.
+          for (let index = out.length - 1; index >= 0; index -= 1) {
+            if (!provisionalTextUuids.has(out[index]?.uuid)) continue;
+            out.splice(index, 1);
+            currentTurnAssistantMessageIndexes = currentTurnAssistantMessageIndexes
+              .filter(value => value !== index).map(value => value > index ? value - 1 : value);
+          }
+          provisionalTextUuids.clear();
+          lastAssistantText = "";
+          lastAssistantTextForActiveTurn = "";
+          streamingText = "";
+          streamingThinking = null;
+          streamingToolUses.length = 0;
+          pendingToolInputDeltas.clear();
+          suppressedStreamingToolInputIndexes.clear();
+          break;
+        }
+        // Keep a failed attempt's partial answer before its failure notice.
+        // The next attempt must start with a fresh streaming accumulator.
+        if (event.type === "stream_error") flushStreamingText(nextUuid);
+        // A correlated tool failure is already displayed on its call row.
+        if (typeof payload.callId === "string" &&
+          (openTools.has(payload.callId) || settledToolCallIds.has(payload.callId))) break;
+        const message = stringResult(payload.message);
+        if (/^(?:AdmissionDeniedError: )?execution admission cancelled: interrupted$/u.test(message)) {
+          if (!interruptionNotices.has("admission")) {
+            interruptionNotices.add("admission");
+            admissionCancellationNoticeUuid = nextUuid();
+            out.push(makeSystemMessage("Tool execution cancelled: interrupted.", "error", admissionCancellationNoticeUuid));
+          }
+        } else {
+          out.push(makeSystemMessage(message, "error", nextUuid()));
+        }
         break;
+      }
       case "slash_result": {
         // Format SlashCommandResult based on its kind instead of
         // JSON.stringifying the raw object — otherwise the user sees
@@ -2861,8 +3117,9 @@ export function adaptTranscriptEvents(
         if (callId === null) break;
         openTools.delete(callId);
         const details: string[] = [];
-        const timedOut = payload.timedOut === true || payload.timed_out === true;
-        let finalState: CollabAgentMessageState = timedOut ? "info" : "success";
+        const interrupted = payload.interrupted === true;
+        const timedOut = !interrupted && (payload.timedOut === true || payload.timed_out === true);
+        let finalState: CollabAgentMessageState = timedOut || interrupted ? "info" : "success";
         const noteStatus = (status: unknown): void => {
           if (collabStatusState(status) === "error") finalState = "error";
         };
@@ -2891,10 +3148,10 @@ export function adaptTranscriptEvents(
         details.push(...collabMailboxUpdateDetails(payload.mailboxUpdates));
         out.push(
           makeCollabAgentMessage(
-            timedOut ? "Wait call timed out" : "Finished waiting",
+            interrupted ? "Wait interrupted" : timedOut ? "Wait call timed out" : "Finished waiting",
             details.length > 0
               ? details
-              : [timedOut ? "Agents may still be running" : "No agents completed yet"],
+              : [interrupted ? "Waiting stopped before a result arrived" : timedOut ? "Agents may still be running" : "No agents completed yet"],
             finalState,
             nextUuid(),
           ),
@@ -2995,6 +3252,7 @@ export function adaptTranscriptEvents(
     }
   }
 
+  flushPendingTaskBudgetNotice();
   return {
     messages: collapseRepeatedSystemLines(out),
     streamingText:
@@ -3010,6 +3268,7 @@ export function adaptTranscriptEvents(
     streamingToolUses,
     streamingThinking,
     turnStreamedChars,
+    streamQuietWarning,
     latestUsage,
     sessionCostUsd: sessionUsage?.costUsd ?? sessionCostUsd,
     sessionUsage,
@@ -3028,6 +3287,8 @@ interface TranscriptState {
   readonly maxSeq: number | null;
   readonly sessionCostUsd: number;
   readonly sessionUsage: AdmissionUsageSummary | null;
+  /** Like `sessionCostUsd`, survives the event ring buffer and clears. */
+  readonly promptCache: PromptCacheTally;
 }
 
 type TranscriptAction =
@@ -3284,6 +3545,7 @@ function buildTranscriptState(
   let maxSeq: number | null = null;
   let sessionCostUsd = 0;
   let sessionUsage: AdmissionUsageSummary | null = null;
+  let promptCache = EMPTY_PROMPT_CACHE_TALLY;
 
   for (const event of orderSequencedEvents(unorderedEvents)) {
     const key = eventKey(event);
@@ -3301,6 +3563,7 @@ function buildTranscriptState(
     keys.add(key);
     sessionCostUsd += tokenCountCostUsd(event);
     sessionUsage = latestSessionUsage(sessionUsage, event);
+    promptCache = promptCacheAfter(promptCache, event);
     pushStoredEvent(events, clampEventForStorage(event), keys, foldedKeys);
     maxSeq = maxEventSeq(maxSeq, event);
   }
@@ -3318,7 +3581,7 @@ function buildTranscriptState(
 
   evictOldestEvents(events, keys);
 
-  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage };
+  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache };
 }
 
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -3343,6 +3606,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
           sessionCostUsd:
             state.sessionCostUsd + tokenCountCostUsd(action.event),
           sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
+          promptCache: promptCacheAfter(state.promptCache, action.event),
         };
       }
 
@@ -3366,6 +3630,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
         sessionCostUsd: state.sessionCostUsd + tokenCountCostUsd(action.event),
         sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
+        promptCache: promptCacheAfter(state.promptCache, action.event),
       };
     }
     case "appendBatch": {
@@ -3389,6 +3654,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         const knownKeys = new Set(state.keys);
         let addedCostUsd = 0;
         let sessionUsage = state.sessionUsage;
+        let promptCache = state.promptCache;
         const fresh: SessionTranscriptEvent[] = [];
         for (const event of action.events) {
           const key = eventKey(event);
@@ -3397,6 +3663,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
           fresh.push(event);
           addedCostUsd += tokenCountCostUsd(event);
           sessionUsage = latestSessionUsage(sessionUsage, event);
+          promptCache = promptCacheAfter(promptCache, event);
         }
         // Known events stay out of the rebuild: a replayed delta sorts ahead
         // of the stored event it was folded into, and would be added twice.
@@ -3408,6 +3675,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
           ...rebuilt,
           sessionCostUsd: state.sessionCostUsd + addedCostUsd,
           sessionUsage,
+          promptCache,
         };
       }
       const keys = state.keys as Set<string>;
@@ -3415,6 +3683,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       let maxSeq = state.maxSeq;
       let sessionCostUsd = state.sessionCostUsd;
       let sessionUsage = state.sessionUsage;
+      let promptCache = state.promptCache;
       for (const event of action.events) {
         const key = eventKey(event);
         if (keys.has(key)) continue;
@@ -3422,6 +3691,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         keys.add(key);
         sessionCostUsd += tokenCountCostUsd(event);
         sessionUsage = latestSessionUsage(sessionUsage, event);
+        promptCache = promptCacheAfter(promptCache, event);
         const seq = eventSeq(event);
         maxSeq = seq === null ? maxSeq : maxEventSeq(maxSeq, event);
       }
@@ -3430,7 +3700,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       const foldedKeys = [...state.foldedKeys];
       for (const event of pending) pushStoredEvent(events, event, keys, foldedKeys);
       evictOldestEvents(events, keys);
-      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage };
+      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache };
     }
   }
 }
@@ -3446,6 +3716,7 @@ export function createSessionTranscriptStateForTesting(
       maxSeq: null,
       sessionCostUsd: 0,
       sessionUsage: null,
+      promptCache: EMPTY_PROMPT_CACHE_TALLY,
     },
     { kind: "reset", events },
   );
@@ -3514,7 +3785,23 @@ export function useSessionTranscript(
     maxSeq: null,
     sessionCostUsd: 0,
     sessionUsage: null,
+    promptCache: EMPTY_PROMPT_CACHE_TALLY,
   });
+
+  // A wholesale replacement can shrink a tall, scrolled transcript to a
+  // summary. Repaint the committed scene instead of trusting cached terminal
+  // cells from the old history. Ordinary streaming updates keep their fast path.
+  const head = state.events[0];
+  const replacementKey = head !== undefined && isTranscriptResetEvent(head)
+    ? eventKey(head) : null;
+  const previousReplacementKey = useRef<string | null>(null);
+  const hadTranscriptEvents = useRef(false);
+  useLayoutEffect(() => {
+    if (replacementKey !== null && replacementKey !== previousReplacementKey.current &&
+        hadTranscriptEvents.current) getInkInstance()?.forceRedraw();
+    previousReplacementKey.current = replacementKey;
+    hadTranscriptEvents.current = state.events.length > 0;
+  }, [replacementKey, state.events]);
 
   useEffect(() => {
     dispatch({ kind: "reset", events: initialEvents(session) });
@@ -3599,6 +3886,7 @@ export function useSessionTranscript(
       ...adapted,
       sessionCostUsd: state.sessionUsage?.costUsd ?? state.sessionCostUsd,
       sessionUsage: state.sessionUsage,
+      promptCacheShare: promptCacheSharePercent(state.promptCache),
     };
-  }, [state.events, state.sessionCostUsd, state.sessionUsage, startupMessages]);
+  }, [state.events, state.sessionCostUsd, state.sessionUsage, state.promptCache, startupMessages]);
 }

@@ -19,6 +19,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   hasSupportedFileIdentity,
   SessionLock,
+  sessionLockIsLiveInCurrentProcess,
 } from "../session/session-store.js";
 
 export class OfflineRolloutSourceMissingError extends Error {
@@ -74,6 +75,9 @@ export interface PinnedOfflineRolloutReader {
   ): PinnedOfflineRolloutSnapshot;
   /** Prove the retained inode and pathname still match the captured snapshot. */
   assertSnapshot(snapshot: PinnedOfflineRolloutSnapshot): void;
+  /** Optional durability proof for reusing this exact source's projection. */
+  sync?(): void;
+  identity?(): { readonly dev: string; readonly ino: string };
   /**
    * Open the exact pinned inode for append-capable SessionStore adoption.
    * The caller owns the returned descriptor and must close or transfer it.
@@ -147,6 +151,16 @@ export function withPinnedOfflineRolloutReadLease<T>(
       },
       assertSnapshot: (snapshot) => {
         assertDescriptorSnapshot(scope, pinned, sourceFd, snapshot);
+      },
+      sync: () => {
+        assertOpenSourceIdentity(scope, pinned, sourceFd);
+        fsyncSync(sourceFd);
+        assertOpenSourceIdentity(scope, pinned, sourceFd);
+      },
+      identity: () => {
+        assertOpenSourceIdentity(scope, pinned, sourceFd);
+        const current = fstatSync(sourceFd, { bigint: true });
+        return { dev: current.dev.toString(10), ino: current.ino.toString(10) };
       },
       openAppendDescriptor: () => {
         if (appendDescriptorTransferred) {
@@ -739,8 +753,10 @@ function assertNotHeldByCurrentProcess(
     }
     const parsed = JSON.parse(readFileSync(lockPath, "utf8")) as {
       readonly pid?: unknown;
+      readonly startNs?: unknown;
+      readonly acquiredAtIso?: unknown;
     };
-    if (parsed.pid === process.pid) {
+    if (sessionLockIsLiveInCurrentProcess(parsed)) {
       throw new Error(
         `canonical journal is live in this process (${lockPath}); stop the session before offline mutation`,
       );

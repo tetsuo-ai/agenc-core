@@ -277,13 +277,13 @@ describe('FullscreenLayout coverage swarm 019', () => {
     expect(output).not.toContain('running-task')
     expect(output).not.toContain('queued-task')
     expect(output).not.toContain('completed-task')
-    expect(output).toContain('auto mode')
+    expect(output).toContain('auto approve')
     expect(output).toContain('$0.00')
     expect(output).not.toContain('12.4K')
   })
 
-  test('portals prompt suggestions above the clipped bottom slot', async () => {
-    // The scroll region gets real height so the popup has rows to rise into;
+  test('portals prompt suggestions out of the clipped bottom slot', async () => {
+    // The scroll region gets real height so the list has rows to take;
     // this harness does not stretch the layout to the terminal height.
     const output = await renderLatestFrame(
       <FullscreenLayout
@@ -297,8 +297,9 @@ describe('FullscreenLayout coverage swarm 019', () => {
     )
     const compactOutput = output.replace(/\s+/gu, '')
 
-    expect(compactOutput).toContain('SLASHCOMMANDS')
-    expect(compactOutput).toContain('/statusshowstatus')
+    expect(compactOutput).toContain('/helpshowcommands')
+    expect(compactOutput).toContain('›/statusshowstatus')
+    expect(compactOutput).not.toContain('SLASHCOMMANDS')
   })
 
   test('portals prompt dialogs over the fullscreen scroll region', async () => {

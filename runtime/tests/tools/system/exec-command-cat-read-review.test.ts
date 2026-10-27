@@ -152,7 +152,9 @@ test("control: normal Light cat authorizes an edit with CRLF preserved", async (
   expect((await edit()).isError).not.toBe(true);
   expect(await readFile(join(root, "source.txt"), "utf8")).toBe("new\r\n");
 });
-test("control: Standard cat does not authorize an edit", async () => {
+test("control: Standard cat of a short file does not authorize an edit", async () => {
+  // Standard sessions accept whole-file shell reads only by content, for files
+  // of 64 bytes or more (exec-command-printed-read.test.ts); "old" is shorter.
   await writeFile(join(root, "source.txt"), "old\n");
   await cat("old\n", false);
   expect((await edit()).isError).toBe(true);

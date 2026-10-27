@@ -96,7 +96,7 @@ class Faults(unittest.TestCase):
   global BROKER
   original=BROKER
   source=(ROOT/'native/agenc-process-broker.c').read_text()
-  read='ssize_t n = pread(5, verified + offset, data_length - offset, (off_t)offset);'
+  read='ssize_t n = pread(5, verified + offset, remaining, (off_t)offset);'
   snapshot='*snapshot_fd = v2_sealed_snapshot(verified, data_length);'
   cases=[
    ('memfd-failure','int fd = memfd_create("agenc-seccomp", MFD_CLOEXEC | MFD_ALLOW_SEALING);','int fd = -1; errno = EMFILE;',False),
@@ -194,6 +194,12 @@ class Protocol(unittest.TestCase):
    self.assertEqual((code,proof),(0,b'SC'));self.assertIn(b'FIRST=49',out)
    self.assertIn(b'SEALS=15',out);self.assertEqual(os.pread(fd,8,0),b'abcdefgh')
   finally:release.unlink(missing_ok=True)
+ def test_maximum_snapshot_and_last_byte_mismatch(self):
+  data=bytes(range(256))*128;fd=self.source(data)
+  code,out,proof=invoke(frame(data=data),source=fd)
+  self.assertEqual((code,proof),(0,b'SC'));self.assertIn(b'FD=3 SEALS=15 OFFSET=0',out)
+  os.pwrite(fd,b'X',len(data)-1)
+  self.rejected(frame(data=data),source=fd)
  def test_pending_cancel_before_eof(self):
   self.rejected(frame(),cancel_pending=True)
  def test_every_truncation(self):

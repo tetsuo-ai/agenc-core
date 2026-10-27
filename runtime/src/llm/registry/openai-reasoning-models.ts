@@ -104,6 +104,22 @@ export function openAiAcceptsSamplingTemperature(
 }
 
 /**
+ * GPT-5.6 and later (the verified rows above and their dated snapshots) route
+ * the prompt cache themselves, and `prompt_cache_key` only separates cache
+ * scopes: a request reads no entry that a request with another key, or with
+ * no key, wrote (developers.openai.com prompt-caching guide, and a gpt-6-luna
+ * probe through the oa recorder, 2026-10-20). A key per conversation
+ * therefore keeps every session from reading the prefix the previous session
+ * of the same user wrote.
+ */
+export function openAiModelScopesPromptCacheByKey(model: string): boolean {
+  const normalized = model.trim().toLowerCase().replace(/^openai[/:]/, "");
+  return OPENAI_REASONING_MODELS.some((entry) =>
+    isModelOrDatedSnapshot(normalized, entry.model)
+  );
+}
+
+/**
  * Chat Completions rejects function tools on GPT-6 Sol and Luna unless
  * `reasoning_effort` is `none` (their default is medium), and never accepts
  * them on GPT-6 Astra (Using GPT-6 guide, 2026-09-22; live: "Function tools

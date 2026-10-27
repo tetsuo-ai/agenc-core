@@ -736,5 +736,15 @@ describe("session memory runtime", () => {
     await expect(
       Promise.resolve(policy({ name: "FileRead" }, { file_path: memoryPath })),
     ).resolves.toMatchObject({ behavior: "deny" });
+    const edits = [{ oldText: "a", newText: "b" }];
+    await expect(
+      Promise.resolve(policy({ name: "Edit" }, { path: memoryPath, edits })),
+    ).resolves.toMatchObject({
+      behavior: "allow",
+      updatedInput: { path: memoryPath, edits, __agencSessionAllowedRoots: [memoryDir] },
+    });
+    await expect(
+      Promise.resolve(policy({ name: "Edit" }, { path: join(tempRoot, "other.md"), edits })),
+    ).resolves.toMatchObject({ behavior: "deny" });
   });
 });

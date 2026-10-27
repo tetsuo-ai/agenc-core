@@ -127,7 +127,7 @@ export function assertProviderStructuredOutputCompatibility(input: {
   ) {
     throw new LLMProviderError(
       input.providerName,
-      "Kimi structured outputs with function tools are not enabled without a verified combined wire contract",
+      "Kimi structured outputs with function tools are not enabled without a verified combined wire contract. Run tools first, then request the final schema with tools: [].",
       400,
     );
   }

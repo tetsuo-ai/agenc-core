@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
+import {
+  DEFAULT_DURABLE_ATOMIC_ASYNC_OPERATIONS,
+  writeDurableAtomicFile,
+  writeDurableAtomicFileSync,
+} from "../utils/durable-atomic-file.js";
+import { readCgroupMemoryEvidence } from "./daemon-memory-evidence.js";
 
 /**
  * The daemon's heartbeat file: rewritten every few seconds with the process's
@@ -28,6 +33,7 @@ export interface DaemonHeartbeat {
   readonly rssMb: number;
   readonly heapUsedMb: number;
   readonly eventLoopLagMs: number;
+  readonly cgroup?: Readonly<Record<string, number>>;
 }
 
 export interface DaemonHeartbeatProcess {
@@ -125,11 +131,32 @@ export function describeAbandonedDaemonExit(
   );
 }
 
+/** The disposer of an installed heartbeat. */
+export interface DaemonHeartbeatDisposer {
+  (): void;
+  /** Resolves once no beat is being written (tests, orderly shutdown). */
+  readonly idle: () => Promise<void>;
+}
+
+/** A beat that found the heartbeat already stopped publishes nothing. */
+class HeartbeatStoppedError extends Error {}
+
 /**
  * Start the heartbeat. The event-loop lag is how late each tick fired against
  * its schedule: a loop blocked by synchronous work shows up here before the
  * process can miss anything else. Returns the disposer, which stops the timer
  * and removes the file so a clean stop leaves nothing to misreport.
+ *
+ * The first beat is written synchronously, so the file exists once this
+ * returns. Every later beat is written off the event loop: its file write and
+ * fsync, and the directory fsync after the rename, run on the libuv thread
+ * pool, so a slow disk delays the beat instead of every request the daemon is
+ * serving (an fsync of several hundred ms on a busy disk used to stall model
+ * requests and tool results every five seconds). The rename itself runs on the
+ * event loop, after the stop check, so a beat in flight when the heartbeat is
+ * stopped can never publish a file the disposer already removed. At most one
+ * beat is written at a time; a tick that finds the previous beat still in
+ * flight is skipped.
  */
 export function installAgenCDaemonHeartbeat(options: {
   readonly path: string;
@@ -137,15 +164,19 @@ export function installAgenCDaemonHeartbeat(options: {
   readonly proc?: DaemonHeartbeatProcess;
   readonly now?: () => number;
   readonly onError?: (error: unknown) => void;
-}): () => void {
+  readonly cgroupMemory?: () => Readonly<Record<string, number>> | undefined;
+}): DaemonHeartbeatDisposer {
   const proc = options.proc ?? (process as DaemonHeartbeatProcess);
   const intervalMs = options.intervalMs ?? AGENC_DAEMON_HEARTBEAT_INTERVAL_MS;
   const now = options.now ?? Date.now;
   let beat = 0;
   let expectedAt = now() + intervalMs;
-  const write = (lagMs: number): void => {
+  let stopped = false;
+  let inFlight: Promise<void> | undefined;
+  const record = (lagMs: number): string => {
     beat += 1;
     const memory = proc.memoryUsage();
+    const cgroup = options.cgroupMemory?.() ?? (process.platform === "linux" ? readCgroupMemoryEvidence() : undefined);
     const heartbeat: DaemonHeartbeat = {
       pid: proc.pid,
       beat,
@@ -154,26 +185,41 @@ export function installAgenCDaemonHeartbeat(options: {
       rssMb: Math.round(memory.rss / 1_048_576),
       heapUsedMb: Math.round(memory.heapUsed / 1_048_576),
       eventLoopLagMs: Math.round(lagMs),
+      ...(cgroup ? { cgroup } : {}),
     };
-    try {
-      writeDurableAtomicFileSync(
-        options.path,
-        `${options.path}.${proc.pid}.${randomUUID()}.tmp`,
-        `${JSON.stringify(heartbeat, null, 2)}\n`,
-      );
-    } catch (error) {
-      options.onError?.(error);
-    }
+    return `${JSON.stringify(heartbeat, null, 2)}\n`;
   };
-  write(0);
+  const temporaryPath = (): string =>
+    `${options.path}.${proc.pid}.${randomUUID()}.tmp`;
+  try {
+    writeDurableAtomicFileSync(options.path, temporaryPath(), record(0));
+  } catch (error) {
+    options.onError?.(error);
+  }
+  const operations = {
+    ...DEFAULT_DURABLE_ATOMIC_ASYNC_OPERATIONS,
+    rename: async (from: string, to: string): Promise<void> => {
+      if (stopped) throw new HeartbeatStoppedError();
+      renameSync(from, to);
+    },
+  };
   const timer = setInterval(() => {
     const tickAt = now();
     const lagMs = Math.max(0, tickAt - expectedAt);
     expectedAt = tickAt + intervalMs;
-    write(lagMs);
+    if (inFlight !== undefined || stopped) return;
+    const write = writeDurableAtomicFile(
+      options.path, temporaryPath(), record(lagMs), 0o600, operations,
+    ).catch((error: unknown) => {
+      if (!(error instanceof HeartbeatStoppedError)) options.onError?.(error);
+    }).finally(() => {
+      if (inFlight === write) inFlight = undefined;
+    });
+    inFlight = write;
   }, intervalMs);
   (timer as { unref?: () => void }).unref?.();
-  return () => {
+  const dispose = (): void => {
+    stopped = true;
     clearInterval(timer);
     try {
       if (readAgenCDaemonHeartbeat(options.path)?.pid === proc.pid) {
@@ -183,6 +229,11 @@ export function installAgenCDaemonHeartbeat(options: {
       /* best-effort */
     }
   };
+  return Object.assign(dispose, {
+    idle: async (): Promise<void> => {
+      while (inFlight !== undefined) await inFlight;
+    },
+  });
 }
 
 export function readAgenCDaemonHeartbeat(path: string): DaemonHeartbeat | null {
@@ -199,7 +250,17 @@ export function readAgenCDaemonHeartbeat(path: string): DaemonHeartbeat | null {
     return null;
   }
   if (typeof record.at !== "string" || Number.isNaN(Date.parse(record.at))) return null;
-  return record as unknown as DaemonHeartbeat;
+  const cgroup: Record<string, number> = {};
+  if (record.cgroup && typeof record.cgroup === "object") {
+    for (const key of ["currentBytes", "limitBytes", "peakBytes", "oom", "oom_kill", "oom_group_kill", "high", "max"]) {
+      const value = (record.cgroup as Record<string, unknown>)[key];
+      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) cgroup[key] = value;
+    }
+  }
+  return { pid: record.pid as number, beat: record.beat as number, at: new Date(record.at).toISOString(),
+    uptimeS: record.uptimeS as number, rssMb: record.rssMb as number, heapUsedMb: record.heapUsedMb as number,
+    eventLoopLagMs: record.eventLoopLagMs as number,
+    ...(Object.keys(cgroup).length > 0 ? { cgroup } : {}) };
 }
 
 export function heartbeatAgeSeconds(heartbeat: DaemonHeartbeat, nowMs: number): number {
@@ -241,7 +302,8 @@ function describeUptime(uptimeS: number): string {
 export function describeDaemonHeartbeatVitals(heartbeat: DaemonHeartbeat): string {
   return (
     `rss ${heartbeat.rssMb} MB, heap ${heartbeat.heapUsedMb} MB, ` +
-    `event-loop lag ${heartbeat.eventLoopLagMs} ms, up ${describeUptime(heartbeat.uptimeS)}`
+    `event-loop lag ${heartbeat.eventLoopLagMs} ms, up ${describeUptime(heartbeat.uptimeS)}` +
+    (heartbeat.cgroup ? `, cgroup=${JSON.stringify(heartbeat.cgroup)}` : "")
   );
 }
 

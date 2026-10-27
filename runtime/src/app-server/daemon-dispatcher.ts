@@ -1,3 +1,4 @@
+import { PermissionModeTransitionPrecommitError } from "../permissions/permission-mode.js";
 import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
 import { promoteOneShotRun } from "../durability/one-shot-durability.js";
 import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } from "../routines/session-preparation.js";
@@ -11,6 +12,7 @@ import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } fr
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { redactSecrets } from "../secrets/sanitizer.js";
 import type { PluginSettingsService } from "../plugins/settings-service.js";
 import type { PluginSettingsResult } from "./protocol/index.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
@@ -37,6 +39,7 @@ import type { RoutinePermissionAuthority } from "../routines/types.js";
 import type { RoutineUpdatedEvent } from "../routines/types.js";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
 import { DaemonOperationTimeoutError } from "./operation-deadline.js";
+import { STARTUP_RESTORE_PROGRESS_METHOD } from "./startup-restore-progress.js";
 import {
   StartupSessionRestoreAbandonedError,
   type AgenCDaemonStartupRestoreGate,
@@ -97,6 +100,13 @@ import {
 import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
 import { PermissionRuleMutationPrecommitError } from "../permissions/permission-updates.js";
+import {
+  TOOL_POLICY_METADATA_KEY,
+  TOOL_POLICY_MODE_CEILING_METADATA_KEY,
+  normalizeSessionToolPolicy,
+  sessionToolPolicyIssue,
+  type SessionToolPolicy,
+} from "../permissions/session-tool-policy.js";
 import {
   validateAndDedupeAdditionalWorkingDirectoryInputs,
 } from "../contracts/additional-working-directories.js";
@@ -200,6 +210,7 @@ import {
   type SessionShellExecuteResult,
   type SessionStatusLineExecuteParams,
   type SessionStatusLineExecuteResult,
+  type SessionSetProviderKeyParams,
   type SessionSetModelParams,
   type SessionSetPermissionModeParams,
   type SessionPermissionRuleMutationParams,
@@ -475,6 +486,7 @@ function buildServerCapabilities(
       agentManager,
       "executeSessionStatusLine",
     ),
+    "session.setProviderKey": hasMethod(agentManager, "setSessionProviderKey"),
     "session.setModel": hasMethod(agentManager, "setSessionModel"),
     "session.setPermissionMode": hasMethod(
       agentManager,
@@ -502,6 +514,10 @@ function buildServerCapabilities(
     "session.mcp.disableServer": hasMethod(
       agentManager,
       "disableMcpServerOnSession",
+    ),
+    "session.mcp.removeServer": hasMethod(
+      agentManager,
+      "removeMcpServerOnSession",
     ),
   } satisfies Record<AgenCDaemonKnownMethod, boolean>;
 
@@ -557,6 +573,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
     | "disableMcpServerOnSession"
+    | "removeMcpServerOnSession"
     | "partialCompactFromMessage"
     | "rollbackCompaction"
     | "extendCompactionRollbackRetention"
@@ -564,6 +581,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "previewFileRewind"
     | "rewindFilesToMessage"
     | "executeSessionShell"
+    | "setSessionProviderKey"
     | "setSessionModel"
     | "setSessionPermissionMode"
     | "mutateSessionPermissionRule"
@@ -583,6 +601,10 @@ export interface AgenCDaemonDispatcherOptions {
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
     readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
+    readonly getSessionToolPolicy?: AgenCDaemonAgentManager["getSessionToolPolicy"];
+    readonly peekRoutineSessionId?: AgenCDaemonAgentManager["peekRoutineSessionId"];
+    readonly peekOwnerSessionIds?: AgenCDaemonAgentManager["peekOwnerSessionIds"];
+    readonly peekOwnerAgentId?: AgenCDaemonAgentManager["peekOwnerAgentId"];
     readonly isLiveSessionToolCallExecuting?: AgenCDaemonAgentManager["isLiveSessionToolCallExecuting"];
   };
   readonly initializeAuthenticator?: (
@@ -638,6 +660,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly routines?: RoutineService;
   readonly routinePreparation?: RoutineSessionPreparation;
   readonly remote?: Pick<RemoteService, "handle" | "stop">;
+  readonly remoteControlEnabled?: () => boolean;
   readonly ownerTelegram?: Pick<OwnerTelegramService, "handle">;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
@@ -689,6 +712,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
     | "disableMcpServerOnSession"
+    | "removeMcpServerOnSession"
     | "partialCompactFromMessage"
     | "rollbackCompaction"
     | "extendCompactionRollbackRetention"
@@ -696,6 +720,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "previewFileRewind"
     | "rewindFilesToMessage"
     | "executeSessionShell"
+    | "setSessionProviderKey"
     | "setSessionModel"
     | "setSessionPermissionMode"
     | "mutateSessionPermissionRule"
@@ -715,6 +740,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
     readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
+    readonly getSessionToolPolicy?: AgenCDaemonAgentManager["getSessionToolPolicy"];
+    readonly peekRoutineSessionId?: AgenCDaemonAgentManager["peekRoutineSessionId"];
+    readonly peekOwnerSessionIds?: AgenCDaemonAgentManager["peekOwnerSessionIds"];
+    readonly peekOwnerAgentId?: AgenCDaemonAgentManager["peekOwnerAgentId"];
     readonly isLiveSessionToolCallExecuting?: AgenCDaemonAgentManager["isLiveSessionToolCallExecuting"];
   };
   readonly #initializeAuthenticator:
@@ -779,6 +808,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #routines: RoutineService | undefined;
   readonly #routinePreparation: RoutineSessionPreparation | undefined;
   readonly #remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly #remoteControlEnabled: () => boolean;
   readonly #ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
@@ -793,6 +823,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     agentId?: string;
     stop(): Promise<void>;
   }>>();
+  /** Agents each connection created with a toolPolicy: that connection may change their MCP servers. */
+  readonly #policyAgentsByConnection = new WeakMap<AgenCDaemonJsonRpcConnection, Set<string>>();
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -825,6 +857,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#routines = options.routines;
     this.#routinePreparation = options.routinePreparation;
     this.#remote = options.remote;
+    this.#remoteControlEnabled = options.remoteControlEnabled ?? (() => false);
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
     this.#projectTrust = options.projectTrust;
@@ -957,7 +990,13 @@ export class AgenCDaemonJsonRpcDispatcher {
     const method = message.method;
     try {
       const params = objectParams(message.params);
+      if (connection.remoteControlBridge && !this.#remoteControlEnabled()) {
+        return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+      }
       if (method === "initialize") {
+        if (params.remoteControlBridge === true && !this.#remoteControlEnabled()) {
+          return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+        }
         if (!connection.beginInitialization()) {
           return errorResponse(id, -32000, "Already initialized", {
             code: "CONNECTION_ALREADY_INITIALIZED",
@@ -1018,6 +1057,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             connection,
             negotiated.state.clientCapabilities,
           );
+          connection.remoteControlBridge = params.remoteControlBridge === true;
           connection.markInitialized(negotiated.state);
           return successResponse(id, {
             type: "initialized",
@@ -1042,6 +1082,9 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if ((REMOTE_METHODS as readonly string[]).includes(method)) {
         if (!this.#remote || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        if (!this.#remoteControlEnabled() && !["remote.status", "remote.stop", "remote.capabilities", "remote.revoke", "remote.pair.cancel"].includes(method)) {
+          return errorResponse(id, -32000, "Remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+        }
         await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#remote.handle(method as RemoteMethod, params));
       }
@@ -1302,7 +1345,26 @@ export class AgenCDaemonJsonRpcDispatcher {
     // including ones added later, and the handler then runs unchanged.
     const restoring = this.#startupRestores?.waitForRequest(method, params, signal);
     if (restoring !== undefined) {
-      await restoring;
+      // Progress belongs to this request. Fresh sessions and health never
+      // wait for the backlog, and a client can cancel only its own waiter.
+      const progress = async (remaining: number): Promise<void> => {
+        try {
+          await connection.sendNotification?.({
+            jsonrpc: JSON_RPC_VERSION,
+            method: STARTUP_RESTORE_PROGRESS_METHOD,
+            params: { requestId: id, remaining },
+          });
+        } catch {
+          // Losing an optional progress notification cannot change recovery
+          // or leave the restore wait's rejection unobserved.
+        }
+      };
+      try {
+        await progress(this.#startupRestores?.unsettled ?? 1);
+        await restoring;
+      } finally {
+        await progress(0);
+      }
       signal.throwIfAborted();
     }
     switch (method) {
@@ -1366,11 +1428,16 @@ export class AgenCDaemonJsonRpcDispatcher {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         this.#assertRoutineVisible(connection, params);
         return successResponse(id, await this.#routines.cancel(params));
-      case "agent.create":
-        return successResponse(
-          id,
-          await this.#createConnectionAgent(connection, validateAgentCreateParams(params), signal),
-        );
+      case "agent.create": {
+        const validated = validateAgentCreateParams(params);
+        const created = await this.#createConnectionAgent(connection, validated, signal);
+        if (validated.toolPolicy !== undefined) {
+          const agents = this.#policyAgentsByConnection.get(connection) ?? new Set<string>();
+          agents.add(created.agentId);
+          this.#policyAgentsByConnection.set(connection, agents);
+        }
+        return successResponse(id, created);
+      }
       case "agent.list":
         return successResponse(
           id,
@@ -1622,13 +1689,13 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionMcpStatusParams(params),
           ),
         );
-      case "session.mcp.addServer":
-        return successResponse(
-          id,
-          await this.#agentManager.addMcpServerToSession(
-            validateSessionMcpAddServerParams(params),
-          ),
-        );
+      case "session.mcp.addServer": {
+        const validated = validateSessionMcpAddServerParams(params);
+        // A toolPolicy session's servers (and their noFsWriteTools grant) change only from its own client.
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.addMcpServerToSession(validated));
+      }
       case "plugin.settings.get":
       case "plugin.settings.set":
       case "plugin.settings.reset": {
@@ -1644,36 +1711,30 @@ export class AgenCDaemonJsonRpcDispatcher {
         if (validated.values === undefined || typeof validated.values !== "object" || Array.isArray(validated.values)) throw invalidParams("plugin.settings.set values must be an object");
         return successResponse(id, await this.#pluginSettings.set({ pluginId: validated.pluginId as string, values: validated.values as Record<string, string | number | boolean | string[]> }) as unknown as PluginSettingsResult);
       }
-      case "session.mcp.reconnectServer":
-        return successResponse(
-          id,
-          await this.#agentManager.reconnectMcpServerOnSession(
-            validateSessionMcpServerByNameParams(
-              params,
-              "session.mcp.reconnectServer",
-            ),
-          ),
-        );
-      case "session.mcp.enableServer":
-        return successResponse(
-          id,
-          await this.#agentManager.enableMcpServerOnSession(
-            validateSessionMcpServerByNameParams(
-              params,
-              "session.mcp.enableServer",
-            ),
-          ),
-        );
-      case "session.mcp.disableServer":
-        return successResponse(
-          id,
-          await this.#agentManager.disableMcpServerOnSession(
-            validateSessionMcpServerByNameParams(
-              params,
-              "session.mcp.disableServer",
-            ),
-          ),
-        );
+      case "session.mcp.reconnectServer": {
+        const validated = validateSessionMcpServerByNameParams(params, "session.mcp.reconnectServer");
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.reconnectMcpServerOnSession(validated));
+      }
+      case "session.mcp.enableServer": {
+        const validated = validateSessionMcpServerByNameParams(params, "session.mcp.enableServer");
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.enableMcpServerOnSession(validated));
+      }
+      case "session.mcp.disableServer": {
+        const validated = validateSessionMcpServerByNameParams(params, "session.mcp.disableServer");
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.disableMcpServerOnSession(validated));
+      }
+      case "session.mcp.removeServer": {
+        const validated = validateSessionMcpServerByNameParams(params, "session.mcp.removeServer");
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.removeMcpServerOnSession(validated));
+      }
       case "session.partialCompactFromMessage":
         return successResponse(
           id,
@@ -1747,6 +1808,21 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           validateSessionShellExecuteResult(result, validated.commandId),
         );
+      }
+      case "session.setProviderKey": {
+        const validated = validateObjectShape(params, {
+          methodName: "session.setProviderKey",
+          stringFields: ["sessionId", "provider", "apiKey"],
+        });
+        for (const field of ["sessionId", "provider", "apiKey"]) {
+          validateRequiredString(validated, "session.setProviderKey", field);
+        }
+        if ((validated.apiKey as string).length > 32_768 || /\s/u.test(validated.apiKey as string)) {
+          throw invalidParams("session.setProviderKey requires a single API key token");
+        }
+        return successResponse(id, await this.#agentManager.setSessionProviderKey(
+          validated as SessionSetProviderKeyParams,
+        ));
       }
       case "session.setModel":
         return successResponse(
@@ -1925,13 +2001,12 @@ export class AgenCDaemonJsonRpcDispatcher {
             },
           ),
         );
-      case "tool.approve":
-        return successResponse(
-          id,
-          await this.#agentManager.approveTool(
-            validateToolApproveParams(params),
-          ),
-        );
+      case "tool.approve": {
+        const validated = validateToolApproveParams(params);
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.approveTool(validated));
+      }
       case "tool.deny":
         return successResponse(
           id,
@@ -1942,13 +2017,12 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.cancelTool(validateToolCancelParams(params)),
         );
-      case "elicitation.respond":
-        return successResponse(
-          id,
-          await this.#agentManager.respondToElicitation(
-            validateElicitationRespondParams(params),
-          ),
-        );
+      case "elicitation.respond": {
+        const validated = validateElicitationRespondParams(params);
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.respondToElicitation(validated));
+      }
       case "permission.list":
         if (this.#agentManager.listPermissions === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -2121,6 +2195,65 @@ export class AgenCDaemonJsonRpcDispatcher {
         ...validated,
         reviewer: trustedReviewer(connection.daemonSocketIdentity, ownClientId),
       }),
+    );
+  }
+
+  /**
+   * A session created with a `toolPolicy` belongs to the client that attached
+   * to it: a tool approval or an elicitation answer can unlock what the model
+   * does next, and adding, replacing or toggling a session MCP server changes
+   * which code answers an allowlisted tool name (and who holds the policy's
+   * `noFsWriteTools` grant). So each must come from a connection holding an
+   * attached client of that very session, as `session.resolveToolCall` already
+   * requires. Another local client that only knows the ids is refused.
+   *
+   * Sessions without a policy keep their historic behaviour, because
+   * `agenc permissions approve` answers a pending request from a connection
+   * that never attached. Remote connections are authorized by their own grant
+   * (remote/access.ts) and hold no tracked client ids.
+   */
+  async #approverBindingError(
+    id: RequestId,
+    connection: AgenCDaemonJsonRpcConnection,
+    method:
+      | "tool.approve"
+      | "elicitation.respond"
+      | "session.mcp.addServer"
+      | "session.mcp.reconnectServer"
+      | "session.mcp.enableServer"
+      | "session.mcp.disableServer"
+      | "session.mcp.removeServer",
+    sessionId: string,
+  ): Promise<AgenCDaemonResponse | undefined> {
+    if (connection.remoteAccess !== undefined) return undefined;
+    if (this.#agentManager.getSessionToolPolicy?.(sessionId) === undefined) return undefined;
+    // The connection that created the session with its toolPolicy may set up its MCP servers
+    // before any client attaches (a client may attach only on its first turn).
+    if (method.startsWith("session.mcp.")) {
+      const owner = this.#agentManager.peekOwnerAgentId?.(sessionId);
+      if (owner !== undefined && this.#policyAgentsByConnection.get(connection)?.has(owner) === true) return undefined;
+    }
+    // The caller may name the session, its agent, or another session of that agent (a live
+    // session id next to the one the client attached under); attachments are per session.
+    const candidates = new Set([
+      sessionId,
+      this.#agentManager.peekRoutineSessionId?.(sessionId) ?? sessionId,
+      ...(this.#agentManager.peekOwnerSessionIds?.(sessionId) ?? []),
+    ]);
+    for (const candidate of candidates) {
+      const attachedClientIds =
+        this.#clientMultiplexer === undefined
+          ? []
+          : await this.#clientMultiplexer.attachedClientIds(candidate);
+      if (connection.trackedClientIds.some((clientId) => attachedClientIds.includes(clientId))) {
+        return undefined;
+      }
+    }
+    return errorResponse(
+      id,
+      -32000,
+      `${method} requires a client attached to session ${sessionId} on this connection`,
+      { code: "SESSION_NOT_ATTACHED" },
     );
   }
 
@@ -2636,6 +2769,8 @@ export class AgenCDaemonJsonRpcConnection {
     return this.#cancellationScope;
   }
 
+  remoteControlBridge = false;
+
   markInitialized(state: AgenCDaemonConnectionInitializeState): void {
     this.assertOpen();
     this.#initializeState = state;
@@ -2862,6 +2997,7 @@ function validateInitializeParams(params: JsonObject): InitializeParams {
   const validated = validateObjectShape(params, {
     methodName: "initialize",
     stringFields: ["protocolVersion", "clientName", "authCookie"],
+    booleanFields: ["remoteControlBridge"],
     objectFields: ["protocol", "capabilities"],
   });
   if (validated.protocol !== undefined) {
@@ -3013,6 +3149,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "objective",
       "resumeSessionId",
       "resumeRolloutPath",
+      "initialUserPromptText",
       "cwd",
       "model",
       "provider",
@@ -3027,13 +3164,38 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "envOverrides",
       "runtimeOptions",
       "resumeSourceProof",
+      "toolPolicy",
     ],
     valueFields: [
+      "taskTokenBudget",
+      "taskMaxCalls",
       "initialContent",
       "deferInitialTurn",
       "initialDisplayUserMessage",
     ],
   });
+  let toolPolicy: SessionToolPolicy | undefined;
+  if (validated.toolPolicy !== undefined) {
+    const issue = sessionToolPolicyIssue(validated.toolPolicy);
+    if (issue !== undefined) {
+      throw invalidParams(`agent.create param 'toolPolicy' ${issue}`);
+    }
+    toolPolicy = normalizeSessionToolPolicy(validated.toolPolicy);
+  }
+  // The daemon persists the policy in agent metadata under these keys; a
+  // client-supplied copy would be indistinguishable from the real one.
+  for (const key of [TOOL_POLICY_METADATA_KEY, TOOL_POLICY_MODE_CEILING_METADATA_KEY]) {
+    if (isPlainJsonObject(validated.metadata) && Object.hasOwn(validated.metadata, key)) {
+      throw invalidParams(`agent.create param 'metadata.${key}' is reserved; use the 'toolPolicy' param`);
+    }
+  }
+  for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+    const value = validated[key];
+    if (value !== undefined &&
+        (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) {
+      throw invalidParams(`agent.create param '${key}' must be a non-negative safe integer`);
+    }
+  }
   let addDirs: readonly string[] | undefined;
   if (validated.addDirs !== undefined) {
     try {
@@ -3144,7 +3306,8 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     validated.resumeSessionId !== undefined &&
     (validated.initialContent !== undefined ||
       validated.deferInitialTurn !== undefined ||
-      validated.initialDisplayUserMessage !== undefined)
+      validated.initialDisplayUserMessage !== undefined ||
+      validated.initialUserPromptText !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'resumeSessionId' cannot be combined with initial turn content or metadata",
@@ -3161,7 +3324,8 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
   if (
     validated.deferInitialTurn === true &&
     (validated.initialContent !== undefined ||
-      validated.initialDisplayUserMessage !== undefined)
+      validated.initialDisplayUserMessage !== undefined ||
+      validated.initialUserPromptText !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'deferInitialTurn' cannot be combined with initial turn content or metadata",
@@ -3210,6 +3374,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     envOverrides,
     runtimeOptions,
     ...(addDirs !== undefined ? { addDirs } : {}),
+    ...(toolPolicy !== undefined ? { toolPolicy } : {}),
   } as AgentCreateParams;
 }
 
@@ -3820,6 +3985,7 @@ function validateSessionResolveToolCallParams(
     methodName: "session.resolveToolCall",
     stringFields: [
       "sessionId",
+      "effectSessionId",
       "toolCallId",
       "disposition",
       "evidenceRef",
@@ -3830,6 +3996,9 @@ function validateSessionResolveToolCallParams(
     objectFields: ["attempt"],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
+  if (validated.effectSessionId !== undefined) {
+    validateRequiredString(validated, "session.resolveToolCall", "effectSessionId");
+  }
   const hasEvidenceFields = [
     "disposition",
     "evidenceRef",
@@ -4108,7 +4277,7 @@ function validateSessionFileRewindParams(
 ): SessionFileRewindParams {
   const validated = validateObjectShape(params, {
     methodName,
-    stringFields: ["sessionId"],
+    stringFields: ["sessionId", "userMessageId"],
     numberFields: ["messageOrdinal"],
   });
   validateRequiredString(validated, methodName, "sessionId");
@@ -4120,6 +4289,10 @@ function validateSessionFileRewindParams(
     throw invalidParams(
       `${methodName} messageOrdinal must be a non-negative integer`,
     );
+  }
+  if (validated.userMessageId !== undefined) {
+    validateRequiredString(validated, methodName, "userMessageId");
+    validateMaximumUtf8Bytes(validated.userMessageId, methodName, "userMessageId", 1024);
   }
   return validated as SessionFileRewindParams;
 }
@@ -4468,7 +4641,7 @@ function validateSessionApplyConfigParams(
   const validated = validateObjectShape(params, {
     methodName: "session.applyConfig",
     stringFields: ["sessionId", "profile"],
-    valueFields: ["reload", "modelVerbosity", "reasoningEffort"],
+    valueFields: ["reload", "modelVerbosity", "reasoningEffort", "taskBudgetLevel", "taskTokenBudget"],
   });
   validateRequiredString(validated, "session.applyConfig", "sessionId");
   // Null clears the session's effort so it follows the model default.
@@ -4491,6 +4664,16 @@ function validateSessionApplyConfigParams(
   }
   if (validated.reload !== undefined && typeof validated.reload !== "boolean") {
     throw invalidParams("session.applyConfig param 'reload' must be a boolean");
+  }
+  if (validated.taskBudgetLevel !== undefined &&
+      (typeof validated.taskBudgetLevel !== 'string' || !['eco', 'balanced', 'max'].includes(validated.taskBudgetLevel) || validated.taskTokenBudget !== undefined ||
+       validated.reasoningEffort !== undefined || validated.modelVerbosity !== undefined || validated.profile !== undefined)) {
+    throw invalidParams("session.applyConfig taskBudgetLevel must be eco, balanced, or max and cannot change other session settings");
+  }
+  if (validated.taskTokenBudget !== undefined &&
+      (typeof validated.taskTokenBudget !== "number" || !Number.isSafeInteger(validated.taskTokenBudget) || validated.taskTokenBudget < 0 ||
+       validated.reasoningEffort !== undefined || validated.modelVerbosity !== undefined || validated.profile !== undefined)) {
+    throw invalidParams("session.applyConfig taskTokenBudget must be a nonnegative whole token count and cannot change other session settings");
   }
   return validated as SessionApplyConfigParams;
 }
@@ -4821,10 +5004,12 @@ function displayUserMessageFromMetadata(
   metadata: JsonObject | undefined,
 ): {
   readonly displayUserMessage?: string | null;
+  readonly userPromptText?: string;
 } {
   if (metadata === undefined) return {};
   const result: {
     displayUserMessage?: string | null;
+    userPromptText?: string;
   } = {};
   if ("displayUserMessage" in metadata) {
     const value = metadata.displayUserMessage;
@@ -4834,6 +5019,12 @@ function displayUserMessageFromMetadata(
       );
     }
     result.displayUserMessage = value;
+  }
+  if ("userPromptText" in metadata) {
+    if (typeof metadata.userPromptText !== "string") {
+      throw invalidParams(`${methodName} metadata 'userPromptText' must be a string`);
+    }
+    result.userPromptText = metadata.userPromptText;
   }
   return result;
 }
@@ -5269,6 +5460,11 @@ function mapDispatchError(
       code: error.code, operation: error.operation, timeoutMs: error.timeoutMs,
     });
   }
+  if (error instanceof PermissionModeTransitionPrecommitError) {
+    return errorResponse(id, -32602, error.message, {
+      code: "PERMISSION_MODE_TRANSITION_REJECTED", authorityPhase: "precommit",
+    });
+  }
   if (error instanceof PermissionRuleMutationPrecommitError) {
     return errorResponse(id, -32602, error.message, {
       code: "PERMISSION_RULE_MUTATION_REJECTED",
@@ -5303,6 +5499,12 @@ function mapDispatchError(
   if (error instanceof AgenCSessionLifecycleError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
+  // The daemon owns a bounded console sink. Keep internal handler failures
+  // diagnosable there, including their stack, without logging request params.
+  console.error(
+    "agenc: unexpected RPC handler exception:",
+    redactSecrets(error instanceof Error ? error.stack || error.message : String(error)),
+  );
   return errorResponse(
     id,
     -32603,

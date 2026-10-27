@@ -19,6 +19,8 @@ const DEFAULT_MAX_BUFFER = 1_000_000
 const SIGKILL_GRACE_MS = 2_000
 
 type ExecFileOptions = {
+  /** Isolate noninteractive runtime maintenance from the terminal and stop its entire tree. */
+  background?: boolean
   abortSignal?: AbortSignal
   timeout?: number
   preserveOutputOnError?: boolean
@@ -32,6 +34,7 @@ type ExecFileOptions = {
 }
 
 type ExecFileWithCwdOptions = {
+  background?: boolean
   abortSignal?: AbortSignal
   timeout?: number
   preserveOutputOnError?: boolean
@@ -145,6 +148,7 @@ export function execFileNoThrow(
   },
 ): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
   return execFileNoThrowWithCwd(file, args, {
+    background: options.background,
     abortSignal: options.abortSignal,
     timeout: options.timeout,
     preserveOutputOnError: options.preserveOutputOnError,
@@ -163,6 +167,7 @@ export function execFileNoThrowWithCwd(
   file: string,
   args: string[],
   {
+    background = false,
     abortSignal,
     timeout: finalTimeout = 10 * SECONDS_IN_MINUTE * MS_IN_SECOND,
     preserveOutputOnError: finalPreserveOutput = true,
@@ -226,6 +231,21 @@ export function execFileNoThrowWithCwd(
       code: 1,
       error: childProcessAbortError(abortSignal.reason).message,
     })
+  }
+
+  if (background) {
+    // Keep the heavier tree-cleanup dependency out of ordinary exec startup.
+    return import('./background-process.js').then(({ execBackgroundProcess }) =>
+      execBackgroundProcess(file, args, {
+        cwd: finalCwd,
+        env: sanitizedEnv.value,
+        argv0: finalArgv0,
+        timeoutMs: finalTimeout,
+        maxBuffer,
+        preserveOutput: finalPreserveOutput,
+        signal: abortSignal,
+      }),
+    )
   }
 
   return new Promise(resolve => {

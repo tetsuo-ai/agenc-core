@@ -3,7 +3,7 @@
  *
  * The USB read (`lsusb`, Ledger vendor id 0x2c97) only runs when something
  * explicitly asks for it via `refreshLedgerStatus()` — wired to fire when the
- * user submits a prompt mentioning "ledger" or runs the `/ledger` command.
+ * user submits a prompt with explicit Ledger device intent or runs `/ledger`.
  * Nothing polls in the background; the indicator simply renders the last
  * on-demand result and ages it locally (connected → recent → hidden) without
  * touching the device again.
@@ -76,7 +76,7 @@ export function getLedgerStatusSnapshot(): LedgerSnapshot {
 
 /**
  * Run a single on-demand USB read and update the store. Fire-and-forget from
- * triggers (prompt mention / /ledger) — never call on a timer.
+ * triggers (device intent / /ledger) — never call on a timer.
  */
 export async function refreshLedgerStatus(): Promise<void> {
   const model = await detectLedgerModel();

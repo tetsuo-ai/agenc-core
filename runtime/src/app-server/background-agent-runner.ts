@@ -1,3 +1,5 @@
+import { setSessionTaskTokenBudget } from "../session/task-budget.js";
+import { TASK_BUDGET_LEVELS, isTaskBudgetLevel, taskBudgetLabel } from "../config/task-budget.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * Starts daemon-owned background agents through the existing delegate runtime.
@@ -21,15 +23,23 @@ import {
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
 import { modelContextWindow } from "../session/turn-context.js";
-import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/thresholds.js";
+import { readPreparedContextPressure, clearPreparedContextPressure } from "../session/prepared-context-pressure.js";
+import { readCompactionProgress, subscribeToCompactionProgress } from "../services/compact/progress.js";
+import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
+import { toAgenCRuntimeMessages } from "../session/runtime-message-conversion.js";
+import { getAutoCompactPolicyForEnvironment } from "../services/compact/thresholds.js";
 import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
 } from "../bin/bootstrap.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
+import { liveAgentSession } from "../agents/live-session.js";
+import { subscribeChildEffectReviews } from "../session/child-effect-reviews.js";
+import { PendingEffectReviews } from "../session/pending-effect-reviews.js";
 import { clearSession } from "../commands/clear.js";
 import { runTurn } from "../session/run-turn.js";
+import { llmMessageToResponseItem } from "../session/message-history-conversion.js";
 import { isToolCallPhysicallyExecuting } from "../session/executing-tool-calls.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
@@ -47,6 +57,7 @@ import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
 import { isGoalRestorable, type SessionGoal } from "../goal/goal.js";
 import { buildSessionGoal } from "../goal/intake.js";
 import { defaultGoalGateDeps, resolveGoalBaseCommit } from "../goal/runtime-deps.js";
+import { captureGoalWorkingTreeBaseline } from "../goal/worktree-baseline.js";
 import {
   commitSessionGoal,
   getSessionGoal,
@@ -68,12 +79,17 @@ import {
   canCycleToAuto,
   createDisabledAutoModeContext,
   transitionPermissionMode,
+  PermissionModeTransitionPrecommitError,
 } from "../permissions/permission-mode.js";
 import {
   applyPermissionRulesSnapshot,
   loadPermissionRulesSnapshot,
 } from "../permissions/settings.js";
 import { parseRuleString, serializeRuleValue } from "../permissions/rules.js";
+import {
+  retainedToolPolicyModeCeiling,
+  sessionToolPolicyFromMetadata,
+} from "../permissions/session-tool-policy.js";
 import {
   authorizeBypassPermissionsConsent,
   canonicalizeBypassPermissionsCwd,
@@ -111,10 +127,13 @@ import {
 } from "../budget/effect-settlement-supervisor.js";
 import {
   resolveLiveDurableEffectReview,
+  resolveDurableEffectReview,
   type ResolveDurableEffectReviewOptions,
   type ResolveDurableEffectReviewResult,
 } from "../state/effect-review.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
+import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { mergeDaemonClientEnvironment } from "./client-env-snapshot.js";
 import {
   permissionGrantsFromToolPermissionContext,
@@ -128,6 +147,7 @@ import type {
   PreparedSessionProviderSwitch,
   Session,
 } from "../session/session.js";
+import { isSelectableHistoryUserMessage, normalizeHistoryMessages, splitActiveHistory } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import { respondToSessionElicitation } from "../elicitation/respond.js";
 import type {
@@ -275,6 +295,7 @@ import {
 } from "./background-agent-runner/daemon-events.js";
 import {
   historyEpochFromRollout,
+  rolloutHasTranscriptReset,
   findPersistedMessageSubmission,
   sessionTranscriptV2FromRollout,
   currentRunEpochFromRollout,
@@ -334,6 +355,7 @@ import {
   runtimeSettingsWithRestoreOverrides,
   buildBootstrapArgv,
   installUnattendedPermissionPolicy,
+  freezeSessionPermissionMode,
   assertRoutineRunAuthority,
 } from "./background-agent-runner/runtime-settings.js";
 import type {
@@ -409,6 +431,8 @@ export {
 } from "./background-agent-runner/tool-recovery.js";
 
 const DAEMON_USER_STOP_GENERATION: unique symbol = Symbol("agenc.daemon-user-stop-generation");
+/** Providers whose effort levels come with their live model lists (published-model-catalog). */
+const LIVE_EFFORT_LEVEL_PROVIDERS: ReadonlySet<string> = new Set(["venice", "ollama-cloud"]);
 type DaemonHumanSessionSubmitOptions = DaemonSessionSubmitOptions & {
   readonly [DAEMON_USER_STOP_GENERATION]?: number;
 };
@@ -529,10 +553,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // A routine run is marked in its immutable runtime options, so the shell
     // sandbox, the dispatch path and MCP questions can tell it apart without
     // reading permission state that changes or is fenced mid-run.
-    const runtimeOptions = routineRun || params.runtimeOptions?.relaxedOneShot !== undefined
+    const runtimeOptions = routineRun || params.runtimeOptions?.relaxedOneShot !== undefined || params.metadata?.mode === "tui" || params.runtimeOptions?.interactiveTaskBudget !== undefined
       ? Object.freeze({
           ...params.runtimeOptions,
           ...(routineRun ? { routineRun: true } : {}),
+          interactiveTaskBudget: params.metadata?.mode === "tui" && params.runtimeOptions?.nonInteractive !== true && !routineRun && params.metadata?.goalRun !== true,
           ...(params.runtimeOptions?.relaxedOneShot !== undefined ? {
             relaxedOneShot: selectRelaxedOneShot({ requested: params.runtimeOptions.relaxedOneShot,
               nonInteractive: params.runtimeOptions.nonInteractive, source: params.metadata?.source,
@@ -558,6 +583,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         : {}),
       argv: buildBootstrapArgv(params, this.#argv),
       runtimeOptions,
+      ...(params.toolPolicy !== undefined
+        ? { toolRegistryOptions: { toolPolicy: params.toolPolicy } }
+        : {}),
       // Daemon agents are unattended execution for budget policy, but this
       // hint deliberately does not enable autonomous keepalive ticks.
       executionAdmissionAutonomous: true,
@@ -653,6 +681,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         params.unattendedAllow,
         params.unattendedDeny,
         routineRun ? { workspaceRoot: runtimeWorkspaceRoot(bootstrap) } : undefined,
+        params.toolPolicy,
+      );
+      const toolPolicyModeCeiling = freezeSessionPermissionMode(
+        bootstrap.session.permissionModeRegistry,
+        params.toolPolicy,
+        undefined,
       );
 
       // Upstream-parity top-level executor: bootstrap already registered
@@ -747,6 +781,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           );
         }
         preparedFirstInput = prepared.input;
+        // Turn one has its own publication path. Refuse before its initial
+        // user_message is written, just as message.stream does for turn two.
+        await bootstrap.session.assertUserPromptFits?.(preparedFirstInput);
       }
 
       requireCanonicalRuntimeSettingsSupport(active, managedThread.threadId);
@@ -833,6 +870,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         const firstSubmitOptions: DaemonSessionSubmitOptions = {
           [DAEMON_USER_PROMPT_PREPARED]: true as const,
+          ...(params.initialUserPromptText !== undefined ? { userPromptText: params.initialUserPromptText } : {}),
+          clientMessageId: `user-initial-${managedThread.threadId}`,
           displayUserMessage:
             params.initialDisplayUserMessage === undefined
               ? messageContentDisplayText(transcriptContent)
@@ -873,6 +912,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         runtimeGenerationId: active.runtimeGenerationId,
         startedAt,
         status: "running",
+        ...(toolPolicyModeCeiling !== undefined ? { toolPolicyModeCeiling } : {}),
         ...(rolloutIdentity !== undefined
           ? {
               rolloutPath: rolloutIdentity.rolloutPath,
@@ -1067,12 +1107,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           this.#env,
           params.envOverrides,
         );
+        // The policy a session was created with is part of its durable
+        // identity. Malformed stored policy throws here, so the restore fails
+        // closed instead of bringing the session back unrestricted.
+        const toolPolicy = sessionToolPolicyFromMetadata(params.metadata);
         // A restored routine run stays marked as one (see startAgent).
-        const restoreRuntimeOptions = isRoutineRun(params.metadata) || params.runtimeOptions?.relaxedOneShot !== undefined
+        const restoreRuntimeOptions = isRoutineRun(params.metadata) || params.runtimeOptions?.relaxedOneShot !== undefined || params.metadata?.mode === "tui" || params.runtimeOptions?.interactiveTaskBudget !== undefined
           ? Object.freeze({
               ...params.runtimeOptions,
               ...(params.runtimeOptions?.relaxedOneShot !== undefined ? { relaxedOneShot: false } : {}),
               ...(isRoutineRun(params.metadata) ? { routineRun: true } : {}),
+              interactiveTaskBudget: params.metadata?.mode === "tui" && params.runtimeOptions?.nonInteractive !== true && !isRoutineRun(params.metadata) && params.metadata?.goalRun !== true,
             })
           : params.runtimeOptions;
         // Same ambient-authority scope as first start: restores also run
@@ -1089,6 +1134,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             : {}),
           conversationId: params.agentId,
           runtimeOptions: restoreRuntimeOptions,
+          ...(toolPolicy !== undefined
+            ? { toolRegistryOptions: { toolPolicy } }
+            : {}),
           resumeConversation: true,
           ...(params.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: params.resumeRolloutPath }
@@ -1161,6 +1209,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           isRoutineRun(params.metadata)
             ? { workspaceRoot: runtimeWorkspaceRoot(bootstrap) }
             : undefined,
+          toolPolicy,
+        );
+        // Before any restore-time override can touch the mode, so a resume
+        // asking for a wider one is refused rather than applied.
+        freezeSessionPermissionMode(
+          bootstrap.session.permissionModeRegistry,
+          toolPolicy,
+          retainedToolPolicyModeCeiling(params.metadata),
         );
         // `/goal` is session state journaled outside the conversation. A
         // reopened session gets its open goal back, paused: continuing is the
@@ -1250,6 +1306,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
         const restoredAt = this.#now();
         const startedAt = params.startedAt ?? restoredAt;
+        const restoredRolloutItems = bootstrap.rolloutStore.readAll();
         const activationMustBePending =
           params.resumeSuspendedRun === true ||
           params.resumeStartupActivationPending === true;
@@ -1308,7 +1365,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           bufferedEvents: [],
           activeToolCallIds: new Set(),
           historyEpoch: historyEpochFromRollout(
-            bootstrap.rolloutStore.readAll(),
+            restoredRolloutItems,
             params.agentId,
           ),
           messageSubmissionQueue: Promise.resolve(),
@@ -1321,6 +1378,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           dispatchChain: Promise.resolve(),
         };
         authorityOwner = active;
+        if (active.runtimeSettings === undefined) {
+          const branchMeta = bootstrap.rolloutStore.readAll().find((item) => item.type === "session_meta");
+          if (branchMeta?.type === "session_meta" &&
+              branchMeta.payload.source === "interactive-root-reviewed-rollback" &&
+              /^c2-reviewed-rollback:[a-f0-9]{64}$/u.test(branchMeta.payload.originator)) {
+            // A reviewed branch copies conversation history into a new run,
+            // not the source run's settings authority. Establish the normal
+            // durable baseline from this run's validated live configuration.
+            requireCanonicalRuntimeSettingsSupport(active, params.agentId);
+            ensureInitialRuntimeSettings(active, params.agentId);
+          }
+        }
         if (
           canonicalRuntimeState.runtimeSettings !== undefined &&
           restoredRuntimeSettings !== undefined &&
@@ -1343,6 +1412,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             params,
             runtimeWorkspaceRoot(bootstrap),
             bootstrap.configStore.current(),
+            bootstrap.session.services.providerEnvironment,
           );
           if (!runtimeSettingsEqual(restoreOverrides, restoredBaseline)) {
             const previousSettings = restoredBaseline;
@@ -1446,7 +1516,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           active,
         );
         const restoredSession = bootstrap.session;
-        const recoveredInitialMessages = params.initialMessages ?? [];
+        // The snapshot conversation fills only an empty history. Once the
+        // user has cleared the conversation (or a reset replaced it), an
+        // empty history is the record, and a snapshot taken before that
+        // reset still holds the removed messages. Hydrating it brought a
+        // cleared conversation back after a daemon restart.
+        const recoveredInitialMessages = rolloutHasTranscriptReset(
+          restoredRolloutItems,
+        )
+          ? []
+          : (params.initialMessages ?? []);
         const recoveredReplayedMessages =
           await this.#hydrateRecoveredAgentState({
             agentId: params.agentId,
@@ -2228,8 +2307,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           : `session ${params.sessionId} already has an active or queued turn`,
       );
     }
-    if (!active.deferredDurableResumePendingReview &&
-        !active.deferredDurableResumeStarting) {
+    // Cancellation can still be settling tool outcomes. Check effect review
+    // inside the submission queue below, after that cleanup, before execution.
+    // A recovered turn already waiting for operator review has no cleanup to
+    // finish. Refuse it with the actionable review error instead of queuing
+    // forever behind the review barrier.
+    if (active.deferredDurableResumePendingReview === true) {
       active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
     }
     // A history the live tool-pair validator has closed cannot take the user
@@ -2307,7 +2390,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   /**
    * `session.goal`: the one place a goal is set, paused, resumed or cleared.
    * The goal is session state journaled outside the conversation; this only
-   * changes that state. Work starts when the client submits the next turn.
+   * changes that state. Clearing also stops the captured running goal turn.
+   * Work starts when the client submits the next turn.
    */
   async updateAgentSessionGoal(
     agentId: string,
@@ -2355,14 +2439,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             defaultMaxRounds: active.bootstrap.configStore.current().goal?.max_rounds,
           });
           if (!built.ok) return refuse(built.message);
-          return reply(commitSessionGoal(session, built.goal, "set"), {
+          const baseline = await captureGoalWorkingTreeBaseline(cwd, built.goal.baseCommit, session.services.configStore?.homeContext.path);
+          return reply(commitSessionGoal(session, {
+            ...built.goal,
+            ...(baseline === undefined ? {} : { worktreeBaseline: baseline }),
+          }, "set"), {
             detectedVerification: built.detected,
           });
         }
-        case "clear":
+        case "clear": {
           if (current === undefined) return refuse("No goal is set.");
+          const goalTurnId = current.status === "active"
+            ? runtimeActiveTurnId(session) ?? active.messageSubmission?.turnId
+            : undefined;
           commitSessionGoal(session, { ...current, status: "cleared" }, "cleared");
+          if (goalTurnId !== undefined) {
+            // Use the captured turn, so cancellation cannot interrupt a new
+            // prompt that starts while the old turn is finishing its cleanup.
+            const stopped = await this.interruptAgentTurnIfMatches(
+              agentId,
+              "goal_cancelled",
+              goalTurnId,
+            );
+            if (!stopped.cancelled && !stopped.stale) {
+              throw new Error("Goal cleared, but the active turn could not be interrupted.");
+            }
+          }
           return reply(undefined, { message: `Goal cleared: ${current.objective}` });
+        }
         case "pause":
           if (current === undefined) return refuse("No goal is set.");
           if (current.status !== "active") {
@@ -2651,18 +2755,28 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             emitToolStart(toolName);
             await active.dispatchChain;
             const router = routerFromRegistry(session.services.registry);
-            const result = await router.dispatchModelToolCall(
-              {
-                id: params.commandId,
-                name: toolName,
-                arguments: JSON.stringify({ command: params.command }),
-              },
-              {
-                ...buildLiveToolDispatchOptions(turn, session, executionSignal),
-                source: "direct",
-              },
-            );
-            return { result, toolName, turnId: turn.subId };
+            // Direct shell effects are serialized outside model turns. Their
+            // approvals belong to this command, not the idle activeTurn slot.
+            let shellDispatchActive = true;
+            try {
+              const result = await router.dispatchModelToolCall(
+                {
+                  id: params.commandId,
+                  name: toolName,
+                  arguments: JSON.stringify({ command: params.command }),
+                },
+                {
+                  ...buildLiveToolDispatchOptions(turn, session, executionSignal),
+                  source: "direct",
+                  getActiveTurnId: () => shellDispatchActive &&
+                    !executionSignal.aborted && this.#active.get(agentId) === active
+                    ? turn.subId : null,
+                },
+              );
+              return { result, toolName, turnId: turn.subId };
+            } finally {
+              shellDispatchActive = false;
+            }
           },
         ),
       );
@@ -2709,6 +2823,21 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const transcriptOutput =
       `<bash-stdout>${escapeXml(result.stdout)}</bash-stdout>` +
       `<bash-stderr>${escapeXml(result.stderr)}</bash-stderr>`;
+    // UI events do not append model history. Persist this operator context
+    // before releasing the serialized command so the next turn and a cold
+    // resume see the command's actual outcome without inventing tool pairs.
+    const shellHistory = {
+      role: "user" as const,
+      content: `<user_shell_command><command>${escapeXml(params.command)}</command>` +
+        `<exit_code>${result.exitCode ?? "unknown"}</exit_code>` +
+        `${transcriptOutput}</user_shell_command>`,
+      runtimeOnly: { responseItemId: `shell-context:${eventKey}` },
+    };
+    active.bootstrap.rolloutStore.appendRollout(
+      { type: "response_item", payload: llmMessageToResponseItem(shellHistory) },
+      { durable: true },
+    );
+    await session.state.with((state) => { state.history.push(shellHistory); });
     session.emit(
       {
         eventId: `shell-output:${eventKey}`,
@@ -2736,6 +2865,28 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     submission: ActiveMessageSubmission,
     userStopGenerationToRelease: number,
   ): Promise<AgenCBackgroundAgentMessageResult> {
+    // The submission records below open the turn they start: like its steps
+    // they are written but not fsynced. The turn keeps them under its own
+    // scope and flushes them at its end; a message that waits behind another
+    // turn gets the background flush.
+    const releaseSubmissionDurability =
+      active.bootstrap.rolloutStore.deferSyncsForTurn?.();
+    try {
+      return await this.#executeAgentMessageSubmissionInTurnScope(
+        active, agentId, params, submission, userStopGenerationToRelease,
+      );
+    } finally {
+      releaseSubmissionDurability?.("background");
+    }
+  }
+
+  async #executeAgentMessageSubmissionInTurnScope(
+    active: ActiveBackgroundAgent,
+    agentId: string,
+    params: AgenCBackgroundAgentMessageParams,
+    submission: ActiveMessageSubmission,
+    userStopGenerationToRelease: number,
+  ): Promise<AgenCBackgroundAgentMessageResult> {
     let input = messageContentToAgentInput(params.content);
     const prepared = await prepareDaemonUserPrompt({
       session: active.bootstrap.session,
@@ -2752,6 +2903,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       );
     }
     input = prepared.input;
+    // Check the transformed, model-facing content before publishing either
+    // user_message or the durable idempotency marker. A refusal leaves the
+    // client's existing draft/attachment rollback path intact.
+    await consumeDaemonPendingProviderSwitches(active.bootstrap.session, active.bootstrap.configStore);
+    await active.bootstrap.session.assertUserPromptFits?.(input);
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {
@@ -2793,10 +2949,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
     }
     const submitOptions: DaemonHumanSessionSubmitOptions = {
+      clientMessageId: params.messageId,
       ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
       [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
       [DAEMON_USER_PROMPT_PREPARED]: true as const,
+      ...(params.userPromptText !== undefined ? { userPromptText: params.userPromptText } : {}),
       displayUserMessage:
         params.displayUserMessage === undefined
           ? messageContentDisplayText(params.originalContent)
@@ -2835,6 +2993,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       );
     }
     await clearSession(active.bootstrap.session);
+    clearPreparedContextPressure(active.bootstrap.session);
     await active.control.clearConversationHistory(agentId);
     // A new conversation does not inherit the old one's goal.
     const clearedGoal = getSessionGoal(active.bootstrap.session);
@@ -2967,6 +3126,28 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new Error("MCP disable is not available for this daemon session.");
     }
     const result = await disableServer(params.serverName);
+    return {
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
+  async removeMcpServer(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const removeServer =
+      active.bootstrap.session.services.mcpManager.removeServer;
+    if (typeof removeServer !== "function") {
+      throw new Error("MCP remove is not available for this daemon session.");
+    }
+    const result = await removeServer(params.serverName);
     return {
       serverName: result.serverName,
       success: result.success,
@@ -3173,18 +3354,38 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         contextWindow: rawWindow,
         effectiveContextWindowPercent: liveModelInfo?.effectiveContextWindowPercent ?? 100,
       } });
-      const effectiveWindowTokens = rawWindow > 0
-        ? getEffectiveContextWindowSizeForEnvironment({ options: {
+      const compactionPolicy = rawWindow > 0
+        ? getAutoCompactPolicyForEnvironment({ options: {
           mainLoopModel: model,
           contextWindowTokens: effectiveModelWindow,
         } }, bootstrap.session.services.providerEnvironment ?? {})
         : undefined;
+      const effectiveWindowTokens = compactionPolicy?.effectiveWindowTokens;
+      const preparedPressure = readPreparedContextPressure(bootstrap.session);
+      const pressure = preparedPressure !== undefined && preparedPressure.model === model && preparedPressure.provider === provider && preparedPressure.effectiveWindowTokens === effectiveWindowTokens
+        ? preparedPressure : undefined;
+      // Before the first prepared request (or after history replacement), use
+      // token-aware input accounting, never base64/metadata JSON byte counts.
+      const compactionWindow = pressure?.effectiveWindowTokens ?? effectiveWindowTokens;
+      const fallbackInput = pressure !== undefined || compactionWindow === undefined ? undefined : estimateMessagesTokens(
+        toAgenCRuntimeMessages(history as import("../llm/types.js").LLMMessage[]),
+        { provider: bootstrap.session.services.provider, options: {
+          mainLoopModel: model, contextWindowTokens: compactionWindow,
+          systemPrompt: instructions, tools: llmTools,
+        } }, { inputOnly: true },
+      );
       return {
         ...(provider !== undefined ? { provider } : {}),
         ...(model !== undefined ? { model } : {}),
         estimated: true,
         windowTokens: rawWindow,
         ...(effectiveWindowTokens !== undefined ? { effectiveWindowTokens } : {}),
+        ...(compactionWindow !== undefined ? {
+          compactionInputTokens: pressure?.inputTokens ?? fallbackInput,
+          compactionWindowTokens: compactionWindow,
+          compactionThresholdTokens: pressure?.autoCompactThresholdTokens ?? compactionPolicy?.compactionThresholdTokens,
+          compactionReservedOutputTokens: pressure?.reservedOutputTokens ?? 0,
+        } : {}),
         messageTokens: finiteNumber(messageTokens),
         systemPromptTokens: finiteNumber(estimate(instructions)),
         systemToolTokens: finiteNumber(systemToolTokens),
@@ -3279,7 +3480,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const submission = active.messageSubmission;
     const liveTurnId =
       submission?.turnId ?? runtimeActiveTurnId(active.bootstrap.session);
-    return sessionTranscriptV2FromRollout(
+    const snapshot = sessionTranscriptV2FromRollout(
       active.bootstrap.rolloutStore.readAll(),
       params.sessionId,
       active.thread.threadId,
@@ -3295,6 +3496,91 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.bootstrap.rolloutStore.store?.sessionDir,
       { includeCompleteMessages: params.includeCompleteMessages },
     );
+    const descendantReviews = this.#descendantEffectReviews(active);
+    const reviews = [...(snapshot.pendingEffectReviews ?? []), ...descendantReviews];
+    const withReviews = { ...snapshot, pendingEffectReviews: reviews };
+    const state = active.bootstrap.session.state?.unsafePeek?.() as { history?: unknown[] } | undefined;
+    if (!Array.isArray(state?.history)) return withReviews;
+    const activeUserMessageIds = splitActiveHistory(normalizeHistoryMessages(state.history)).activeHistory
+      .filter(isSelectableHistoryUserMessage)
+      .flatMap((message) => typeof message.runtimeOnly?.responseItemId === "string"
+        ? [message.runtimeOnly.responseItemId] : []);
+    const pendingId = snapshot.activeTurn?.clientMessageId;
+    if (pendingId !== undefined && !activeUserMessageIds.includes(pendingId)) activeUserMessageIds.push(pendingId);
+    return { ...withReviews, activeUserMessageIds };
+  }
+
+  effectReviewSessionIds(agentId: string): readonly string[] {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const rootId = active.bootstrap.session.conversationId;
+    return [rootId, ...(active.bootstrap.rolloutStore.listThreadSpawnDescendants?.(rootId) ?? [])
+      .map(edge => edge.childThreadId)];
+  }
+
+  #descendantEffectReviews(active: ActiveBackgroundAgent): NonNullable<SessionTranscriptV2Result["pendingEffectReviews"]> {
+    const rootId = active.bootstrap.session.conversationId;
+    const descendants = this.effectReviewSessionIds(active.thread.threadId).filter(id => id !== rootId);
+    if (descendants.length === 0) return [];
+    const agencHome = active.bootstrap.session.services.configStore?.homeContext.path;
+    if (agencHome === undefined) throw new Error("Effect review requires the owning session's configuration home");
+    const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot, agencHome });
+    try {
+      const effects = new StateRunDurabilityRepository(driver);
+      return descendants.flatMap(sessionId => {
+        const pending = listUnresolvedUnknownOutcomeEffects(driver, sessionId);
+        if (pending.length === 0) return [];
+        const live = active.control.getLive?.(sessionId);
+        const child = live === undefined ? undefined : liveAgentSession(live);
+        const display = new PendingEffectReviews();
+        for (const item of child?.rolloutStore?.readAll() ?? []) {
+          if (item.type === "event_msg") display.apply(item.payload);
+        }
+        return pending.flatMap(effect => {
+          const durable = effects.getEffectBySessionCall(sessionId, effect.toolCallId);
+          // An executing intent is not yet an unknown outcome requiring review.
+          if (durable !== undefined && durable.reviewStatus !== "pending") return [];
+          const context = display.reviews.find(review => review.callId === effect.toolCallId);
+          return [{ sessionId, callId: effect.toolCallId, toolName: effect.toolName,
+            description: context?.description ?? `Child session ${sessionId}`, blocksSession: false,
+            error: `${context?.error ?? durable?.unknownReason ?? "Unknown outcome"}. From this parent run /resolve ${effect.toolCallId} <confirmed_committed|confirmed_no_effect|remains_unknown> --session ${sessionId}` }];
+        });
+      });
+    } finally { driver.close(); }
+  }
+
+  #publishEffectReviews(active: ActiveBackgroundAgent): void {
+    const snapshot = sessionTranscriptV2FromRollout(active.bootstrap.rolloutStore.readAll(),
+      active.sessionBinding?.sessionId ?? active.thread.threadId, active.thread.threadId);
+    void this.#emitOrBufferEvent(active, {
+      id: active.bootstrap.session.nextInternalSubId(), type: "effect_reviews_snapshot",
+      payload: { reviews: [...(snapshot.pendingEffectReviews ?? []), ...this.#descendantEffectReviews(active)] },
+      statusProjection: "session_only",
+    });
+  }
+
+  #clearReviewedEffectPoison(
+    active: ActiveBackgroundAgent,
+    params: ResolveDurableEffectReviewOptions,
+    outcome: ResolveDurableEffectReviewResult,
+  ): void {
+    if (outcome.kind === "not_found" || !outcome.durable || params.resolution.workflowStatus === "pending") return;
+    const root = active.bootstrap.session;
+    const sessions = new Set([root]);
+    for (const id of this.effectReviewSessionIds(active.thread.threadId)) {
+      if (id === root.conversationId) continue;
+      const live = active.control.getLive?.(id);
+      const child = live === undefined ? undefined : liveAgentSession(live);
+      if (child !== undefined) sessions.add(child);
+    }
+    // A parent fence may already reference the child's effect. The reviewed
+    // canonical run/step authorizes clearing that exact mirror only; a reused
+    // call id in another run or attempt must remain blocked.
+    for (const session of sessions) resolveLiveEffectPoison(session, {
+      callId: params.toolCallId, runId: outcome.runId, stepId: outcome.stepId,
+    });
   }
 
   async resolveLiveEffectReview(
@@ -3305,21 +3591,37 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
-    if (active.bootstrap.session.conversationId !== params.sessionId) {
+    if (!this.effectReviewSessionIds(agentId).includes(params.sessionId)) {
       throw new Error(
-        `AgenC daemon agent ${agentId} does not own session ${params.sessionId}`,
+        `AgenC daemon agent ${agentId} does not own session ${params.sessionId}; attach to the owning session and run /resolve ${params.toolCallId} <confirmed_committed|confirmed_no_effect|remains_unknown>`,
       );
     }
-    const session = active.bootstrap.session;
-    const agencHome = session.services.configStore?.homeContext.path;
+    const root = active.bootstrap.session;
+    const live = params.sessionId === root.conversationId ? undefined : active.control.getLive(params.sessionId);
+    const session = params.sessionId === root.conversationId ? root : live === undefined ? undefined : liveAgentSession(live);
+    const agencHome = root.services.configStore?.homeContext.path;
     if (agencHome === undefined) {
       throw new Error("Live effect review requires the owning session's configuration home");
     }
+    // Closed descendants still have reviewable canonical evidence. The offline
+    // path acquires their journal lease and refuses if a writer still owns it.
+    if (session === undefined) {
+      const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot, agencHome });
+      try {
+        const result = resolveDurableEffectReview(driver, params);
+        this.#clearReviewedEffectPoison(active, params, result);
+        this.#publishEffectReviews(active);
+        return result;
+      }
+      finally { driver.close(); }
+    }
+    const rolloutStore = session.rolloutStore;
+    if (rolloutStore === null) throw new Error(`Owning session ${params.sessionId} has no live effect journal`);
     return runWithCurrentRuntimeSession(session, () => {
       const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot, agencHome });
       try {
         const outcome = resolveLiveDurableEffectReview(driver, params, {
-          readAll: () => active.bootstrap.rolloutStore.readAll(),
+          readAll: () => rolloutStore.readAll(),
           append: (eventId, payload) =>
             session.emit(
               {
@@ -3330,20 +3632,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               { durable: true },
             ),
           project: (event) =>
-            active.bootstrap.rolloutStore.recordEffectEvent(event),
+            rolloutStore.recordEffectEvent(event),
         });
-        if (
-          outcome.kind !== "not_found" &&
-          outcome.durable &&
-          params.resolution.workflowStatus !== "pending"
-        ) {
-          resolveLiveEffectPoison(session, {
-            callId: params.toolCallId,
-            ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
-            ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
-          });
-        }
-        if (active.deferredDurableResumePendingReview &&
+        this.#clearReviewedEffectPoison(active, params, outcome);
+        if (session === root && active.deferredDurableResumePendingReview &&
           outcome.kind !== "not_found" &&
           !active.bootstrap.rolloutStore.hasPendingEffectReviews?.()) {
           const reapply = active.reapplyRecoveredHistoryAfterReview;
@@ -3359,6 +3651,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             active.releaseDeferredDurableResumeReviewBarrier = undefined;
           }).catch(() => undefined);
         }
+        this.#publishEffectReviews(active);
         return outcome;
       } finally {
         driver.close();
@@ -3584,6 +3877,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
     replacementEvent: JsonObject,
   ): Promise<void> {
+    clearPreparedContextPressure(active.bootstrap.session);
     const id =
       typeof replacementEvent.id === "string"
         ? replacementEvent.id
@@ -3622,12 +3916,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const result = await preview.call(active.bootstrap.session, {
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
     if (result.ok) {
       return {
         sessionId: params.sessionId,
         ok: true,
         canRestoreFiles: result.canRestoreFiles,
+        checkpointAvailable: result.checkpointAvailable,
         filesChanged: [...result.filesChanged],
         insertions: result.insertions,
         deletions: result.deletions,
@@ -3655,6 +3951,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const result = await rewindFiles.call(active.bootstrap.session, {
       messageOrdinal: params.messageOrdinal,
+      ...(params.userMessageId !== undefined ? { userMessageId: params.userMessageId } : {}),
     });
     if (result.ok) {
       return {
@@ -3670,6 +3967,24 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       code: result.code,
       message: result.message,
     };
+  }
+
+  async setAgentProviderKey(
+    agentId: string,
+    params: { readonly provider: string; readonly apiKey: string },
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error("The session is no longer running.");
+    }
+    await withRuntimeSettingsMutation(active, async () => {
+      if (!isRunnableActiveAgent(active)) throw new Error("The session is no longer running.");
+      const session = active.bootstrap.session;
+      if (session.activeTurn.unsafePeek() !== null || session.pendingProviderSwitch !== null) {
+        throw new Error("Wait for the current turn or model switch to finish, then try again.");
+      }
+      await session.providerService.useSessionApiKey(params.provider, params.apiKey);
+    });
   }
 
   async setAgentModel(
@@ -3948,29 +4263,38 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         if (sameModeAutoAuthorityRevoked) {
           nextCtx = createDisabledAutoModeContext(liveCurrent);
         } else {
-          const transitioned = runWithCurrentRuntimeSession(
-            active.bootstrap.session,
-            () => {
-              if (target !== "bypassPermissions") {
+          let transitioned: ReturnType<typeof transitionPermissionMode>;
+          try {
+            transitioned = runWithCurrentRuntimeSession(
+              active.bootstrap.session,
+              () => {
+                if (target !== "bypassPermissions") {
+                  return transitionPermissionMode(
+                    transitionContext.mode,
+                    target,
+                    transitionContext,
+                  );
+                }
+                if (workspacePath === undefined) {
+                  throw new Error(
+                    "Switching to bypassPermissions requires a canonical workspace",
+                  );
+                }
                 return transitionPermissionMode(
                   transitionContext.mode,
                   target,
                   transitionContext,
+                  { workspacePath },
                 );
-              }
-              if (workspacePath === undefined) {
-                throw new Error(
-                  "Switching to bypassPermissions requires a canonical workspace",
-                );
-              }
-              return transitionPermissionMode(
-                transitionContext.mode,
-                target,
-                transitionContext,
-                { workspacePath },
-              );
-            },
-          );
+              },
+            );
+          } catch (error) {
+            // This callback computes the next context and has not returned a
+            // registry update, prepared effect, or durable settings event.
+            throw new PermissionModeTransitionPrecommitError(
+              error instanceof Error ? error.message : String(error), { cause: error },
+            );
+          }
           if ("error" in transitioned) {
             throw new Error(
               "Switching to bypassPermissions requires explicit consent for this exact cwd",
@@ -4063,46 +4387,58 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const canonicalRule = serializeRuleValue(parsed);
     const registry = active.bootstrap.session.permissionModeRegistry;
-    return registry.transact(async (current) => {
-      try {
-        if (!isRunnableActiveAgent(active)) {
-          throw new Error(`AgenC daemon agent not running: ${agentId}`);
-        }
-        const policy = await loadPermissionRulesSnapshot({
-          configStore: active.bootstrap.configStore,
-          cwd: runtimeWorkspaceRoot(active.bootstrap),
-        });
-        if (policy.managedOnly) {
-          throw new Error(
-            "Session permission rules are disabled by managed-only policy",
+    // Read the same configured sources as startup, without applying a provider
+    // selection. The registry coordinator publishes the fresh store and rules
+    // together, so a persisted removal cannot leave an older live deny behind.
+    const preparedConfigReload = await active.bootstrap.configStore.prepareReload();
+    try {
+      return await registry.transact(async (current) => {
+        try {
+          if (!isRunnableActiveAgent(active)) {
+            throw new Error(`AgenC daemon agent not running: ${agentId}`);
+          }
+          const policy = await loadPermissionRulesSnapshot({
+            configStore: preparedConfigReload.authority,
+            cwd: runtimeWorkspaceRoot(active.bootstrap),
+          });
+          if (policy.managedOnly) {
+            throw new Error(
+              "Session permission rules are disabled by managed-only policy",
+            );
+          }
+
+          const mutation = mutatePermissionRuleSource(
+            applyPermissionRulesSnapshot(current, policy),
+            "session",
+            params.operation,
+            params.behavior,
+            parsed,
+          );
+          return {
+            next: mutation.next,
+            metadata: { preparedConfigReload },
+            result: () => ({
+              applied: mutation.applied,
+              operation: params.operation,
+              behavior: params.behavior,
+              rule: canonicalRule,
+              sessionRules: mutation.buckets,
+            }),
+          };
+        } catch (error) {
+          if (error instanceof PermissionRuleMutationPrecommitError) throw error;
+          throw new PermissionRuleMutationPrecommitError(
+            error instanceof Error ? error.message : String(error),
+            { cause: error },
           );
         }
-
-        const mutation = mutatePermissionRuleSource(
-          current,
-          "session",
-          params.operation,
-          params.behavior,
-          parsed,
-        );
-        return {
-          next: mutation.applied ? mutation.next : null,
-          result: () => ({
-            applied: mutation.applied,
-            operation: params.operation,
-            behavior: params.behavior,
-            rule: canonicalRule,
-            sessionRules: mutation.buckets,
-          }),
-        };
-      } catch (error) {
-        if (error instanceof PermissionRuleMutationPrecommitError) throw error;
-        throw new PermissionRuleMutationPrecommitError(
-          error instanceof Error ? error.message : String(error),
-          { cause: error },
-        );
-      }
-    });
+      });
+    } catch (error) {
+      preparedConfigReload.rollback();
+      throw error;
+    } finally {
+      preparedConfigReload.settle();
+    }
   }
 
   async getAgentHooksStatus(
@@ -4250,6 +4586,21 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
     const session = active.bootstrap.session;
+    if (params.taskBudgetLevel !== undefined || params.taskTokenBudget !== undefined) {
+      if ((params.taskBudgetLevel !== undefined && (!isTaskBudgetLevel(params.taskBudgetLevel) || params.taskTokenBudget !== undefined)) || (params.taskTokenBudget !== undefined && (!Number.isSafeInteger(params.taskTokenBudget) || params.taskTokenBudget < 0)) || params.reasoningEffort !== undefined || params.modelVerbosity !== undefined || params.profile !== undefined) throw new Error("A task budget update cannot change other session settings");
+      const store = session.services.configStore;
+      if (store === undefined) throw new Error("No live config authority is available");
+      return withRuntimeSettingsMutation(active, async () => {
+        const staged = await store.prepareReload();
+        try {
+          const requested = params.taskTokenBudget ?? TASK_BUDGET_LEVELS[params.taskBudgetLevel!];
+          const configured = staged.config.task_token_budget ?? requested;
+          const effective = setSessionTaskTokenBudget(session, configured);
+          return { applied: true, taskTokenBudget: effective,
+            summary: `Current session budget: ${taskBudgetLabel(effective)}.${configured !== requested ? " Explicit CLI or project settings override the saved choice." : ""}` };
+        } finally { staged.rollback(); staged.settle(); }
+      });
+    }
     if (params.reasoningEffort !== undefined || params.modelVerbosity !== undefined) {
       if (params.reload !== undefined || params.profile !== undefined) {
         throw new Error("An effort or response detail update cannot reload other configuration");
@@ -4264,7 +4615,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           ? previousSettings.reasoningEffort
           : normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
         if (params.reasoningEffort !== undefined && level !== null) {
-          const effort = resolveReasoningEffort({ provider: previousSettings.provider, model: previousSettings.model });
+          const effortModel = { provider: previousSettings.provider, model: previousSettings.model };
+          let effort = resolveReasoningEffort(effortModel);
+          if (!effort.levels.includes(level) && LIVE_EFFORT_LEVEL_PROVIDERS.has(effortModel.provider)) {
+            // Venice and Ollama Cloud publish a model's levels with their live
+            // lists. When the session could not read the list yet (a slow
+            // network at start), its provider reads it now, before refusing.
+            await session.services.provider?.getExecutionProfile?.({ model: effortModel.model })
+              .catch(() => undefined);
+            effort = resolveReasoningEffort(effortModel);
+          }
           if (!effort.levels.includes(level)) {
             throw new Error("The selected model does not support this reasoning effort");
           }
@@ -4345,10 +4705,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const changes: string[] = [];
     let applied = false;
+    let keepLiveReasoningEffort = false;
     let preparedReloadSelection:
       ReturnType<typeof resolveProviderModelSelection> | undefined;
     let preparedReloadProviderSwitch: PreparedSessionProviderSwitch | undefined;
     if (params.reload === true) {
+      const configuredEffortBeforeReload = configStore.current().reasoning_effort;
       const preparedConfigReload = await configStore.prepareReload();
       const preparedMcpAuthorityRefresh = prepareMcpAuthorityRefresh(session);
       try {
@@ -4357,24 +4719,41 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           params.profile !== undefined
             ? resolveProfile(preparedConfig, params.profile)
             : preparedConfig;
+        // A saved swarm toggle must not replace a later /effort choice with
+        // an unchanged startup default. A profile or changed default is an
+        // explicit configuration request and still takes effect.
+        keepLiveReasoningEffort = params.profile === undefined &&
+          configuredEffortBeforeReload === preparedResolved.reasoning_effort;
         if (
           typeof preparedResolved.model === "string" ||
           typeof preparedResolved.model_provider === "string"
         ) {
+          const previousConfig = configStore.current();
+          const liveSelection = readSessionSelection(session, {
+            includePending: true,
+            fallbackConfig: preparedConfig,
+          });
+          // Reloading an unrelated setting must not reapply an unchanged
+          // startup model over a later live choice. A changed configured pair
+          // or an explicit profile is still a new model-selection request.
+          const keepLiveSelection = params.profile === undefined &&
+            previousConfig.model === preparedConfig.model &&
+            previousConfig.model_provider === preparedConfig.model_provider;
+          const reloadProvider = keepLiveSelection ? liveSelection.provider : preparedResolved.model_provider;
+          const reloadModel = keepLiveSelection ? liveSelection.model : preparedResolved.model;
           preparedReloadSelection = resolveProviderModelSelection(
             preparedConfig,
-            readSessionSelection(session, {
-              includePending: true,
-              fallbackConfig: preparedConfig,
-            }),
+            liveSelection,
             {
-              ...(typeof preparedResolved.model_provider === "string"
-                ? { model_provider: preparedResolved.model_provider }
+              ...(typeof reloadProvider === "string"
+                ? { model_provider: reloadProvider }
                 : {}),
-              ...(typeof preparedResolved.model === "string"
-                ? { model: preparedResolved.model }
+              ...(typeof reloadModel === "string"
+                ? { model: reloadModel }
                 : {}),
             },
+            session.services.providerEnvironment,
+            { validateCatalog: false },
           );
           preparedReloadProviderSwitch = await runWithCurrentRuntimeSession(
             session,
@@ -4515,6 +4894,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
                   ? { model: requestedModel }
                   : {}),
               },
+              session.services.providerEnvironment,
+              { validateCatalog: false },
             )
           : undefined);
       const targetModel = targetSelection?.model;
@@ -4538,7 +4919,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
                 session.prepareProviderSwitch(pendingSelection),
               ),
             )));
-      const nextReasoning = normalizeRuntimeSetting(
+      const nextReasoning = keepLiveReasoningEffort ? null : normalizeRuntimeSetting(
         resolved.reasoning_effort,
         RUN_RUNTIME_REASONING_EFFORTS,
         "reasoning effort",
@@ -5113,6 +5494,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   }
 
   #installSessionEventLogBridge(active: ActiveBackgroundAgent): () => void {
+    const unsubscribeChildReviews = subscribeChildEffectReviews(active.bootstrap.session, () => {
+      this.#publishEffectReviews(active);
+    });
+    const unsubscribeCompact = subscribeToCompactionProgress(active.bootstrap.session, (progress) => {
+      // Live telemetry travels over the existing opaque notification surface.
+      // It is never appended to the canonical run journal or used as authority.
+      void this.#emitOrBufferEvent(active, {
+        id: active.bootstrap.session.nextInternalSubId(),
+        type: "compact_progress", payload: { ...progress },
+        statusProjection: "session_only",
+      });
+    });
     const eventLog = (
       active.bootstrap.session as {
         eventLog?: {
@@ -5130,11 +5523,23 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         };
       }
     ).eventLog;
-    if (typeof eventLog?.subscribe !== "function") return () => {};
+    if (typeof eventLog?.subscribe !== "function") return () => { unsubscribeCompact(); unsubscribeChildReviews(); };
     active.canonicalEventBridgeInstalled = true;
-    return eventLog.subscribe((event) => {
-      const uncorrelated = daemonEventFromUnboundSessionEvent(event);
-      if (uncorrelated === null) return;
+    const unsubscribeLog = eventLog.subscribe((event) => {
+      if (event.msg?.type === "context_compacted" || event.msg?.type === "history_cleared" || event.msg?.type === "history_replaced") {
+        clearPreparedContextPressure(active.bootstrap.session);
+      }
+      const canonicalEvent = daemonEventFromUnboundSessionEvent(event);
+      if (canonicalEvent === null) return;
+      const completed = event.msg?.type === "context_compacted"
+        ? readCompactionProgress(active.bootstrap.session) : undefined;
+      // Enrich only the daemon display projection. The canonical boundary and
+      // its strict recovery schema remain byte-for-byte unchanged.
+      const uncorrelated = completed?.phase === "complete" && completed.afterTokens !== undefined
+        ? { ...canonicalEvent, payload: { ...canonicalEvent.payload,
+            displayText: `Compacted ${completed.beforeTokens.toLocaleString("en-US")} to ${completed.afterTokens.toLocaleString("en-US")} tokens in ${Math.round((Date.now() - completed.startedAtMs) / 1000)}s`,
+          } }
+        : canonicalEvent;
       const daemonEvent = projectTelemetryErrorAsSessionOnly(
         scopeDirectShellDaemonEvent(
           active,
@@ -5145,6 +5550,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#applyCanonicalEventBookkeeping(active, daemonEvent);
       void this.#emitOrBufferEvent(active, daemonEvent);
     });
+    return () => { unsubscribeLog(); unsubscribeCompact(); unsubscribeChildReviews(); };
   }
 
   #applyCanonicalEventBookkeeping(
@@ -5952,7 +6358,7 @@ function installDaemonTurnDriverHooks(
       const ctx = baseCtx;
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
-          ? (opts?.displayUserMessage ?? promptDisplayText)
+          ? (opts?.userPromptText ?? opts?.displayUserMessage ?? promptDisplayText)
           : undefined;
       // displayUserMessage: null suppresses the run-turn user_message
       // emit. On the daemon path, submitAgentMessage above already
@@ -5974,6 +6380,12 @@ function installDaemonTurnDriverHooks(
           querySource: "sdk",
           exactOutput: opts?.exactOutput,
           displayUserMessage: null,
+          ...(rootHumanTurnText !== undefined && opts?.clientMessageId !== undefined
+            ? { seedUserMessageRuntimeOnly: {
+                userMessageId: opts.clientMessageId,
+                responseItemId: opts.clientMessageId,
+              } }
+            : {}),
           ...(opts?.[DAEMON_USER_STOP_GENERATION] !== undefined
             ? { userStopGenerationToRelease: opts[DAEMON_USER_STOP_GENERATION] }
             : {}),

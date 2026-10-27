@@ -51,6 +51,24 @@ of the conversation, so compaction cannot drop or paraphrase it, and it is
 restated at the top of every later turn. A reopened session gets an open goal
 back **paused**; `/goal resume` continues it.
 
+In a Git workspace, setting a goal also journals the content and mode identities
+of existing tracked changes and untracked files. Review compares against that
+baseline, so unchanged files that predate the goal are not attributed to it.
+Later edits, deletions and restorations still appear in the integrity check.
+New goals retain the starting bytes of those existing changes in private,
+content-addressed files under the AgenC home. Their bytes and directory entries
+are synced before the goal is journaled. Review diffs compare only files changed
+after that snapshot, including new untracked file contents, later edits and
+deletions. The repository's index, refs and working files are not changed by
+this comparison. Missing or corrupt retained bytes stop review rather than
+being treated as an empty diff. Hash-only baselines from older builds can still
+review new files and initially clean tracked files, but cannot reconstruct a
+later edit to an already dirty file; set a new goal before making that edit.
+Older goals without a baseline keep the
+conservative comparison against that commit and all untracked files, with a
+visible note that some files may predate the goal. An incomplete or unreadable
+baseline prevents setting the goal rather than silently omitting files.
+
 `/goal` does not change the permission mode. In `default` mode the agent's
 edits, and the runtime's verification command, still ask for approval. Use
 `acceptEdits` or approve the command for the session to let a goal run alone.

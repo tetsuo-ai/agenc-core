@@ -1,11 +1,12 @@
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { makeRuntimeScratch } from '../helpers/runtime-scratch.js'
 
 it('uses the same installed manager and leaf exports through native ESM and require', async () => {
-  const directory = await mkdtemp(join(process.cwd(), '.sandbox-native-'))
+  const { directory, cleanup } = await makeRuntimeScratch('agenc-sandbox-native-')
   try {
     const fixture = join(directory, 'fixture.ts')
     await writeFile(fixture, `
@@ -55,5 +56,5 @@ it('uses the same installed manager and leaf exports through native ESM and requ
       expect(child.status, `${mode}: ${child.stderr}`).toBe(0)
       expect(child.stdout.trim()).toBe(`sandbox-native-ok:${mode}`)
     }
-  } finally { await rm(directory, { recursive: true, force: true }) }
+  } finally { await cleanup() }
 })

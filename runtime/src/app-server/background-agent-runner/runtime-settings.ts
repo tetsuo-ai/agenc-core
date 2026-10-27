@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type {
   LocalRuntimeBootstrap,
   PreparedConfiguredExecutionAuthority,
@@ -23,7 +24,12 @@ import {
   canonicalizeBypassPermissionsCwd,
   loadBypassPermissionsConsent,
 } from "../../permissions/bypass-consent-state.js";
-import type { ToolPermissionContext } from "../../permissions/types.js";
+import type { PermissionMode, ToolPermissionContext } from "../../permissions/types.js";
+import {
+  frozenPermissionModeMessage,
+  isWiderPermissionMode,
+  type SessionToolPolicy,
+} from "../../permissions/session-tool-policy.js";
 import {
   readSessionSelection,
   resolveProviderModelSelection,
@@ -65,6 +71,7 @@ import {
   applySessionExecutionAuthority,
   executionAuthorityForPermissionContext,
   sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionExecutionAuthorityFromConfiguration,
 } from "../../session/configuration.js";
 import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
 import {
@@ -233,6 +240,20 @@ function installDaemonPermissionAuthorityCoordinator(
       let preparedMcpAuthorityRefreshStarted = false;
       let authorityTransitionCompleted = false;
       try {
+        if (
+          stagedConfiguredAuthority === undefined &&
+          preparedConfigReload === undefined &&
+          preparedMcpAuthorityRefresh === undefined &&
+          runtimeSettingsCommitMetadata(metadata)?.reason === "permission_mode_changed" &&
+          isDeepStrictEqual(authority, sessionExecutionAuthorityFromConfiguration(session.sessionConfiguration))
+        ) {
+          // Ordinary permission choices govern future tool admission. When
+          // execution authority is unchanged, publishing that choice must not
+          // drain the broker and terminate already-approved running commands.
+          await publication.commit();
+          authorityTransitionCompleted = true;
+          return;
+        }
         await transitionSandboxExecutionBrokerAuthority(
           broker,
           sandboxExecutionBrokerAuthorityFromSessionAuthority(
@@ -1374,6 +1395,8 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
   readonly model?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
@@ -1389,6 +1412,12 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
     provider: canonical.provider,
     model: canonical.model,
     ...(canonical.profile !== null ? { profile: canonical.profile } : {}),
+    ...(params.taskTokenBudget !== undefined
+      ? { taskTokenBudget: params.taskTokenBudget }
+      : {}),
+    ...(params.taskMaxCalls !== undefined
+      ? { taskMaxCalls: params.taskMaxCalls }
+      : {}),
     ...(params.configPath !== undefined
       ? { configPath: params.configPath }
       : {}),
@@ -1401,6 +1430,7 @@ function runtimeSettingsWithRestoreOverrides(
   params: AgenCBackgroundAgentRestoreParams,
   workspaceRoot: string,
   config: AgenCConfig,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): RunRuntimeSettingsSnapshot {
   const permissionMode = params.permissionMode ?? canonical.permissionMode;
   const permissionChanged = permissionMode !== canonical.permissionMode;
@@ -1422,6 +1452,13 @@ function runtimeSettingsWithRestoreOverrides(
         : {}),
       ...(params.model !== undefined ? { model: params.model } : {}),
     },
+    env,
+    // Automatic daemon restore repeats the saved pair. Only a new model
+    // override is an admission request; catalog drift cannot block replay.
+    { validateCatalog: params.model !== undefined && (
+      params.model !== canonical.model ||
+      (params.provider !== undefined && params.provider !== canonical.provider)
+    ) },
   );
   // Resuming on another model is a model switch: the effort stays only when
   // that model accepts it.
@@ -1458,6 +1495,8 @@ function buildBootstrapArgv(
     readonly model?: string;
     readonly profile?: string;
     readonly configPath?: string;
+    readonly taskTokenBudget?: number;
+    readonly taskMaxCalls?: number;
     readonly addDirs?: readonly string[];
     readonly permissionMode?:
       | "default"
@@ -1498,11 +1537,13 @@ async function installUnattendedPermissionPolicy(
   allow: readonly string[] | undefined,
   deny: readonly string[] | undefined,
   routine?: { readonly workspaceRoot: string },
+  toolPolicy?: SessionToolPolicy,
 ): Promise<void> {
   if (
     normalizeUnattendedToolList(allow).length === 0 &&
     normalizeUnattendedToolList(deny).length === 0 &&
-    routine === undefined
+    routine === undefined &&
+    toolPolicy === undefined
   ) {
     return;
   }
@@ -1512,6 +1553,8 @@ async function installUnattendedPermissionPolicy(
   const next = applyUnattendedPermissionPolicyToContext(current, {
     ...(allow !== undefined ? { allowlist: allow } : {}),
     ...(deny !== undefined ? { denylist: deny } : {}),
+    // A session tool policy rides the same bypass-immune floor as the denylist.
+    ...(toolPolicy !== undefined ? { enabledTools: toolPolicy.enabledTools } : {}),
     // Both default off, so every caller that is not a routine is byte-identical.
     ...(routine === undefined
       ? {}
@@ -1520,6 +1563,29 @@ async function installUnattendedPermissionPolicy(
         : { readOnly: true }),
   });
   await registry.update(next);
+}
+
+/**
+ * Freeze a session's permission mode at its ceiling when its tool policy asks
+ * for it, and return that ceiling so the caller can persist it. The ceiling is
+ * the mode the session has now, or, on restore, the one recorded when it was
+ * created: a session narrowed to `plan` before a restart may return to its
+ * original mode, never past it. A restored session already wider than its
+ * recorded ceiling is refused instead of silently capped.
+ */
+function freezeSessionPermissionMode(
+  registry: PermissionModeRegistry,
+  toolPolicy: SessionToolPolicy | undefined,
+  retainedCeiling: PermissionMode | undefined,
+): PermissionMode | undefined {
+  if (toolPolicy?.frozenPermissionMode !== true) return undefined;
+  const current = registry.current().mode;
+  const ceiling = retainedCeiling ?? current;
+  if (isWiderPermissionMode(current, ceiling)) {
+    throw new Error(frozenPermissionModeMessage(current, ceiling));
+  }
+  registry.freezeModeCeiling(ceiling);
+  return ceiling;
 }
 
 /**
@@ -1580,6 +1646,7 @@ export {
   runtimeSettingsWithRestoreOverrides,
   buildBootstrapArgv,
   installUnattendedPermissionPolicy,
+  freezeSessionPermissionMode,
   assertRoutineRunAuthority,
 };
 export type { PreparedRuntimeSettingsChange };

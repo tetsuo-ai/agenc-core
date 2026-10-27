@@ -80,7 +80,15 @@ commands. They are compiled into the runtime and appear as
 | Name | Purpose |
 | --- | --- |
 | `browser-automation` | Snapshot → act → re-snapshot workflow for the LIVE `Browser` tool ([browser.md](../browser.md)) |
-| `agenc-marketplace-kit-installer` | Marketplace kit install helper |
+| `agenc-marketplace-kit-installer` | Marketplace kit install helper. Unlisted by default |
+
+The kit installer tells the model to download and run an installer, so it does
+not appear in the per-session skill listing, in `/skills`, or in an unknown-skill
+suggestion list unless the operator turns the marketplace on (`[protocol]
+enabled = true`, which project config cannot set). It still loads when asked for
+by its exact name. A session created with a `toolPolicy` never offers or loads
+it, and offers the other bundled skills only when its policy names them (see
+[daemon.md](daemon.md), "Session tool policy").
 
 `zeroday-hunter` is a signed marketplace plugin, not a `bundledSkills.ts`
 registration. The in-package builtin-plugin skill seam

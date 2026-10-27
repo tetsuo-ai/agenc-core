@@ -56,7 +56,7 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: "26.5.0"
+  NODE_VERSION: "26.12.1"
   NPM_VERSION: "11.17.0"
   npm_config_build_from_source: "true"
   LINUX_BUILDER_IMAGE: "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c"
@@ -562,17 +562,120 @@ jobs:
           require_first_workflow_attempt "$GITHUB_RUN_ATTEMPT"
       - name: Install glibc 2.28 build prerequisites
         run: |
-          dnf install -y --setopt=gpgcheck=1 \
+          # The toolchain packages come first. Every dependency dnf resolves for them is
+          # pinned after gzip, so a Rocky update or a lagging mirror cannot change the
+          # reviewed RPM content inventory below. glibc-static and its libxcrypt-static
+          # dependency come from PowerTools; the session sandbox helper and the
+          # namespace-init image link statically.
+          dnf install -y --setopt=gpgcheck=1 --enablerepo=powertools \
             libatomic-8.5.0-28.el8_10 \
             libgcc-8.5.0-28.el8_10 \
             gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10 \
             gcc-toolset-12-binutils-2.38-17.el8 \
             kernel-headers-4.18.0-553.150.1.el8_10 \
+            glibc-static-2.28-251.el8_10.43 \
             python3.12-3.12.13-2.el8_10 \
             make-4.2.1-11.el8 \
             git-2.43.7-1.el8_10 \
             tar-1.30-11.el8_10 \
-            gzip-1.9-13.el8_5
+            gzip-1.9-13.el8_5 \
+            audit-libs-3.1.2-1.el8_10.1 \
+            checkpolicy-2.9-1.el8 \
+            diffutils-3.6-6.el8 \
+            elfutils-debuginfod-client-0.190-2.el8 \
+            elfutils-libelf-0.190-2.el8 \
+            elfutils-libs-0.190-2.el8 \
+            emacs-filesystem-26.1-15.el8_10.2 \
+            environment-modules-4.5.2-4.el8 \
+            gcc-toolset-12-binutils-gold-2.38-17.el8 \
+            gcc-toolset-12-gcc-12.2.1-7.8.el8_10 \
+            gcc-toolset-12-libstdc++-devel-12.2.1-7.8.el8_10 \
+            gcc-toolset-12-runtime-12.0-6.el8 \
+            git-core-2.43.7-1.el8_10 \
+            git-core-doc-2.43.7-1.el8_10 \
+            glibc-2.28-251.el8_10.43 \
+            glibc-common-2.28-251.el8_10.43 \
+            glibc-devel-2.28-251.el8_10.43 \
+            glibc-gconv-extra-2.28-251.el8_10.43 \
+            glibc-headers-2.28-251.el8_10.43 \
+            glibc-langpack-en-2.28-251.el8_10.43 \
+            glibc-minimal-langpack-2.28-251.el8_10.43 \
+            groff-base-1.22.3-18.el8 \
+            libedit-3.1-23.20170329cvs.el8 \
+            libgomp-8.5.0-29.el8_10 \
+            libmpc-1.1.0-9.1.el8 \
+            libpipeline-1.5.0-2.el8 \
+            libpkgconf-1.4.2-1.el8 \
+            libselinux-utils-2.9-8.el8 \
+            libxcrypt-devel-4.1.1-6.el8 \
+            libxcrypt-static-4.1.1-6.el8 \
+            man-db-2.7.6.1-18.el8 \
+            mpdecimal-2.5.1-3.el8 \
+            ncurses-6.1-10.20180224.el8 \
+            openssh-8.0p1-33.el8_10 \
+            openssh-clients-8.0p1-33.el8_10 \
+            openssl-1.1.1k-17.el8_10 \
+            openssl-libs-1.1.1k-17.el8_10 \
+            openssl-pkcs11-0.4.10-3.el8 \
+            perl-Carp-1.42-396.el8 \
+            perl-Data-Dumper-2.167-399.el8 \
+            perl-Digest-1.17-395.el8 \
+            perl-Digest-MD5-2.55-396.el8 \
+            perl-Encode-2.97-3.el8 \
+            perl-Errno-1.28-423.el8_10.1 \
+            perl-Error-0.17025-2.el8 \
+            perl-Exporter-5.72-396.el8 \
+            perl-File-Path-2.15-2.el8 \
+            perl-File-Temp-0.230.600-1.el8 \
+            perl-Getopt-Long-2.50-4.el8 \
+            perl-Git-2.43.7-1.el8_10 \
+            perl-HTTP-Tiny-0.074-3.el8 \
+            perl-IO-1.38-423.el8_10.1 \
+            perl-IO-Socket-IP-0.39-5.el8 \
+            perl-IO-Socket-SSL-2.066-4.module+el8.9.0+1517+e71a7a62 \
+            perl-MIME-Base64-3.15-396.el8 \
+            perl-Mozilla-CA-20160104-7.module+el8.9.0+1521+0101edce \
+            perl-Net-SSLeay-1.88-2.module+el8.9.0+1517+e71a7a62 \
+            perl-PathTools-3.74-1.el8 \
+            perl-Pod-Escapes-1.07-395.el8 \
+            perl-Pod-Perldoc-3.28-396.el8 \
+            perl-Pod-Simple-3.35-395.el8 \
+            perl-Pod-Usage-1.69-395.el8 \
+            perl-Scalar-List-Utils-1.49-2.el8 \
+            perl-Socket-2.027-3.el8 \
+            perl-Storable-3.11-3.el8 \
+            perl-Term-ANSIColor-4.06-396.el8 \
+            perl-Term-Cap-1.17-395.el8 \
+            perl-TermReadKey-2.37-7.el8 \
+            perl-Text-ParseWords-3.30-395.el8 \
+            perl-Text-Tabs+Wrap-2013.0523-395.el8 \
+            perl-Time-Local-1.280-1.el8 \
+            perl-URI-1.73-3.el8 \
+            perl-Unicode-Normalize-1.25-396.el8 \
+            perl-constant-1.33-396.el8 \
+            perl-interpreter-5.26.3-423.el8_10.1 \
+            perl-libnet-3.11-3.el8 \
+            perl-libs-5.26.3-423.el8_10.1 \
+            perl-macros-5.26.3-423.el8_10.1 \
+            perl-parent-0.237-1.el8 \
+            perl-podlators-4.11-1.el8 \
+            perl-threads-2.21-2.el8 \
+            perl-threads-shared-1.58-2.el8 \
+            pkgconf-1.4.2-1.el8 \
+            pkgconf-m4-1.4.2-1.el8 \
+            pkgconf-pkg-config-1.4.2-1.el8 \
+            policycoreutils-2.9-26.el8_10 \
+            policycoreutils-python-utils-2.9-26.el8_10 \
+            procps-ng-3.3.15-14.el8 \
+            python3-audit-3.1.2-1.el8_10.1 \
+            python3-libselinux-2.9-8.el8 \
+            python3-libsemanage-2.9-9.el8_6 \
+            python3-policycoreutils-2.9-26.el8_10 \
+            python3-setools-4.3.0-5.el8 \
+            python3.12-libs-3.12.13-2.el8_10 \
+            python3.12-pip-wheel-23.2.1-4.el8 \
+            scl-utils-2.0.2-16.el8 \
+            tcl-8.6.8-2.el8
           dnf clean all
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -1129,6 +1232,13 @@ jobs:
           "AGENC_NPM_DISTRIBUTION_SHA256=$($toolchain.npmDistribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run native probes and build from two isolated worktrees
         shell: bash
+        env:
+          # Windows runners default to core.autocrlf=true, but build checks compare
+          # generated files and hash migration sources byte for byte. Both build
+          # worktrees keep the committed LF bytes on every platform.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
         run: |
           set -euo pipefail
           umask 022

@@ -8,7 +8,13 @@
 
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import {
+  matchesPlainDataSnapshot,
+  matchesPlainDataSnapshotIgnoringKeyOrder,
+  snapshotPlainData,
+  type PlainDataSnapshot,
+} from "../utils/plain-data-snapshot.js";
+import { deepSeekReasoningOnlyReplayProvenance } from "./deepseek-reasoning-only-replay.js";
 
 import { LLMContextWindowExceededError } from "./errors.js";
 import { getTokenizerConfigForProvider } from "./token-estimation.js";
@@ -39,6 +45,29 @@ export const TOKEN_ACCOUNTING_METRICS_MAX_PARTITIONS = 4_096;
 export const TOKEN_ACCOUNTING_CALIBRATION_HEADROOM = 1.02;
 export const TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR = 4;
 export const TOKEN_ACCOUNTING_CALIBRATION_MAX_SCOPES = 256;
+/**
+ * Two-way calibration from reported prompt tokens, for providers whose report counts the whole prompt (see
+ * {@link reportsCompletePromptTokens}). The conservative fallback for those requests stays the first-call bound,
+ * but once a request of the same conversation and request shape has been reported, the estimate is anchored on
+ * that report instead of the fallback alone:
+ *
+ *   estimate = min(fallback, anchorFallback) x ratio x headroom + max(0, fallback - anchorFallback)
+ *
+ * The anchor is the newest reported request; `ratio` is the largest reported-to-fallback ratio among the last
+ * {@link TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES} reports. The part of the request the provider has already
+ * measured is scaled by that ratio, and only what grew since the anchor keeps the conservative fallback rate, so a
+ * large dense tool result is still bounded at two bytes per token while the history around it is not counted at
+ * twice its size again. Measured on 6,580 recorded DeepSeek requests (2026-10-20): the fallback was 2.45x the
+ * provider's count (p5 2.19, max 3.19); replaying the recorded sessions through this rule gave a median of 1.18x and
+ * a minimum of 1.03x over 4,389 calibrated main and subagent calls. The headroom covers the drift of the ratio
+ * between consecutive calls; the minimum factor bounds the damage of an implausibly low report (it keeps at least
+ * 30% of the fallback, about six bytes per token). Content denser than the fallback's own floor (random base64 is
+ * about 1.4 bytes per DeepSeek token) is undercounted on growth exactly as a first call undercounts it; a refusal
+ * for context length then records the provider's own count (see `recordContextOverflow`) before compaction retries.
+ */
+export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM = 1.1;
+export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES = 8;
+export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_MIN_FACTOR = 0.3;
 export const TOKEN_FALLBACK_MARGIN_RATIO = 0.1;
 export const TOKEN_FALLBACK_MARGIN_TOKENS = 256;
 
@@ -123,10 +152,41 @@ export function conservativeBytesPerToken(
   });
   // An unmatched endpoint tells us nothing, and DEFAULT_BYTES_PER_TOKEN is a
   // guess, not a bound. Hold the floor for those.
-  if (config.modelFamily === "unknown") {
+  // The catalog's prose ratio (3.5 bytes/token for DeepSeek) undercounted
+  // dense structured input in observed provider receipts. Use the conservative
+  // fallback floor there, including first calls before empirical calibration.
+  // This remains an estimate; reconciliation must never treat it as a cap.
+  if (config.modelFamily === "unknown" || config.modelFamily === "deepseek") {
     return TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN;
   }
   return Math.max(TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN, config.bytesPerToken);
+}
+
+/**
+ * Whether a usage report from this endpoint counts the complete prompt, so it may lower later estimates as well as
+ * raise them (see {@link TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM}).
+ *
+ * Only the DeepSeek API qualifies today: its `prompt_tokens` is the whole prompt (cache hits plus misses), and its
+ * receipts were measured. The provider must be DeepSeek itself, not just a DeepSeek model: a local runtime serving a
+ * DeepSeek model reports what it evaluated, and Ollama's `prompt_eval_count` leaves out a reused KV-cache prefix, so
+ * its reports undercount whenever the cache is warm. Every other endpoint keeps upward-only calibration.
+ */
+export function reportsCompletePromptTokens(provider: string, model: string): boolean {
+  return provider.trim().toLowerCase() === "deepseek" &&
+    getTokenizerConfigForProvider({ provider, model }).modelFamily === "deepseek";
+}
+
+/**
+ * The prompt size a context-length refusal reports, when its text carries one. DeepSeek (and other
+ * OpenAI-compatible APIs) answer "This model's maximum context length is 1048576 tokens. However, you requested
+ * 1056296 tokens (672296 in the messages, 384000 in the completion)."; the messages figure is the provider's own
+ * count of the prompt it refused.
+ */
+export function reportedPromptTokensFromContextOverflow(message: string): number | undefined {
+  const match = /\((\d{1,15}) in the messages\b/iu.exec(message);
+  if (match === null) return undefined;
+  const tokens = Number.parseInt(match[1]!, 10);
+  return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : undefined;
 }
 const TOKEN_ACCOUNTING_MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const TOKEN_ACCOUNTING_METRICS_OVERFLOW_MODEL = "other";
@@ -180,6 +240,11 @@ export interface TokenAccountingCalibration {
   /** The uncalibrated fallback estimate the factor was applied to. */
   readonly basisInputTokens: number;
   readonly headroom: number;
+  /**
+   * Present when the estimate is anchored on a reported request of the same conversation and request shape (two-way
+   * calibration): that request's uncalibrated fallback. Growth beyond it is counted at the fallback rate.
+   */
+  readonly anchorBasisInputTokens?: number;
 }
 
 export interface TokenAccountingResult {
@@ -209,6 +274,8 @@ export interface ProviderNativeTokenCountResult {
 }
 
 export interface ProviderTokenCountCapability {
+  /** Pure in-process counters may opt into advisory prompt preflight. */
+  readonly runsLocally?: true;
   readonly capabilityVersion: string;
   readonly adapterRevision: string;
   /** A digest/revision only. It must not contain credentials or raw prompts. */
@@ -304,6 +371,12 @@ interface CacheEntry {
   readonly bytes: number;
 }
 
+/** One reported request: its uncalibrated fallback estimate and the provider's count of its prompt. */
+interface AnchoredCalibrationSample {
+  readonly basisInputTokens: number;
+  readonly reportedInputTokens: number;
+}
+
 interface PreparedAccountingRequest {
   readonly request: TokenAccountingRequest;
   readonly digest: string;
@@ -379,9 +452,16 @@ export class TokenAccountingService {
   readonly #abandonedDigests = new Set<string>();
   readonly #metrics = new Map<string, MutableTokenAccountingMetric>();
   readonly #calibrationFactors = new Map<string, number>();
+  /** Reported requests per conversation, provider, model, endpoint and request shape; newest last. */
+  readonly #anchoredSamples = new Map<string, readonly AnchoredCalibrationSample[]>();
   readonly #calibrationBases = new WeakMap<
     TokenAccountingResult,
-    { readonly key: string; readonly basisInputTokens: number }
+    {
+      readonly key: string;
+      readonly basisInputTokens: number;
+      /** Set only where reports may lower estimates ({@link reportsCompletePromptTokens}). */
+      readonly anchoredKey?: string;
+    }
   >();
 
   #cacheBytes = 0;
@@ -438,6 +518,17 @@ export class TokenAccountingService {
     options: TokenAccountingCountOptions = {},
   ): Promise<TokenAccountingResult> {
     return this.#calibrate(request, await this.#countUncalibrated(request, options));
+  }
+
+  /**
+   * The local fallback with its scope's calibration, synchronously and without a provider counter: the estimate
+   * `count` returns when no counter is configured. For checks that must agree with the dispatch gate's count.
+   */
+  estimate(request: TokenAccountingRequest): TokenAccountingResult {
+    return this.#calibrate(
+      request,
+      prepareAccountingRequest(request, undefined, this.#maxRequestBytes).fallback,
+    );
   }
 
   async #countUncalibrated(
@@ -503,13 +594,24 @@ export class TokenAccountingService {
       this.#calibrationFactors.delete(key);
       this.#calibrationFactors.set(key, factor);
     }
+    const anchoredKey = reportsCompletePromptTokens(request.provider, request.model)
+      ? anchoredCalibrationKeyFor(key, request)
+      : undefined;
+    const samples = anchoredKey === undefined ? undefined : this.#anchoredSamples.get(anchoredKey);
+    if (anchoredKey !== undefined && samples !== undefined) {
+      this.#anchoredSamples.delete(anchoredKey);
+      this.#anchoredSamples.set(anchoredKey, samples);
+    }
     const calibrated =
-      factor !== undefined && factor > 1
-        ? withCalibration(result, factor)
-        : { ...result };
+      samples !== undefined && samples.length > 0
+        ? withAnchoredCalibration(result, samples, factor)
+        : factor !== undefined && factor > 1
+          ? withCalibration(result, factor)
+          : { ...result };
     this.#calibrationBases.set(calibrated, {
       key,
       basisInputTokens: result.inputTokens,
+      ...(anchoredKey !== undefined ? { anchoredKey } : {}),
     });
     return calibrated;
   }
@@ -596,6 +698,43 @@ export class TokenAccountingService {
         calibration.key,
         reportedInputTokens / calibration.basisInputTokens,
       );
+      if (calibration.anchoredKey !== undefined) {
+        this.#recordAnchoredSample(calibration.anchoredKey, {
+          basisInputTokens: calibration.basisInputTokens,
+          reportedInputTokens,
+        });
+      }
+    }
+  }
+
+  /**
+   * A provider refused a request this result admitted because it exceeded the context window. When the refusal
+   * states the prompt's size, that count is recorded like a usage report, so the retry after compaction is anchored on
+   * the true size. Otherwise the conversation's two-way calibration is dropped and later estimates return to the
+   * conservative fallback until a new report arrives.
+   */
+  recordContextOverflow(result: TokenAccountingResult, providerMessage: string): void {
+    const calibration = this.#calibrationBases.get(result);
+    if (calibration === undefined || result.source !== "conservative_fallback") return;
+    const reported = reportedPromptTokensFromContextOverflow(providerMessage);
+    if (reported !== undefined) {
+      this.recordProviderUsage(result, reported);
+      return;
+    }
+    if (calibration.anchoredKey !== undefined) {
+      this.#anchoredSamples.delete(calibration.anchoredKey);
+    }
+  }
+
+  #recordAnchoredSample(key: string, sample: AnchoredCalibrationSample): void {
+    const previous = this.#anchoredSamples.get(key) ?? [];
+    const samples = [...previous.slice(-(TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES - 1)), sample];
+    this.#anchoredSamples.delete(key);
+    this.#anchoredSamples.set(key, samples);
+    while (this.#anchoredSamples.size > this.#calibrationMaxScopes) {
+      const oldest = this.#anchoredSamples.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.#anchoredSamples.delete(oldest);
     }
   }
 
@@ -643,6 +782,7 @@ export class TokenAccountingService {
     this.#cacheBytes = 0;
     this.#metrics.clear();
     this.#calibrationFactors.clear();
+    this.#anchoredSamples.clear();
   }
 
   #readCache(digest: string): TokenAccountingResult | undefined {
@@ -889,6 +1029,14 @@ export function createTokenAccountingRequest(
   };
 }
 
+/** Validate the local wire-byte bound without invoking a provider counter. */
+export function assertTokenAccountingRequestWithinByteLimit(
+  request: TokenAccountingRequest,
+  capability?: ProviderTokenCountCapability,
+): void {
+  prepareAccountingRequest(request, capability, MAX_TOKEN_ACCOUNTING_REQUEST_BYTES);
+}
+
 export function estimateTokenAccountingRequest(
   request: TokenAccountingRequest,
 ): TokenAccountingResult {
@@ -948,6 +1096,67 @@ function calibrationKeyFor(
       request.provider,
     ),
   });
+}
+
+/**
+ * Two-way calibration is kept per request shape as well: agent turns carry their tool catalog, while the
+ * conversation's side calls (the compaction summarizer, classifiers, memory selection) are tool-free and have their own
+ * densities, so a side call must not become the anchor that the next agent turn is measured against. The system prompt
+ * is deliberately not part of the key: the runtime extends it within a conversation (a compaction appends its
+ * continuation note and frames durable summaries), and a key that changed there would drop the calibration exactly
+ * when the history sits near the compaction threshold.
+ */
+function anchoredCalibrationKeyFor(
+  key: string,
+  request: TokenAccountingRequest,
+): string {
+  const agentTurn = (request.options.tools?.length ?? 0) > 0 ||
+    (request.providerNativeTools?.length ?? 0) > 0;
+  return `${key}\0${agentTurn ? "agent-turn" : "tool-free"}`;
+}
+
+function withAnchoredCalibration(
+  result: TokenAccountingResult,
+  samples: readonly AnchoredCalibrationSample[],
+  upwardFactor: number | undefined,
+): TokenAccountingResult {
+  const anchor = samples[samples.length - 1]!;
+  let ratio = TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_MIN_FACTOR;
+  for (const sample of samples) {
+    ratio = Math.max(ratio, sample.reportedInputTokens / sample.basisInputTokens);
+  }
+  ratio = Math.min(TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR, ratio);
+  const scale = ratio * TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM;
+  const basis = result.inputTokens;
+  // The provider measured the anchor; what this request adds beyond it keeps
+  // the conservative fallback rate (never less), so dense new content such as
+  // a large shell or JSON tool result is still bounded at the fallback floor.
+  const measured = Math.min(basis, anchor.basisInputTokens) * scale;
+  const growth = Math.max(0, basis - anchor.basisInputTokens) * Math.max(1, scale);
+  let inputTokens = Math.ceil(measured + growth);
+  // A report from another request of this conversation that the fallback
+  // undercounted still raises this one, as upward-only calibration does.
+  if (upwardFactor !== undefined && upwardFactor > 1) {
+    inputTokens = Math.max(
+      inputTokens,
+      Math.ceil(basis * upwardFactor * TOKEN_ACCOUNTING_CALIBRATION_HEADROOM),
+    );
+  }
+  inputTokens = Math.max(
+    TOKEN_ACCOUNTING_MINIMUM_INPUT_TOKENS,
+    Math.min(Number.MAX_SAFE_INTEGER, inputTokens),
+  );
+  return {
+    ...result,
+    inputTokens,
+    totalTokens: safeTokenSum(inputTokens, result.reservedOutputTokens),
+    calibration: {
+      factor: ratio,
+      basisInputTokens: basis,
+      headroom: TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM,
+      anchorBasisInputTokens: anchor.basisInputTokens,
+    },
+  };
 }
 
 function withCalibration(
@@ -1011,11 +1220,15 @@ export function estimateUtf8TokenUnits(
   value: string,
   bytesPerToken: number,
 ): number {
+  return utf8TokenUnits(normalizedUtf8UpperBound(value), bytesPerToken);
+}
+
+function utf8TokenUnits(normalizedUpperBound: number, bytesPerToken: number): number {
   const divisor =
     Number.isFinite(bytesPerToken) && bytesPerToken > 0
       ? bytesPerToken
       : TOKEN_ACCOUNTING_UTF8_WORST_CASE_BYTES_PER_TOKEN;
-  return Math.ceil(normalizedUtf8UpperBound(value) / divisor);
+  return Math.ceil(normalizedUpperBound / divisor);
 }
 
 function prepareAccountingRequest(
@@ -1026,14 +1239,17 @@ function prepareAccountingRequest(
   let snapshot: TokenAccountingRequest;
   let promptIdentity: Readonly<Record<string, unknown>>;
   let cacheIdentity: Readonly<Record<string, unknown>>;
-  let serializedCacheIdentity: string;
-  let serializedPromptIdentity: string;
+  let cacheIdentityParts: CanonicalJsonPart[];
+  let promptUpperBound: number;
   let messageProjection: PreparedMessageAccountingProjection;
   try {
-    snapshot = snapshotAccountingRequest(request);
+    snapshot = snapshotAccountingRequest(request, accountingMessageSnapshots);
     const normalizedMessages = prepareMessagesForWire(
       snapshot.messages,
       snapshot.options,
+      (snapshot.options.tools?.length ?? 0) > 0 && snapshot.options.disableThinkingForRecovery !== true
+        ? { preserveReasoningOnlyFor: deepSeekReasoningOnlyReplayProvenance(snapshot.provider, snapshot.model) }
+        : undefined,
     );
     const toolResultImagePolicy =
       chatCompletionsCapabilityHintsForProvider(
@@ -1059,9 +1275,18 @@ function prepareAccountingRequest(
     // The prompt is part of the complete cache identity. Normalize that tree
     // once, then serialize its prompt subtree for the fallback estimate too.
     // Both serializations retain the same sorted keys and request byte bound.
+    // Each is kept as the ordered parts of its JSON text: messages whose
+    // canonical snapshot was reused from an earlier request reuse their text
+    // and its measured lengths, so only new messages are serialized.
     const canonicalIdentity = canonicalize(cacheIdentity, new Set()) as Record<string, unknown>;
-    serializedCacheIdentity = JSON.stringify(canonicalIdentity);
-    serializedPromptIdentity = JSON.stringify(canonicalIdentity.prompt);
+    const promptParts: CanonicalJsonPart[] = [];
+    appendCanonicalJson(canonicalIdentity.prompt, promptParts);
+    promptUpperBound = Math.max(...canonicalJsonLengths(promptParts));
+    cacheIdentityParts = [];
+    appendCanonicalJson(canonicalIdentity, cacheIdentityParts, {
+      node: canonicalIdentity.prompt,
+      parts: promptParts,
+    });
   } catch (error) {
     if (error instanceof TokenAccountingError) throw error;
     throw new TokenAccountingError(
@@ -1074,7 +1299,7 @@ function prepareAccountingRequest(
   // cache keys. Count every inline source occurrence, then add the projected
   // request bytes. The small metadata overlap intentionally errs conservative.
   const requestBytes =
-    utf8Length(serializedCacheIdentity) + messageProjection.inlineSourceBytes;
+    canonicalJsonUtf8Length(cacheIdentityParts) + messageProjection.inlineSourceBytes;
   if (requestBytes > maxRequestBytes) {
     throw new TokenAccountingError(
       "request_too_large",
@@ -1090,12 +1315,12 @@ function prepareAccountingRequest(
     get digest() {
       return digest ??= createHash("sha256")
         .update(TOKEN_ACCOUNTING_DIGEST_DOMAIN)
-        .update(serializedCacheIdentity, "utf8")
+        .update(canonicalJsonText(cacheIdentityParts), "utf8")
         .digest("hex");
     },
     fallback: conservativeFallbackResult(
       snapshot,
-      serializedPromptIdentity,
+      promptUpperBound,
       messageProjection,
     ),
   };
@@ -1103,6 +1328,7 @@ function prepareAccountingRequest(
 
 function snapshotAccountingRequest(
   request: TokenAccountingRequest,
+  messageSnapshots: AccountingMessageSnapshots,
 ): TokenAccountingRequest {
   const options = request.options;
   const snapshotOptions: LLMChatOptions = Object.freeze({
@@ -1134,7 +1360,7 @@ function snapshotAccountingRequest(
     // to authorize an invocation. Copying it here would force deferred body
     // hashes on the request path. Keep agentInvocation and all other runtime
     // metadata so authenticated projection still sees its original authority.
-    messages: canonicalSnapshot(request.messages.map(accountingSourceMessage)),
+    messages: messageSnapshots.snapshot(request.messages, request.calibrationScope ?? ""),
     options: snapshotOptions,
     ...(request.providerNativeTools !== undefined
       ? {
@@ -1224,7 +1450,7 @@ function cacheIdentityForRequest(
 
 function conservativeFallbackResult(
   request: TokenAccountingRequest,
-  serializedPromptIdentity: string,
+  promptUpperBound: number,
   messageProjection: PreparedMessageAccountingProjection,
 ): TokenAccountingResult {
   const inspection = inspectRequestContent(
@@ -1235,8 +1461,8 @@ function conservativeFallbackResult(
     request.options.promptCacheKey,
     messageProjection.inlineImages,
   );
-  const promptTokens = estimateUtf8TokenUnits(
-    serializedPromptIdentity,
+  const promptTokens = utf8TokenUnits(
+    promptUpperBound,
     conservativeBytesPerToken(request.provider, request.model),
   );
   const frameTokens =
@@ -1521,6 +1747,81 @@ function canonicalSnapshot<T>(value: T): T {
   return canonicalize(value, new Set(), true) as T;
 }
 
+interface AccountingMessageSnapshot {
+  /** Leaves of the accounting source message the snapshot was taken from. */
+  leaves: PlainDataSnapshot;
+  readonly snapshot: LLMMessage;
+}
+
+const ACCOUNTING_MESSAGE_SNAPSHOT_SCOPES = 64;
+
+/**
+ * Canonical snapshots of request messages, reused while a message still
+ * holds the data its snapshot was taken from.
+ *
+ * Every model request is counted with a fresh copy of the whole history, so
+ * a message is looked up by identity first and then at its position in the
+ * previous request of the same calibration scope. A snapshot is reused only
+ * when the message's accounting source still holds the same keys and leaves
+ * (any key order: the snapshot sorts keys). canonicalSnapshot is a pure
+ * function of those, so a reused snapshot equals the one it would build now,
+ * and messages that are not plain data are snapshotted every time.
+ */
+class AccountingMessageSnapshots {
+  readonly #byMessage = new WeakMap<LLMMessage, AccountingMessageSnapshot>();
+  readonly #previous = new Map<string, readonly (AccountingMessageSnapshot | undefined)[]>();
+
+  snapshot(messages: readonly LLMMessage[], scope: string): readonly LLMMessage[] {
+    // Every source first, then the snapshots in order, as the full snapshot
+    // of the mapped array does, so a failure surfaces at the same message.
+    const sources = messages.map(accountingSourceMessage);
+    const previous = this.#previous.get(scope);
+    const entries: (AccountingMessageSnapshot | undefined)[] = new Array(messages.length);
+    const snapshots: LLMMessage[] = new Array(messages.length);
+    for (let index = 0; index < messages.length; index += 1) {
+      // A hole stays a hole, as mapping and snapshotting the array leave it.
+      if (!(index in sources)) continue;
+      const message = messages[index]!;
+      const source = sources[index]!;
+      let entry = this.#byMessage.get(message);
+      if (entry === undefined || !reusableSnapshot(source, entry)) {
+        entry = previous?.[index];
+        if (entry === undefined || !reusableSnapshot(source, entry)) {
+          const snapshot = canonicalSnapshot(source);
+          const leaves = snapshotPlainData(source);
+          entry = leaves === undefined ? undefined : { leaves, snapshot };
+          snapshots[index] = snapshot;
+        }
+      }
+      if (entry !== undefined) {
+        this.#byMessage.set(message, entry);
+        snapshots[index] ??= entry.snapshot;
+      }
+      entries[index] = entry;
+    }
+    this.#previous.delete(scope);
+    this.#previous.set(scope, entries);
+    if (this.#previous.size > ACCOUNTING_MESSAGE_SNAPSHOT_SCOPES) {
+      this.#previous.delete(this.#previous.keys().next().value!);
+    }
+    // The array is a snapshot as canonicalSnapshot would return it.
+    Object.freeze(snapshots);
+    canonicalSnapshots.add(snapshots);
+    return snapshots;
+  }
+}
+
+function reusableSnapshot(source: LLMMessage, entry: AccountingMessageSnapshot): boolean {
+  if (matchesPlainDataSnapshot(source, entry.leaves)) return true;
+  if (!matchesPlainDataSnapshotIgnoringKeyOrder(source, entry.leaves)) return false;
+  const leaves = snapshotPlainData(source);
+  if (leaves === undefined) return false;
+  entry.leaves = leaves;
+  return true;
+}
+
+const accountingMessageSnapshots = new AccountingMessageSnapshots();
+
 function canonicalize(value: unknown, ancestors: Set<object>, freeze = false): unknown {
   if (
     value === null ||
@@ -1636,20 +1937,147 @@ function safetyMarginForTokens(tokens: number): number {
   );
 }
 
+/**
+ * UTF-8 bytes of `value`. A lone surrogate counts as its three-byte
+ * replacement character, as the encoder writes it; no copy is made.
+ */
 function utf8Length(value: string): number {
-  if (oneShotFastModeActive()) return Buffer.byteLength(value, "utf8");
-  return new TextEncoder().encode(value).byteLength;
+  return Buffer.byteLength(value, "utf8");
 }
 
 function normalizedUtf8UpperBound(value: string): number {
-  // ASCII is unchanged by every Unicode normalization form. Avoid creating
-  // five encoded copies of the same prompt merely to count identical bytes.
-  if (oneShotFastModeActive() && /^[\x00-\x7f]*$/.test(value)) return value.length;
-  let upperBound = utf8Length(value);
-  for (const form of TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS) {
-    upperBound = Math.max(upperBound, utf8Length(value.normalize(form)));
+  return Math.max(...normalizedUtf8Lengths(value));
+}
+
+/** UTF-8 lengths of a text as-is and in NFC, NFD, NFKC and NFKD. */
+type Utf8Lengths = [number, number, number, number, number];
+
+/**
+ * UTF-8 lengths of `value` and of each normalization form of it.
+ *
+ * An ASCII code unit is unchanged by every form, decomposes to nothing else,
+ * is a starter (canonical reordering never moves a mark across it) and is
+ * never the second character of a composition. So a text normalizes piece by
+ * piece at every position that holds an ASCII code unit, and only the pieces
+ * with non-ASCII text need a normalization: each maximal non-ASCII run, with
+ * the ASCII character before it, which a combining mark can compose with.
+ * Every other code unit is ASCII and counts one byte in every form.
+ */
+function normalizedUtf8Lengths(value: string): Utf8Lengths {
+  if (!HAS_NON_ASCII.test(value)) {
+    return [value.length, value.length, value.length, value.length, value.length];
   }
-  return upperBound;
+  const lengths: Utf8Lengths = [0, 0, 0, 0, 0];
+  let pieceUnits = 0;
+  for (const match of value.matchAll(NON_ASCII_RUN)) {
+    const start = match.index > 0 ? match.index - 1 : 0;
+    const end = match.index + match[0].length;
+    const piece = value.slice(start, end);
+    pieceUnits += end - start;
+    lengths[0] += utf8Length(piece);
+    for (let form = 0; form < TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS.length; form += 1) {
+      lengths[form + 1]! += utf8Length(piece.normalize(TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS[form]));
+    }
+  }
+  const ascii = value.length - pieceUnits;
+  for (let form = 0; form < lengths.length; form += 1) lengths[form]! += ascii;
+  return lengths;
+}
+
+const NON_ASCII_RUN = /[^\x00-\x7f]+/g;
+const HAS_NON_ASCII = /[^\x00-\x7f]/;
+
+/**
+ * One part of a JSON text: literal text, or the cached serialization of a
+ * frozen canonical snapshot together with its measured lengths.
+ */
+type CanonicalJsonPart = string | CanonicalJsonPiece;
+
+interface CanonicalJsonPiece {
+  readonly json: string;
+  readonly lengths: Utf8Lengths;
+}
+
+/** Text and lengths of frozen canonical snapshots; they can never change. */
+const canonicalJsonPieces = new WeakMap<object, CanonicalJsonPiece>();
+
+/**
+ * Append the parts of `JSON.stringify(value)` for a canonical value (plain
+ * objects and arrays of JSON scalars with no undefined, as canonicalize
+ * returns them). The parts concatenate to exactly that text, and each part
+ * starts with an ASCII character, so lengths add up across parts.
+ */
+function appendCanonicalJson(
+  value: unknown,
+  parts: CanonicalJsonPart[],
+  known?: { readonly node: unknown; readonly parts: readonly CanonicalJsonPart[] },
+): void {
+  if (known !== undefined && value === known.node && typeof value === "object" && value !== null) {
+    for (const part of known.parts) appendJsonPart(parts, part);
+    return;
+  }
+  if (value === null || typeof value !== "object") {
+    appendJsonPart(parts, JSON.stringify(value));
+    return;
+  }
+  if (canonicalSnapshots.has(value)) {
+    let piece = canonicalJsonPieces.get(value);
+    if (piece === undefined) {
+      const json = JSON.stringify(value);
+      piece = { json, lengths: normalizedUtf8Lengths(json) };
+      canonicalJsonPieces.set(value, piece);
+    }
+    parts.push(piece);
+    return;
+  }
+  if (Array.isArray(value)) {
+    appendJsonPart(parts, "[");
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) appendJsonPart(parts, ",");
+      appendCanonicalJson(value[index] ?? null, parts, known);
+    }
+    appendJsonPart(parts, "]");
+    return;
+  }
+  appendJsonPart(parts, "{");
+  let first = true;
+  for (const key of Object.keys(value)) {
+    const entry = (value as Record<string, unknown>)[key];
+    if (entry === undefined) continue;
+    appendJsonPart(parts, `${first ? "" : ","}${JSON.stringify(key)}:`);
+    first = false;
+    appendCanonicalJson(entry, parts, known);
+  }
+  appendJsonPart(parts, "}");
+}
+
+/** Literal text joins the literal text before it; a cached piece stays whole. */
+function appendJsonPart(parts: CanonicalJsonPart[], part: CanonicalJsonPart): void {
+  const last = parts.length - 1;
+  if (typeof part === "string" && last >= 0 && typeof parts[last] === "string") {
+    parts[last] = `${parts[last] as string}${part}`;
+  } else {
+    parts.push(part);
+  }
+}
+
+function canonicalJsonLengths(parts: readonly CanonicalJsonPart[]): Utf8Lengths {
+  const total: Utf8Lengths = [0, 0, 0, 0, 0];
+  for (const part of parts) {
+    const lengths = typeof part === "string" ? normalizedUtf8Lengths(part) : part.lengths;
+    for (let form = 0; form < total.length; form += 1) total[form]! += lengths[form]!;
+  }
+  return total;
+}
+
+function canonicalJsonUtf8Length(parts: readonly CanonicalJsonPart[]): number {
+  let total = 0;
+  for (const part of parts) total += typeof part === "string" ? utf8Length(part) : part.lengths[0];
+  return total;
+}
+
+function canonicalJsonText(parts: readonly CanonicalJsonPart[]): string {
+  return parts.map((part) => typeof part === "string" ? part : part.json).join("");
 }
 
 function normalizeIdentityPart(value: string, fallback: string): string {

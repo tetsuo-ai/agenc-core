@@ -3,6 +3,7 @@ import type { ToolRecoveryCategory } from "../tools/types.js";
 export const DEFAULT_EFFECT_SETTLEMENT_DRAIN_MS = 2_000;
 
 export interface LiveEffectIdentity {
+  readonly sessionId?: string;
   readonly runId: string;
   readonly stepId: string;
   readonly callId: string;
@@ -86,14 +87,14 @@ function liveEffectBlockedMessage(
   context: LiveEffectBlockContext,
 ): string {
   const named = blocking
-    .map((effect) => `${effect.callId} (${effect.toolName})`)
+    .map((effect) => `${effect.callId} (${effect.toolName}, owning session ${effect.sessionId ?? effect.runId})`)
     .join(", ");
   // The call id and the user's disposition are enough: Core records the
   // user's attestation as the evidence. An evidence reference and its
   // SHA-256 remain optional for operators who hold a receipt.
   const resolveCommand =
     `\`/resolve ${blocking[0]?.callId ?? "<call-id>"} ` +
-    `<confirmed_committed|confirmed_no_effect|remains_unknown>\``;
+    `<confirmed_committed|confirmed_no_effect|remains_unknown> --session ${blocking[0]?.sessionId ?? blocking[0]?.runId ?? "<owning-session-id>"}\``;
   const base = `live effect settlement is unresolved for ${named}; side-effecting and interactive dispatch remain blocked. `;
   if (context.unattended) {
     // Nobody is attached to this run, so asking is pointless: the turn ends

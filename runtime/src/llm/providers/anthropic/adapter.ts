@@ -41,6 +41,7 @@ import {
   parseAnthropicMessagesResponse,
   readAnthropicReasoningOutputTokens,
   readAnthropicThinkingTokenDetails,
+  withAnthropicProcessedTokenTotal,
 } from "../../wire/messages-anthropic.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
@@ -1018,13 +1019,11 @@ export class AnthropicProvider implements LLMProvider {
       this.noteServedSpeed(request, usage.speed);
       const finalResponse: LLMResponse = {
         ...parsed,
-        usage: {
+        usage: withAnthropicProcessedTokenTotal({
           ...parsed.usage,
-          totalTokens:
-            parsed.usage.promptTokens + parsed.usage.completionTokens,
           availability: usage.reported ? "reported" : "unknown",
           provenance: usage.reported ? "provider" : "synthetic",
-        },
+        }),
       };
       onChunk({
         content: "",
@@ -1129,19 +1128,21 @@ export class AnthropicProvider implements LLMProvider {
         return {
           content,
           toolCalls: partialToolCalls,
-          usage: markAnthropicReasoningIncludedInCompletion(coerceUsage({
-            promptTokens: usage.input_tokens,
-            completionTokens: usage.output_tokens,
-            cachedInputTokens: usage.cache_read_input_tokens,
-            cacheCreationInputTokens: usage.cache_creation_input_tokens,
-            cacheCreation1hInputTokens: usage.cache_creation?.ephemeral_1h_input_tokens,
-            reasoningOutputTokens: readAnthropicReasoningOutputTokens({
-              ...usage,
-            }),
-            webSearchRequests: usage.server_tool_use?.web_search_requests,
-            availability: "unknown",
-            provenance: "synthetic",
-          })),
+          usage: withAnthropicProcessedTokenTotal(
+            markAnthropicReasoningIncludedInCompletion(coerceUsage({
+              promptTokens: usage.input_tokens,
+              completionTokens: usage.output_tokens,
+              cachedInputTokens: usage.cache_read_input_tokens,
+              cacheCreationInputTokens: usage.cache_creation_input_tokens,
+              cacheCreation1hInputTokens: usage.cache_creation?.ephemeral_1h_input_tokens,
+              reasoningOutputTokens: readAnthropicReasoningOutputTokens({
+                ...usage,
+              }),
+              webSearchRequests: usage.server_tool_use?.web_search_requests,
+              availability: "unknown",
+              provenance: "synthetic",
+            })),
+          ),
           model,
           ...(thinking !== undefined ? { thinking } : {}),
           finishReason: "error",

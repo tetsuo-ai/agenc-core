@@ -14,6 +14,13 @@ const cost = (model: string, inputTokens = 1000) => computeUsdCostWithResolution
 }, DEFAULT_MODEL_COSTS);
 
 describe("reviewed OpenRouter catalog", () => {
+  test("keeps the October 21 live output ceilings and prices", () => {
+    const rows = new Map(OPENROUTER_MODELS.map(row => [row.model, row]));
+    expect(rows.get("deepseek/deepseek-v4-pro-0813")?.output).toBe(393216);
+    expect(rows.get("qwen/qwen3.8-2.4t-a95b")?.output).toBe(909000);
+    expect(rows.get("mistralai/mistral-large-4-0")?.pricing.prompt).toBe("0.00000136");
+    expect(rows.get("google/gemini-2.5-pro")?.expires).toBeUndefined();
+  });
   test("serializes only advertised efforts in OpenRouter's nested envelope", () => {
     const model = "openai/gpt-oss-120b";
     const request = (reasoningEffort: "low" | "none") => buildChatCompletionsRequest({

@@ -35,6 +35,7 @@ import {
 import type { Session, SessionServices } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import { resolveHomeContext } from "../../config/home.js";
+import { fileEditTargetKey, fileEditTargetPath } from "../../tools/system/file-edit-target.js";
 import {
   isSkillCandidatesDisabledByEnv,
   parseSkillCandidateProposals,
@@ -52,9 +53,9 @@ import { withSignedAllowedRoots } from "../../agents/_deps/filesystem-args.js";
 import { canWritePathWithCwd } from "../../sandbox/engine/index.js";
 import {
   agencHomeCarveOutAllowsWrite,
+  isSessionDurableMemoryWritePath,
   permissionProfileForLiveSandboxPolicies,
 } from "../../tools/runtimes/sandboxing.js";
-import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
 import type { AgentPath } from "../../agents/registry.js";
 import {
   createMemoryExtractionTriggerState,
@@ -144,13 +145,21 @@ function emitExtractionWarning(
   ) {
     return;
   }
-  try {
-    bus.emit({
-      id: bus.nextInternalSubId(),
-      msg: { type: "warning", payload: { cause, message } },
-    });
-  } catch {
-    // Diagnostics must never break the turn.
+  const emit = (): void => {
+    try {
+      bus.emit!({
+        id: bus.nextInternalSubId!(),
+        msg: { type: "warning", payload: { cause, message } },
+      });
+    } catch {
+      // Diagnostics must never break the turn.
+    }
+  };
+  const store = session.rolloutStore;
+  if (store !== undefined && store !== null) {
+    void store.withCanonicalBackgroundWork(emit).catch(() => {});
+  } else {
+    emit();
   }
 }
 
@@ -444,9 +453,9 @@ export function createAutoMemoryToolPolicy(
     }
 
     if (WRITE_TOOL_NAMES.has(tool.name)) {
-      const filePath = resolveMemoryPath(input.file_path, writeRoot);
+      const filePath = resolveMemoryPath(fileEditTargetPath(input), writeRoot);
       if (!filePath) {
-        const readable = resolveMemoryPathInRoots(input.file_path, readRoots);
+        const readable = resolveMemoryPathInRoots(fileEditTargetPath(input), readRoots);
         return deny(
           readable
             ? `${tool.name} may only write to this session's project memory directory: ${writeRoot}. The other memory roots are readable but not writable from memory extraction.`
@@ -463,7 +472,7 @@ export function createAutoMemoryToolPolicy(
           "secret_in_memory_write",
         );
       }
-      return allowWithMemoryRoots({ ...input, file_path: filePath }, [writeRoot]);
+      return allowWithMemoryRoots({ ...input, [fileEditTargetKey(input)]: filePath }, [writeRoot]);
     }
 
     return deny(
@@ -481,8 +490,10 @@ function writtenContent(input: Record<string, unknown>): string {
   if (typeof input.new_string === "string") parts.push(input.new_string);
   if (Array.isArray(input.edits)) {
     for (const edit of input.edits) {
-      const candidate = (edit as { new_string?: unknown } | null)?.new_string;
-      if (typeof candidate === "string") parts.push(candidate);
+      const record = edit as { new_string?: unknown; newText?: unknown } | null;
+      for (const candidate of [record?.new_string, record?.newText]) {
+        if (typeof candidate === "string") parts.push(candidate);
+      }
     }
   }
   return parts.join("\n");
@@ -499,7 +510,7 @@ function createChildWriteTracker(memoryDir: string): ChildWriteTracker {
     onProgress(event) {
       if (event.kind === "tool_call" && WRITE_TOOL_NAMES.has(event.toolName)) {
         const args = parseMemoryToolArguments(event.arguments);
-        const filePath = resolveMemoryPath(args.file_path, memoryDir);
+        const filePath = resolveMemoryPath(fileEditTargetPath(args), memoryDir);
         if (filePath) {
           pathsByCallId.set(event.callId, filePath);
         }
@@ -901,8 +912,9 @@ export function initExtractMemories(
       !canWritePathWithCwd(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot) &&
       // The file tools may write the durable memory roots under
       // workspace_write; the extractor's Write calls go through the same
-      // runtime sandbox check, so admit exactly what it admits.
-      !(isDurableMemoryWritePath(memoryDir) &&
+      // runtime sandbox check, so admit exactly what it admits: this
+      // session's own memory directories, not the daemon process's.
+      !(isSessionDurableMemoryWritePath(session.services, memoryDir, ctx.cwd) &&
         agencHomeCarveOutAllowsWrite(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot))
     )) {
       // A child path allowlist cannot grant filesystem authority. Do not
@@ -1093,35 +1105,43 @@ export function initExtractMemories(
 
     lane.inProgress = true;
     try {
-      try {
-        // A lane created after a restart, or after the lane map pruned it,
-        // continues from the persisted cadence. This runs under the
-        // in-progress guard so a concurrent request queues behind it.
-        await restoreLane(lane, queued.context.session, memoryDir);
-        await runExtraction(queued, memoryDir, lane, false, readOnlyMemoryRoots);
-      } catch (error) {
-        // Best effort: extraction failures must never break the user turn,
-        // but they must not vanish either.
-        emitExtractionWarning(
-          queued.context.session,
-          "memory_extraction_failed",
-          errorText(error),
-        );
-      }
-      await persistLane(lane, queued.context.session, memoryDir);
-      while (lane.pendingContext) {
-        const trailing = lane.pendingContext;
-        lane.pendingContext = undefined;
+      const run = async (): Promise<void> => {
         try {
-          await runExtraction(trailing, memoryDir, lane, true, readOnlyMemoryRoots);
+          // A lane created after a restart, or after the lane map pruned it,
+          // continues from the persisted cadence. This runs under the
+          // in-progress guard so a concurrent request queues behind it.
+          await restoreLane(lane, queued.context.session, memoryDir);
+          await runExtraction(queued, memoryDir, lane, false, readOnlyMemoryRoots);
         } catch (error) {
+          // Best effort: extraction failures must never break the user turn,
+          // but they must not vanish either.
           emitExtractionWarning(
-            trailing.context.session,
+            queued.context.session,
             "memory_extraction_failed",
-            `trailing run: ${errorText(error)}`,
+            errorText(error),
           );
         }
-        await persistLane(lane, trailing.context.session, memoryDir);
+        await persistLane(lane, queued.context.session, memoryDir);
+        while (lane.pendingContext) {
+          const trailing = lane.pendingContext;
+          lane.pendingContext = undefined;
+          try {
+            await runExtraction(trailing, memoryDir, lane, true, readOnlyMemoryRoots);
+          } catch (error) {
+            emitExtractionWarning(
+              trailing.context.session,
+              "memory_extraction_failed",
+              `trailing run: ${errorText(error)}`,
+            );
+          }
+          await persistLane(lane, trailing.context.session, memoryDir);
+        }
+      };
+      const store = queued.context.session.rolloutStore;
+      if (store !== null && store !== undefined) {
+        await store.withCanonicalBackgroundWork(run);
+      } else {
+        await run();
       }
     } finally {
       lane.inProgress = false;

@@ -121,10 +121,10 @@ export async function verifyApiKey(
     return { status: "error", error: `Unknown provider: ${params.provider}` };
   }
   const provider = providerInfo.id;
-  if (providerInfo.onboarding.access === "managed") {
+  if (providerInfo.onboarding.access === "retired") {
     return {
       status: "error",
-      error: "Hosted AgenC uses account auth instead of first-run BYOK keys.",
+      error: "AgenC accounts no longer provide models.",
     };
   }
   if (providerInfo.onboarding.access === "environment") {
@@ -312,9 +312,10 @@ export function useApiKeyVerification(
 
 /**
  * URL used to verify a provider API key. This is the models listing for
- * most providers, except OpenRouter: its models endpoint is public (it returns
- * 200 for any Authorization header, verified live), so its authenticated
- * key-info endpoint `/auth/key` is used instead.
+ * most providers. Where the models listing is public (it returns 200 for any
+ * Authorization header, verified live), an authenticated endpoint is used
+ * instead: OpenRouter's key-info `/auth/key` and Venice's
+ * `/api_keys/rate_limits` (both answer 401 to a wrong key).
  */
 export function providerVerificationUrl(
   provider: GenericApiKeyVerificationProvider,
@@ -323,6 +324,9 @@ export function providerVerificationUrl(
   const trimmed = baseURL.replace(/\/+$/, "");
   if (provider === "openrouter" && !/\/auth\/key$/i.test(trimmed)) {
     return `${trimmed}/auth/key`;
+  }
+  if (provider === "venice" && !/\/api_keys\/rate_limits$/i.test(trimmed)) {
+    return `${trimmed}/api_keys/rate_limits`;
   }
   if (trimmed.endsWith("/models")) return trimmed;
   if (/\/(?:v\d+(?:beta)?|api\/v\d+)$/i.test(trimmed)) {

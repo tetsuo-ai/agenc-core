@@ -128,6 +128,7 @@ export interface AgenCCommandExecServiceOptions {
   readonly windowsSandboxPrivateDesktop?: boolean;
   /** Opt-in GPU compute inside the sandbox (config `sandbox.allow_gpu`). */
   readonly allowGpu?: boolean;
+  readonly allowLocalBinding?: boolean;
   /** Injectable only for deterministic readiness/fault tests. */
   readonly sandboxProbe?: typeof probeSandboxExecutionStatus;
 }
@@ -209,6 +210,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
   readonly #windowsSandboxLevel: WindowsSandboxLevel;
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #allowGpu: boolean;
+  readonly #allowLocalBinding: boolean;
   readonly #sandboxProbe: typeof probeSandboxExecutionStatus;
   #nextGeneratedProcessId = 1;
 
@@ -224,6 +226,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
     this.#allowGpu = options.allowGpu ?? false;
+    this.#allowLocalBinding = options.allowLocalBinding === true;
     this.#sandboxProbe = options.sandboxProbe ?? probeSandboxExecutionStatus;
   }
 
@@ -577,6 +580,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       ...(this.#allowGpu ? { allowGpu: true } : {}),
+      ...(this.#allowLocalBinding ? { network: { allowLocalBinding: true } } : {}),
     });
     const [transformedProgram, ...transformedArgs] = transformed.command;
     if (transformedProgram === undefined) {

@@ -1,9 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigStore } from "../../src/config/store.js";
 import * as memoryPrompt from "../../src/memory/memdir.js";
+import * as compactRuntime from "../../src/services/compact/_deps/runtime.js";
 import * as outputStyles from "../../src/constants/outputStyles.js";
 
 const { loadTieredInstructionsMock } = vi.hoisted(() => ({
@@ -430,17 +431,21 @@ describe("/context display: computeContextUsageBreakdown", () => {
 });
 
 describe("/context TUI bridge", () => {
-  test("counts memory from the captured session home and working directory", async () => {
-    const home = mkdtempSync(join(tmpdir(), "agenc-context-memory-owner-"));
+  /** Runs /context for an interactive session in `home`; returns the memory load and the counted system text. */
+  async function contextMemory(home: string) {
     const configStore = new ConfigStore({ home, cwd: home, env: { HOME: home, AGENC_HOME: home } });
     await configStore.reload();
     const load = vi.spyOn(memoryPrompt, "loadMemoryPrompt");
+    const estimate = vi.spyOn(compactRuntime, "estimateMessagesTokens");
     const style = vi.spyOn(outputStyles, "getOutputStyleConfig").mockResolvedValue(null);
     const session = {
       abortController: new AbortController(), conversationId: "context-memory-owner",
       newDefaultTurnWithSubId: () => ({ cwd: home, config: {},
         modelInfo: { slug: "grok-4", contextWindow: 200_000, effectiveContextWindowPercent: 100 },
-        modelProviderId: "grok", dynamicTools: [], options: {} }),
+        modelProviderId: "grok", dynamicTools: [], options: {},
+        // What the permissions section reads, so the system prompt assembles.
+        sandboxPolicy: { value: "workspace_write" },
+        networkSandboxPolicy: { allowlist: [], denylist: [], allowManagedDomainsOnly: false } }),
       nextInternalSubId: () => "context-memory-1", snapshotHistoryMessages: () => [],
       state: { unsafePeek: () => ({ totalTokenUsage: { promptTokens: 0 } }) },
       permissionModeRegistry: { current: () => undefined },
@@ -458,10 +463,46 @@ describe("/context TUI bridge", () => {
         expect.objectContaining({ cwd: home, configStore }),
         session.services.providerEnvironment,
       );
-      expect((await load.mock.results[0]?.value)?.directories).toContain(join(home, "memory"));
+      const sections = await load.mock.results[0]?.value;
+      const system = estimate.mock.calls
+        .map(([messages]) => (messages as readonly { role?: string; content?: unknown }[])[0])
+        .find((message) => message?.role === "system");
+      return { sections, counted: String(system?.content ?? "") };
     } finally {
       load.mockRestore();
+      estimate.mockRestore();
       style.mockRestore();
+    }
+  }
+
+  const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+  test("counts memory from the captured session home and working directory", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-context-memory-owner-"));
+    try {
+      // Empty memory: the session's prompt leaves the rules and directories to
+      // the memory-on-request reminder, and /context still counts them, once.
+      const { sections, counted } = await contextMemory(home);
+      expect(sections?.directories).toBe("");
+      expect(sections?.onRequest).toContain(join(home, "memory"));
+      expect(counted).toContain(join(home, "memory"));
+      expect(occurrences(counted, memoryPrompt.MEMORY_RULES_MARKER)).toBe(1);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("counts the memory rules once when they ride in the prompt", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-context-memory-owner-"));
+    try {
+      mkdirSync(join(home, "memory"), { recursive: true });
+      writeFileSync(join(home, "memory", "MEMORY.md"), "- [Tabs](tabs.md): the user indents with tabs\n");
+      const { sections, counted } = await contextMemory(home);
+      expect(sections?.directories).toContain(join(home, "memory"));
+      expect(sections?.onRequest).toBeUndefined();
+      expect(counted).toContain(join(home, "memory"));
+      expect(occurrences(counted, memoryPrompt.MEMORY_RULES_MARKER)).toBe(1);
+    } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });

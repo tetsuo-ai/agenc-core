@@ -100,6 +100,15 @@ describe("policy limits service", () => {
     expect(hostile?.restrictions["toString"]?.allowed).toBe(false);
   });
 
+  it("never vends a provider key for a signed-in account without its own key", async () => {
+    const backend = remoteBackend();
+    const fetchImpl = vi.fn();
+    const service = makeService({ authBackend: backend, authSubscriptionTier: "team", fetchImpl });
+    await service.loadPolicyLimits();
+    expect(backend.vendKey).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("fetches API-key policy limits, persists them, and denies configured policies", async () => {
     const fetchMock = vi.fn(async () =>
       response(200, {
@@ -308,72 +317,6 @@ describe("policy limits service", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
     expect(service.isPolicyAllowed("allow_remote_sessions")).toBe(true);
-  });
-
-  it("gates remote-auth policy fetches to team, enterprise, and C4E tiers", async () => {
-    const fetchMock = vi.fn(async () =>
-      response(200, {
-        restrictions: { allow_remote_control: { allowed: false } },
-      }),
-    );
-    const backend = remoteBackend();
-    const freeService = makeService({
-      providerName: "agenc",
-      authBackend: backend,
-      authSubscriptionTier: "free",
-      fetchImpl: fetchMock,
-      sessionId: "session-free",
-    });
-
-    await freeService.loadPolicyLimits();
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(backend.vendKey).not.toHaveBeenCalled();
-
-    const teamService = makeService({
-      providerName: "agenc",
-      authBackend: backend,
-      authSubscriptionTier: "team",
-      fetchImpl: fetchMock,
-      sessionId: "session-team",
-    });
-
-    await teamService.loadPolicyLimits();
-
-    expect(backend.vendKey).toHaveBeenCalledWith("agenc", "session-team");
-    expect(headersFromCall(fetchMock).get("x-api-key")).toBe(
-      "managed-policy-key",
-    );
-    expect(teamService.isPolicyAllowed("allow_remote_control")).toBe(false);
-
-    const enterpriseService = makeService({
-      providerName: "agenc",
-      authBackend: backend,
-      authSubscriptionTier: "enterprise",
-      fetchImpl: fetchMock,
-      sessionId: "session-enterprise",
-    });
-
-    await enterpriseService.loadPolicyLimits();
-
-    expect(backend.vendKey).toHaveBeenCalledWith(
-      "agenc",
-      "session-enterprise",
-    );
-
-    const c4eBackend = remoteBackend({
-      getSubscriptionTier: vi.fn(async () => "c4e" as never),
-    });
-    const c4eService = makeService({
-      providerName: "agenc",
-      authBackend: c4eBackend,
-      fetchImpl: fetchMock,
-      sessionId: "session-c4e",
-    });
-
-    await c4eService.loadPolicyLimits();
-
-    expect(c4eBackend.vendKey).toHaveBeenCalledWith("agenc", "session-c4e");
   });
 
   it("fails open when remote managed-key or subscription lookup fails", async () => {

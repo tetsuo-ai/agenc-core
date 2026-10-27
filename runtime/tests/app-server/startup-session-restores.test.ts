@@ -20,6 +20,20 @@ interface Target {
   readonly sessionId?: string;
 }
 
+it("yields to I/O between batches even when hundreds of restores finish immediately", async () => {
+  let completed = 0;
+  const restores = new StartupSessionRestores({
+    targets: Array.from({ length: 193 }, (_, index) => ({ runId: `run-${index}` })),
+    concurrency: 4,
+    task: async () => { completed++; return "published" as const; },
+  });
+  restores.start();
+  const atIoTurn = await new Promise<number>(resolve => setImmediate(() => resolve(completed)));
+  expect(atIoTurn).toBeGreaterThan(0);
+  expect(atIoTurn).toBeLessThan(193);
+  expect((await restores.settled).published).toBe(193);
+});
+
 /** Restores that wait until the test releases each one, by run id. */
 function gatedRestores(
   runIds: readonly string[],
@@ -341,6 +355,24 @@ describe("daemon dispatcher with sessions still restoring", () => {
     restores.start();
     return { dispatcher, handled, publish: () => publish() };
   }
+
+  it("reports the request's restore wait and completion without delaying new work", async () => {
+    const { dispatcher, publish } = dispatcherWithPendingRestore();
+    const sendNotification = vi.fn();
+    const connection = dispatcher.createConnection({ sendNotification });
+    await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "init", method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } } });
+    const waiting = connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 2, method: "agent.attach", params: { agentId: pending.runId } });
+    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledWith({
+      jsonrpc: JSON_RPC_VERSION, method: "event.startup_restore", params: { requestId: 2, remaining: 1 },
+    }));
+    await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 3, method: "agent.create", params: { objective: "new work" } });
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    publish();
+    await waiting;
+    expect(sendNotification).toHaveBeenLastCalledWith({
+      jsonrpc: JSON_RPC_VERSION, method: "event.startup_restore", params: { requestId: 2, remaining: 0 },
+    });
+  });
 
   it("holds every method that names a session still restoring until it is published", async () => {
     const { dispatcher, handled, publish } = dispatcherWithPendingRestore();

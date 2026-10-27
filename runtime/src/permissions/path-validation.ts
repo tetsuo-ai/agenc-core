@@ -23,7 +23,7 @@ import {
   sep,
 } from "node:path";
 
-import { getRuleByContentsForTool } from "./rules.js";
+import { getContentRulesForTool } from "./rules.js";
 import { unattendedWriteRoots } from "./unattended-policy.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
 import {
@@ -55,6 +55,7 @@ import {
   hasAutoMemPathOverride,
   isAutoMemoryEnabled,
 } from "../memory/paths.js";
+import type { SessionDurableMemoryDirectories } from "../services/extractMemories/memory-paths.js";
 
 const MAX_DIRS_TO_LIST = 5;
 const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
@@ -79,6 +80,12 @@ export interface ResolvedPathCheckResult extends PathCheckResult {
 export interface ValidatePathOptions {
   readonly extraWorkingDirectories?: readonly string[];
   readonly planFileAuthority?: SessionPlanFileAuthority | null;
+  /**
+   * The session's durable memory directories (the ones its memory prompt
+   * names). Absent, the process-wide roots apply, which in a daemon key the
+   * project memory directory to the daemon's own working directory.
+   */
+  readonly durableMemory?: SessionDurableMemoryDirectories;
   /** Unresolved spellings (trailing dots, 8.3, relative names) for safety only. */
   readonly extraSafetyPaths?: readonly string[];
 }
@@ -92,6 +99,8 @@ export interface ToolPathPermissionOptions {
   readonly operationType: FileOperationType;
   readonly extraWorkingDirectories?: readonly string[];
   readonly planFileAuthority?: SessionPlanFileAuthority | null;
+  /** See {@link ValidatePathOptions.durableMemory}. */
+  readonly durableMemory?: SessionDurableMemoryDirectories;
 }
 
 export function formatDirectoryList(directories: string[]): string {
@@ -536,8 +545,12 @@ function matchingRuleForPath(
       : pathsToCheck.length > 0 && pathsToCheck.every(matches);
   };
   for (const toolName of toolNamesForOperation(operationType)) {
-    const rules = getRuleByContentsForTool(context, toolName, behavior);
-    for (const [content, rule] of rules) {
+    // Equal relative text from different sources can name different files.
+    // Resolve every source before matching, retaining later-source priority
+    // when several rules describe the same target.
+    const rules = getContentRulesForTool(context, toolName, behavior);
+    for (const rule of rules.reverse()) {
+      const content = rule.ruleValue.ruleContent!;
       const patterns = restrictive
         ? restrictiveRulePatterns(content, rule.source, cwd)
         : [resolvePathRulePattern(content, rule.source, cwd)];
@@ -633,22 +646,59 @@ export function isDurableMemoryWritePath(resolvedPath: string): boolean {
   return underDurableMemoryRoots(getPathsForPermissionCheck(resolvedPath));
 }
 
+/**
+ * Whether every spelling of `resolvedPath` (as written, resolved, and through
+ * each link) lies under one of `roots`, each root taken as given and where it
+ * really lives, so a home reached through a link still matches. The roots
+ * must come from trusted session state (the memory directories the session's
+ * memory prompt names), never from tool input.
+ */
+export function isUnderMemoryRoots(
+  resolvedPath: string,
+  roots: readonly string[],
+): boolean {
+  return pathsUnderRoots(getPathsForPermissionCheck(resolvedPath), roots);
+}
+
+/** Every spelling under some root, each root also where it really lives. */
+function pathsUnderRoots(
+  paths: readonly string[],
+  roots: readonly string[],
+): boolean {
+  if (roots.length === 0 || paths.length === 0) return false;
+  const candidates = uniquePaths(
+    roots.flatMap((root) => [root, safeResolvePath(root).resolvedPath]),
+  );
+  return paths.every((path) =>
+    candidates.some((root) => isPathInside(path, root)),
+  );
+}
+
 function durableMemoryPathPermission(
   resolvedPath: string,
   context: ToolPermissionContext,
   operationType: FileOperationType,
   cwd: string,
   precomputedPathsToCheck?: readonly string[],
+  sessionMemory?: SessionDurableMemoryDirectories,
 ): PathCheckResult | null {
-  if (
-    !isAutoMemoryEnabled() ||
-    (operationType !== "read" && hasAutoMemPathOverride())
-  )
-    return null;
-  // An arbitrary SDK override gets no write carveout.
   const paths =
     precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
-  if (!underDurableMemoryRoots(paths)) return null;
+  if (sessionMemory !== undefined) {
+    // The session's own directories, so project and global memory files are
+    // the same kind of file here as in its memory prompt. Auto memory off
+    // leaves no roots; a cowork override is readable, not a write carve-out.
+    if (operationType !== "read" && !sessionMemory.writable) return null;
+    if (!pathsUnderRoots(paths, sessionMemory.roots)) return null;
+  } else {
+    if (
+      !isAutoMemoryEnabled() ||
+      (operationType !== "read" && hasAutoMemPathOverride())
+    )
+      return null;
+    // An arbitrary SDK override gets no write carveout.
+    if (!underDurableMemoryRoots(paths)) return null;
+  }
   return (
     matchingRuleResult(
       resolvedPath,
@@ -714,6 +764,7 @@ export function isPathAllowed(
     operationType,
     cwd,
     precomputedPathsToCheck,
+    options.durableMemory,
   );
   if (memoryPermission !== null) return memoryPermission;
 
@@ -847,7 +898,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason: "UNC network paths require manual approval",
       },
     };
@@ -858,7 +910,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason:
           "Tilde expansion variants (~user, ~+, ~-) in paths require manual approval",
       },
@@ -874,7 +927,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason: "Shell expansion syntax in paths requires manual approval",
       },
     };
@@ -885,7 +939,8 @@ export function validatePath(
       allowed: false,
       resolvedPath: cleanPath,
       decisionReason: {
-        type: "other",
+        type: "safetyCheck",
+        classifierApprovable: false,
         reason: "Path exceeds maximum length",
       },
     };
@@ -897,7 +952,8 @@ export function validatePath(
         allowed: false,
         resolvedPath: cleanPath,
         decisionReason: {
-          type: "other",
+          type: "safetyCheck",
+          classifierApprovable: false,
           reason:
             "Glob patterns are not allowed in write operations. Please specify an exact file path.",
         },
@@ -1105,6 +1161,7 @@ export function checkToolPathPermission(
       )
         ? opts.planFileAuthority
         : null,
+      ...(opts.durableMemory !== undefined ? { durableMemory: opts.durableMemory } : {}),
     },
   );
   // A file tool confines itself to the workspace root plus the signed roots
@@ -1140,31 +1197,11 @@ export function checkToolPathPermission(
     };
   }
 
-  // Mirror the bash short-circuit at permissions/bash.ts:431 ("hadDeny"
-  // guard): in --dangerously-bypass-approvals-and-sandbox / bypassPermissions mode the user has explicitly
-  // opted out of approval gating, so filesystem-touching tools (Read, Glob,
-  // FileRead, ...) must not surface the working-dir prompt. Without this,
-  // `agenc --dangerously-bypass-approvals-and-sandbox` was half-bypassing — Bash and Grep auto-approved while
-  // Read/Glob still prompted, breaking GAP-TEST-* scenarios 11/13/35.
-  //
-  // SECURITY: this bypass runs AFTER validatePath, so a path-specific
-  // Deny(...) rule (handled above), the safety gates surfaced as a
-  // "safetyCheck" decisionReason (the shared protected-path classifier and
-  // dangerous-removal checks in isPathAllowed/checkPathSafetyForAutoEdit),
-  // and a content-specific ask rule are still honored. These are exactly the
-  // bypass-immune categories the evaluator enforces at
-  // permissions/evaluator.ts (step 1d deny, step 1f content ask rule, step 1g
-  // safetyCheck); the evaluator only sees the rule when this wrapper reports
-  // it, so converting the ask into an allow here silenced a confirmation the
-  // settings promised (#2125). Everything else (workingDir) is auto-allowed
-  // under bypass.
+  // Bypass lifts only the ordinary workspace boundary. Deny, explicit ask,
+  // protected paths and malformed/ambiguous path safety remain mandatory.
   if (
     opts.context.mode === "bypassPermissions" &&
-    decisionReason?.type !== "safetyCheck" &&
-    !(
-      decisionReason?.type === "rule" &&
-      decisionReason.rule.ruleBehavior === "ask"
-    )
+    decisionReason?.type === "workingDir"
   ) {
     return {
       behavior: "allow",

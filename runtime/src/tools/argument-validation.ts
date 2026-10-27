@@ -91,7 +91,7 @@ export function validateToolArgs(
 /**
  * Only for original model input, before execution gates or scheduling predicates.
  * `reshape` is the tool's own `reshapeModelArgs`; it runs only when strict
- * validation and the JSON container repair both fail, gets the untouched
+ * validation and the schema-directed JSON repair both fail, gets the untouched
  * input, and its result must pass the same strict validation.
  */
 export function normalizeModelToolArgs(
@@ -178,7 +178,10 @@ function normalizeContainerArgs(
     try {
       const parsed: unknown = JSON.parse(value);
       const type = schemaTypeOf(parsed);
-      if ((type !== "array" && type !== "object") || !types.has(type)) return value;
+      const numeric = typeof parsed === "number" && Number.isFinite(parsed) &&
+        (!Number.isInteger(parsed) || Number.isSafeInteger(parsed));
+      if (type !== "array" && type !== "object" && !numeric) return value;
+      if (!types.has(type) && !(numeric && types.has("number"))) return value;
       value = parsed;
       paths.push(path);
     } catch {

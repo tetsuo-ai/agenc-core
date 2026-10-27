@@ -1863,7 +1863,7 @@ export async function bashToolHasPermission(
     subcommands.length > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK
   ) {
     logForDebugging(
-      `bashPermissions: ${subcommands.length} subcommands exceeds cap (${MAX_SUBCOMMANDS_FOR_SECURITY_CHECK}) — returning ask`,
+      `bashPermissions: ${subcommands.length} subcommands exceeds cap (${MAX_SUBCOMMANDS_FOR_SECURITY_CHECK}): returning ask`,
       { level: 'debug' },
     )
     const decisionReason = {

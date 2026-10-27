@@ -10,6 +10,7 @@
 //   AGENC_MAX_TURNS                               → max_turns
 //   AGENC_COORDINATOR_MODE                        → coordinator_mode
 //   AGENC_STREAM_IDLE_TIMEOUT_MS                  → stream_watchdog_timeout_ms
+//   AGENC_STREAM_QUIET_WARNING_MS                 → stream_quiet_warning_ms
 //   AGENC_PROVIDER_OUTAGE_WAIT_MS                 → provider_outage_wait_ms
 //   AGENC_PROVIDER_OUTAGE_RETRY_MS                → provider_outage_retry_ms
 //   AGENC_XAI_INCREMENTAL                         → providers.grok.incremental_continuation
@@ -21,7 +22,6 @@
 //   AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS        → 8k default + retry mode
 //   AGENC_MAX_BUDGET_USD                           → session cost budget
 //   AGENC_AUTH_BACKEND                             → auth.backend
-//   AGENC_AUTH_MANAGED_KEYS_ENABLED               → auth.managedKeys.enabled
 //   AGENC_BROWSER_*                                → browser.*
 //   AGENC_BUDGET*                                  → budget.*
 //   AGENC_HEARTBEAT*                               → heartbeat.*
@@ -62,6 +62,7 @@ export interface EnvSnapshot {
   readonly AGENC_MAX_TURNS?: string;
   readonly AGENC_COORDINATOR_MODE?: string;
   readonly AGENC_STREAM_IDLE_TIMEOUT_MS?: string;
+  readonly AGENC_STREAM_QUIET_WARNING_MS?: string;
   readonly AGENC_PROVIDER_OUTAGE_WAIT_MS?: string;
   readonly AGENC_PROVIDER_OUTAGE_RETRY_MS?: string;
   readonly AGENC_XAI_INCREMENTAL?: string;
@@ -74,7 +75,6 @@ export interface EnvSnapshot {
   readonly AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_MAX_BUDGET_USD?: string;
   readonly AGENC_AUTH_BACKEND?: string;
-  readonly AGENC_AUTH_MANAGED_KEYS_ENABLED?: string;
   readonly AGENC_BROWSER_EXECUTABLE?: string;
   readonly AGENC_BROWSER_HEADLESS?: string;
   readonly AGENC_BROWSER_ALLOW_PRIVATE_NETWORK?: string;
@@ -110,6 +110,11 @@ export interface EnvSnapshot {
   readonly LMSTUDIO_BASE_URL?: string;
   readonly OPENROUTER_API_KEY?: string;
   readonly OPENROUTER_BASE_URL?: string;
+  readonly VENICE_API_KEY?: string;
+  readonly VENICE_BASE_URL?: string;
+  readonly ABLIT_KEY?: string;
+  readonly ABLITERATION_API_KEY?: string;
+  readonly ABLITERATION_BASE_URL?: string;
   readonly GROQ_API_KEY?: string;
   readonly GROQ_BASE_URL?: string;
   readonly DEEPSEEK_API_KEY?: string;
@@ -370,6 +375,14 @@ export function applyEnvOverrides(
       );
     }
   }
+  if (e.AGENC_STREAM_QUIET_WARNING_MS !== undefined) {
+    const warningMs = readNonNegativeInteger(e.AGENC_STREAM_QUIET_WARNING_MS);
+    if (warningMs !== undefined) {
+      override.stream_quiet_warning_ms = warningMs;
+    } else if (e.AGENC_STREAM_QUIET_WARNING_MS.trim().length > 0) {
+      onWarn?.("[agenc:config] invalid AGENC_STREAM_QUIET_WARNING_MS; expected a non-negative integer");
+    }
+  }
   if (e.AGENC_PROVIDER_OUTAGE_WAIT_MS !== undefined) {
     const waitMs = readNonNegativeInteger(e.AGENC_PROVIDER_OUTAGE_WAIT_MS);
     if (waitMs !== undefined) {
@@ -423,24 +436,6 @@ export function applyEnvOverrides(
     } else if (e.AGENC_AUTH_BACKEND.trim().length > 0) {
       onWarn?.(
         `[agenc:config] invalid AGENC_AUTH_BACKEND="${e.AGENC_AUTH_BACKEND}"; expected "local" or "remote"`,
-      );
-    }
-  }
-  if (e.AGENC_AUTH_MANAGED_KEYS_ENABLED !== undefined) {
-    const enabled = readBoolean(e.AGENC_AUTH_MANAGED_KEYS_ENABLED);
-    if (enabled !== undefined) {
-      override.auth = {
-        ...(config.auth ?? {}),
-        ...(override.auth ?? {}),
-        managedKeys: {
-          ...(config.auth?.managedKeys ?? {}),
-          ...(override.auth?.managedKeys ?? {}),
-          enabled,
-        },
-      };
-    } else if (e.AGENC_AUTH_MANAGED_KEYS_ENABLED.trim().length > 0) {
-      onWarn?.(
-        `[agenc:config] invalid AGENC_AUTH_MANAGED_KEYS_ENABLED="${e.AGENC_AUTH_MANAGED_KEYS_ENABLED}"; expected boolean-like value`,
       );
     }
   }

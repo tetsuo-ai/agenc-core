@@ -19,19 +19,6 @@ vi.mock("../../src/commands/provider.js", () => ({
   applyProviderSwitch: authMocks.applyProviderSwitch,
 }));
 
-vi.mock(
-  "../../src/commands/subscription-managed-models.js",
-  async (importOriginal) => {
-    const actual = await importOriginal<
-      typeof import("../../src/commands/subscription-managed-models.js")
-    >();
-    return {
-      ...actual,
-      hasHostedManagedAccess: () => true,
-    };
-  },
-);
-
 import { loginCommand } from "../../src/commands/auth.js";
 
 describe("auth command provider selection", () => {
@@ -81,7 +68,7 @@ describe("auth command provider selection", () => {
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
       expect(result.text).not.toContain("route selected");
-      expect(result.text).toContain("Your current provider was kept");
+      expect(result.text).not.toMatch(/hosted|model credits|managed/i);
     }
     expect(authMocks.applyProviderSwitch).not.toHaveBeenCalled();
   });
@@ -118,8 +105,7 @@ describe("auth command provider selection", () => {
 
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("Your current provider (grok) was kept");
-      expect(result.text).toContain("run /provider openrouter to switch");
+      expect(result.text).toBe("Logged in as Test User · plan=pro");
       expect(result.text).not.toContain("route selected");
     }
     expect(authMocks.applyProviderSwitch).not.toHaveBeenCalled();

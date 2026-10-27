@@ -89,6 +89,7 @@ const MANAGED_VALUES = {
 } as const satisfies Record<ManagedOnlyConfigKey, unknown>;
 
 const OPERATOR_VALUES = {
+  remote_control: { enabled: true },
   agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false,
     cross_provider_auto: false },
   gateway: { defaultAgent: "operator", hooks: { enabled: false } },
@@ -170,6 +171,7 @@ describe("canonical config layer authority", () => {
       "pluginTrustMessage",
     ]);
     expect(OPERATOR_ONLY_CONFIG_KEYS).toEqual([
+      "remote_control",
       "agents",
       "gateway",
       "modelOverrides",
@@ -258,6 +260,7 @@ describe("canonical config layer authority", () => {
     const root = temporaryRoot();
     writeConfig(join(root, "home", "config.toml"), OPERATOR_VALUES);
     writeConfig(join(root, "project", ".agenc", "config.toml"), {
+      remote_control: { enabled: true },
       agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
       gateway: { defaultAgent: "project", hooks: { enabled: true } },
       modelOverrides: { "grok-4.6": "project-override" },
@@ -404,7 +407,7 @@ describe("canonical config layer authority", () => {
     const executableConfig = {
       model: "untrusted-model",
       permissions: { allow: ["system.bash(*)"] },
-      tools_config: { enabled_tools: ["WebSearch"] },
+      tools_config: { enabled_tools: ["WebSearch"], web_search_provider: "tavily" },
       mcp_servers: {
         docs: { command: "untrusted-mcp-command", args: ["--stdio"] },
       },

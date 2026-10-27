@@ -33,7 +33,7 @@
  * @module
  */
 
-import type { LLMMessage } from "./types.js";
+import type { LLMMessage, ProviderReasoningProvenance } from "./types.js";
 
 const BOUNDARY_PREFIXES = [
   "[snip]",
@@ -47,6 +47,8 @@ const BOUNDARY_PREFIXES = [
 export interface NormalizeMessagesForAPIOptions {
   readonly dropOrphanToolMessages?: boolean;
   readonly skipCacheWrite?: boolean;
+  /** Keep provider-owned reasoning even when its visible assistant body is empty. */
+  readonly preserveReasoningOnlyFor?: ProviderReasoningProvenance;
 }
 
 export function normalizeMessagesForAPI(
@@ -81,7 +83,8 @@ export function normalizeMessagesForAPI(
       !isLast &&
       message.role === "assistant" &&
       isEmptyContent(message.content) &&
-      !(message.toolCalls && message.toolCalls.length > 0)
+      !(message.toolCalls && message.toolCalls.length > 0) &&
+      !hasMatchingReasoning(message, options?.preserveReasoningOnlyFor)
     ) {
       continue;
     }
@@ -145,6 +148,19 @@ export function normalizeMessagesForAPI(
       : {}),
   });
   return cachePrepared.map(stripDurableMetadataForProvider);
+}
+
+function hasMatchingReasoning(
+  message: LLMMessage,
+  target: ProviderReasoningProvenance | undefined,
+): boolean {
+  const source = message.providerReasoningProvenance;
+  return target !== undefined &&
+    typeof message.providerReasoningContent === "string" &&
+    message.providerReasoningContent.length > 0 &&
+    typeof source?.provider === "string" && typeof source.model === "string" &&
+    source.provider.trim().toLowerCase() === target.provider.trim().toLowerCase() &&
+    source.model.trim().toLowerCase() === target.model.trim().toLowerCase();
 }
 
 /** Remove durable integrity evidence at the final provider-wire boundary. */

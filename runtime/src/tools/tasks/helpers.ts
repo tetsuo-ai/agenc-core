@@ -33,6 +33,7 @@ export function toolMetadata(
     readonly hiddenByDefault?: boolean;
     readonly keywords?: readonly string[];
     readonly virtualNoFsWrites?: boolean;
+    readonly fixedWriteTargets?: () => readonly string[];
   } = {},
 ): Tool["metadata"] {
   return {
@@ -41,6 +42,9 @@ export function toolMetadata(
     hiddenByDefault: opts.hiddenByDefault ?? false,
     mutating: opts.mutating ?? false,
     ...(opts.virtualNoFsWrites === true ? { virtualNoFsWrites: true } : {}),
+    ...(opts.fixedWriteTargets !== undefined
+      ? { fixedWriteTargets: opts.fixedWriteTargets }
+      : {}),
     deferred: opts.deferred ?? false,
     keywords: opts.keywords ?? [family],
     preferredProfiles: ["coding", "operator", "general"],

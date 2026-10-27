@@ -25,13 +25,13 @@ Order matches `buildDefaultRegistry`.
 | `/logout` | | Sign out of your AgenC account |
 | `/whoami` | `account` | Show the signed-in AgenC account |
 | `/subscription` | `billing` | Show your AgenC plan and billing URL |
-| `/usage` | | Show hosted model usage for your AgenC plan |
+| `/usage` | | Show AgenC plan usage and the balance or usage of each connected provider; `/usage <provider>` (for example `/usage ollama`) shows one provider in detail. See [`/usage`](#usage) |
 | `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow). Headless: `agenc grok-login` |
 | `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
 | `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
 | `/openai-logout` | `chatgpt-logout` | Sign out of the OpenAI / ChatGPT OAuth session |
 | `/cost` | `stats` | Show session cost, token usage, and per-agent spend |
-| `/model` | | Switch the model (picker or pass a name). The session keeps its reasoning effort if the new model accepts it; otherwise the new model runs at its default and the switch says so |
+| `/model` | | Switch the model (picker or pass a name). Type in the picker to search its models by ID or name; Esc clears the search. The session keeps its reasoning effort if the new model accepts it; otherwise the new model runs at its default and the switch says so |
 | `/provider` | | Switch the LLM provider for subsequent turns. Reasoning effort carries over as with `/model` |
 | `/effort` | | Show or set reasoning effort for the current model (the exact model catalog levels, including `minimal` where supported; `default` clears the session's effort, so every model it switches to runs at its own default) |
 | `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect in the **live** session (`<call-id> <disposition> [<evidence-ref> <evidence-sha256>]`). Resume a settled terminal first. |
@@ -43,6 +43,7 @@ Order matches `buildDefaultRegistry`.
 | `/tasks` | `jobs`, `bashes` | Show live background tasks and spawned agents |
 | `/todos` | `todo` | Show the session todo lists |
 | `/config` | | Manage configuration — opens a picker |
+| `/theme` | | Choose the color theme. The picker previews each theme as the selection moves, Enter saves it as `tui.theme` and Esc keeps the current one; `/theme <name>` sets one directly. See [`/theme`](#theme) |
 | `/keybindings` | | Scaffold and edit canonical `tui.keybindings`, then reload config |
 | `/hooks` | | Inspect and test AgenC hook configuration |
 | `/skills` | | Manage project skills and show loaded skill roots |
@@ -73,7 +74,7 @@ Sources: `runtime/src/commands/*.ts(x)` modules imported by
 `buildDefaultRegistry` in `registry.ts` (`help`, `hello`, `status`, `auth`,
 `xai-auth`, `openai-auth`, `cost`, `model`, `provider`, `effort`, `resolve`, `swarm`,
 `ledger`, `permissions`, `plan`, `agent-management`, `tasks`, `todos`,
-`config`, `keybindings`, `hooks`, `skills`, `mcp`, `remote`, `plugins`, `memory/slash`,
+`config`, `theme`, `keybindings`, `hooks`, `skills`, `mcp`, `remote`, `plugins`, `memory/slash`,
 `resume`, `rewind`, `init`, `output-style`, `clear`, `session-compact`,
 `compaction-operator`, `coordinator`, `diff`, `protocol`, `exit`). Related:
 [grok-oauth.md](../grok-oauth.md), [cli.md](cli.md) (compaction operator),
@@ -107,15 +108,42 @@ The adapters and command-object set derive their membership from that list.
 
 ## `/login`
 
-`/login` signs into the AgenC account. The PromptInput footer
-[usesAnthropicAccountFlow](../../runtime/src/utils/model/providers.ts) gates
-the login prompt to first-party providers (`anthropic`, `amazon-bedrock`). A
-Grok or openai-compatible BYOK session does not show it when the provider
-selection is correct. Use `/grok-login` for Grok and `/openai-login` only for
-the `openai` provider. The `openai-compatible` provider uses
-`OPENAI_COMPATIBLE_API_KEY`, its documented fallback, or a provider-scoped
-saved BYOK credential. See
-[env.md](env.md#provider-credential-isolation).
+`/login` signs into the AgenC account for account features. It does not provide
+models or change the selected provider. Use `/grok-login` for Grok,
+`/openai-login` for OpenAI, or `/providers` to configure your own provider key.
+
+## `/usage`
+
+`/usage` lists every provider with a key set (an
+environment variable or a key saved in `/provider`) whose API reports a balance
+or usage for that same key. All lookups run at once with a 5 second timeout per
+request, and a provider that fails shows one dim line such as
+`Ollama Cloud  usage unavailable (HTTP 401)` without holding up the others.
+
+`/usage <provider>` shows one provider in detail. `/usage ollama` means Ollama
+Cloud, since a local Ollama server has no account.
+
+| Provider | Summary | Detail adds | Endpoint |
+| --- | --- | --- | --- |
+| Ollama Cloud | plan credits left and reset date (or session and weekly limits on legacy plans), purchased credits, last 24 hours, top two models | plan period, last 7 days, web search and fetch, spend per model | `GET /api/balance`, `GET /api/usage` |
+| OpenRouter | account credits left | credits used, this key's daily, weekly, monthly and total spend, key limit, free model requests, key expiry | `GET /api/v1/credits`, `GET /api/v1/key` |
+| DeepSeek | balance per currency | granted and topped-up balance, whether API calls are allowed | `GET /user/balance` |
+| Venice AI | USD balance, plus DIEM and bundled credits when present | DIEM refresh date, API tier and access, key expiry | `GET /api/v1/api_keys/rate_limits` |
+| Kimi (Moonshot) | available balance and money owed | voucher and cash balance | `GET /v1/users/me/balance` |
+| abliteration.ai | credits left | credits used | `GET /v1/credits` |
+
+Each request goes only to the origin the provider's chat adapter would use, so a
+key never travels where that provider's chat requests could not. OpenRouter,
+DeepSeek, Venice and abliteration.ai follow their resolved base URL (the
+registry default, `providers.<id>.base_url` in config, or the provider's
+`*_BASE_URL` override). The Ollama Cloud and Kimi adapters are pinned to
+`https://ollama.com/v1` and `https://api.moonshot.ai/v1` and refuse any other
+endpoint, so with a different `base_url` their usage shows
+`usage unavailable (custom endpoint)` and no request is sent. Redirects are
+refused and keys are never printed. Providers whose APIs need an admin or
+management key for billing (OpenAI, Anthropic, xAI, Mistral) or document no
+balance API for API keys (Gemini, Groq, Cerebras, NVIDIA NIM, Meta, Qwen, Z.AI, MiniMax, GitHub
+Copilot, Amazon Bedrock) are not listed. There is no AgenC account model-usage section.
 
 ## `/swarm`
 
@@ -178,6 +206,34 @@ remains available in transcript history. `/compact-rollback` and
 an active turn (`ACTIVE_TURN`). Syntax:
 [cli.md](cli.md#compaction-operator-commands).
 
+## `/theme`
+
+`/theme` opens a picker of the color themes `tui.theme` accepts: `auto`,
+`dark`, `light`, `light-daltonized`, `dark-daltonized`, `light-ansi`,
+`dark-ansi` and `olive`. Moving the selection repaints the screen in that
+theme, and the picker draws a short sample conversation, because the
+transcript is hidden while a picker is open.
+
+| Key | Effect |
+| --- | --- |
+| Up / Down (or `k` / `j`) | Move and preview |
+| Enter | Save the highlighted theme as `tui.theme` in your user `config.toml` and close |
+| Esc (or `q`) | Close and keep the theme you had. Ctrl+C or any other close does the same |
+
+`/theme <name>` saves a theme without the picker, in any case. An unknown
+name returns an error that lists the valid names and saves nothing. `auto`
+follows the terminal background: olive on a dark terminal, light on a light
+one.
+
+The saved theme is the same setting `/config` shows and first-run setup
+writes, so new sessions start with it, and `/config reload` after a hand edit
+of `config.toml` applies it at once. If a project, managed or command-line
+layer sets its own `tui.theme`, that layer still wins: `/theme` saves your
+choice and says which layer keeps its theme in effect.
+
+These are color themes only. The lean agent mode started with `--light` is a
+different setting.
+
 ## `/permissions`
 
 `/permissions` opens the permission editor. The command also accepts `list`,
@@ -239,7 +295,7 @@ an unclassified path, or the journal predates that attestation. Operator detail:
 | Topic | Fact |
 | --- | --- |
 | Surfaces | Some commands declare `supportedSurfaces` (e.g. `/hooks` → `runtime`, `daemon-tui`); default is all surfaces when omitted |
-| Protocol verbs | Default: honest stub unless `[protocol] enabled = true` + `adapter = "marketplace-cli"`; mutating verbs stay owner-gated |
+| Protocol verbs | Default: honest stub unless `[protocol] enabled = true` + `adapter = "marketplace-cli"`; mutating verbs stay owner-gated. Never available in a session created with a `toolPolicy` (they refuse before any process starts) |
 | `/provider` vs config | Slash name `/provider`; persisted field `model_provider` |
 | Help groups | Presentation metadata in `runtime/src/commands/help-groups.ts` |
 | Plugin-added commands | Plugins can register additional commands outside this minimal registry (see [skills-plugins.md](skills-plugins.md)) |

@@ -118,4 +118,72 @@ describe("repairToolTurnSequence", () => {
     expect(repaired[1]).toEqual(messages[0]);
     expect(findToolTurnValidationIssue(repaired)).toBeNull();
   });
+
+  test("inserts missing tool results when aggressive recovery is requested", () => {
+    const messages: readonly LLMMessage[] = [
+      assistantWithCalls([toolCall("call-1")]),
+      user("what next"),
+    ];
+
+    const repaired = repairToolTurnSequence(messages, {
+      repairMissingResults: true,
+    });
+    expect(repaired).toEqual([
+      assistantWithCalls([toolCall("call-1")]),
+      {
+        role: "tool",
+        toolCallId: "call-1",
+        toolName: "FileRead",
+        content: "[missing tool result inserted during transcript recovery]",
+      },
+      user("what next"),
+    ]);
+    expect(findToolTurnValidationIssue(repaired)).toBeNull();
+  });
+
+  test("drops duplicate and empty tool-call ids during aggressive recovery", () => {
+    const messages: readonly LLMMessage[] = [
+      assistantWithCalls([
+        toolCall("call-1"),
+        toolCall("call-1"),
+        { id: "  ", name: "FileWrite", arguments: "{}" },
+      ]),
+    ];
+
+    const repaired = repairToolTurnSequence(messages, {
+      repairMissingResults: true,
+    });
+    expect(repaired).toEqual([
+      assistantWithCalls([toolCall("call-1")]),
+      {
+        role: "tool",
+        toolCallId: "call-1",
+        toolName: "FileRead",
+        content: "[missing tool result inserted during transcript recovery]",
+      },
+    ]);
+    expect(findToolTurnValidationIssue(repaired)).toBeNull();
+  });
+
+  test("keeps assistant text when aggressive recovery strips every tool call", () => {
+    const messages: readonly LLMMessage[] = [
+      {
+        role: "assistant",
+        content: "hello",
+        toolCalls: [{ id: "  ", name: "FileRead", arguments: "{}" }],
+      },
+    ];
+
+    const repaired = repairToolTurnSequence(messages, {
+      repairMissingResults: true,
+    });
+    expect(repaired).toEqual([
+      {
+        role: "assistant",
+        content: "hello",
+        toolCalls: undefined,
+      },
+    ]);
+    expect(findToolTurnValidationIssue(repaired)).toBeNull();
+  });
 });

@@ -38,8 +38,12 @@ vi.mock("../../../src/utils/settings/canonicalAuthority.js", async importOrigina
   ...(await importOriginal<
     typeof import("../../../src/utils/settings/canonicalAuthority.js")
   >()),
+  // The root ThemeProvider reads the saved theme from this store and
+  // follows its reloads.
   getCanonicalSettingsAuthority: () => ({
     homeContext: { path: "/agenc-home" },
+    current: () => ({}),
+    subscribe: () => () => {},
   }),
 }));
 

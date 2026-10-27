@@ -151,6 +151,7 @@ function MessageImpl({
         // file as created while its Write is still in-progress (◐) or has FAILED
         // (✕) — it appears only once the glyph flips to a resolved success (●).
         const turnFileChanges = deriveTurnFileChanges(message.message.content, {
+          toolResultByToolUseID: lookups.toolResultByToolUseID,
           resolvedToolUseIDs: lookups.resolvedToolUseIDs,
           erroredToolUseIDs: lookups.erroredToolUseIDs,
         });

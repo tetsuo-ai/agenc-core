@@ -136,7 +136,10 @@ describe("session usage projection", () => {
     const report = buildCostReport(commandContext(usage));
     expect(report.totalCostUsd).toBe(0.4);
     expect(report.hasUnknownCost).toBe(true);
-    expect(formatCostReport(report)).toContain("some pricing unknown");
+    const output = formatCostReport(report);
+    expect(output).toContain("Session cost: ≥$0.400");
+    expect(output).toContain("Unpriced calls (excluded from the known cost):");
+    expect(output).not.toContain("Session cost: ≥$2.00");
   });
 
   it("preserves actual ledger rows after the worker disappears from the UI task list", () => {

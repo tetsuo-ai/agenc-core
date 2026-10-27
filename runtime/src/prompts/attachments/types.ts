@@ -146,6 +146,26 @@ export interface CriticalSystemReminderAttachment {
 }
 
 /**
+ * Built-in product help that the heads keep out of their fixed prefix: sent
+ * once, before the user message that asks for it
+ * (prompts/attachments/product-help.ts).
+ */
+export interface ProductHelpAttachment {
+  readonly kind: "product_help";
+  readonly topic: "undo" | "instructions";
+}
+
+/**
+ * Interactive Light's memory rules and directories, sent with a user message
+ * about memory or durable facts when the session's fixed prefix left them out
+ * (prompts/attachments/memory-on-request.ts).
+ */
+export interface MemoryOnRequestAttachment {
+  readonly kind: "memory_on_request";
+  readonly content: string;
+}
+
+/**
  * Output-style attachment (fires every turn when style is non-default).
  * Source: upstream attachment donor `attachments.ts:1598-1613`.
  */
@@ -319,6 +339,8 @@ export interface McpResourceAttachment {
 export interface SkillListingAttachment {
   readonly kind: "skill_listing";
   readonly content: string;
+  /** The request that carries the listing lists the Skill tool, so no fallback path is needed. */
+  readonly skillToolListed?: boolean;
 }
 
 /**
@@ -328,6 +350,8 @@ export interface SkillListingAttachment {
 export interface SkillRelevanceAttachment {
   readonly kind: "skill_relevance";
   readonly content: string;
+  /** See {@link SkillListingAttachment.skillToolListed}. */
+  readonly skillToolListed?: boolean;
 }
 
 /**
@@ -369,6 +393,8 @@ export type Attachment =
   | AutoModeExitAttachment
   | DateChangeAttachment
   | CriticalSystemReminderAttachment
+  | ProductHelpAttachment
+  | MemoryOnRequestAttachment
   | OutputStyleAttachment
   | TokenUsageAttachment
   | BudgetUsdAttachment

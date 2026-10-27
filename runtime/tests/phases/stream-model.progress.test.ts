@@ -178,15 +178,18 @@ describe("shared stream progress guard", () => {
     }
   });
 
-  test("empty heartbeat chunks do not reset the configured idle watchdog", async () => {
+  test("empty heartbeat chunks keep the byte watchdog alive without model output", async () => {
     vi.useFakeTimers();
-    const { pending } = sampleTurn((emit, options) => new Promise((_resolve, reject) => {
-      const timer = setInterval(() => emit({ content: "", done: false }), 10_000);
-      options.signal!.addEventListener("abort", () => {
-        clearInterval(timer); reject(options.signal!.reason);
-      }, { once: true });
-    }));
-    await vi.advanceTimersByTimeAsync(600_001);
-    expect((await pending).message).toMatch(/^stream_idle:/);
+    const { pending, events } = sampleTurn(async (emit, options) => {
+      for (let minute = 0; minute < 25; minute++) {
+        await new Promise(resolve => setTimeout(resolve, 60_000));
+        expect(options.signal?.aborted).toBe(false);
+        emit({ content: "", done: false });
+      }
+      return answer;
+    });
+    await vi.advanceTimersByTimeAsync(25 * 60_000 + 1);
+    expect(await pending).toBeUndefined();
+    expect(events.some(event => event.msg.type === "warning" && event.msg.payload.cause === "stream_idle_warning")).toBe(true);
   });
 });

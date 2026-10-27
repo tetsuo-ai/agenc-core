@@ -69,6 +69,25 @@ describe("OpenAI-compatible error classification", () => {
     ).toBe("tool_call_incompatible");
   });
 
+  // During a provider outage the gateway answers with an HTML error page.
+  // On 2026-10-16 a DeepSeek 502 like this ended a turn instead of retrying.
+  test("a 5xx gateway error page is a retryable outage, not a malformed response", () => {
+    const page = '<!DOCTYPE HTML>\n<html lang="en">\n<head><title>Error response</title></head>\n<body><h1>Error response</h1><p>Error code: 502</p></body>\n</html>';
+    for (const status of [500, 502, 503, 504]) {
+      expect(classifyOpenAIHttpFailure({ status, body: page })).toMatchObject({
+        category: "provider_unavailable",
+        retryable: true,
+      });
+    }
+    // Non-JSON bodies on success and on client errors stay malformed.
+    expect(classifyOpenAIHttpFailure({ status: 200, body: page }).category).toBe("malformed_provider_response");
+    expect(classifyOpenAIHttpFailure({ status: 400, body: page }).category).toBe("malformed_provider_response");
+    // A context overflow reported by a 5xx keeps its own category.
+    expect(
+      classifyOpenAIHttpFailure({ status: 502, body: "<html>maximum context length exceeded</html>" }).category,
+    ).toBe("context_overflow");
+  });
+
   test("embeds and extracts category markers in formatted messages", () => {
     expect(formatOpenAICategoryMarker("endpoint_not_found")).toBe(
       "[openai_category=endpoint_not_found]",

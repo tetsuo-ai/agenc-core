@@ -75,7 +75,7 @@ describe("LLM registry", () => {
     expect(resolveBuiltInProviderInfo("agenc")).toMatchObject({
       id: "agenc",
       name: "AgenC",
-      requiresManagedAuth: true,
+      onboarding: { access: "retired" },
     });
     expect(resolveBuiltInProviderInfo("anthropic")).toMatchObject({
       baseURL: "https://api.anthropic.com/v1",

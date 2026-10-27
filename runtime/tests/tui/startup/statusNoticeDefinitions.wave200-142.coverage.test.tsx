@@ -157,17 +157,9 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
 
     mocks.subscriber = true
     mocks.authTokenSource = { hasToken: true, source: 'ANTHROPIC_AUTH_TOKEN' }
-    expect(getActiveNotices(baseContext()).map(notice => notice.id)).toContain(
+    expect(getActiveNotices(baseContext()).map(notice => notice.id)).not.toContain(
       'agenc-account-external-token',
     )
-    expect(
-      collectText(
-        noticeById(
-          statusNoticeDefinitions,
-          'agenc-account-external-token',
-        ).render(baseContext()),
-      ),
-    ).toContain('Using ANTHROPIC_AUTH_TOKEN instead of AgenC account')
 
     mocks.authTokenSource = { hasToken: false, source: 'none' }
     mocks.apiKeyConfigured = true
@@ -219,7 +211,7 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
       },
       {
         apiKeySource: '/login managed key',
-        expected: 'sign out of the AgenC account',
+        expected: 'Sign out of the provider account',
         source: 'agenc-cloud',
       },
     ]

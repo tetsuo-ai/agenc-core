@@ -160,6 +160,16 @@ reservation is voided. Check the session environment and run `agenc doctor`
 rather than weakening the sandbox. Commands interrupted after they start still
 retain unknown-effect accounting until their outcome is established.
 
+`lightMode` chooses the new session's mode: `true` for Light, `false` for
+standard. When it is omitted, the session takes the daemon default, which is
+Light unless the daemon's `config.toml` sets `light_mode = false`. Before
+0.19.12 an omitted value meant standard, so an embedder that depends on the
+standard tool set should pass `lightMode: false`. Daemons before protocol 1.19
+have no Light mode: `false` is not sent to them and `true` fails with
+`AgencCapabilityUnavailableError`. `promptViaSubprocess()` runs `agenc -p`,
+which also starts in Light; pass `extraArgs: ["--standard"]` for standard
+mode.
+
 `dangerouslyBypassApprovalsAndSandbox` defaults to `false`. Set it to `true`
 only when the embedding application deliberately grants both approval bypass
 and unrestricted OS execution to the new session. The daemon retains that
@@ -386,7 +396,9 @@ continues in the daemon. `model` and `provider` ride on the run session
 bootstrap the same way `agenc run start --model` does. Omitting them uses
 the daemon default, including for children that inherit the run's provider.
 `lightMode: true` runs the Goal session, implementer, reviewer, repair children,
-and their sub-agents in Light mode. Omit it for standard mode. The setting is
+and their sub-agents in Light mode; `lightMode: false` runs them in standard
+mode. When it is omitted, a new Goal takes the daemon default, which is Light
+unless the daemon's `config.toml` sets `light_mode = false`. The setting is
 frozen with the run and reported as `runStatus(id).workflow.lightMode` after
 restart. A continuation inherits its source Goal's mode unless it explicitly
 sets `lightMode` to `true` or `false`. Clients can check the

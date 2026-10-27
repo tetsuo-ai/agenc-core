@@ -1,9 +1,10 @@
-import type { AdmissionUsageSnapshot, AdmissionUsageSummary, AdmissionUsageTotals } from "../budget/admission-types.js";
+import type { AdmissionUsageSnapshot, AdmissionUsageSummary, AdmissionUsageTotals, UnpricedUsageCall } from "../budget/admission-types.js";
 
 /** Only immutable reservation fields used by the usage observer. */
 export interface UsageReservation {
   readonly reservation_id: string;
   readonly run_id: string;
+  readonly step_id?: string;
   readonly kind: string;
   readonly model: string | null;
   readonly provider: string | null;
@@ -14,6 +15,20 @@ export interface UsageReservation {
   readonly actual_cost_nanos: number | null;
   readonly reserved_cost_nanos: number;
   readonly resolution_reason: string | null;
+}
+
+export const MAX_UNPRICED_USAGE_CALLS = 20;
+
+export function unpricedUsageCall(row: UsageReservation): UnpricedUsageCall | undefined {
+  if (row.status !== "held_unknown" &&
+      !(["reconciled", "provider_overrun"].includes(row.status) && row.actual_cost_nanos === null)) return undefined;
+  return {
+    reservationId: row.reservation_id, runId: row.run_id,
+    stepId: row.step_id ?? row.reservation_id, kind: row.kind,
+    ...(row.model === null ? {} : { model: row.model }),
+    ...(row.provider === null ? {} : { provider: row.provider }),
+    reason: row.resolution_reason ?? "reported_usage_cost_unknown",
+  };
 }
 
 type Counts = [number, number, number, number, number, number, number, number];
@@ -59,6 +74,7 @@ export function captureMaterializedUsage(summary: AdmissionUsageSummary): Admiss
     signature: JSON.stringify([encode(captured),
       captured.models.map(m => [m.model, m.provider ?? null, encode(m)]),
       captured.agents.map(a => [a.runId, encode(a)]),
+      captured.unpricedCalls ?? [], captured.unpricedCallCount ?? 0,
     ]),
     read: () => structuredClone(captured),
   };
@@ -91,9 +107,13 @@ function compareIdentity(a: Group, b: Group): number {
 export class AdmissionUsageProjection {
   private readonly reservations = new Map<string, UsageReservation>();
   private readonly groups = new Map<string, Group>();
+  private readonly unpriced = new Map<string, UnpricedUsageCall>();
   get size(): number { return this.reservations.size; }
 
   update(id: string, next: UsageReservation | undefined): void {
+    const diagnostic = next === undefined ? undefined : unpricedUsageCall(next);
+    if (diagnostic === undefined) this.unpriced.delete(id);
+    else this.unpriced.set(id, diagnostic);
     const previous = this.reservations.get(id);
     if (previous !== undefined) this.change(previous, -1);
     if (next === undefined || next.status === "voided") this.reservations.delete(id);
@@ -133,15 +153,21 @@ export class AdmissionUsageProjection {
         add(counts, group.counts); agents.set(owner, counts);
       }
     }
+    const unpricedCalls = [...this.unpriced.values()]
+      .sort((a, b) => Buffer.compare(Buffer.from(a.reservationId), Buffer.from(b.reservationId)))
+      .slice(0, MAX_UNPRICED_USAGE_CALLS);
+    const unpricedCallCount = this.unpriced.size;
     const signature = JSON.stringify([
       visible(all),
       [...models.values()].map(m => [m.model ?? "unknown", m.provider, visible(m.counts)]),
       [...agents].map(([id, counts]) => [id, visible(counts)]),
+      unpricedCalls, unpricedCallCount,
     ]);
     return {
       runId, sequence, signature,
       read: () => ({
         runId, sequence, ...totals(all),
+        ...(unpricedCallCount > 0 ? { unpricedCalls: unpricedCalls.map(call => ({ ...call })), unpricedCallCount } : {}),
         models: [...models.values()].map(m => ({ model: m.model ?? "unknown", ...(m.provider === null ? {} : { provider: m.provider }), ...totals(m.counts) })),
         agents: [...agents].map(([id, counts]) => ({ runId: id, ...totals(counts) })),
       }),

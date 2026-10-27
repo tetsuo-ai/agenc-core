@@ -1,3 +1,4 @@
+import { sideEffectFreeTool } from "../side-effect-free.js";
 /**
  * `FileRead` — first-class file reading tool for AgenC.
  *
@@ -58,11 +59,9 @@ import {
   safePathAllowingSessionPlanFile,
   withSignedAllowedRoots,
 } from "./filesystem.js";
-import {
-  FILE_TOOL_PATH_SCHEMA,
-  FILE_TOOL_PATH_USAGE,
-} from "./agent-path-hints.js";
+import { FILE_TOOL_PATH_SCHEMA } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
 import {
@@ -293,22 +292,12 @@ function resultFormatLine(sparse: boolean): string {
     : "Results are returned using cat -n format, with line numbers starting at 1";
 }
 
-const fileReadDescription = (sparse: boolean): string => `Reads a file from the local filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
-
-Usage:
-- ${FILE_TOOL_PATH_USAGE}
-- By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
-- Output is capped at ${DEFAULT_MAX_OUTPUT_TOKENS} tokens; a read that would exceed the cap returns an error instead of content, so for large files pass offset and limit.
-- When you already know which part of the file you need, only read that part. This can be important for larger files.
-- ${resultFormatLine(sparse)}
-- This tool allows AgenC to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually because AgenC can inspect multimodal inputs.
-- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.
-- This tool can read Jupyter notebook files (.ipynb) and returns cells with their source, text outputs, errors, and embedded visual outputs.
-- This tool can only read files, not directories. To list files in a directory, use the registered shell tool.
-- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- Do NOT re-read a file you just edited to verify — Edit/Write would have errored if the change failed, and the harness tracks file state for you.`;
+const fileReadDescription = (sparse: boolean): string => `Read a file: text, images (screenshots included, shown visually), PDFs and Jupyter notebooks (cells with their outputs).
+- Reads up to ${DEFAULT_LINE_LIMIT} lines from the start by default; for a large file pass offset and limit and read only the part you need. A read over ${DEFAULT_MAX_OUTPUT_TOKENS} tokens fails instead of returning content.
+- ${resultFormatLine(sparse)}.
+- PDFs over 10 pages need pages (at most 20 per read).
+- Directories cannot be read; list them with the shell tool.
+- A file read whole can then be edited. Edit and Write fail if their change did not land, so do not re-read a file to check an edit.`;
 
 // ─────────────────────────────────────────────────────────────────────
 // Config
@@ -1517,7 +1506,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
     config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
   const sparseLineNumbers = config.lightMode === true || config.sparseLineNumbers === true;
 
-  return {
+  return sideEffectFreeTool({
     name: FILE_READ_TOOL_NAME,
     description: fileReadDescription(sparseLineNumbers),
     metadata: {
@@ -1544,23 +1533,21 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             { type: "number" },
             { type: "string", pattern: "^[1-9]\\d*$" },
           ],
-          description:
-            "Optional. Line number to start from (1-indexed). Numeric strings are accepted.",
+          description: "Line to start from, 1-based.",
         },
         limit: {
           anyOf: [
             { type: "number" },
             { type: "string", pattern: "^[1-9]\\d*$" },
           ],
-          description:
-            "Optional. Max number of lines to return. Numeric strings are accepted.",
+          description: "Number of lines to read.",
         },
         ...(config.lightMode === true ? { dense_line_numbers: {
           type: "boolean", description: "Number every line in this read instead of sparse numbering.",
         } } : {}),
         pages: {
           type: "string",
-          description: "Optional. Page range for PDF files (e.g. '1-5').",
+          description: "PDF page range, e.g. '1-5'.",
         },
       },
       required: ["file_path"],
@@ -1593,6 +1580,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         // perform anyway, and a print-mode run (which auto-denies requests)
         // could not read the plan file it was told to keep (#2131).
         planFileAuthority: sessionPlanFileAuthority(context.session),
+        // Memory files are the session's own memory directories, the ones
+        // its memory prompt names.
+        durableMemory: sessionDurableMemoryDirectoriesOf(context.session, cwd),
       });
       if (decision.behavior !== "allow") return decision;
 
@@ -1759,7 +1749,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         await boundRead?.dispose();
       }
     },
-  };
+  });
 }
 
 /**

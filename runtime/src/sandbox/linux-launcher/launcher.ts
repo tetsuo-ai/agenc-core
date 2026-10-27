@@ -79,11 +79,13 @@ export function preferredBubblewrapLauncher(
   ) {
     return null;
   }
-  const probe = options.probeArgv0 ?? systemBubblewrapSupportsArgv0;
+  // Both flags come from the same immutable help response. Run the child
+  // once, under this invocation's scrubbed environment.
+  const help = systemBubblewrapHelp(program, env);
   return {
     program,
-    supportsArgv0: probe(program),
-    supportsBindFd: systemBubblewrapSupportsBindFd(program),
+    supportsArgv0: options.probeArgv0?.(program) ?? (help?.includes("--argv0") ?? false),
+    supportsBindFd: help?.includes("--ro-bind-fd") ?? false,
   };
 }
 
@@ -139,10 +141,6 @@ export function probeBubblewrapCapabilities(program: string, env: NodeJS.Process
   const help = systemBubblewrapHelp(program, env);
   if (help === null) return undefined;
   return { supportsArgv0: help.includes("--argv0"), supportsBindFd: help.includes("--ro-bind-fd") };
-}
-
-function systemBubblewrapSupportsArgv0(program: string): boolean {
-  return systemBubblewrapHelp(program)?.includes("--argv0") ?? false;
 }
 
 export function systemBubblewrapSupportsBindFd(

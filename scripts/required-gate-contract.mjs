@@ -19,10 +19,10 @@ if (
 }
 export const NEXT_REQUIRED_GATE_CONTEXT =
   `agenc-local-required-v${REQUIRED_GATE_CONTEXT_EPOCH + 1}`;
-export const REQUIRED_NODE_VERSION = "v26.5.0";
+export const REQUIRED_NODE_VERSION = "v26.12.1";
 export const REQUIRED_NPM_VERSION = "11.17.0";
 export const REQUIRED_DOCKER_IMAGE =
-  "node:26.5.0-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271";
+  "node:26.12.1-bookworm@sha256:dc5ba49acad07ed5c0defe487a0f14726a8882064683460bcb8168e03e2f74f3";
 
 export const REQUIRED_GATES = Object.freeze([
   Object.freeze({

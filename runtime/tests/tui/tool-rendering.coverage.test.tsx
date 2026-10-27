@@ -41,10 +41,10 @@ describe("TUI dynamic tool fallback coverage", () => {
     expect(tool.toAutoClassifierInput(input)).toBe(input);
     expect(tool.userFacingName(input)).toBe("DynamicCoverageTool");
     expect(tool.getActivityDescription(input)).toBe(
-      "DynamicCoverageTool {\"path\":\"src/example.ts\"}",
+      "DynamicCoverageTool src/example.ts",
     );
     expect(tool.renderToolUseMessage(input)).toBe(
-      "{\"path\":\"src/example.ts\"}",
+      "src/example.ts",
     );
 
     const resultBlock = tool.mapToolResultToToolResultBlockParam(

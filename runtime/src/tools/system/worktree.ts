@@ -45,12 +45,14 @@
  * @module
  */
 
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   getPlanFilePath,
   getPlansDirectory,
 } from "../../planning/plan-files.js";
+import { canonicalAuthorityPath } from "../../sandbox/desktop-authority-protection.js";
+import { isValidGitMarker } from "../../utils/git/gitRootMarker.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
@@ -63,6 +65,7 @@ import { verifiedSessionContextFromArgs } from "./filesystem.js";
 import {
   hardenGitWorktreeMutationArgs,
   worktreeCheckoutPermissions,
+  worktreeMutationMetadataRoot,
   worktreeMutationPermissions,
 } from "../../sandbox/worktree-permissions.js";
 
@@ -332,6 +335,63 @@ async function countWorktreeChanges(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Declared write targets
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The work tree holding `start`, found the way git discovers it: the nearest
+ * directory whose `.git` is real Git metadata (an empty or dangling `.git`
+ * is walked past). Not memoized, so a repository created during the session
+ * is seen.
+ */
+function nearestGitWorkTree(start: string): string | undefined {
+  let current = resolve(start);
+  for (;;) {
+    if (isValidGitMarker(join(current, ".git"))) return current;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+/**
+ * Where EnterWorktree and ExitWorktree write, declared to the runtime sandbox
+ * through `ToolMetadata.fixedWriteTargets`. Every write they make is a git
+ * command with a fixed argument list (`worktree add`, `checkout`, `worktree
+ * remove`, `branch -D`) run in the session's sandbox with the narrow grants
+ * of sandbox/worktree-permissions.ts: the linked worktree lives in
+ * `<repo>/.agenc/worktrees/<slug>`, and Git records it and its branch in the
+ * repository's metadata directory. The model chooses only the slug, which is
+ * validated to stay inside `.agenc/worktrees`. `<repo>` is the work tree that
+ * holds the workspace; outside a repository the tools refuse before writing
+ * anything. Declaring the two locations lets the sandbox verify them (inside
+ * the writable workspace, not reserved, not denied, never under read_only)
+ * instead of refusing every call as unverifiable, which in a default session
+ * made the approved call fall back to running without the sandbox.
+ */
+export function worktreeToolWriteTargets(cwd: string): readonly string[] {
+  const repo = nearestGitWorkTree(cwd);
+  if (repo === undefined) return [resolve(cwd, ".agenc", "worktrees")];
+  return [resolve(repo, ".agenc", "worktrees"), worktreeMutationMetadataRoot(repo)];
+}
+
+/**
+ * Whether a worktree mutation of `repoRoot` writes only what the tool
+ * declared for `cwd`: checked before the first git mutation, so a repository
+ * that git resolves differently from the declaration is refused with no
+ * effect instead of being written outside the verified locations.
+ */
+export function worktreeWritesStayDeclared(cwd: string, repoRoot: string): boolean {
+  try {
+    const declared = new Set(worktreeToolWriteTargets(cwd).map(canonicalAuthorityPath));
+    return [resolve(repoRoot, ".agenc", "worktrees"), worktreeMutationMetadataRoot(repoRoot)]
+      .every((target) => declared.has(canonicalAuthorityPath(target)));
+  } catch {
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // EnterWorktree
 // ─────────────────────────────────────────────────────────────────────
 
@@ -360,6 +420,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       hiddenByDefault: false,
       mutating: true,
       deferred: true,
+      fixedWriteTargets: () => worktreeToolWriteTargets(config.cwd),
     },
     requiresApproval: true,
     recoveryCategory: "side-effecting",
@@ -422,6 +483,13 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         return refuse(
           "EnterWorktree",
           `Not in a git repository (no rev-parse --show-toplevel from ${startCwd}). EnterWorktree requires a git repo or configured WorktreeCreate hooks (the latter aren't yet wired in AgenC).`,
+        );
+      }
+
+      if (!worktreeWritesStayDeclared(config.cwd, mainRepoRoot)) {
+        return refuse(
+          "EnterWorktree",
+          `Refusing to create a worktree: git resolves the repository to ${mainRepoRoot}, not the repository holding ${startCwd} whose worktree locations were verified by the sandbox.`,
         );
       }
 
@@ -604,8 +672,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
 // ExitWorktree
 // ─────────────────────────────────────────────────────────────────────
 
-export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
-  void _config;
+export function createExitWorktreeTool(config: WorktreeToolConfig): Tool {
   return {
     name: "ExitWorktree",
     description: EXIT_WORKTREE_PROMPT,
@@ -617,6 +684,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
       hiddenByDefault: false,
       mutating: true,
       deferred: true,
+      fixedWriteTargets: () => worktreeToolWriteTargets(config.cwd),
     },
     requiresApproval: true,
     recoveryCategory: "side-effecting",
@@ -662,7 +730,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         // Verbatim no-op message from AgenC
         // `ExitWorktreeTool.validateInput:182-188`.
         return errorResult(
-          "No-op: there is no active EnterWorktree session to exit. This tool only operates on worktrees created by EnterWorktree in the current session — it will not touch worktrees created manually or in a previous session. No filesystem changes were made.",
+          "No-op: there is no active EnterWorktree session to exit. This tool only operates on worktrees created by EnterWorktree in the current session: it will not touch worktrees created manually or in a previous session. No filesystem changes were made.",
         );
       }
 
@@ -674,7 +742,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         );
         if (summary === null) {
           return errorResult(
-            `Could not verify worktree state at ${session.worktreePath}. Refusing to remove without explicit confirmation. Re-invoke with discard_changes: true to proceed — or use action: "keep" to preserve the worktree.`,
+            `Could not verify worktree state at ${session.worktreePath}. Refusing to remove without explicit confirmation. Re-invoke with discard_changes: true to proceed, or use action: "keep" to preserve the worktree.`,
           );
         }
         const { changedFiles, commits } = summary;
@@ -691,7 +759,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
             );
           }
           return errorResult(
-            `Worktree has ${parts.join(" and ")}. Removing will discard this work permanently. Confirm with the user, then re-invoke with discard_changes: true — or use action: "keep" to preserve the worktree.`,
+            `Worktree has ${parts.join(" and ")}. Removing will discard this work permanently. Confirm with the user, then re-invoke with discard_changes: true, or use action: "keep" to preserve the worktree.`,
           );
         }
       }
@@ -725,6 +793,12 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
       }
 
       // action === "remove"
+      if (!worktreeWritesStayDeclared(config.cwd, session.mainRepoRoot)) {
+        return refuse(
+          "ExitWorktree",
+          `Refusing to remove ${session.worktreePath}: its repository ${session.mainRepoRoot} is not the one holding ${config.cwd} whose worktree locations were verified by the sandbox. Use action: "keep" instead.`,
+        );
+      }
       const remove = await runWorktreeGit(
         rawArgs,
         [

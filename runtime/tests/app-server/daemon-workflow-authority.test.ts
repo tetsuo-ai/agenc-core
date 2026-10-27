@@ -48,6 +48,7 @@ function recoveredRun(
       cwd: "/tmp/agenc-recovered-project",
       rolloutPath: "/tmp/agenc-recovered-project/rollout.jsonl",
       lifecycleState: "suspended",
+      prepareCwd: vi.fn(async () => ({ fd: 42, identity: { dev: "1", ino: "2" } })),
       close: vi.fn(),
     } as RecoveredAgentRun["resumeSource"],
   } as RecoveredAgentRun;

@@ -4,6 +4,7 @@ import type {
   SlashCommandResult,
 } from "./types.js";
 import { parseRemoteSlashArgs, runRemoteSlash, startRemoteOn } from "../bin/remote-cli.js";
+import { getCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { remoteAuthContextFromCommandContext } from "./config-context.js";
 
 /**
@@ -13,6 +14,9 @@ import { remoteAuthContextFromCommandContext } from "./config-context.js";
  */
 export const remoteCommand: SlashCommand = {
   name: "remote",
+  get isHidden() {
+    return getCanonicalSettingsAuthority()?.current().remote_control?.enabled !== true;
+  },
   description: "Link this computer to the AgenC phone app",
   immediate: true,
   supportsNonInteractive: true,

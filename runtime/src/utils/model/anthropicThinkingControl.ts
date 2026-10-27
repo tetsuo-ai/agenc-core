@@ -46,7 +46,8 @@ export function isHaiku55(model: string): boolean {
 }
 
 function familySpelling(model: string): string {
-  // Bedrock inference profiles brand the segment "anthropic.agenc-<model>".
+  // Older AgenC builds wrote Bedrock ids as "anthropic.agenc-<model>"; AWS
+  // spells the segment "anthropic.claude-<model>". Read both.
   return model.toLowerCase().replaceAll("anthropic.agenc-", "anthropic.claude-");
 }
 

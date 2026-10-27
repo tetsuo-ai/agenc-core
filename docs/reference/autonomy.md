@@ -1,7 +1,7 @@
 # Autonomy reference
 
 Operator and developer guide for **cost-bounded autonomous surfaces** in
-AgenC **0.18.0**: daemon-owned execution admission, heartbeat, cron delivery,
+AgenC **0.19.19**: daemon-owned execution admission, heartbeat, cron delivery,
 and hooks HTTP.
 
 Design background: [`../design/execution-admission-kernel.md`](../design/execution-admission-kernel.md).
@@ -35,6 +35,7 @@ sanitized/framed as untrusted content before they reach the model.
 | Hooks HTTP | `runtime/src/gateway/hooks.ts` | daemon session model/tool boundaries; HTTP **429** on denial |
 | Interactive TUI / print | `session/` turn loop | model/tool boundaries; windows only with `enforce_interactive` |
 | Background agents | `app-server/background-agent-runner.ts` | unattended policy; `[agent.budget]` is enforced only by the shared admission kernel |
+| Scheduled routines | `runtime/src/routines/` | unattended; a permission-blocked run fails with a fixed mode-specific `run.error` ([agents.md](agents.md#permission-blocked-explanation)) |
 
 Defaults: **budget disabled**, **heartbeat disabled**. Enabling either is an
 explicit operator action.
@@ -465,4 +466,5 @@ Identifier fields (`name` / `agent` / `sessionKey`) must match
 | Session routing | `runtime/src/gateway/session-router.ts` |
 | Config schema `[budget]` / `[heartbeat]` | `runtime/src/config/schema.ts` |
 | Background admission policy | `runtime/src/app-server/background-agent-runner.ts`, `runtime/src/bin/bootstrap.ts` |
+| Scheduled routines | `runtime/src/routines/` (permission-blocked `run.error`: [agents.md](agents.md#permission-blocked-explanation)) |
 | Lifecycle hooks (PreToolUse etc.) | `runtime/src/hooks/` (session hooks; distinct from gateway Hooks HTTP) |

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import type { LLMMessage, LLMTool } from "../types.js";
+import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 import {
+  advertisedResponsesToolNames,
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
 } from "./responses-openai.js";
@@ -69,7 +71,7 @@ describe("buildOpenAIResponsesRequest", () => {
       const request = build(model);
       expect(request).not.toHaveProperty("text.verbosity");
       expect(request.instructions).toBe("STATIC_HEAD");
-      expect((request.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+      expect((request.input as Array<Record<string, unknown>>)[0]).toMatchObject({
         role: "system", content: [{ text: expect.stringContaining("# Response Detail") }],
       });
       expect(request.max_output_tokens).toBe(4096);
@@ -89,7 +91,8 @@ describe("buildOpenAIResponsesRequest", () => {
       options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
         reasoningEffort: "high", maxOutputTokens: 4096 },
     }));
-    expect(build(false)).toBe('{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"system","content":[{"type":"input_text","text":"DYNAMIC_TAIL"}]}],"stream":false,"store":false,"instructions":"STATIC_HEAD","max_output_tokens":4096,"reasoning":{"effort":"high"}}');
+    // The session tail leads the direct input (append-only requests).
+    expect(build(false)).toBe('{"model":"gpt-5","input":[{"type":"message","role":"system","content":[{"type":"input_text","text":"DYNAMIC_TAIL"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":false,"store":false,"instructions":"STATIC_HEAD","max_output_tokens":4096,"reasoning":{"effort":"high"}}');
     expect(build(true)).toBe('{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":false,"store":false,"instructions":"STATIC_HEAD\\n\\nDYNAMIC_TAIL","include":["reasoning.encrypted_content"],"reasoning":{"effort":"high"}}');
   });
   test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
@@ -281,7 +284,6 @@ describe("buildOpenAIResponsesRequest", () => {
       },
       {
         type: "function_call",
-        id: "fc_tool-1",
         call_id: "tool-1",
         name: "shell",
         arguments: "{\"cmd\":\"pwd\"}",
@@ -291,6 +293,104 @@ describe("buildOpenAIResponsesRequest", () => {
         call_id: "tool-1",
         output: "ok",
       },
+    ]);
+  });
+
+  test.each([
+    ["platform API", false],
+    ["ChatGPT backend", true],
+  ])("sends history function calls with the item id the provider issued or none on the %s", (_label, chatgptBackend) => {
+    const issuedId = "fc_0a1b2c3d4e5f6071016acbcc22e5e8819192aa7ff9b45985e6";
+    const issued = new Map([["call_seen", issuedId]]);
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-6-luna",
+      messages: [
+        { role: "user", content: "inspect" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "call_seen", name: "shell", arguments: "{\"cmd\":\"ls\"}" },
+            { id: "call_unseen", name: "shell", arguments: "{\"cmd\":\"pwd\"}" },
+          ],
+        },
+        { role: "tool", toolCallId: "call_seen", toolName: "shell", content: "a" },
+        { role: "tool", toolCallId: "call_unseen", toolName: "shell", content: "b" },
+      ],
+      tools: TEST_TOOLS,
+      chatgptBackend,
+      functionCallItemId: (callId) => issued.get(callId),
+    });
+
+    expect(request.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "inspect" }] },
+      { type: "function_call", id: issuedId, call_id: "call_seen", name: "shell", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", call_id: "call_unseen", name: "shell", arguments: "{\"cmd\":\"pwd\"}" },
+      { type: "function_call_output", call_id: "call_seen", output: "a" },
+      { type: "function_call_output", call_id: "call_unseen", output: "b" },
+    ]);
+    // The serialized wire names no item derived from a call id.
+    const wire = JSON.stringify(request);
+    expect(wire).not.toContain("\"fc_seen\"");
+    expect(wire).not.toContain("\"fc_unseen\"");
+  });
+
+  test.each(["", 1, null] as const)("omits an item id when the lookup returns %j", (issued) => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "run" },
+        { role: "assistant", content: "", toolCalls: [{ id: "call_seen", name: "shell", arguments: "{}" }] },
+        { role: "tool", toolCallId: "call_seen", toolName: "shell", content: "ok" },
+      ],
+      tools: TEST_TOOLS,
+      functionCallItemId: () => issued as never,
+    });
+
+    expect(request.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "run" }] },
+      { type: "function_call", call_id: "call_seen", name: "shell", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_seen", output: "ok" },
+    ]);
+    expect(JSON.stringify(request)).not.toContain("\"fc_");
+  });
+
+  test("trims a history call token before looking up the issued item id", () => {
+    const issuedId = "fc_0a1b2c3d4e5f6071016acbcc22e5e8819192aa7ff9b45985e6";
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "run" },
+        { role: "assistant", content: "", toolCalls: [{ id: "  call_seen  ", name: "shell", arguments: "{}" }] },
+        { role: "tool", toolCallId: "  call_seen  ", toolName: "shell", content: "ok" },
+      ],
+      tools: TEST_TOOLS,
+      functionCallItemId: (callId) => callId === "call_seen" ? issuedId : undefined,
+    });
+
+    expect(request.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "run" }] },
+      { type: "function_call", id: issuedId, call_id: "call_seen", name: "shell", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_seen", output: "ok" },
+    ]);
+  });
+
+  test.each([false, true])("requires observed provenance for an item-id-shaped call token, observed=%s", (observed) => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "run" },
+        { role: "assistant", content: "", toolCalls: [{ id: "fc_only", name: "shell", arguments: "{}" }] },
+        { role: "tool", toolCallId: "fc_only", toolName: "shell", content: "ok" },
+      ],
+      tools: TEST_TOOLS,
+      functionCallItemId: (id) => observed && id === "fc_only" ? "fc_only" : undefined,
+    });
+
+    expect(request.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "run" }] },
+      { type: "function_call", ...(observed ? { id: "fc_only" } : {}), call_id: "call_only", name: "shell", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_only", output: "ok" },
     ]);
   });
 
@@ -628,7 +728,6 @@ describe("buildOpenAIResponsesRequest", () => {
       },
       {
         type: "function_call",
-        id: "fc_image",
         call_id: "call_image",
         name: "view_image",
         arguments: "{\"path\":\"/tmp/cat.png\"}",
@@ -672,6 +771,104 @@ describe("buildOpenAIResponsesRequest", () => {
       type: "function",
       name: tools[0]!.name,
     });
+  });
+
+  test("omits tools when an auto_only destination is asked not to call one", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "muse-wonder-1.0",
+      messages: [{ role: "user", content: "summarize" }],
+      tools: TEST_TOOLS,
+      toolChoicePolicy: "auto_only",
+      options: { toolChoice: "none" },
+    });
+    expect(request.tools).toBeUndefined();
+    expect(request.tool_choice).toBeUndefined();
+  });
+
+  test("keeps tools and sends auto when auto_only rewrites required or a named choice", () => {
+    for (const toolChoice of ["required", { type: "function", name: "shell" }] as const) {
+      const request = buildOpenAIResponsesRequest({
+        model: "muse-wonder-1.0",
+        messages: [{ role: "user", content: "go" }],
+        tools: TEST_TOOLS,
+        toolChoicePolicy: "auto_only",
+        options: { toolChoice },
+      });
+      expect(request.tool_choice).toBe("auto");
+      expect(request.tools).toEqual([
+        expect.objectContaining({ type: "function", name: "shell" }),
+      ]);
+    }
+  });
+
+  test("strips a reasoning effort the destination does not accept", () => {
+    const allowed = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+    const stripped = buildOpenAIResponsesRequest({
+      model: "muse-wonder-1.0",
+      messages: [{ role: "user", content: "think" }],
+      tools: [],
+      options: { reasoningEffort: "max" },
+      reasoningEffortAllowedValues: allowed,
+    });
+    expect(stripped.reasoning).toBeUndefined();
+
+    const kept = buildOpenAIResponsesRequest({
+      model: "muse-wonder-1.0",
+      messages: [{ role: "user", content: "think" }],
+      tools: [],
+      options: { reasoningEffort: "high" },
+      reasoningEffortAllowedValues: allowed,
+    });
+    expect(kept.reasoning).toEqual({ effort: "high" });
+
+    const unrestricted = buildOpenAIResponsesRequest({
+      model: "muse-wonder-1.0",
+      messages: [{ role: "user", content: "think" }],
+      tools: [],
+      options: { reasoningEffort: "max" },
+    });
+    expect(unrestricted.reasoning).toEqual({ effort: "max" });
+
+    const emptyAllowlist = buildOpenAIResponsesRequest({
+      model: "muse-wonder-1.0",
+      messages: [{ role: "user", content: "think" }],
+      tools: [],
+      options: { reasoningEffort: "high" },
+      reasoningEffortAllowedValues: new Set(),
+    });
+    expect(emptyAllowlist.reasoning).toBeUndefined();
+  });
+});
+
+describe("advertisedResponsesToolNames", () => {
+  const request = {
+    model: "muse-wonder-1.0",
+    messages: [] as LLMMessage[],
+    tools: TEST_TOOLS,
+  };
+
+  test("is empty only when auto_only omits tools for toolChoice none", () => {
+    expect(advertisedResponsesToolNames({
+      ...request,
+      toolChoicePolicy: "auto_only",
+      options: { toolChoice: "none" },
+    })).toEqual([]);
+    expect(advertisedResponsesToolNames({
+      ...request,
+      toolChoicePolicy: "auto_only",
+      options: { toolChoice: "auto" },
+    })).toEqual(["shell"]);
+    expect(advertisedResponsesToolNames({
+      ...request,
+      toolChoicePolicy: "auto_only",
+      options: { toolChoice: "required" },
+    })).toEqual(["shell"]);
+    // Without auto_only, none is a wire choice and the catalog stays advertised.
+    expect(advertisedResponsesToolNames({
+      ...request,
+      options: { toolChoice: "none" },
+    })).toEqual(["shell"]);
+    expect(advertisedResponsesToolNames(request)).toEqual(["shell"]);
   });
 });
 
@@ -784,6 +981,128 @@ describe("parseOpenAIResponsesResponse", () => {
     expect(response.toolCalls).toEqual([]);
     expect(response.incompleteToolCalls).toEqual(reason === "max_output_tokens"
       ? [{ id: "call_cut", name: "spawn_agent" }] : undefined);
+  });
+
+  test("does not resolve a hashed tool alias when auto_only omitted the catalog", () => {
+    const longToolName = `mcp.plugin-${"shared-prefix-".repeat(5)}.search`;
+    const wireName = encodeMcpToolNameForWire(longToolName);
+    expect(wireName).toMatch(/^toolh__/);
+    const omitted = {
+      model: "muse-wonder-1.0",
+      messages: [] as LLMMessage[],
+      tools: [
+        {
+          type: "function" as const,
+          function: {
+            name: longToolName,
+            description: "A long tool that was disabled for this request.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      toolChoicePolicy: "auto_only" as const,
+      options: { toolChoice: "none" as const },
+    };
+
+    expect(() =>
+      parseOpenAIResponsesResponse(
+        "muse-wonder-1.0",
+        {
+          status: "completed",
+          output: [
+            {
+              type: "function_call",
+              call_id: "call_unadvertised",
+              name: wireName,
+              arguments: "{}",
+            },
+          ],
+        },
+        omitted,
+      ),
+    ).toThrow(/unknown hashed tool name/i);
+
+    expect(() =>
+      parseOpenAIResponsesResponse(
+        "muse-wonder-1.0",
+        {
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+          output: [
+            {
+              type: "function_call",
+              call_id: "call_cut",
+              name: wireName,
+              arguments: '{"q":"',
+            },
+          ],
+        },
+        omitted,
+      ),
+    ).toThrow(/unknown hashed tool name/i);
+  });
+
+  test("maps a hashed alias only against the tools that request advertised", () => {
+    const longToolName = `mcp.plugin-${"shared-prefix-".repeat(5)}.search`;
+    const wireName = encodeMcpToolNameForWire(longToolName);
+    const response = parseOpenAIResponsesResponse(
+      "muse-wonder-1.0",
+      {
+        status: "completed",
+        output: [
+          {
+            type: "function_call",
+            call_id: "call_search",
+            name: wireName,
+            arguments: "{}",
+          },
+        ],
+      },
+      {
+        model: "muse-wonder-1.0",
+        messages: [],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: longToolName,
+              description: "Search.",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      },
+    );
+    expect(response.toolCalls).toEqual([
+      { id: "call_search", name: longToolName, arguments: "{}" },
+    ]);
+  });
+
+  test("keeps a plain wire name when auto_only omitted the catalog", () => {
+    const response = parseOpenAIResponsesResponse(
+      "muse-wonder-1.0",
+      {
+        status: "completed",
+        output: [
+          {
+            type: "function_call",
+            call_id: "call_plain",
+            name: "shell",
+            arguments: "{}",
+          },
+        ],
+      },
+      {
+        model: "muse-wonder-1.0",
+        messages: [],
+        tools: TEST_TOOLS,
+        toolChoicePolicy: "auto_only",
+        options: { toolChoice: "none" },
+      },
+    );
+    expect(response.toolCalls).toEqual([
+      { id: "call_plain", name: "shell", arguments: "{}" },
+    ]);
   });
 
   test("records responses endpoint markers in request metrics", () => {

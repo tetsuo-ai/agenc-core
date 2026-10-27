@@ -56,6 +56,31 @@ describe("compaction summary reasoning effort", () => {
     harness = undefined;
   });
 
+  it("bounds automatic Flash summaries without changing the MAX agent", async () => {
+    const source = createSource(40);
+    harness = createCompactionTransactionHarness(source, {
+      sessionId: SESSION_ID,
+      contextWindowTokens: 65_536,
+      maxOutputTokens: 32_768,
+      compactionMode: "automatic",
+    });
+    await shapeSession(harness, {
+      selection: { provider: "deepseek", model: "deepseek-flash" },
+      reasoningEffort: "max",
+      supportedReasoningLevels: ["low", "high", "max"],
+    });
+
+    const result = await compactOutsideTurn(source, harness);
+
+    expect(result.transaction).toBeDefined();
+    expect(sentEfforts(harness)).toEqual(sentEfforts(harness).map(() => "low"));
+    for (const [, options] of harness.provider.chat.mock.calls as unknown as [unknown, LLMChatOptions][]) {
+      expect(options.maxOutputTokens).toBe(8_192);
+    }
+    expect(mainLoopEffort(harness)).toBe("max");
+    expect(harness.context.options?.maxOutputTokens).toBe(32_768);
+  });
+
   it("sends the session's effort on every summary call", async () => {
     const source = createSource(40);
     harness = createCompactionTransactionHarness(source, {

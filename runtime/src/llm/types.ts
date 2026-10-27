@@ -123,6 +123,8 @@ export interface LLMMessage {
     /** Durable response-item identity retained across compaction replay. */
     readonly responseItemId?: string;
     readonly mergeBoundary?: "user_context";
+    /** Exact relevant-memory versions already present in a retained attachment. */
+    readonly relevantMemoryFingerprints?: readonly string[];
     readonly permissionModeReminder?: "plan" | "plan_exit" | "auto" | "auto_exit";
     readonly excludeFromDurableHistory?: true;
     /**
@@ -158,6 +160,8 @@ export interface LLMMessage {
      * preparation must remove it after local history transformations finish.
      */
     readonly toolResultIntegrity?: ToolResultIntegrity;
+    /** Host-reported tool failure, retained for restored transcript rendering. */
+    readonly toolResultIsError?: true;
     /** Durable authority/channel identity for versioned agent invocation input. */
     readonly agentInvocation?: AgentInvocationChannelMetadata;
     /** Commit-authenticated boundary/summary identity; never accepted from wire input. */
@@ -287,6 +291,8 @@ export type LLMUsageProvenance = "provider" | "synthetic";
 
 export interface LLMUsage {
   promptTokens: number;
+  /** Anthropic reports cache reads and writes outside promptTokens. Other wires include them. */
+  readonly cacheInputExcludedFromPrompt?: true;
   completionTokens: number;
   totalTokens: number;
   /**
@@ -328,6 +334,12 @@ export interface LLMUsage {
    * speed that was requested.
    */
   readonly speed?: "fast" | "standard";
+  /**
+   * What the provider says it charged for this call, in USD (OpenRouter's
+   * `usage.cost`). Cost accounting uses it instead of a rate card: routing
+   * can serve the call from an endpoint whose price is not the catalog's.
+   */
+  readonly providerCostUsd?: number;
 }
 
 /**
@@ -430,6 +442,13 @@ export interface LLMProviderExecutionProfile {
   readonly usageReporting: "authoritative" | "unavailable";
   /** Whether request-scoped output-token limits reach the provider wire. */
   readonly supportsMaxOutputTokens: boolean;
+  /**
+   * The model's documented maximum output, declared only by a provider that
+   * cannot take a request-scoped ceiling but whose model cannot answer past
+   * this bound (the ChatGPT sign-in backend). Hard-budget admission reserves
+   * it in place of a wire ceiling.
+   */
+  readonly modelMaximumOutputTokens?: number;
   /**
    * Extra context this provider reserves beyond prompt and output before it
    * will accept a request. Preflight and admission must reserve the same room
@@ -751,6 +770,16 @@ export interface LLMChatOptions {
    * conversation state is implied.
    */
   readonly promptCacheKey?: string;
+  /** Native Kimi K3 implicit cache TTL. Hits renew the original entry's TTL. */
+  readonly promptCacheTtl?: "5m" | "1h";
+  /**
+   * Stable prompt-cache scope of the local user (the same for every session
+   * of one AgenC home). Wires whose provider keys the cache by scope rather
+   * than by conversation (OpenAI GPT-5.6 and later on the platform API) send
+   * it instead of `promptCacheKey`, so a new session reads the prefix the
+   * previous one wrote. Pure optimization, like `promptCacheKey`.
+   */
+  readonly promptCacheScopeKey?: string;
   /**
    * For fire-and-forget fork turns, avoid writing the fork's tail into
    * provider prompt cache while preserving cache reads from the shared prefix.
@@ -774,6 +803,8 @@ export interface LLMChatOptions {
   readonly disableThinkingForRecovery?: true;
   /** Provider-facing reasoning-summary hint for APIs that expose it. */
   readonly reasoningSummary?: LLMReasoningSummary;
+  /** The summary hint came from model metadata, rather than an explicit user choice. */
+  readonly reasoningSummaryIsDefault?: true;
   /** Provider-facing output verbosity hint for APIs that expose it. */
   readonly modelVerbosity?: LLMModelVerbosity;
   /** Effective session response detail, used only for prompt fallback routes. */

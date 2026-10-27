@@ -2,8 +2,8 @@
  * The closest available tool for an unknown tool name.
  *
  * Models trained on other harnesses call tools by those harnesses' names
- * (`Read`, `edit_file`, `bash`). Core never aliases a name: the call still
- * fails with its terminal error. The error names the tool the model most
+ * (`Read`, `edit_file`, `bash`). Names outside the exact compatibility table
+ * fail with their terminal error. The error names the tool the model most
  * likely meant, so it can correct in one step. A suggestion needs a clear
  * match and is always one of the names the caller says are available.
  *

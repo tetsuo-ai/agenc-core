@@ -21,6 +21,7 @@ import {
 import { WorkspaceMutationError } from "./mutation-error.js";
 import { windowsCommandLineUtf16CodeUnits } from "../utils/supervisedProcess.js";
 import { issueBoundReadOnlyCwdCapability, type BoundReadOnlyCwdCapability } from "../sandbox/bound-readonly-cwd.js";
+import { boundReadOnlyBwrapFailedToStart, prepareBoundReadOnlyBwrapLaunch, type BoundReadOnlyBwrapLaunch } from "../sandbox/linux-launcher/bound-bwrap.js";
 
 interface WorkspaceFileBackup {
   readonly existed: boolean;
@@ -646,14 +647,16 @@ export function __workspaceBoundHelperLaunchPlanForTests(input: {
   readonly platform: NodeJS.Platform;
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly useNoFollow?: boolean;
-}): BoundHelperLaunchPlan {
-  return createBoundHelperLaunchPlan({
+  readonly workerSource?: string;
+}): BoundHelperLaunchPlan & { readonly directorySource: Buffer; readonly workerSource: Buffer } {
+  const directorySource = describeBoundSource(BOUND_DIRECTORY_HELPER_SOURCE);
+  const workerSource = describeBoundSource(input.workerSource ?? BOUND_READ_WORKER_SOURCE);
+  return { ...createBoundHelperLaunchPlan({
     ...input,
     processEnvironment: input.processEnvironment ?? {},
     useNoFollow: input.useNoFollow ?? true,
-    directorySource: describeBoundSource(BOUND_DIRECTORY_HELPER_SOURCE),
-    workerSource: describeBoundSource(BOUND_READ_WORKER_SOURCE),
-  });
+    directorySource, workerSource,
+  }), directorySource: directorySource.bytes, workerSource: workerSource.bytes };
 }
 
 export function __workspaceBoundSourceBootstrapForTests(source: string): {
@@ -1335,61 +1338,8 @@ const createStructuredRipgrepLimiter = (value) => {
 };
 `;
 
-const BOUND_READ_WORKER_SOURCE = String.raw`
-import { spawn } from "node:child_process";
-import { constants } from "node:fs";
-import { lstat, open, stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
-
-const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-const identity = (value) => ({
-  dev: value.dev.toString(10),
-  ino: value.ino.toString(10),
-  mode: value.mode.toString(10),
-});
-const fileStats = (value) => ({
-  ...identity(value),
-  size: Number(value.size),
-  mtimeMs: Number(value.mtimeMs),
-  ctimeMs: Number(value.ctimeMs),
-});
-const sameIdentity = (left, right) =>
-  left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
-const validSegment = (value) =>
-  typeof value === "string" &&
-  value.length > 0 &&
-  value !== "." &&
-  value !== ".." &&
-  !value.includes("/") &&
-  (process.platform !== "win32" || !value.includes("\\"));
-const noFollow =
-  commandLineNoFollowEnabled() && typeof constants.O_NOFOLLOW === "number"
-    ? constants.O_NOFOLLOW
-    : 0;
-function commandLineNoFollowEnabled() {
-  return process.env.AGENC_BOUND_READ_USE_NOFOLLOW !== "0";
-}
-delete process.env.AGENC_BOUND_READ_USE_NOFOLLOW;
-let activeChild = null;
-const stopActiveChildAndExit = () => {
-  if (activeChild === null) process.exit(143);
-  const child = activeChild;
-  child.once("close", () => process.exit(143));
-  child.kill();
-  const forced = setTimeout(() => child.kill("SIGKILL"), 500);
-  forced.unref();
-};
-process.once("SIGTERM", stopActiveChildAndExit);
-process.once("SIGINT", stopActiveChildAndExit);
-
-${STRUCTURED_RIPGREP_LIMITER_SOURCE}
-
-const readCommand = async () => {
-  let raw = "";
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) raw += chunk;
-  return JSON.parse(raw);
-};
+// Kept identical in the isolated traversal worker and the held-cwd basename path.
+const BOUND_READ_OPEN_SOURCE = String.raw`
 const openVerifiedBasename = async (command) => {
   if (
     !Array.isArray(command.parentSegments) ||
@@ -1463,6 +1413,65 @@ const openVerifiedBasename = async (command) => {
     throw error;
   }
 };
+`;
+
+const BOUND_READ_WORKER_SOURCE = String.raw`
+import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import { lstat, open, stat } from "node:fs/promises";
+import { createInterface } from "node:readline";
+
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const identity = (value) => ({
+  dev: value.dev.toString(10),
+  ino: value.ino.toString(10),
+  mode: value.mode.toString(10),
+});
+const fileStats = (value) => ({
+  ...identity(value),
+  size: Number(value.size),
+  mtimeMs: Number(value.mtimeMs),
+  ctimeMs: Number(value.ctimeMs),
+});
+const sameIdentity = (left, right) =>
+  left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+const validSegment = (value) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value !== "." &&
+  value !== ".." &&
+  !value.includes("/") &&
+  (process.platform !== "win32" || !value.includes("\\"));
+const noFollow =
+  commandLineNoFollowEnabled() && typeof constants.O_NOFOLLOW === "number"
+    ? constants.O_NOFOLLOW
+    : 0;
+function commandLineNoFollowEnabled() {
+  return process.env.AGENC_BOUND_READ_USE_NOFOLLOW !== "0";
+}
+delete process.env.AGENC_BOUND_READ_USE_NOFOLLOW;
+let activeChild = null;
+const stopActiveChildAndExit = () => {
+  if (activeChild === null) process.exit(143);
+  const child = activeChild;
+  child.once("close", () => process.exit(143));
+  child.kill();
+  const forced = setTimeout(() => child.kill("SIGKILL"), 500);
+  forced.unref();
+};
+process.once("SIGTERM", stopActiveChildAndExit);
+process.once("SIGINT", stopActiveChildAndExit);
+
+${STRUCTURED_RIPGREP_LIMITER_SOURCE}
+
+const readCommand = async () => {
+  let raw = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) raw += chunk;
+  return JSON.parse(raw);
+};
+${BOUND_READ_OPEN_SOURCE}
+
 const runPinnedRipgrep = async (command, inputHandle) => {
   if (
     typeof command.program !== "string" ||
@@ -1788,7 +1797,7 @@ try {
 const BOUND_DIRECTORY_HELPER_SOURCE = String.raw`
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { constants, createReadStream, lstatSync } from "node:fs";
+import { closeSync, constants, createReadStream, fstatSync, lstatSync, openSync } from "node:fs";
 import {
   link,
   lstat,
@@ -1943,6 +1952,10 @@ let targetParentBound = false;
 let effectStarted = false;
 let boundDirectoryIdentity;
 let boundReadDirectoryIdentity;
+// Where this helper started and proved its identity. A reused read helper
+// binds every new directory from here, never from the previous one.
+let anchorPath;
+let anchorReadIdentity;
 let activeChild = null;
 const announceEffect = () => {
   if (effectStarted) return;
@@ -1969,6 +1982,190 @@ const stopActiveChildAndExit = () => {
 };
 process.once("SIGTERM", stopActiveChildAndExit);
 process.once("SIGINT", stopActiveChildAndExit);
+// Basename reads never change cwd, so they can use the authenticated
+// directory helper itself. Descendant traversal still gets an isolated worker.
+const openRootReadFile = (() => {
+  const identity = preciseIdentity;
+  const noFollow = boundReadUseNoFollow && typeof constants.O_NOFOLLOW === "number"
+    ? constants.O_NOFOLLOW : 0;
+  ${BOUND_READ_OPEN_SOURCE}
+  return openVerifiedBasename;
+})();
+// On Linux a descendant read needs no isolated worker either: the walk opens
+// each component through the previous directory's descriptor
+// (/proc/self/fd/N/name) with O_NOFOLLOW and O_DIRECTORY, so no component can
+// be a symbolic link or a non-directory and a renamed or exchanged ancestor
+// cannot redirect it, and this helper's own cwd never changes. The leaf gets
+// the same before, opened and after identity checks as a basename read.
+const procFdPath = (descriptor, name) => "/proc/self/fd/" + descriptor + "/" + name;
+let procFdWalkAvailable;
+const descendantReadsInHelper = async () => {
+  if (procFdWalkAvailable !== undefined) return procFdWalkAvailable;
+  procFdWalkAvailable = false;
+  if (
+    process.platform !== "linux" ||
+    !boundReadUseNoFollow ||
+    typeof constants.O_NOFOLLOW !== "number" ||
+    typeof constants.O_DIRECTORY !== "number"
+  ) {
+    return false;
+  }
+  let held;
+  try {
+    held = await open(".", constants.O_RDONLY | constants.O_DIRECTORY);
+    const direct = preciseIdentity(await held.stat({ bigint: true }));
+    const viaProc = preciseIdentity(
+      await stat("/proc/self/fd/" + held.fd, { bigint: true }),
+    );
+    procFdWalkAvailable = sameIdentity(direct, viaProc);
+  } catch {
+    procFdWalkAvailable = false;
+  } finally {
+    await held?.close();
+  }
+  return procFdWalkAvailable;
+};
+const notRealDirectory = (error) => {
+  if (error?.code === "ENOTDIR" || error?.code === "ELOOP") {
+    return Object.assign(new Error("relative read parent is not a real directory"), {
+      code: "PATH_IDENTITY_CHANGED",
+    });
+  }
+  return error;
+};
+const openVerifiedDescendant = async (command) => {
+  if (
+    !Array.isArray(command.parentSegments) ||
+    !command.parentSegments.every(validSegment) ||
+    !validSegment(command.name)
+  ) {
+    throw Object.assign(new Error("invalid capability-relative path"), {
+      code: "INVALID_PATH",
+    });
+  }
+  const root = await open(".", constants.O_RDONLY | constants.O_DIRECTORY);
+  let parent = root;
+  try {
+    if (
+      !sameIdentity(
+        preciseIdentity(await root.stat({ bigint: true })),
+        command.rootIdentity,
+      )
+    ) {
+      throw Object.assign(new Error("bound root identity changed"), {
+        code: "PATH_IDENTITY_CHANGED",
+      });
+    }
+    for (const segment of command.parentSegments) {
+      let next;
+      try {
+        next = await open(
+          procFdPath(parent.fd, segment),
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+      } catch (error) {
+        throw notRealDirectory(error);
+      }
+      if (parent !== root) await parent.close();
+      parent = next;
+    }
+    const leafPath = procFdPath(parent.fd, command.name);
+    const leafBefore = await lstat(leafPath, { bigint: true });
+    if (!leafBefore.isFile() || leafBefore.isSymbolicLink()) {
+      throw Object.assign(new Error("read target is not a real regular file"), {
+        code: "PATH_IDENTITY_CHANGED",
+      });
+    }
+    const beforeIdentity = preciseIdentity(leafBefore);
+    const handle = await open(
+      leafPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const opened = await handle.stat({ bigint: true });
+      const expectedIdentity = command.expectedIdentity ?? null;
+      if (
+        !opened.isFile() ||
+        !sameIdentity(preciseIdentity(opened), beforeIdentity) ||
+        (expectedIdentity !== null &&
+          !sameIdentity(preciseIdentity(opened), expectedIdentity))
+      ) {
+        throw Object.assign(new Error("read target identity changed"), {
+          code: "PATH_IDENTITY_CHANGED",
+        });
+      }
+      const leaf = await lstat(leafPath, { bigint: true });
+      if (
+        leaf.isSymbolicLink() ||
+        !sameIdentity(preciseIdentity(leaf), preciseIdentity(opened))
+      ) {
+        throw Object.assign(new Error("read target identity changed"), {
+          code: "PATH_IDENTITY_CHANGED",
+        });
+      }
+      return { handle, stats: opened };
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  } finally {
+    if (parent !== root) await parent.close();
+    await root.close();
+  }
+};
+const runRootRead = (command) =>
+  runVerifiedRead(command, () =>
+    openRootReadFile({
+      ...command, parentSegments: [], name: command.relativeSegments[0],
+      rootIdentity: boundReadDirectoryIdentity,
+    }),
+  );
+const runDescendantRead = (command) =>
+  runVerifiedRead(command, () =>
+    openVerifiedDescendant({
+      ...command,
+      parentSegments: command.relativeSegments.slice(0, -1),
+      name: command.relativeSegments[command.relativeSegments.length - 1],
+      rootIdentity: boundReadDirectoryIdentity,
+    }),
+  );
+const runVerifiedRead = async (command, openTarget) => {
+  let opened;
+  try {
+    opened = await openTarget();
+    const stats = {
+      ...preciseIdentity(opened.stats), size: Number(opened.stats.size),
+      mtimeMs: Number(opened.stats.mtimeMs), ctimeMs: Number(opened.stats.ctimeMs),
+    };
+    if (command.operation === "validate_regular_file") {
+      return { type: "result", ok: true, stats };
+    }
+    const maxBytes = Number(command.maxBytes);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw Object.assign(new Error("invalid read byte limit"), { code: "INVALID_COMMAND" });
+    }
+    if (opened.stats.size > maxBytes && command.truncate !== true) {
+      return { type: "result", ok: false, code: "FILE_TOO_LARGE",
+        message: "bound file exceeds the requested byte limit", stats };
+    }
+    let content;
+    if (command.truncate === true && opened.stats.size > maxBytes) {
+      content = Buffer.alloc(maxBytes);
+      const read = await opened.handle.read(content, 0, content.length, 0);
+      content = content.subarray(0, read.bytesRead);
+    } else {
+      content = await opened.handle.readFile();
+    }
+    return { type: "result", ok: true, stats, contentBase64: content.toString("base64") };
+  } catch (error) {
+    if (command.allowMissing === true && error?.code === "ENOENT") {
+      return { type: "result", ok: true, missing: true };
+    }
+    throw error;
+  } finally {
+    await opened?.handle.close();
+  }
+};
 const runBoundReadWorker = async (command) => {
   if (boundReadWorkerSource.length === 0) {
     throw Object.assign(new Error("bound read worker source is unavailable"), {
@@ -2112,6 +2309,8 @@ try {
   boundReadDirectoryIdentity = preciseIdentity(
     await stat(".", { bigint: true }),
   );
+  anchorPath = process.cwd();
+  anchorReadIdentity = boundReadDirectoryIdentity;
   send({
     type: "ready",
     identity: boundDirectoryIdentity,
@@ -2134,6 +2333,23 @@ try {
     effectStarted = false;
     try {
       if (
+        command.operation === "bind_read_directory" &&
+        command.fromAnchor === true
+      ) {
+        // A reused read helper binds again from its authenticated anchor:
+        // return there by its absolute path and prove it is still the same
+        // directory before walking to the new target.
+        process.chdir(anchorPath);
+        const anchored = preciseIdentity(await stat(".", { bigint: true }));
+        if (!sameIdentity(anchored, anchorReadIdentity)) {
+          throw Object.assign(new Error("helper anchor identity changed"), {
+            code: "PATH_IDENTITY_CHANGED",
+          });
+        }
+        targetParentBound = false;
+        boundDirectoryIdentity = identity(await stat("."));
+        boundReadDirectoryIdentity = anchored;
+      } else if (
         !sameIdentity(identity(await stat(".")), boundDirectoryIdentity)
       ) {
         throw Object.assign(
@@ -2254,6 +2470,17 @@ try {
           });
         }
         const segments = command.relativeSegments;
+        if (segments.length === 1 && command.operation !== "read_text_window") {
+          send(await runRootRead(command));
+          continue;
+        }
+        if (
+          command.operation !== "read_text_window" &&
+          (await descendantReadsInHelper())
+        ) {
+          send(await runDescendantRead(command));
+          continue;
+        }
         send(
           await runBoundReadWorker({
             ...command,
@@ -2347,6 +2574,41 @@ try {
           )
             ? command.env
             : {};
+        // A planned bubblewrap launch replaces the sandbox launcher process:
+        // the daemon computed it from the same launcher arguments, and this
+        // helper supplies the held directory as its bound cwd descriptor.
+        const directBwrap =
+          command.directBwrap === undefined ? null : command.directBwrap;
+        if (
+          directBwrap !== null &&
+          (typeof directBwrap !== "object" ||
+            process.platform !== "linux" ||
+            typeof directBwrap.program !== "string" ||
+            !isAbsolute(directBwrap.program) ||
+            directBwrap.program.includes("\0") ||
+            !Array.isArray(directBwrap.args) ||
+            !directBwrap.args.every(
+              (value) => typeof value === "string" && !value.includes("\0"),
+            ) ||
+            directBwrap.env === null ||
+            typeof directBwrap.env !== "object" ||
+            Array.isArray(directBwrap.env) ||
+            !Object.values(directBwrap.env).every(
+              (value) => typeof value === "string",
+            ) ||
+            typeof directBwrap.seccompBase64 !== "string" ||
+            directBwrap.seccompFd !== 3 ||
+            directBwrap.cwdFd !== 4 ||
+            directBwrap.programIdentity === null ||
+            typeof directBwrap.programIdentity !== "object" ||
+            (directBwrap.cwdIdentity !== undefined &&
+              (directBwrap.cwdIdentity === null ||
+                typeof directBwrap.cwdIdentity !== "object")))
+        ) {
+          throw Object.assign(new Error("invalid bound sandbox launch"), {
+            code: "INVALID_COMMAND",
+          });
+        }
         const stdoutParts = [];
         const stderrParts = [];
         let stdoutBytes = 0;
@@ -2372,16 +2634,66 @@ try {
           if (stdoutSpoolPath !== null) {
             spoolHandle = await open(stdoutSpoolPath, "wx", 0o600);
           }
-          const child = spawn(command.program, command.args, {
-            cwd: ".",
-            env: commandEnv,
-            ...(command.argv0 === undefined
-              ? {}
-              : { argv0: command.argv0 }),
-            windowsHide: true,
-            stdio: ["pipe", "pipe", "pipe"],
-          });
+          let heldCwd;
+          if (directBwrap !== null) {
+            const launcher = await stat(directBwrap.program, { bigint: true });
+            const expected = directBwrap.programIdentity;
+            if (
+              !launcher.isFile() ||
+              String(launcher.dev) !== expected.dev ||
+              String(launcher.ino) !== expected.ino ||
+              String(launcher.size) !== expected.size ||
+              String(launcher.mode) !== expected.mode ||
+              String(launcher.mtimeNs) !== expected.mtimeNs
+            ) {
+              throw Object.assign(new Error("bound sandbox launcher changed"), {
+                code: "INVALID_COMMAND",
+              });
+            }
+            heldCwd = openSync(".", constants.O_RDONLY | constants.O_DIRECTORY);
+            const held = fstatSync(heldCwd, { bigint: true });
+            if (
+              !held.isDirectory() ||
+              !sameIdentity(preciseIdentity(held), boundReadDirectoryIdentity) ||
+              (directBwrap.cwdIdentity !== undefined &&
+                !sameIdentity(preciseIdentity(held), directBwrap.cwdIdentity))
+            ) {
+              closeSync(heldCwd);
+              throw Object.assign(
+                new Error("bound working-directory identity changed"),
+                { code: "PATH_IDENTITY_CHANGED" },
+              );
+            }
+          }
+          let child;
+          try {
+            child = spawn(
+              directBwrap === null ? command.program : directBwrap.program,
+              directBwrap === null ? command.args : directBwrap.args,
+              {
+                cwd: ".",
+                env: directBwrap === null ? commandEnv : directBwrap.env,
+                ...(directBwrap !== null || command.argv0 === undefined
+                  ? {}
+                  : { argv0: command.argv0 }),
+                windowsHide: true,
+                // Descriptors 3 and 4 are the seccomp program and the held
+                // directory, as bubblewrap's arguments name them.
+                stdio:
+                  directBwrap === null
+                    ? ["pipe", "pipe", "pipe"]
+                    : ["pipe", "pipe", "pipe", "pipe", heldCwd],
+              },
+            );
+          } finally {
+            if (heldCwd !== undefined) closeSync(heldCwd);
+          }
           activeChild = child;
+          if (directBwrap !== null) {
+            const seccompSource = child.stdio?.[3];
+            seccompSource?.on("error", () => {});
+            seccompSource?.end(Buffer.from(directBwrap.seccompBase64, "base64"));
+          }
           // A failed spawn reports on the next tick, and EMFILE or ENFILE
           // also leave its stdio undefined: listen before touching it.
           child.once("error", (error) => {
@@ -2979,6 +3291,8 @@ class BoundDirectoryHelper {
   async bindReadDirectory(input: {
     readonly directoryPath: string;
     readonly expectedIdentity: BoundReadIdentity;
+    /** A reused helper walks again from its anchor, not from its last directory. */
+    readonly fromAnchor?: boolean;
   }): Promise<void> {
     const relativeDirectory = relative(this.#anchorPath, input.directoryPath);
     const relativeSegments =
@@ -3003,6 +3317,7 @@ class BoundDirectoryHelper {
         expectedIdentity: null,
         expectedReadIdentity: input.expectedIdentity,
         relativeSegments,
+        ...(input.fromAnchor === true ? { fromAnchor: true } : {}),
       },
       input.directoryPath,
     );
@@ -3014,6 +3329,45 @@ class BoundDirectoryHelper {
     }
     this.#readRootPath = input.directoryPath;
     this.#readRootIdentity = message.readIdentity;
+    this.#parentBound = false;
+  }
+
+  /** The identity of the directory this helper holds for reads. */
+  get readRootIdentity(): BoundReadIdentity | undefined {
+    return this.#readRootIdentity;
+  }
+
+  /** The anchor this helper proved at start; a reused helper must still match it. */
+  get anchorPath(): string {
+    return this.#anchorPath;
+  }
+
+  /**
+   * Whether this helper can serve another read capability: running, with no
+   * command in flight and nothing unread. An aborted search kills the
+   * helper, and any failed or timed-out exchange leaves it closed or busy.
+   */
+  get reusable(): boolean {
+    return !this.#closed && !this.#child.stdin.destroyed && this.#waiters.length === 0 &&
+      this.#messages.length === 0 && this.#child.exitCode === null && this.#child.signalCode === null;
+  }
+
+  /** Drop the bound directory and stop holding the event loop open while idle. */
+  park(): void {
+    this.#readRootIdentity = undefined;
+    this.#setReferenced(false);
+  }
+
+  unpark(): void {
+    this.#setReferenced(true);
+  }
+
+  #setReferenced(referenced: boolean): void {
+    for (const handle of [this.#child, this.#child.stdin, this.#child.stdout, this.#child.stderr]) {
+      const target = handle as unknown as { ref?: () => void; unref?: () => void } | null | undefined;
+      if (referenced) target?.ref?.();
+      else target?.unref?.();
+    }
   }
 
   async mutate(input: {
@@ -3266,6 +3620,8 @@ class BoundDirectoryHelper {
     readonly expectedInputIdentity?: BoundReadIdentity;
     readonly stdoutSpoolPath?: string;
     readonly maxSpoolBytes?: number;
+    /** Start this planned bubblewrap launch instead of the launcher command. */
+    readonly directBwrap?: BoundReadOnlyBwrapLaunch;
     readonly signal?: AbortSignal;
   }): Promise<WorkspaceBoundRipgrepResult> {
     const isAborted = (): boolean => input.signal?.aborted === true;
@@ -3318,6 +3674,22 @@ class BoundDirectoryHelper {
             ? {
                 stdoutSpoolPath: input.stdoutSpoolPath,
                 maxSpoolBytes: input.maxSpoolBytes,
+              }
+            : {}),
+          ...(input.directBwrap !== undefined && relativeInputSegments === undefined
+            ? {
+                directBwrap: {
+                  program: input.directBwrap.program,
+                  programIdentity: input.directBwrap.programIdentity,
+                  args: [...input.directBwrap.args],
+                  env: { ...input.directBwrap.env },
+                  seccompBase64: input.directBwrap.seccomp.toString("base64"),
+                  seccompFd: input.directBwrap.seccompFd,
+                  cwdFd: input.directBwrap.cwdFd,
+                  ...(input.directBwrap.cwdIdentity === undefined
+                    ? {}
+                    : { cwdIdentity: input.directBwrap.cwdIdentity }),
+                },
               }
             : {}),
         },
@@ -3615,8 +3987,32 @@ export function __setWorkspaceBoundReadNoFollowForTests(
   workspaceBoundReadNoFollowOverrideForTests = enabled;
 }
 
+/**
+ * One capability's use of a read helper. After dispose every call refuses:
+ * the helper may already serve another capability bound to another directory.
+ */
+interface ReadHelperLease {
+  readonly use: () => BoundDirectoryHelper;
+  readonly release: () => Promise<void>;
+}
+
+function readHelperLease(helper: BoundDirectoryHelper): ReadHelperLease {
+  let released = false;
+  return {
+    use: () => {
+      if (released) throw new Error("bound read capability was disposed");
+      return helper;
+    },
+    release: async () => {
+      if (released) return;
+      released = true;
+      await releaseReadHelper(helper);
+    },
+  };
+}
+
 function workspaceBoundReadCapability(input: {
-  readonly helper: BoundDirectoryHelper;
+  readonly lease: ReadHelperLease;
   readonly rootPath: string;
   readonly exactFile?: {
     readonly relativePath: string;
@@ -3629,10 +4025,11 @@ function workspaceBoundReadCapability(input: {
     input.exactFile?.relativePath === relativePath
       ? input.exactFile.identity
       : undefined;
+  const helper = input.lease.use;
   const capability: WorkspaceBoundReadCapability = {
     rootPath: input.rootPath,
     readRelativeFile: (relativePath, maxBytes, options) =>
-      input.helper.readRelativeFile({
+      helper().readRelativeFile({
         relativePath,
         maxBytes,
         ...(options?.truncate === true ? { truncate: true } : {}),
@@ -3641,16 +4038,16 @@ function workspaceBoundReadCapability(input: {
           : {}),
       }),
     readRelativeFileIfExists: (relativePath, maxBytes) =>
-      input.helper.readRelativeFileIfExists({ relativePath, maxBytes }),
+      helper().readRelativeFileIfExists({ relativePath, maxBytes }),
     validateRelativeFile: (relativePath) =>
-      input.helper.validateRelativeFile({
+      helper().validateRelativeFile({
         relativePath,
         ...(expectedIdentityFor(relativePath) !== undefined
           ? { expectedIdentity: expectedIdentityFor(relativePath)! }
           : {}),
       }),
-    runRipgrep: (runInput) =>
-      input.helper.runPinnedRipgrep({
+    runRipgrep: async (runInput) => {
+      const request = {
         program: runInput.program,
         args: runInput.args,
         env: runInput.env,
@@ -3683,13 +4080,38 @@ function workspaceBoundReadCapability(input: {
             }
           : {}),
         ...(runInput.signal !== undefined ? { signal: runInput.signal } : {}),
-      }),
+      };
+      // A directory search starts its planned bubblewrap launch from the
+      // helper instead of the launcher command (see bound-bwrap.ts).
+      const planned = runInput.relativeInputFile === undefined
+        ? prepareBoundReadOnlyBwrapLaunch({
+            program: runInput.program,
+            args: runInput.args,
+            env: runInput.env,
+            directory: input.rootPath,
+            ...(helper().readRootIdentity === undefined ? {} : { heldIdentity: helper().readRootIdentity! }),
+          })
+        : undefined;
+      if (planned !== undefined) {
+        const result = await helper().runPinnedRipgrep({ ...request, directBwrap: planned.launch });
+        if (!boundReadOnlyBwrapFailedToStart(result)) {
+          boundReadDirectLaunches += 1;
+          lastBoundReadDirectLaunch = planned.launch;
+          return result;
+        }
+        // Bubblewrap refused the planned launch before ripgrep ran: forget
+        // that evidence and run the search through the launcher, which keeps
+        // its own fallbacks.
+        planned.invalidate();
+      }
+      return helper().runPinnedRipgrep(request);
+    },
     dispose: () => {
       boundReadCwds.delete(capability);
-      return input.helper.dispose();
+      return input.lease.release();
     },
   };
-  if (input.exactFile === undefined) boundReadCwds.set(capability, input.helper.readOnlyCwdCapability());
+  if (input.exactFile === undefined) boundReadCwds.set(capability, helper().readOnlyCwdCapability());
   return capability;
 }
 
@@ -3710,6 +4132,112 @@ function resolveFilesystemPathIdentity(path: string): string {
 
 function resolvedReadIdentityPath(path: string): string {
   return resolveFilesystemPathIdentity(path);
+}
+
+/**
+ * Idle authenticated read helpers. Starting one costs a Node process and the
+ * source authentication handshake on every Grep, Glob and Orient call, so a
+ * helper whose capability was disposed cleanly waits here for the next one.
+ * Reuse changes nothing a fresh helper proves: the same authenticated program
+ * (same launch arguments, source digests and environment), anchored at the
+ * same filesystem root, binds the next directory from that anchor with the
+ * same per-segment identity walk and final identity check, and every read
+ * still checks the bound directory first. A helper that was aborted, timed
+ * out, failed or has anything in flight is never reused.
+ */
+const MAX_IDLE_READ_HELPERS = 2;
+const IDLE_READ_HELPER_MS = 5 * 60_000;
+interface ReadHelperPoolKey {
+  readonly signature: string;
+  readonly rootIdentity: BoundReadIdentity;
+}
+const idleReadHelpers: Array<{
+  readonly helper: BoundDirectoryHelper;
+  readonly key: ReadHelperPoolKey;
+  readonly expiry: NodeJS.Timeout;
+}> = [];
+const readHelperPoolKeys = new WeakMap<BoundDirectoryHelper, ReadHelperPoolKey>();
+
+function boundReadHelperSignature(useNoFollow: boolean): string | undefined {
+  // A test seam that replaces the worker source always gets its own helper.
+  if (workspaceBoundReadWorkerSourceTransformForTests !== undefined) return undefined;
+  const noFollowEnabled = useNoFollow && typeof constants.O_NOFOLLOW === "number" && constants.O_NOFOLLOW !== 0;
+  const plan = createBoundHelperLaunchPlan({
+    executable: process.execPath,
+    platform: process.platform,
+    processEnvironment: process.env,
+    useNoFollow: noFollowEnabled,
+    directorySource: BOUND_DIRECTORY_HELPER_DESCRIPTOR,
+    workerSource: BOUND_READ_WORKER_DESCRIPTOR,
+  });
+  return JSON.stringify([process.execPath, noFollowEnabled, plan.directoryArgs, plan.environment]);
+}
+
+function takeIdleReadHelper(key: ReadHelperPoolKey, anchorPath: string): BoundDirectoryHelper | undefined {
+  for (let index = idleReadHelpers.length - 1; index >= 0; index -= 1) {
+    const idle = idleReadHelpers[index]!;
+    if (idle.key.signature !== key.signature || !samePreciseFileIdentity(idle.key.rootIdentity, key.rootIdentity) ||
+        idle.helper.anchorPath !== anchorPath) continue;
+    idleReadHelpers.splice(index, 1);
+    clearTimeout(idle.expiry);
+    if (!idle.helper.reusable) {
+      void idle.helper.dispose().catch(() => {});
+      continue;
+    }
+    idle.helper.unpark();
+    return idle.helper;
+  }
+  return undefined;
+}
+
+/**
+ * Whether released read helpers wait in the idle pool. A parked helper keeps
+ * the working directory of the last directory it bound, and on Windows a
+ * process's working directory cannot be deleted or renamed, so pooling would
+ * lock that folder for up to IDLE_READ_HELPER_MS. Windows helpers exit on
+ * release, as they did before the pool existed.
+ */
+export function readHelperPoolingEnabled(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "win32";
+}
+
+async function releaseReadHelper(helper: BoundDirectoryHelper): Promise<void> {
+  const key = readHelperPoolKeys.get(helper);
+  if (!readHelperPoolingEnabled() || key === undefined || !helper.reusable ||
+      idleReadHelpers.length >= MAX_IDLE_READ_HELPERS) {
+    await helper.dispose();
+    return;
+  }
+  helper.park();
+  const expiry = setTimeout(() => {
+    const index = idleReadHelpers.findIndex((idle) => idle.helper === helper);
+    if (index >= 0) idleReadHelpers.splice(index, 1);
+    void helper.dispose().catch(() => {});
+  }, IDLE_READ_HELPER_MS);
+  expiry.unref();
+  idleReadHelpers.push({ helper, key, expiry });
+}
+
+let boundReadHelperStarts = 0;
+let boundReadDirectLaunches = 0;
+let lastBoundReadDirectLaunch: BoundReadOnlyBwrapLaunch | undefined;
+
+/** Test-only: bound searches that ran through a planned bubblewrap launch. */
+export function __boundReadDirectLaunchesForTests(): { readonly count: number; readonly last?: BoundReadOnlyBwrapLaunch } {
+  return { count: boundReadDirectLaunches, ...(lastBoundReadDirectLaunch === undefined ? {} : { last: lastBoundReadDirectLaunch }) };
+}
+
+/** Test-only: how many read helpers this process has started. */
+export function __boundReadHelperStartsForTests(): number {
+  return boundReadHelperStarts;
+}
+
+/** Test-only: dispose every idle read helper. */
+export async function __disposeIdleReadHelpersForTests(): Promise<number> {
+  const idle = idleReadHelpers.splice(0);
+  for (const entry of idle) clearTimeout(entry.expiry);
+  await Promise.all(idle.map((entry) => entry.helper.dispose().catch(() => {})));
+  return idle.length;
 }
 
 async function bindReadDirectoryHelper(
@@ -3750,13 +4278,11 @@ async function bindReadDirectoryHelper(
     throw new WorkspacePathIdentityChangedError(expectedPath);
   }
 
-  const helper = await BoundDirectoryHelper.start(
-    rootPathIdentity,
-    rootIdentity,
-    workspaceBoundReadNoFollowOverrideForTests ??
-      (typeof constants.O_NOFOLLOW === "number" && constants.O_NOFOLLOW !== 0),
-  );
-  try {
+  const useNoFollow = workspaceBoundReadNoFollowOverrideForTests ??
+    (typeof constants.O_NOFOLLOW === "number" && constants.O_NOFOLLOW !== 0);
+  const signature = boundReadHelperSignature(useNoFollow);
+  const key = signature === undefined ? undefined : { signature, rootIdentity };
+  const bind = async (helper: BoundDirectoryHelper, fromAnchor: boolean): Promise<BoundDirectoryHelper> => {
     const admittedAfter = await preciseStats(expectedPath);
     if (
       !admittedAfter.isDirectory() ||
@@ -3770,8 +4296,28 @@ async function bindReadDirectoryHelper(
     await helper.bindReadDirectory({
       directoryPath: expectedPath,
       expectedIdentity: admittedIdentity,
+      ...(fromAnchor ? { fromAnchor: true } : {}),
     });
+    if (key !== undefined) readHelperPoolKeys.set(helper, key);
     return helper;
+  };
+  const reused = key === undefined ? undefined : takeIdleReadHelper(key, rootPathIdentity.anchorPath);
+  if (reused !== undefined) {
+    try {
+      return await bind(reused, true);
+    } catch {
+      // A fresh helper repeats every check and reports a real path change.
+      await reused.dispose().catch(() => {});
+    }
+  }
+  const helper = await BoundDirectoryHelper.start(
+    rootPathIdentity,
+    rootIdentity,
+    useNoFollow,
+  );
+  boundReadHelperStarts += 1;
+  try {
+    return await bind(helper, false);
   } catch (error) {
     await helper.dispose().catch(() => {});
     throw error;
@@ -3795,7 +4341,7 @@ export async function bindWorkspaceDirectoryReadCapability(
       options?.expectedIdentity,
     );
     return workspaceBoundReadCapability({
-      helper,
+      lease: readHelperLease(helper),
       rootPath: expectedPath,
     });
   } catch (error) {
@@ -3851,8 +4397,9 @@ export async function bindWorkspaceFileReadCapability(
       relativePath,
       identity: admittedFileIdentity,
     };
+    const lease = readHelperLease(helper);
     const base = workspaceBoundReadCapability({
-      helper,
+      lease,
       rootPath: dirname(expectedPath),
       exactFile,
     });
@@ -3860,13 +4407,13 @@ export async function bindWorkspaceFileReadCapability(
       ...base,
       filePath: expectedPath,
       readFile: (maxBytes) =>
-        helper!.readRelativeFile({
+        lease.use().readRelativeFile({
           relativePath,
           expectedIdentity: exactFile.identity,
           maxBytes,
         }),
       readTextWindow: (offset, limit, maxBytes) =>
-        helper!.readTextWindow({
+        lease.use().readTextWindow({
           relativePath,
           expectedIdentity: exactFile.identity,
           offset,

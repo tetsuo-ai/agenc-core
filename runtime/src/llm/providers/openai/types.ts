@@ -41,7 +41,7 @@ export interface OpenAIProviderConfig extends LLMProviderConfig {
   /**
    * Zero data retention as a request-level routing preference. Only
    * subclasses whose API has such a control act on it (OpenRouter sends
-   * `provider.zdr = true`); the base adapter ignores it.
+   * `provider.zdr = true`, on by default); the base adapter ignores it.
    */
   readonly zeroDataRetention?: boolean;
   /**

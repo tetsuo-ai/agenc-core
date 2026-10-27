@@ -2863,6 +2863,14 @@ export function recordAgentJobResult(
   return { kind: "ok" };
 }
 
+/**
+ * The state database a live job records its results in, or undefined for an
+ * unknown job or one without a durable repository.
+ */
+export function agentJobStateDatabasePath(jobId: JobId): string | undefined {
+  return jobs.get(jobId)?.repository?.stateDatabasePath;
+}
+
 /** Production report path: schema execution runs in the shared owned pool. */
 export async function recordAgentJobResultAsync(
   args: RecordAgentJobResultArgs,

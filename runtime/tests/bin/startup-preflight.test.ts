@@ -20,12 +20,21 @@ describe("launcher startup preflight", () => {
       ["--fork"], ["--sandbox"], ["--max-budget-usd=2"], ["--print=yes"],
       ["-p", "--", "--max-budget-usd", "2"], ["-p", "explain", "--max-budget-usd", "2"],
       ["-", "--fork"], ["--bare", "--no-tui", "hello"],
+      ["--light", "-p", "hello"], ["--standard", "-p", "hello"], ["--standard"],
       ["--autonomous", "--dangerously-bypass-approvals-and-sandbox", "-p", "hello"],
     ]) {
       const plan = classifyCLI({ argv: [...executable, ...argv], ...terminal });
       const expected = plan.kind === "errorAndExit" ? plan : null;
       expect(preflightStartupArguments(argv, terminal), argv.join(" ")).toEqual(expected);
       expect(generatedPreflight(argv, terminal), argv.join(" ")).toEqual(expected);
+    }
+  });
+
+  it.each([true, false])("lets the session mode flags through the launcher with tty=%s", (isTTY) => {
+    const terminal = { isTTY, isStdoutTTY: isTTY };
+    for (const argv of [["--standard"], ["--standard", "-p", "hello"], ["--light", "hello"]]) {
+      expect(preflightStartupArguments(argv, terminal), argv.join(" ")).toBeNull();
+      expect(generatedPreflight(argv, terminal), argv.join(" ")).toBeNull();
     }
   });
 

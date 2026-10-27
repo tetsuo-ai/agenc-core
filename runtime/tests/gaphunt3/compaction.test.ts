@@ -143,15 +143,16 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
     const abortController = new AbortController();
     abortController.abort("user pressed esc");
 
-    // Provider whose summary call throws once aborted. The abort discriminator
-    // must surface the cancel rather than swallowing it into a failure count.
-    const messages = [makeMessage("x".repeat(10_000)), makeMessage("recent request")];
+    // Canonical ownership rejects a pre-aborted acquisition before dispatch.
+    // Preserve the original cancel cause and never count it as a failure.
+    const messages = [makeMessage("x".repeat(60_000)), makeMessage("recent request")];
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
       chat: async () => {
         throw new Error("Partial compaction aborted");
       },
     });
+    const tracking = { consecutiveFailures: 0 };
 
     await expect(
       autoCompactIfNeeded(
@@ -162,18 +163,24 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
         },
         undefined,
         undefined,
-        { consecutiveFailures: 0 },
+        tracking,
         0,
         { force: true },
       ),
-    ).rejects.toBe("user pressed esc");
+    ).rejects.toMatchObject({
+      name: "CompactionTransactionError", reason: "intent_failed", cause: "user pressed esc",
+    });
+    expect(tracking.consecutiveFailures).toBe(0);
+    expect(harness.provider.chat).not.toHaveBeenCalled();
+    expect(harness.store.readAll().some((item) => item.type === "compaction_failed" || item.type === "compaction_committed"))
+      .toBe(false);
     harness.close();
   });
 
   it("classifies a provider AbortError as a cancel even without an aborted controller", async () => {
     const abortError = new Error("aborted");
     abortError.name = "AbortError";
-    const messages = [makeMessage("x".repeat(10_000)), makeMessage("recent request")];
+    const messages = [makeMessage("x".repeat(60_000)), makeMessage("recent request")];
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
       chat: async () => {
@@ -201,7 +208,7 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
     // failures are deliberately non-fatal) must still increment the
     // circuit-breaker counter so the abort carve-out does not mask genuine
     // failures.
-    const messages = [makeMessage("x".repeat(10_000)), makeMessage("recent request")];
+    const messages = [makeMessage("x".repeat(60_000)), makeMessage("recent request")];
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
     });

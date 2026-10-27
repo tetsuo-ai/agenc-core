@@ -228,6 +228,51 @@ describe('useTextInput', () => {
     }
   })
 
+  test('restores its text when the parent refuses an edit', async () => {
+    // A shortcut such as "?" or option+m on an empty prompt is handled by the
+    // parent, which keeps its own value. Before this, the refused character
+    // stayed in the local mirror and showed up on the next keystroke.
+    const onChange = vi.fn((next: string) => (next === '?' ? false : undefined))
+    const rendered = await renderHookHarness({ externalOffset: 0, onChange, value: '' })
+
+    try {
+      for (let press = 0; press < 3; press += 1) {
+        rendered.latest().onInput('?', key())
+        await sleep()
+        expect(rendered.latest().value).toBe('')
+        expect(rendered.latest().offset).toBe(0)
+      }
+      expect(onChange).toHaveBeenCalledTimes(3)
+      expect(rendered.onOffsetChange).not.toHaveBeenCalled()
+
+      rendered.latest().onInput('a', key())
+      await sleep()
+      expect(rendered.latest().value).toBe('a')
+      expect(onChange).toHaveBeenLastCalledWith('a')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test.each(['!', '!python3 '])('uses a parent-normalized edit atomically: %s', async (prefix) => {
+    const onChange = vi.fn((next: string) => next.startsWith('!')
+      ? { value: next.slice(1), offset: next.length - 1 }
+      : undefined)
+    const onSubmit = vi.fn()
+    const rendered = await renderHookHarness({ onChange, onSubmit, value: '', externalOffset: 0 })
+    try {
+      rendered.latest().onInput(prefix, key())
+      await sleep()
+      expect(rendered.latest().value).toBe(prefix.slice(1))
+      expect(rendered.latest().offset).toBe(prefix.length - 1)
+      // Next characters can arrive before controlled parent props commit.
+      const remaining = prefix === '!' ? 'python3 --version' : '--version'
+      for (const char of remaining) rendered.latest().onInput(char, key())
+      rendered.latest().onInput('', key({ return: true }))
+      expect(onSubmit).toHaveBeenCalledWith('python3 --version')
+    } finally { await rendered.dispose() }
+  })
+
   test('handles cursor movement, kill ring, yank, and yank-pop editing', async () => {
     const rendered = await renderHookHarness({
       columns: 80,
@@ -405,11 +450,22 @@ describe('useTextInput', () => {
       rendered.latest().onInput('c', key({ ctrl: true }))
       await sleep()
       expect(rendered.latest().value).toBe('')
+      expect(harness.addToHistory).toHaveBeenCalledWith('interrupt')
+      expect(onExitMessage).toHaveBeenCalledWith(false, 'Ctrl-C')
+      rendered.latest().onInput('c', key({ ctrl: true }))
+      await sleep()
       expect(onExitMessage).toHaveBeenCalledWith(true, 'Ctrl-C')
+      expect(onExit).not.toHaveBeenCalled()
       rendered.latest().onInput('c', key({ ctrl: true }))
       await sleep()
       expect(onExitMessage).toHaveBeenCalledWith(false, 'Ctrl-C')
       expect(onExit).toHaveBeenCalledTimes(1)
+
+      await rendered.render({ externalOffset: 6, mask: '•', value: 'secret' })
+      rendered.latest().onInput('c', key({ ctrl: true }))
+      await sleep()
+      expect(rendered.latest().value).toBe('')
+      expect(harness.addToHistory).not.toHaveBeenCalledWith('secret')
 
       rendered.latest().onInput('p', key({ ctrl: true }))
       rendered.latest().onInput('n', key({ ctrl: true }))

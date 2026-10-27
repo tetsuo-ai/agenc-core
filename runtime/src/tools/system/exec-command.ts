@@ -1,10 +1,12 @@
-import { constants as fsConstants, existsSync, realpathSync, statSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
+import { canonicalAuthorityPath, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { observationCapableShell } from "../side-effect-free-shell.js";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
-import { notifyExecSessionDiscovery } from "../exec-session-discovery.js";
+import { notifyExecEscalationDiscovery, notifyExecSessionDiscovery } from "../exec-session-discovery.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 import {
@@ -13,11 +15,13 @@ import {
   shellBypassesApprovalsAndSandbox,
   shellWorkspaceMutationPermission,
 } from "./shell-mutation-permission.js";
-import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
-import { recordSessionRead, resolveSessionId, safePathAllowingSessionPlanFile } from "./filesystem.js";
+import { preflightSelfTermination, preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
+import { recordSessionRead, resolveSessionId } from "./filesystem.js";
+import { isCompletePrintedOutput, rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
+import { execCommandRunsConcurrently } from "../read-only-shell-concurrency.js";
 import type {
   ExecCommandToolOutput,
   UnifiedExecProcessManagerLike,
@@ -42,20 +46,26 @@ import {
 import { isSearchOrReadBashCommand } from "../../utils/bash/commands.js";
 import {
   formatUnifiedExecToolContent,
+  residualNoteOncePerSession,
+  serverCheckNoteOncePerSession,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
+import { localServerGuidance } from "./local-server-guidance.js";
+import { execProcessNamespaceNotice } from "./exec-process-namespace.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
 import {
   execSandboxDenialNotice,
-  sandboxEscalationAvailable,
+  sandboxEscalationGrant,
   worktreeWriteDenialNotice,
+  type SandboxEscalationGrant,
 } from "./exec-sandbox-denial.js";
 import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing.js";
-import { readReadOnlyInspectionInvocation } from "../../permissions/readonly-inspection.js";
+import { readReadOnlyInspectionInvocation, readReadOnlyShellInvocation } from "../../permissions/readonly-inspection.js";
+import { readOnlyCommandNotice } from "./exec-read-only-notice.js";
 import { isDangerousCommand } from "../../permissions/bash.js";
 import { shellCallRequestsSandboxEscalation } from "../../permissions/read-only-grant.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
@@ -78,6 +88,39 @@ export interface ExecCommandToolConfig extends BashToolConfig {
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
   /** Advertise the continuation tool before a yielded handle reaches the model. */
   readonly onSessionYielded?: () => void;
+  /**
+   * Whether the exec_command description this session sees already says how
+   * to check a server (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
+   * Every request carries it then, so the result notes leave it out.
+   */
+  readonly serverChecksDescribed?: () => boolean;
+  /**
+   * A sandbox notice on this result tells the model to retry with
+   * sandbox_permissions: present exec_command's full schema on the next
+   * request, so the field is there to use (a lean schema hides it).
+   */
+  readonly onEscalationAdvised?: () => void;
+}
+
+/**
+ * How this call's session answers a retry outside the sandbox. A
+ * permission-mode allow runs an attempt under `never`, but an escalation
+ * request still meets the session's own policy: read that one. `fallback`
+ * covers a call without a runtime context (direct tool use).
+ */
+export function execEscalationGrant(
+  args: Record<string, unknown>,
+  fallback: SandboxEscalationGrant,
+): SandboxEscalationGrant {
+  const runtimeContext = readToolRuntimeContext(args);
+  if (runtimeContext === undefined) return fallback;
+  return sandboxEscalationGrant(
+    runtimeContext.requestedApprovalPolicy ?? runtimeContext.approvalPolicy,
+    {
+      sandboxMode: runtimeContext.requestedSandboxMode,
+      session: runtimeContext.invocation.session,
+    },
+  );
 }
 
 const PLAIN_INTERACTIVE_SHELL_RE =
@@ -89,17 +132,14 @@ const PLAIN_INTERACTIVE_SHELL_RE =
  */
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 
-const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 const PATH_ARG = /^[A-Za-z0-9_./@+-]+$/u;
 
 /**
- * One read step of a `;`/`&&` chain: cat of named files, an explicit line window of one file, or a
- * `grep -n` of one file, whose output numbers every line it shows.
+ * One read step of a `;`/`&&` chain: cat of named files or an explicit line window of one file.
  */
 type ShellReadStep =
   | { readonly kind: "full"; readonly paths: readonly string[] }
-  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number }
-  | { readonly kind: "numbered"; readonly path: string };
+  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number };
 
 /**
  * Simple commands of a command line as the shell would see them: `;`-separated lists of `&&`-joined
@@ -266,11 +306,6 @@ function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellRea
       steps.push({ kind: "lines", path: rest[2]!, start: Number(range[1]), end: Number(range[2]) });
       continue;
     }
-    const grepped = name === "grep" ? numberedGrepPath(rest) : undefined;
-    if (grepped !== undefined) {
-      steps.push({ kind: "numbered", path: grepped });
-      continue;
-    }
     if (name !== "head") continue;
     const count = rest.length === 3 && rest[0] === "-n" ? rest[1]!
       : rest.length === 2 && /^-n?\d+$/u.test(rest[0]!) ? rest[0]!.replace(/^-n?/u, "") : undefined;
@@ -283,125 +318,10 @@ function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellRea
 }
 
 /**
- * The one file of `grep -n [-A N] [-B N] [-C N] [-E|-F|-i|-w|-x] [-e PATTERN | PATTERN] FILE`. With a
- * single file operand grep prints no file name, so every shown line is `N:text` or `N-text`. Any other
- * option, or another operand count, gives undefined.
- */
-function numberedGrepPath(args: readonly string[]): string | undefined {
-  let numbered = false;
-  let patternGiven = false;
-  const operands: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (arg === "--") {
-      operands.push(...args.slice(i + 1));
-      break;
-    }
-    if (!arg.startsWith("-") || arg === "-") {
-      operands.push(arg);
-    } else if (arg === "-e") {
-      if (i + 1 >= args.length) return undefined;
-      patternGiven = true;
-      i += 1;
-    } else if (/^-[ABC]$/u.test(arg)) {
-      if (!/^\d+$/u.test(args[i + 1] ?? "")) return undefined;
-      i += 1;
-    } else if (/^-[nEFiwx]+$/u.test(arg)) {
-      numbered ||= arg.includes("n");
-    } else if (!/^-[ABC]\d+$/u.test(arg)) {
-      return undefined;
-    }
-  }
-  const files = patternGiven ? operands : operands.slice(1);
-  const file = files[0];
-  return numbered && files.length === 1 && PATH_ARG.test(file!) && !file!.startsWith("-") ? file : undefined;
-}
-
-/**
- * The longest run of consecutive `N:text` or `N-text` output lines whose text is exactly line N of the
- * file, as `grep -n` prints matches and their context.
- */
-function numberedRun(stdout: string, lines: readonly string[]): { readonly start: number; readonly end: number } | undefined {
-  let best: { start: number; end: number } | undefined;
-  let run: { start: number; end: number } | undefined;
-  for (const shown of stdout.split(/\r?\n/u)) {
-    const match = /^(\d+)[:-](.*)$/u.exec(shown);
-    const number = match === null ? 0 : Number(match[1]);
-    if (match === null || number < 1 || number > lines.length || lines[number - 1] !== match[2]) {
-      run = undefined;
-      continue;
-    }
-    run = run !== undefined && number === run.end + 1 ? { start: run.start, end: number } : { start: number, end: number };
-    if (best === undefined || run.end - run.start > best.end - best.start) best = run;
-  }
-  return best;
-}
-
-/** Largest file the optional read proof will snapshot. */
-const READ_PROOF_MAX_BYTES = 2 * 1024 * 1024;
-
-/**
- * One snapshot bound to the opened object: nonblocking and without following a swapped-in symlink,
- * so a path replaced by a FIFO or device after the command cannot hold the finished exec waiting;
- * only a bounded regular file is read.
- */
-async function regularFileSnapshot(path: string) {
-  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
-  try {
-    const stats = await handle.stat();
-    if (!stats.isFile() || stats.size === 0 || stats.size > READ_PROOF_MAX_BYTES) return undefined;
-    // Read at most the stat size plus one byte, so a file that grows after the stat is never read
-    // past the bound; any extra byte rejects the snapshot.
-    const buffer = Buffer.alloc(stats.size + 1);
-    let filled = 0;
-    while (filled < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
-      if (bytesRead === 0) break;
-      filled += bytesRead;
-    }
-    if (filled !== stats.size) return undefined;
-    return { bytes: buffer.subarray(0, filled), stats };
-  } finally {
-    await handle.close();
-  }
-}
-
-/**
- * Current text of a workspace file from two snapshots that must agree on bytes, size, mtime, ctime,
- * inode and device, so the recorded mtime belongs to bytes that held across the window; a later
- * change shows as a newer mtime, which the gate refuses as stale.
- */
-async function stableWorkspaceText(
-  path: string,
-  allowedPaths: readonly string[],
-  args: Record<string, unknown>,
-): Promise<{ readonly canonical: string; readonly text: string; readonly mtimeMs: number } | undefined> {
-  const safe = await safePathAllowingSessionPlanFile(path, allowedPaths, args);
-  if (!safe.safe) return undefined;
-  try {
-    const first = await regularFileSnapshot(safe.resolved);
-    if (first === undefined) return undefined;
-    const second = await regularFileSnapshot(safe.resolved);
-    if (
-      second === undefined || !first.bytes.equals(second.bytes) || first.bytes.length !== first.stats.size ||
-      first.stats.size !== second.stats.size || first.stats.mtimeMs !== second.stats.mtimeMs ||
-      first.stats.ctimeMs !== second.stats.ctimeMs || first.stats.ino !== second.stats.ino ||
-      first.stats.dev !== second.stats.dev || first.bytes.includes(0)
-    ) return undefined;
-    // Strict decoding: distinct invalid byte sequences would otherwise compare equal as U+FFFD.
-    const text = STRICT_UTF8.decode(first.bytes);
-    if (text.includes("�")) return undefined;
-    return { canonical: safe.resolved, text, mtimeMs: first.stats.mtimeMs };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * Light records the reads a model makes through the shell for the read-before-write gate: a `cat`
  * step of a `;`/`&&` chain is a full read of each named file whose exact current content appears in
- * the output, and a `sed -n 'A,Bp' file` or `head -n N file` step is a partial read of those lines
- * when exactly those lines appear. The shell must have exited on its own, untruncated with no live
+ * the output. A `sed -n 'A,Bp' file` or `head -n N file` step counts only if it shows the whole file.
+ * Partial shell views do not authorize edits. The shell must have exited on its own, untruncated with no live
  * session; after a nonzero exit only the first step of each `;` list counts. The
  * model has then seen the current text, which is what the gate asks for (GPT models read this way:
  * 0.2 to 0.3 gate refusals per benchmark task, each costing a FileRead and a retry).
@@ -415,8 +335,8 @@ export async function recordShellReads(params: {
 }): Promise<void> {
   const { output } = params;
   // A null exit code means the shell did not exit on its own (a signal, or still running).
-  if (output.exitCode === null || output.truncated || output.timedOut || output.session_id !== undefined) return;
-  if (output.stdout.length === 0) return;
+  const visible = formatUnifiedExecToolContent(output, true);
+  if (!isCompletePrintedOutput(output, visible)) return;
   const sessionId = resolveSessionId(params.args);
   if (sessionId === undefined) return;
   const steps = shellReadSteps(params.cmd, params.cwd, output.exitCode === 0);
@@ -425,21 +345,8 @@ export async function recordShellReads(params: {
     for (const rawPath of step.kind === "full" ? step.paths : [step.path]) {
       const file = await stableWorkspaceText(resolve(params.cwd, rawPath), params.allowedPaths, params.args);
       if (file === undefined) continue;
-      if (step.kind === "numbered") {
-        const lines = file.text.split(/\r?\n/u);
-        const run = numberedRun(output.stdout, lines);
-        if (run === undefined) continue;
-        recordSessionRead(sessionId, file.canonical, {
-          content: lines.slice(run.start - 1, run.end).join("\n"),
-          timestamp: file.mtimeMs,
-          viewKind: "partial",
-          readOffset: run.start,
-          readLimit: run.end - run.start + 1,
-        });
-        continue;
-      }
       if (step.kind === "full") {
-        if (!output.stdout.includes(file.text)) continue;
+        if (!visible.includes(file.text)) continue;
         recordSessionRead(sessionId, file.canonical, {
           content: file.text.split(/\r?\n/u).join("\n"),
           timestamp: file.mtimeMs,
@@ -452,11 +359,12 @@ export async function recordShellReads(params: {
       if (step.start < 1 || step.end < step.start || step.start > lines.length) continue;
       const window = lines.slice(step.start - 1, Math.min(step.end, lines.length));
       const shown = window.join("\n");
-      if (shown.length === 0 || !output.stdout.replace(/\r\n/gu, "\n").includes(shown)) continue;
+      if (shown.length === 0 || !visible.replace(/\r\n/gu, "\n").includes(shown)) continue;
       const whole = step.start === 1 && step.end >= lines.length;
-      recordSessionRead(sessionId, file.canonical, whole
-        ? { content: lines.join("\n"), timestamp: file.mtimeMs, viewKind: "full", rawContent: file.text }
-        : { content: shown, timestamp: file.mtimeMs, viewKind: "partial", readOffset: step.start, readLimit: step.end - step.start + 1 });
+      if (!whole) continue;
+      recordSessionRead(sessionId, file.canonical, {
+        content: lines.join("\n"), timestamp: file.mtimeMs, viewKind: "full", rawContent: file.text,
+      });
     }
   }
 }
@@ -593,6 +501,8 @@ export function runtimeSandboxForExec(
       readonly sandboxPersistentSession?: unknown;
     };
     readonly features?: unknown;
+    readonly sandboxAllowLocalBinding?: unknown;
+    readonly sandboxPersistentSession?: unknown;
     readonly network?: unknown;
     readonly networkSandboxPolicy?: unknown;
     readonly cwd?: unknown;
@@ -622,10 +532,16 @@ export function runtimeSandboxForExec(
   const networkInterfaces = networkPolicyInterfaces(turn.network);
   const routineRun = routineRunOptions(context.invocation.session) !== undefined;
   const childTempRoot = runtimeChildTempRoot(context, sessionTempRoot, sandboxPolicyCwd);
-  const profile = permissionProfileForRuntimeContext(attempt.context, {
+  let profile = permissionProfileForRuntimeContext(attempt.context, {
     cwd: sandboxPolicyCwd,
     ...(network !== undefined ? { network } : {}),
   });
+  // Tool attempts build their own per-call profile instead of using the
+  // broker profile. Carry the same trusted memory reservations to this path;
+  // file tools continue to use the ordinary runtime profile and carve-outs.
+  for (const memoryRoot of sessionDurableMemoryDirectoriesOf(context.invocation.session, sandboxPolicyCwd)?.roots ?? []) {
+    profile = protectDesktopAuthority(profile, canonicalAuthorityPath(memoryRoot));
+  }
   return {
     permissionProfile: worktreeChildProfile(profile, worktreeConfinement, {
       escalated: attempt.escalated,
@@ -641,7 +557,8 @@ export function runtimeSandboxForExec(
     sandboxPolicyCwd,
     sessionTempRoot: childTempRoot,
     preference: "require",
-    ...(booleanValue(turn.config?.sandboxPersistentSession) === false ? { persistentSession: false } : {}),
+    ...(booleanValue(turn.sandboxAllowLocalBinding) === true ? { network: { allowLocalBinding: true } } : {}),
+    ...(booleanValue(turn.sandboxPersistentSession ?? turn.config?.sandboxPersistentSession) === false ? { persistentSession: false } : {}),
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
       : {}),
@@ -854,16 +771,18 @@ function processObservationDisposition(
 /**
  * Why `detach: true` cannot run here, or null when it can. A detached process
  * escapes every containment the sandbox lease relies on, so it exists only
- * where no sandbox applies; the message names the flag that gets there and
- * the sandboxed alternative.
+ * where no sandbox applies; name the single-command launch outside the
+ * sandbox in the words that fit how this session grants it, and the
+ * sandboxed alternative.
  */
 function detachRefusal(
   runtimeSandbox: UnifiedExecRuntimeSandbox | undefined,
   manager: UnifiedExecProcessManagerLike,
+  escalation: SandboxEscalationGrant,
 ): ToolResult | null {
   const message =
     runtimeSandbox !== undefined
-      ? "detach: true needs the danger-full-access sandbox: start AgenC with --dangerously-bypass-approvals-and-sandbox (or sandbox_mode = \"danger-full-access\"). In a sandboxed session keep the process alive with yield_time_ms instead; it stops when the session ends."
+      ? "This command has not started: detach=true is unavailable inside the sandbox. " + localServerGuidance(escalation) + " You do not need to disable the sandbox for the whole session."
       : manager.startDetachedProcess === undefined
         ? "detach: true is not supported by this exec manager."
         : null;
@@ -985,6 +904,16 @@ function sandboxAutoAllow(
   const appState = context.getAppState();
   const permissions = context.toolPermissionContext?.(appState) ??
     appState.toolPermissionContext;
+  // The sandbox's auto-allow must not skip the user's approval of a
+  // workspace edit in default mode. Preflight reserves hard refusals for
+  // protected targets; an ordinary content write goes through this card.
+  if (permissions.mode === "default" && classifyShellWorkspaceWritePolicy({
+    toolName: "exec_command",
+    args: { command: args.cmd, cwd: args.workdir },
+    workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
+  }).blocked) {
+    return { behavior: "ask", message: "Allow this shell command to change workspace files?" };
+  }
   // The auto-mode classifier re-runs tool checks with the mode set to
   // acceptEdits (evaluator.ts, tryAcceptEditsSimulation). autoModeActive
   // outside auto mode means plan with auto, which keeps its classifier.
@@ -1035,10 +964,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       env: config?.env,
       maxTimeoutMs: config?.maxTimeoutMs,
     });
-  return {
+  return observationCapableShell({
     name: "exec_command",
     description:
-      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits; delete or rename workspace files here with rm or mv. Never use this to print commentary, placeholders, or reminders to yourself; call the relevant tool directly instead.\n\nLong-running commands: set a short yield_time_ms to run in the BACKGROUND — when the command outlives the yield window the result carries a session_id and the process keeps running. Poll for more output with write_stdin(session_id, chars='') and stop it with kill_process(session_id). Prefer this over trailing '&' (a shell-backgrounded child has no session_id, so its output is unrecoverable).\n\nServices: every process a command leaves behind (a trailing '&', nohup, setsid, a daemon that forks) is stopped when the command returns, and a process kept alive with yield_time_ms is stopped when the session ends. To start a web server, database, sshd, or other daemon that must keep running afterwards, set detach: true (needs the danger-full-access sandbox); the result carries its pid and log file.",
+      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, and kill_process stops it. A trailing '&' loses the output, and every process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -1065,7 +994,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     isSearchOrReadCommand: (input: { cmd?: string }) =>
       isSearchOrReadBashCommand(input?.cmd ?? ""),
     supportsParallelToolCalls: false,
-    isConcurrencySafe: () => false,
+    // Read-only inspections from one response run side by side; everything
+    // else is exclusive and keeps submission order.
+    isConcurrencySafe: (input: Record<string, unknown>) =>
+      execCommandRunsConcurrently(input, config?.cwd ?? process.cwd()),
     interruptBehavior: () => "cancel",
     checkPermissions(input, context) {
       return sandboxAutoAllow(input as Record<string, unknown>, context, config);
@@ -1089,52 +1021,52 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         cmd: {
           type: "string",
           description:
-            "Shell command to execute. MCP tool names such as mcp.server.tool are not shell commands; call those tools directly. Do not use echo/printf placeholders like \"I need to call the MCP tool\".",
+            "Shell command. MCP tools (mcp.<server>.<tool>) are tool calls, not commands.",
         },
         workdir: {
           type: "string",
-          description: "Working directory. Defaults to the AgenC workspace root.",
+          description: "Working directory; defaults to the workspace root.",
         },
         timeoutMs: {
           type: "number",
           description:
-            "Optional hard command timeout in milliseconds. Prefer yield_time_ms for long-running commands you want to keep alive.",
+            "Hard timeout in ms. To keep a long command alive use yield_time_ms instead.",
         },
         yield_time_ms: {
           type: "number",
           description:
-            "How long to wait for output before returning. If the process is still running, AgenC returns a session_id for write_stdin.",
+            "How long to wait for output before returning; a process still running then returns a session_id.",
         },
         max_output_tokens: {
           type: "number",
           description:
-            "Maximum output tokens to return. Long output is truncated head/tail.",
+            "Output token cap; longer output keeps its head and tail.",
         },
         login: {
           type: "boolean",
           description:
-            "Run the command through a login shell where supported.",
+            "Run through a login shell where supported.",
         },
         tty: {
           type: "boolean",
           description:
-            "Allocate an interactive PTY. Required for persistent shells and write_stdin. Unavailable inside a contained tool operation; use tty=false with non-interactive flags, or ask the user to run it with the app's Run button.",
+            "Allocate a PTY, needed for interactive programs and write_stdin input. Unavailable inside a contained tool operation: use non-interactive flags, or ask the user to run it with the app's Run button.",
         },
         shell: {
           type: "string",
           description:
-            "Shell executable to run the command through. Defaults to the user's shell.",
+            "Shell executable; defaults to the user's shell.",
         },
         detach: {
           type: "boolean",
           description:
-            "Start the command as a detached service: its own session, stdout/stderr to a log file, never stopped by AgenC, so it survives this command returning and the session ending. Waits yield_time_ms (default 2000) for an early exit, then returns pid and log path. Only under the danger-full-access sandbox (--dangerously-bypass-approvals-and-sandbox); not with tty.",
+            "Start a detached service with its own session and a log file; AgenC never stops it, so it outlives the command and the session. Waits yield_time_ms (default 2000) for an early exit, then returns the pid and log path. Only outside the sandbox (danger-full-access or an approved require_escalated launch); not with tty.",
         },
         ...SANDBOX_PERMISSION_INPUT_PROPERTIES,
         prefix_rule: {
           type: "array",
           items: { type: "string" },
-          description: "Approval-cache command prefix rule, when applicable.",
+          description: "Command prefix to cache the approval for.",
         },
       },
       required: ["cmd"],
@@ -1142,7 +1074,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      const failure = validateExecCommandInput(args, config);
+      const failure = validateExecCommandInput(args, config) ?? preflightSelfTermination(args);
       if (failure !== null) {
         return {
           content: safeStringify({ error: failure.message }),
@@ -1171,8 +1103,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       // against the child session, not the registry's workspace. Check, gate
       // and record that same directory.
       let inspection: ReturnType<typeof readReadOnlyInspectionInvocation>;
+      let readOnlyShell: ReturnType<typeof readReadOnlyShellInvocation>;
       try {
         inspection = readReadOnlyInspectionInvocation(args);
+        readOnlyShell = readReadOnlyShellInvocation(args);
       } catch (error) {
         // The trusted executable changed after inspection. Nothing has started.
         const message = error instanceof Error ? error.message : String(error);
@@ -1185,7 +1119,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ),
         };
       }
-      const effectiveWorkdir = inspection?.cwd ?? workdir;
+      const effectiveWorkdir = inspection?.cwd ?? readOnlyShell?.cwd ?? workdir;
 
       // Checked here, not in preflight: an earlier call in the same turn may
       // create the directory. Nothing has started, so the refusal is no effect.
@@ -1240,13 +1174,19 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
-        const runtimeSandbox = inspection?.runtimeSandbox ?? runtimeSandboxForExec(
+        const runtimeSandbox = inspection?.runtimeSandbox ?? readOnlyShell?.runtimeSandbox ?? runtimeSandboxForExec(
           args,
           config?.cwd ?? process.cwd(),
         );
         if (detach) {
-          const refusal = detachRefusal(runtimeSandbox, manager);
-          if (refusal !== null) return refusal;
+          const escalation = execEscalationGrant(args, "with_approval");
+          const refusal = detachRefusal(runtimeSandbox, manager, escalation);
+          if (refusal !== null) {
+            if (runtimeSandbox !== undefined && escalation !== "unavailable") {
+              notifyExecEscalationDiscovery(args, config?.onEscalationAdvised);
+            }
+            return refusal;
+          }
         }
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
@@ -1283,7 +1223,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               ...commonRequest,
               ...(inspection !== undefined
                 ? { directInvocation: inspection, workdir: inspection.cwd }
-                : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
+                : readOnlyShell !== undefined
+                  ? { readOnlyShell, workdir: readOnlyShell.cwd }
+                  : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
               ...(timeoutMs !== undefined ? { timeoutMs } : {}),
               ...(args.__onProgress !== undefined
                 ? { __onProgress: args.__onProgress }
@@ -1338,43 +1280,80 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         if ((output.process_id ?? output.session_id) !== undefined && output.detached !== true) {
           notifyExecSessionDiscovery(args, config?.onSessionYielded);
         }
-        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
+        const noteSessionId = resolveSessionId(args as Record<string, unknown>);
+        const serverChecksDescribed = config?.serverChecksDescribed?.() === true;
+        const execContent = residualNoteOncePerSession(
+          formatUnifiedExecToolContent(output, config?.lightMode === true),
+          noteSessionId,
+          serverChecksDescribed,
+        );
+        if (!detach && tty !== true) {
+          rememberPrintedOutput({
+            cmd,
+            output,
+            visible: execContent,
+            cwd: effectiveWorkdir ?? config?.cwd ?? process.cwd(),
+            args: args as Record<string, unknown>,
+          });
+        }
         const runtimeContext = readToolRuntimeContext(args);
         const denial = execSandboxDenialNotice({
           output: execContent,
           exitCode: output.exitCode,
+          command: cmd,
           sandboxApplied: runtimeSandbox !== undefined,
-          escalationAvailable:
-            runtimeContext === undefined ||
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
-              sandboxMode: runtimeContext.requestedSandboxMode,
-              session: runtimeContext.invocation.session,
-            }),
+          session: runtimeContext?.invocation.session,
+          escalation: execEscalationGrant(args, "with_approval"),
         });
         const confinedWorktree = runtimeSandbox === undefined
           ? undefined
           : readSandboxExecutionBroker(args)?.worktreeConfinement?.worktree;
-        const notice = denial?.notice ?? execNetworkFailureNotice({
-          output: execContent,
-          exitCode: output.exitCode,
-          runtimeSandbox,
-          escalationAvailable: runtimeContext !== undefined &&
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
-              sandboxMode: runtimeContext.requestedSandboxMode,
-              session: runtimeContext.invocation.session,
-            }),
-        }) ?? (confinedWorktree === undefined
-          ? null
-          : worktreeWriteDenialNotice({
-              output: execContent,
-              exitCode: output.exitCode,
-              worktree: confinedWorktree,
-            }));
+        // A read-only command line ran without write or network authority only
+        // because it looked like an inspection, so a refused write or lookup is
+        // that choice, not the session sandbox: escalation advice would mislead.
+        const ordinaryNotice = (): string | null => {
+          const networkEscalation = execEscalationGrant(args, "unavailable");
+          const networkNotice = denial === null
+            ? execNetworkFailureNotice({
+                output: execContent,
+                exitCode: output.exitCode,
+                command: cmd,
+                runtimeSandbox,
+                escalation: networkEscalation,
+              })
+            : null;
+          // The notice tells the model to retry with sandbox_permissions: the
+          // next request must present that field.
+          if (denial?.advisesEscalation === true || (networkNotice !== null && networkEscalation !== "unavailable")) {
+            notifyExecEscalationDiscovery(args, config?.onEscalationAdvised);
+          }
+          return denial?.notice ?? networkNotice ?? (confinedWorktree === undefined
+            ? null
+            : worktreeWriteDenialNotice({
+                output: execContent,
+                exitCode: output.exitCode,
+                worktree: confinedWorktree,
+              }));
+        };
+        const primaryNotice = readOnlyShell !== undefined
+          ? readOnlyCommandNotice(execContent, output.exitCode)
+          : ordinaryNotice();
+        const namespaceNotice = execProcessNamespaceNotice({ command: cmd, runtimeSandbox });
+        const notice = [primaryNotice, namespaceNotice].filter(Boolean).join("\n\n") || null;
+        // How to check a server after one that waited a fixed time, unless a
+        // sandbox or process notice already says what to do next or the
+        // description already says it on every request. A check still running
+        // gets the guidance without the claim that nothing needs a later kill:
+        // its session needs kill_process or a poll.
+        const serverNote = notice === null && !serverChecksDescribed
+          ? serverCheckNoteOncePerSession(noteSessionId, cmd, stillAlive)
+          : undefined;
+        const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
         return {
           content:
-            notice === null ? execContent : `${execContent}\n\n${notice}`,
+            notice === null ? content : `${content}\n\n${notice}`,
           isError: isError || undefined,
-          codeModeResult: unifiedExecCodeModeResult(output),
+          codeModeResult: unifiedExecCodeModeResult(output, notice),
           effectDisposition: processObservationDisposition(
             cmd,
             effectiveWorkdir ?? config?.cwd ?? process.cwd(),
@@ -1411,5 +1390,5 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         return errorResult(error);
       }
     },
-  };
+  }, { readOnlyShellAvailable: () => manager.readOnlyShellAvailable?.() === true });
 }

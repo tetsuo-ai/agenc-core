@@ -52,6 +52,7 @@ export interface McpMenuController {
   reconnect(serverName: string): Promise<string>;
   enable(serverName: string): Promise<string>;
   disable(serverName: string): Promise<string>;
+  remove(serverName: string): Promise<string>;
   add(serverName: string, commandLine: string): Promise<string>;
   create(serverName: string, toolName: string, description: string): Promise<string>;
 }
@@ -62,6 +63,7 @@ type ParsedMcpArgs =
   | { readonly kind: "reconnect"; readonly serverName: string }
   | { readonly kind: "enable"; readonly serverName: string }
   | { readonly kind: "disable"; readonly serverName: string }
+  | { readonly kind: "remove"; readonly serverName: string }
   | {
       readonly kind: "new";
       readonly serverName: string;
@@ -83,6 +85,7 @@ function usage(): string {
     "       /mcp reconnect <server>",
     "       /mcp enable <server>",
     "       /mcp disable <server>",
+    "       /mcp remove <server> (session additions only)",
     "       /mcp new <server> [--tool <tool>] [description...]",
     "       /mcp add <server> <command> [args...]",
   ].join("\n");
@@ -150,7 +153,7 @@ export function parseMcpArgs(argsRaw: string): ParsedMcpArgs {
     if (words.length > 2) return { kind: "error", message: usage() };
     return words[1] ? { kind: "tools", serverName: words[1] } : { kind: "tools" };
   }
-  if (first === "reconnect" || first === "enable" || first === "disable") {
+  if (first === "reconnect" || first === "enable" || first === "disable" || first === "remove") {
     if (words.length !== 2 || !words[1]) return { kind: "error", message: usage() };
     return { kind: first, serverName: words[1] };
   }
@@ -629,6 +632,14 @@ function createMcpMenuController(ctx: SlashCommandContext): McpMenuController {
         "disabled for this session",
       );
     },
+    remove: async (serverName: string) => {
+      const remove = requireMcpMethod(manager.removeServer, "remove");
+      return mutationResultText(
+        "remove",
+        await remove(serverName),
+        "removed for this session",
+      );
+    },
     add: async (serverName: string, commandLine: string) => {
       const words = parseShellWords(commandLine.trim());
       if (words === null || !words[0]) {
@@ -739,6 +750,10 @@ export const mcpCommand: SlashCommand = {
         };
       }
       const manager = ctx.session.services.mcpManager;
+      if (parsed.kind === "remove") {
+        const remove = requireMcpMethod(manager.removeServer, "remove");
+        return formatMutationResult("remove", await remove(parsed.serverName), "removed from this session");
+      }
       if (parsed.kind === "new") {
         const scaffold = await createProjectMcpServer(
           ctx.cwd,

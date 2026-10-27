@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JWT } from "google-auth-library";
 import type { AuthBackend } from "../auth/backend.js";
-import { AgenCProvider } from "./providers/agenc/index.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
@@ -381,43 +380,16 @@ describe("createProvider", () => {
     }
   });
 
-  test("routes 'agenc' to AgenCProvider with explicit auth context", () => {
-    const provider = createProvider("agenc", {
-      baseURL: "http://127.0.0.1:8000/v1",
-      model: "agenc",
-      extra: {
-        authBackend,
-        sessionId: "session-1",
-        subscriptionTier: "team",
-        maxTokens: 2048,
-      },
-    });
-
-    expect(provider).toBeInstanceOf(AgenCProvider);
-    expect(isFactoryProvider(provider)).toBe(true);
-    expect(readProviderIdentity(provider)).toBe("agenc");
-    expect(readProviderFactoryOptions(provider)).toMatchObject({
-      baseURL: "http://127.0.0.1:8000/v1",
-      model: "agenc",
-      extra: {
-        maxTokens: 2048,
-      },
-    });
-    expect(readProviderFactoryOptions(provider).extra).not.toHaveProperty(
-      "authBackend",
-    );
-  });
-
   test("'agenc' without auth context throws explanatory error", () => {
     expect(() => createProvider("agenc", { model: "agenc" })).toThrow(
-      /authBackend/,
+      /no longer provide models/,
     );
     expect(() =>
       createProvider("agenc", {
         model: "agenc",
         extra: { authBackend },
       }),
-    ).toThrow(/sessionId/);
+    ).toThrow(/no longer provide models/);
   });
 
   test.each(KNOWN_PROVIDER_NAMES)(
@@ -542,71 +514,6 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
-  test.each([
-    { name: "grok", model: "grok-4.3" },
-    { name: "openai", model: "gpt-5" },
-    { name: "anthropic", model: "claude-opus-4-7" },
-    {
-      name: "openai-compatible",
-      model: "local-model",
-      baseURL: "https://llm.agenc.tech/v1",
-    },
-    { name: "openrouter", model: "openai/gpt-5" },
-    { name: "groq", model: "llama-3.3-70b-versatile" },
-    { name: "deepseek", model: "deepseek-v4-pro" },
-    {
-      name: "amazon-bedrock",
-      model: "amazon.nova-pro-v1:0",
-    },
-  ] as const)(
-    "vends concrete provider keys through AuthBackend for '$name'",
-    async (entry) => {
-      const { name, model } = entry;
-      const extra = "extra" in entry ? entry.extra : undefined;
-      const baseURL = "baseURL" in entry ? entry.baseURL : undefined;
-      const vendKey = vi.fn(async (provider: string, sessionId: string) =>
-        provider === "amazon-bedrock"
-          ? {
-              provider,
-              sessionId,
-              kind: "aws-sigv4" as const,
-              accessKeyId: "vended-aws-access",
-              secretAccessKey: "vended-aws-secret",
-              sessionToken: "vended-aws-session",
-              region: "us-west-2",
-            }
-          : {
-              provider,
-              sessionId,
-              kind: "api-key" as const,
-              apiKey: `vended-${provider}-key`,
-            },
-      );
-      const vendingAuthBackend: AuthBackend = {
-        ...authBackend,
-        vendKey,
-      };
-
-      const provider = createProvider(name, {
-        model,
-        ...(baseURL !== undefined ? { baseURL } : {}),
-        extra: {
-          authBackend: vendingAuthBackend,
-          sessionId: "session-vend",
-          ...(extra ?? {}),
-        },
-      });
-
-      expect(provider.name).toBe(name);
-      expect(isFactoryProvider(provider)).toBe(true);
-      await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-        provider: name,
-        model,
-      });
-      expect(vendKey).toHaveBeenCalledWith(name, "session-vend");
-    },
-  );
-
   test("never asks AuthBackend to vend Gemini credentials", () => {
     const vendKey = vi.fn(authBackend.vendKey);
     const provider = createProvider("gemini", {
@@ -674,85 +581,13 @@ describe("createProvider", () => {
     },
   );
 
-  test("normalizes OpenRouter model ids for AuthBackend-vended gateway keys", async () => {
-    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-      provider,
-      sessionId,
-      kind: "api-key" as const,
-      apiKey: "vended-gateway-key",
-      baseUrl: "https://llm.agenc.tech",
-    }));
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-
-    const provider = createProvider("openrouter", {
-      model: "x-ai/grok-4.3",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-gateway",
-      },
-    });
-
-    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-      provider: "openrouter",
-      model: "openrouter/x-ai/grok-4.3",
-    });
-    expect(vendKey).toHaveBeenCalledWith("openrouter", "session-gateway");
-  });
-
-  test("normalizes OpenRouter model ids for direct managed gateway providers", async () => {
-    const provider = createProvider("openrouter", {
-      apiKey: "managed-gateway-key",
-      baseURL: "https://llm.agenc.tech",
-      model: "x-ai/grok-build-0.1",
-      extra: { managedGateway: true },
-    });
-
-    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-      provider: "openrouter",
-      model: "openrouter/x-ai/grok-build-0.1",
-    });
-    expect(readProviderFactoryOptions(provider)).toMatchObject({
-      model: "openrouter/x-ai/grok-build-0.1",
-    });
-  });
-
-  test("defaults model metadata on AuthBackend-vended providers without explicit model", () => {
-    const provider = createProvider("openai", {
-      extra: {
-        authBackend,
-        sessionId: "session-default-model",
-      },
-    });
-
-    expect(
-      (provider as unknown as { config: { model: string } }).config.model,
-    ).toBe("gpt-5");
-    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5");
-  });
-
-  test("prepares AuthBackend-vended provider switches without explicit model", () => {
-    const prepared = prepareProviderSwitch("openai", {
-      extra: {
-        authBackend,
-        sessionId: "session-switch-default-model",
-      },
-    });
-
-    expect(prepared.provider).toBe("openai");
-    expect(prepared.model).toBe("gpt-5");
-    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
-  });
-
   test("does not let ambient provider-specific model env change factory selection", async () => {
     const provider = withEnv(
       {
         OPENAI_MODEL: "gpt-5.4",
       },
       () =>
-        createProvider("openai", {
+        createProvider("openai", { apiKey: "synthetic-user-key",
           extra: {
             authBackend,
             sessionId: "session-env-model",
@@ -764,7 +599,7 @@ describe("createProvider", () => {
         OPENAI_MODEL: "gpt-5.4",
       },
       () =>
-        prepareProviderSwitch("openai", {
+        prepareProviderSwitch("openai", { apiKey: "synthetic-user-key",
           extra: {
             authBackend,
             sessionId: "session-env-model-switch",
@@ -782,120 +617,6 @@ describe("createProvider", () => {
     });
     expect(prepared.model).toBe("gpt-5");
     expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
-  });
-
-  test("uses AuthBackend-vended keys on delegated compatible requests", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "chatcmpl_1",
-          model: "openai/gpt-5",
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content: "delegated",
-              },
-              finish_reason: "stop",
-            },
-          ],
-          usage: {
-            prompt_tokens: 4,
-            completion_tokens: 1,
-            total_tokens: 5,
-          },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-      provider,
-      sessionId,
-      kind: "api-key" as const,
-      apiKey: "vended-openrouter-key",
-      baseUrl: "https://llm.agenc.tech/v1",
-    }));
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-    const provider = createProvider("openrouter", {
-      model: "openai/gpt-5",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-chat",
-        fetchImpl,
-      },
-    });
-
-    const response = await provider.chat([{ role: "user", content: "hello" }]);
-
-    expect(response.content).toBe("delegated");
-    expect(vendKey).toHaveBeenCalledWith("openrouter", "session-chat");
-    const [url] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(url)).toBe("https://llm.agenc.tech/v1/chat/completions");
-    const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const headers = init?.headers as Headers;
-    expect(headers.get("authorization")).toBe("Bearer vended-openrouter-key");
-  });
-
-  test("uses AuthBackend-vended Bedrock credentials on delegated requests", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          output: {
-            message: {
-              role: "assistant",
-              content: [{ text: "bedrock delegated" }],
-            },
-          },
-          stopReason: "end_turn",
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-      provider,
-      sessionId,
-      kind: "aws-sigv4" as const,
-      accessKeyId: "vended-aws-access",
-      secretAccessKey: "vended-aws-secret",
-      sessionToken: "vended-aws-session",
-      region: "us-west-2",
-    }));
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-    const provider = createProvider("amazon-bedrock", {
-      model: "amazon.nova-pro-v1:0",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-bedrock",
-        region: "us-east-1",
-        fetchImpl,
-      },
-    });
-
-    const response = await provider.chat([{ role: "user", content: "hello" }]);
-
-    expect(response.content).toBe("bedrock delegated");
-    expect(vendKey).toHaveBeenCalledWith("amazon-bedrock", "session-bedrock");
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe(
-      "https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-pro-v1%3A0/converse",
-    );
-    const headers = new Headers(init?.headers as HeadersInit);
-    expect(headers.get("x-amz-security-token")).toBe("vended-aws-session");
-    expect(headers.get("authorization")).toContain(
-      "Credential=vended-aws-access/",
-    );
   });
 
   test("does not combine partial explicit Bedrock credentials with managed vending", () => {
@@ -922,322 +643,6 @@ describe("createProvider", () => {
         },
       }),
     ).toThrow(/requires accessKeyId/u);
-    expect(vendKey).not.toHaveBeenCalled();
-  });
-
-  test.each([
-    {
-      label: "provider",
-      vended: {
-        provider: "anthropic",
-        sessionId: "session-mismatch",
-        kind: "api-key" as const,
-        apiKey: "vended-openai-key",
-      },
-      expected: /returned provider "anthropic"/,
-    },
-    {
-      label: "sessionId",
-      vended: {
-        provider: "openai",
-        sessionId: "other-session",
-        kind: "api-key" as const,
-        apiKey: "vended-openai-key",
-      },
-      expected: /returned session "other-session"/,
-    },
-  ])(
-    "rejects AuthBackend-vended provider keys with mismatched $label",
-    async ({ vended, expected }) => {
-      const vendingAuthBackend: AuthBackend = {
-        ...authBackend,
-        vendKey: vi.fn(async () => vended),
-      };
-      const provider = createProvider("openai", {
-        model: "gpt-5.4",
-        extra: {
-          authBackend: vendingAuthBackend,
-          sessionId: "session-mismatch",
-        },
-      });
-
-      await expect(provider.getExecutionProfile?.()).rejects.toThrow(expected);
-    },
-  );
-
-  test.each([
-    {
-      provider: "openai" as const,
-      model: "gpt-5.4",
-      vended: {
-        provider: "openai",
-        sessionId: "session-kind",
-        kind: "aws-sigv4" as const,
-        accessKeyId: "aws-access",
-        secretAccessKey: "aws-secret",
-      },
-      expected: /expected api-key/u,
-    },
-    {
-      provider: "amazon-bedrock" as const,
-      model: "amazon.nova-pro-v1:0",
-      vended: {
-        provider: "amazon-bedrock",
-        sessionId: "session-kind",
-        kind: "api-key" as const,
-        apiKey: "not-an-aws-access-key",
-      },
-      expected: /expected aws-sigv4/u,
-    },
-  ])(
-    "rejects $provider managed credentials of the wrong kind",
-    async ({ provider: name, model, vended, expected }) => {
-      const provider = createProvider(name, {
-        model,
-        extra: {
-          authBackend: {
-            ...authBackend,
-            vendKey: vi.fn(async () => vended),
-          },
-          sessionId: "session-kind",
-        },
-      });
-
-      await expect(provider.getExecutionProfile?.()).rejects.toThrow(expected);
-    },
-  );
-
-  test("rejects empty AuthBackend-vended provider keys", async () => {
-    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-      provider,
-      sessionId,
-      kind: "api-key" as const,
-      apiKey: " ",
-    }));
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-    const provider = createProvider("openai", {
-      model: "gpt-5.4",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-empty",
-      },
-    });
-
-    await expect(provider.getExecutionProfile?.()).rejects.toThrow(
-      /AuthBackend\.vendKey\(\) returned an empty API key/,
-    );
-  });
-
-  test("retries AuthBackend vending after transient delegate failures", async () => {
-    const vendKey = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("temporary vending failure"))
-      .mockResolvedValueOnce({
-        provider: "openai",
-        sessionId: "session-retry",
-        kind: "api-key" as const,
-        apiKey: "vended-openai-key",
-      });
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-    const provider = createProvider("openai", {
-      model: "gpt-5.4",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-retry",
-      },
-    });
-
-    await expect(provider.getExecutionProfile?.()).rejects.toThrow(
-      /temporary vending failure/,
-    );
-    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-      provider: "openai",
-      model: "gpt-5.4",
-    });
-    expect(vendKey).toHaveBeenCalledTimes(2);
-  });
-
-  test("re-vends AuthBackend keys after vended expiry", async () => {
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-      const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-        provider,
-        sessionId,
-        kind: "api-key" as const,
-        apiKey: `vended-openai-key-${vendKey.mock.calls.length}`,
-        expiresAt: new Date(Date.now() + 1_000).toISOString(),
-      }));
-      const vendingAuthBackend: AuthBackend = {
-        ...authBackend,
-        vendKey,
-      };
-      const provider = createProvider("openai", {
-        model: "gpt-5.4",
-        extra: {
-          authBackend: vendingAuthBackend,
-          sessionId: "session-expiry",
-        },
-      });
-
-      await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-        provider: "openai",
-        model: "gpt-5.4",
-      });
-      vi.setSystemTime(new Date("2026-01-01T00:00:02.000Z"));
-      await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-        provider: "openai",
-        model: "gpt-5.4",
-      });
-
-      expect(vendKey).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  test("preserves optional provider hooks on AuthBackend-vended providers that support them", () => {
-    const grok = createProvider("grok", {
-      model: "grok-4.3",
-      extra: {
-        authBackend,
-        sessionId: "session-hooks",
-      },
-    });
-    const openai = createProvider("openai", {
-      model: "gpt-5.4",
-      extra: {
-        authBackend,
-        sessionId: "session-hooks-openai",
-      },
-    });
-
-    expect(typeof grok.prewarmStartup).toBe("function");
-    expect(typeof grok.retrieveStoredResponse).toBe("function");
-    expect(typeof grok.deleteStoredResponse).toBe("function");
-    expect(openai.prewarmStartup).toBeUndefined();
-    expect(typeof openai.retrieveStoredResponse).toBe("function");
-    expect(typeof openai.deleteStoredResponse).toBe("function");
-  });
-
-  test.each([
-    {
-      name: "anthropic",
-      model: "claude-opus-4-7",
-    },
-    {
-      name: "amazon-bedrock",
-      model: "amazon.nova-pro-v1:0",
-    },
-  ] as const)(
-    "does not expose unsupported optional provider hooks on AuthBackend-vended $name providers",
-    ({ name, model }) => {
-      const provider = createProvider(name, {
-        model,
-        extra: {
-          authBackend,
-          sessionId: `session-no-hooks-${name}`,
-        },
-      });
-
-      expect(provider.prewarmStartup).toBeUndefined();
-      expect(provider.retrieveStoredResponse).toBeUndefined();
-      expect(provider.deleteStoredResponse).toBeUndefined();
-    },
-  );
-
-  test("recreates AuthBackend-vended providers from readProviderFactoryOptions", async () => {
-    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-      provider,
-      sessionId,
-      kind: "api-key" as const,
-      apiKey: "vended-openrouter-key",
-    }));
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-    const provider = createProvider("openrouter", {
-      model: "openai/gpt-5",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-rebuild",
-      },
-    });
-
-    const options = readProviderFactoryOptions(provider);
-    expect(options.apiKey).toBeUndefined();
-    expect(options.extra?.authBackend).toBe(vendingAuthBackend);
-    expect(options.extra).toMatchObject({
-      sessionId: "session-rebuild",
-    });
-
-    const rebuilt = createProvider("openrouter", options);
-    await expect(rebuilt.getExecutionProfile?.()).resolves.toMatchObject({
-      provider: "openrouter",
-      model: "openai/gpt-5",
-    });
-    expect(vendKey).toHaveBeenCalledWith("openrouter", "session-rebuild");
-  });
-
-  test("coalesces concurrent AuthBackend vending for a cold provider", async () => {
-    let resolveVend!: () => void;
-    const vendKey = vi.fn(
-      (provider: string, sessionId: string) =>
-        new Promise<Awaited<ReturnType<AuthBackend["vendKey"]>>>((resolve) => {
-          resolveVend = () =>
-            resolve({
-              provider,
-              sessionId,
-              kind: "api-key",
-              apiKey: "vended-openai-key",
-            });
-        }),
-    );
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-    const provider = createProvider("openai", {
-      model: "gpt-5.4",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-concurrent",
-      },
-    });
-
-    const firstProfile = provider.getExecutionProfile?.();
-    const secondProfile = provider.getExecutionProfile?.();
-    expect(firstProfile).toBeDefined();
-    expect(secondProfile).toBeDefined();
-    expect(vendKey).toHaveBeenCalledTimes(1);
-
-    resolveVend();
-    await Promise.all([firstProfile, secondProfile]);
-    expect(vendKey).toHaveBeenCalledTimes(1);
-  });
-
-  test("authBackend without sessionId in factory options fails before vending", () => {
-    const vendKey = vi.fn(authBackend.vendKey);
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
-
-    expect(() =>
-      createProvider("openai", {
-        model: "gpt-5.4",
-        extra: {
-          authBackend: vendingAuthBackend,
-        },
-      }),
-    ).toThrow(/sessionId/);
     expect(vendKey).not.toHaveBeenCalled();
   });
 

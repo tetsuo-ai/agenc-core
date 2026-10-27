@@ -53,9 +53,8 @@ import {
   isTrustedXaiOauthInferenceBaseUrl,
 } from "../services/xai/oauth.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
-import { hasActivePilotModelAccess } from "../auth/pilot-access.js";
-import { LLMMissingCredentialsError } from "./errors.js";
 
+import { LLMMissingCredentialsError } from "./errors.js";
 
 /** Lower-precedence credentials discovered at the canonical ingress. */
 export interface ProviderCredentialCandidates {
@@ -114,15 +113,11 @@ export interface ProviderRuntimeCredentialOptions {
   readonly authBackend?: AuthBackend;
   readonly sessionId?: string;
   readonly subscriptionTier?: AuthSubscriptionTier;
-  readonly managedKeysEnabled?: boolean;
-  readonly freeManagedCredential?: boolean;
 }
 
 export interface ResolvedProviderRuntimeAuthority extends ResolvedProviderCredentialAuthority {
   readonly managedCredential: boolean;
 }
-
-export const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
 function nonEmpty(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -159,7 +154,6 @@ function assertOpenAiOauthBaseUrl(baseURL: string | undefined): string {
   }
   return canonical;
 }
-
 
 function readyCredential(
   mode: ProviderCredentialReadyMode,
@@ -851,80 +845,25 @@ export function resolveProviderCredentialAuthority(
   );
 }
 
-function isEntitledSubscription(
-  tier: AuthSubscriptionTier | undefined,
-): boolean {
-  return tier === "pro" || tier === "team" || tier === "enterprise";
-}
-
+/** Retired provider names fail before any account or provider request. */
 export function assertHostedAgencSubscriptionAuthority(params: {
   readonly provider: ProviderName;
-  readonly authBackend: AuthBackend | undefined;
-  readonly subscriptionTier: AuthSubscriptionTier | undefined;
+  readonly authBackend?: AuthBackend;
+  readonly subscriptionTier?: AuthSubscriptionTier;
 }): void {
-  if (
-    params.provider === "agenc" &&
-    params.authBackend?.kind === "remote" &&
-    !isEntitledSubscription(params.subscriptionTier)
-  ) {
-    throw new Error(
-      "Hosted AgenC model routing requires an active AgenC subscription",
-    );
+  if (params.provider === "agenc") {
+    throw new Error("AgenC accounts no longer provide models. Choose a provider with your own credentials or a local server.");
   }
 }
 
-/** A remote authority may grant one expiring pilot model without changing tier. */
 export async function assertHostedAgencModelAuthority(params: {
   readonly provider: ProviderName;
   readonly model?: string;
   readonly sessionId?: string;
-  readonly authBackend: AuthBackend | undefined;
-  readonly subscriptionTier: AuthSubscriptionTier | undefined;
+  readonly authBackend?: AuthBackend;
+  readonly subscriptionTier?: AuthSubscriptionTier;
 }): Promise<void> {
-  if (params.provider === "agenc" && params.authBackend?.kind === "remote" &&
-      !isEntitledSubscription(params.subscriptionTier)) {
-    try {
-      const usage = await params.authBackend.getLlmUsage({ sessionId: params.sessionId });
-      if (hasActivePilotModelAccess(usage, params.model)) return;
-    } catch {
-      // An unavailable or malformed entitlement cannot grant hosted access.
-    }
-    if (params.model !== undefined && params.model !== "agenc") {
-      throw new Error(
-        "This AgenC model is unavailable. Check your model access and server readiness.",
-      );
-    }
-  }
   assertHostedAgencSubscriptionAuthority(params);
-}
-
-function withRuntimeAuthExtra(
-  provider: ProviderName,
-  options: ProviderFactoryOptions,
-  runtime: ProviderRuntimeCredentialOptions,
-  managedCredential: boolean,
-): ProviderFactoryOptions {
-  const sessionId = nonEmpty(runtime.sessionId);
-  if (runtime.authBackend === undefined || sessionId === undefined) {
-    return options;
-  }
-  return {
-    ...options,
-    extra: {
-      ...(options.extra ?? {}),
-      authBackend: runtime.authBackend,
-      sessionId,
-      ...(runtime.subscriptionTier !== undefined
-        ? { subscriptionTier: runtime.subscriptionTier }
-        : {}),
-      ...(managedCredential ? { managedCredential: true } : {}),
-      ...(managedCredential &&
-      provider === "openrouter" &&
-      options.extra?.maxTokens === undefined
-        ? { maxTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS }
-        : {}),
-    },
-  };
 }
 
 /** Local credential choice shared by consent preview and live preparation. */
@@ -969,28 +908,9 @@ export async function resolveProviderLocalCredentialAuthority(
       });
     }
   }
-  const sessionId = nonEmpty(runtime.sessionId);
-  const managedCredential =
-    resolved.credential.status === "missing" &&
-    authPreference === "auto" &&
-    runtime.managedKeysEnabled === true &&
-    info?.onboarding.supportsManagedKeyAccess === true &&
-    runtime.authBackend !== undefined &&
-    sessionId !== undefined;
-
-  if (
-    managedCredential &&
-    runtime.authBackend?.kind === "remote" &&
-    !isEntitledSubscription(runtime.subscriptionTier) &&
-    runtime.freeManagedCredential !== true
-  ) {
-    throw new Error(
-      "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
-    );
-  }
   return Object.freeze({
     ...resolved,
-    managedCredential,
+    managedCredential: false,
   });
 }
 
@@ -1012,19 +932,10 @@ export async function resolveProviderRuntimeAuthority(
     subscriptionTier: runtime.subscriptionTier,
   });
 
-  const needsAuthBackend = selected.managedCredential || provider === "agenc";
-  const factoryOptions = needsAuthBackend
-    ? withRuntimeAuthExtra(
-        provider,
-        selected.factoryOptions,
-        runtime,
-        selected.managedCredential,
-      )
-    : selected.factoryOptions;
   return Object.freeze({
-    factoryOptions,
+    factoryOptions: selected.factoryOptions,
     credential: selected.credential,
-    managedCredential: selected.managedCredential,
+    managedCredential: false,
   });
 }
 
@@ -1032,20 +943,10 @@ export function requireProviderRuntimeCredential(
   provider: ProviderName,
   authority: ResolvedProviderRuntimeAuthority,
 ): void {
-  if (
-    authority.credential.status !== "missing" ||
-    authority.managedCredential ||
-    provider === "agenc"
-  ) {
-    return;
-  }
-  const managedHint =
-    resolveBuiltInProviderInfo(provider)?.onboarding
-      .supportsManagedKeyAccess === true
-      ? " or sign in and enable auth.managedKeys.enabled"
-      : "";
+  assertHostedAgencSubscriptionAuthority({ provider });
+  if (authority.credential.status !== "missing") return;
   throw new LLMMissingCredentialsError(provider,
-    `${provider} provider requires credentials. Set ${authority.credential.missingLabel}${managedHint}.`,
+    `${provider} provider requires credentials. Set ${authority.credential.missingLabel}.`,
   );
 }
 

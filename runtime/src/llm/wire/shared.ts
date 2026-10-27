@@ -15,7 +15,7 @@ import type {
   LLMUsage,
 } from "../types.js";
 import { LLMInvalidResponseError } from "../errors.js";
-import { normalizeMessagesForAPI } from "../messages.js";
+import { normalizeMessagesForAPI, type NormalizeMessagesForAPIOptions } from "../messages.js";
 import { validateToolCall, validateToolCallDetailed } from "../types.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 import { validateAgentInvocationMessageSequence } from "../../contracts/agent-invocation-envelope.js";
@@ -307,6 +307,7 @@ export function coerceUsage(usage: {
   readonly availability?: LLMUsage["availability"];
   readonly provenance?: LLMUsage["provenance"];
   readonly cacheWritesUnreported?: LLMUsage["cacheWritesUnreported"];
+  readonly providerCostUsd?: unknown;
 }): LLMUsage {
   const reportedPromptTokens = toOptionalNumber(usage.promptTokens);
   const reportedCompletionTokens = toOptionalNumber(usage.completionTokens);
@@ -346,6 +347,10 @@ export function coerceUsage(usage: {
     ...(usage.speed !== undefined ? { speed: usage.speed } : {}),
     ...(usage.cacheWritesUnreported !== undefined
       ? { cacheWritesUnreported: usage.cacheWritesUnreported }
+      : {}),
+    ...(typeof usage.providerCostUsd === "number" && Number.isFinite(usage.providerCostUsd) &&
+      usage.providerCostUsd >= 0
+      ? { providerCostUsd: usage.providerCostUsd }
       : {}),
   };
 }
@@ -708,9 +713,11 @@ export function parseAnthropicToolChoice(
 export function prepareMessagesForWire(
   messages: readonly LLMMessage[],
   options?: LLMChatOptions,
+  normalization?: Pick<NormalizeMessagesForAPIOptions, "preserveReasoningOnlyFor">,
 ): readonly LLMMessage[] {
   validateAgentInvocationMessageSequence(messages);
   return normalizeMessagesForAPI(messages, {
+    ...normalization,
     ...(options?.skipCacheWrite !== undefined
       ? { skipCacheWrite: options.skipCacheWrite }
       : {}),

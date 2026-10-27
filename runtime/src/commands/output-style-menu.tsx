@@ -53,6 +53,12 @@ function statusGlyph(status: OutputStyleMenuRowStatus): string {
   }
 }
 
+const STYLE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  default: "answers coding questions directly and keeps explanations brief.",
+  explanatory: "explains the choices behind the code as it works.",
+  learning: "helps you learn by explaining the work and asking you to try parts yourself.",
+};
+
 function OutputStyleMenuView({
   snapshot,
   onDone,
@@ -107,13 +113,13 @@ function OutputStyleMenuView({
   return (
     <MenuModal
       title="output style"
-      count={`${rows.length}`}
       summary={`effective ${snapshot.effectiveStyle}`}
       headerRight={busy ? "switching" : "local"}
       columns={[3, 13, 24, 18, 44]}
       headers={["", "status", "style", "source", "description"]}
       items={rows}
       activeIndex={activeIndex}
+      detail={<ThemedText color="text2" wrap="wrap">{selected ? `${selected.name}: ${STYLE_DESCRIPTIONS[selected.name.toLowerCase()] ?? selected.description}` : "choose how the agent explains its work."}</ThemedText>}
       renderRow={(row, _index, active) => {
         const color = statusColor(row.status);
         return [

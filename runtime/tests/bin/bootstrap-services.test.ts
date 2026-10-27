@@ -534,7 +534,16 @@ describe("execution admission journal projection", () => {
     expect(subscribeCritical).toHaveBeenCalledTimes(2);
     expect(subscribe).not.toHaveBeenCalled();
     expect(readAll).toHaveBeenCalledOnce();
-    expect(syncCanonicalTail).toHaveBeenCalledTimes(2);
+    // journal-1 (committed before the first bind) and journal-2 (delivered
+    // live) are already in the rollout when the session rebinds. One fsync
+    // of the whole canonical file proves both; nothing is written between
+    // them, so a second proof would cover the same bytes. The proof comes
+    // after the rebind starts and before the detached journal-3 is appended,
+    // whose own durable append covers it.
+    expect(syncCanonicalTail).toHaveBeenCalledOnce();
+    const [proof] = syncCanonicalTail.mock.invocationCallOrder;
+    expect(proof).toBeGreaterThan(emit.mock.invocationCallOrder[1]!);
+    expect(proof).toBeLessThan(emit.mock.invocationCallOrder[2]!);
     stopSecondBinding();
   });
 

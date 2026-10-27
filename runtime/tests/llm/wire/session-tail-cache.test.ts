@@ -216,7 +216,7 @@ describe("grok keeps the session tail inside the reusable prefix", () => {
 });
 
 describe("OpenAI Responses keeps the session tail in the instructions", () => {
-  it("adds the session tail to the instructions and sends only the per-request tail last", () => {
+  it("adds the session tail to the instructions and sends the per-request tail as the first input item", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-test",
       messages: TURN_2,
@@ -225,11 +225,12 @@ describe("OpenAI Responses keeps the session tail in the instructions", () => {
     });
     expect(request.instructions).toBe(`${STATIC_HEAD}\n\n${SESSION_TAIL}`);
     const input = request.input as Array<Record<string, unknown>>;
-    expect(input.at(-1)).toEqual({
+    expect(input[0]).toEqual({
       type: "message",
       role: "system",
       content: [{ type: "input_text", text: PERMISSIONS }],
     });
+    expect(input.at(-1)).toMatchObject({ type: "message", role: "user" });
   });
 
   it("folds everything into the instructions on the ChatGPT backend", () => {

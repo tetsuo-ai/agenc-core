@@ -35,8 +35,8 @@ vi.mock('../../utils/config.js', () => ({
   getRuntimeState: () => harness.config,
 }))
 
-vi.mock('../../utils/settings/settings.js', () => ({
-  getExecutionAuthoritySettings: () => ({
+vi.mock('./useSettings.js', () => ({
+  useSettings: () => ({
     tui: { copyOnSelect: harness.config.copyOnSelect },
   }),
 }))
@@ -159,6 +159,7 @@ describe('useCopyOnSelect wave200 coverage', () => {
       notifySelectionChanged()
 
       harness.config = { copyOnSelect: false }
+      await render()
       harness.hasSelection.mockReturnValue(true)
       harness.copySelectionNoClear.mockClear()
       notifySelectionChanged()

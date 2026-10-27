@@ -25,7 +25,10 @@ import {
   boundedExcerpt,
   type GoalVerificationCommand,
   type GoalVerificationResult,
+  type GoalWorkingTreeBaseline,
 } from "./goal.js";
+import { changedGoalWorkingTreePaths } from "./worktree-baseline.js";
+import { goalWorkingTreeDiff } from "./worktree-diff.js";
 
 export const DEFAULT_GOAL_VERIFY_TIMEOUT_MS = 10 * 60_000;
 export const GOAL_JUDGE_TIMEOUT_MS = 120_000;
@@ -42,10 +45,12 @@ export interface GoalGateDeps {
     readonly timeoutMs: number;
     readonly signal?: AbortSignal;
   }): Promise<readonly GoalVerificationResult[]>;
-  changedPaths(cwd: string, baseCommit: string | undefined): Promise<readonly string[]>;
+  changedPaths(cwd: string, baseCommit: string | undefined, baseline?: GoalWorkingTreeBaseline): Promise<readonly string[]>;
   diff(
     cwd: string,
     baseCommit: string | undefined,
+    baseline?: GoalWorkingTreeBaseline,
+    agencHome?: string,
   ): Promise<{ readonly stat: string; readonly diff: string }>;
   /** Raw judge text; throws when the judge could not be reached. */
   judge(input: {
@@ -137,8 +142,9 @@ export const defaultGoalGateDeps: GoalGateDeps = {
     }
     return results;
   },
-  async changedPaths(cwd, baseCommit) {
+  async changedPaths(cwd, baseCommit, baseline) {
     if (baseCommit === undefined) return [];
+    if (baseline !== undefined) return changedGoalWorkingTreePaths(cwd, baseCommit, baseline);
     const [tracked, untracked] = await Promise.all([
       gitText(["diff", "--name-only", baseCommit], cwd),
       gitText(["ls-files", "--others", "--exclude-standard"], cwd),
@@ -150,8 +156,9 @@ export const defaultGoalGateDeps: GoalGateDeps = {
     }
     return [...paths];
   },
-  async diff(cwd, baseCommit) {
+  async diff(cwd, baseCommit, baseline, agencHome) {
     if (baseCommit === undefined) return { stat: "", diff: "" };
+    if (baseline !== undefined) return goalWorkingTreeDiff(cwd, baseCommit, baseline, agencHome);
     const [stat, diff] = await Promise.all([
       gitText(["diff", "--stat", baseCommit], cwd),
       gitText(["diff", "--no-color", baseCommit], cwd),

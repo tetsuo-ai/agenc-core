@@ -1,5 +1,5 @@
 import type { ToolExecutionInjectedArgs } from "../tools/types.js";
-import type { ReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
+import type { ReadOnlyInspectionInvocation, ReadOnlyShellInvocation } from "../permissions/readonly-inspection.js";
 import type {
   AdditionalPermissionProfile,
   NetworkProxyConfig,
@@ -100,11 +100,23 @@ export interface UnifiedExecManagerOptions {
   readonly sandboxManager?: UnifiedExecSandboxManager;
   /** Injectable only for deterministic sandbox-authority drain tests. */
   readonly sandboxAuthorityQuiesceTimeoutMs?: number;
+  /**
+   * Darwin: prepare each command's contained launch while the previous one
+   * runs, so a command does not wait for its gate and watchdog to start. See
+   * `prepareContainedProcessLaunch`.
+   */
+  readonly prepareContainedLaunches?: boolean;
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly ownerBinding?: UnifiedExecOwnerBinding;
   readonly directInvocation?: ReadOnlyInspectionInvocation;
+  /**
+   * A command line classified as read-only: it runs through the session shell
+   * with the session environment, but only in this invocation's mandatory
+   * no-write, no-network sandbox.
+   */
+  readonly readOnlyShell?: ReadOnlyShellInvocation;
   readonly callId?: string;
   readonly cmd: string;
   readonly workdir?: string;
@@ -231,6 +243,8 @@ export interface ExecCommandToolOutput {
   readonly timedOut: boolean;
   readonly truncated: boolean;
   readonly original_token_count: number;
+  /** Launch authority for polled output, which may differ from the polling call. */
+  readonly sandboxApplied?: boolean;
   /** True when the command ran with `detach: true`; AgenC neither tracks nor stops it. */
   readonly detached?: boolean;
   /** OS pid of a detached process that was still running when the yield window closed. */
@@ -258,6 +272,8 @@ export interface UnifiedExecProcessManagerLike {
   readonly shellPath?: string;
   /** Whether commands inherit shell startup hooks (BASH_ENV, exported functions, SHELLOPTS). */
   shellStartupHooksPresent?(): boolean;
+  /** Whether a read-only command line can run through the session shell here. */
+  readOnlyShellAvailable?(): boolean;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
   /** Start a service that outlives the command and the session; see DetachedProcessRequest. */
   startDetachedProcess?(

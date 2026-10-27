@@ -1,152 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AuthBackend } from "../auth/backend.js";
-import { createAgenCDaemonRuntimeAuthBackend } from "./provider-key-vending.js";
+import type { AuthBackend } from "../../src/auth/backend.js";
+import { createAgenCDaemonRuntimeAuthBackend } from "../../src/app-server/provider-key-vending.js";
 
-function makeAuthBackend(vendKey: AuthBackend["vendKey"]): AuthBackend {
-  return {
-    login: vi.fn(() => ({ authenticated: true, provider: "local" })),
-    logout: vi.fn(() => ({ authenticated: false })),
-    whoami: vi.fn(() => ({ authenticated: true, provider: "local" })),
-    vendKey: vi.fn(vendKey),
-    inferAgencModel: vi.fn(() => ({
-      provider: "agenc",
-      model: "agenc:grok",
-    })),
-    getSubscriptionTier: vi.fn(() => "pro"),
-  };
-}
-
-describe("AgenC daemon provider-key vending", () => {
-  it("vends one managed provider key per daemon runtime session and provider", async () => {
-    const calls: string[] = [];
-    const backend = makeAuthBackend((provider, sessionId) => {
-      calls.push(`${provider}:${sessionId}`);
-      return {
-        kind: "api-key",
-        provider: String(provider),
-        sessionId,
-        apiKey: `managed-key-${calls.length}`,
-      };
-    });
+describe("daemon account authentication", () => {
+  it("delegates identity operations but never delegates model access", async () => {
+    const backend = { kind: "remote", login: vi.fn(), logout: vi.fn(), whoami: vi.fn(), getSubscriptionTier: vi.fn(), vendKey: vi.fn(), inferAgencModel: vi.fn(), getLlmUsage: vi.fn() } as unknown as AuthBackend;
     const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
-
-    const first = await wrapped.vendKey("grok", "session-1");
-    const duplicate = await wrapped.vendKey("grok", "session-1");
-    const secondSession = await wrapped.vendKey("grok", "session-2");
-    const secondProvider = await wrapped.vendKey("openai", "session-1");
-
-    expect(duplicate).toBe(first);
-    expect(secondSession).toMatchObject({
-      kind: "api-key",
-      apiKey: "managed-key-2",
-    });
-    expect(secondProvider).toMatchObject({
-      kind: "api-key",
-      apiKey: "managed-key-3",
-    });
-    expect(calls).toEqual([
-      "grok:session-1",
-      "grok:session-2",
-      "openai:session-1",
-    ]);
-  });
-
-  it("preserves the wrapped backend kind for runtime policy gates", () => {
-    const backend: AuthBackend = {
-      ...makeAuthBackend(() => {
-        throw new Error("not expected");
-      }),
-      kind: "remote",
-    };
-    const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
-
-    expect(wrapped.kind).toBe("remote");
-  });
-
-  it("replaces the backend and clears cached provider keys", async () => {
-    const initialBackend: AuthBackend = {
-      ...makeAuthBackend((provider, sessionId) => ({
-        kind: "api-key",
-        provider: String(provider),
-        sessionId,
-        apiKey: "managed-key-before",
-      })),
-      kind: "local",
-    };
-    const nextBackend: AuthBackend = {
-      ...makeAuthBackend((provider, sessionId) => ({
-        kind: "api-key",
-        provider: String(provider),
-        sessionId,
-        apiKey: "managed-key-after",
-      })),
-      kind: "remote",
-    };
-    const wrapped = createAgenCDaemonRuntimeAuthBackend(initialBackend);
-
-    await expect(wrapped.vendKey("grok", "session-1")).resolves.toMatchObject({
-      apiKey: "managed-key-before",
-    });
-    wrapped.replaceBackend(nextBackend);
-
-    expect(wrapped.kind).toBe("remote");
-    await expect(wrapped.vendKey("grok", "session-1")).resolves.toMatchObject({
-      apiKey: "managed-key-after",
-    });
-    expect(initialBackend.vendKey).toHaveBeenCalledTimes(1);
-    expect(nextBackend.vendKey).toHaveBeenCalledTimes(1);
-  });
-
-  it("retries a provider-key vend after the AuthBackend rejects", async () => {
-    let attempts = 0;
-    const backend = makeAuthBackend((provider, sessionId) => {
-      attempts += 1;
-      if (attempts === 1) {
-        throw new Error("temporary vending failure");
-      }
-      return {
-        kind: "api-key",
-        provider: String(provider),
-        sessionId,
-        apiKey: "managed-key",
-      };
-    });
-    const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
-
-    await expect(wrapped.vendKey("grok", "session-1")).rejects.toThrow(
-      "temporary vending failure",
-    );
-    await expect(wrapped.vendKey("grok", "session-1")).resolves.toMatchObject({
-      apiKey: "managed-key",
-    });
-    expect(attempts).toBe(2);
-  });
-
-  it("caches structured AWS credentials without an API-key facade", async () => {
-    const backend = makeAuthBackend((provider, sessionId) => ({
-      kind: "aws-sigv4",
-      provider: String(provider),
-      sessionId,
-      accessKeyId: "managed-aws-access",
-      secretAccessKey: "managed-aws-secret",
-      sessionToken: "managed-aws-session",
-      region: "us-west-2",
-    }));
-    const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
-
-    const first = await wrapped.vendKey("amazon-bedrock", "session-1");
-    const duplicate = await wrapped.vendKey("amazon-bedrock", "session-1");
-
-    expect(duplicate).toBe(first);
-    expect(first).toEqual({
-      kind: "aws-sigv4",
-      provider: "amazon-bedrock",
-      sessionId: "session-1",
-      accessKeyId: "managed-aws-access",
-      secretAccessKey: "managed-aws-secret",
-      sessionToken: "managed-aws-session",
-      region: "us-west-2",
-    });
-    expect(backend.vendKey).toHaveBeenCalledTimes(1);
+    await wrapped.login(); await wrapped.whoami(); await wrapped.getSubscriptionTier(); await wrapped.logout();
+    for (const method of [backend.login, backend.whoami, backend.getSubscriptionTier, backend.logout]) expect(method).toHaveBeenCalledOnce();
+    await expect(wrapped.vendKey("openrouter", "offline")).rejects.toThrow("no longer provide models");
+    await expect(wrapped.inferAgencModel()).rejects.toThrow("no longer provide models");
+    await expect(wrapped.getLlmUsage()).rejects.toThrow("no longer provide models");
+    expect(await wrapped.listAgencModels!()).toEqual([]);
+    for (const method of [backend.vendKey, backend.inferAgencModel, backend.getLlmUsage]) expect(method).not.toHaveBeenCalled();
+    const next = { ...backend, whoami: vi.fn() };
+    wrapped.replaceBackend(next); await wrapped.whoami();
+    expect(next.whoami).toHaveBeenCalledOnce();
   });
 });

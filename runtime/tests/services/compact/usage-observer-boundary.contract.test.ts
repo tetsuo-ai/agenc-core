@@ -10,7 +10,7 @@ import type { EventMsg } from "../../../src/session/event-log.js";
 import { createCompactionTransactionHarness, createProvider, type CompactionTransactionHarness } from "../../helpers/compaction-transaction-harness.js";
 
 function sourceMessages(): readonly RuntimeMessage[] {
-  return Array.from({ length: 8 }, (_, index) => ({
+  return Array.from({ length: 20 }, (_, index) => ({
     role: index % 2 === 0 ? "user" as const : "assistant" as const,
     content: `source-${index}:${"x".repeat(4_000)}`,
   }));

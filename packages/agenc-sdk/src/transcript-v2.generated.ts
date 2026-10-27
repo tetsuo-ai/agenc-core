@@ -12,11 +12,28 @@ interface TranscriptV2JsonObject {
   readonly [key: string]: TranscriptV2JsonValue | undefined;
 }
 
+export interface PendingEffectReview extends TranscriptV2JsonObject {
+  readonly sessionId?: string;
+  /** False for a descendant's review: its parent can still take prompts. */
+  readonly blocksSession?: boolean;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly description: string;
+  readonly error: string;
+}
+
 export interface SessionTranscriptV2Message extends TranscriptV2JsonObject {
+  /** Runtime user event ID shared with the file checkpoint and history. */
+  readonly canonicalUserMessageId?: string;
   readonly messageId: string;
   readonly commitEventId: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  /** Original user submission time, when retained by the durable journal. */
+  readonly acceptedAt?: string;
+  /** Display-only delta prefix, never a committed response or model-history item. */
+  readonly partial?: "streaming" | "interrupted";
+  readonly partialTruncated?: boolean;
   /** Full UTF-8 text when the snapshot substitutes a bounded reference. */
   readonly textArtifact?: { readonly id: string; readonly digest: string; readonly size: number; readonly mimeType: "text/plain" };
   readonly turnId?: string;
@@ -28,6 +45,8 @@ export interface SessionTranscriptV2Message extends TranscriptV2JsonObject {
 export interface SessionTranscriptV2ActiveTurn extends TranscriptV2JsonObject {
   readonly turnId: string;
   readonly clientMessageId?: string;
+  /** Display-delta replay watermark, including discarded attempts with no fresh text. */
+  readonly partialSequence?: number;
 }
 
 export interface SessionTranscriptV2TurnResult extends TranscriptV2JsonObject {
@@ -71,6 +90,16 @@ export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
     readonly modelCalls?: number;
     readonly hasUnknownCost?: boolean;
     readonly costEstimated?: boolean;
+    readonly unpricedCallCount?: number;
+    readonly unpricedCalls?: readonly {
+      readonly reservationId: string;
+      readonly runId: string;
+      readonly stepId: string;
+      readonly kind: string;
+      readonly model?: string;
+      readonly provider?: string;
+      readonly reason: string;
+    }[];
     readonly models?: readonly {
       readonly model: string;
       readonly provider?: string;
@@ -118,6 +147,10 @@ export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
 }
 
 export interface SessionTranscriptV2Result extends TranscriptV2JsonObject {
+  /** Independent of the visible transcript boundary and truncation. */
+  readonly pendingEffectReviews?: readonly PendingEffectReview[];
+  /** Active selectable canonical user IDs; archived display rows are not targets. */
+  readonly activeUserMessageIds?: readonly string[];
   readonly schemaVersion: 2;
   readonly sessionId: string;
   readonly runId: string;

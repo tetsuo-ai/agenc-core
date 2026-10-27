@@ -74,7 +74,7 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
       ? { model_provider: error.toProvider }
       : {}),
     model: error.toModel,
-  });
+  }, { validateCatalog: false });
 
   // Step 1: synthesize terminal tool_results for orphan tool_use
   // blocks BEFORE tombstone clears the batch. Without this, a

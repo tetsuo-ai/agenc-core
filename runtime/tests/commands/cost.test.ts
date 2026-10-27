@@ -96,6 +96,24 @@ const AGENT_APP_STATE = {
 };
 
 describe("/cost", () => {
+  it("names an interrupted unpriced call and shows the recorded total as a lower bound", () => {
+    const report = buildCostReport({
+      ...contextWith({}),
+      appState: { getSessionUsage: () => ({
+        runId: "session-1", sequence: 2, costUsd: 0.551, heldCostUsd: 0.02, inputTokens: 20, outputTokens: 10,
+        totalTokens: 30, modelCalls: 1, hasUnknownCost: true, models: [], agents: [], unpricedCallCount: 1,
+        unpricedCalls: [{ reservationId: "r2", runId: "worker-1", stepId: "turn-2", kind: "model_turn", provider: "deepseek",
+          model: "deepseek-flash", reason: "cancelled_after_dispatch:interrupted" }],
+      }) },
+    });
+    const out = formatCostReport(report);
+    expect(out).toContain("Session cost: ≥$0.551");
+    expect(out).toContain("deepseek/deepseek-flash · model call turn-2");
+    expect(out).toContain("cancelled after dispatch (interrupted); provider usage unavailable");
+    expect(out).toContain("run worker-1");
+    expect(out).not.toContain("+?");
+  });
+
   it("is registered with /stats as the default-surface alias", () => {
     const registry = buildDefaultRegistry();
     expect(registry.find("cost")?.name).toBe("cost");
@@ -212,7 +230,7 @@ describe("/cost", () => {
       contextWith({ sidecar: fakeCostSidecar(), appState: AGENT_APP_STATE }),
     );
     const out = text(result);
-    expect(out).toContain("Session cost: $1.23");
+    expect(out).toContain("Session cost: ≥$1.23");
     expect(out).toContain("build the parser · runner");
   });
 });

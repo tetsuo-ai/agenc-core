@@ -1,11 +1,11 @@
 # Onboarding AgenC (operator guide)
 
-**Current release: 0.18.0.** This is the live product guide for first-run and
+**Current release: 0.19.19.** This is the live product guide for first-run and
 the multi-act setup path. Superseded implementation notes remain available in
 Git history and are not product truth.
 
 Related: [INDEX](INDEX.md) · [quickstart](quickstart.md) · [install](install.md) ·
-[gateway](gateway.md) · [managed OpenRouter](managed-openrouter.md) ·
+[gateway](gateway.md) · [OpenRouter setup](managed-openrouter.md) ·
 [remote control](remote-control.md) · [VPS](deploy/vps.md).
 
 ## North star
@@ -55,11 +55,9 @@ in `runtime/src/onboarding/Onboarding.tsx` (`FIRST_RUN_STEP_ORDER`):
 
 1. **preflight** — environment / install sanity
 2. **theme** — `auto` / `dark` / `light` plus daltonized/ansi palettes (no `system` value)
-3. **provider** — built-in providers, local runtimes, managed OpenRouter when
-   logged in
+3. **provider**: built-in providers and local runtimes
 4. **model access** — choose directly in the wizard:
-   - sign in or create an AgenC account for hosted models (free accounts get
-     the free-model catalog)
+   - sign in with ChatGPT for OpenAI using your own provider account
    - sign in with X / xAI for Grok through an eligible subscription
    - verify and save a provider API key
    - configure access later
@@ -73,14 +71,10 @@ Then you are in chat. Flags:
 - `--reset` — show the wizard again next interactive start (does not wipe
   keys, persona, or gateway config)
 
-No slash command is required during first run. The model-access step launches
-either account flow itself and displays the browser URL/device code in the
-wizard. BYOK env keys, directly pasted keys, and local Ollama/LM Studio remain
-available. AgenC account access uses managed OpenRouter (default
-`auth.managedKeys.enabled = true`): free accounts receive hosted `:free`
-routes, while the paid default model is `x-ai/grok-4.5`. See
-[managed-openrouter.md](managed-openrouter.md) and
-[grok-oauth.md](grok-oauth.md).
+No slash command is required during first run. Provider sign-in displays its
+browser URL or device code in the wizard. API keys and local Ollama or LM Studio
+are also available. AgenC account sign-in is separate and does not provide models.
+See [grok-oauth.md](grok-oauth.md).
 
 ## Act 2a — identity
 

@@ -28,6 +28,7 @@ export const PROVIDERS = [
   'lmstudio',
   'openai-compatible',
   'openrouter',
+  'venice',
   'groq',
   'deepseek',
   'meta',

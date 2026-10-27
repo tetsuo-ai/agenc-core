@@ -6,8 +6,13 @@
  * defaults, ordered environment ingress names, and onboarding classification.
  */
 
-import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
 import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_API_KEY_ENV, OLLAMA_CLOUD_DEFAULT_MODEL } from "./ollama-cloud-models.js";
+import {
+  ABLITERATION_API_KEY_ENV_VARS,
+  ABLITERATION_BASE_URL,
+  ABLITERATION_BASE_URL_ENV_VARS,
+  ABLITERATION_DEFAULT_MODEL,
+} from "./abliteration-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { registerProviderFundsDisplayNames } from "../funds.js";
@@ -38,11 +43,11 @@ const GITHUB_COPILOT_MODEL_IDS = Object.freeze([
   "claude-opus-5.5",
   "claude-sonnet-4.6",
   "claude-sonnet-5",
-  "gemini-3.5-flash",
-  "gemini-3.6-flash",
+  // GitHub deprecated Gemini 3.5 Flash, Gemini 3.6 Flash and Kimi K2.7 Code
+  // across Copilot on 2026-10-02.
+  // https://github.blog/changelog/2026-10-02-selected-models-in-github-copilot-deprecated
   "gemini-3.7-flash",
   "mai-code-1.1-flash",
-  "kimi-k2.7-code",
   "kimi-k3",
   "grok-4.5",
   "grok-4.6",
@@ -54,119 +59,49 @@ const GITHUB_COPILOT_CATALOG_MODELS = Object.freeze(
   ),
 );
 
+// NVIDIA NIM ids without a registry row that NVIDIA's hosted API still lists.
+// On 2026-10-17 GET https://integrate.api.nvidia.com/v1/models returned 81
+// models, and 80 of the 115 ids this picker offered were not among them. A chat
+// call to each of those 80 answered HTTP 410 ("The model 'openai/gpt-oss-120b'
+// has reached its end of life on 2026-09-03T08:00:00Z and is no longer
+// available.") or HTTP 404. They are hidden here; the registry rows join through
+// mergeDerivedProviderModels, so a retired row (visibility "none") stays out too.
+// Old sessions keep working: a saved nvidia-nim route is admitted without catalog
+// validation, and an explicit nvidia-nim pair keeps its vendor/model id.
+// The full retired list is pinned in tests/llm/registry/nvidia-nim-catalog.test.ts.
 const NVIDIA_PROVIDER_MODEL_IDS = Object.freeze([
-  "openai/gpt-oss-120b",
   "nvidia/cosmos-reason2-8b",
-  "microsoft/phi-4-mini-flash-reasoning",
-  "qwen/qwen3-next-80b-a3b-thinking",
-  "deepseek-ai/deepseek-r1-distill-qwen-32b",
-  "deepseek-ai/deepseek-r1-distill-qwen-14b",
-  "deepseek-ai/deepseek-r1-distill-qwen-7b",
-  "deepseek-ai/deepseek-r1-distill-llama-8b",
-  "qwen/qwq-32b",
   "meta/codellama-70b",
   "bigcode/starcoder2-15b",
-  "bigcode/starcoder2-7b",
   "mistralai/codestral-22b-instruct-v0.1",
-  "mistralai/mamba-codestral-7b-v0.1",
   "deepseek-ai/deepseek-coder-6.7b-instruct",
   "google/codegemma-7b",
   "google/codegemma-1.1-7b",
-  "qwen/qwen2.5-coder-32b-instruct",
-  "qwen/qwen2.5-coder-7b-instruct",
-  "qwen/qwen3-coder-480b-a35b-instruct",
   "ibm/granite-34b-code-instruct",
   "ibm/granite-8b-code-instruct",
   "nvidia/llama-3.1-nemotron-70b-instruct",
   "nvidia/llama-3.1-nemotron-51b-instruct",
   "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-  "nvidia/llama-3.3-nemotron-super-49b-v1",
-  "nvidia/llama-3.3-nemotron-super-49b-v1.5",
   "nvidia/nemotron-4-340b-instruct",
   "nvidia/nemotron-3-super-120b-a12b",
-  "nvidia/nemotron-3-nano-30b-a3b",
-  "nvidia/nemotron-mini-4b-instruct",
-  "nvidia/llama-3.1-nemotron-nano-8b-v1",
-  "nvidia/llama-3.1-nemotron-nano-4b-v1.1",
   "nvidia/llama3-chatqa-1.5-70b",
-  "nvidia/llama3-chatqa-1.5-8b",
-  "meta/llama-3.1-405b-instruct",
-  "meta/llama-3.1-70b-instruct",
-  "meta/llama-3.1-8b-instruct",
   "meta/llama-3.2-90b-vision-instruct",
   "meta/llama-3.2-11b-vision-instruct",
-  "meta/llama-3.2-3b-instruct",
-  "meta/llama-3.2-1b-instruct",
-  "meta/llama-3.3-70b-instruct",
-  "meta/llama-4-maverick-17b-128e-instruct",
-  "meta/llama-4-scout-17b-16e-instruct",
   "google/gemma-4-31b-it",
-  "google/gemma-3-27b-it",
   "google/gemma-3-12b-it",
   "google/gemma-3-4b-it",
-  "google/gemma-3-1b-it",
-  "google/gemma-3n-e4b-it",
-  "google/gemma-3n-e2b-it",
-  "google/gemma-2-27b-it",
-  "google/gemma-2-9b-it",
-  "google/gemma-2-2b-it",
-  "mistralai/mistral-large-3-675b-instruct-2512",
   "mistralai/mistral-large-2-instruct",
   "mistralai/mistral-large",
-  "mistralai/mistral-medium-3-instruct",
-  "mistralai/mistral-small-4-119b-2603",
-  "mistralai/mistral-small-3.1-24b-instruct-2503",
-  "mistralai/mistral-small-24b-instruct",
   "mistralai/mistral-7b-instruct-v0.3",
-  "mistralai/mistral-7b-instruct-v0.2",
-  "mistralai/mixtral-8x22b-instruct-v0.1",
-  "mistralai/mixtral-8x7b-instruct-v0.1",
-  "mistralai/mistral-nemotron",
-  "mistralai/ministral-14b-instruct-2512",
-  "mistralai/devstral-2-123b-instruct-2512",
-  "mistralai/magistral-small-2506",
-  "mistralai/mathstral-7b-v0.1",
-  "microsoft/phi-4-multimodal-instruct",
-  "microsoft/phi-4-mini-instruct",
-  "microsoft/phi-3.5-mini-instruct",
-  "microsoft/phi-3-small-128k-instruct",
-  "microsoft/phi-3-small-8k-instruct",
-  "microsoft/phi-3-medium-128k-instruct",
-  "microsoft/phi-3-medium-4k-instruct",
-  "microsoft/phi-3-mini-128k-instruct",
-  "microsoft/phi-3-mini-4k-instruct",
-  "qwen/qwen3.5-397b-a17b",
-  "qwen/qwen3.5-122b-a10b",
-  "qwen/qwen3-next-80b-a3b-instruct",
-  "qwen/qwen2.5-7b-instruct",
-  "qwen/qwen2-7b-instruct",
-  "qwen/qwen3-32b",
-  "qwen/qwen3-8b",
-  "deepseek-ai/deepseek-r1",
-  "deepseek-ai/deepseek-v3",
-  "deepseek-ai/deepseek-v3.2",
-  "deepseek-ai/deepseek-v3.1-terminus",
-  "deepseek-ai/deepseek-v3.1",
-  "ibm/granite-3.3-8b-instruct",
   "ibm/granite-3.0-8b-instruct",
   "ibm/granite-3.0-3b-a800m-instruct",
   "databricks/dbrx-instruct",
   "01-ai/yi-large",
   "ai21labs/jamba-1.5-large-instruct",
-  "ai21labs/jamba-1.5-mini-instruct",
   "writer/palmyra-creative-122b",
   "writer/palmyra-fin-70b-32k",
   "writer/palmyra-med-70b",
   "writer/palmyra-med-70b-32k",
-  "z-ai/glm5",
-  "z-ai/glm4.7",
-  "minimaxai/minimax-m2.5",
-  "moonshotai/kimi-k2.5",
-  "moonshotai/kimi-k2-instruct",
-  "moonshotai/kimi-k2-thinking",
-  "moonshotai/kimi-k2.5-thinking",
-  "moonshotai/kimi-k2-instruct-0905",
-  ...NVIDIA_CURRENT_MODEL_CATALOG.map((entry) => entry.model),
 ] as const);
 
 // Single source of truth: model lists for providers that have entries in
@@ -208,15 +143,13 @@ export type BuiltInProviderOnboardingAccess =
   | "api-key"
   | "environment"
   | "local"
-  | "managed";
+  | "retired";
 
 export interface BuiltInProviderOnboardingInfo {
   /** Stable provider-picker rank. Lower values appear first. */
   readonly order: number;
   /** Mutually exclusive first-run credential/readiness path. */
   readonly access: BuiltInProviderOnboardingAccess;
-  /** A signed-in AgenC subscription may supply this provider's key. */
-  readonly supportsManagedKeyAccess: boolean;
 }
 
 export interface ProviderCredentialFieldDefinition {
@@ -306,12 +239,10 @@ const AMAZON_BEDROCK_REGIONAL_ENDPOINT = Object.freeze({
 function onboardingInfo(
   order: number,
   access: BuiltInProviderOnboardingAccess,
-  supportsManagedKeyAccess = false,
 ): BuiltInProviderOnboardingInfo {
   return Object.freeze({
     order,
     access,
-    supportsManagedKeyAccess,
   });
 }
 
@@ -406,7 +337,23 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURL: "https://openrouter.ai/api/v1",
     credentials: apiKeyCredentials(["OPENROUTER_API_KEY"]),
     baseURLEnvVars: ["OPENROUTER_BASE_URL"],
-    onboarding: onboardingInfo(70, "api-key", true),
+    onboarding: onboardingInfo(70, "api-key"),
+  }),
+  venice: providerDefinition({
+    name: "Venice AI",
+    defaultModel: "zai-org-glm-5-2",
+    baseURL: "https://api.venice.ai/api/v1",
+    credentials: apiKeyCredentials(["VENICE_API_KEY"]),
+    baseURLEnvVars: ["VENICE_BASE_URL"],
+    onboarding: onboardingInfo(85, "api-key"),
+  }),
+  abliteration: providerDefinition({
+    name: "abliteration.ai",
+    defaultModel: ABLITERATION_DEFAULT_MODEL,
+    baseURL: ABLITERATION_BASE_URL,
+    credentials: apiKeyCredentials(ABLITERATION_API_KEY_ENV_VARS),
+    baseURLEnvVars: ABLITERATION_BASE_URL_ENV_VARS,
+    onboarding: onboardingInfo(86, "api-key"),
   }),
   groq: providerDefinition({
     name: "Groq",
@@ -426,7 +373,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   meta: providerDefinition({
     name: "Meta",
-    defaultModel: "muse-spark-1.3",
+    defaultModel: "muse-wonder-1.0",
     baseURL: "https://api.meta.ai/v1",
     credentials: apiKeyCredentials(["MODEL_API_KEY"]),
     baseURLEnvVars: ["META_BASE_URL"],
@@ -519,7 +466,12 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   "nvidia-nim": providerDefinition({
     name: "NVIDIA NIM",
-    defaultModel: "nvidia/llama-3.1-nemotron-70b-instruct",
+    // The previous default, nvidia/llama-3.1-nemotron-70b-instruct, is still
+    // listed by GET /v1/models, but every chat call to it answered HTTP 404
+    // ("Function ... Not found for account") on 2026-10-17. This model answered
+    // 200 with plain text and with a tool call, and takes the 32,000 output
+    // tokens AgenC requests (the hosted schema caps max_tokens at 32,768).
+    defaultModel: "nvidia/nemotron-3-super-120b-a12b",
     baseURL: "https://integrate.api.nvidia.com/v1",
     credentials: apiKeyCredentials(["NVIDIA_API_KEY"]),
     baseURLEnvVars: ["NVIDIA_BASE_URL"],
@@ -574,7 +526,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURL: "https://id.agenc.ag/v1",
     credentials: noCredentials(),
     baseURLEnvVars: ["AGENC_BASE_URL"],
-    onboarding: onboardingInfo(160, "managed"),
+    onboarding: onboardingInfo(160, "retired"),
   }),
 } as const);
 
@@ -694,6 +646,8 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "z-ai/glm-4.7-flash",
   ] }),
   // Shared API Llama rows retired 2026-08-16; enterprise IDs remain custom.
+  venice: mergeDerivedProviderModels("venice"),
+  abliteration: mergeDerivedProviderModels("abliteration"),
   groq: mergeDerivedProviderModels("groq"),
   deepseek: Object.freeze(["deepseek-flash", "deepseek-v4-pro"]),
   // `/models` also advertises image generation and voice transcription.
@@ -710,7 +664,9 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   // verified thinking contract, so an effort never dies at request build.
   gemini: mergeDerivedProviderModels("gemini"),
   mistral: mergeDerivedProviderModels("mistral"),
-  "nvidia-nim": NVIDIA_PROVIDER_MODEL_IDS,
+  "nvidia-nim": mergeDerivedProviderModels("nvidia-nim", {
+    leadingExtras: NVIDIA_PROVIDER_MODEL_IDS,
+  }),
   minimax: mergeDerivedProviderModels("minimax"),
   // Copilot proxies models owned by several providers. Keep those entries
   // qualified here so bare slugs such as gpt-5.4 retain one global owner.
@@ -720,7 +676,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "amazon.nova-lite-v1:0",
     "amazon.nova-micro-v1:0",
   ] }),
-  agenc: Object.freeze(["agenc"]),
+  agenc: Object.freeze([]),
 });
 
 /**
@@ -762,12 +718,11 @@ export interface BuiltInProviderInfo {
   readonly credentials: ProviderCredentialDefinition;
   readonly baseURLEnvVars: readonly string[];
   readonly supportsApiKeylessAuth: boolean;
-  readonly requiresManagedAuth: boolean;
   readonly onboarding: BuiltInProviderOnboardingInfo;
 }
 
 const BUILT_IN_PROVIDER_IDS = Object.freeze(
-  Object.keys(BUILT_IN_PROVIDER_DEFINITIONS) as BuiltInProviderSlug[],
+  Object.keys(BUILT_IN_PROVIDER_DEFINITIONS).filter(id => id !== "agenc") as BuiltInProviderSlug[],
 );
 
 export function builtInProviderIds(): readonly BuiltInProviderSlug[] {
@@ -788,7 +743,6 @@ export function resolveBuiltInProviderInfo(
     credentials: definition.credentials,
     baseURLEnvVars: definition.baseURLEnvVars,
     supportsApiKeylessAuth: definition.supportsApiKeylessAuth,
-    requiresManagedAuth: definition.onboarding.access === "managed",
     onboarding: definition.onboarding,
   };
 }
@@ -860,5 +814,7 @@ export function resolveBuiltInProviderSlug(
 // funds.ts imports nothing so the catalog can load first; give it the display
 // names it uses for billing refusals.
 registerProviderFundsDisplayNames(
-  (provider) => listBuiltInProviderInfo().find((info) => info.id === provider)?.name,
+  (provider) => Object.hasOwn(BUILT_IN_PROVIDER_DEFINITIONS, provider)
+    ? BUILT_IN_PROVIDER_DEFINITIONS[provider as BuiltInProviderSlug].name
+    : undefined,
 );

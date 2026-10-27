@@ -1,3 +1,4 @@
+import { assertModelCatalogSelection } from "../llm/model-catalog-selection.js";
 import {
   mergeProviderModelLayer,
   resolveProviderSlugOrThrow,
@@ -5,6 +6,7 @@ import {
   type ProviderSlug,
 } from "../config/provider-model-authority.js";
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
+import { configuredModelForProvider } from "../config/resolve-model.js";
 import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import type { Session } from "./session.js";
 import { asRecord } from "../utils/record.js";
@@ -39,6 +41,8 @@ export function resolveProviderModelSelection(
   config: AgenCConfig | undefined,
   current: SessionSelection,
   layer: Pick<AgenCConfig, "model_provider" | "model">,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  options: { readonly validateCatalog?: boolean } = {},
 ): ResolvedSessionSelection {
   const configuredBase = mergeProviderModelLayer(defaultConfig(), config ?? {});
   const currentProvider = resolveBuiltInProviderSlug(current.provider);
@@ -60,6 +64,13 @@ export function resolveProviderModelSelection(
   const model = nonEmptyString(resolved.model);
   if (model === undefined) {
     throw new Error("model selection values must be non-empty");
+  }
+  // A saved OpenRouter selection may name a private route or outlive the
+  // public catalog. Validate newly typed IDs while preserving that saved pair.
+  const savedOpenRouterModel = provider === "openrouter" &&
+    configuredModelForProvider(config ?? {}, provider) === model;
+  if (options.validateCatalog !== false && !savedOpenRouterModel) {
+    assertModelCatalogSelection(config ?? {}, provider, model, env);
   }
   if (!isModelAllowed(provider, model, config ?? {})) {
     throw new ModelNotAllowedError(model);
@@ -222,7 +233,7 @@ export function readBuiltInSessionSelection(
 export function resolveSessionProviderModelSelection(
   session: Session | unknown,
   layer: Pick<AgenCConfig, "model_provider" | "model">,
-  options: ReadSessionSelectionOptions = {},
+  options: ReadSessionSelectionOptions & { readonly validateCatalog?: boolean } = {},
 ): ResolvedSessionSelection {
   const sessionRecord = asRecord(session);
   const config = options.fallbackConfig ?? configStoreCurrent(sessionRecord);
@@ -230,5 +241,10 @@ export function resolveSessionProviderModelSelection(
     ...options,
     ...(config === undefined ? {} : { fallbackConfig: config }),
   });
-  return resolveProviderModelSelection(config, current, layer);
+  const environment = asRecord(asRecord(sessionRecord?.services)?.providerEnvironment) ?? undefined;
+  return resolveProviderModelSelection(
+    config, current, layer,
+    environment as Readonly<Record<string, string | undefined>> | undefined,
+    { validateCatalog: options.validateCatalog },
+  );
 }

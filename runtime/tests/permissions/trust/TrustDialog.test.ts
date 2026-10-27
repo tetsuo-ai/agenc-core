@@ -61,6 +61,9 @@ describe("trust card copy", () => {
     expect(trustSafetyNote(true, true)).toBe(
       "Approvals and the sandbox are off for this run.",
     );
+    expect(trustSafetyNote(false, true)).toBe(
+      "Approvals still apply. The sandbox is off.",
+    );
   });
 
   it("never uses an em dash in card copy", () => {
@@ -73,6 +76,7 @@ describe("trust card copy", () => {
       trustSafetyNote(false, false),
       trustSafetyNote(true, false),
       trustSafetyNote(true, true),
+      trustSafetyNote(false, true),
     ].join("\n");
     expect(copy).not.toContain("\u2014");
   });

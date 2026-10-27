@@ -92,7 +92,6 @@ export class PolicyLimitsService {
   readonly #pollingIntervalMs: number;
   readonly #providerName: string | undefined;
   readonly #requestTimeoutMs: number;
-  readonly #sessionId: string;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #userAgent: string;
 
@@ -137,7 +136,6 @@ export class PolicyLimitsService {
       options.requestTimeoutMs,
       DEFAULT_POLICY_LIMITS_FETCH_TIMEOUT_MS,
     );
-    this.#sessionId = trimNonEmpty(options.sessionId) ?? "default";
     this.#sleep = options.sleep ?? sleepMs;
     this.#subscriptionTier = options.authSubscriptionTier;
     this.#userAgent = trimNonEmpty(options.userAgent) ?? "agenc-runtime";
@@ -434,68 +432,13 @@ export class PolicyLimitsService {
       return { headers: { "x-api-key": this.#apiKey } };
     }
 
-    if (this.#authBackend?.kind !== "remote") {
-      return {
-        headers: {},
-        error: "Authentication required for policy limits",
-      };
-    }
-
-    const tier = await this.#resolveSubscriptionTier();
-    if (!isEligibleSubscriptionTier(tier)) {
-      return {
-        headers: {},
-        error: "Subscription tier is not eligible for policy limits",
-      };
-    }
-
-    try {
-      const key = await this.#authBackend.vendKey(
-        this.#providerName ?? "agenc",
-        this.#sessionId,
-      );
-      if (key.kind !== "api-key") {
-        return {
-          headers: {},
-          error: "Authentication required for policy limits",
-        };
-      }
-      const apiKey = trimNonEmpty(key.apiKey);
-      if (apiKey === undefined) {
-        return {
-          headers: {},
-          error: "Authentication required for policy limits",
-        };
-      }
-      return { headers: { "x-api-key": apiKey } };
-    } catch {
-      return {
-        headers: {},
-        error: "Authentication required for policy limits",
-      };
-    }
-  }
-
-  async #resolveSubscriptionTier(): Promise<PolicyLimitsSubscriptionTier | undefined> {
-    if (this.#subscriptionTier !== undefined) return this.#subscriptionTier;
-    if (this.#authBackend === undefined) return undefined;
-    try {
-      this.#subscriptionTier = normalizePolicyLimitsSubscriptionTier(
-        await this.#authBackend.getSubscriptionTier({
-          sessionId: this.#sessionId,
-        }),
-      );
-      return this.#subscriptionTier;
-    } catch {
-      return undefined;
-    }
+    return { headers: {}, error: "Your own provider key is required for policy limits" };
   }
 
   async #canFetchPolicyLimits(): Promise<boolean> {
     if (!this.#isFirstPartyProvider()) return false;
     if (this.#apiKey !== undefined) return true;
-    if (this.#authBackend?.kind !== "remote") return false;
-    return isEligibleSubscriptionTier(await this.#resolveSubscriptionTier());
+    return false;
   }
 
   #getRestrictionsFromCache(): PolicyLimitsRestrictions | null {
@@ -625,22 +568,6 @@ function isEligibleSubscriptionTier(
   tier: PolicyLimitsSubscriptionTier | undefined,
 ): boolean {
   return tier === "team" || tier === "enterprise" || tier === "c4e";
-}
-
-function normalizePolicyLimitsSubscriptionTier(
-  tier: AuthSubscriptionTier | string,
-): PolicyLimitsSubscriptionTier | undefined {
-  const normalized = tier.trim().toLowerCase();
-  if (
-    normalized === "free" ||
-    normalized === "pro" ||
-    normalized === "team" ||
-    normalized === "enterprise" ||
-    normalized === "c4e"
-  ) {
-    return normalized;
-  }
-  return undefined;
 }
 
 function resolvePolicyLimitsEndpoint(opts: {

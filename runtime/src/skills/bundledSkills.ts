@@ -25,6 +25,14 @@ export type BundledSkillDefinition = {
   model?: string
   disableModelInvocation?: boolean
   userInvocable?: boolean
+  /**
+   * `false` keeps the skill out of the skill listings the model and the user
+   * see (the per-session listing, `/skills`, unknown-skill suggestions)
+   * unless the operator turns it on in config; see
+   * {@link isBundledSkillListed}. It stays loadable by exact name. Defaults to
+   * listed.
+   */
+  listedByDefault?: boolean
   isEnabled?: () => boolean
   hooks?: HooksSettings
   context?: 'inline' | 'fork'
@@ -45,6 +53,27 @@ export type BundledSkillDefinition = {
 
 // Internal registry for bundled skills
 const bundledSkills: Command[] = []
+// Names registered with `listedByDefault: false`.
+const unlistedByDefaultSkills = new Set<string>()
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Whether a bundled skill belongs in the skill listings for a session running
+ * under `config`. A skill registered with `listedByDefault: false` is listed
+ * only once the operator has turned the marketplace on (`[protocol] enabled =
+ * true`, which project config cannot set). Listing is separate from loading:
+ * the skill can always be loaded by its exact name, and a session with a
+ * toolPolicy applies its own rule on top.
+ */
+export function isBundledSkillListed(name: string, config: unknown): boolean {
+  if (!unlistedByDefaultSkills.has(name)) return true
+  return isPlainRecord(config) &&
+    isPlainRecord(config.protocol) &&
+    config.protocol.enabled === true
+}
 
 /**
  * Register a bundled skill that will be available to the model.
@@ -102,6 +131,9 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     progressMessage: 'running',
     getPromptForCommand,
   }
+  if (definition.listedByDefault === false) {
+    unlistedByDefaultSkills.add(definition.name)
+  }
   bundledSkills.push(command)
 }
 
@@ -118,6 +150,7 @@ export function getBundledSkills(): Command[] {
  */
 export function clearBundledSkills(): void {
   bundledSkills.length = 0
+  unlistedByDefaultSkills.clear()
 }
 
 /**

@@ -9,7 +9,7 @@ const SUPPORTED: ReadonlyArray<readonly [string, ChildAuthProfile]> = [
   ["openai", "sign_in"],
   ["grok", "sign_in"],
   ["anthropic", "api_key"],
-  ["deepseek", "managed"],
+  ["deepseek", "api_key"],
   ["ollama", "local"],
   ["lmstudio", "local"],
   ["openai-compatible", "local"],
@@ -17,6 +17,8 @@ const SUPPORTED: ReadonlyArray<readonly [string, ChildAuthProfile]> = [
 ];
 
 const REJECTED: ReadonlyArray<readonly [string, ChildAuthProfile]> = [
+  ["deepseek", "managed"],
+  ["agenc", "api_key"],
   ["anthropic", "sign_in"],
   ["ollama", "sign_in"],
   ["openai", "local"],

@@ -1,3 +1,4 @@
+import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,7 @@ function postToolCompactionHarness(autoCompactTokenLimit = 3_000) {
   const cwd = mkdtempSync(join(tmpdir(), "agenc-compact-shutdown-"));
   const home = join(cwd, "home");
   const provider = mkProvider();
+  installPreparedCompactionPressure(provider, request => request.messages.length > 1 ? 3_100 : 100);
   let samples = 0;
   provider.chatStream = async (): Promise<LLMResponse> => {
     samples += 1;
@@ -79,7 +81,7 @@ describe("compaction terminal outcome", () => {
     const harness = postToolCompactionHarness(1);
     const entered = Promise.withResolvers<void>();
     try {
-      blockCompactionUntilAbort(harness, "do_not_inject", "pre-request compaction aborted", entered);
+      blockCompactionUntilAbort(harness, "before_last_user_message", "pre-request compaction aborted", entered);
       const running = harness.run().then(() => undefined, error => error);
       await entered.promise;
       await shutdownSessionLifecycle({ session: harness.session,

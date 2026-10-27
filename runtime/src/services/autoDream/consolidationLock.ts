@@ -102,7 +102,7 @@ export async function rollbackConsolidationLock(
     await utimes(path, t, t)
   } catch (e: unknown) {
     logForDebugging(
-      `[autoDream] rollback failed: ${(e as Error).message} — next trigger delayed to minHours`,
+      `[autoDream] rollback failed: ${(e as Error).message}: next trigger delayed to minHours`,
     )
   }
 }

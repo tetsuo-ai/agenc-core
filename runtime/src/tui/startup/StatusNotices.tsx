@@ -45,10 +45,10 @@ function isDaemonAutostartDisabled(
 
 // Set by the CLI entrypoint when ensureAgenCDaemonAutostart failed but the
 // interactive TUI boots anyway (agenc-main runDefaultAgenCCliRoute).
-function daemonAutostartFailure(
-  environment: ProviderAuthReadContext['environment'],
-): string | undefined {
-  const value = environment.AGENC_DAEMON_AUTOSTART_FAILURE?.trim();
+function daemonAutostartFailure(): string | undefined {
+  // This marker belongs to the CLI, not provider authentication. Core-only
+  // overrides are deliberately absent from the session/tool environment.
+  const value = process.env.AGENC_DAEMON_AUTOSTART_FAILURE?.trim();
   return value !== undefined && value.length > 0 ? value : undefined;
 }
 
@@ -145,7 +145,7 @@ export function StatusNotices(t0: Props) {
     memoryDiagnostics,
     daemonStatus: {
       autostartDisabled: isDaemonAutostartDisabled(providerAuthContext.environment),
-      autostartFailure: daemonAutostartFailure(providerAuthContext.environment)
+      autostartFailure: daemonAutostartFailure()
     }
   };
   const activeNotices = getActiveNotices(context);

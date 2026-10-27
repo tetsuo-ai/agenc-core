@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { bootstrapLocalRuntimeSession } from "../../src/bin/bootstrap.js";
+import { DEFAULT_TASK_TOKEN_BUDGET } from "../../src/config/task-budget.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { Session } from "../../src/session/session.js";
@@ -241,4 +242,24 @@ describe("canonical aggregate bootstrap dollar cap", () => {
     expect(allocations().find((row) => row.key === "run:legacy-over-cap"))
       .toMatchObject({ maxCostUsd: 3, usedCostUsd: 4, heldCostUsd: 0 });
   });
+});
+
+describe("default task token allocation", () => {
+  it("binds the default task token ceiling to the canonical runtime and admission scope", async () => {
+    const boot = await bootstrap("");
+    expect(boot.session.config.taskTokenBudget).toBe(DEFAULT_TASK_TOKEN_BUDGET);
+    expect(boot.client.scope.maxTokens).toBe(DEFAULT_TASK_TOKEN_BUDGET || undefined);
+  });
+  it("removes the token ceiling with zero while retaining a separate dollar cap", async () => {
+    const boot = await bootstrap("task_token_budget = 0\ntask_max_calls = 0\nmax_budget_usd = 3");
+    expect(boot.session.config.taskTokenBudget).toBe(0);
+    expect(boot.client.scope.maxTokens).toBeUndefined();
+    expect(boot.client.scope.maxModelCalls).toBeUndefined();
+    expect(boot.client.scope.hasHardCostCap).toBe(true);
+  });
+});
+
+it("binds the optional task call cap without interpreting explicit zero as a hard zero allowance", async () => {
+  const boot = await bootstrap("task_max_calls = 3");
+  expect(boot.client.scope.maxModelCalls).toBe(3);
 });

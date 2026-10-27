@@ -1,7 +1,7 @@
 /**
  * Stream retry classification and interrupted-stream cleanup for the
- * sampling request reconnect ladder. Pure move out of run-turn.ts; the
- * declarations are the originals byte for byte.
+ * sampling request reconnect ladder. Retries discard unexecuted attempts;
+ * dispatched tool work is retained for explicit user continuation.
  *
  * @module
  */
@@ -21,6 +21,7 @@ import {
 } from "../llm/errors.js";
 import type { LLMToolCall } from "../llm/types.js";
 import { StreamProgressError } from "../llm/stream-progress.js";
+import { StreamByteIdleError } from "../llm/stream-watchdog.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import { isPartialProviderResponseError } from "../recovery/api-errors.js";
 import {
@@ -29,6 +30,7 @@ import {
   serverDirectedRetryAfter,
 } from "../recovery/reconnection.js";
 import type { Session } from "./session.js";
+import { emitError } from "./event-log.js";
 import type { TurnState } from "./turn-state.js";
 
 function streamRetryErrorCause(error: unknown): unknown {
@@ -38,6 +40,9 @@ function streamRetryErrorCause(error: unknown): unknown {
 /** Controlled runtime stops, never provider prose containing these words. */
 export function isStreamProgressStop(error: unknown): boolean {
   const cause = streamRetryErrorCause(error);
+  // A recovered socket may spend a long time reasoning with keepalives. The
+  // semantic-loop retry's total-time cap must not cut that healthy stream.
+  if (cause instanceof StreamByteIdleError) return false;
   return cause instanceof StreamProgressError ||
     (cause instanceof Error && cause.message.startsWith("stream_idle:"));
 }
@@ -70,6 +75,7 @@ const TRANSIENT_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
 
 function streamRetryFailureLabel(cause: unknown): string {
   if (cause instanceof StreamProgressError) {
+    if (cause.reason === "stream_degenerate") return "degenerate model output";
     return cause.reason === "stream_loop" ? "repetitive reasoning" : "no model progress";
   }
   if (cause instanceof Error && cause.message.startsWith("stream_idle")) {
@@ -194,18 +200,13 @@ function cleanupInterruptedStreamAttempt(
   state.toolResults = [];
   state.needsFollowUp = false;
   state.streamingToolExecutor = null;
-}
-
-function isReplaySafeStreamTool(session: Session, toolName: string): boolean {
-  const tool = session.services.registry.tools.find(
-    (candidate) => candidate.name === toolName,
-  );
-  try {
-    if (tool?.requiresUserInteraction?.() === true) return false;
-  } catch {
-    return false;
-  }
-  return tool?.isReadOnly === true || tool?.metadata?.mutating === false;
+  // A durable boundary lets live and replayed transcripts drop unfinished
+  // text/input buffers instead of appending the next attempt to them.
+  emitError(session, session.nextInternalSubId(), {
+    cause: "stream_attempt_discarded",
+    message: "Discarded interrupted model output before retry.",
+    streamError: true,
+  });
 }
 
 type InterruptedStreamHistoryState = TurnState & {
@@ -234,23 +235,39 @@ function snapshotStartedInterruptedTools(state: TurnState): void {
 
 function interruptedStreamRetryBlockReason(
   state: TurnState,
-  session: Session,
+  error?: unknown,
 ): string | null {
-  if (state.toolUseBlocks.length === 0) return null;
+  const cause = streamRetryErrorCause(error);
+  // A degenerate sample must never replay even a read-only tool. Block as
+  // soon as a call is registered, before dispatch certainty is available.
+  if (cause instanceof StreamProgressError && cause.reason === "stream_degenerate") {
+    const executor = state.streamingToolExecutor as {
+      getToolStates?: () => readonly unknown[];
+    } | null;
+    if (state.toolUseBlocks.length > 0 || (executor?.getToolStates?.().length ?? 0) > 0 || state.toolResults.length > 0) {
+      return "not retrying degenerate output after streamed tool work; retry manually";
+    }
+  }
   const executor = state.streamingToolExecutor as {
     getToolStates?: () => ReadonlyArray<{
       readonly id: string;
       readonly status: string;
       readonly toolName: string;
+      readonly hasDispatched?: boolean;
     }>;
   } | null;
   const toolStates = new Map(
     executor?.getToolStates?.().map((tool) => [tool.id, tool]) ?? [],
   );
+  // The caller cancels queued work before this snapshot and before awaiting
+  // admission. A read-only label is not permission to replay dispatched work.
+  for (const tool of toolStates.values()) {
+    if (tool.hasDispatched === false) continue;
+    return `streamed tool ${tool.toolName} (${tool.id}) reached ${tool.status} and may have executed`;
+  }
   for (const block of state.toolUseBlocks) {
-    if (isReplaySafeStreamTool(session, block.name)) continue;
-    const status = toolStates.get(block.id)?.status ?? "queued";
-    return `not retrying because streamed tool ${block.name} (${block.id}) reached ${status} without an explicit read-only replay contract`;
+    if (toolStates.get(block.id)?.hasDispatched === false) continue;
+    return `the dispatch state of streamed tool ${block.name} (${block.id}) is unknown`;
   }
   return null;
 }

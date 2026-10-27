@@ -171,7 +171,7 @@ describe('v2 primitives coverage swarm row 065', () => {
     )
 
     expect(output).toContain('mode · default')
-    expect(output).toContain('current · acceptEdits')
+    expect(output).toContain('now · edits freely')
     expect(output).toContain('row065')
     expect(output).toContain('/ commands')
     expect(output).toContain('#65')

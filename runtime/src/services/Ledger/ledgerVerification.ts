@@ -178,12 +178,22 @@ export function dismissLedgerVerification(requestId?: number): void {
 }
 
 /**
- * Natural-language trigger used by the composer. English and Spanish forms
- * cover the product's current UI languages without opening the modal for an
- * ordinary balance/account question.
+ * Require a hardware phrase, with identifier/path boundaries around the whole
+ * phrase. A bare "ledger" is also accounting vocabulary. Nearby wallet/code
+ * words must not turn ledger.txt, ledgerEntries or src/ledger/ into USB intent.
+ * Slash commands own their status reads and verification lifecycle separately.
  */
+export function isLedgerDeviceRequest(text: string): boolean {
+  if (text.trimStart().startsWith("/")) return false;
+  return /(?<![\p{L}\p{N}_./\\-])(?:(?:my|mi)\s+ledger(?!\s+(?:balance|totals?|entries|contable)\b)|ledger\s+(?:(?:hardware\s+)?wallet|device|nano|flex|stax|dispositivo|cartera|billetera)|(?:(?:hardware\s+)?wallet|device|dispositivo|cartera|billetera)(?:\s+de)?\s+ledger)(?![\p{L}\p{N}_/\\-]|\.[\p{L}\p{N}_/\\-])/iu.test(text);
+}
+
+/** English and Spanish authenticity words require explicit device intent. */
 export function isLedgerAuthenticityRequest(text: string): boolean {
-  if (!/\bledger\b/i.test(text)) return false;
+  if (/^\/(?:ledger|wallet)\s+genuine-check(?:\s|$)/i.test(text.trim())) {
+    return !/(?:^|\s)(?:--help|-h)(?:\s|$)/.test(text);
+  }
+  if (!isLedgerDeviceRequest(text)) return false;
   return (
     /\bgenuine(?:-check)?\b/i.test(text) ||
     /\bauthentic(?:ity|ate|ation)?\b/i.test(text) ||

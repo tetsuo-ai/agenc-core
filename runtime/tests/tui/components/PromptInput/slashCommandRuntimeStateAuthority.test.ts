@@ -13,28 +13,33 @@ vi.mock("../../../utils/config.js", () => ({
 }));
 
 describe("slash command runtime-state authority", () => {
-  test("opens the bare slash palette from an explicit state snapshot", () => {
-    const command: Command = {
-      type: "prompt",
-      name: "review",
-      description: "Review the current changes",
-      progressMessage: "reviewing",
-      contentLength: 0,
-      source: "plugin",
-      getPromptForCommand: async () => [],
-    };
+  const command: Command = {
+    type: "prompt",
+    name: "review",
+    description: "Review the current changes",
+    progressMessage: "reviewing",
+    contentLength: 0,
+    source: "plugin",
+    getPromptForCommand: async () => [],
+  };
+  const snapshot = {
+    skillUsage: {
+      review: { usageCount: 2, lastUsedAt: Date.now() },
+    },
+  };
 
-    expect(
-      generateCommandSuggestions("/", [command], {
-        skillUsage: {
-          review: { usageCount: 2, lastUsedAt: Date.now() },
-        },
-      }),
-    ).toEqual([
+  test("ranks typed matches from an explicit state snapshot", () => {
+    expect(generateCommandSuggestions("/rev", [command], snapshot)).toEqual([
       expect.objectContaining({
         displayText: "/review",
         metadata: command,
       }),
     ]);
+  });
+
+  test("opens the bare slash palette without reading ambient state", () => {
+    // A bare '/' lists built-in commands and project skills only, so a
+    // plugin command waits for typed text even when it was used recently.
+    expect(generateCommandSuggestions("/", [command], snapshot)).toEqual([]);
   });
 });

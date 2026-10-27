@@ -13,6 +13,7 @@ import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import {
   openStateDatabasePaths,
   resolveStateDatabasePaths,
+  StateSqliteDriver,
 } from "../../src/state/sqlite-driver.js";
 
 const denied = vi.hoisted(() => ({ projectDir: "" }));
@@ -83,6 +84,75 @@ function seedExpiredRollout(workspace: string, sessionId: string): string {
 }
 
 describe("daemon startup state materialization", () => {
+  it("never opts into an unbounded full vacuum on the readiness path", () => {
+    const paths = seedExpiredRun(cwd);
+    const reclaim = vi.spyOn(StateSqliteDriver.prototype, "reclaimFreePages");
+    try {
+      recoverAgenCDaemonStartupState(home, cwd, defaultConfig());
+      expect(reclaim).toHaveBeenCalledOnce();
+      expect(reclaim.mock.calls[0]?.[0]?.allowFullVacuum).not.toBe(true);
+      expect(existsSync(paths.stateDbPath)).toBe(true);
+    } finally { reclaim.mockRestore(); }
+  });
+
+  it("defers snapshot payloads and preserves tool recovery across a crash before hydration", () => {
+    const paths = pathsFor();
+    const driver = openStateDatabasePaths(paths);
+    try {
+      upsertAgentRun(driver, {
+        id: "deferred-run", objective: "recover safely", status: "running",
+        currentSessionId: "deferred-session", startedAt: "2000-01-01T00:00:00.000Z", lastActiveAt: "2000-01-01T00:00:00.000Z",
+      });
+      driver.prepareState("INSERT INTO session_state_snapshots VALUES (?, ?, ?, ?, '{}')").run(
+        "deferred-session", "2000-01-01T00:00:00.000Z", JSON.stringify([{ role: "assistant", content: "saved history" }]),
+        JSON.stringify({ pending: ["write", "read", "ask"] }),
+      );
+      for (const [id, category] of [["write", "side-effecting"], ["read", "idempotent"], ["ask", "interactive"]]) {
+        driver.prepareState(`INSERT INTO in_flight_tool_calls (session_id, tool_call_id, tool_name, args_json, status, recovery_category, started_at)
+          VALUES ('deferred-session', ?, ?, '{}', 'running', ?, '2000-01-01T00:00:00.000Z')`).run(id, id, category);
+      }
+    } finally { driver.close(); }
+    const first = recoverAgenCDaemonStartupState(home, cwd, defaultConfig());
+    expect(first.recoveredRuns[0]).toMatchObject({ snapshotDeferred: true, status: "running" });
+    expect(first.recoveredRuns[0]).not.toHaveProperty("latestSnapshot");
+    // Simulate exit before any background task ran. Durable classification,
+    // not an in-memory snapshot, makes the next restart apply the same policy.
+    const second = recoverAgenCDaemonStartupState(home, cwd, defaultConfig());
+    expect(second.recoveredToolCalls.map(call => call.statusAfter).sort()).toEqual(["poisoned", "recovery_cancelled", "replay_pending"]);
+    const policies = new AgenCDaemonSnapshotPolicyRegistry({ agencHome: home, defaultCwd: cwd, onError: error => { throw error; } });
+    try {
+      policies.registerStartupRecovery(second);
+      expect(second.recoveredRuns[0]).not.toHaveProperty("latestSnapshot");
+      const run = policies.hydrateStartupRun(second, second.recoveredRuns[0]!);
+      expect(run).not.toHaveProperty("snapshotDeferred");
+      expect(run.latestSnapshot).toMatchObject({
+        conversation: [{ role: "assistant", content: "saved history" }],
+        toolState: { pending: [], inFlight: { read: { status: "replay_pending" } }, completed: { write: { status: "poisoned" }, ask: { status: "recovery_cancelled" } } },
+      });
+      const persisted = openStateDatabasePaths(paths);
+      try {
+        const row = persisted.prepareState<[], { tool_state_json: string }>("SELECT tool_state_json FROM session_state_snapshots ORDER BY snapshot_at DESC LIMIT 1").get()!;
+        expect(JSON.parse(row.tool_state_json)).toMatchObject({ completed: { write: { status: "poisoned" }, ask: { status: "recovery_cancelled" } } });
+      } finally { persisted.close(); }
+    } finally { policies.close(); }
+  });
+
+  it("reports malformed deferred snapshots when that session is hydrated", () => {
+    const driver = openStateDatabasePaths(pathsFor());
+    try {
+      upsertAgentRun(driver, { id: "bad", objective: "bad snapshot", status: "running", currentSessionId: "bad", startedAt: "2000-01-01", lastActiveAt: "2000-01-01" });
+      driver.prepareState("INSERT INTO session_state_snapshots VALUES ('bad', '2000-01-01', 'invalid', '{}', '{}')").run();
+    } finally { driver.close(); }
+    const report = recoverAgenCDaemonStartupState(home, cwd, defaultConfig());
+    const log = vi.fn();
+    const policies = new AgenCDaemonSnapshotPolicyRegistry({ agencHome: home, defaultCwd: cwd, onError: () => {}, log });
+    try {
+      policies.registerStartupRecovery(report);
+      expect(policies.hydrateStartupRun(report, report.recoveredRuns[0]!)).not.toHaveProperty("latestSnapshot");
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("not valid JSON"));
+    } finally { policies.close(); }
+  });
+
   it("does not create a default project solely for empty startup recovery", () => {
     const paths = pathsFor();
     expect(existsSync(paths.projectDir)).toBe(false);

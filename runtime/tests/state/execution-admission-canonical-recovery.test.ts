@@ -108,6 +108,36 @@ function readEvents(sourcePath: string): Event[] {
 }
 
 describe("canonical execution-admission recovery", () => {
+  it("recovers journal bounds beyond the V8 call argument limit", () => {
+    const eventCount = 160_000;
+    const sourcePath = bindRollout(Array.from({ length: eventCount }, (_, index) => ({
+      eventId: `history-${index}`,
+      id: `history-${index}`,
+      seq: index + 1,
+      msg: {
+        type: "warning" as const,
+        payload: { cause: "fixture", message: "history" },
+      },
+    })));
+    const original = readFileSync(sourcePath, "utf8");
+    admissions.enqueue(request("after-long-history"));
+    const admission = admissions.listJournal({ runId: RUN_ID })[0]!;
+
+    expect(recoverExecutionAdmissionCanonicalJournals(driver, admissions))
+      .toMatchObject({ admissionEventsAppended: 1 });
+    expect(new StateRunDurabilityRepository(driver).listJournalBindings(RUN_ID))
+      .toMatchObject([{ firstAvailableSequence: 1, lastSequence: eventCount + 1 }]);
+    expect(readFileSync(sourcePath, "utf8")).toBe(original + serializeRolloutItem({
+      type: "event_msg",
+      payload: {
+        eventId: admission.eventId,
+        id: admission.eventId,
+        seq: eventCount + 1,
+        msg: { type: "execution_admission", payload: admission },
+      },
+    }));
+  });
+
   it("backfills the exact SQLite event under the run sequence lease", () => {
     const sourcePath = bindRollout([
       {

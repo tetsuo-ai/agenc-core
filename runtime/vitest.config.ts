@@ -137,10 +137,17 @@ export const HOSTED_FND_TEST_INCLUDE = Object.freeze([
 
 /** Real Linux-kernel sandbox coverage executed on a disposable hosted runner. */
 export const KERNEL_TEST_INCLUDE = Object.freeze([
+  "tests/routines/scheduled-session-mode-sandbox.kernel.test.ts",
   "tests/sandbox/landlock-seccomp.kernel.test.ts",
-  "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+  "tests/sandbox/linux-launcher/bound-search-launch.kernel.test.ts",
   "tests/sandbox/linux-launcher/direct-bwrap.kernel.test.ts",
+  "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+  "tests/sandbox/linux-launcher/local-binding.kernel.test.ts",
+  "tests/sandbox/linux-launcher/session-sandbox.kernel.test.ts",
   "tests/sandbox/readonly-delegation.kernel.test.ts",
+  "tests/unified-exec/protected-create-session.kernel.test.ts",
+  "tests/unified-exec/session-sandbox.kernel.test.ts",
+  "tests/utils/process-broker-v2-lifecycle.kernel.test.ts",
 ]);
 
 /** PowerShell integration tests executed by the pinned hosted capability lane. */
@@ -148,6 +155,17 @@ export const POWERSHELL_TEST_INCLUDE = Object.freeze([
   "tests/budget/admitted-legacy-powershell.powershell.test.ts",
   "tests/packaging/install-ps1.powershell.test.ts",
   "tests/tools/PowerShellTool.execution.powershell.test.ts",
+]);
+
+/**
+ * Default-suite files whose every test is macOS behavior. Off macOS they are
+ * not discovered at all: the hermetic release run on Linux requires zero
+ * skipped tests. Single macOS tests inside mixed files use
+ * tests/helpers/platform-registration.ts instead.
+ */
+export const DARWIN_ONLY_DEFAULT_TEST_FILES = Object.freeze([
+  "tests/utils/supervisedProcess.watchdog-spawn-failure.test.ts",
+  "tests/sandbox/engine/seatbelt-chromium.darwin.test.ts",
 ]);
 
 /**
@@ -173,6 +191,7 @@ export const DEFAULT_TEST_EXCLUDE = Object.freeze([
   ...DESIGN_TEST_INCLUDE,
   ...CROSS_REPO_TEST_INCLUDE,
   ...NATIVE_TEST_INCLUDE,
+  ...(process.platform === "darwin" ? [] : DARWIN_ONLY_DEFAULT_TEST_FILES),
   ...KERNEL_TEST_INCLUDE,
   ...POWERSHELL_TEST_INCLUDE,
 ]);

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { defaultConfig, mergeConfigs } from "../../src/config/schema.js";
 import {
@@ -6,6 +6,10 @@ import {
   type SessionSelection,
 } from "../../src/session/provider-model-selection.js";
 import { ModelNotAllowedError } from "../../src/utils/model/modelAllowlist.js";
+import { clearPublishedModelCatalogs, recordPublishedModelCatalog } from "../../src/llm/registry/published-model-catalog.js";
+import { openRouterCatalogEntry } from "../../src/llm/registry/openrouter-models.js";
+
+afterEach(() => clearPublishedModelCatalogs());
 
 const CURRENT: SessionSelection = Object.freeze({
   provider: "grok",
@@ -83,4 +87,129 @@ describe("session provider/model policy boundary", () => {
       })
     ).toThrow(ModelNotAllowedError);
   });
+});
+
+
+describe("model catalog admission", () => {
+  const current = { provider: "deepseek", model: "deepseek-flash" };
+
+  test.each([
+    { model_provider: "openrouter", model: "private-openrouter-model" },
+    { providers: { openrouter: { default_model: "private-openrouter-model" } } },
+  ])("preserves a configured private OpenRouter selection: %o", config => {
+    for (const live of [false, true]) {
+      if (live) recordPublishedModelCatalog("openrouter", [openRouterCatalogEntry({
+        model: "public/model", label: "Public model", modalities: ["text"],
+        parameters: ["tools"], efforts: [], pricing: {},
+      })], { replace: true });
+      for (const layer of [
+        { model_provider: "openrouter" },
+        { model_provider: "openrouter", model: "private-openrouter-model" },
+      ]) {
+        expect(resolveProviderModelSelection(config, current, layer, {}))
+          .toMatchObject({ provider: "openrouter", model: "private-openrouter-model" });
+        expect(() => resolveProviderModelSelection({ ...config, availableModels: [] }, current, layer, {}))
+          .toThrow(ModelNotAllowedError);
+      }
+    }
+  });
+
+  test("still validates a newly typed OpenRouter model when a private model is saved", () => {
+    const config = { model_provider: "openrouter", model: "private-openrouter-model" };
+    expect(() => resolveProviderModelSelection(config, current, {
+      model_provider: "openrouter", model: "another-private-model",
+    }, {})).toThrow("Invalid OpenRouter model id");
+  });
+
+  test.each(["xyz", "deepseek-flsh", "deepseek:deepseek-flsh"])(
+    "rejects fixed-catalog input %s with a closest-name hint", (model) => {
+      expect(() => resolveProviderModelSelection({}, current, { model }))
+        .toThrow(/unknown model .*deepseek.*[Dd]id you mean 'deepseek-flash'/u);
+      expect(current).toEqual({ provider: "deepseek", model: "deepseek-flash" });
+    },
+  );
+
+  test.each(["grok", "openai", "anthropic"])(
+    "rejects unknown names on %s", (provider) => {
+      expect(() => resolveProviderModelSelection({}, current, {
+        model_provider: provider, model: "xyz",
+      }, {})).toThrow(/unknown model .*did you mean/iu);
+    },
+  );
+
+  // Venice's list is its live /models answer (128 tool-capable models on
+  // 2026-10-15), not the 3-model offline snapshot; Venice itself refuses an
+  // ID it does not serve before the first request.
+  test.each([
+    [{ model_provider: "venice", model: "deepseek-v4-flash" }, "deepseek-v4-flash"],
+    [{ model: "venice:claude-opus-5-5" }, "claude-opus-5-5"],
+    [{ model_provider: "venice", model: "qwen3-5-397b-a17b" }, "qwen3-5-397b-a17b"],
+  ] as const)("accepts a live Venice model the bundled snapshot lacks: %o", (layer, model) => {
+    expect(resolveProviderModelSelection({}, current, layer, {}))
+      .toMatchObject({ provider: "venice", model });
+  });
+
+  // Ollama Cloud's list is its live /api/tags answer, and several of its IDs
+  // are also native IDs elsewhere (kimi-k3 on Kimi, glm-5.3 on Z.AI). A pair
+  // that names Ollama Cloud stays on Ollama Cloud.
+  test.each([
+    [{ model_provider: "ollama-cloud", model: "kimi-k3" }, "kimi-k3"],
+    [{ model_provider: "ollama-cloud", model: "glm-5.3" }, "glm-5.3"],
+    [{ model_provider: "ollama-cloud", model: "muse-spark-open" }, "muse-spark-open"],
+    [{ model: "ollama-cloud:minimax-m3.1-flash" }, "minimax-m3.1-flash"],
+  ] as const)("keeps an explicit Ollama Cloud pair on Ollama Cloud: %o", (layer, model) => {
+    expect(resolveProviderModelSelection({}, current, layer, {}))
+      .toMatchObject({ provider: "ollama-cloud", model });
+  });
+
+  test.each(["ollama", "lmstudio", "openai-compatible", "openrouter"])(
+    "accepts a custom name on open provider %s", (provider) => {
+      const model = provider === "openrouter" ? "vendor/my-custom-model" : "my-custom-model";
+      expect(resolveProviderModelSelection({}, current, {
+        model_provider: provider, model,
+      })).toMatchObject({ provider, model });
+    },
+  );
+
+  test("accepts custom names at a configured OpenAI-compatible endpoint", () => {
+    expect(resolveProviderModelSelection({ providers: {
+      openai: { base_url: "http://localhost:8765/v1" },
+    } }, current, { model_provider: "openai", model: "my-custom-model" }))
+      .toMatchObject({ provider: "openai", model: "my-custom-model" });
+  });
+
+  test("does not admit an unknown fixed-catalog model just because it is configured", () => {
+    expect(() => resolveProviderModelSelection({
+      model_provider: "deepseek", model: "xyz",
+      providers: { deepseek: { default_model: "xyz" } },
+    }, current, { model: "xyz" })).toThrow(/unknown model/u);
+  });
+
+  test("still switches to a correct name", () => {
+    expect(resolveProviderModelSelection({}, current, { model: "deepseek:deepseek-v4-pro" }))
+      .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+  });
+});
+
+
+test("uses the endpoint environment supplied by the caller", () => {
+  const current = { provider: "deepseek", model: "deepseek-flash" };
+  expect(resolveProviderModelSelection({}, current, {
+    model_provider: "openai", model: "custom-model",
+  }, { OPENAI_BASE_URL: "http://localhost:9876/v1" }))
+    .toMatchObject({ provider: "openai", model: "custom-model" });
+  expect(() => resolveProviderModelSelection({}, current, { model: "xyz" }, {
+    DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1/",
+  })).toThrow(/unknown model/u);
+});
+
+
+test("configured model admission keeps managed policy while allowing catalog drift", () => {
+  const current = { provider: "deepseek", model: "retired-model" };
+  expect(resolveProviderModelSelection({}, current, {}, {}, { validateCatalog: false }))
+    .toMatchObject(current);
+  expect(() => resolveProviderModelSelection({ availableModels: ["deepseek-flash"] }, current, {}, {}, { validateCatalog: false }))
+    .toThrow(ModelNotAllowedError);
+  expect(() => resolveProviderModelSelection({}, current, { model: "retired-model" }, {}))
+    .toThrow(/unknown model/u);
 });

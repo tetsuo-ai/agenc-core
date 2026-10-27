@@ -1,6 +1,7 @@
 /** Shared M3 boundary for logical model calls. */
 
 import type { Session } from "../session/session.js";
+import { billableTokenUsage as reconciledTokenUsage } from "../llm/usage.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -37,9 +38,14 @@ import {
   anthropicSupportsFastMode,
 } from "../llm/providers/anthropic/fast-mode.js";
 import { xaiSendsPriorityProcessing } from "../llm/providers/grok/priority-processing.js";
+import { taskBudgetOf, prepareInteractiveTaskBudgetCall } from "../session/task-budget.js";
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
-import { isLLMPreGenerationRejection, LLMManagedAdmissionError } from "../llm/errors.js";
+import {
+  isLLMPreGenerationRejection,
+  LLMContextWindowExceededError,
+  LLMManagedAdmissionError,
+} from "../llm/errors.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 
 // A local-only count has no cache consumer. Match a SHA-256 revision's encoded
@@ -347,6 +353,11 @@ function maximumTokenCostUsd(
   return tokenCost + outputTokens * entry.webSearchUsdPerRequest;
 }
 
+function withoutProviderCharge(usage: LLMResponse["usage"]): LLMResponse["usage"] {
+  const { providerCostUsd: _charge, ...rest } = usage;
+  return rest;
+}
+
 function usageCostUsd(
   model: string,
   provider: string,
@@ -396,6 +407,8 @@ function usageCostUsd(
     // Charge by the speed the provider reports it served, not the one
     // requested: a fast request served at standard speed bills standard.
     ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
+    // What the provider says it charged is the price of record.
+    ...(usage.providerCostUsd !== undefined ? { providerCostUsd: usage.providerCostUsd } : {}),
   };
   const resolved = computeUsdCostWithResolution(
     modelUsage,
@@ -407,21 +420,6 @@ function usageCostUsd(
   };
 }
 
-function reconciledTokenUsage(usage: LLMResponse["usage"]): {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-} {
-  const outputTokens = Math.max(
-    usage.completionTokens,
-    usage.reasoningOutputTokens ?? 0,
-  );
-  const inputTokens = Math.max(
-    usage.promptTokens,
-    (usage.cachedInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0),
-    usage.totalTokens - outputTokens,
-  );
-  return { inputTokens, outputTokens };
-}
 
 function hasUnboundedPaidServerTool(options: LLMChatOptions): boolean {
   return paidServerToolNames(options).length > 0;
@@ -484,7 +482,19 @@ function isSameModelIdentity(reported: string, requested: string): boolean {
  * uselessness and the turn is better refused with a reason than answered with
  * a fragment. Compaction is the path back from here, not a smaller ceiling.
  */
-const MIN_ADMISSIBLE_OUTPUT_TOKENS = 1_024;
+export const MIN_ADMISSIBLE_OUTPUT_TOKENS = 1_024;
+
+/** The provider's context-length refusal, when it is the error or one of its causes. */
+function contextWindowRefusalIn(
+  error: unknown,
+): LLMContextWindowExceededError | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if (current instanceof LLMContextWindowExceededError) return current;
+    current = (current as { readonly cause?: unknown }).cause;
+  }
+  return undefined;
+}
 
 /**
  * Shared context-fit authority for admission and advisory-compaction preflight.
@@ -516,7 +526,22 @@ export function fitOutputReservationToContext(
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
+  const taskBudget = taskBudgetOf(params.session);
   const client = params.session.services.executionAdmission;
+  const invoke = (options: LLMChatOptions): Promise<LLMResponse> => {
+    if (!taskBudget) return params.invoke(options);
+    return (async () => {
+      const reserve = (options.accountedInputTokens ?? 0) + (options.maxOutputTokens ?? 0);
+      // Admission checked the checkpoint before acquiring its lease. Reading
+      // durable usage again here would count that same lease a second time and
+      // could pause after markDispatched. Embedders without admission still
+      // need the local checkpoint before invoking the provider.
+      if (client === undefined) {
+        await prepareInteractiveTaskBudgetCall(params.session, reserve, params.signal);
+      }
+      return taskBudget.invoke(reserve, () => params.invoke(options));
+    })();
+  };
   const providerFactoryOptions = readProviderFactoryOptions(params.provider);
   // A few structurally typed embedding/test providers predate the explicit
   // identity fields on this boundary. Keep the admission path fail-safe at
@@ -605,16 +630,27 @@ export async function runAdmittedModelCall(
   const configuredMaxOutputTokens =
     positiveInteger(params.options.maxOutputTokens) ??
     positiveInteger(profile?.maxOutputTokens);
-  // A denied preflight still enters the durable admission API. Zero is only
-  // a persisted placeholder for the rejected request; it never reaches a
-  // provider because denialReason is resolved before queue/claim.
-  const maxOutputTokens = configuredMaxOutputTokens ?? 0;
   const hasHardCostCap =
     client?.scope.hasHardCostCap === true ||
     client?.scope.maxCostUsd !== undefined;
   const hasHardTokenCap =
     client?.scope.hasHardTokenCap === true ||
     client?.scope.maxTokens !== undefined;
+  // A provider that cannot take a request ceiling may still declare the
+  // model's documented maximum output (the ChatGPT sign-in backend). No
+  // answer can exceed it, so under a hard cap the reservation uses it.
+  const modelOutputBound = profile?.supportsMaxOutputTokens === true
+    ? undefined
+    : positiveInteger(profile?.modelMaximumOutputTokens);
+  // A denied preflight still enters the durable admission API. Zero is only
+  // a persisted placeholder for the rejected request; it never reaches a
+  // provider because denialReason is resolved before queue/claim.
+  const maxOutputTokens =
+    (hasHardCostCap || hasHardTokenCap) &&
+    modelOutputBound !== undefined &&
+    configuredMaxOutputTokens !== undefined
+      ? Math.max(configuredMaxOutputTokens, modelOutputBound)
+      : configuredMaxOutputTokens ?? 0;
   // Under a hard aggregate token/USD cap the reservation must be a real
   // upper bound, so the provider has to enforce the request-scoped output
   // ceiling and report authoritative usage. Without a hard cap that
@@ -624,8 +660,9 @@ export async function runAdmittedModelCall(
   // their usage is conservatively held unknown after dispatch.
   const providerContractUnavailable =
     (hasHardCostCap || hasHardTokenCap) &&
-    (profile?.supportsMaxOutputTokens !== true ||
-      profile.usageReporting !== "authoritative");
+    (profile?.usageReporting !== "authoritative" ||
+      (profile.supportsMaxOutputTokens !== true &&
+        modelOutputBound === undefined));
 
   const contextWindowTokens =
     positiveInteger(params.options.contextWindowTokens) ??
@@ -786,7 +823,7 @@ export async function runAdmittedModelCall(
     if (accountingFailureReason !== undefined) {
       throw new AdmissionDeniedError(accountingFailureReason);
     }
-    return params.invoke({
+    return invoke({
       ...accountingOptions,
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: admittedMaxOutputTokens }
@@ -824,6 +861,11 @@ export async function runAdmittedModelCall(
       }
     : undefined;
   let lease;
+  await prepareInteractiveTaskBudgetCall(params.session, maxInputTokens + admittedMaxOutputTokens, params.signal);
+  if (taskBudget?.limit !== undefined &&
+      taskBudget.tokens + maxInputTokens + admittedMaxOutputTokens > taskBudget.limit) {
+    taskBudget.stop();
+  }
   try {
     lease = await client.acquire(
       {
@@ -843,12 +885,15 @@ export async function runAdmittedModelCall(
         maxInputTokens,
         maxOutputTokens: admittedMaxOutputTokens,
         maxCostUsd: maximumCost,
-        ...(reservedRates.costEstimated ? { costEstimated: true } : {}),
+        ...(reservedRates.costEstimated || reservedRates.catalogEstimate ? { costEstimated: true } : {}),
         ...(denialReason !== undefined ? { denialReason } : {}),
       },
       params.signal,
     );
   } catch (error) {
+    if (error instanceof AdmissionDeniedError && error.reason === "model_call_budget_exceeded") {
+      taskBudget?.stop();
+    }
     // Denied/queued-then-cancelled attempts still need durable routing
     // evidence. recordFallback is a no-op only when acquisition failed before
     // the repository could create the step row.
@@ -875,6 +920,8 @@ export async function runAdmittedModelCall(
       params.onFallbackRecorded?.();
     }
     if (routingEvent !== undefined) client.recordFallback(routingEvent);
+    taskBudget?.assertFits(maxInputTokens + Math.min(
+      admittedMaxOutputTokens, lease.request.estimate.maxOutputTokens));
     client.markDispatched(reservationId, {
       boundary: "provider_wire",
       details: {
@@ -900,7 +947,7 @@ export async function runAdmittedModelCall(
       admittedMaxOutputTokens,
       lease.request.estimate.maxOutputTokens,
     );
-    const response = await params.invoke({
+    const response = await invoke({
       ...accountingOptions,
       ...(profile?.providerExecutionHandle !== undefined
         ? { providerExecutionHandle: profile.providerExecutionHandle }
@@ -959,7 +1006,9 @@ export async function runAdmittedModelCall(
     const actualPrice = usageCostUsd(
       managedRoutePriced ? effectiveModel : actualModel,
       pricingProvider,
-      usage,
+      // A managed call is billed in AgenC credits, never at what the upstream
+      // provider charged the gateway.
+      requestedProvider === "agenc" ? withoutProviderCharge(usage) : usage,
       params.options,
     );
     if (actualPrice === null) {
@@ -970,7 +1019,10 @@ export async function runAdmittedModelCall(
         // locks are committed together before any live shutdown is attempted.
         client.cancelRun("unpriced_provider_response");
       } else {
-        client.holdUnknown(reservationId, "unpriced_provider_response");
+        // Tokens are authoritative even when monetary pricing is unavailable.
+        // Reconcile them while retaining the conservative monetary hold.
+        const reported = reconciledTokenUsage(usage);
+        client.reconcile(reservationId, { ...reported, costUsd: null });
       }
       settled = true;
       hitM4DurabilityFailpoint("after_model_response_commit");
@@ -1021,6 +1073,14 @@ export async function runAdmittedModelCall(
     if (lateCancellation !== undefined) throw lateCancellation;
     return response;
   } catch (error) {
+    // A context-length refusal of a request admitted on a calibrated estimate
+    // corrects that calibration before compaction retries the request.
+    if (dispatched && accountingResult !== undefined) {
+      const refusal = contextWindowRefusalIn(error);
+      if (refusal !== undefined) {
+        tokenAccountingService.recordContextOverflow(accountingResult, refusal.message);
+      }
+    }
     if (settled) {
       // Reconciliation/unknown-hold already reached an exactly-once terminal
       // state. Never overwrite it from a broad catch path.

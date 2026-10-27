@@ -131,7 +131,9 @@ export function buildTerminalToolResult(opts: {
   readonly detail?: string;
 }): TerminalToolResult {
   const baseText = CAUSE_TEXT[opts.cause];
-  const detail = opts.detail ? ` — ${opts.detail}` : "";
+  const detail = opts.detail ? `: ${opts.detail}` : "";
+  // Keep protocol metadata for recovery consumers. The TUI decodes this
+  // envelope before rendering its human-readable content.
   const content = JSON.stringify({
     tool_use_id: opts.toolCall.id,
     is_error: true,

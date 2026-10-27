@@ -1803,6 +1803,33 @@ autostart = false
     }
   });
 
+  it.each(["agent.create", "session.attach"] as const)("shows restore progress for %s and gives restoration its own deadline", async method => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-restore-progress-"));
+    const socketPath = join(dir, "daemon.sock");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const server = new AgenCUnixSocketServer({ socketPath, onMessage: async (message, context) => {
+      if (message.method === "initialize") {
+        await context.send({ jsonrpc: "2.0", id: message.id, result: { type: "initialized", protocolVersion: "1.1.0", capabilities: {} } });
+      } else if (message.method === method) {
+        await context.send({ jsonrpc: "2.0", method: "event.startup_restore", params: { requestId: message.id, remaining: 193 } });
+        await new Promise(resolve => setTimeout(resolve, 120));
+        await context.send({ jsonrpc: "2.0", method: "event.startup_restore", params: { requestId: message.id, remaining: 0 } });
+        await context.send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "restored" } });
+      }
+    } });
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({ socketPath, authCookie: "test", timeoutMs: 50 });
+    try {
+      await expect(client.request(method, { sessionId: "old" })).resolves.toEqual({ sessionId: "restored" });
+      expect(stderr).toHaveBeenCalledWith("Reopening 193 sessions...\n");
+    } finally {
+      stderr.mockRestore();
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps message.send requests alive beyond the generic daemon timeout", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-agent-send-timeout-"));
     const socketPath = join(dir, "daemon.sock");
@@ -1915,6 +1942,8 @@ autostart = false
   });
 
   it.each([
+    "agent.create",
+    "session.setPermissionMode",
     "session.partialCompactFromMessage",
     "session.rewindConversationToMessage",
   ] as const)(
@@ -2285,7 +2314,7 @@ autostart = false
     expect(starts).toHaveLength(1);
     expect(io.stdoutText()).toBe("");
     expect(io.stderrText()).toContain(
-      "Daemon connection closed before response",
+      "Daemon connection closed",
     );
   });
 });

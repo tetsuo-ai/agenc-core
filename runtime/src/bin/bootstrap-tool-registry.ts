@@ -11,6 +11,7 @@ import { createModelFacingTools } from "./model-facing-tools.js";
 import { sparseLineNumbersEnabled } from "../tools/system/_deps/line-numbers.js";
 import type { CsvAgentJobsRepositoryProvider } from "../app-server/csv-agent-jobs-authority.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { resolveWebSearchMode, type WebSearchMode } from "../tools/web-search-mode.js";
 import { rareToolDeferralEnabled } from "../tools/rare-tool-deferral.js";
 
 export interface BootstrapToolRegistryOptions {
@@ -30,12 +31,26 @@ export interface BootstrapToolRegistryOptions {
     BuildToolRegistryOptions,
     "workspaceRoot" | "modelFacingTools"
   >;
+  /** config.toml `defer_rare_tools`; the session environment overrides it. */
+  readonly configuredDeferRareTools?: boolean;
+  readonly configuredWebSearch?: WebSearchMode;
+  /**
+   * config.toml `[providers.deepseek] web_search`; the session's
+   * `AGENC_DEEPSEEK_WEB_SEARCH` overrides it.
+   */
+  readonly configuredDeepSeekWebSearch?: boolean;
 }
 
 export function buildBootstrapToolRegistry(
   options: BootstrapToolRegistryOptions,
 ): ToolRegistry {
+  const webSearchEnabled = (): boolean => {
+    const store = options.getSession()?.services?.configStore;
+    return resolveWebSearchMode(options.environment ?? {},
+      store === undefined ? options.configuredWebSearch : store.current().web_search) === "on";
+  };
   const modelFacingTools = createModelFacingTools({
+    webSearchEnabled,
     workspaceRoot: options.workspaceRoot,
     ...(options.agencHome !== undefined
       ? { agencHome: options.agencHome }
@@ -56,6 +71,9 @@ export function buildBootstrapToolRegistry(
     ...(options.toolRegistryOptions?.grokCapabilities !== undefined
       ? { grokCapabilities: options.toolRegistryOptions.grokCapabilities }
       : {}),
+    ...(options.configuredDeepSeekWebSearch !== undefined
+      ? { deepseekWebSearch: options.configuredDeepSeekWebSearch }
+      : {}),
     ...(options.toolRegistryOptions?.sessionProvider !== undefined
       ? { sessionProvider: options.toolRegistryOptions.sessionProvider }
       : {}),
@@ -64,6 +82,9 @@ export function buildBootstrapToolRegistry(
       : {}),
     ...(options.toolRegistryOptions?.outputSchema !== undefined
       ? { outputSchema: options.toolRegistryOptions.outputSchema }
+      : {}),
+    ...(options.toolRegistryOptions?.toolPolicy !== undefined
+      ? { toolPolicy: options.toolRegistryOptions.toolPolicy }
       : {}),
   });
   return buildToolRegistry({
@@ -76,9 +97,15 @@ export function buildBootstrapToolRegistry(
       : {}),
     getSession: options.getSession,
     requireAdmission: true,
+    webSearchEnabled,
     // Read from the session's captured environment, so a client sets it per
     // session. An explicit toolRegistryOptions value below still wins.
-    deferRareTools: rareToolDeferralEnabled(options.environment ?? {}),
+    deferRareTools: rareToolDeferralEnabled(options.environment ?? {}, {
+      lightMode: options.toolRegistryOptions?.lightMode === true,
+      ...(options.configuredDeferRareTools !== undefined
+        ? { configured: options.configuredDeferRareTools }
+        : {}),
+    }),
     mcpToolsProvider: options.mcpManager,
     workflowController: buildWorkflowToolController({
       getSession: options.getSession,

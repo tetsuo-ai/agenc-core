@@ -3,8 +3,10 @@
  * session environment, BYOK state, local health probes, and auth backend.
  */
 
+import { ModelMetadataResolver } from "../model-metadata.js";
+import { veniceDefaultModel } from "../registry/venice-models.js";
 import type { AuthAgencModel, AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
-import { accountDefaultModel, readAccountModelAccess } from "../../auth/account-access.js";
+
 import { loadCanonicalConfig } from "../../config/repository.js";
 import { readProviderConfig } from "../../config/resolve-provider.js";
 import type { AgenCConfig } from "../../config/schema.js";
@@ -19,40 +21,22 @@ import {
 import {
   BUILT_IN_PROVIDER_DEFINITIONS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
-  resolveBuiltInProviderSlug,
 } from "../registry/provider-info.js";
 import type { ProviderName } from "../provider.js";
-import { assertHostedAgencModelAuthority, resolveProviderCredentialAuthority } from "../provider-options.js";
+import {
+  resolveProviderCredentialAuthority,
+} from "../provider-options.js";
 
 export type ProviderAvailabilityStatus = "usable" | "unusable";
 export type ProviderCredentialStatus =
   | "present"
   | "missing"
-  | "managed"
   | "unavailable"
   | "optional"
   | "not-required";
 export type ProviderLocalStatus = "up" | "down" | "unchecked" | "n/a";
 
-const HOSTED_AGENC_DELEGATE_PROVIDERS = new Set<ProviderName>([
-  "grok",
-  "openai",
-  "anthropic",
-  "ollama",
-  "lmstudio",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
-  "mistral",
-  "nvidia-nim",
-  "minimax",
-  "github",
-  "qwen",
-]);
-
 const DEFAULT_LOCAL_PROVIDER_PROBE_TIMEOUT_MS = 750;
-const PROVIDER_CHECK_SESSION_ID = "cli";
 
 export interface ProviderAvailabilityEntry {
   readonly provider: ProviderName;
@@ -108,7 +92,7 @@ export async function collectProviderAvailability(
     (await loadCanonicalConfig({ home, env })).config;
   const subscription = await resolveSubscriptionContext(options.authBackend);
   const entries = await Promise.all(
-    (Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS) as ProviderName[]).map(
+    (Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS) as ProviderName[]).filter(provider => provider !== "agenc").map(
       (provider) =>
         resolveProviderAvailabilityEntry({
           provider,
@@ -195,7 +179,7 @@ async function resolveProviderAvailabilityEntry(params: {
   readonly localProbeTimeoutMs: number;
 }): Promise<ProviderAvailabilityEntry> {
   const providerConfig = readProviderConfig(params.config, params.provider);
-  const model =
+  let model =
     providerConfig?.default_model?.trim() ??
     BUILT_IN_PROVIDER_DEFAULT_MODELS[params.provider];
   const configuredBaseURL =
@@ -229,13 +213,18 @@ async function resolveProviderAvailabilityEntry(params: {
       detail: error instanceof Error ? error.message : String(error),
     });
   }
+  if (params.provider === "venice" && authority.factoryOptions.apiKey && !providerConfig?.default_model) {
+    const models = await new ModelMetadataResolver({
+      fetchImpl: params.fetchImpl ?? fetch,
+      env: { ...params.env, VENICE_API_KEY: authority.factoryOptions.apiKey },
+    }).discoverVeniceModels(params.config);
+    model = veniceDefaultModel(models ?? []) ?? model;
+  }
   const credential = authority.credential;
   const credentialReady = credential.status === "ready";
   const credentialProvenance = "provenance" in credential
     ? credential.provenance
     : undefined;
-  const subscriptionTier = params.subscription.tier;
-  const paidSubscription = isPaidSubscriptionTier(subscriptionTier);
   const localUrl = localProviderProbeUrl(
     params.provider,
     resolveProviderBaseURLForDiscovery({
@@ -256,23 +245,6 @@ async function resolveProviderAvailabilityEntry(params: {
           timeoutMs: params.localProbeTimeoutMs,
         })
       : { localStatus: "n/a" as const };
-
-  if (params.provider === "agenc") {
-    const hostedRoute = await verifyHostedAgencRoute({
-          authBackend: params.authBackend,
-          model,
-          subscriptionTier,
-        });
-    return { ...buildEntry({
-      provider: params.provider,
-      model: hostedRoute.model ?? model,
-      credentialStatus: "not-required",
-      localProbe,
-      subscription: params.subscription,
-      usable: hostedRoute.usable,
-      detail: hostedRoute.detail,
-    }), ...(hostedRoute.models === undefined ? {} : { models: hostedRoute.models }) };
-  }
 
   if (localUrl !== undefined) {
     const usable = localProbe.localStatus === "up";
@@ -334,37 +306,6 @@ async function resolveProviderAvailabilityEntry(params: {
           : {}),
       });
     }
-    if (
-      BUILT_IN_PROVIDER_DEFINITIONS[params.provider].onboarding
-        .supportsManagedKeyAccess &&
-      params.subscription.authBackendKind === "remote" &&
-      paidSubscription
-    ) {
-      const managedKey = await verifyManagedProviderKey({
-        authBackend: params.authBackend,
-        provider: params.provider,
-      });
-      if (!managedKey.usable) {
-        return buildEntry({
-          provider: params.provider,
-          model,
-          credentialStatus: "unavailable",
-          localProbe,
-          subscription: params.subscription,
-          usable: false,
-          detail: managedKey.detail,
-        });
-      }
-      return buildEntry({
-        provider: params.provider,
-        model,
-        credentialStatus: "managed",
-        localProbe,
-        subscription: params.subscription,
-        usable: true,
-        detail: "managed key available through AgenC subscription",
-      });
-    }
     return buildEntry({
       provider: params.provider,
       model,
@@ -373,10 +314,7 @@ async function resolveProviderAvailabilityEntry(params: {
       subscription: params.subscription,
       usable: false,
       detail:
-        params.subscription.authBackendKind === "remote" &&
-          subscriptionTier === "free"
-          ? "set BYOK credential or upgrade subscription for managed keys"
-          : `set ${credential.status === "missing" ? credential.missingLabel : "provider credentials"}`,
+        `set ${credential.status === "missing" ? credential.missingLabel : "provider credentials"}`,
       ...(credentialProvenance !== undefined
         ? { credentialProvenance }
         : {}),
@@ -465,12 +403,6 @@ function localProbeApiKey(
   return firstNonEmptyString(apiKey);
 }
 
-function isPaidSubscriptionTier(
-  tier: AuthSubscriptionTier | undefined,
-): boolean {
-  return tier === "pro" || tier === "team" || tier === "enterprise";
-}
-
 function localProviderProbeUrl(
   provider: ProviderName,
   baseURL: string | undefined,
@@ -549,158 +481,6 @@ async function probeLocalProvider(params: {
   }
 }
 
-async function verifyManagedProviderKey(params: {
-  readonly authBackend: AuthBackend | undefined;
-  readonly provider: string;
-}): Promise<{ readonly usable: boolean; readonly detail: string }> {
-  if (params.authBackend === undefined) {
-    return {
-      usable: false,
-      detail: "managed key unavailable: no auth backend configured",
-    };
-  }
-  try {
-    const key = await params.authBackend.vendKey(
-      params.provider,
-      PROVIDER_CHECK_SESSION_ID,
-    );
-    if (key.kind !== "api-key") {
-      return {
-        usable: false,
-        detail:
-          `managed key unavailable: expected api-key credential for ${params.provider}, received ${key.kind}`,
-      };
-    }
-    const apiKey = firstNonEmptyString(key.apiKey);
-    if (apiKey === undefined) {
-      return {
-        usable: false,
-        detail: `managed key unavailable: empty key for ${params.provider}`,
-      };
-    }
-    if (key.provider !== params.provider) {
-      return {
-        usable: false,
-        detail:
-          `managed key unavailable: provider mismatch for ${params.provider}`,
-      };
-    }
-    if (key.sessionId !== PROVIDER_CHECK_SESSION_ID) {
-      return {
-        usable: false,
-        detail: "managed key unavailable: session mismatch",
-      };
-    }
-    return {
-      usable: true,
-      detail: "managed key vending verified",
-    };
-  } catch (error) {
-    return {
-      usable: false,
-      detail: `managed key unavailable: ${errorMessage(error)}`,
-    };
-  }
-}
-
-async function verifyHostedAgencRoute(params: {
-  readonly authBackend: AuthBackend | undefined;
-  readonly model: string;
-  readonly subscriptionTier: AuthSubscriptionTier | undefined;
-}): Promise<{ readonly usable: boolean; readonly detail: string; readonly model?: string; readonly models?: readonly AuthAgencModel[] }> {
-  if (params.authBackend === undefined) {
-    return {
-      usable: false,
-      detail: "hosted AgenC routing unavailable: no auth backend configured",
-    };
-  }
-  if (params.authBackend.kind !== "remote" && !isPaidSubscriptionTier(params.subscriptionTier)) {
-    return { usable: false, detail: "requires paid AgenC subscription" };
-  }
-  let requestedModel = params.model;
-  let models: readonly AuthAgencModel[] | undefined;
-  if (params.authBackend.kind === "remote" && !isPaidSubscriptionTier(params.subscriptionTier)) {
-    const access = await readAccountModelAccess(params.authBackend);
-    const authorizedModel = accountDefaultModel(access, requestedModel);
-    if (authorizedModel === undefined) return {
-      usable: false, models: [],
-      detail: !access.authenticated ? "Sign in with AgenC to check model access." :
-        access.unavailable ? "AgenC model access could not be verified. Refresh to try again." :
-          "No active AgenC model credits are available for this account.",
-    };
-    requestedModel = authorizedModel;
-    models = access.models;
-  }
-  try {
-    if (models === undefined) await assertHostedAgencModelAuthority({
-      provider: "agenc",
-      authBackend: params.authBackend,
-      model: requestedModel,
-      sessionId: PROVIDER_CHECK_SESSION_ID,
-      subscriptionTier: params.subscriptionTier,
-    });
-    const inferred = await params.authBackend.inferAgencModel({
-      provider: "agenc",
-      requestedModel,
-      sessionId: PROVIDER_CHECK_SESSION_ID,
-      ...(params.subscriptionTier !== undefined
-        ? { subscriptionTier: params.subscriptionTier }
-        : {}),
-    });
-    const provider = resolveBuiltInProviderSlug(inferred.provider);
-    const model = firstNonEmptyString(inferred.model);
-    if (provider === undefined) {
-      return {
-        usable: false,
-        detail:
-          `hosted AgenC routing unavailable: unknown inferred provider "${inferred.provider}"`,
-      };
-    }
-    if (
-      provider === "agenc" ||
-      !HOSTED_AGENC_DELEGATE_PROVIDERS.has(provider)
-    ) {
-      return {
-        usable: false,
-        detail:
-          `hosted AgenC routing unavailable: invalid inferred provider "${inferred.provider}"`,
-      };
-    }
-    if (model === undefined) {
-      return {
-        usable: false,
-        detail: "hosted AgenC routing unavailable: empty inferred model",
-      };
-    }
-    if (models !== undefined && model !== requestedModel) {
-      return { usable: false, models: [], detail: "AgenC returned a different model from the authorized selection." };
-    }
-    const managedKey = await verifyManagedProviderKey({
-      authBackend: params.authBackend,
-      provider,
-    });
-    if (!managedKey.usable) {
-      return {
-        usable: false,
-        detail:
-          `hosted AgenC routing unavailable after inferring ${provider}/${model}: ${managedKey.detail}`,
-      };
-    }
-    return {
-      usable: true,
-      model: requestedModel,
-      ...(models === undefined ? {} : { models }),
-      detail: "AgenC model access verified. Usage is charged to your account credits.",
-    };
-  } catch (error) {
-    return {
-      usable: false,
-      models: [],
-      detail: `AgenC model access is unavailable: ${errorMessage(error)}`,
-    };
-  }
-}
-
 function formatCredentialStatus(entry: ProviderAvailabilityEntry): string {
   if (
     entry.credentialStatus === "present" &&
@@ -726,10 +506,6 @@ function formatLocalStatus(entry: ProviderAvailabilityEntry): string {
 function firstNonEmptyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function table(rows: readonly (readonly string[])[]): string {

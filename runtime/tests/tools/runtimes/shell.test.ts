@@ -19,7 +19,12 @@ describe("shell runtime access analysis", () => {
   ])("does not mark active substitution or malformed input read-only: %s", (command) => {
     const analysis = analyzeShellRuntimeAccess(shellTool, { command }, workspaceRoot);
     expect(analysis?.indeterminateRead).toBe(true);
-    expect(analysis?.indeterminateWrite).toBe(true);
+    if (command.startsWith("cat <<") || command === "cat 'open") {
+      expect(analysis?.indeterminateWrite).toBe(true);
+    } else {
+      expect(analysis?.indeterminateWrite).toBe(false);
+      expect(analysis?.writeTargets).toEqual([path.join(workspaceRoot, "src/file")]);
+    }
     expect(analysis?.knownSafeWhenTargetless).toBe(false);
   });
 

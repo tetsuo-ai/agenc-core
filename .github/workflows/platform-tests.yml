@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: "26.5.0"
+  NODE_VERSION: "26.12.1"
   NPM_VERSION: "11.17.0"
 
 jobs:

@@ -10,7 +10,7 @@
 import type { LLMMessage } from "../llm/types.js";
 import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import type { CompactionResult } from "../services/compact/types.js";
-import { getAutoCompactThreshold } from "../services/compact/thresholds.js";
+import { getAutoCompactPolicyForEnvironment } from "../services/compact/thresholds.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   extractMessageText,
@@ -50,6 +50,7 @@ import {
 import { sessionQuerySourceForTurn } from "./run-turn-queued-commands.js";
 import { buildSamplingRequestContract } from "./run-turn-sampling-request.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
+import { reportsCompletePromptTokens } from "../llm/token-accounting.js";
 import {
   describeCompactionDecline,
   ladderAppliesToDecline,
@@ -65,9 +66,6 @@ import {
   type CompactionFailureDetails,
 } from "../services/compact/failure-details.js";
 import { logForDebugging } from "../utils/debug.js";
-
-const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
-const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
 
 interface AgenCAutoCompactResult {
   readonly wasCompacted: boolean;
@@ -132,8 +130,10 @@ async function runAgenCAutoCompact(params: {
     );
     const compactContext = {
       ...toolUseContext,
+      liveUserMessageId: state.liveUserMessageId,
       options: {
         ...toolUseContext.options,
+        contextWindowTokens: request.contextWindowTokens,
         tools: request.tools,
         systemPrompt: request.baseInstructions,
         ...(request.maxOutputTokens !== undefined
@@ -320,11 +320,12 @@ function emitAutoCompactFailed(
   phase: CompactionPhase,
   explanation: string,
   details: CompactionFailureDetails | undefined,
+  cause: "auto_compact_failed" | "auto_compact_declined" = "auto_compact_failed",
 ): void {
   const message = `${reason}/${phase}: ${explanation}`;
   const hasDetails = details !== undefined && Object.keys(details).length > 0;
   logForDebugging(
-    `auto_compact_failed ${message}${hasDetails ? ` ${JSON.stringify(details)}` : ""}`,
+    `${cause} ${message}${hasDetails ? ` ${JSON.stringify(details)}` : ""}`,
     { level: "warn" },
   );
   session.emit({
@@ -332,12 +333,33 @@ function emitAutoCompactFailed(
     msg: {
       type: "warning",
       payload: {
-        cause: "auto_compact_failed",
+        cause,
         message,
         ...(hasDetails ? { details } : {}),
       },
     },
   });
+}
+
+/**
+ * Record a structural decline the dispatch caller handled. The fit projection
+ * continued the turn, so the reason is diagnostic (`auto_compact_declined`,
+ * kept out of the transcript); it is a user-visible failure only when the
+ * request could not be made to fit either.
+ */
+export function emitStructuralCompactionDecline(
+  session: Session,
+  decline: StructuralCompactionDecline,
+  continued: boolean,
+): void {
+  emitAutoCompactFailed(
+    session,
+    decline.reason,
+    decline.phase,
+    decline.explanation,
+    decline.details,
+    continued ? "auto_compact_declined" : "auto_compact_failed",
+  );
 }
 
 function compactionNotRun(
@@ -360,22 +382,7 @@ function compactionNotRun(
 }
 
 function getAutoCompactTokenLimit(ctx: TurnContext): number | undefined {
-  if (!isAutoCompactEnabledForNotices()) return undefined;
-
-  const explicit = finitePositive(
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
-      .autoCompactTokenLimit,
-  );
-  if (explicit !== undefined) return explicit;
-
-  const effectiveWindow = finitePositive(modelContextWindow(ctx));
-  if (effectiveWindow === undefined) return undefined;
-  return Math.max(
-    1,
-    effectiveWindow > AUTOCOMPACT_NOTICE_BUFFER_TOKENS
-      ? effectiveWindow - AUTOCOMPACT_NOTICE_BUFFER_TOKENS
-      : effectiveWindow,
-  );
+  return getPreSamplingAutoCompactTokenLimit(ctx);
 }
 
 function messageHasImageContent(message: LLMMessage | undefined): boolean {
@@ -383,12 +390,6 @@ function messageHasImageContent(message: LLMMessage | undefined): boolean {
   return message.content.some(
     (part) => part.type === "image_url" && part.image_url.url.trim().length > 0,
   );
-}
-
-function isAutoCompactEnabledForNotices(): boolean {
-  const raw = getSelectedProviderEnvironment().AGENC_DISABLE_AUTO_COMPACT;
-  if (raw === undefined) return true;
-  return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -426,6 +427,33 @@ interface RunAutoCompactOptions {
    * replacement while the new history is already canonical.
    */
   readonly onDurableHistoryReplaced?: (durableCount: number) => void;
+  /**
+   * Receives a final unchanged-history refusal that no compaction tier can
+   * overcome (see {@link isStructuralCompactionDecline}) in place of the
+   * `auto_compact_failed` warning. The dispatch caller can still shorten the
+   * outgoing request's tool results and reports the outcome itself.
+   */
+  readonly onStructuralDecline?: (decline: StructuralCompactionDecline) => void;
+}
+
+/** An unchanged-history refusal the request fit projection may still overcome. */
+export interface StructuralCompactionDecline {
+  readonly reason: CompactionReason;
+  readonly phase: CompactionPhase;
+  readonly explanation: string;
+  readonly code: "context_limit" | "no_shrink";
+  readonly details?: CompactionFailureDetails;
+}
+
+/**
+ * Every tier left history unchanged because its candidate cannot fit the
+ * window, or because nothing but the live request and the newest tool
+ * results remains to summarize. Only the outgoing request can shrink further.
+ */
+export function isStructuralCompactionDecline(
+  result: Pick<AutoCompactResult, "skippedCode">,
+): result is { readonly skippedCode: "context_limit" | "no_shrink" } {
+  return result.skippedCode === "context_limit" || result.skippedCode === "no_shrink";
 }
 
 /**
@@ -647,6 +675,9 @@ async function runAutoCompact(
           ? [...compacted, { ...unsentImageTurn }]
           : compacted;
         state.messagesForQuery = [...compacted];
+        // The last sample measured the replaced history. It must not trigger
+        // another compaction before the model consumes the retained results.
+        state.lastResponseUsage = undefined;
         if (unsentImageTurn) {
           state.messagesForQuery.push({ ...unsentImageTurn });
         }
@@ -763,13 +794,23 @@ async function runAutoCompact(
      * dropped, leaving a turn that ended mid-plan with nothing to act on.
      */
     if (result.skippedReason !== undefined) {
-      emitAutoCompactFailed(
-        session,
-        reason,
-        phase,
-        result.skippedReason,
-        result.skippedDetails,
-      );
+      if (options.onStructuralDecline !== undefined && isStructuralCompactionDecline(result)) {
+        options.onStructuralDecline({
+          reason,
+          phase,
+          explanation: result.skippedReason,
+          code: result.skippedCode,
+          ...(result.skippedDetails !== undefined ? { details: result.skippedDetails } : {}),
+        });
+      } else {
+        emitAutoCompactFailed(
+          session,
+          reason,
+          phase,
+          result.skippedReason,
+          result.skippedDetails,
+        );
+      }
     }
     return false;
   } catch (error) {
@@ -970,7 +1011,7 @@ function effectivePreviousModelContextWindow(previousTurnSettings: {
 async function runPreSamplingCompact(
   session: Session,
   ctx: TurnContext,
-  querySource: string,
+  _querySource: string,
   state?: TurnState,
   options: Pick<RunAutoCompactOptions, "onAdvisoryRefusal" | "onDurableHistoryReplaced"> = {},
 ): Promise<boolean> {
@@ -979,7 +1020,7 @@ async function runPreSamplingCompact(
     ctx,
     state,
   );
-  let preSamplingCompacted = await maybeRunPreviousModelInlineCompact(
+  const preSamplingCompacted = await maybeRunPreviousModelInlineCompact(
     session,
     ctx,
     // Model downshift is a separate safety path, not the local proactive gate.
@@ -989,22 +1030,9 @@ async function runPreSamplingCompact(
     state,
     options,
   );
-  const autoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
-  if (
-    autoCompactLimit !== undefined &&
-    activeContextTokensBefore >= autoCompactLimit
-  ) {
-    const contextLimitCompacted = await runAutoCompact(
-      session,
-      ctx,
-      "do_not_inject",
-      "context_limit",
-      "pre_turn",
-      state,
-      { propagateErrors: true, querySource, ...options },
-    );
-    preSamplingCompacted = preSamplingCompacted || contextLimitCompacted;
-  }
+  // General context pressure is evaluated after query preparation, before
+  // every physical provider dispatch. Only a model downshift needs this
+  // separate earlier path to summarize with the previous larger model.
   return preSamplingCompacted;
 }
 
@@ -1031,8 +1059,9 @@ function getActiveContextTokenUsage(
       ? state
       : { ...state, messagesForQuery: [...messages] };
   const request = buildSamplingRequestContract(accountingState, session, ctx);
+  const accountingProvider = ctx.provider ?? session.services.provider;
   return estimateMessagesTokens(toAgenCRuntimeMessages(request.input), {
-    provider: ctx.provider ?? session.services.provider,
+    provider: accountingProvider,
     options: {
       mainLoopModel: ctx.modelInfo.slug,
       ...(request.contextWindowTokens !== undefined
@@ -1053,14 +1082,25 @@ function getActiveContextTokenUsage(
     // Keep input (including its safety margin) on the same scale as the
     // headroom-reserving proactive threshold. Output remains fully accounted
     // by hard admission and can be clamped there; no request limit changes.
-    inputOnly: options.includeOutput !== true && usesLocalToolProfile(ctx.modelProviderId),
+    inputOnly: options.includeOutput !== true,
+    // The dispatch gate compares a calibrated count with the same limit. Where
+    // reports lower that count (two-way calibration), the uncalibrated estimate
+    // is about 2.4 times larger and would escalate a commit that already fits.
+    ...(session.conversationId &&
+      reportsCompletePromptTokens(accountingProvider.name, ctx.modelInfo.slug)
+      ? { calibrationScope: session.conversationId }
+      : {}),
   });
 }
 
 function getPreSamplingAutoCompactTokenLimit(
   ctx: TurnContext,
 ): number | undefined {
-  if (!isAutoCompactEnabledForNotices()) return undefined;
+  const policy = getAutoCompactPolicyForEnvironment({ options: {
+    mainLoopModel: ctx.modelInfo.slug,
+    contextWindowTokens: finitePositive(modelContextWindow(ctx)),
+  } }, getSelectedProviderEnvironment());
+  if (!policy.autoCompactEnabled) return undefined;
   const explicit = finitePositive(
     (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
       .autoCompactTokenLimit,
@@ -1068,12 +1108,7 @@ function getPreSamplingAutoCompactTokenLimit(
   if (explicit !== undefined) return explicit;
   const contextWindowTokens = finitePositive(modelContextWindow(ctx));
   if (contextWindowTokens === undefined) return undefined;
-  return getAutoCompactThreshold({
-    options: {
-      mainLoopModel: ctx.modelInfo.slug,
-      contextWindowTokens,
-    },
-  });
+  return policy.compactionThresholdTokens;
 }
 
 function getTotalTokenUsage(session: Session): number {

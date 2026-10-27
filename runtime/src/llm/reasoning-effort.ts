@@ -1,14 +1,19 @@
+import { isKimiK3Model } from "./registry/kimi-models.js";
 /** Provider-scoped effort contract shared by session validation and wire gating.
- * Registered models retain their catalog levels and defaults. Hosted NIM
- * models have separate contracts, even when the model id names another vendor.
+ * Registered models retain their catalog levels and defaults, except that a
+ * DeepSeek model through a gateway defaults to DeepSeek's own high
+ * (model-family.ts). Hosted NIM models have separate contracts, even when the
+ * model id names another vendor.
  */
 import { resolveNvidiaCurrentModel } from "./registry/nvidia-current-models.js";
 import { supportsXaiReasoningEffortParam } from "./structured-output.js";
 import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel, DEEPSEEK_REASONING_LEVELS } from "./registry/deepseek-models.js";
+import { isOllamaGptOssModel, OLLAMA_GPT_OSS_REASONING_LEVELS } from "./registry/ollama-gpt-oss.js";
 import { anthropicEffortLevels } from "../utils/model/anthropicThinkingControl.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
+import { gatewayFamilyDefaultEffort } from "./model-family.js";
 import {
   bedrockConverseEffortLevels,
   resolveRegisteredModelCatalogEntry,
@@ -66,8 +71,8 @@ function nimReasoningEffortValues(
   )?.values;
 }
 
-// Conservative Muse Spark fallback. Exact registered models use their catalog
-// enum below; newly documented tiers must not leak into unknown model variants.
+// Conservative Muse fallback. Exact registered models use their catalog enum
+// below; newly documented tiers must not leak into unknown model variants.
 const META_REASONING_EFFORT_VALUES = new Set([
   "minimal",
   "low",
@@ -123,7 +128,7 @@ export function resolveReasoningEffort(input: {
   const isManagedDeepSeek = input.managedGateway === true && slug === "openrouter" && isAgenCDeepSeekModel(model);
   const isNativeDeepSeek = slug === "deepseek" && isNativeDeepSeekModel(model);
   const isZai = slug === "zai" || slug === "zai-coding-plan";
-  const isKimiK3 = slug === "kimi" && model?.trim().toLowerCase() === "kimi-k3";
+  const isKimiK3 = slug === "kimi" && isKimiK3Model(model);
   // Preserve the existing transport compatibility gates. OpenAI and Grok
   // family matching permits forwarding, but does not verify a session enum.
   let acceptsReasoningEffort = false;
@@ -149,7 +154,7 @@ export function resolveReasoningEffort(input: {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
     acceptsReasoningEffort = supportsXaiReasoningEffortParam(model);
-  } else if (slug === "meta" && /(?:^|[/:])muse-spark-/i.test(model ?? "")) {
+  } else if (slug === "meta" && /(?:^|[/:])muse-(?:spark|wonder)-/i.test(model ?? "")) {
     const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
     reasoningEffortAllowedValues = entry !== undefined
       ? new Set(entry.supportedReasoningLevels)
@@ -187,7 +192,10 @@ export function resolveReasoningEffort(input: {
     reasoningEffortAllowedValues =
       CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
-  } else if (slug === "ollama-cloud" || slug === "groq") {
+  } else if (slug === "ollama" && isOllamaGptOssModel(model)) {
+    reasoningEffortAllowedValues = new Set(OLLAMA_GPT_OSS_REASONING_LEVELS);
+    acceptsReasoningEffort = true;
+  } else if (slug === "ollama-cloud" || slug === "groq" || slug === "venice" || slug === "abliteration") {
     const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
@@ -213,7 +221,10 @@ export function resolveReasoningEffort(input: {
     (slug === "anthropic" && model !== undefined
       ? anthropicEffortLevels(model)
       : [...(reasoningEffortAllowedValues ?? [])]);
-  const defaultLevel = entry?.defaultReasoningLevel;
+  // A DeepSeek model through a gateway defaults to DeepSeek's own high
+  // (model-family.ts), so the status line shows what the session sends.
+  const defaultLevel = gatewayFamilyDefaultEffort(slug, model, levels, { managedGateway: input.managedGateway }) ??
+    entry?.defaultReasoningLevel;
   return {
     registered: entry !== undefined,
     levels,

@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AuthBackend } from "../../../../src/auth/backend.js";
 import { createProvider } from "../../../../src/llm/provider.js";
 import { resolveModelCatalogMetadata, deriveFlatCatalog } from "../../../../src/llm/registry/model-catalog.js";
 import { QWEN_FLASH_NEXT_MODEL as model } from "../../../../src/llm/registry/qwen-flash-next.js";
@@ -17,17 +16,8 @@ function sse(frames: unknown[]): Response {
   });
 }
 
-function authBackend(): AuthBackend {
-  return {
-    kind: "remote", login: () => ({ authenticated: true }), logout: () => ({ authenticated: false }),
-    whoami: () => ({ authenticated: true }), getSubscriptionTier: () => "free",
-    getLlmUsage: () => ({ managedModelsEnabled: true, subscriptionTier: "free", modelAllowance: { status: "active", duration: "pilot", allowedModelCount: 1 } }),
-    inferAgencModel: () => ({ provider: "qwen", model }),
-    vendKey: (provider, sessionId) => ({ kind: "api-key", provider, sessionId, apiKey: "synthetic-loopback-capability", baseUrl: "http://127.0.0.1:43187/v1", expiresAt: new Date(Date.now() + 60_000).toISOString() }),
-  };
-}
 
-describe("AgenC Flash Next relay wire", () => {
+describe("Direct Qwen Flash Next wire", () => {
   it.each(["reasoning", "reasoning_content"])("preserves %s and fragmented tools across a two-turn stream", async (field) => {
     const requests: Record<string, any>[] = [];
     const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
@@ -47,12 +37,12 @@ describe("AgenC Flash Next relay wire", () => {
         { model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 45, completion_tokens: 2, total_tokens: 47 } },
       ]);
     });
-    const provider = createProvider("agenc", { model, tools, extra: { authBackend: authBackend(), sessionId: "synthetic-session", subscriptionTier: "free", fetchImpl } });
+    const provider = createProvider("qwen", { model, tools, apiKey: "synthetic-loopback-capability", baseURL: "http://127.0.0.1:43187/v1", extra: { fetchImpl } });
     const messages: LLMMessage[] = [{ role: "user", content: "Look up SYN-42" }];
     const first = await provider.chatStream(messages, () => {}, { reasoningEffort: "medium", maxTokens: 192 });
     expect(first.content).toBe("");
     expect(first.providerReasoningContent).toBe("synthetic replay state");
-    expect(first.toolCalls).toEqual([{ id: expect.stringMatching(/^call_[a-f0-9]{32}$/u), name: "lookup_ticket", arguments: '{"ticket_id":"SYN-42"}' }]);
+    expect(first.toolCalls).toEqual([{ id: "call_lookup", name: "lookup_ticket", arguments: '{"ticket_id":"SYN-42"}' }]);
     const toolCallId = first.toolCalls![0]!.id;
     expect(first.usage.totalTokens).toBe(36);
     const final = await provider.chatStream([...messages,
@@ -73,7 +63,7 @@ describe("AgenC Flash Next relay wire", () => {
       body = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({ model, choices: [{ message: { role: "assistant", content: "ok", reasoning: "synthetic state" }, finish_reason: "stop" }], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } }), { headers: { "content-type": "application/json" } });
     });
-    const provider = createProvider("agenc", { model, tools, extra: { authBackend: authBackend(), sessionId: "synthetic-session", fetchImpl } });
+    const provider = createProvider("qwen", { model, tools, apiKey: "synthetic-loopback-capability", baseURL: "http://127.0.0.1:43187/v1", extra: { fetchImpl } });
     const result = await provider.chat([{ role: "user", content: "use the tool" }], { toolChoice: "required", reasoningEffort: "xhigh" });
     expect(body.chat_template_kwargs).toEqual({ enable_thinking: false, preserve_thinking: true });
     expect(body.enable_thinking).toBeUndefined();

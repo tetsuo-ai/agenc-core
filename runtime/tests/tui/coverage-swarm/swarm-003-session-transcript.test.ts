@@ -322,7 +322,7 @@ describe("session transcript coverage swarm row 003", () => {
       "Realtime voice started",
       "Realtime error",
       "Realtime closed",
-      "[object Object]",
+      "Tool execution failed",
     ]);
     expect(transcript.streamingText).toBeNull();
   });
@@ -381,7 +381,7 @@ describe("session transcript coverage swarm row 003", () => {
       "compact text",
       "Error: slash command failed",
       "Error: content error",
-      '{\n  "kind": "weird",\n  "value": 9\n}',
+      "Tool execution failed (weird)",
     ]);
   });
 

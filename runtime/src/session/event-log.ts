@@ -121,6 +121,8 @@ export interface SessionMetaLine {
   readonly modelProvider?: string;
   /** Upstream thread memory mode persisted by metadata-update rows. */
   readonly memoryMode?: string;
+  /** Presentation/tool-catalog profile, independent of permission authority. */
+  readonly lightMode?: boolean;
   readonly admissionOwner?: {
     readonly workspaceId: string;
     readonly runId: string;
@@ -145,6 +147,7 @@ export interface TurnStartedEvent {
 }
 
 export interface TurnCompleteEvent {
+  readonly usableFinalAnswer?: boolean;
   readonly turnId: string;
   /** Agent-assignment correlation id, when this is a reusable worker turn. */
   readonly taskId?: string;
@@ -294,7 +297,7 @@ export interface TurnCheckpointV3Event extends TurnCheckpointBase<TurnCheckpoint
 export interface TurnCheckpointV4Event extends TurnCheckpointBase<TurnCheckpointSliceLine> {
   readonly checkpointVersion: 4;
   readonly toolResultIntegrityVersion: 1;
-  readonly prefixHashVersion: 3;
+  readonly prefixHashVersion: 3 | 4;
 }
 
 export type TurnCheckpointEvent =
@@ -358,6 +361,8 @@ export interface CompletionGateEvent {
     | "unavailable_checks"
     | "rounds_exhausted"
     | "no_tool_use"
+    | "literal_file_verified"
+    | "answer_only"
     | "deadline_reserve";
   /** Tool calls that completed between the last injection and this decision. */
   readonly toolCallsSinceInjection: number;
@@ -415,6 +420,8 @@ export interface TokenCountEvent {
    * "priority" or "fast"), which bills at fast-mode rates.
    */
   readonly speed?: "fast";
+  /** What the provider charged for this call in USD (OpenRouter `usage.cost`). */
+  readonly providerCostUsd?: number;
 }
 
 export interface McpToolCallBeginEvent {
@@ -517,6 +524,8 @@ export interface PermissionDecisionEvent {
 }
 
 export interface ContextCompactedEvent {
+  /** Canonical selectable root-user IDs in the committed conversation order. */
+  readonly activeUserMessageIds?: readonly string[];
   readonly turnId?: string;
   readonly summary?: string;
   readonly preCompactTokens?: number;
@@ -531,6 +540,7 @@ export interface ThreadRolledBackEvent {
 export interface ErrorEvent {
   readonly cause: string;
   readonly message: string;
+  readonly callId?: string;
   readonly turnId?: string;
   readonly stack?: string;
 }
@@ -1006,6 +1016,7 @@ export interface CollabWaitingEndEvent {
   readonly senderThreadId: string;
   readonly callId: string;
   readonly timedOut?: boolean;
+  readonly interrupted?: boolean;
   readonly agentStatuses?: ReadonlyArray<CollabAgentStatusEntry>;
   readonly statuses: Readonly<Record<string, AgentStatus>>;
 }
@@ -1195,6 +1206,12 @@ export type EventMsg =
         readonly callId: string;
         readonly toolName: string;
         readonly args: string;
+        /**
+         * How a crash during this call is recovered. The daemon's in-flight
+         * tool index records it; idempotent rows are observer state and
+         * commit without their own fsync.
+         */
+        readonly recoveryCategory?: ToolRecoveryCategory;
       };
     }
   | {
@@ -1871,6 +1888,7 @@ export class EventLog {
 export interface EmitErrorOptions {
   readonly cause: string;
   readonly message: string;
+  readonly callId?: string;
   readonly turnId?: string;
   readonly stack?: string;
   /** Use `stream_error` instead of `error` (for transient provider failures). */
@@ -1919,6 +1937,7 @@ export function emitError(
             cause: options.cause,
             message: options.message,
             ...(options.turnId !== undefined ? { turnId: options.turnId } : {}),
+            ...(options.callId !== undefined ? { callId: options.callId } : {}),
             ...(options.stack !== undefined ? { stack: options.stack } : {}),
           },
         },
@@ -2027,6 +2046,9 @@ export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
         : {}),
       ...(usage.webSearchRequests !== undefined
         ? { webSearchRequests: usage.webSearchRequests }
+        : {}),
+      ...(usage.providerCostUsd !== undefined
+        ? { providerCostUsd: usage.providerCostUsd }
         : {}),
     },
   };

@@ -49,7 +49,7 @@ test("real discovery refreshes the advertised catalog and real FileRead remains 
     const ctx = mkCtx({ cwd, permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
       modelInfo: { ...base.modelInfo, maxOutputTokens: 2048 } });
     const loop = runMinimalTurn(session, ctx, [{ role: "user", content: "discover and read" }], "", new AbortController().signal);
-    for (;;) { const next = await withOneShotFastMode(() => loop.next()); if (next.done) { expect(next.value.reason).toBe("completed"); break; } }
+    for (;;) { const next = await withOneShotFastMode(() => loop.next(), String(session.conversationId)); if (next.done) { expect(next.value.reason).toBe("completed"); break; } }
     expect(calls).toBe(3);
     expect(specialist).toHaveBeenCalledOnce();
   } finally { await rm(cwd, { recursive: true, force: true }); }

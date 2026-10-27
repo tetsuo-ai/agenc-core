@@ -70,6 +70,8 @@ export type Options = {
   stderr: NodeJS.WriteStream;
   exitOnCtrlC: boolean;
   stdinMode?: 'readable' | 'data';
+  /** Keep queued bytes when another interactive session will own stdin. */
+  shouldPreserveInputOnExit?: () => boolean;
   patchConsole: boolean;
   waitUntilExit?: () => Promise<void>;
   onFrame?: (event: FrameEvent) => void;
@@ -1445,19 +1447,27 @@ export default class Ink {
       return;
     }
 
-    // Store and remove all 'readable' event listeners temporarily
-    // This prevents Ink from consuming stdin while the editor is active
-    const readableListeners = stdin.listeners('readable');
-    logForDebugging(`[stdin] suspendStdin: removing ${readableListeners.length} readable listener(s), wasRawMode=${(stdin as NodeJS.ReadStream & {
-      isRaw?: boolean;
-    }).isRaw ?? false}`);
-    readableListeners.forEach(listener => {
-      this.stdinListeners.push({
-        event: 'readable',
-        listener: listener as (...args: any[]) => void
-      });
-      stdin.removeListener('readable', listener as (...args: any[]) => void);
-    });
+    stdin.pause();
+    for (const event of ['readable', 'data']) {
+      for (const listener of stdin.listeners(event)) {
+        this.stdinListeners.push({ event, listener: listener as (...args: any[]) => void });
+        stdin.removeListener(event, listener as (...args: any[]) => void);
+      }
+    }
+
+    // In readable mode pause() can be a no-op: flowing delivery is already
+    // paused while libuv continues reading. Stop the native reader using the
+    // same state transition as Node's process.stdin pause handler, so bytes
+    // reach the editor instead of being buffered by this process.
+    const nativeStdin = stdin as NodeJS.ReadStream & {
+      _handle?: { reading: boolean; readStop: () => number };
+      _readableState?: { reading: boolean };
+    };
+    if (nativeStdin._handle?.readStop) {
+      nativeStdin._handle.reading = false;
+      if (nativeStdin._readableState) nativeStdin._readableState.reading = false;
+      nativeStdin._handle.readStop();
+    }
 
     // If raw mode is enabled, disable it temporarily
     const stdinWithRaw = stdin as NodeJS.ReadStream & {
@@ -1507,6 +1517,7 @@ export default class Ink {
       }
       this.wasRawMode = false;
     }
+    stdin.resume();
   }
 
   // Stable identity for TerminalWriteContext. An inline arrow here would
@@ -1571,8 +1582,9 @@ export default class Ink {
       // stale if AlternateScreen's unmount (which flips the flag) raced a
       // busy event loop + SIGINT. No-op if tracking was never enabled.
       writeSync(1, DISABLE_MOUSE_TRACKING);
-      // Drain stdin so in-flight mouse events don't leak to the shell
-      this.drainStdin();
+      // A session handoff must retain user typing queued during final paint.
+      // Ordinary shell exit still drains late terminal reports.
+      if (this.options.shouldPreserveInputOnExit?.() !== true) this.drainStdin();
       // Disable extended key reporting (both kitty and modifyOtherKeys)
       writeSync(1, DISABLE_MODIFY_OTHER_KEYS);
       writeSync(1, DISABLE_KITTY_KEYBOARD);

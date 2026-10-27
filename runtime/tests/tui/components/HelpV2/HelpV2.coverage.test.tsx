@@ -205,7 +205,10 @@ describe("HelpV2 coverage", () => {
       expect(harness.output()).toContain("Custom commands matching deploy:");
       expect(harness.output()).toContain("/deploy-project");
       expect(harness.output()).not.toContain("/internal-project");
-      expect(generalOutput).toContain("esc to cancel");
+      expect(generalOutput).toContain("shift+tab or alt+m");
+      expect(generalOutput).toContain("change mode");
+      expect(generalOutput).toContain("show the to-do list");
+      expect(generalOutput).toContain("ctrl+shift+-");
     } finally {
       harness.dispose();
     }

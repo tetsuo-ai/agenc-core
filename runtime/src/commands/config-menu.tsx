@@ -4,7 +4,7 @@ import type { AgenCConfig } from "../config/schema.js";
 import type {
 } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
-import { Box, useInput } from "../tui/ink.js";
+import { useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
@@ -39,6 +39,24 @@ type ConfigRow = {
   readonly value: string;
   readonly status: ConfigRowStatus;
   readonly detail: string;
+};
+
+const CONFIG_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  "session model": "the model answering in this conversation. Use /model to choose another.",
+  "configured model": "the model new sessions start with. This conversation can use a different one.",
+  reasoning: "how much the model thinks before answering. Use /effort to balance speed and thoroughness.",
+  approval: "when the agent must ask before acting. Use /permissions to review what it may do.",
+  sandbox: "limits which files and network connections commands can use.",
+  "config.toml": "the settings file for this session. Use /config edit to change it, then /config reload.",
+  "project roots": "helps the agent find the project and its instructions when you start inside a subfolder.",
+  "mcp server": "lets other apps connect to AgenC. Use /mcp to manage tools connected to this session.",
+  plugins: "adds tools, commands and skills from installed plugins. Use /plugins to manage them.",
+  profiles: "named groups of settings you can choose when starting a session.",
+  tools: "controls which tools the agent can use, including web search.",
+  agent: "sets limits on background work and how long completed work is kept.",
+  theme: "the colors used by the terminal interface. Use /theme to choose another.",
+  updates: "controls automatic updates and which release channel to use.",
+  warnings: "settings that could not be used as written. Review them in /config show.",
 };
 
 export type ConfigMenuSnapshot = {
@@ -347,13 +365,13 @@ export function ConfigMenuView({
   return (
     <MenuModal
       title="config"
-      count={`${rows.length}`}
       summary={liveSnapshot.warningCount > 0 ? `${liveSnapshot.warningCount} warnings` : "session + configuration"}
       headerRight={liveSnapshot.configPath}
       columns={[3, 13, 18, 24, 54]}
       headers={["", "status", "section", "key", "value"]}
       items={rows}
       activeIndex={activeIndex}
+      detail={<ThemedText color="text2" wrap="wrap">{selected ? `${selected.key}: ${CONFIG_DESCRIPTIONS[selected.key] ?? selected.detail}` : "no settings available."}</ThemedText>}
       renderRow={(item, _index, active) => {
         const color = statusColor(item.status);
         return [
@@ -374,20 +392,6 @@ export function ConfigMenuView({
           </ThemedText>,
         ];
       }}
-      preview={
-        <Box flexDirection="column" gap={1}>
-          <ThemedText color="agenc">Session and Configuration</ThemedText>
-          <ThemedText color="text2" wrap="wrap">
-            The active model comes from this session. Other rows come from layered configuration. Use explicit subcommands for scripted output.
-          </ThemedText>
-          <ThemedText color="subtle" wrap="wrap">
-            Selected: {selected?.key ?? "none"}
-          </ThemedText>
-          <ThemedText color="inactive" wrap="wrap">
-            {selected?.detail ?? "No config rows available."}
-          </ThemedText>
-        </Box>
-      }
       footer={[
         { keyName: "up/down", label: "navigate" },
         { keyName: "q", label: "close" },

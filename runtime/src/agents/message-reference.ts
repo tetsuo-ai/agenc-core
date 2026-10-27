@@ -26,16 +26,51 @@ export const agentMessageReferenceSchema = {
  * search, tool output, another session, or a filesystem path. Resolution runs
  * before routing/admission so those boundaries see and price the real task.
  */
+/**
+ * Some models fill every tool field: a call can carry a real message together
+ * with a placeholder message_ref that selects no excerpt (no delimiters, or
+ * empty ones), or an empty message next to a real reference. GPT models on
+ * the OpenAI route did this on every spawn, so every helper was refused with
+ * "Use either message or message_ref, not both". Treat null and empty values
+ * as absent; when message has text and the reference selects no excerpt, the
+ * explicit message wins. A message next to a reference that selects an
+ * excerpt keeps both: GPT models write their own instruction in message and
+ * point at the user's words with the excerpt, so resolveAgentMessage puts the
+ * message first and the excerpt after it.
+ */
+export function normalizeAgentMessageArgs(args: Record<string, unknown>): {
+  readonly message?: unknown;
+  readonly message_ref?: unknown;
+} {
+  let message = args.message;
+  let ref = args.message_ref;
+  if (message === null || (typeof message === "string" && message.trim().length === 0)) message = undefined;
+  if (ref === null) ref = undefined;
+  if (ref !== undefined && typeof ref === "object" && !Array.isArray(ref)) {
+    const record: Record<string, unknown> = { ...(ref as Record<string, unknown>) };
+    for (const key of ["after", "before"] as const) {
+      if (record[key] === null || record[key] === "") delete record[key];
+    }
+    const selectsExcerpt = record.after !== undefined || record.before !== undefined;
+    ref = message !== undefined && !selectsExcerpt ? undefined : record;
+  }
+  return {
+    ...(message !== undefined ? { message } : {}),
+    ...(ref !== undefined ? { message_ref: ref } : {}),
+  };
+}
+
 export function resolveAgentMessage(
-  args: Record<string, unknown>,
+  rawArgs: Record<string, unknown>,
   session: Pick<Session, "currentRootHumanTurn">,
 ): string {
+  const args = normalizeAgentMessageArgs(rawArgs);
   let text: string;
   if (args.message_ref === undefined) {
     if (typeof args.message !== "string") throw new Error("message or message_ref is required");
     text = args.message;
   } else {
-    if (args.message !== undefined) throw new Error("Use either message or message_ref, not both");
+    if (args.message !== undefined && typeof args.message !== "string") throw new Error("message must be a string");
     const ref = args.message_ref;
     if (ref === null || typeof ref !== "object" || Array.isArray(ref)) throw new Error("message_ref must be an object");
     const record = ref as Record<string, unknown>;
@@ -57,7 +92,8 @@ export function resolveAgentMessage(
       else end = index;
     }
     if (end <= start) throw new Error("message_ref delimiters select an empty or reversed excerpt");
-    text = source.slice(start, end);
+    const excerpt = source.slice(start, end);
+    text = args.message === undefined ? excerpt : `${args.message}\n\n${excerpt}`;
   }
   if (text.trim().length === 0) throw new Error("message or message_ref must contain a nonempty task");
   if (Buffer.byteLength(text, "utf8") > MAX_AGENT_MESSAGE_BYTES) throw new Error("Expanded agent message exceeds 256 KiB UTF-8; select a smaller excerpt or pass permitted file paths");

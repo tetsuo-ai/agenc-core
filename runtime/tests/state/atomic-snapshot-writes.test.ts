@@ -1,16 +1,38 @@
 import {
+  closeSync,
   existsSync,
+  fstatSync,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stageSessionSnapshotWrite } from "./atomic-snapshot-writes.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
+
+// Reload helpers imported by test setup so filesystem fault injection reaches them.
+vi.hoisted(() => vi.resetModules());
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    openSync: vi.fn(actual.openSync),
+    fsyncSync: vi.fn(actual.fsyncSync),
+    closeSync: vi.fn(actual.closeSync),
+  };
+});
+
+const actualOpen = vi.mocked(openSync).getMockImplementation()!;
+const actualSync = vi.mocked(fsyncSync).getMockImplementation()!;
+const actualClose = vi.mocked(closeSync).getMockImplementation()!;
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 
 let home = "";
 let cwd = "";
@@ -24,6 +46,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Object.defineProperty(process, "platform", platformDescriptor);
+  vi.mocked(openSync).mockReset().mockImplementation(actualOpen);
+  vi.mocked(fsyncSync).mockReset().mockImplementation(actualSync);
+  vi.mocked(closeSync).mockReset().mockImplementation(actualClose);
   driver.close();
   rmSync(home, { recursive: true, force: true });
   rmSync(cwd, { recursive: true, force: true });
@@ -111,6 +137,56 @@ describe("atomic session snapshot writes", () => {
       toolState: { lastTrigger: "message_exchange" },
       mcpConnectionState: { status: "connected" },
     });
+  });
+});
+
+describe.each(["win32", "linux", "darwin"] as const)("snapshot directory sync on %s", (platform) => {
+  it.each(["EINVAL", "ENOTSUP", "EPERM", "EACCES", "EBADF", "EISDIR", "EIO", "ENOSPC"])(
+    "preserves the snapshot policy for %s from open and fsync",
+    (code) => {
+      Object.defineProperty(process, "platform", { value: platform });
+      const error = Object.assign(new Error(`directory: ${code}`), { code });
+      for (const phase of ["open", "sync"]) {
+        vi.mocked(openSync).mockImplementation((path, flags, mode) => {
+          if (phase === "open" && flags === "r") throw error;
+          return actualOpen(path, flags, mode);
+        });
+        vi.mocked(fsyncSync).mockImplementation((fd) => {
+          if (fstatSync(fd).isDirectory()) throw error;
+          actualSync(fd);
+        });
+        const stage = () => stageSessionSnapshotWrite(driver.projectDir, {
+          sessionId: `directory-${phase}`,
+          snapshotAt: "2026-05-01T00:00:10.000Z",
+          conversationJson: "[]",
+          toolStateJson: "{}",
+          mcpConnectionStateJson: "{}",
+        });
+        if (code === "EINVAL" || code === "ENOTSUP" || code === "EPERM" ||
+            (platform === "win32" && code !== "EIO" && code !== "ENOSPC")) {
+          expect(stage).not.toThrow();
+        } else {
+          expect(stage).toThrow(error);
+        }
+      }
+    },
+  );
+
+  it("propagates EPERM from directory close", () => {
+    Object.defineProperty(process, "platform", { value: platform });
+    const error = Object.assign(new Error("directory close: EPERM"), { code: "EPERM" });
+    vi.mocked(closeSync).mockImplementation((fd) => {
+      const isDirectory = fstatSync(fd).isDirectory();
+      actualClose(fd);
+      if (isDirectory) throw error;
+    });
+    expect(() => stageSessionSnapshotWrite(driver.projectDir, {
+      sessionId: "directory-close",
+      snapshotAt: "2026-05-01T00:00:10.000Z",
+      conversationJson: "[]",
+      toolStateJson: "{}",
+      mcpConnectionStateJson: "{}",
+    })).toThrow(error);
   });
 });
 

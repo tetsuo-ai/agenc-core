@@ -1,3 +1,5 @@
+import "../helpers/cron-os-home.js";
+import { darwinPlatformFixturePrelude } from "../helpers/darwin-platform-fixture.mjs";
 // End-to-end tests for scripts/install/install.sh (TODO task 1).
 //
 // The installer must speak the exact runtime-manager install contract
@@ -52,6 +54,36 @@ const WINDOWS_NODE_BIN_REL = "node_modules/.agenc-node/node.exe";
 const NODE_LIBRARY_REL = "node_modules/.agenc-node/lib";
 const NODE_ABI = process.versions.modules;
 
+// These fixtures advertise Linux/x64 independently of the host. Only their
+// -e identity probes emulate that target; file-based helpers retain the real OS
+// for filesystem locking and extraction.
+function fixtureNodeProbeLines(platform = "linux", preload = ""): string[] {
+  return [
+    'if [ "${1:-}" = "-e" ]; then',
+    '  shift; fixture_script="$1"; shift',
+    `  exec ${JSON.stringify(process.execPath)} ${preload ? `--require ${JSON.stringify(preload)} ` : ""}-e "Object.defineProperty(process, 'platform', { value: '${platform}' }); Object.defineProperty(process, 'arch', { value: 'x64' }); $fixture_script" "$@"`,
+    "fi",
+  ];
+}
+// Concurrent installer children may still be reading these scripts. Publish a
+// new inode instead of truncating a shared executable underneath them.
+function writeFixtureScript(path: string, content: string, mode = 0o644): void {
+  const temporary = `${path}.next`;
+  writeFileSync(temporary, content, { mode });
+  renameSync(temporary, path);
+}
+
+function fixtureNodeDirectory(home: string, platform = "linux"): string {
+  const directory = join(home, "fixture-node");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const preload = join(directory, "darwin-fixture.cjs");
+  const macFixture = platform === "darwin" && process.platform !== "darwin";
+  if (macFixture) writeFixtureScript(preload, darwinPlatformFixturePrelude);
+  writeFixtureScript(join(directory, "node"), ["#!/bin/sh", ...fixtureNodeProbeLines(platform, macFixture ? preload : ""),
+    `exec ${JSON.stringify(process.execPath)} ${macFixture ? `--require ${JSON.stringify(preload)} ` : ""}"$@"`, ""].join("\n"), 0o755);
+  return directory;
+}
+
 function sha256(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
@@ -81,7 +113,7 @@ function removePersistentWrapperLocks(root: string): void {
 // node script so the generated wrapper can actually be executed.
 function makeSyntheticArtifact(
   dir: string,
-  options: { omitPrivateNode?: boolean; omitPrivateNodeLibrary?: boolean } = {},
+  options: { omitPrivateNode?: boolean; omitPrivateNodeLibrary?: boolean; platform?: string } = {},
 ): { tarball: string; sha: string } {
   const tree = join(dir, "tree");
   const binDir = join(tree, "node_modules", "@tetsuo-ai", "runtime", "bin");
@@ -110,6 +142,7 @@ function makeSyntheticArtifact(
     "  printf 'private-node-path-ok\\n'",
     "  exit 0",
     "fi",
+    ...fixtureNodeProbeLines(options.platform),
     `exec ${JSON.stringify(process.execPath)} "$@"`,
     "",
   ].join("\n");
@@ -122,6 +155,7 @@ function makeSyntheticArtifact(
   writeFileSync(join(privateNodeRoot, "LICENSE"), "synthetic Node license\n");
   writeFileSync(join(privateNodeRoot, "identity.json"), JSON.stringify({
     schemaVersion: 1,
+    executable: "bin/node", executableSha256: sha256(Buffer.from(nodeShim)), executableBytes: Buffer.byteLength(nodeShim),
     nodeVersion: process.versions.node,
     nodeMajor: Number(process.versions.node.split(".")[0]),
     nodeModuleAbi: process.versions.modules,
@@ -138,7 +172,7 @@ function makeSyntheticArtifact(
     }
   }
   const tarball = join(dir, `agenc-runtime-${VERSION}-test.tar.gz`);
-  const res = spawnSync("tar", ["-czf", tarball, "-C", tree, "node_modules"]);
+  const res = spawnSync("tar", [...(process.platform === "darwin" ? ["--no-xattrs"] : []), "-czf", tarball, "-C", tree, "node_modules"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   expect(res.status).toBe(0);
   return { tarball, sha: sha256(readFileSync(tarball)) };
 }
@@ -490,7 +524,7 @@ function writeInstrumentedInstallPs1(dir: string): string {
 }
 
 function makeBootstrapNodeDistribution(dir: string): string {
-  const distribution = join(dir, "node-v26.5.0-linux-x64");
+  const distribution = join(dir, "node-v26.12.1-linux-x64");
   const bin = join(distribution, "bin");
   mkdirSync(bin, { recursive: true });
   const node = join(bin, "node");
@@ -498,8 +532,8 @@ function makeBootstrapNodeDistribution(dir: string): string {
     mode: 0o755,
   });
   chmodSync(node, 0o755);
-  const archive = join(dir, "node-v26.5.0-linux-x64.tar.gz");
-  const result = spawnSync("tar", ["-czf", archive, "-C", dir, "node-v26.5.0-linux-x64"]);
+  const archive = join(dir, "node-v26.12.1-linux-x64.tar.gz");
+  const result = spawnSync("tar", ["-czf", archive, "-C", dir, "node-v26.12.1-linux-x64"]);
   expect(result.status, result.stderr?.toString()).toBe(0);
   return archive;
 }
@@ -545,12 +579,12 @@ function writeBootstrapFixtureInstallSh(
   let source = readFileSync(INSTALL_SH, "utf8");
   source = replaceExactlyOnce(
     source,
-    'NODE_DIST_SHA="22b5f47ad6ae78837e4c2b846019965ce1a06ba143de176102294a1bf44fc677"',
+    'NODE_DIST_SHA="0fd1eb7770598f52a21995edf6ed35fc690400fa437c2386af329519e9143132"',
     `NODE_DIST_SHA="${sha256(readFileSync(archive))}"`,
   );
   source = replaceExactlyOnce(
     source,
-    "NODE_DIST_BYTES=61529729",
+    "NODE_DIST_BYTES=62907493",
     `NODE_DIST_BYTES=${statSync(archive).size}`,
   );
   source = replaceExactlyOnce(
@@ -578,14 +612,14 @@ function writeBootstrapFixtureInstallSh(
 }
 
 function makeBootstrapWindowsNodeDistribution(dir: string): string {
-  const distribution = join(dir, "node-v26.5.0-win-x64");
+  const distribution = join(dir, "node-v26.12.1-win-x64");
   mkdirSync(distribution, { recursive: true });
   const node = join(distribution, "node.exe");
   writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, {
     mode: 0o755,
   });
   chmodSync(node, 0o755);
-  const archive = join(dir, "node-v26.5.0-win-x64.zip");
+  const archive = join(dir, "node-v26.12.1-win-x64.zip");
   const result = spawnSync(
     "pwsh",
     [
@@ -615,12 +649,12 @@ function writeBootstrapFixtureInstallPs1(
   let source = readFileSync(INSTALL_PS1, "utf8");
   source = replaceExactlyOnce(
     source,
-    '$nodeDistributionSha256 = "d3b2277dbcccfdf24ef6302928f64f484cff1d77a6d3caa3a28f4d20ce9158f6"',
+    '$nodeDistributionSha256 = "b3efd5c70cba3308ed46e7e699a9b8aac075bbc6b027fcb39c84c31acc25e2b4"',
     `$nodeDistributionSha256 = "${sha256(readFileSync(archive))}"`,
   );
   source = replaceExactlyOnce(
     source,
-    "$nodeDistributionBytes = 41113391",
+    "$nodeDistributionBytes = 41901456",
     `$nodeDistributionBytes = ${statSync(archive).size}`,
   );
   if (options.bootstrapUrl !== undefined) {
@@ -819,7 +853,7 @@ function startHttpsFixture(
   writeFileSync(config, JSON.stringify(routes));
   writeFileSync(server, `
 const https = require("node:https");
-const { readFileSync, writeFileSync } = require("node:fs");
+const { readFileSync, writeFileSync, renameSync } = require("node:fs");
 const [key, cert, config, ready] = process.argv.slice(2);
 const routes = JSON.parse(readFileSync(config, "utf8"));
 const sockets = new Set();
@@ -849,7 +883,10 @@ server.on("connection", (socket) => {
   sockets.add(socket);
   socket.on("close", () => sockets.delete(socket));
 });
-server.listen(0, "127.0.0.1", () => writeFileSync(ready, String(server.address().port)));
+server.listen(0, "127.0.0.1", () => {
+  writeFileSync(ready + ".tmp", String(server.address().port));
+  renameSync(ready + ".tmp", ready);
+});
 process.on("SIGTERM", () => {
   for (const socket of sockets) socket.destroy();
   server.close(() => process.exit(0));
@@ -883,7 +920,7 @@ function startConnectProxy(
   writeFileSync(server, `
 const http = require("node:http");
 const net = require("node:net");
-const { appendFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, writeFileSync, renameSync } = require("node:fs");
 const [ready, log] = process.argv.slice(2);
 const sockets = new Set();
 const proxy = http.createServer((_req, res) => { res.writeHead(405); res.end(); });
@@ -905,7 +942,10 @@ proxy.on("connect", (req, client, head) => {
   upstream.on("error", () => client.destroy());
   client.on("error", () => upstream.destroy());
 });
-proxy.listen(0, "127.0.0.1", () => writeFileSync(ready, String(proxy.address().port)));
+proxy.listen(0, "127.0.0.1", () => {
+  writeFileSync(ready + ".tmp", String(proxy.address().port));
+  renameSync(ready + ".tmp", ready);
+});
 process.on("SIGTERM", () => {
   for (const socket of sockets) socket.destroy();
   proxy.close(() => process.exit(0));
@@ -998,6 +1038,24 @@ function expectFailedInstallCleanup(home: string): void {
   }
 }
 
+// Installer lock registries use the OS account home, deliberately ignoring HOME.
+// Substitute that syscall in the disposable program, never in shipped code.
+function isolatedOsHomePrelude(): string {
+  const home = process.env.AGENC_TEST_HERMETIC_HOME;
+  if (!home) throw new Error("installer tests require a hermetic home");
+  return `const fixtureOs = require("node:os");
+const originalFixtureUserInfo = fixtureOs.userInfo;
+fixtureOs.userInfo = () => ({ ...originalFixtureUserInfo(), homedir: ${JSON.stringify(home)} });
+require("node:module").syncBuiltinESMExports();`;
+}
+function isolatedInstaller(path: string, home: string): string {
+  const source = readFileSync(path, "utf8");
+  const marker = "// BEGIN GENERATED AGENC RUNTIME INSTALLER PROGRAM";
+  const target = join(home, "isolated-install.sh");
+  writeFixtureScript(target, source.replace(marker, marker + "\n" + isolatedOsHomePrelude()));
+  return target;
+}
+
 type RunResult = { status: number; stdout: string; stderr: string };
 
 function runInstaller(opts: {
@@ -1019,7 +1077,7 @@ function runInstaller(opts: {
     HOME: opts.home,
     AGENC_HOME: opts.agencHome ?? join(opts.home, ".agenc"),
     TMPDIR: join(opts.home, "tmp"),
-    PATH: [...(opts.pathPrepend ?? []), process.env.PATH ?? ""].join(":"),
+    PATH: [...(opts.pathPrepend ?? []), fixtureNodeDirectory(opts.home, opts.envOverrides?.AGENC_INSTALL_PLATFORM), process.env.PATH ?? ""].join(":"),
     // Deterministic platform selection regardless of the host machine.
     AGENC_INSTALL_PLATFORM: "linux",
     AGENC_INSTALL_ARCH: "x64",
@@ -1033,7 +1091,7 @@ function runInstaller(opts: {
   const res = spawnSync(
     "sh",
     [
-      opts.installerPath ?? INSTALL_SH,
+      isolatedInstaller(opts.installerPath ?? INSTALL_SH, opts.home),
       ...(opts.repoDerived
         ? []
         : ["--manifest-url", opts.manifestUrl ?? pathToFileURL(opts.manifest!).href]),
@@ -1059,7 +1117,7 @@ function runInstallerAsync(opts: {
     HOME: opts.home,
     AGENC_HOME: join(opts.home, ".agenc"),
     TMPDIR: join(opts.home, "tmp"),
-    PATH: process.env.PATH ?? "",
+    PATH: [fixtureNodeDirectory(opts.home), process.env.PATH ?? ""].join(":"),
     AGENC_INSTALL_PLATFORM: "linux",
     AGENC_INSTALL_ARCH: "x64",
     AGENC_INSTALL_LIBC_FAMILY: "glibc",
@@ -1072,7 +1130,7 @@ function runInstallerAsync(opts: {
     const child = spawn(
       "sh",
       [
-        INSTALL_SH,
+        isolatedInstaller(INSTALL_SH, opts.home),
         "--manifest-url",
         pathToFileURL(opts.manifest).href,
         "--prefix",
@@ -1214,6 +1272,25 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       wrapper: join(home, ".local", "bin", "agenc"),
     };
   }
+
+  test("macOS installer writes a stable Node wrapper and launchd keeps its wrapper entrypoint", () => {
+    const home = join(work, "home");
+    const artifact = makeSyntheticArtifact(work, { platform: "darwin" });
+    const manifest = writeManifest(work, artifact, { platform: "darwin", minimumMacosVersion: "13.5" });
+    const stubs = join(work, "stubs");
+    mkdirSync(stubs);
+    writeFileSync(join(stubs, "launchctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(join(stubs, "sw_vers"), "#!/bin/sh\nprintf '26.6.2\\n'\n", { mode: 0o755 });
+    const result = runInstaller({ home, manifest, pathPrepend: [stubs], envOverrides: { AGENC_INSTALL_PLATFORM: "darwin" } });
+    expect(result.status, result.stderr).toBe(0);
+    const wrapper = join(home, ".local/bin/agenc");
+    const stable = join(home, ".agenc/bin/agenc-node");
+    expect(parseGeneratedWrapper(wrapper)?.nodeBin).toBe(stable);
+    expect(lstatSync(stable).isFile()).toBe(true);
+    expect(lstatSync(stable).isSymbolicLink()).toBe(false);
+    expect(readFileSync(stable)).toEqual(readFileSync(join(work, "tree", NODE_BIN_REL)));
+    expect(readFileSync(join(home, "Library/LaunchAgents/dev.agenc.daemon.plist"), "utf8")).toContain(`<string>${wrapper}</string>`);
+  });
 
   test("resolve_system_tool accepts the platform's stock tools, including hardlinked ones", () => {
     // Regression: the resolver required nlink === 1, but macOS ships
@@ -2197,6 +2274,71 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     }
   }, 30_000);
 
+  test("the installed private Node must match the manifest build record, not the installer pin", () => {
+    const artifact = makeSyntheticArtifact(work);
+    const manifest = remoteManifest(artifact, "linux", "unused");
+    const mismatched = structuredClone(manifest);
+    mismatched.build.nodeVersion = "v26.0.1";
+    const fixture = startHttpsFixture(work, {
+      "/release-manifest.json": { bodyText: JSON.stringify(manifest) },
+      "/mismatched-manifest.json": { bodyText: JSON.stringify(mismatched) },
+      "/repo-artifact.tar.gz": { bodyBase64: readFileSync(artifact.tarball).toString("base64") },
+    });
+    const fetchRewrite = writeGithubArtifactFetchRewrite(work);
+    const toolchain = JSON.parse(readFileSync(RELEASE_TOOLCHAIN, "utf8")) as {
+      nodeVersion: string;
+    };
+    // An installer whose own Node pin differs from the artifact's private
+    // Node, as when a pinned older release predates the installer's pin.
+    const installerPath = join(work, "older-node-pin-install.sh");
+    writeFileSync(
+      installerPath,
+      replaceExactlyOnce(
+        readFileSync(writeInstrumentedInstallSh(work), "utf8"),
+        `SUPPORTED_NODE_VERSION=${toolchain.nodeVersion}\n`,
+        "SUPPORTED_NODE_VERSION=26.0.1\n",
+      ),
+      { mode: 0o755 },
+    );
+    const common = {
+      NODE_EXTRA_CA_CERTS: fixture.ca,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${fetchRewrite}`.trim(),
+      AGENC_INSTALL_TEST_GITHUB_ARTIFACT_URL: `${fixture.baseUrl}/repo-artifact.tar.gz`,
+    };
+    try {
+      const recorded = runInstaller({
+        home: join(work, "manifest-node"),
+        manifestUrl: `${fixture.baseUrl}/release-manifest.json`,
+        args: ["--no-daemon"],
+        installerPath,
+        envOverrides: common,
+      });
+      expect(recorded.status, recorded.stderr).toBe(0);
+
+      const mismatch = runInstaller({
+        home: join(work, "manifest-node-mismatch"),
+        manifestUrl: `${fixture.baseUrl}/mismatched-manifest.json`,
+        args: ["--no-daemon"],
+        installerPath,
+        envOverrides: common,
+      });
+      expect(mismatch.status).not.toBe(0);
+      expect(mismatch.stderr).toContain("installed private Node.js identity is invalid");
+
+      // A local manifest has no verified build record, so the installer pin applies.
+      const local = runInstaller({
+        home: join(work, "local-manifest-pin"),
+        manifest: writeManifest(work, artifact),
+        args: ["--no-daemon"],
+        installerPath,
+      });
+      expect(local.status).not.toBe(0);
+      expect(local.stderr).toContain("installed private Node.js identity is invalid");
+    } finally {
+      fixture.stop();
+    }
+  }, 30_000);
+
   test("official manifests require complete canonical dual provenance identities", () => {
     const artifact = makeSyntheticArtifact(work);
     const base = remoteManifest(
@@ -2598,7 +2740,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     const results = await Promise.all(
       Array.from({ length: 4 }, () => runInstallerAsync({ home, manifest })),
     );
-    expect(results.map((result) => result.status)).toEqual([0, 0, 0, 0]);
+    expect(results.map((result) => result.status), JSON.stringify(results)).toEqual([0, 0, 0, 0]);
     const { installDir, marker } = paths(home, artifact.sha);
     expect(readFileSync(marker, "utf8")).toBe(artifact.sha);
     expect(readFileSync(join(installDir, BIN_REL), "utf8")).toContain("console.log");
@@ -2884,12 +3026,11 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(ps1).toContain(
       '"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"',
     );
-    expect(ps1).toContain('[System.Reflection.Assembly]::Load("System.Net.Http")');
+    // Add-Type resolves these in Windows PowerShell 5.1, where Assembly::Load by short name fails.
+    expect(ps1).toContain("Add-Type -AssemblyName System.Net.Http");
     expect(ps1).toContain(".SendAsync(");
     expect(ps1).toContain(".ReadAsStreamAsync()");
-    expect(ps1).toContain(
-      '[System.Reflection.Assembly]::Load("System.IO.Compression.FileSystem")',
-    );
+    expect(ps1).toContain("Add-Type -AssemblyName System.IO.Compression.FileSystem");
   });
 
   test("standalone bootstrap pins are mechanically bound to release-toolchain.json", () => {
@@ -2955,6 +3096,22 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     }
   });
 
+  test("standalone installers bind the installed private Node to the manifest build record", () => {
+    const sh = readFileSync(INSTALL_SH, "utf8");
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    expect(sh).toContain(
+      'legacy || trustMode === "explicitLocal" ? "" : m.build?.nodeVersion ?? "",',
+    );
+    expect(sh).toContain('MANIFEST_NODE_VERSION="$(printf \'%s\\n\' "$SELECTED" | sed -n 18p)"');
+    expect(sh).toContain('PRIVATE_NODE_VERSION="${MANIFEST_NODE_VERSION#v}"');
+    expect(sh).toContain(
+      '[ -n "$PRIVATE_NODE_VERSION" ] || PRIVATE_NODE_VERSION="$SUPPORTED_NODE_VERSION"',
+    );
+    expect(sh.match(/process\.versions\.node !== process\.argv\[3\]/g)).toHaveLength(2);
+    expect(ps1).toContain("([string]$manifest.build.nodeVersion).Substring(1)");
+    expect(ps1).toContain("process.versions.node !== expectedVersion");
+  });
+
   test("PowerShell bootstrap uses one cancellation deadline for headers and every body read", () => {
     const ps1 = readFileSync(INSTALL_PS1, "utf8");
     // A single cancellation source guards every network wait; each wait is
@@ -3003,7 +3160,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       },
     });
     expect(res.status, res.stderr).toBe(0);
-    expect(res.stderr).toContain("using private Node.js 26.5.0 bootstrap");
+    expect(res.stderr).toContain("using private Node.js 26.12.1 bootstrap");
     const installed = paths(home, artifact.sha);
     expect(parseInstallShWrapper(installed.wrapper)).toMatchObject({
       nodeBin: installed.privateNode,
@@ -3258,6 +3415,9 @@ function registerInstallPs1Tests(): void {
         AGENC_INSTALL_MANIFEST_URL: manifest ?? "",
         AGENC_INSTALL_PLATFORM: "win32",
         AGENC_INSTALL_ARCH: "x64",
+        // On a Windows host the installer would add the temporary prefix to
+        // the real user PATH.
+        AGENC_NO_MODIFY_PATH: "1",
         ...envOverrides,
       };
       const result = spawnSync("pwsh", ["-NoProfile", "-File", installerPath], {
@@ -3309,7 +3469,7 @@ function registerInstallPs1Tests(): void {
       }, installerPath);
 
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(result.stdout).toContain("using private Node.js 26.5.0 bootstrap");
+      expect(result.stdout).toContain("using private Node.js 26.12.1 bootstrap");
       const installed = windowsPaths(home, artifact.sha);
       expect(parseGeneratedWrapper(installed.wrapper)).toMatchObject({
         nodeBin: installed.privateNode,
@@ -3549,6 +3709,33 @@ function registerInstallPs1Tests(): void {
       expect(second.status, second.stderr).toBe(0);
       expect(second.stdout).toContain("already installed");
       expect(existsSync(backup)).toBe(false);
+    });
+
+    test("PowerShell checks a local manifest's private Node against the installer pin", () => {
+      const home = join(work, "older-node-pin-home");
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      const artifact = makeSyntheticArtifact(work);
+      const manifest = writeManifest(work, artifact, {
+        platform: "win",
+        arch: "x64",
+      });
+      const toolchain = JSON.parse(readFileSync(RELEASE_TOOLCHAIN, "utf8")) as {
+        nodeVersion: string;
+      };
+      const installerPath = join(work, "older-node-pin-install.ps1");
+      writeFileSync(
+        installerPath,
+        replaceExactlyOnce(
+          readFileSync(INSTALL_PS1, "utf8"),
+          `$SupportedNodeVersion = "${toolchain.nodeVersion}"`,
+          '$SupportedNodeVersion = "26.0.1"',
+        ),
+      );
+      const result = runPowerShell(home, manifest, join(home, ".agenc"), {}, installerPath);
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        "installed private Node.js identity is invalid",
+      );
     });
 
     test("PowerShell writes a WinSW definition from installed absolute paths", () => {

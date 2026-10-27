@@ -34,6 +34,13 @@ describe("agenc CLI help", () => {
     expect(help).toContain(
       "--bare                                   Run reduced startup and suppress all session hook extensions",
     );
+    expect(help).toContain(
+      "--light                                  Start with core tools and discover more (default)",
+    );
+    expect(help).toContain(
+      "--standard                               Start with the standard tool set instead of Light",
+    );
+    expect(help).not.toMatch(/experimental/iu);
     expect(help).toContain("--config <path>");
     expect(help).toContain("--autonomous");
     expect(help).toContain("--dangerously-bypass-approvals-and-sandbox");

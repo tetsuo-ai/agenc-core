@@ -47,13 +47,15 @@ describe("compaction with runtime-owned tool pairs", () => {
 
     const result = await compactConversation(source, harness.context);
     // The durable summary pins every pair of the summarized span in order
-    // (the last call stays verbatim in the kept suffix); the model-visible
+    // (the last six complete exchanges stay verbatim in the kept suffix); the model-visible
     // summary message carries none of them.
     expect(
       result.transaction?.committed.summary.body.tool_pairs.map(
         (pair) => pair.tool_call_id,
       ),
-    ).toEqual(Array.from({ length: TOOL_CALLS - 1 }, (_, index) => `call-${index}`));
+    ).toEqual(Array.from({ length: TOOL_CALLS - 6 }, (_, index) => `call-${index}`));
+    expect(result.transaction!.committed.replacement_history.filter(message => message.role === "tool").map(message => message.toolCallId))
+      .toEqual(Array.from({ length: 6 }, (_, index) => `call-${TOOL_CALLS - 6 + index}`));
     const message = summaryMessageContent(result);
     expect(message).not.toContain("call-");
     expect(message).not.toContain("tool_pairs");
@@ -64,8 +66,19 @@ describe("compaction with runtime-owned tool pairs", () => {
     }
   });
 
+  it("points to exact durable tool results without copying their payload into context", async () => {
+    const source = createSource(8, 4000);
+    harness = createCompactionTransactionHarness(source, { compactionMode: "automatic", sessionId: SESSION_ID, chat: bodyCitingFirstSource });
+    const result = await compactConversation(source, harness.context, "", { keepCount: 0 });
+    const context = JSON.parse(summaryMessageContent(result));
+    expect(context.history_reference.path).toBe(harness.store.rolloutPath);
+    expect(context.history_reference.description).toContain("Exact tool results");
+    expect(summaryMessageContent(result)).not.toContain("call-0");
+    expect(harness.store.readAll().some(item => item.type === "response_item" && item.payload.toolCallId === "call-0")).toBe(true);
+  });
+
   it("sends no call id or digest to any summarizer call and still pins every pair", async () => {
-    const source = createSource(TOOL_CALLS, 400);
+    const source = [...createSource(TOOL_CALLS, 400), { role: "user" as const, content: "Now summarize the completed work." }];
     harness = createCompactionTransactionHarness(source, {
       compactionMode: "automatic",
       sessionId: SESSION_ID,
@@ -119,7 +132,7 @@ describe("compaction with runtime-owned tool pairs", () => {
     const rendered: string[] = [];
     // One call needs a large result for the source to clear the shrink floor.
     for (const [toolCalls, resultBytes] of [[1, 8_000], [TOOL_CALLS, 0]] as const) {
-      const source = createSource(toolCalls, resultBytes);
+      const source = [...createSource(toolCalls, resultBytes), { role: "user" as const, content: "Now summarize the completed work." }];
       harness = createCompactionTransactionHarness(source, {
         compactionMode: "automatic",
         sessionId: SESSION_ID,
@@ -135,7 +148,10 @@ describe("compaction with runtime-owned tool pairs", () => {
       const message = summaryMessageContent(result);
       expect(message).not.toContain(transaction.attempt_id);
       expect(message).not.toContain(transaction.committed.summary.summary_sha256);
-      rendered.push(message);
+      const parsed = JSON.parse(message);
+      expect(parsed.history_reference.path).toBe(harness.store.rolloutPath);
+      delete parsed.history_reference;
+      rendered.push(JSON.stringify(parsed));
       harness.close();
       harness = undefined;
     }

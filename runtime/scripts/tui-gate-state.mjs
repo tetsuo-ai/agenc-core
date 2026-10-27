@@ -759,6 +759,29 @@ async function terminateOwnedDaemons(state, options = {}) {
   }
 }
 
+/**
+ * Daemon state that must be gone once every retained daemon child has exited.
+ *
+ * The socket must be closed. A foreground daemon deliberately leaves its own
+ * daemon.pid in place when it exits (its JS cleanup cannot prove that the
+ * native exit finishes), and the next stop, restart or start removes it after
+ * proving the process is gone. So a pid file naming a retained child whose
+ * exit this gate observed is stale metadata, not a survivor; the next start
+ * proves it replaces it before it counts as ready. Any other pid survives.
+ */
+async function survivingDaemonState(state, socketPath) {
+  const survivors = [];
+  if (await pathExists(socketPath)) survivors.push(`socket ${socketPath}`);
+  const pid = await readDaemonPid(state.agencHome);
+  if (pid !== null) {
+    const record = state.daemonProcesses.get(pid);
+    if (record === undefined || record.exit === null) {
+      survivors.push(`daemon.pid names pid ${pid}`);
+    }
+  }
+  return survivors;
+}
+
 export async function stopTuiGateDaemon(state) {
   if (!state || state.cleaned) return;
   const rootPresent = await pathExists(state.root);
@@ -792,18 +815,15 @@ export async function stopTuiGateDaemon(state) {
   }
   const deadline = Date.now() + DAEMON_FORCE_KILL_GRACE_MS;
   const socketPath = agenCDaemonLocalEndpoint(state.agencHome);
-  while (
-    ((await pathExists(socketPath)) ||
-      (await readDaemonPid(state.agencHome)) !== null) &&
-    Date.now() < deadline
-  ) {
+  let survivors = await survivingDaemonState(state, socketPath);
+  while (survivors.length > 0 && Date.now() < deadline) {
     await sleep(DAEMON_POLL_MS);
+    survivors = await survivingDaemonState(state, socketPath);
   }
-  if (
-    (await pathExists(socketPath)) ||
-    (await readDaemonPid(state.agencHome)) !== null
-  ) {
-    throw new Error("private TUI gate daemon state survived process cleanup");
+  if (survivors.length > 0) {
+    throw new Error(
+      `private TUI gate daemon state survived process cleanup: ${survivors.join("; ")}`,
+    );
   }
 }
 

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { itOnDarwin } from "../helpers/platform-registration.js";
 
 // A contained command waits at its gate until the owner watchdog reports
 // ready. The deadline for that report was a plain 2 s timer, and two things
@@ -88,7 +89,7 @@ describe("contained process watchdog readiness", () => {
     expect(result.stdout.toString("utf8")).toBe("ran");
   });
 
-  it.runIf(process.platform === "darwin")(
+  itOnDarwin(
     "reports a launch abandoned before its watchdog was ready as a command that did not start",
     async () => {
       // Keep the watchdog silent so readiness cannot race the deadline.
@@ -116,7 +117,7 @@ describe("contained process watchdog readiness", () => {
     },
   );
 
-  it.runIf(process.platform === "darwin")(
+  itOnDarwin(
     "starts the command for a watchdog that answers after the old 2 s deadline",
     async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
@@ -139,7 +140,7 @@ describe("contained process watchdog readiness", () => {
     },
   );
 
-  it.runIf(process.platform === "darwin")(
+  itOnDarwin(
     "lets a reply that arrives in the same turn as an expired deadline start the command",
     async () => {
       // The ordering a blocked loop produces, forced: the deadline callback

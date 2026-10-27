@@ -62,6 +62,7 @@ function fixture(options?: {
   } as unknown as MultiAgentV2Options;
   const tool = createWaitAgentTool(opts);
   return {
+    emit,
     control,
     tool,
     session,
@@ -116,7 +117,7 @@ describe("wait_agent consecutive timeouts", () => {
 
   it("returns at once when the turn's abort signal fires, and counts no timeout", async () => {
     // #2201: a stopped swarm held its parent turn open until the wait's deadline.
-    const { tool, waitForMailboxChange } = fixture();
+    const { tool, waitForMailboxChange, emit } = fixture();
     const controller = new AbortController();
     waitForMailboxChange.mockImplementationOnce(async (_timeoutMs, _ownership, signal) => {
       controller.abort("interrupted");
@@ -126,6 +127,12 @@ describe("wait_agent consecutive timeouts", () => {
     Object.defineProperty(args, "__abortSignal", { value: controller.signal, enumerable: false });
     const interrupted = await call(tool, args);
     expect(interrupted.body).toMatchObject({ interrupted: true, timed_out: false });
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      msg: expect.objectContaining({
+        type: "collab_waiting_end",
+        payload: expect.objectContaining({ interrupted: true, timedOut: false }),
+      }),
+    }));
     expect(waitForMailboxChange).toHaveBeenLastCalledWith(
       expect.any(Number),
       undefined,
@@ -309,6 +316,45 @@ describe("structured child result delivery", () => {
     expect(read).toHaveBeenCalledWith("root-session", "child", "turn", 0);
     expect(waitForMailboxChange).not.toHaveBeenCalled();
     expect(JSON.parse(response.content).text).toBe('  {"ok":true}\n');
+  });
+
+  it("treats the placeholder result_ref GPT models send as a plain wait", async () => {
+    // Live on 473af774f with gpt-6.1-sol: wait_agent arrived with
+    // result_ref {"agent_id":"","turn_id":"","offset":0} and was refused.
+    for (const placeholder of [
+      { agent_id: "", turn_id: "", offset: 0 },
+      { agent_id: "/root/helper_one", turn_id: "", offset: 0 },
+      { agent_id: "  ", turn_id: "turn" },
+      {},
+      null,
+    ]) {
+      const { tool, control, waitForMailboxChange } = fixture();
+      const read = vi.fn();
+      Object.assign(control, { readChildResultPage: read });
+      const response = await tool.execute({ result_ref: placeholder, timeout_ms: 30_000 });
+      expect(response.isError).toBeFalsy();
+      expect(read).not.toHaveBeenCalled();
+      expect(waitForMailboxChange).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("still refuses a result_ref that is malformed rather than empty", async () => {
+    for (const bad of [
+      { agent_id: "child", turn_id: "turn", offset: -1 },
+      { agent_id: "child", turn_id: "turn", extra: 1 },
+      { agent_id: "", turn_id: "", extra: 1 },
+      { agent_id: 7, turn_id: "turn" },
+      // Incomplete ids do not excuse malformed fields.
+      { agent_id: "", turn_id: "", offset: -1 },
+      { agent_id: 7, turn_id: "" },
+      { agent_id: "child", turn_id: "", offset: "bad" },
+      "child",
+    ]) {
+      const { tool, waitForMailboxChange } = fixture();
+      const response = await tool.execute({ result_ref: bad });
+      expect(response.isError).toBe(true);
+      expect(waitForMailboxChange).not.toHaveBeenCalled();
+    }
   });
 
   it("preserves the exact final answer through notification, mailbox and wait JSON", async () => {

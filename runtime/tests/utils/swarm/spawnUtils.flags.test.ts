@@ -44,7 +44,8 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
   )
   const runtimeOptions = Object.freeze({
     simpleMode: state.simpleMode ?? false,
-    lightMode: state.lightMode ?? false,
+    // A leader started with no mode flag runs in Light, the default.
+    lightMode: state.lightMode ?? true,
     dangerouslyBypassApprovalsAndSandbox:
       state.dangerouslyBypassApprovalsAndSandbox ?? false,
     stdinDataMode: false,
@@ -88,7 +89,7 @@ describe('buildInheritedCliFlags', () => {
     const { buildInheritedCliFlags } = await loadSpawnUtils()
 
     expect(buildInheritedCliFlags({ permissionMode: 'default' })).toBe(
-      '--model leader-model --teammate-mode default',
+      '--model leader-model --light --teammate-mode default',
     )
   })
 
@@ -98,7 +99,7 @@ describe('buildInheritedCliFlags', () => {
     })
 
     expect(buildInheritedCliFlags({ permissionMode: 'auto' })).toBe(
-      '--permission-mode auto --model leader-model --teammate-mode tmux',
+      '--permission-mode auto --model leader-model --light --teammate-mode tmux',
     )
   })
 
@@ -111,7 +112,7 @@ describe('buildInheritedCliFlags', () => {
     })
 
     expect(flags).toBe(
-      "--permission-mode acceptEdits --model 'worker model with spaces' --teammate-mode default",
+      "--permission-mode acceptEdits --model 'worker model with spaces' --light --teammate-mode default",
     )
   })
 
@@ -121,7 +122,7 @@ describe('buildInheritedCliFlags', () => {
     })
 
     expect(buildInheritedCliFlags()).toBe(
-      '--model bound-leader-model --teammate-mode default',
+      '--model bound-leader-model --light --teammate-mode default',
     )
   })
 
@@ -130,7 +131,7 @@ describe('buildInheritedCliFlags', () => {
 
     const flags = buildInheritedCliFlags()
 
-    expect(flags).toBe('--model leader-model --bare --teammate-mode default')
+    expect(flags).toBe('--model leader-model --bare --light --teammate-mode default')
   })
 })
 
@@ -138,4 +139,9 @@ describe('buildInheritedCliFlags', () => {
 test('propagates Light without enabling bare mode or permission bypass', async () => {
   const { buildInheritedCliFlags } = await loadSpawnUtils({ lightMode: true })
   expect(buildInheritedCliFlags()).toBe('--model leader-model --light --teammate-mode default')
+})
+
+test('keeps a standard leader standard: the teammate gets --standard, not the default', async () => {
+  const { buildInheritedCliFlags } = await loadSpawnUtils({ lightMode: false })
+  expect(buildInheritedCliFlags()).toBe('--model leader-model --standard --teammate-mode default')
 })

@@ -27,6 +27,11 @@ function storedData(home: HomeContext): SecureStorageData {
 }
 
 function installSecureStorage(): void {
+  // Cache expiry must read the same isolated store, never the host keychain.
+  vi.doMock("../../src/utils/secureStorage/native.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../../src/utils/secureStorage/native.js")>(),
+    readNativeSecureStorage: (home: HomeContext) => storedData(home),
+  }));
   vi.doMock(secureStorageModulePath, () => ({
     getSecureStorage: (home: HomeContext) => ({
       name: "provider-credential-authority-test",
@@ -86,6 +91,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.doUnmock(secureStorageModulePath);
+  vi.doUnmock("../../src/utils/secureStorage/native.js");
   vi.doUnmock("../../src/services/xai/oauth.js");
   vi.doUnmock("../../src/utils/model/providers.js");
   vi.clearAllMocks();
@@ -550,14 +556,21 @@ describe("provider credential authority", () => {
       ...await importOriginal<typeof import("../../src/utils/model/providers.js")>(),
       getSelectedProviderEnvironment: () => ({ AGENC_XAI_STORE: "0" }),
     }));
-    const tokenRefresh = vi.fn(async () => ({
-      accessToken: "new-xai-bearer", refreshToken: "new-xai-refresh",
-      expiresAt: Date.now() + 6 * 60 * 60 * 1000,
-    }));
-    vi.doMock("../../src/services/xai/oauth.js", async (importOriginal) => ({
-      ...await importOriginal<typeof import("../../src/services/xai/oauth.js")>(),
-      refreshXaiOauthTokens: tokenRefresh,
-    }));
+    // Stub the transport so the real refresh path stays hermetic regardless
+    // of which concurrent credential import first loads the OAuth module.
+    const tokenRefresh = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("https://auth.x.ai/oauth2/token");
+      expect(init?.method).toBe("POST");
+      expect(init?.redirect).toBe("manual");
+      const body = new URLSearchParams(String(init?.body));
+      expect(body.get("grant_type")).toBe("refresh_token");
+      expect(body.get("refresh_token")).toBe("old-xai-refresh");
+      return Response.json({
+        access_token: "new-xai-bearer", refresh_token: "new-xai-refresh",
+        expires_in: 6 * 60 * 60,
+      });
+    });
+    vi.stubGlobal("fetch", tokenRefresh);
     const { xaiCredentials } = await loadCredentialModules();
     xaiCredentials.saveXaiOauthCredentials(home, {
       accessToken: "old-xai-bearer", refreshToken: "old-xai-refresh",
@@ -1844,7 +1857,7 @@ describe("provider credential authority", () => {
     expect(resolved.credential.status).toBe("missing");
   });
 
-  test("marks managed OpenRouter credentials for lazy vending", async () => {
+  test("never grants OpenRouter credentials from an account", async () => {
     const { providerOptions } = await loadCredentialModules();
     const vendKey = vi.fn(() => {
       throw new Error("managed credentials must remain lazy");
@@ -1873,17 +1886,9 @@ describe("provider credential authority", () => {
     );
 
     expect(vendKey).not.toHaveBeenCalled();
-    expect(resolved.managedCredential).toBe(true);
-    expect(resolved.factoryOptions).toMatchObject({
-      model: "x-ai/grok-4.3",
-      extra: {
-        authBackend,
-        managedCredential: true,
-        maxTokens: 2_048,
-        sessionId: "managed-session",
-        subscriptionTier: "pro",
-      },
-    });
+    expect(resolved.managedCredential).toBe(false);
+    expect(resolved.factoryOptions).toMatchObject({ model: "x-ai/grok-4.3" });
+    expect(resolved.factoryOptions.extra).toBeUndefined();
     expect(resolved.factoryOptions.apiKey).toBeUndefined();
     expect(resolved.factoryOptions.baseURL).toBeUndefined();
   });

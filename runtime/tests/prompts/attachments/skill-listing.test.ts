@@ -7,7 +7,7 @@ import { describe, expect, test } from "vitest";
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
 import { attachmentsToMessages, SKILL_LISTING_REMINDER_HEADER } from "./messages.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
-import { skillListingProducer } from "./skill-listing.js";
+import { LIGHT_SKILL_LISTING_MAX_CHARS, skillListingProducer } from "./skill-listing.js";
 
 function makeOpts(
   partial?: Partial<GetAttachmentsOptions>,
@@ -380,12 +380,72 @@ describe("skillListingProducer", () => {
 });
 
 
-test("Light defers the skill catalog until Skill is visible, without consuming its first emission", async () => {
-  const opts = makeOpts({ lightMode: true });
-  const tracking = getAttachmentTrackingState(opts.sessionKey);
-  expect(await skillListingProducer(opts, tracking)).toEqual([]);
-  const loaded = { ...opts, loadedTools: [{ type: "function" as const, function: { name: "Skill", description: "Load skills", parameters: {} } }] };
-  const listing = await skillListingProducer(loaded, tracking);
-  expect(listing.some(item => item.kind === "skill_listing")).toBe(true);
-  expect(await skillListingProducer({ ...loaded, messages: attachmentsToMessages(listing) }, tracking)).toEqual([]);
+describe("Light, which loads Skill through system.searchTools", () => {
+  const skillTool = { type: "function" as const, function: { name: "Skill", description: "Load skills", parameters: {} } };
+  const searchTool = { type: "function" as const, function: { name: "system.searchTools", description: "Find tools", parameters: {} } };
+  // Every session has the runtime's bundled skills; none of them is installed.
+  const bundledOnly = [
+    { name: "simplify", description: "Review changed code", loadedFrom: "bundled" },
+    { name: "verify", description: "Run a verification pass", loadedFrom: "bundled" },
+    { name: "hidden-local", description: "User-invoked only", loadedFrom: "skills", disableModelInvocation: true },
+  ];
+  const withSkills = (availableSkills: ReadonlyArray<Record<string, unknown>>) => ({
+    skillsForConfig: async () => ({ invokedSkills: [], availableSkills }),
+  }) as GetAttachmentsOptions["skillsManager"];
+
+  test("without an installed skill, defers the catalog until Skill is visible, without consuming its first emission", async () => {
+    const opts = makeOpts({ lightMode: true, loadedTools: [searchTool], skillsManager: withSkills(bundledOnly) });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    expect(await skillListingProducer(opts, tracking)).toEqual([]);
+    expect(tracking.listedSkillNames.size).toBe(0);
+    const loaded = { ...opts, loadedTools: [searchTool, skillTool] };
+    const listing = await skillListingProducer(loaded, tracking);
+    expect(listing).toEqual([expect.objectContaining({ kind: "skill_listing", content: expect.stringContaining("- simplify:") })]);
+    expect(await skillListingProducer({ ...loaded, messages: attachmentsToMessages(listing) }, tracking)).toEqual([]);
+  });
+
+  test("names the installed skills before Skill is loaded, without the bundled ones", async () => {
+    const opts = makeOpts({
+      lightMode: true,
+      loadedTools: [searchTool],
+      skillsManager: withSkills([
+        ...bundledOnly,
+        { name: "release-greeting", description: "Greets a named person in the release team's house format.", loadedFrom: "skills", scope: "project" },
+      ]),
+    });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    const out = await skillListingProducer(opts, tracking);
+    expect(out).toEqual([{ kind: "skill_listing", content: "- release-greeting: Greets a named person in the release team's house format." }]);
+    // The standard reminder: it says how to load Skill while it is not callable.
+    const [message] = attachmentsToMessages(out);
+    expect(message?.content).toContain(SKILL_LISTING_REMINDER_HEADER);
+    expect(message?.content).toContain("Otherwise, if system.searchTools is callable, find and select Skill there");
+    // Once Skill is loaded the listing stays as it is: no second listing.
+    expect(await skillListingProducer({
+      ...opts, loadedTools: [searchTool, skillTool], messages: attachmentsToMessages(out),
+    }, tracking)).toEqual([]);
+  });
+
+  test("keeps the listing of a large catalog within its ceiling, the skills the request is about first", async () => {
+    const catalog = [
+      ...Array.from({ length: 1_800 }, (_, i) => ({
+        name: `filler-${String(i).padStart(4, "0")}`,
+        description: "a shared skill with a description long enough to consume the listing budget quickly",
+        loadedFrom: "skills",
+        scope: "user",
+      })),
+      { name: "release-greeting", description: "Greets a named person in the release team's house format.", loadedFrom: "skills", scope: "user" },
+    ];
+    const userInput = "Give me a release greeting for Ana.";
+    const light = makeOpts({ lightMode: true, loadedTools: [searchTool], userInput, contextWindowTokens: 1_000_000, skillsManager: withSkills(catalog) });
+    const [listing] = await skillListingProducer(light, getAttachmentTrackingState(light.sessionKey)) as Array<{ content: string }>;
+    expect(listing!.content.length).toBeLessThanOrEqual(LIGHT_SKILL_LISTING_MAX_CHARS);
+    expect(listing!.content.split("\n")[0]).toMatch(/^- release-greeting: /u);
+    expect(listing!.content).toMatch(/- \.\.\.and 1\d{3} more skills not shown/u);
+    // A standard session lists more of the same catalog, up to its own ceiling.
+    const standard = makeOpts({ loadedTools: [searchTool, skillTool], userInput, contextWindowTokens: 1_000_000, skillsManager: withSkills(catalog) });
+    const [full] = await skillListingProducer(standard, getAttachmentTrackingState(standard.sessionKey)) as Array<{ content: string }>;
+    expect(full!.content.length).toBeGreaterThan(5 * LIGHT_SKILL_LISTING_MAX_CHARS);
+    expect(full!.content.length).toBeLessThanOrEqual(12_000);
+  });
 });

@@ -254,6 +254,7 @@ function projectSlashCommand(
     argumentHint: cmd.argumentHint,
     aliases: cmd.aliases ? [...cmd.aliases] : undefined,
     isEnabled: cmd.isEnabled,
+    get isHidden() { return cmd.isHidden; },
     kind: cmd.kind,
     source: cmd.source,
     loadedFrom: cmd.loadedFrom,
@@ -383,6 +384,14 @@ function projectLocalSkill(
         args,
       });
       const rawContent = rendered?.content ?? "";
+      if (rendered !== null && rendered !== undefined) {
+        skillsManager.recordInvokedSkill?.({
+          skillName: rendered.skill.name,
+          skillPath: rendered.skill.path,
+          content: rendered.content,
+          invokedAt: Date.now(),
+        });
+      }
       const content = repositoryControlled
         ? frameRepositorySkillGuidance(rawContent)
         : rawContent;

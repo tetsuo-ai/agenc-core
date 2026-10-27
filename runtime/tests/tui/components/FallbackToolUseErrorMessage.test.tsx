@@ -67,7 +67,7 @@ describe('FallbackToolUseErrorMessage', () => {
     expect(output).not.toContain('<error>')
   })
 
-  test('truncates long errors and keeps an existing Error prefix', async () => {
+  test('summarizes errors on one line and keeps an existing Error prefix', async () => {
     const lines = Array.from({ length: 11 }, (_, index) =>
       index === 0 ? 'Error: first line' : `line ${index + 1}`,
     )
@@ -76,12 +76,12 @@ describe('FallbackToolUseErrorMessage', () => {
 
     expect(output).toContain('Error: first line')
     expect(output).toContain('line 10')
-    expect(output).not.toContain('line 11')
-    expect(output).toContain('+1 line')
-    expect(output).toContain('ctrl+o')
+    expect(output).toContain('line 11')
+    expect(output).not.toContain('+1 line')
+    expect(output).not.toContain('ctrl+o')
   })
 
-  test('uses plural truncation text and preserves Cancelled prefixes', async () => {
+  test('keeps the readable cancellation reason without a raw multiline dump', async () => {
     const lines = Array.from({ length: 12 }, (_, index) =>
       index === 0 ? 'Cancelled: stopped by user' : `cancel line ${index + 1}`,
     )
@@ -90,7 +90,7 @@ describe('FallbackToolUseErrorMessage', () => {
 
     expect(output).toContain('Cancelled: stopped by user')
     expect(output).not.toContain('Error: Cancelled')
-    expect(output).toContain('+2 lines')
+    expect(output).not.toContain('+2 lines')
   })
 
   test('adds an Error prefix and shows every line in verbose mode', async () => {

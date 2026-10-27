@@ -15,9 +15,11 @@ import {
 } from "./provider-command-access.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import type { SlashCommandContext } from "./types.js";
+import { readVeniceMenuModels } from "./venice-menu-models.js";
+import { readOllamaMenuModels } from "./ollama-menu-models.js";
 
 type ProviderRowStatus = "current" | "configured" | "default";
-export type ProviderAuthState = "managed" | "ready" | "missing" | "optional";
+export type ProviderAuthState = "ready" | "missing" | "optional";
 export type ProviderRuntimeState =
   | "active"
   | "available"
@@ -122,17 +124,7 @@ function providerMenuAuth(access: ProviderCommandAccess): {
 } {
   const rejection = formatProviderCommandRejection(access, "provider");
   if (rejection !== undefined) {
-    const label = access.rejection?.code === "provider-managed-auth-required"
-      ? "AgenC sign-in required"
-      : access.rejection?.code === "login-required"
-        ? "login or BYOK required"
-        : access.rejection?.code === "upgrade-required"
-          ? "upgrade required"
-          : access.rejection?.code === "model-not-managed"
-            ? "hosted model unavailable"
-            : access.rejection?.code === "configuration"
-              ? "configuration error"
-              : access.auth.label;
+    const label = access.rejection?.code === "configuration" ? "configuration error" : access.auth.label;
     return { state: "missing", label, source: rejection };
   }
   return {
@@ -250,12 +242,20 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
   const currentProvider = sessionSelection.provider;
   const currentModel = sessionSelection.model;
   const modelCatalog = buildProviderModelCatalog(config);
+  // The TUI has no models manager (the session runs in the daemon), so the
+  // list the menu read from Venice comes first.
+  const veniceModels = readVeniceMenuModels(ctx)
+    ?.map(entry => ({ slug: entry.model, isDefault: entry.functionCallingDefault })) ??
+    ctx.session.services?.modelsManager?.tryListModels()
+      ?.filter(entry => entry.provider === "venice");
 
   const unsortedRows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
-    const configuredModel = providerModel({
+    const discoveredDefault = provider === "venice" && status === "default"
+      ? veniceModels?.find(entry => entry.isDefault)?.slug : undefined;
+    const configuredModel = discoveredDefault ?? providerModel({
       config,
       provider,
       currentProvider,
@@ -265,32 +265,17 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       provider,
       model: configuredModel,
     });
-    const managedProjectionActive =
-      configuredAccess.directCredential?.status === "missing" &&
-      configuredAccess.managed.enabled &&
-      configuredAccess.managed.signedIn &&
-      configuredAccess.managed.defaultModel !== undefined;
-    const managedModelRequest = managedProjectionActive
-      ? configuredAccess.managed.defaultModel
-      : undefined;
-    const model = providerModel({
-      config,
-      provider,
-      currentProvider,
-      currentModel,
-      ...(managedModelRequest === undefined
-        ? {}
-        : { requestedModel: managedModelRequest }),
-    });
-    const access = model === configuredModel
-      ? configuredAccess
-      : accessOverlay.inspect({ provider, model });
+    const model = configuredModel;
+    const access = configuredAccess;
     const baseURL = access.endpoint?.baseURL ?? info.baseURL;
     const auth = providerMenuAuth(access);
-    const rawModels = modelCatalog[provider] ?? [];
-    const models = managedProjectionActive
-      ? access.managed.visibleModels
-      : rawModels;
+    const discoveredModels = provider === "venice"
+      ? veniceModels?.map(entry => entry.slug)
+      : provider === "ollama"
+        ? readOllamaMenuModels(ctx)?.map(entry => entry.model)
+        : undefined;
+    const rawModels = discoveredModels ?? modelCatalog[provider] ?? [];
+    const models = rawModels;
     const state = runtimeState({
       status,
       access,

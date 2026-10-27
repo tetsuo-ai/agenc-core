@@ -202,6 +202,13 @@ export function validateToolsConfig(
   const record = requirePlainObject(value, field);
   for (const [key, item] of Object.entries(record)) {
     const path = `${field}.${key}`;
+    if (key === "web_search_provider") {
+      optionalEnum(item, path, [
+        "auto", "firecrawl", "tavily", "exa", "you", "jina", "bing",
+        "mojeek", "linkup", "custom", "ddg", "native",
+      ]);
+      continue;
+    }
     if (key === "web_search_endpoint") {
       optionalString(item, path);
       continue;
@@ -282,8 +289,9 @@ function validateCompletionGate(value: unknown): void {
   if (value === undefined) return;
   const field = "completion_gate";
   const record = requirePlainObject(value, field);
-  rejectUnknownFields(record, new Set(["mode", "max_rounds"]), field);
+  rejectUnknownFields(record, new Set(["mode", "max_rounds", "exact_output"]), field);
   optionalEnum(record.mode, `${field}.mode`, ["auto", "always", "never"]);
+  optionalEnum(record.exact_output, `${field}.exact_output`, ["verify", "skip"]);
   optionalPositiveInteger(record.max_rounds, `${field}.max_rounds`);
   if (typeof record.max_rounds === "number" && record.max_rounds > 10) {
     throw new InvalidStrictConfigError(`${field}.max_rounds`, "exceeds the maximum of 10 rounds");
@@ -613,6 +621,12 @@ const ROOT_FIELD_VALIDATORS = {
   mcp: delegatedObjectValidator("mcp"),
   mcp_servers: delegatedObjectValidator("mcp_servers"),
   daemon: validateDaemon,
+  remote_control: (value) => {
+    if (value === undefined) return;
+    const record = requirePlainObject(value, "remote_control");
+    rejectUnknownFields(record, new Set(["enabled"]), "remote_control");
+    optionalBoolean(record.enabled, "remote_control.enabled");
+  },
   gateway: validateGateway,
   protocol: delegatedObjectValidator("protocol"),
   lsp_servers: validateLspServers,
@@ -681,13 +695,23 @@ const ROOT_FIELD_VALIDATORS = {
   completion_gate: validateCompletionGate,
   goal: validateGoal,
   compaction: validateCompaction,
+  stream_degenerate_guard: fieldValidator("stream_degenerate_guard", optionalBoolean),
+  light_mode: fieldValidator("light_mode", optionalBoolean),
+  defer_rare_tools: fieldValidator("defer_rare_tools", optionalBoolean),
+  web_search: enumValidator("web_search", ["auto", "on"]),
+  lean_system_prompt: fieldValidator("lean_system_prompt", optionalBoolean),
   stream_watchdog_timeout_ms: fieldValidator("stream_watchdog_timeout_ms", optionalNonNegativeInteger),
+  stream_quiet_warning_ms: fieldValidator("stream_quiet_warning_ms", optionalNonNegativeInteger),
   provider_outage_wait_ms: fieldValidator("provider_outage_wait_ms", optionalNonNegativeInteger),
   provider_outage_retry_ms: fieldValidator("provider_outage_retry_ms", optionalPositiveInteger),
   max_output_tokens: fieldValidator("max_output_tokens", optionalPositiveInteger),
   capped_default_max_output_tokens: fieldValidator("capped_default_max_output_tokens", optionalBoolean),
   max_turns: fieldValidator("max_turns", optionalPositiveInteger),
   max_budget_usd: fieldValidator("max_budget_usd", optionalPositiveNumber),
+  budget_level: enumValidator("budget_level", ["eco", "balanced", "max"]),
+  task_token_budget: fieldValidator("task_token_budget", optionalNonNegativeInteger),
+  task_max_calls: fieldValidator("task_max_calls", optionalNonNegativeInteger),
+  experimental_task_budget_progress: fieldValidator("experimental_task_budget_progress", optionalString),
   autonomous_mode: fieldValidator("autonomous_mode", optionalBoolean),
   coordinator_mode: fieldValidator("coordinator_mode", optionalBoolean),
   transaction_guard: delegatedObjectValidator("transaction_guard"),

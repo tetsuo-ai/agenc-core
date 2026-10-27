@@ -448,7 +448,7 @@ describe("project trust preflight", () => {
         expect.objectContaining({
           workspaceRoot: workspace,
           bypassPermissionsRequested: true,
-          bypassSandboxRequested: true,
+          sandboxOff: true,
         }),
       );
     } finally {
@@ -456,6 +456,32 @@ describe("project trust preflight", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it.each(["--bypass-approvals", "--dangerously-bypass-approvals-and-sandbox"])(
+    "explains how to recover from a clean headless trust refusal with %s", async flag => {
+      const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
+      const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
+      await mkdir(join(workspace, ".git"));
+      const env = makeEnv(home, workspace);
+      const stdio = makeNonTtyStdio();
+      const renderPrompt = vi.fn(async () => true);
+      try {
+        await expect(runProjectTrustPreflightForTui({
+          env, argv: ["node", "agenc", flag, "-p", "hello"], cwd: workspace,
+          stdin: stdio.stdin, stdout: stdio.stdout, stderr: stdio.stderr, renderPrompt,
+        })).resolves.toEqual({ accepted: false, projectRoot: workspace, prompted: false });
+        expect(stdio.stderrText()).toBe(
+          `agenc: project is not trusted: ${workspace}\n` +
+          "agenc: run agenc here in a terminal with the same bypass flags to confirm trust, or rerun without bypass flags\n",
+        );
+        expect(renderPrompt).not.toHaveBeenCalled();
+        expect(resolveProjectTrustKindSync({ agencHome: home, env, projectRoot: workspace })).toBe("none");
+      } finally {
+        await rm(home, { recursive: true, force: true });
+        await rm(workspace, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("asks even for an automatically trusted folder when approvals are bypassed", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
@@ -487,18 +513,118 @@ describe("project trust preflight", () => {
           stdout: stdio.stdout,
           stderr: stdio.stderr,
           renderPrompt,
+          platform: "linux",
+          sandboxProbe: () => ({ kind: "ready", mode: "workspace_write", platform: "linux" }),
         }),
       ).resolves.toEqual({ accepted: true, projectRoot: workspace, prompted: true });
       expect(renderPrompt).toHaveBeenCalledWith(
         expect.objectContaining({
           bypassPermissionsRequested: true,
-          bypassSandboxRequested: false,
+          sandboxOff: false,
         }),
       );
       // Confirming under a bypass flag records an explicit grant.
       expect(
         resolveProjectTrustKindSync({ agencHome: home, env, projectRoot: workspace }),
       ).toBe("explicit");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("says the sandbox is off when --bypass-approvals runs on a host without one", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
+    const env = makeEnv(home, workspace);
+    const stdio = makeTtyStdio();
+    const renderPrompt = vi.fn(async () => true);
+    const sandboxProbe = vi.fn(() => ({
+      kind: "unavailable" as const,
+      mode: "workspace_write" as const,
+      platform: "win32" as const,
+      reason: "Windows restricted-token sandbox is not implemented",
+    }));
+    try {
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc", "--bypass-approvals"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          renderPrompt,
+          platform: "win32",
+          sandboxProbe,
+        }),
+      ).resolves.toMatchObject({ accepted: true, prompted: true });
+      expect(sandboxProbe).toHaveBeenCalledOnce();
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({ bypassPermissionsRequested: true, sandboxOff: true }),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses the startup's own --bypass-approvals resolution instead of probing again", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
+    const env = makeEnv(home, workspace);
+    const stdio = makeTtyStdio();
+    const renderPrompt = vi.fn(async () => true);
+    const sandboxProbe = vi.fn();
+    try {
+      await runProjectTrustPreflightForTui({
+        env,
+        argv: ["node", "agenc", "--bypass-approvals"],
+        cwd: workspace,
+        stdin: stdio.stdin,
+        stdout: stdio.stdout,
+        stderr: stdio.stderr,
+        renderPrompt,
+        sandboxBypass: { dangerouslyBypassApprovalsAndSandbox: true, notice: "dropped" },
+        sandboxProbe,
+      });
+      expect(sandboxProbe).not.toHaveBeenCalled();
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({ sandboxOff: true }),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("says the sandbox is off when the config selects danger-full-access", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
+    await writeFile(
+      join(home, "config.toml"),
+      'config_version = 2\nsandbox_mode = "danger-full-access"\n',
+      "utf8",
+    );
+    await shipRepoHook(workspace);
+    const env = makeEnv(home, workspace);
+    const stdio = makeTtyStdio();
+    const renderPrompt = vi.fn(async () => true);
+    try {
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          renderPrompt,
+        }),
+      ).resolves.toMatchObject({ accepted: true, prompted: true });
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({ bypassPermissionsRequested: false, sandboxOff: true }),
+      );
     } finally {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
@@ -776,6 +902,43 @@ describe("automatic project trust in the preflight", () => {
       );
     });
   });
+
+  it("does not show the user's own config as repository settings in the home folder", async () => {
+    // A real install: HOME is the workspace and the AgenC home is HOME/.agenc.
+    const userHome = await mkdtemp(join(tmpdir(), "agenc-trust-user-home-"));
+    const agencHome = join(userHome, ".agenc");
+    await mkdir(agencHome);
+    await writeFile(
+      join(agencHome, "config.toml"),
+      'config_version = 2\nmodel = "grok-4.6"\nreasoning_effort = "high"\n',
+      "utf8",
+    );
+    const env = { ...makeEnv(agencHome, userHome), HOME: userHome };
+    const tty = makeTtyStdio();
+    const renderPrompt = vi.fn(async () => true);
+    try {
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc"],
+          cwd: userHome,
+          stdin: tty.stdin,
+          stdout: tty.stdout,
+          stderr: tty.stderr,
+          renderPrompt,
+          markSessionTrusted: async () => undefined,
+        }),
+      ).resolves.toMatchObject({ accepted: true, prompted: true });
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          location: "home",
+          review: { repoItems: [], userItems: [] },
+        }),
+      );
+    } finally {
+      await rm(userHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("resolveAttachTargetTrustRoot", () => {
@@ -913,7 +1076,8 @@ describe("main project trust routing", () => {
         try {
           await expect(main()).resolves.toBe(1);
           expect(stderr.text()).toBe(
-            `agenc: project is not trusted: ${workspace}\n`,
+            `agenc: project is not trusted: ${workspace}\n` +
+            "agenc: run agenc here in a terminal with the same bypass flags to confirm trust, or rerun without bypass flags\n",
           );
         } finally {
           stderr.restore();

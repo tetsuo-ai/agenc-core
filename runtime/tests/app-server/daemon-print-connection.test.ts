@@ -37,7 +37,7 @@ async function fixture() {
   await writeFile(cookiePath, "cookie\n"); await writeFile(pidPath, "5200\n");
   const record = (fields = {}) => writeDaemonRuntimeInfo(infoPath, { ...identity, startedAt: "now", ...fields });
   record();
-  const messages: Array<{ method: string; connection: number; protocolVersion?: string }> = [];
+  const messages: Array<{ method: string; connection: number; protocolVersion?: string; id?: unknown; params?: Record<string, unknown> }> = [];
   const sockets = new Set<Socket>();
   let connection = 0;
   const behavior: {
@@ -51,7 +51,8 @@ async function fixture() {
       buffer += chunk;
       while (buffer.includes("\n")) {
         const newline = buffer.indexOf("\n"); const request = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
-        messages.push({ method: request.method, connection: id, protocolVersion: request.params.protocolVersion });
+        messages.push({ method: request.method, connection: id, protocolVersion: request.params.protocolVersion,
+          id: request.id, params: request.params });
         void (async () => {
           await behavior.beforeReply?.(request.method, socket);
           if (socket.destroyed) return;
@@ -198,7 +199,9 @@ it("preserves the default control deadline without shortening session requests",
     const client = await f.scope.createConnectedTuiClient({ env: f.env });
     timers.mockClear();
     await client.request("agent.create", {});
-    expect(timers.mock.calls.some(([, delay]) => delay === 30_000)).toBe(true);
+    // Authenticated cold restoration has no ambient request deadline.
+    // Control/discovery and health checks keep their separate bounded timers.
+    expect(timers.mock.calls).toHaveLength(0);
     timers.mockClear();
     await client.request("health.ping");
     expect(timers.mock.calls.some(([, delay]) => delay === 30_000)).toBe(true);
@@ -270,6 +273,30 @@ it("forwards cancellation before dispatch without creating an agent", async () =
   const f = await fixture(); const client = await f.prepare();
   await expect(client.request("agent.create", {}, { signal: AbortSignal.abort("cancelled") })).rejects.toThrow("cancelled");
   expect(f.messages.map(x => x.method)).toEqual(["initialize", "initialize"]);
+});
+
+it("forwards cancellation for an unbounded agent.create and settles it on close", async () => {
+  const f = await fixture(); const client = await f.prepare();
+  const entered = deferred(), release = deferred(), cancelled = deferred();
+  f.behavior.beforeReply = async method => {
+    if (method === "agent.create") { entered.resolve(); await release.promise; }
+    if (method === "request.cancel") cancelled.resolve();
+  };
+  const controller = new AbortController();
+  const pending = client.request("agent.create", {}, { signal: controller.signal });
+  const failure = expect(pending).rejects.toThrow("Daemon connection closed");
+  try {
+    await entered.promise;
+    controller.abort("cancel cold restoration");
+    await cancelled.promise;
+    const create = f.messages.find(message => message.method === "agent.create");
+    const cancel = f.messages.find(message => message.method === "request.cancel");
+    expect(create).toBeDefined();
+    expect(cancel?.params).toMatchObject({ requestId: create!.id, reason: "cancel cold restoration" });
+    await f.scope.close();
+    await failure;
+    expect(f.messages.filter(message => message.method === "agent.create")).toHaveLength(1);
+  } finally { release.resolve(); }
 });
 
 

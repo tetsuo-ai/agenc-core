@@ -81,7 +81,7 @@ function safeSdkRuntimeOptions(
 ) {
   return Object.freeze({
     simpleMode: false,
-    ...(lightMode === true ? { lightMode: true } : {}),
+    ...(lightMode !== undefined ? { lightMode } : {}),
     dangerouslyBypassApprovalsAndSandbox,
     stdinDataMode: false,
     remoteMode: false,
@@ -299,7 +299,12 @@ export interface AgencClientOptions {
 }
 
 export interface AgencCreateSessionParams extends SessionCreateParams {
-  /** Experimental, off by default: defer tool exposure in new sessions; requires daemon 1.19+. */
+  /**
+   * Session mode. Omitted: the daemon default, which is Light unless the
+   * daemon's config.toml sets `light_mode = false`. Pass false for standard
+   * mode. Daemons before protocol 1.19 have no Light mode and always run
+   * standard; passing true to one fails.
+   */
   readonly lightMode?: boolean;
   /** Existing agents must be opened with attachAgent(), preserving their owning authority. */
   readonly agentId?: never;
@@ -1094,8 +1099,9 @@ export class AgencClient {
         : undefined,
     );
     const negotiatedVersion = this.#negotiatedClientProtocolVersion;
-    if (lightMode === true && negotiatedVersion !== undefined &&
-        (parseDaemonProtocolVersion(negotiatedVersion)?.minor ?? 0) < LIGHT_MODE_PROTOCOL_MINOR) {
+    const daemonHasLightMode = negotiatedVersion === undefined ||
+      (parseDaemonProtocolVersion(negotiatedVersion)?.minor ?? 0) >= LIGHT_MODE_PROTOCOL_MINOR;
+    if (lightMode === true && !daemonHasLightMode) {
       throw new AgencCapabilityUnavailableError("Light mode", negotiatedVersion);
     }
     const canAttachWithRuntimeAuthority =
@@ -1132,7 +1138,8 @@ export class AgencClient {
           ...(deadlineAt !== undefined ? { deadlineAt } : {}),
           ...(deadlineReserveMs !== undefined ? { deadlineReserveMs } : {}),
         },
-        lightMode,
+        // A daemon without Light rejects the field and is standard anyway.
+        daemonHasLightMode ? lightMode : undefined,
       ),
     } as AgentCreateParams);
     try {

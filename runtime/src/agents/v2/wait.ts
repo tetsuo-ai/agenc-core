@@ -223,6 +223,23 @@ function exactResultPage(
   return result;
 }
 
+/** True for null, and for a well-typed result_ref that lacks a nonempty
+ * agent_id or turn_id: ids absent, null or strings, offset absent, null or a
+ * nonnegative integer. Malformed shapes still get the strict checks. */
+function isPlaceholderResultRef(ref: unknown): boolean {
+  if (ref === null) return true;
+  if (typeof ref !== "object" || Array.isArray(ref)) return false;
+  const value = ref as Record<string, unknown>;
+  if (Object.keys(value).some(key => !["agent_id", "turn_id", "offset"].includes(key))) return false;
+  const idShaped = (id: unknown): boolean => id === undefined || id === null || typeof id === "string";
+  const missing = (id: unknown): boolean =>
+    id === undefined || id === null || (typeof id === "string" && id.trim().length === 0);
+  const offsetShaped = value.offset === undefined || value.offset === null ||
+    (typeof value.offset === "number" && Number.isSafeInteger(value.offset) && value.offset >= 0);
+  return idShaped(value.agent_id) && idShaped(value.turn_id) && offsetShaped &&
+    (missing(value.agent_id) || missing(value.turn_id));
+}
+
 export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
   const session = opts.getSession();
   const { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs } = session
@@ -271,8 +288,12 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     if (session === undefined || !callerIsCurrent()) {
       return agentValidationError("invalid-runtime-identity: calling agent session is not live");
     }
-    if (args.result_ref !== undefined) {
-      const ref = args.result_ref;
+    // GPT models fill every optional field, so a plain wait arrives with
+    // result_ref {"agent_id":"","turn_id":"","offset":0}. No result page has an
+    // empty id: a null reference, or one without both ids, is a plain wait.
+    const resultRef = isPlaceholderResultRef(args.result_ref) ? undefined : args.result_ref;
+    if (resultRef !== undefined) {
+      const ref = resultRef;
       if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return agentValidationError("result_ref must be an object");
       const value = ref as Record<string, unknown>;
       if (Object.keys(value).some(key => !["agent_id", "turn_id", "offset"].includes(key)) ||
@@ -346,8 +367,9 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     if (!callerIsCurrent()) {
       return agentValidationError("invalid-runtime-identity: calling agent session is no longer live");
     }
-    const timedOut = !mailboxChanged;
-    const updates = timedOut ? [] : [...recoveredUpdates, ...drainMailboxUpdates(session)];
+    const interrupted = !mailboxChanged && abortSignal?.aborted === true;
+    const timedOut = !mailboxChanged && !interrupted;
+    const updates = mailboxChanged ? [...recoveredUpdates, ...drainMailboxUpdates(session)] : [];
     emit(session, {
       type: "collab_waiting_end",
       payload: {
@@ -355,11 +377,12 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
         callId: waitCallId,
         statuses: {},
         timedOut,
+        ...(interrupted ? { interrupted: true } : {}),
         agentStatuses: [],
         ...(updates.length > 0 ? { mailboxUpdates: updates } : {}),
       },
     });
-    if (timedOut && abortSignal?.aborted === true) {
+    if (interrupted) {
       // The turn was stopped while waiting: return now so the stop lands now,
       // not at the deadline, and start no timeout streak over it.
       waitTimeoutStreaks.delete(session);

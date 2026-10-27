@@ -13,6 +13,9 @@ import {
   writeFileSync,
   utimesSync,
   writeSync,
+  renameSync,
+  statSync,
+  truncateSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,8 +29,11 @@ import {
 import { sanitizePath } from "../utils/sessionStoragePortable.js";
 import {
   __setResumeSessionTestHooksForTest,
+  reproveResumeSessionAllowingAppend,
+  resolveInitialResumeSession,
   resolveLatestSessionId as resolveLatestSessionIdWithHome,
   resolveResumeSessionId as resolveResumeSessionIdWithHome,
+  type ResolvedResumeSession,
 } from "./resume-session.js";
 
 let workHome: string;
@@ -112,6 +118,37 @@ function writeRollout(
   return writeRolloutAtSlug(slug, sessionId, iso, mtimeSec, cwd);
 }
 
+/** A rollout whose session header names its originator and source. */
+function writeRolloutWithMeta(
+  cwd: string,
+  sessionId: string,
+  mtimeSec: number,
+  meta: { readonly originator: string; readonly source?: string },
+): string {
+  const sessionDir = join(projectDir(cwd), "sessions", sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  const file = join(sessionDir, `rollout-2026-01-01T10-00-00-000Z-${sessionId}.jsonl`);
+  writeFileSync(
+    file,
+    `${JSON.stringify({
+      type: "session_meta",
+      payload: {
+        sessionId,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        cwd,
+        agencVersion: "0.19.12",
+        rolloutSchemaVersion: 5,
+        ...meta,
+      },
+    })}\n${JSON.stringify({
+      type: "response_item",
+      payload: { role: "user", content: `seed for ${sessionId}` },
+    })}\n`,
+  );
+  utimesSync(file, mtimeSec, mtimeSec);
+  return file;
+}
+
 /**
  * Write under the LEGACY project-slug layout
  * (`~/.agenc/projects/<sanitizePath(cwd)>/sessions/<id>/rollout-*.jsonl`).
@@ -152,6 +189,62 @@ describe("resume-session CLI lookup", () => {
       expect(BigInt(resolved.cwdDev)).toBeGreaterThan(0n);
       expect(BigInt(resolved.cwdIno)).toBeGreaterThan(0n);
     }
+  });
+
+  it("--continue skips newer sub-agent, hook-agent and review sessions", () => {
+    // After a turn, memory extraction (a sub-agent) writes the newest rollout
+    // in the project; --continue must still open the user's conversation.
+    const root = writeRolloutWithMeta(workHome, "conv-userroot1", 1, {
+      originator: "agenc-cli",
+      source: "interactive-root",
+    });
+    writeRolloutWithMeta(workHome, "a1b2c3d4-0000-4000-8000-000000000001", 4, {
+      originator: "agenc-subagent",
+    });
+    writeRolloutWithMeta(workHome, "a1b2c3d4-0000-4000-8000-000000000002", 3, {
+      originator: "agenc-hook-agent",
+    });
+    writeRolloutWithMeta(workHome, "a1b2c3d4-0000-4000-8000-000000000003", 2, {
+      originator: "agenc-review-delegate",
+    });
+
+    expect(resolveLatestSessionId(workHome)).toMatchObject({
+      kind: "ok",
+      sessionId: "conv-userroot1",
+      rolloutPath: root,
+    });
+  });
+
+  it("--continue is not stopped by a background session still being written", () => {
+    const root = writeRolloutWithMeta(workHome, "conv-userroot2", 1, {
+      originator: "agenc-cli",
+      source: "interactive-root",
+    });
+    const live = writeRolloutWithMeta(workHome, "a1b2c3d4-0000-4000-8000-000000000004", 2, {
+      originator: "agenc-subagent",
+    });
+    // The extraction appends while the search reads its header.
+    __setResumeSessionTestHooksForTest({
+      afterCandidateMetadataRead: (path) => {
+        if (path === live) writeFileSync(path, `${JSON.stringify({ type: "response_item", payload: {} })}\n`, { flag: "a" });
+      },
+    });
+
+    expect(resolveLatestSessionId(workHome)).toMatchObject({
+      kind: "ok",
+      sessionId: "conv-userroot2",
+      rolloutPath: root,
+    });
+  });
+
+  it("an explicit session id still resolves a sub-agent session", () => {
+    const sub = writeRolloutWithMeta(workHome, "a1b2c3d4-0000-4000-8000-000000000005", 2, {
+      originator: "agenc-subagent",
+    });
+
+    expect(
+      resolveResumeSessionId(workHome, "a1b2c3d4-0000-4000-8000-000000000005"),
+    ).toMatchObject({ kind: "ok", rolloutPath: sub });
   });
 
   it("resolves exact and unique-prefix session ids", () => {
@@ -512,5 +605,143 @@ describe("resume-session CLI lookup", () => {
       reason: "source_unavailable",
     });
     expect(injected).toBe(true);
+  });
+});
+
+describe("initial resume search during startup writes", () => {
+  it.each(["latest", "exact"] as const)("retries a %s search whose source grows while metadata is read", async (kind) => {
+    const id = "conv-startupappend1";
+    const path = writeRollout(workHome, id, "2026-01-01T10-00-00-000Z", 1);
+    let appends = 0;
+    __setResumeSessionTestHooksForTest({ afterCandidateMetadataRead: (observed) => {
+      if (observed !== path || appends >= 2) return;
+      appends += 1;
+      writeFileSync(path, `${JSON.stringify({ type: "response_item", payload: { role: "assistant", content: "restored" } })}\n`, { flag: "a" });
+    } });
+    const result = await resolveInitialResumeSession(() => kind === "latest"
+      ? resolveLatestSessionId(workHome) : resolveResumeSessionId(workHome, id));
+    expect(result).toMatchObject({ kind: "ok", sessionId: id, sourceSize: String(statSync(path).size) });
+    expect(appends).toBe(2);
+    if (result.kind === "ok") {
+      expect(resolveResumeSessionId(workHome, id)).toEqual(result);
+    }
+  });
+
+  it("does not retry a search that exhausted its metadata budget", async () => {
+    let attempts = 0;
+    const result = await resolveInitialResumeSession(() => {
+      attempts += 1;
+      return { kind: "search_incomplete", input: "--continue", reason: "metadata_limit" };
+    });
+    expect(result).toMatchObject({ kind: "search_incomplete", reason: "metadata_limit" });
+    expect(attempts).toBe(1);
+  });
+
+  it("fails closed when the rollout never becomes stable", async () => {
+    const id = "conv-startupunstable1";
+    const path = writeRollout(workHome, id, "2026-01-01T10-00-00-000Z", 1);
+    let mutations = 0;
+    __setResumeSessionTestHooksForTest({ afterCandidateMetadataRead: () => {
+      mutations += 1;
+      writeFileSync(path, `${rolloutContent(id, workHome)}${" ".repeat(mutations)}\n`);
+    } });
+    const result = await resolveInitialResumeSession(() => resolveLatestSessionId(workHome));
+    expect(result).toEqual({ kind: "search_incomplete", input: "--continue", reason: "source_unavailable" });
+    expect(mutations).toBeGreaterThan(1);
+  });
+
+  it("keeps an unavailable source closed when cancelled", async () => {
+    const controller = new AbortController();
+    let attempts = 0;
+    const result = await resolveInitialResumeSession(() => {
+      attempts += 1;
+      controller.abort();
+      return { kind: "search_incomplete", input: "--continue", reason: "source_unavailable" };
+    }, controller.signal);
+    expect(result).toMatchObject({ kind: "search_incomplete", reason: "source_unavailable" });
+    expect(attempts).toBe(1);
+  });
+});
+
+describe("append-only resume reproof", () => {
+  function appendLine(path: string, text: string): void {
+    const fd = openSync(path, "a");
+    try {
+      writeSync(fd, `${JSON.stringify({ type: "response_item", payload: { role: "assistant", content: text } })}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  function resolved(sessionId: string): ResolvedResumeSession {
+    const result = resolveResumeSessionId(workHome, sessionId);
+    if (result.kind !== "ok") throw new Error(`fixture did not resolve: ${result.kind}`);
+    return result;
+  }
+
+  it("accepts what a live daemon appended after the descriptor was resolved", () => {
+    const sessionId = "conv-appendok1";
+    const rolloutPath = writeRollout(workHome, sessionId, "2026-01-01T10-00-00-000Z", 1);
+    const before = resolved(sessionId);
+    appendLine(rolloutPath, "streamed after the terminal closed");
+    const after = reproveResumeSessionAllowingAppend(before, agencHome);
+    expect(after.rolloutPath).toBe(rolloutPath);
+    expect(after.sourceIno).toBe(before.sourceIno);
+    expect(Number(after.sourceSize)).toBe(statSync(rolloutPath).size);
+    expect(Number(after.sourceSize)).toBeGreaterThan(Number(before.sourceSize));
+  });
+
+  it("retries while appends land during the read, then reproves the grown source", () => {
+    const sessionId = "conv-appendrace1";
+    const rolloutPath = writeRollout(workHome, sessionId, "2026-01-01T10-00-00-000Z", 1);
+    const before = resolved(sessionId);
+    let appended = 0;
+    __setResumeSessionTestHooksForTest({
+      afterCandidateMetadataRead: (path) => {
+        if (appended >= 2) return;
+        appended += 1;
+        appendLine(path, `delta ${appended}`);
+      },
+    });
+    const after = reproveResumeSessionAllowingAppend(before, agencHome);
+    expect(appended).toBe(2);
+    expect(Number(after.sourceSize)).toBe(statSync(rolloutPath).size);
+  });
+
+  it("still refuses a rewritten past, a replaced file and a truncation", () => {
+    for (const change of ["rewritten", "replaced", "truncated"] as const) {
+      const sessionId = `conv-append${change}`;
+      const rolloutPath = writeRollout(workHome, sessionId, "2026-01-01T10-00-00-000Z", 1);
+      const before = resolved(sessionId);
+      const original = readFileSync(rolloutPath, "utf8");
+      if (change === "rewritten") {
+        writeFileSync(rolloutPath, original.replace(`seed for ${sessionId}`, "rewritten input") + "\n");
+      } else if (change === "replaced") {
+        renameSync(rolloutPath, `${rolloutPath}.old`);
+        writeFileSync(rolloutPath, `${original}\n`);
+      } else {
+        truncateSync(rolloutPath, Number(before.sourceSize) - 10);
+      }
+      expect(() => reproveResumeSessionAllowingAppend(before, agencHome), change)
+        .toThrow(/changed during authorization/);
+    }
+  });
+
+  it("gives up when the source never holds still", () => {
+    const sessionId = "conv-appendstorm1";
+    writeRollout(workHome, sessionId, "2026-01-01T10-00-00-000Z", 1);
+    const before = resolved(sessionId);
+    let appended = 0;
+    __setResumeSessionTestHooksForTest({
+      afterCandidateMetadataRead: (path) => {
+        appended += 1;
+        appendLine(path, `delta ${appended}`);
+      },
+    });
+    const started = Date.now();
+    expect(() => reproveResumeSessionAllowingAppend(before, agencHome)).toThrow(/changed during authorization/);
+    expect(appended).toBeGreaterThan(5);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });

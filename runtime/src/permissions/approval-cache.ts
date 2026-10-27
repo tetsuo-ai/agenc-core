@@ -116,6 +116,7 @@ export interface WithCachedApprovalOpts<K> {
  */
 export class ApprovalStore<K> {
   private readonly map: Map<string, ReviewDecision> = new Map();
+  private readonly pending = new Map<string, Promise<void>>();
 
   get(key: K): ReviewDecision | undefined {
     return this.map.get(canonicalJsonKey(key));
@@ -158,19 +159,28 @@ export class ApprovalStore<K> {
       return await fetchDecision();
     }
 
-    const allAlreadyApproved = keys.every((k) => {
-      const cached = this.get(k);
-      return cached !== undefined && cached.kind === "approved_for_session";
-    });
-    if (allAlreadyApproved) {
-      return { kind: "approved_for_session" };
+    // Reserve overlapping scopes before yielding. A concurrent request must
+    // recheck the first answer, rather than opening an already obsolete card.
+    const ids = [...new Set(keys.map(canonicalJsonKey))];
+    const predecessors = ids.map(id => this.pending.get(id));
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const tail = Promise.all(predecessors).then(() => held);
+    for (const id of ids) this.pending.set(id, tail);
+    try {
+      await Promise.all(predecessors);
+      if (keys.every(key => this.get(key)?.kind === "approved_for_session")) {
+        return { kind: "approved_for_session" };
+      }
+      const decision = await fetchDecision();
+      if (decision.kind === "approved_for_session") this.setMany(keys, decision);
+      return decision;
+    } finally {
+      release();
+      for (const id of ids) {
+        if (this.pending.get(id) === tail) this.pending.delete(id);
+      }
     }
-
-    const decision = await fetchDecision();
-    if (decision.kind === "approved_for_session") {
-      this.setMany(keys, decision);
-    }
-    return decision;
   }
 }
 

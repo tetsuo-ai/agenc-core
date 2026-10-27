@@ -573,6 +573,34 @@ describe("permissionsCommand — remove", () => {
     }
   });
 
+  it("removes a persisted Bash deny from the live projection before reporting success", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-persisted-deny-remove-"));
+    try {
+      writeFileSync(join(home, "config.toml"), 'config_version = 2\n[permissions]\ndeny = ["Bash"]\n');
+      const store = new ConfigStore({ home, cwd: home, env: {} });
+      await store.reload();
+      let initial = createEmptyToolPermissionContext({ mode: "bypassPermissions", isBypassPermissionsModeAvailable: true });
+      for (const destination of ["userSettings", "session"] as const) {
+        initial = applyPermissionUpdate(initial, { type: "addRules", destination, behavior: "deny", rules: [{ toolName: "Bash" }] });
+      }
+      const registry = new PermissionModeRegistry(initial);
+      const mutateDaemonPermissionRule = vi.fn(async () => {
+        await registry.update(applyPermissionUpdate(registry.current(), {
+          type: "removeRules", destination: "session", behavior: "deny", rules: [{ toolName: "Bash" }],
+        }));
+      });
+      const session = Object.assign(stubSession(registry), { mutateDaemonPermissionRule });
+      const result = await permissionsCommand.execute(stubCtx({
+        session, configStore: store, home, cwd: home, argsRaw: "remove deny Bash --persist user",
+      }));
+      expect(result.kind).toBe("text");
+      expect(mutateDaemonPermissionRule).toHaveBeenCalledTimes(2);
+      expect(registry.current().mode).toBe("bypassPermissions");
+      expect(exportRules(registry.current())).not.toContain('"Bash"');
+      expect(parseToml(readFileSync(join(home, "config.toml"), "utf8"), "test")).toMatchObject({ permissions: { deny: [] } });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it("does not mirror or persist a daemon-rejected removal", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-perms-daemon-reject-"));
     try {

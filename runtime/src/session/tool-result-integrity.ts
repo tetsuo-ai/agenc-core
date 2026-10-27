@@ -127,17 +127,188 @@ export class ToolResultCanonicalizationError extends Error {
   }
 }
 
+/** Receives canonical bytes in order; a string chunk is its UTF-8 encoding. */
+type CanonicalByteSink = (chunk: Buffer | string) => void;
+
+/**
+ * The single field framing behind every canonical digest and recorded field
+ * run: length-prefixed label, then length-prefixed UTF-8 value. Returns the
+ * value's UTF-8 byte length.
+ */
+function frameCanonicalString(
+  sink: CanonicalByteSink,
+  label: string,
+  value: string,
+): number {
+  assertWellFormedUtf16(label, "canonical field label");
+  assertWellFormedUtf16(value, label);
+  const labelBytes = Buffer.from(label, "utf8");
+  const valueByteLength = Buffer.byteLength(value, "utf8");
+  sink(encodeUnsignedLength(labelBytes.length));
+  sink(labelBytes);
+  sink(encodeUnsignedLength(valueByteLength));
+  sink(value);
+  return valueByteLength;
+}
+
+function frameCanonicalCount(
+  sink: CanonicalByteSink,
+  label: string,
+  value: number,
+): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ToolResultCanonicalizationError(
+      "unsupported_body_value",
+      "integrity_failure",
+      `${label} must be a non-negative safe integer`,
+    );
+  }
+  frameCanonicalString(sink, "count-label", label);
+  sink(encodeUnsignedLength(value));
+}
+
+/** Field-level writer shared by digests and recorded field runs. */
+export interface CanonicalFieldWriter {
+  writeCount(label: string, value: number): void;
+  writeString(label: string, value: string): void;
+}
+
+/**
+ * An immutable run of canonical fields produced by
+ * {@link CanonicalFieldRecorder}. Only this module can create one, so a digest
+ * can replay recorded bytes without accepting arbitrary unframed input.
+ */
+export interface CanonicalFieldRecord {
+  /** Framed bytes the record replays into a digest. */
+  readonly byteLength: number;
+  /** UTF-8 value bytes counted as payload, excluding framing. */
+  readonly payloadByteLength: number;
+}
+
+const recordedCanonicalBytes = new WeakMap<CanonicalFieldRecord, Buffer>();
+
+/** Records fields with the digest framing for byte-exact replay later. */
+export class CanonicalFieldRecorder implements CanonicalFieldWriter {
+  readonly #chunks: Buffer[] = [];
+  readonly #sink: CanonicalByteSink = (chunk) => {
+    this.#chunks.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk);
+  };
+  #payloadByteLength = 0;
+
+  writeCount(label: string, value: number): void {
+    frameCanonicalCount(this.#sink, label, value);
+  }
+
+  writeString(label: string, value: string, countPayload = true): void {
+    const valueByteLength = frameCanonicalString(this.#sink, label, value);
+    if (countPayload) this.#payloadByteLength += valueByteLength;
+  }
+
+  /** Append an earlier record's fields, byte for byte. */
+  writeRecord(record: CanonicalFieldRecord): void {
+    this.#chunks.push(canonicalRecordBytes(record));
+    this.#payloadByteLength += record.payloadByteLength;
+  }
+
+  finish(): CanonicalFieldRecord {
+    // An unpooled allocation: a retained record must not pin a shared slab.
+    const bytes = Buffer.allocUnsafeSlow(
+      this.#chunks.reduce((total, chunk) => total + chunk.length, 0),
+    );
+    let offset = 0;
+    for (const chunk of this.#chunks) offset += chunk.copy(bytes, offset);
+    const record: CanonicalFieldRecord = Object.freeze({
+      byteLength: bytes.length,
+      payloadByteLength: this.#payloadByteLength,
+    });
+    recordedCanonicalBytes.set(record, bytes);
+    return record;
+  }
+}
+
+function canonicalRecordBytes(record: CanonicalFieldRecord): Buffer {
+  const bytes = recordedCanonicalBytes.get(record);
+  if (bytes === undefined) {
+    throw new TypeError("canonical field record was not produced by a recorder");
+  }
+  return bytes;
+}
+
+/**
+ * Recorded field runs appended in order and kept in one contiguous buffer, so
+ * a digest can replay any leading run of them with a single hash update.
+ * Only records produced by {@link CanonicalFieldRecorder} can be appended.
+ */
+export class CanonicalRecordLog {
+  #bytes = Buffer.allocUnsafeSlow(4_096);
+  #byteLength = 0;
+  readonly #ends: number[] = [];
+  readonly #payloadEnds: number[] = [];
+
+  get recordCount(): number {
+    return this.#ends.length;
+  }
+
+  append(record: CanonicalFieldRecord): void {
+    const bytes = canonicalRecordBytes(record);
+    const needed = this.#byteLength + bytes.length;
+    if (needed > this.#bytes.length) {
+      const grown = Buffer.allocUnsafeSlow(Math.max(needed, this.#bytes.length * 2));
+      this.#bytes.copy(grown, 0, 0, this.#byteLength);
+      this.#bytes = grown;
+    }
+    bytes.copy(this.#bytes, this.#byteLength);
+    this.#byteLength = needed;
+    this.#ends.push(needed);
+    this.#payloadEnds.push((this.#payloadEnds.at(-1) ?? 0) + record.payloadByteLength);
+  }
+
+  /** Keep only the first `recordCount` records. */
+  truncate(recordCount: number): void {
+    if (!Number.isSafeInteger(recordCount) || recordCount < 0 || recordCount > this.#ends.length) {
+      throw new RangeError("canonical record log truncation is outside the log");
+    }
+    this.#ends.length = recordCount;
+    this.#payloadEnds.length = recordCount;
+    this.#byteLength = recordCount === 0 ? 0 : this.#ends[recordCount - 1]!;
+  }
+
+  /** The bytes and payload length of the first `recordCount` records. */
+  static prefix(
+    log: CanonicalRecordLog,
+    recordCount: number,
+  ): { readonly bytes: Buffer; readonly payloadByteLength: number } {
+    if (!(#ends in log)) {
+      throw new TypeError("canonical record log was not created by this module");
+    }
+    if (!Number.isSafeInteger(recordCount) || recordCount < 0 || recordCount > log.#ends.length) {
+      throw new RangeError("canonical record log prefix is outside the log");
+    }
+    if (recordCount === 0) return { bytes: Buffer.alloc(0), payloadByteLength: 0 };
+    return {
+      bytes: log.#bytes.subarray(0, log.#ends[recordCount - 1]!),
+      payloadByteLength: log.#payloadEnds[recordCount - 1]!,
+    };
+  }
+}
+
 /**
  * Small streaming writer used by both body identities and checkpoint-v2
  * hashes. Every field is domain-separated and length-prefixed; callers never
  * need to materialize one giant JSON string solely to hash it.
  */
-export class CanonicalSha256Writer {
+export class CanonicalSha256Writer implements CanonicalFieldWriter {
   readonly #hash: Hash;
+  readonly #sink: CanonicalByteSink;
   #payloadByteLength = 0;
 
   constructor(domain: string) {
-    this.#hash = createHash(TOOL_RESULT_DIGEST_ALGORITHM);
+    const hash = createHash(TOOL_RESULT_DIGEST_ALGORITHM);
+    this.#hash = hash;
+    this.#sink = (chunk) => {
+      if (typeof chunk === "string") hash.update(chunk, "utf8");
+      else hash.update(chunk);
+    };
     this.writeString("domain", domain, false);
   }
 
@@ -152,27 +323,28 @@ export class CanonicalSha256Writer {
   }
 
   writeCount(label: string, value: number): void {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new ToolResultCanonicalizationError(
-        "unsupported_body_value",
-        "integrity_failure",
-        `${label} must be a non-negative safe integer`,
-      );
-    }
-    this.writeString("count-label", label, false);
-    this.#hash.update(encodeUnsignedLength(value));
+    frameCanonicalCount(this.#sink, label, value);
   }
 
   writeString(label: string, value: string, countPayload = true): void {
-    assertWellFormedUtf16(label, "canonical field label");
-    assertWellFormedUtf16(value, label);
-    const labelBytes = Buffer.from(label, "utf8");
-    const valueByteLength = Buffer.byteLength(value, "utf8");
-    this.#hash.update(encodeUnsignedLength(labelBytes.length));
-    this.#hash.update(labelBytes);
-    this.#hash.update(encodeUnsignedLength(valueByteLength));
-    this.#hash.update(value, "utf8");
+    const valueByteLength = frameCanonicalString(this.#sink, label, value);
     if (countPayload) this.#payloadByteLength += valueByteLength;
+  }
+
+  /** Replay recorded fields; equal to writing the same fields directly. */
+  writeRecord(record: CanonicalFieldRecord): void {
+    this.#hash.update(canonicalRecordBytes(record));
+    this.#payloadByteLength += record.payloadByteLength;
+  }
+
+  /**
+   * Replay the first `recordCount` records of a log; equal to replaying each
+   * of those records in order with {@link writeRecord}.
+   */
+  writeRecordLog(log: CanonicalRecordLog, recordCount: number): void {
+    const prefix = CanonicalRecordLog.prefix(log, recordCount);
+    this.#hash.update(prefix.bytes);
+    this.#payloadByteLength += prefix.payloadByteLength;
   }
 
   digest(): string {

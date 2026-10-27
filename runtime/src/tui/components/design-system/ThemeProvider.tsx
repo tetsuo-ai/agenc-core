@@ -1,12 +1,13 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import type { AgenCConfig } from '../../../config/schema.js';
 import { useStdin } from '../../ink/components/StdinContext.js';
 import { logError } from '../../../utils/log.js';
-import { getExecutionAuthoritySettings, updateSettingsForSource } from '../../../utils/settings/settings.js';
-import { getCanonicalSettingsAuthority } from '../../../utils/settings/canonicalAuthority.js';
-import { getTerminalBackground, type TerminalBackground } from '../../../utils/terminalBackground.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type CanonicalSettingsAuthority, getCanonicalSettingsAuthority } from '../../../utils/settings/canonicalAuthority.js';
+import { autoThemeForBackground, getTerminalBackground, type TerminalBackground } from '../../../utils/terminalBackground.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ThemeName, ThemeSetting } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveThemeSetting, themeSettingFromConfig } from '../../../utils/themeSetting.js';
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
   themeSetting: ThemeSetting;
@@ -32,37 +33,63 @@ type Props = {
   children: React.ReactNode;
   initialState?: ThemeSetting;
   onThemeSave?: (setting: ThemeSetting) => void;
+  /**
+   * The settings store whose `tui.theme` is the saved theme. Defaults to the
+   * store bound when the provider mounts; read once. The provider follows
+   * the store's reloads, so a theme saved by /theme or edited in
+   * config.toml and reloaded shows at once.
+   */
+  settingsAuthority?: CanonicalSettingsAuthority | null;
 };
-function defaultInitialTheme(): ThemeSetting {
-  if (getCanonicalSettingsAuthority() === null) {
-    return DEFAULT_THEME;
-  }
-  return getExecutionAuthoritySettings().tui?.theme ?? DEFAULT_THEME;
-}
-function defaultSaveTheme(setting: ThemeSetting): void {
-  if (getCanonicalSettingsAuthority() === null) {
-    return;
-  }
-  void updateSettingsForSource('userSettings', {
-    tui: { theme: setting }
-  }).then(({ error }) => {
-    if (error) logError(error);
-  });
-}
 export function ThemeProvider({
   children,
   initialState,
-  onThemeSave = defaultSaveTheme
+  onThemeSave,
+  settingsAuthority
 }: Props) {
-  const [themeSetting, setThemeSetting] = useState(initialState ?? defaultInitialTheme);
+  const [authority] = useState(() => settingsAuthority !== undefined ? settingsAuthority : getCanonicalSettingsAuthority());
+  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(() => initialState ?? themeSettingFromConfig(authority?.current(), DEFAULT_THEME));
   const [previewTheme, setPreviewTheme] = useState<ThemeSetting | null>(null);
 
   // Track terminal theme for 'auto' resolution. Seeds from $COLORFGBG (or
   // 'dark' if unset); the OSC 11 watcher corrects it on first poll.
   const [terminalBackground, setTerminalBackground] = useState<TerminalBackground>(() => (initialState ?? themeSetting) === 'auto' ? getTerminalBackground() : 'dark');
+  const saveTheme = useCallback((setting: ThemeSetting) => {
+    if (onThemeSave !== undefined) {
+      onThemeSave(setting);
+      return;
+    }
+    if (authority === null) return;
+    void saveThemeSetting(setting, authority).then(({
+      error
+    }) => {
+      if (error) logError(error);
+    });
+  }, [onThemeSave, authority]);
+
+  // Follow the saved theme. /theme and its picker save through the store,
+  // and /config reload picks up a hand edit; each reload lands here. A
+  // preview in progress stays on top until its picker ends it.
+  useEffect(() => {
+    if (authority === null) return;
+    const follow = (config: AgenCConfig) => {
+      const saved = themeSettingFromConfig(config, DEFAULT_THEME);
+      // Seed 'auto' from the cached terminal background, as a direct switch
+      // does, so the OSC round-trip doesn't flash the wrong palette.
+      if (saved === 'auto') setTerminalBackground(getTerminalBackground());
+      setThemeSetting(saved);
+    };
+    if (initialState === undefined) follow(authority.current());
+    const unsubscribe = authority.subscribe(follow);
+    return () => {
+      unsubscribe?.();
+    };
+  }, [authority, initialState]);
 
   // The setting currently in effect (preview wins while picker is open)
   const activeSetting = previewTheme ?? themeSetting;
+  const previewRef = useRef(previewTheme);
+  previewRef.current = previewTheme;
   const {
     internal_querier
   } = useStdin();
@@ -90,7 +117,7 @@ export function ThemeProvider({
       cleanup?.();
     };
   }, [activeSetting, internal_querier]);
-  const currentTheme: ThemeName = activeSetting === 'auto' ? terminalBackground : activeSetting;
+  const currentTheme: ThemeName = activeSetting === 'auto' ? autoThemeForBackground(terminalBackground) : activeSetting;
   const value = useMemo<ThemeContextValue>(() => ({
     themeSetting,
     setThemeSetting: (newSetting: ThemeSetting) => {
@@ -102,7 +129,7 @@ export function ThemeProvider({
       if (newSetting === 'auto') {
         setTerminalBackground(getTerminalBackground());
       }
-      onThemeSave?.(newSetting);
+      saveTheme(newSetting);
     },
     setPreviewTheme: (newSetting_0: ThemeSetting) => {
       setPreviewTheme(newSetting_0);
@@ -110,20 +137,21 @@ export function ThemeProvider({
         setTerminalBackground(getTerminalBackground());
       }
     },
+    // Both read the live preview, so a picker may hold these from its first
+    // render and still end the preview it started.
     savePreview: () => {
-      if (previewTheme !== null) {
-        setThemeSetting(previewTheme);
+      const preview = previewRef.current;
+      if (preview !== null) {
+        setThemeSetting(preview);
         setPreviewTheme(null);
-        onThemeSave?.(previewTheme);
+        saveTheme(preview);
       }
     },
     cancelPreview: () => {
-      if (previewTheme !== null) {
-        setPreviewTheme(null);
-      }
+      setPreviewTheme(null);
     },
     currentTheme
-  }), [themeSetting, previewTheme, currentTheme, onThemeSave]);
+  }), [themeSetting, currentTheme, saveTheme]);
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 

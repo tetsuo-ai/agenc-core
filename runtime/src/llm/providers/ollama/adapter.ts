@@ -8,6 +8,7 @@
  */
 
 import { observeInitialHttpResponse, withInitialHttpRejection } from "../../initial-http-rejection.js";
+import { ollamaRuntimeContextWindow, ollamaTrainedContextLength } from "./context-window.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type {
@@ -43,6 +44,7 @@ import {
 import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
 import {
   LLMInvalidResponseError,
+  LLMModelLoadError,
   LLMProviderError,
   mapLLMError,
   isLLMPreGenerationRejection,
@@ -60,6 +62,7 @@ import { repairToolTurnSequence, validateToolTurnSequence } from "../../tool-tur
 import { safeStringify } from "../../_deps/safe-stringify.js";
 import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { withOllamaHealthSidecar } from "./health.js";
+import { isOllamaGptOssModel, ollamaGptOssThinkLevel } from "../../registry/ollama-gpt-oss.js";
 import { isRecord } from "../../../utils/record.js";
 import { coerceUsage } from "../../wire/shared.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
@@ -121,6 +124,8 @@ interface OllamaCapabilityProfile {
   readonly mode: "native" | "text";
   /** Only explicit model metadata can remove incompatible tool-result images. */
   readonly toolResultImagePolicy?: "strip";
+  /** The model's trained context length from `/api/show`, when it reports one. */
+  readonly trainedContextLength?: number;
 }
 
 function collectParamDiagnostics(
@@ -225,6 +230,41 @@ function cloneProviderTracePayload(
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * A thinking model's reasoning for a reply that calls tools, kept on that
+ * assistant message so the next request of the same tool loop can send it
+ * back as `thinking`. Ollama's templates for thinking models (gpt-oss among
+ * them) render it there; without it the model starts its reasoning over
+ * after every tool result.
+ */
+function ollamaReplayReasoning(
+  provider: string,
+  model: string,
+  thinking: string,
+  toolCalls: readonly LLMToolCall[],
+): Pick<LLMResponse, "providerReasoningContent" | "providerReasoningProvenance"> {
+  return thinking.length > 0 && toolCalls.length > 0
+    ? { providerReasoningContent: thinking, providerReasoningProvenance: { provider, model } }
+    : {};
+}
+
+/** Thinking that `model` produced on `provider`, else undefined. */
+function replayableOllamaThinking(
+  message: LLMMessage,
+  provider: string,
+  model: string,
+): string | undefined {
+  const source = message.providerReasoningProvenance;
+  const thinking = message.providerReasoningContent;
+  const same = (left: string, right: string): boolean =>
+    left.trim().toLowerCase() === right.trim().toLowerCase();
+  return typeof thinking === "string" && thinking.length > 0 &&
+    typeof source?.provider === "string" && typeof source.model === "string" &&
+    same(source.provider, provider) && same(source.model, model)
+    ? thinking
+    : undefined;
 }
 
 function readNonNegativeNumber(value: unknown): number | undefined {
@@ -553,6 +593,10 @@ function extractOllamaContent(parts: LLMContentPart[]): {
   return { content: textPieces.join("\n"), images };
 }
 
+/** Ollama's messages for a model it could not load (server/sched.go, llm/server.go). */
+const OLLAMA_MODEL_LOAD_FAILURE =
+  /requires more system memory|not enough memory|insufficient memory|out of memory|unable to allocate|failed to allocate|llama runner process has terminated|llama runner process no longer running|error loading model|unable to load model|failed to load model|model runner has unexpectedly stopped/iu;
+
 export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
 
@@ -570,6 +614,7 @@ export class OllamaProvider implements LLMProvider {
     toolsFingerprint: string;
     mode: "native" | "text";
     toolResultImagePolicy?: "strip";
+    trainedContextLength?: number;
     names: ReturnType<typeof createOllamaToolNameProjection>;
   }>();
 
@@ -708,10 +753,13 @@ export class OllamaProvider implements LLMProvider {
       options?.timeoutMs,
     );
     let content = "";
+    /** The model's thinking, sent back with its tool calls (ollamaReplayReasoning). */
+    let reasoningText = "";
     /** How much of `content` the caller has already been shown. */
     let emittedLength = 0;
     let holdingText = false;
-    let model = String(params.model ?? this.config.model);
+    const requestModel = String(params.model ?? this.config.model);
+    let model = requestModel;
     let toolCalls: LLMToolCall[] = [];
     let promptTokens = 0;
     let completionTokens = 0;
@@ -763,6 +811,7 @@ export class OllamaProvider implements LLMProvider {
               const chunkContent = readString(message.content);
               const thinking = readString(message.thinking);
               if (thinking) {
+                reasoningText += thinking;
                 onChunk({ content: "", done: false, thinkingDelta: { delta: thinking, index: 0 } });
               }
 
@@ -908,6 +957,7 @@ export class OllamaProvider implements LLMProvider {
         content,
         ...(toolCallRecovery ? { toolCallRecovery } : {}),
         toolCalls: completedToolCalls,
+        ...ollamaReplayReasoning(this.name, requestModel, reasoningText, completedToolCalls),
         usage: coerceUsage({
           promptTokens,
           completionTokens,
@@ -1065,11 +1115,13 @@ export class OllamaProvider implements LLMProvider {
         // Missing, malformed, or unknown metadata is not proof tools are unsupported.
         if (!Array.isArray(capabilities) || !capabilities.every((item) => typeof item === "string") ||
           !capabilities.includes("completion")) return { mode: "native" };
+        const trainedContextLength = ollamaTrainedContextLength(metadata);
         return {
           mode: capabilities.includes("tools") &&
             !ollamaTemplateRequiresTextTools(isRecord(metadata) ? metadata.template : undefined)
             ? "native" : "text",
           ...(!capabilities.includes("vision") ? { toolResultImagePolicy: "strip" as const } : {}),
+          ...(trainedContextLength !== undefined ? { trainedContextLength } : {}),
         };
       } catch {
         return { mode: "native" };
@@ -1159,9 +1211,17 @@ export class OllamaProvider implements LLMProvider {
         ? [{ role: "system" as const, content: options.systemPrompt.trim() }, ...projection.messages]
         : projection.messages;
 
+    const requestModel = options?.model?.trim() || this.config.model;
+    // Thinking goes back only inside the running tool loop: the assistant
+    // messages after the last user message, as Ollama's gpt-oss template
+    // renders it. Older thinking would only grow the prompt.
+    const lastUserIndex = requestMessages.map((m) => m.role).lastIndexOf("user");
     const params: Record<string, unknown> = {
-      model: options?.model?.trim() || this.config.model,
-      messages: requestMessages.map((m) => this.toOllamaMessage(m)),
+      model: requestModel,
+      messages: requestMessages.map((m, index) => this.toOllamaMessage(
+        m,
+        execution.mode === "native" && index > lastUserIndex ? requestModel : undefined,
+      )),
     };
 
     // Build model options
@@ -1178,7 +1238,11 @@ export class OllamaProvider implements LLMProvider {
       modelOptions.num_predict = Math.floor(
         (options?.maxOutputTokens ?? this.config.maxTokens)!,
       );
-    if (this.config.numCtx !== undefined) modelOptions.num_ctx = this.config.numCtx;
+    // One num_ctx per model, the same number admission uses: the configured
+    // window, else the default capped at the model's trained length. Without
+    // it Ollama runs at its own small default and drops the oldest messages.
+    const numCtx = this.config.numCtx ?? ollamaRuntimeContextWindow(execution.trainedContextLength);
+    if (numCtx !== undefined) modelOptions.num_ctx = numCtx;
     if (this.config.numGpu !== undefined) modelOptions.num_gpu = this.config.numGpu;
     if (options?.stopSequences !== undefined && options.stopSequences.length > 0) {
       modelOptions.stop = [...options.stopSequences];
@@ -1187,6 +1251,13 @@ export class OllamaProvider implements LLMProvider {
 
     if (this.config.keepAlive !== undefined)
       params.keep_alive = this.config.keepAlive;
+
+    // gpt-oss reasons at the session's effort; other models keep their own
+    // thinking default (registry/ollama-gpt-oss.ts).
+    const think = isOllamaGptOssModel(String(params.model))
+      ? ollamaGptOssThinkLevel(options?.reasoningEffort)
+      : undefined;
+    if (think !== undefined) params.think = think;
 
     // Native Ollama chat accepts a tools list but no tool_choice. `none`
     // omits the catalog so the provider cannot call tools. `auto` keeps
@@ -1262,7 +1333,7 @@ export class OllamaProvider implements LLMProvider {
       // allowlist constraint and shipped under
       // `fallback_full_catalog_no_matches`.
       console.warn(
-        `[OllamaAdapter] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog — suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
+        `[OllamaAdapter] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog: suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
       );
       return {
         tools: [],
@@ -1298,7 +1369,12 @@ export class OllamaProvider implements LLMProvider {
     };
   }
 
-  private toOllamaMessage(msg: LLMMessage): Record<string, unknown> {
+  /**
+   * `replayThinkingFor` names the request's model when this message belongs
+   * to the running tool loop; its thinking is sent back only when that same
+   * model produced it on this provider.
+   */
+  private toOllamaMessage(msg: LLMMessage, replayThinkingFor?: string): Record<string, unknown> {
     if (msg.role === "tool") {
       let content: string;
       if (Array.isArray(msg.content)) {
@@ -1318,9 +1394,13 @@ export class OllamaProvider implements LLMProvider {
       };
     }
     if (msg.role === "assistant" && msg.toolCalls?.length) {
+      const thinking = replayThinkingFor === undefined
+        ? undefined
+        : replayableOllamaThinking(msg, this.name, replayThinkingFor);
       return {
         role: "assistant",
         content: msg.content,
+        ...(thinking !== undefined ? { thinking } : {}),
         tool_calls: msg.toolCalls.map((toolCall) => ({
           function: {
             name: toolCall.name,
@@ -1405,6 +1485,12 @@ export class OllamaProvider implements LLMProvider {
           ?? toolCallRecovery.toolName,
       } } : {}),
       toolCalls,
+      ...ollamaReplayReasoning(
+        this.name,
+        options?.model?.trim() || this.config.model,
+        readString(message.thinking),
+        toolCalls,
+      ),
       usage,
       model:
         readString(record.model) ||
@@ -1436,7 +1522,24 @@ export class OllamaProvider implements LLMProvider {
       return mapped;
     }
 
-    const mapped = mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0);
+    // The ollama SDK puts the HTTP status on `status_code` (its ResponseError);
+    // the shared mapper reads `status`. Without it a 500 or a 503 (server busy,
+    // model failed to load) became a plain provider error that ended the turn
+    // instead of a server error the turn retries, and a 401 from a cloud model
+    // was not an authentication error.
+    const statusCode = typeof e?.status_code === "number" ? e.status_code : undefined;
+    // A 500 can also be Ollama failing to load the model (its scheduler's
+    // default branch: not enough memory, a runner that exits while loading).
+    // That answer does not change on a retry, so it ends the turn at once with
+    // Ollama's message instead of waiting out an outage. 503 (busy) and other
+    // 500s stay retryable.
+    if (statusCode === 500 && OLLAMA_MODEL_LOAD_FAILURE.test(String(e?.message ?? ""))) {
+      return new LLMModelLoadError(this.name, String(e.message), statusCode);
+    }
+    const source = statusCode !== undefined && e?.status === undefined && e?.statusCode === undefined
+      ? Object.assign(new Error(String(e?.message ?? err)), { name: e?.name, status: statusCode, cause: err })
+      : err;
+    const mapped = mapLLMError(this.name, source, timeoutMs ?? this.config.timeoutMs ?? 0);
     return isLLMPreGenerationRejection(err, this.name)
       ? markLLMPreGenerationRejection(mapped, this.name) : mapped;
   }

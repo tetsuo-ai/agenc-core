@@ -5,12 +5,15 @@ import {
   dismissLedgerVerification,
   getLedgerVerificationSnapshot,
   isLedgerAuthenticityRequest,
+  isLedgerDeviceRequest,
   isLedgerGenuineResult,
   markLedgerVerificationFailed,
   markLedgerVerified,
   observeLedgerGenuineCheck,
   resetLedgerVerificationForTests,
 } from "../../../src/services/Ledger/ledgerVerification.js";
+
+import { authenticityLedgerPrompts, codingLedgerPrompts } from "./ledgerPromptCases.js";
 
 function toolUse(id: string, command: string): unknown {
   return {
@@ -69,6 +72,28 @@ describe("Ledger verification store", () => {
     expect(isLedgerAuthenticityRequest("verify this downloaded file")).toBe(
       false,
     );
+  });
+
+  test.each(codingLedgerPrompts)("does not open hardware verification for %s", (prompt) => {
+    expect(isLedgerAuthenticityRequest(prompt)).toBe(false);
+    expect(isLedgerDeviceRequest(prompt)).toBe(false);
+  });
+
+  test.each(authenticityLedgerPrompts)("recognizes hardware authenticity intent: %s", (prompt) => {
+    expect(isLedgerAuthenticityRequest(prompt)).toBe(true);
+  });
+
+  test.each(["/ledger genuine-check", "/wallet genuine-check"])("recognizes explicit genuine check: %s", (prompt) => {
+    expect(isLedgerAuthenticityRequest(prompt)).toBe(true);
+  });
+
+  test.each(["show my Ledger wallet balance", "Connect my Ledger", "Muestra mi Ledger Nano"])("allows a device status read without opening authenticity: %s", (prompt) => {
+    expect(isLedgerDeviceRequest(prompt)).toBe(true);
+    expect(isLedgerAuthenticityRequest(prompt)).toBe(false);
+  });
+
+  test.each(["/ledger genuine-check --help", "/wallet genuine-check -h", "/ledger help genuine-check", "/ledger balances", "Explain /ledger genuine-check"])("leaves command help and mentions out of the popup: %s", (prompt) => {
+    expect(isLedgerAuthenticityRequest(prompt)).toBe(false);
   });
 
   test("protects a newer request from stale completion updates", () => {

@@ -278,12 +278,14 @@ async function getInstallationPrefix(
     prefixResult = await execFileNoThrowWithCwd(executable, ['pm', 'bin', '-g'], {
       cwd,
       env: options.environment,
+      background: true,
+      timeout: 5000,
     })
   } else {
     prefixResult = await execFileNoThrowWithCwd(
       executable,
       ['-g', 'config', 'get', 'prefix'],
-      { cwd, env: options.environment },
+      { cwd, env: options.environment, background: true, timeout: 5000 },
     )
   }
   if (prefixResult.code !== 0) {
@@ -322,9 +324,47 @@ export async function checkGlobalInstallPermissions(
   }
 }
 
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
+const backgroundVersionChecks = new Map<ReleaseChannel, {
+  pending: boolean
+  nextCheckAt: number
+  failures: number
+}>()
+
 export async function getLatestVersion(
   channel: ReleaseChannel,
+  options: { background?: boolean } = {},
 ): Promise<string | null> {
+  // A TUI component can remount or replace its callback during a task. Keep
+  // failed-check backoff in the process, rather than tying it to that render.
+  let state: { pending: boolean; nextCheckAt: number; failures: number } | undefined
+  if (options.background) {
+    state = backgroundVersionChecks.get(channel) ?? { pending: false, nextCheckAt: 0, failures: 0 }
+    if (state.pending || Date.now() < state.nextCheckAt) return null
+    state.pending = true
+    state.nextCheckAt = Date.now() + UPDATE_CHECK_INTERVAL_MS
+    backgroundVersionChecks.set(channel, state)
+  }
+  let version: string | null = null
+  try {
+    version = await fetchLatestVersion(channel)
+    return version
+  } catch (error) {
+    logForDebugging(`Update check unavailable: ${error}`)
+    return null
+  } finally {
+    if (state !== undefined) {
+      state.pending = false
+      state.failures = version === null ? Math.min(state.failures + 1, 5) : 0
+      state.nextCheckAt = Date.now() + Math.min(
+        UPDATE_CHECK_INTERVAL_MS * 2 ** Math.max(0, state.failures - 1),
+        6 * 60 * 60 * 1000,
+      )
+    }
+  }
+}
+
+async function fetchLatestVersion(channel: ReleaseChannel): Promise<string | null> {
   const npmTag = channel === 'stable' ? 'stable' : 'latest'
 
   // Run from home directory to avoid reading project-level .npmrc
@@ -332,7 +372,7 @@ export async function getLatestVersion(
   const result = await execFileNoThrowWithCwd(
     'npm',
     ['view', `${MACRO.PACKAGE_URL}@${npmTag}`, 'version', '--prefer-online'],
-    { abortSignal: AbortSignal.timeout(5000), cwd: homedir() },
+    { timeout: 5000, background: true, cwd: homedir() },
   )
   if (result.code !== 0) {
     logForDebugging(`npm view failed with code ${result.code}`)
@@ -363,7 +403,7 @@ export async function getNpmDistTags(): Promise<NpmDistTags> {
   const result = await execFileNoThrowWithCwd(
     'npm',
     ['view', MACRO.PACKAGE_URL, 'dist-tags', '--json', '--prefer-online'],
-    { abortSignal: AbortSignal.timeout(5000), cwd: homedir() },
+    { timeout: 5000, background: true, cwd: homedir() },
   )
 
   if (result.code !== 0) {
@@ -469,7 +509,7 @@ To fix this issue:
     const installResult = await execFileNoThrowWithCwd(
       packageManager,
       ['install', '-g', packageSpec],
-      { cwd: homedir() },
+      { cwd: homedir(), background: true },
     )
     if (installResult.code !== 0) {
       const error = new AutoUpdaterError(

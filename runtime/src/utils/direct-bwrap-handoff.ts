@@ -9,9 +9,21 @@ export interface DirectBwrapHandoff {
     readonly command: readonly string[];
     readonly executable: string;
     readonly policyPaths: readonly string[];
+    /**
+     * Missing protected metadata paths the namespace leaves unmounted. The
+     * session sandbox watches them around every command with the same
+     * created-path monitor the per-command launcher runs.
+     */
+    readonly protectedCreateTargets: readonly string[];
   };
   /** Fixed trusted installed artifact, absent on the legacy V2 handoff. */
   readonly namespaceInitArtifact?: string;
+  /**
+   * Missing protected metadata paths a per-command launch leaves unmounted.
+   * The launcher that dispatches this handoff runs the created-path monitor
+   * around the command (only callers that asked for it get such a plan).
+   */
+  readonly protectedCreateTargets?: readonly string[];
   readonly sourceFd: number | undefined;
   readonly isCurrent: () => boolean;
   readonly dispose: () => void;

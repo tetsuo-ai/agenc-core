@@ -232,7 +232,7 @@ function expectedCanonicalInstaller() {
     identityReplacement,
     canonicalInstallerPath,
   );
-  return withFinalNewline(replaceGeneratedBlock(
+  const withWrapper = replaceGeneratedBlock(
     withIdentity,
     {
       startMarker: wrapperStartMarker,
@@ -243,7 +243,28 @@ function expectedCanonicalInstaller() {
     },
     wrapperReplacement,
     canonicalInstallerPath,
-  ));
+  );
+  let result = withWrapper;
+  for (const [name, file, loader] of [
+    ["STABLE NODE", "stable-node.mjs", "loadStableNodeModule"],
+    ["RUNTIME MAINTENANCE", "runtime-maintenance.mjs", "loadRuntimeMaintenanceModule"],
+  ]) {
+    let source = readFileSync(join(repoRoot, "packages/agenc/lib", file), "utf8");
+    const sqliteUrl = "data:text/javascript;base64," +
+      Buffer.from(readFileSync(sqliteSourcePath, "utf8")).toString("base64");
+    source = source.replace('"./sqlite-lock.mjs"', JSON.stringify(sqliteUrl));
+    const startMarker = `// BEGIN GENERATED AGENC ${name} MODULE`;
+    const endMarker = `// END GENERATED AGENC ${name} MODULE`;
+    const block = `${startMarker}
+function ${loader}() {
+  return import("data:text/javascript;base64,${Buffer.from(source).toString("base64")}");
+}
+${endMarker}`;
+    result = replaceGeneratedBlock(result, {
+      startMarker, endMarker, legacyStart: startMarker, legacyEnd: endMarker,
+    }, block, canonicalInstallerPath);
+  }
+  return withFinalNewline(result);
 }
 
 const mode = parseMode(process.argv.slice(2));

@@ -288,6 +288,18 @@ export function createRequestUserInputTool(
       // protocol explicitly and for tool-search discovery.
       hiddenByDefault: true,
       mutating: true,
+      /**
+       * Audited per the ToolMetadata.virtualNoFsWrites contract: execute()
+       * below checks the session, the root thread and the permission mode,
+       * normalizes the questions (strings only, `additionalProperties: false`,
+       * no path) and calls `session.requestUserInput`, which emits the
+       * question event and waits for the client's answer in turn state. No
+       * file is written and nothing runs. Without this the runtime sandbox saw
+       * a mutating tool with no write target and refused every call ("could
+       * not verify write targets for request_user_input"), including in plan
+       * mode, the one mode that offers it.
+       */
+      virtualNoFsWrites: true,
       deferred: true,
       keywords: ["interaction", "user-input", "elicitation"],
       preferredProfiles: ["coding", "operator", "general"],

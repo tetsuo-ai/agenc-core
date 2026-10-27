@@ -31,6 +31,17 @@ afterEach(() => {
 });
 
 describe("pruneTerminalAgentRuns", () => {
+  it.each([pruneSessionSnapshotsForSession, pruneSessionStateSnapshots])("enforces snapshot bytes for multibyte text while retaining the newest row", prune => {
+    const conversation = JSON.stringify(["🐈".repeat(100)]);
+    for (const stamp of ["2026-05-01", "2026-05-02"]) {
+      driver.prepareState("INSERT INTO session_state_snapshots VALUES ('unicode', ?, ?, '{}', '{}')").run(stamp, conversation);
+    }
+    const options = { snapshot_max_bytes: 500 };
+    if (prune === pruneSessionSnapshotsForSession) pruneSessionSnapshotsForSession(driver, "unicode", options);
+    else pruneSessionStateSnapshots(driver, options);
+    expect(driver.prepareState("SELECT snapshot_at FROM session_state_snapshots WHERE session_id = 'unicode'").all()).toEqual([{ snapshot_at: "2026-05-02" }]);
+  });
+
   it("prunes terminal agent runs according to completed and failed retention windows", () => {
     seedRun("completed-old", "session-completed-old", "completed", "2026-03-01T00:00:00.000Z");
     seedRun("stopped-old", "session-stopped-old", "stopped", "2026-03-02T00:00:00.000Z");

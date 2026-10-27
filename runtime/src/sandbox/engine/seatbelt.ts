@@ -96,6 +96,17 @@ export interface CreateSeatbeltCommandArgsParams {
   readonly extraAllowUnixSockets?: readonly string[];
   /** Opt-in GPU compute (Metal) — see {@link MACOS_SEATBELT_GPU_POLICY}. */
   readonly allowGpu?: boolean;
+  /**
+   * The command launches Chromium for the Browser tool. See
+   * {@link MACOS_SEATBELT_CHROMIUM_POLICY}. `bundleIdentifier` is the
+   * browser app's CFBundleIdentifier, the prefix of the Mach names Chromium
+   * registers for its own processes.
+   */
+  readonly chromiumBrowser?: {
+    readonly bundleIdentifier: string | undefined;
+    /** The per-user temporary folder (`getconf DARWIN_USER_TEMP_DIR`). */
+    readonly userTempDir?: string | undefined;
+  };
 }
 
 interface ProxyPolicyInputs {
@@ -142,6 +153,123 @@ export const MACOS_SEATBELT_GPU_POLICY = `; GPU compute (Metal) — opt-in via c
 (allow mach-lookup
   (global-name "com.apple.MTLCompilerService"))`;
 
+/**
+ * Chromium launch allowance for the Browser tool's own spawn.
+ *
+ * Chromium on macOS starts as an AppKit app even when headless: it registers
+ * with LaunchServices (`TransformProcessType`) and connects to the window
+ * server. HIServices aborts the process when launchservicesd is out of reach,
+ * which is the "Google Chrome quit unexpectedly" crash every sandboxed launch
+ * hit. Chromium's child processes then find the browser through Mach names it
+ * registers itself (the MachPortRendezvousServer and crashpad handshake names
+ * under `org.chromium.` and the browser's bundle identifier, see
+ * {@link MACOS_SEATBELT_CHROMIUM_BUNDLE_POLICY}).
+ *
+ * Measured on macOS 26 with Chrome 155 and Chrome for Testing 153 (headless,
+ * CDP over pipes, Chromium's own sandbox off): these rules are enough to
+ * launch, navigate, fill forms, open tabs and take screenshots. The window
+ * system plumbing an app uses at startup is allowed. Services that carry the
+ * user's data stay denied and Chromium carries on without them: the
+ * clipboard, AppleEvents, keychain and credential services, location,
+ * Spotlight, iCloud, notifications, Time Machine, analytics, and GPU user
+ * clients (rendering falls back to software). File and network rules are
+ * the session profile's, plus the per-user temporary folder (see
+ * {@link MACOS_SEATBELT_CHROMIUM_TEMP_POLICY}).
+ */
+export const MACOS_SEATBELT_CHROMIUM_POLICY = `; Chromium browser launch (Browser tool only)
+(allow mach-lookup
+  (global-name "com.apple.coreservices.launchservicesd")
+  (global-name "com.apple.lsd.mapdb")
+  (global-name "com.apple.lsd.modifydb")
+  (global-name "com.apple.CoreServices.coreservicesd")
+  (global-name "com.apple.windowserver.active")
+  (global-name "com.apple.CARenderServer")
+  (global-name "com.apple.hiservices-xpcservice")
+  (global-name "com.apple.dock.server")
+  (global-name "com.apple.dock.fullscreen")
+  (global-name "com.apple.window_proxies")
+  (global-name "com.apple.windowmanager.server")
+  (global-name "com.apple.distributed_notifications@Uv3")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.runningboard")
+  (global-name "com.apple.fonts")
+  (global-name "com.apple.logd")
+  (global-name "com.apple.touchbarserver.mig")
+  (global-name "com.apple.tccd.system")
+  (global-name "com.apple.system.opendirectoryd.api")
+  (global-name-prefix "org.chromium."))
+(allow mach-register
+  (local-name-prefix "")
+  (global-name-prefix "org.chromium."))
+(allow ipc-posix-shm-read-data
+  (ipc-posix-name "apple.shm.notification_center"))
+(allow sysctl-read
+  (sysctl-name "hw.product")
+  (sysctl-name "kern.bootargs")
+  (sysctl-name "kern.hv_vmm_present")
+  (sysctl-name "kern.iossupportversion")
+  (sysctl-name "kern.maxfiles")
+  (sysctl-name "kern.num_files")
+  (sysctl-name "kern.willshutdown")
+  (sysctl-name "security.mac.lockdown_mode_state"))`;
+
+/**
+ * Chromium names its rendezvous server after the browser app's bundle
+ * identifier (`com.google.Chrome.MachPortRendezvousServer.<pid>`), so the
+ * prefix comes from the launched app's Info.plist through a parameter.
+ */
+export const MACOS_SEATBELT_CHROMIUM_BUNDLE_POLICY = `(allow mach-lookup mach-register
+  (global-name-prefix (param "CHROMIUM_MACH_NAME_PREFIX")))`;
+
+/**
+ * Chromium creates its process-singleton socket folder
+ * (`com.google.Chrome.XXXXXX`) in the per-user temporary folder that
+ * `getconf DARWIN_USER_TEMP_DIR` names, whatever TMPDIR says, and aborts with
+ * "Failed to create a ProcessSingleton" when it cannot. With the default
+ * TMPDIR that folder is already the session's temporary root; with a custom
+ * TMPDIR or AGENC_TMPDIR it is not, so the browser gets it explicitly.
+ */
+export const MACOS_SEATBELT_CHROMIUM_TEMP_POLICY = `(allow file-write*
+  (subpath (param "CHROMIUM_USER_TEMP_DIR")))`;
+
+const BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/u;
+
+/**
+ * The CFBundleIdentifier of the app that contains a Chromium executable, or
+ * undefined for a bare binary (chrome-headless-shell) or a bundle whose
+ * Info.plist cannot be read.
+ */
+export function chromiumBundleIdentifier(executablePath: string): string | undefined {
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(executablePath);
+  } catch {
+    return undefined;
+  }
+  const bundle = /^(.*\.app)\/Contents\/MacOS\/[^/]+$/u.exec(realPath)?.[1];
+  if (bundle === undefined) return undefined;
+  const infoPlist = path.join(bundle, "Contents", "Info.plist");
+  let text: string;
+  try {
+    text = fs.readFileSync(infoPlist, "utf8");
+  } catch {
+    return undefined;
+  }
+  let identifier =
+    /<key>CFBundleIdentifier<\/key>\s*<string>([^<]*)<\/string>/u.exec(text)?.[1];
+  if (identifier === undefined && text.startsWith("bplist")) {
+    const result = spawnSync(
+      "/usr/bin/plutil",
+      ["-extract", "CFBundleIdentifier", "raw", "-o", "-", infoPlist],
+      { encoding: "utf8", timeout: 2_000 },
+    );
+    identifier = result.status === 0 ? result.stdout.trim() : undefined;
+  }
+  return identifier !== undefined && BUNDLE_IDENTIFIER_PATTERN.test(identifier)
+    ? identifier
+    : undefined;
+}
+
 export function createSeatbeltCommandArgs(
   args: CreateSeatbeltCommandArgsParams,
 ): string[] {
@@ -155,6 +283,7 @@ export function createSeatbeltCommandArgs(
     network,
     extraAllowUnixSockets = [],
     allowGpu = false,
+    chromiumBrowser,
   } = args;
 
   const unreadableRoots = getUnreadableRootsWithCwd(
@@ -202,6 +331,23 @@ export function createSeatbeltCommandArgs(
   if (allowGpu) {
     policySections.push(MACOS_SEATBELT_GPU_POLICY);
   }
+  const chromiumParams: (readonly [string, string])[] = [];
+  if (chromiumBrowser !== undefined) {
+    policySections.push(MACOS_SEATBELT_CHROMIUM_POLICY);
+    const bundleIdentifier = chromiumBrowser.bundleIdentifier;
+    if (
+      bundleIdentifier !== undefined &&
+      BUNDLE_IDENTIFIER_PATTERN.test(bundleIdentifier)
+    ) {
+      policySections.push(MACOS_SEATBELT_CHROMIUM_BUNDLE_POLICY);
+      chromiumParams.push(["CHROMIUM_MACH_NAME_PREFIX", `${bundleIdentifier}.`]);
+    }
+    const userTempDir = chromiumBrowser.userTempDir;
+    if (userTempDir !== undefined && path.isAbsolute(userTempDir)) {
+      policySections.push(MACOS_SEATBELT_CHROMIUM_TEMP_POLICY);
+      chromiumParams.push(["CHROMIUM_USER_TEMP_DIR", normalizePathForPolicy(userTempDir)]);
+    }
+  }
   const fullPolicy = policySections.join("\n");
 
   const dirParams = [
@@ -210,6 +356,7 @@ export function createSeatbeltCommandArgs(
     ...reservedWriteParams,
     ...macosDirParams(),
     ...unixSocketDirParams(proxy),
+    ...chromiumParams,
   ];
   return [
     "-p",
@@ -748,6 +895,31 @@ function darwinUserCacheDir(): string | null {
   }
   resolvedDarwinUserCacheDir = normalizePathForPolicy(realPath);
   return resolvedDarwinUserCacheDir;
+}
+
+let resolvedDarwinUserTempDir: string | undefined;
+
+/**
+ * The per-user temporary folder macOS gives every process, independent of
+ * TMPDIR. Remembered once its real path resolved, like the cache folder.
+ */
+export function darwinUserTempDir(
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform !== "darwin") return undefined;
+  if (resolvedDarwinUserTempDir !== undefined) return resolvedDarwinUserTempDir;
+  const result = spawnSync("/usr/bin/getconf", ["DARWIN_USER_TEMP_DIR"], {
+    encoding: "utf8",
+  });
+  if (result.error !== undefined || result.status !== 0) return undefined;
+  const value = result.stdout.trim();
+  if (value.length === 0 || !path.isAbsolute(value)) return undefined;
+  try {
+    resolvedDarwinUserTempDir = normalizePathForPolicy(fs.realpathSync(value));
+  } catch {
+    return undefined;
+  }
+  return resolvedDarwinUserTempDir;
 }
 
 function normalizePathForSandbox(candidate: string): string | null {

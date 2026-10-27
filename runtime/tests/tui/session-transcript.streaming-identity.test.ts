@@ -4,6 +4,7 @@ import {
   adaptTranscriptEvents,
   makeUserMessage,
 } from "../../src/tui/session-transcript.js";
+import { selectableMessageOrdinal, selectableUserMessagesFilter } from "../../src/tui/components/message-selector-filter.js";
 
 // M-TUI-1: message uuids minted during transcript projection must stay stable
 // across re-projections. `useSessionTranscript` re-runs `adaptTranscriptEvents`
@@ -40,6 +41,27 @@ function messageUuids(transcript: { readonly messages: readonly any[] }): string
 }
 
 describe("session transcript streaming identity (M-TUI-1)", () => {
+  test("automatic compaction preserves visible history but binds selectors to active user ordinals", () => {
+    const transcript = adaptTranscriptEvents([
+      { id: "old", msg: { type: "user_message", payload: { message: "old request" } } } as never,
+      { id: "wire-event-keep", msg: { type: "user_message", payload: { message: "kept request", messageId: "keep" } } } as never,
+      { id: "compact", msg: { type: "context_compacted", payload: { activeUserMessageIds: ["legacy-not-rendered", "keep"] } } } as never,
+      { id: "later", msg: { type: "user_message", payload: { message: "new request" } } } as never,
+    ]);
+    const selectable = transcript.messages.filter(selectableUserMessagesFilter);
+    expect(selectable.map(message => message.canonicalUserMessageId)).toEqual(["keep", "later"]);
+    expect(selectable.map(message => selectableMessageOrdinal(transcript.messages, message))).toEqual([1, 2]);
+    expect(transcript.messages.some((message: any) => message.canonicalUserMessageId === "old" && message.isVisibleInTranscriptOnly)).toBe(true);
+  });
+
+  test("legacy compaction notices preserve legacy selector ordinals", () => {
+    const transcript = adaptTranscriptEvents([
+      { id: "user", msg: { type: "user_message", payload: { message: "request" } } } as never,
+      { id: "compact", msg: { type: "context_compacted", payload: {} } } as never,
+    ]);
+    const [user] = transcript.messages.filter(selectableUserMessagesFilter);
+    expect(selectableMessageOrdinal(transcript.messages, user)).toBe(0);
+  });
   test("two consecutive flushes of the same stream keep identical uuids for already-projected messages", () => {
     const flush1 = adaptTranscriptEvents(streamingPrefix());
     const flush2 = adaptTranscriptEvents([

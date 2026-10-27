@@ -27,6 +27,8 @@ import type { AttachmentProducer } from "./orchestrator.js";
 interface RoutingInstructionContext {
   readonly planMode: boolean;
   readonly spawnAvailable: boolean;
+  /** spawn_agent starts deferred behind system.searchTools. */
+  readonly spawnDeferred: boolean;
 }
 
 function routingInstructions(
@@ -61,6 +63,21 @@ function routingInstructions(
       `do not spawn workers until execution mode resumes. ${common}`
     );
   }
+  const integration =
+    decision.integration === "verify_then_integrate"
+      ? "For writable subtasks, give workers disjoint write sets, use `isolation: \"worktree\"`, and require committed changed-file/test evidence. Review and integrate one exact verified `base_commit..integration_ref` range at a time, then re-run verification. Never infer an integration target from a mutable branch or path. Intended deliverables under ignored paths must be explicitly unignored or force-added and committed."
+      : "Give each worker a disjoint question and synthesize results in the parent; do not duplicate their work locally.";
+  if (!context.spawnAvailable && context.spawnDeferred) {
+    // Telling a Light session that spawn_agent "is not available" made models
+    // keep all work local even though one search loads the tool.
+    return (
+      "This parallel route recommends delegation. `spawn_agent` and `wait_agent` start deferred in this session: " +
+      "load them first with `system.searchTools` and `select: [\"spawn_agent\", \"wait_agent\"]`. " +
+      `Then decide whether \`spawn_agent\` is appropriate for up to ${decision.maxAgents} independent workers, subject to the user's full request and prerequisites. ` +
+      "If the search reports them missing, continue locally and do not claim that workers were launched. " +
+      `Keep immediate blockers local. ${integration} ${common}`
+    );
+  }
   if (!context.spawnAvailable) {
     return (
       "Parallel routing was selected, but `spawn_agent` is not available in " +
@@ -68,10 +85,6 @@ function routingInstructions(
       `continue locally and report the unavailable delegation boundary. ${common}`
     );
   }
-  const integration =
-    decision.integration === "verify_then_integrate"
-      ? "For writable subtasks, give workers disjoint write sets, use `isolation: \"worktree\"`, and require committed changed-file/test evidence. Review and integrate one exact verified `base_commit..integration_ref` range at a time, then re-run verification. Never infer an integration target from a mutable branch or path. Intended deliverables under ignored paths must be explicitly unignored or force-added and committed."
-      : "Give each worker a disjoint question and synthesize results in the parent; do not duplicate their work locally.";
   return (
     "This parallel route recommends delegation. Decide whether `spawn_agent` is appropriate " +
     `for up to ${decision.maxAgents} independent workers, subject to the user's full request and prerequisites. ` +
@@ -126,6 +139,11 @@ export const swarmModeProducer: AttachmentProducer = async (
   const spawnAvailable = opts.loadedTools.some(
     (tool) => tool.function.name === "spawn_agent",
   );
+  // Light and standard sessions alike start with spawn_agent deferred behind
+  // system.searchTools; the instruction says how to load it and what to do
+  // when the search reports it missing.
+  const spawnDeferred = !spawnAvailable && (opts.lightMode === true ||
+    opts.loadedTools.some((tool) => tool.function.name === "system.searchTools"));
   trackingState.swarmRoutingDecisionCount =
     (trackingState.swarmRoutingDecisionCount ?? 0) + 1;
   trackingState.lastSwarmRoutingTurnId = turnProvenance.turnId;
@@ -136,6 +154,7 @@ export const swarmModeProducer: AttachmentProducer = async (
       content: renderSwarmReminder(decision, {
         planMode,
         spawnAvailable,
+        spawnDeferred,
       }),
     },
   ];

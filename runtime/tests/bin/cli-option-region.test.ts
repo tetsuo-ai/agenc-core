@@ -64,6 +64,18 @@ describe("tokenizeCliOptionRegion", () => {
       endedBy: "positional",
     });
   });
+
+  it.each([
+    ["--budget", "eco"],
+    ["--task-token-budget", "1000"],
+    ["--task-max-calls", "5"],
+  ] as const)("consumes %s so its value cannot become the prompt", (flag, value) => {
+    expect(tokenizeCliOptionRegion([flag, value, "explain this"])).toEqual({
+      optionArgs: [flag, value],
+      promptArgs: ["explain this"],
+      endedBy: "positional",
+    });
+  });
 });
 
 describe("generated CLI option insertion", () => {

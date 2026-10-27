@@ -71,7 +71,8 @@ export const PINNED_GITHUB_CLI_ARTIFACTS = Object.freeze({
     url: "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_amd64.zip",
     sha256: "c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3",
     bytes: 14821821,
-    executable: "gh_2.96.0_windows_amd64/bin/gh.exe",
+    // The Windows zip has no top-level folder, unlike the Linux and macOS archives.
+    executable: "bin/gh.exe",
     executableSha256: "cd79f16203f1fbe56937c4c96e2b6eadd10549418dcb241d91576ac77af0ac8b",
     executableBytes: 41504056,
   }),

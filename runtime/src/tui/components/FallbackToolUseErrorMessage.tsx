@@ -8,6 +8,7 @@ import { Box, Text } from '../ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { countCharInString } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from './MessageResponse.js';
+import { summarizeToolError } from '../tool-error-text.js';
 const MAX_RENDERED_LINES = 10;
 type Props = {
   result: ToolResultBlockParam['content'];
@@ -35,8 +36,8 @@ export function FallbackToolUseErrorMessage(t0: Props) {
       const extractedError = extractTag(result, "tool_use_error") ?? result;
       const withoutSandboxViolations = removeSandboxViolationTags(extractedError);
       const withoutErrorTags = withoutSandboxViolations.replace(/<\/?error>/g, "");
-      const trimmed = withoutErrorTags.trim();
-      if (!verbose && trimmed.includes("InputValidationError: ")) {
+      const trimmed = summarizeToolError(withoutErrorTags);
+      if (!verbose && withoutErrorTags.includes("InputValidationError: ")) {
         error = "Invalid tool parameters";
       } else {
         if (trimmed.startsWith("Error: ") || trimmed.startsWith("Cancelled: ")) {

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { PassThrough } from "node:stream";
+import stripAnsi from "strip-ansi";
 
 import hooksCommand from "./hooks.js";
 import type { SlashCommandContext } from "./types.js";
@@ -207,6 +209,22 @@ function daemonCtx(
 }
 
 describe("/hooks command (daemon path)", () => {
+  it("advertises only supported daemon hook actions in overview and usage", async () => {
+    const overview = await hooksCommand.execute(daemonCtx("list"));
+    expect(overview.kind).toBe("text");
+    if (overview.kind === "text") {
+      expect(overview.text).toContain("/hooks diagnostics");
+      expect(overview.text).not.toContain("/hooks test");
+      expect(overview.text).not.toContain("clear-diagnostics");
+    }
+    const invalid = await hooksCommand.execute(daemonCtx("badargument"));
+    expect(invalid.kind).toBe("error");
+    if (invalid.kind === "error") {
+      expect(invalid.message).not.toContain("test");
+      expect(invalid.message).not.toContain("clear-diagnostics");
+    }
+  });
+
   it("renders the daemon's real hooks via the status RPC", async () => {
     const result = await hooksCommand.execute(daemonCtx("list"));
     expect(result.kind).toBe("text");
@@ -214,6 +232,38 @@ describe("/hooks command (daemon path)", () => {
       expect(result.text).toContain("AgenC Hooks");
       expect(result.text).toContain("PreToolUse");
       expect(result.text).toContain("printf daemon-ok");
+    }
+  });
+
+  it("opens a read-only menu from daemon hooks when the TUI is connected", async () => {
+    const getDaemonHooksStatus = vi.fn(async () => daemonStatusSnapshot());
+    const setToolJSX = vi.fn();
+    const context = {
+      ...daemonCtx("", { getDaemonHooksStatus }),
+      appState: { setToolJSX } as SlashCommandContext["appState"],
+    };
+    expect(await hooksCommand.execute(context)).toMatchObject({ kind: "skip" });
+    expect(getDaemonHooksStatus).toHaveBeenCalledOnce();
+    expect(setToolJSX).toHaveBeenCalledOnce();
+    const stdin = Object.assign(new PassThrough(), { isTTY: true, ref() {}, unref() {}, setRawMode() {} });
+    const stdout = Object.assign(new PassThrough(), { isTTY: true, columns: 80, rows: 24 });
+    let output = "";
+    stdout.on("data", chunk => { output += chunk.toString(); });
+    const { createRoot } = await import("../../src/tui/ink.js");
+    const { getInkInstance } = await import("../../src/tui/ink/instances.js");
+    const root = await createRoot({ stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream, patchConsole: false, exitOnCtrlC: false });
+    try {
+      root.render(setToolJSX.mock.calls[0]![0].jsx);
+      await new Promise(resolve => setTimeout(resolve, 40));
+      output = "";
+      getInkInstance(stdout as unknown as NodeJS.WriteStream)!.forceRedraw();
+      await vi.waitFor(() => expect(stripAnsi(output).replace(/\s+/gu, "")).toContain("printfdaemon-ok"));
+      expect(stripAnsi(output).replace(/\s+/gu, "")).toContain("runsyourcommandsbeforetheagentusesatool.");
+      expect(stripAnsi(output)).not.toContain("edit-test");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
     }
   });
 

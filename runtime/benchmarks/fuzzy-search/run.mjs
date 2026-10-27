@@ -394,9 +394,9 @@ function boundedErrorMessage(message) {
 }
 
 function assertPinnedToolchain() {
-  if (process.version !== "v26.5.0") {
+  if (process.version !== "v26.12.1") {
     throw new Error(
-      `fuzzy benchmark requires Node v26.5.0, received ${process.version}`,
+      `fuzzy benchmark requires Node v26.12.1, received ${process.version}`,
     );
   }
   const observedNpm = commandText("npm", ["--version"]);

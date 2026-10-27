@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import { findProjectRootSync } from "../session/session-store.js";
@@ -71,6 +72,8 @@ export interface IgnoredConfigValue extends ConfigLayerSource {
 
 export interface ConfigLayerSnapshot extends ConfigLayerSource {
   readonly config: AgenCConfig;
+  /** Preserve literal selection intent after the layer gains a canonical pair. */
+  readonly modelSelectionSource?: "explicit" | "provider_default";
 }
 
 export interface McpLayerCandidate {
@@ -328,6 +331,9 @@ export function validateStrictConfigDocument(
   }
 }
 
+const RETIRED_MODEL_ACCOUNT_LAYERS = new WeakSet<ConfigLayerSnapshot>();
+export const RETIRED_MODEL_ACCOUNT_NOTICE = "AgenC accounts no longer provide models. Use your own provider credentials or a local server.";
+
 export async function readStrictConfigLayer(
   path: string,
   scope: ConfigScope,
@@ -361,6 +367,9 @@ export async function readStrictConfigLayer(
     ...source(scope, label, path),
     config: validateStrictConfigDocument(parsed, path),
   });
+  if (isPlainRecord(parsed.auth) && ("managedKeys" in parsed.auth || "managed_keys" in parsed.auth)) {
+    RETIRED_MODEL_ACCOUNT_LAYERS.add(layer);
+  }
   STABLE_LAYER_IDENTITIES.set(layer, Object.freeze({
     path: resolve(path),
     resolvedPath: snapshot.resolvedPath,
@@ -502,6 +511,12 @@ function sanitizeTopLevelAuthority(
   ignored: IgnoredConfigValue[],
 ): AgenCConfig {
   const raw = cloneRecord(layer.config as Readonly<Record<string, unknown>>);
+  // A process-launch flag, profile or environment is not owner consent to
+  // expose the daemon. Only canonical home and managed files own this switch.
+  if (layer.scope !== "user" && layer.scope !== "managed" && layer.scope !== "default") {
+    removeKey(raw, "remote_control", layer, ignored,
+      "only home or managed config.toml may enable remote control");
+  }
   for (const key of MANAGED_ONLY_CONFIG_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(raw, key) || layer.scope === "managed") {
       continue;
@@ -739,6 +754,7 @@ function sanitizeRepositoryLayer(
     const tools = raw.tools_config;
     for (const key of [
       "enabled_tools",
+      "web_search_provider",
       "web_search_endpoint",
       "web_search_endpoint_kind",
     ] as const) {
@@ -1195,8 +1211,13 @@ function mergeLayer(
     ignored,
     retainUntrustedProjectCommandHooks,
   );
+  const modelSelectionSource = layer.modelSelectionSource ?? (
+    safe.model !== undefined ? "explicit" :
+    safe.model_provider !== undefined && safe.model_provider !== base.model_provider ? "provider_default" : undefined
+  );
   const safeLayer = Object.freeze({
     ...layer,
+    ...(modelSelectionSource === undefined ? {} : { modelSelectionSource }),
     config: resolveProviderModelLayer(base, safe),
   });
   const merged = mergeConfigLayerSnapshots([safeLayer], base);
@@ -1303,6 +1324,25 @@ function diffLayer(
   return syntheticLayer(scope, label, normalizeRawConfig(patch));
 }
 
+function isSameDirectory(left: string, right: string): boolean {
+  try {
+    const a = statSync(left);
+    const b = statSync(right);
+    return a.isDirectory() && b.isDirectory() && a.dev === b.dev && a.ino === b.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when a workspace's `.agenc` folder is the AgenC home itself, as in a
+ * session started in the home folder. That folder holds the user's own
+ * config, never repository settings.
+ */
+export function workspaceConfigDirIsAgenCHome(projectRoot: string, agencHome: string): boolean {
+  return isSameDirectory(join(projectRoot, ".agenc"), agencHome);
+}
+
 async function loadLayeredConfigInternal(
   options: LayeredConfigRepositoryOptions,
   includeWorkspaceLayers: boolean,
@@ -1323,10 +1363,15 @@ async function loadLayeredConfigInternal(
   const ignored: IgnoredConfigValue[] = [];
   const provenance: Record<string, ConfigProvenanceEntry> = {};
 
+  let retiredModelAccountNoticeShown = false;
   const registerPhysicalSource = (
     layer: ConfigLayerSnapshot | null,
   ): void => {
     if (layer?.path === undefined) return;
+    if (!retiredModelAccountNoticeShown && RETIRED_MODEL_ACCOUNT_LAYERS.has(layer)) {
+      retiredModelAccountNoticeShown = true;
+      (options.onWarn ?? console.warn)(RETIRED_MODEL_ACCOUNT_NOTICE);
+    }
     const identity = STABLE_LAYER_IDENTITIES.get(layer);
     if (identity === undefined) return;
     for (const existing of physicalSources) {
@@ -1416,7 +1461,13 @@ async function loadLayeredConfigInternal(
     managedConfigPath: managedPath,
     includeProjectInputs: includeWorkspaceLayers,
   });
-  const project = includeWorkspaceLayers
+  // A workspace at the user's home folder with the default AGENC_HOME has the
+  // AgenC home itself as <root>/.agenc, so its config.toml is the user layer.
+  // The AgenC home is never repository configuration: such a root has no
+  // project or local layer. Every other path collision still fails closed.
+  const workspaceLayersAreAgenCHome =
+    includeWorkspaceLayers && workspaceConfigDirIsAgenCHome(projectRoot, home.path);
+  const project = includeWorkspaceLayers && !workspaceLayersAreAgenCHome
     ? await readStrictConfigLayer(
         join(projectRoot, ...PROJECT_CONFIG_RELATIVE_PATH),
         "project",
@@ -1436,7 +1487,7 @@ async function loadLayeredConfigInternal(
     config = merged.config;
     sources.push(merged.source);
   }
-  const local = includeWorkspaceLayers
+  const local = includeWorkspaceLayers && !workspaceLayersAreAgenCHome
     ? await readStrictConfigLayer(
         join(projectRoot, ...LOCAL_CONFIG_RELATIVE_PATH),
         "local",
@@ -1478,7 +1529,11 @@ async function loadLayeredConfigInternal(
       hasProfileSelection ? ["model_provider", "model"] : [],
     );
     if (profile) {
-      const merged = mergeLayer(config, profile, true, provenance, ignored);
+      const merged = mergeLayer(config, { ...profile,
+        ...(hasProfileSelection ? { modelSelectionSource: selectedProfile?.model !== undefined ? "explicit" as const :
+          selectedProfile?.model_provider !== config.model_provider ? "provider_default" as const :
+          [...sources].reverse().find(layer => layer.modelSelectionSource !== undefined)?.modelSelectionSource ?? "explicit" as const } : {}),
+      }, true, provenance, ignored);
       config = merged.config;
       sources.push(merged.source);
     }
@@ -1496,7 +1551,11 @@ async function loadLayeredConfigInternal(
     hasEnvironmentSelection ? ["model_provider", "model"] : [],
   );
   if (environment) {
-    const merged = mergeLayer(config, environment, true, provenance, ignored);
+    const merged = mergeLayer(config, { ...environment,
+      ...(hasEnvironmentSelection ? { modelSelectionSource: env.AGENC_MODEL?.trim() ? "explicit" as const :
+        env.AGENC_PROVIDER?.trim() !== config.model_provider ? "provider_default" as const :
+        [...sources].reverse().find(layer => layer.modelSelectionSource !== undefined)?.modelSelectionSource ?? "explicit" as const } : {}),
+    }, true, provenance, ignored);
     config = merged.config;
     sources.push(merged.source);
   }
@@ -1528,7 +1587,7 @@ async function loadLayeredConfigInternal(
   }
 
   if (
-    config.model_provider === "gemini" &&
+    ["gemini", "venice", "ollama-cloud", "abliteration"].includes(config.model_provider ?? "") &&
     provenance.reasoning_effort?.scope === "default"
   ) {
     const { reasoning_effort: _defaultEffort, ...providerDefaults } = config;
@@ -1536,6 +1595,9 @@ async function loadLayeredConfigInternal(
     delete provenance.reasoning_effort;
   }
 
+  if (config.remote_control?.enabled !== true && env.AGENC_REMOTE_FULL_CONTROL !== undefined) {
+    options.onWarn?.("AGENC_REMOTE_FULL_CONTROL is ignored while remote_control.enabled is false; only home or managed config.toml can enable remote control.");
+  }
   config = mergeConfigs(config, {
     configVersion: CANONICAL_CONFIG_VERSION,
   });

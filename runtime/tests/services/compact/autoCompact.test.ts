@@ -88,7 +88,7 @@ describe("auto compact", () => {
   test("compacts when usage crosses threshold with only context-window data", async () => {
     process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
     const messages = [
-      message("x".repeat(10_000)),
+      message("x".repeat(60_000)),
       message("recent request"),
     ];
 
@@ -119,7 +119,7 @@ describe("auto compact", () => {
     };
     const messages = [
       screenshot(0),
-      message("x".repeat(10_000)),
+      message("x".repeat(60_000)),
       screenshot(1),
       screenshot(2),
       screenshot(3),
@@ -147,7 +147,7 @@ describe("auto compact", () => {
   }, 60_000);
 
   test("force still refuses a candidate that cannot prove shrink", async () => {
-    const messages = [message("small current turn")];
+    const messages = Array.from({ length: 16 }, (_, index) => message(`small turn ${index}`));
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
     });
@@ -176,7 +176,7 @@ describe("auto compact", () => {
 
   test("runs no lifecycle hooks below threshold and one pair for forced auto compaction", async () => {
     const messages = [
-      message("x".repeat(10_000)),
+      message("x".repeat(60_000)),
       message("recent request"),
     ];
     const harness = createCompactionTransactionHarness(messages, {
@@ -215,7 +215,7 @@ describe("auto compact", () => {
       expect.objectContaining({
         hook_event_name: "PreCompact",
         trigger: "auto",
-        custom_instructions: "",
+        custom_instructions: expect.stringContaining("Current request (untrusted task data"),
       }),
     );
     expect(executePostCompact).toHaveBeenCalledOnce();
@@ -236,7 +236,7 @@ describe("auto compact", () => {
       resetMicrocompactState: vi.fn(),
     };
 
-    const messages = [message("x".repeat(10_000)), message("recent request")];
+    const messages = [message("x".repeat(60_000)), message("recent request")];
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
     });
@@ -259,7 +259,7 @@ describe("auto compact", () => {
     expect(String(result.compactionResult?.summaryMessages[0]?.content))
       .not.toContain("remembered decisions");
     expect(result.compactionResult?.userDisplayMessage)
-      .toBe("Conversation compacted transactionally");
+      .toMatch(/^Compacted [\d,]+ to [\d,]+ tokens in \d+s$/u);
     expect(cleanup.clearReadFileState).not.toHaveBeenCalled();
     expect(cleanup.clearProviderResponseId).not.toHaveBeenCalled();
     expect(cleanup.resetMicrocompactState).not.toHaveBeenCalled();
@@ -274,7 +274,7 @@ describe("auto compact", () => {
     // way forward when the compaction call died on "Connection error." and
     // the attempt was filed as a failure instead of retried.
     function compactionWithChat(chat: (messages: LLMMessage[]) => Promise<unknown>) {
-      const messages = [message("x".repeat(10_000)), message("recent request")];
+      const messages = [message("x".repeat(60_000)), message("recent request")];
       const harness = createCompactionTransactionHarness(messages, {
         compactionMode: "automatic",
         chat: chat as never,
@@ -331,7 +331,7 @@ describe("auto compact", () => {
     await runWithCapturedEnvironment(async () => {
       expect(isAutoCompactEnabled()).toBe(false);
       await expect(autoCompactIfNeeded(
-        [message("x".repeat(10_000))],
+        [message("x".repeat(60_000))],
         { options: { contextWindowTokens: 100 } },
       )).resolves.toEqual({
         wasCompacted: false,

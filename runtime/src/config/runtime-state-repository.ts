@@ -91,6 +91,7 @@ export type InstallMethod = "local" | "native" | "global" | "unknown";
 export type GlobalRuntimeState = {
   projects?: Record<string, ProjectRuntimeState>;
   installMethod?: InstallMethod;
+  skippedUpdateVersion?: string;
   userID?: string;
   hasAcknowledgedCostThreshold?: boolean;
   hasUsedBackslashReturn?: boolean;

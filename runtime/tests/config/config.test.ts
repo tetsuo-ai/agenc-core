@@ -95,9 +95,10 @@ describe("schema: defaultConfig", () => {
     expect(cfg.max_turns).toBeUndefined();
     expect(cfg.agent_max_threads).toBeUndefined();
     expect(cfg.agent_max_depth).toBe(1);
-    expect(cfg.stream_watchdog_timeout_ms).toBe(600_000);
+    expect(cfg.stream_watchdog_timeout_ms).toBe(1_200_000);
+    expect(cfg.stream_quiet_warning_ms).toBe(600_000);
     expect(cfg.auth?.backend).toBe("remote");
-    expect(cfg.auth?.managedKeys?.enabled).toBe(true);
+    expect(cfg.auth).toEqual({ backend: "remote" });
     expect(cfg.plugins?.enabled).toBe(false);
     expect(cfg.plugins?.allowlist).toEqual([]);
     expect(cfg.mcp?.server).toEqual({
@@ -107,7 +108,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.defaultMode).toBeUndefined();
-    expect(cfg.tui?.theme).toBe("dark");
+    expect(cfg.tui?.theme).toBe("olive");
     expect(cfg.agent?.budget).toEqual({});
     expect(cfg.agent?.retention).toEqual({
       completed_days: 30,
@@ -845,17 +846,14 @@ describe("schema: statusLine / outputStyle block (T12)", () => {
 });
 
 describe("schema: closed config block validators (CF-13)", () => {
-  test("validateAuthConfig accepts managed local/remote auth settings", () => {
+  test("validateAuthConfig ignores retired managed settings", () => {
     const out = validateAuthConfig({
       backend: "remote",
       managedKeys: { enabled: true },
     });
-    expect(out).toEqual({
-      backend: "remote",
-      managedKeys: { enabled: true },
-    });
+    expect(out).toEqual({ backend: "remote" });
     expect(Object.isFrozen(out)).toBe(true);
-    expect(Object.isFrozen(out?.managedKeys)).toBe(true);
+    expect(out?.managedKeys).toBeUndefined();
   });
 
   test("validateAuthConfig rejects unknown auth fields with field metadata", () => {
@@ -1677,7 +1675,7 @@ describe("env: resolvers", () => {
     },
   );
 
-  test("applyEnvOverrides — AGENC_AUTH_MANAGED_KEYS_ENABLED wins over TOML auth flag", () => {
+  test("applyEnvOverrides ignores the retired managed model environment flag", () => {
     const base = mergeConfigs(defaultConfig(), {
       auth: { managedKeys: { enabled: true } },
     });
@@ -1685,7 +1683,7 @@ describe("env: resolvers", () => {
       AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
     });
     expect(out.auth?.backend).toBe("remote");
-    expect(out.auth?.managedKeys?.enabled).toBe(false);
+    expect(out.auth?.managedKeys?.enabled).toBe(true);
   });
 
   test("applyEnvOverrides — AGENC_AUTH_BACKEND selects remote auth", () => {
@@ -1697,7 +1695,7 @@ describe("env: resolvers", () => {
     }, (warning) => warnings.push(warning));
 
     expect(out.auth?.backend).toBe("remote");
-    expect(out.auth?.managedKeys?.enabled).toBe(true);
+    expect(out.auth?.managedKeys).toBeUndefined();
     expect(warnings).toEqual([]);
   });
 
@@ -1755,17 +1753,21 @@ describe("env: resolvers", () => {
       AGENC_MAX_TURNS: "42",
       AGENC_COORDINATOR_MODE: "off",
       AGENC_STREAM_IDLE_TIMEOUT_MS: "15_000",
+      AGENC_STREAM_QUIET_WARNING_MS: "10_000",
     });
     expect(out.max_turns).toBe(42);
     expect(out.coordinator_mode).toBe(false);
     expect(out.stream_watchdog_timeout_ms).toBe(15_000);
+    expect(out.stream_quiet_warning_ms).toBe(10_000);
 
     const disabled = applyEnvOverrides(out, {
       AGENC_COORDINATOR_MODE: "yes",
       AGENC_STREAM_IDLE_TIMEOUT_MS: "0",
+      AGENC_STREAM_QUIET_WARNING_MS: "0",
     });
     expect(disabled.coordinator_mode).toBe(true);
     expect(disabled.stream_watchdog_timeout_ms).toBe(0);
+    expect(disabled.stream_quiet_warning_ms).toBe(0);
   });
 
   test("applyEnvOverrides folds AGENC_XAI_INCREMENTAL into providers.grok", () => {
@@ -1811,6 +1813,28 @@ describe("env: resolvers", () => {
     ).toThrow(/allowed only under providers.grok/u);
   });
 
+  test("providers.deepseek takes web_search and no other Grok capability field", () => {
+    expect(
+      normalizeRawConfig({
+        providers: { deepseek: { web_search: false } },
+      }).providers?.deepseek,
+    ).toEqual({ web_search: false });
+    expect(
+      validateProviderConfig({ deepseek: { web_search: true, base_url: "https://api.deepseek.com/v1" } }),
+    ).toEqual({ deepseek: { web_search: true, base_url: "https://api.deepseek.com/v1" } });
+    expect(() =>
+      validateProviderConfig({ deepseek: { web_search: "auto" } }),
+    ).toThrow(InvalidProviderConfigError);
+    expect(() =>
+      validateProviderConfig({ deepseek: { x_search: true } }),
+    ).toThrow(/providers.deepseek accepts only web_search/u);
+    expect(() =>
+      validateProviderConfig({ openai: { web_search: true } }),
+    ).toThrow(/allowed only under providers.grok/u);
+    // Unset means auto; nothing is written by default.
+    expect(defaultConfig().providers?.deepseek).toBeUndefined();
+  });
+
   test("applyEnvOverrides diagnoses invalid loop, coordinator, and watchdog values", () => {
     const warnings: string[] = [];
     const out = applyEnvOverrides(
@@ -1824,8 +1848,8 @@ describe("env: resolvers", () => {
     );
     expect(out.max_turns).toBeUndefined();
     expect(out.coordinator_mode).toBeUndefined();
-    // An invalid override leaves the ten-minute default in place.
-    expect(out.stream_watchdog_timeout_ms).toBe(600_000);
+    // An invalid override leaves the twenty-minute default in place.
+    expect(out.stream_watchdog_timeout_ms).toBe(1_200_000);
     expect(warnings).toEqual([
       '[agenc:config] invalid AGENC_MAX_TURNS="0"; expected a positive integer',
       '[agenc:config] invalid AGENC_COORDINATOR_MODE="sometimes"; expected boolean-like value',
@@ -1880,11 +1904,10 @@ describe("env: resolvers", () => {
     );
     expect(out.max_output_tokens).toBeUndefined();
     expect(out.capped_default_max_output_tokens).toBeUndefined();
-    expect(out.auth?.managedKeys?.enabled).toBe(true);
+    expect(out.auth?.managedKeys).toBeUndefined();
     expect(warnings).toEqual([
       '[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="bogus"; expected a positive integer',
       '[agenc:config] invalid AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS="maybe"; expected boolean-like value',
-      '[agenc:config] invalid AGENC_AUTH_MANAGED_KEYS_ENABLED="sometimes"; expected boolean-like value',
     ]);
   });
 

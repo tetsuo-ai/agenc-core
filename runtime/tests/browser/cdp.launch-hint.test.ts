@@ -14,10 +14,21 @@ const SUID_ABORT =
   "[9:9:0923/171949.501230:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/google/chrome/chrome-sandbox is owned by root and has mode 4755.";
 const NAMESPACE_ABORT =
   "[9:9:0923/173401.190279:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:128] No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md.";
+// What snap printed there on 2026-10-15: /snap/bin/chromium started as `snap` (exit 64), and a script
+// that runs /snap/bin/chromium reaching `snap run` (exit 46).
+const SNAP_AS_LAUNCHER = "error: unknown flag `no-sandbox'";
+const SNAP_RUN_SCOPE =
+  'internal error, please report: running "chromium" failed: cannot create transient scope: DBus error "org.freedesktop.DBus.Error.UnixProcessIdUnknown": [Failed to set unit properties: No such process]';
+const SNAP_HINT =
+  "Snap packages cannot start inside AgenC's sandbox. Install Google Chrome or a non-snap Chromium, or set [browser].executable_path to one.";
 
-async function launchFailure(stderr: string, overStdio = false): Promise<string> {
+async function launchFailure(
+  stderr: string,
+  overStdio = false,
+  end = "process.exit(1)",
+): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "agenc-browser-hint-test-"));
-  const worker = `process.stderr.write(${JSON.stringify(`${stderr}\n`)}, () => process.exit(1));`;
+  const worker = `process.stderr.write(${JSON.stringify(`${stderr}\n`)}, () => ${end});`;
   const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: dir });
   vi.spyOn(broker, "prepareSpawn").mockImplementation((_surface, command) => {
     // overStdio stands for a launch through AgenC's Linux sandbox, where CDP
@@ -80,4 +91,44 @@ test("outside AgenC's Linux sandbox, a sandbox abort never suggests turning Chro
     expect(hint).toContain("Fix the Chromium installation");
     expect(hint).not.toContain("no_sandbox");
   }
+});
+
+test.skipIf(process.platform === "win32")("a browser killed during launch is named as a crash, not a wrapper script", async () => {
+  const message = await launchFailure("starting", false, 'process.kill(process.pid, "SIGKILL")');
+  expect(message).toMatch(/did not establish a CDP pipe/);
+  expect(message).toContain("Chromium was killed by SIGKILL during launch.");
+  expect(message).not.toContain("wrapper script");
+});
+
+test("a crash signal points at the macOS crash report", () => {
+  const abort = { code: null, signal: "SIGABRT" as const };
+  expect(launchFailureHint("", false, abort, "darwin")).toBe(
+    "Chromium was killed by SIGABRT during launch. macOS keeps its crash report in ~/Library/Logs/DiagnosticReports.",
+  );
+  expect(launchFailureHint("", false, abort, "linux")).toBe(
+    "Chromium was killed by SIGABRT during launch.",
+  );
+  expect(launchFailureHint("", false, { code: null, signal: "SIGKILL" }, "darwin")).toBe(
+    "Chromium was killed by SIGKILL during launch.",
+  );
+});
+
+test("an ordinary exit keeps the wrapper script hint, and a sandbox abort keeps its own", () => {
+  expect(launchFailureHint("", false, { code: 1, signal: null })).toContain("wrapper script");
+  expect(launchFailureHint(NAMESPACE_ABORT, true, { code: null, signal: "SIGTRAP" }))
+    .toContain("no_sandbox = true");
+});
+
+test("a snap that reached AgenC's Linux sandbox is named as one", () => {
+  expect(launchFailureHint(SNAP_AS_LAUNCHER, true, { code: 64, signal: null })).toBe(SNAP_HINT);
+  expect(launchFailureHint(SNAP_RUN_SCOPE, true, { code: 46, signal: null })).toBe(SNAP_HINT);
+  // Outside the sandbox the snap advice does not apply.
+  expect(launchFailureHint(SNAP_AS_LAUNCHER, false, { code: 64, signal: null })).toContain("wrapper script");
+});
+
+test.skipIf(process.platform === "win32")("a snap launch failure inside AgenC's Linux sandbox ends with the snap hint", async () => {
+  const message = await launchFailure(SNAP_RUN_SCOPE, true, "process.exit(46)");
+  expect(message).toMatch(/did not establish a CDP pipe/);
+  expect(message).toContain(SNAP_HINT);
+  expect(message).not.toContain("wrapper script");
 });

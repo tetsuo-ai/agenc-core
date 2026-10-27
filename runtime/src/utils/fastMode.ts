@@ -245,7 +245,7 @@ function isOutOfCreditsReason(reason: string | null): boolean {
 export function handleFastModeOverageRejection(reason: string | null): void {
   const message = getOverageDisabledMessage(reason)
   logForDebugging(
-    `Fast mode overage rejection: ${reason ?? 'unknown'} — ${message}`,
+    `Fast mode overage rejection: ${reason ?? 'unknown'}: ${message}`,
   )
   // Disable fast mode permanently unless the user has ran out of credits
   if (!isOutOfCreditsReason(reason)) {

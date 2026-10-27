@@ -7,7 +7,7 @@ import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 
 // NOTE: This copy is legally reviewed — do not modify without Legal team approval.
-export const AUTO_MODE_DESCRIPTION = "Auto mode lets AgenC handle permission prompts automatically — AgenC checks each tool call for risky actions and prompt injection before executing. Actions AgenC identifies as safe are executed, while actions AgenC identifies as risky are blocked and AgenC may try a different approach. Ideal for long-running tasks. Sessions are slightly more expensive. AgenC can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to change mode.";
+export const AUTO_MODE_DESCRIPTION = "Auto mode lets AgenC handle permission prompts automatically. AgenC checks each tool call for risky actions and prompt injection before executing. Actions AgenC identifies as safe are executed, while actions AgenC identifies as risky are blocked and AgenC may try a different approach. Ideal for long-running tasks. Sessions are slightly more expensive. AgenC can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to change mode.";
 type Props = {
   onAccept(): void;
   onDecline(): void;

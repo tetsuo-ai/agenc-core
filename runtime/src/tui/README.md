@@ -60,7 +60,7 @@ screens, and hooks imported by live runtime paths.
 `MenuModal` backs the default interactive menu views for the slash commands:
 `/model`, `/provider`, `/hooks`, `/skills`, `/mcp`,
 `/plugins`, `/permissions`, `/memory`, `/resume`, `/config`, `/agents`,
-`/status`, `/diff` — see the `*-menu.tsx` files under `runtime/src/commands/`.
+`/status`, `/diff`: see the `*-menu.tsx` files under `runtime/src/commands/`.
 (`/provider` is the only provider-switch command; there is no `/model-provider`.)
 `/context` (alias `/ctx`, registered in `commands/session-compact.ts`) renders
 through `ContextUsageModal` when the TUI bridge is available; headless
@@ -86,6 +86,14 @@ tokens: `agencWash`, `worker`, `workerWash`, `successWash`, `errorWash`,
 `text2`, `muted3`, `line`, `lineSoft`, `briefLabelWorker`, and `planModeWash`.
 Components resolve these through `components/design-system/`
 (`ThemeProvider`, `resolveThemedColor`, `ThemedBox`, `ThemedText`).
+
+The saved theme is `tui.theme` in the user's `config.toml`.
+`utils/themeSetting.ts` holds what each theme is for and the one writer,
+`saveThemeSetting`. `ThemeProvider` reads the saved theme from its settings
+store and follows the store's reloads, so `/theme` and its picker
+(`commands/theme-menu.tsx`), first-run setup and `/config reload` all repaint
+the open TUI. A picker's preview sits on top of the saved theme until the
+picker closes.
 
 ## Permission modes
 

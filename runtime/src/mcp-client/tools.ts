@@ -937,7 +937,7 @@ function renderMcpProgress(raw: unknown, sensitiveHeaders?: Readonly<Record<stri
     parts.push(`progress ${progress}${total}`);
   }
   if (parts.length === 0) return undefined;
-  return parts.join(" — ");
+  return parts.join(", ");
 }
 
 function forwardMcpProgress(

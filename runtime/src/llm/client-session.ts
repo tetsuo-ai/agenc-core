@@ -1170,6 +1170,9 @@ export class ProviderHttpClientSession {
             throw materializeTransportError(session.config.providerName, transport);
           } finally {
             watchdog.stop();
+            // A consumer can reject an unfinished stream (for example runaway
+            // tool padding). Release the upstream body, not just its lock.
+            await reader.cancel().catch(() => undefined);
             reader.releaseLock();
             currentAttempt.attemptState.cleanup();
           }

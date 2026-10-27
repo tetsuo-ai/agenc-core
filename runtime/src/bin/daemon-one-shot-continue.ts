@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { type OneShotContinueSession } from "./route.js";
 import { type AgentRuntimeOptions } from "../session/runtime-options.js";
 import { hasSupportedFileIdentity } from "../session/session-store.js";
-import { resolveLatestSessionId, resolveResumeSessionId, reproveResumeSessionAfterDaemonReady, type ResolvedResumeSession, type ResumeSessionResolution } from "./resume-session.js";
+import { resolveInitialResumeSession, resolveLatestSessionId, resolveResumeSessionId, reproveResumeSessionAfterDaemonReady, reproveResumeSessionAllowingAppend, type ResolvedResumeSession, type ResumeSessionResolution } from "./resume-session.js";
 import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
 import type { AgentCreateParams, AgentSummary, MessageContentBlock } from "../app-server/protocol/index.js";
 import { isRecord } from "../utils/record.js";
@@ -40,6 +40,8 @@ interface OneShotContinueResumeOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
 }
@@ -48,19 +50,21 @@ interface OneShotContinueResumeOptions {
  * Resolve which prior session a headless continue targets, or write the
  * operator-facing reason it cannot and return the exit code.
  */
-function resolveOneShotContinueTarget(params: {
+async function resolveOneShotContinueTarget(params: {
   readonly cwd: string;
   readonly agencHome: string;
   readonly continueSession: OneShotContinueSession;
-}): { readonly descriptor: ResolvedResumeSession; readonly displayId: string } | { readonly exitCode: number } {
-  const resolved =
+  readonly signal: AbortSignal;
+}): Promise<{ readonly descriptor: ResolvedResumeSession; readonly displayId: string } | { readonly exitCode: number }> {
+  const resolved = await resolveInitialResumeSession(() =>
     params.continueSession.kind === "latest"
       ? resolveLatestSessionId(params.cwd, params.agencHome)
       : resolveResumeSessionId(
           params.cwd,
           params.continueSession.sessionId,
           params.agencHome,
-        );
+        ), params.signal);
+  if (params.signal.aborted) return { exitCode: oneShotAbortExitCode(params.signal) };
   if (resolved.kind !== "ok") {
     process.stderr.write(
       `${describeUnresolvedOneShotSession(resolved, params.continueSession)}\n`,
@@ -97,6 +101,11 @@ async function acquireOneShotContinueAgent(params: {
   if (live !== null) {
     assertResumeCwdProof(descriptor.cwd, params.cwdProof);
     assertLiveAgentMatchesResumeDescriptor(live, descriptor);
+    for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+      if (params.resume[key] !== undefined && params.resume[key] !== live.metadata?.[key]) {
+        throw new Error(`cannot change ${key} when continuing a live session; start a new session`);
+      }
+    }
     return { agent: live, revived: false, descriptor };
   }
   descriptor = reproveResumeDescriptor(descriptor, agencHome);
@@ -124,6 +133,12 @@ async function acquireOneShotContinueAgent(params: {
         : {}),
       ...(params.resume.profile !== undefined
         ? { profile: params.resume.profile }
+        : {}),
+      ...(params.resume.taskTokenBudget !== undefined
+        ? { taskTokenBudget: params.resume.taskTokenBudget }
+        : {}),
+      ...(params.resume.taskMaxCalls !== undefined
+        ? { taskMaxCalls: params.resume.taskMaxCalls }
         : {}),
       ...(params.resume.configPath !== undefined
         ? { configPath: params.resume.configPath }
@@ -174,7 +189,8 @@ export async function runDaemonOneShotContinue(params: OneShotContinueResumeOpti
   if (params.signal.aborted) {
     return oneShotAbortExitCode(params.signal);
   }
-  const target = resolveOneShotContinueTarget(params);
+  const target = await resolveOneShotContinueTarget(params);
+  if (params.signal.aborted) return oneShotAbortExitCode(params.signal);
   if ("exitCode" in target) return target.exitCode;
   const { displayId } = target;
   const failResume = (error: unknown): number => {
@@ -197,7 +213,8 @@ export async function runDaemonOneShotContinue(params: OneShotContinueResumeOpti
   let cancelled = false;
   try {
     assertResumeCwdProof(target.descriptor.cwd, cwdProof);
-    let descriptor = reproveResumeDescriptor(target.descriptor, params.agencHome);
+    // A daemon may still be appending to this session: appends only before readiness.
+    let descriptor = reproveResumeSessionAllowingAppend(target.descriptor, params.agencHome);
     await params.deps.ensureDaemonReady(params.env)();
     assertResumeCwdProof(descriptor.cwd, cwdProof);
     descriptor = reproveResumeSessionAfterDaemonReady(descriptor, params.agencHome);
@@ -232,6 +249,7 @@ export async function runDaemonOneShotContinue(params: OneShotContinueResumeOpti
     }
     const content = goal?.kickoff ?? params.initialContent ?? params.prompt;
     const run = await awaitDaemonOneShotRun({
+      env: params.env,
       daemonClient,
       sessionId,
       agentId: acquired.agent.agentId,
@@ -256,10 +274,11 @@ export async function runDaemonOneShotContinue(params: OneShotContinueResumeOpti
       }),
     });
     cancelled = run.cancelled;
-    completed = !cancelled;
-    return goal !== undefined && !cancelled
+    const exitCode = goal !== undefined && !cancelled
       ? await printModeGoalExitCode(client, sessionId, run.code, params.signal)
       : run.code;
+    completed = !cancelled && exitCode === 0;
+    return exitCode;
   } catch (error) {
     if (params.signal.aborted) {
       cancelled = true;

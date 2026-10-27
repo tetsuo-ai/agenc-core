@@ -34,7 +34,7 @@ import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
-import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
+import { preflightSelfTermination, preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { bashToolHasPermission } from "../../permissions/bash.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
@@ -1089,6 +1089,8 @@ export function createBashTool(config?: BashToolConfig): Tool {
         return errorResult(prepared.message);
       }
       const { command, shellCommand } = prepared;
+      const selfTermination = preflightSelfTermination(rawArgs);
+      if (selfTermination !== null) return errorResult(selfTermination.message);
       const cwd = inspection?.cwd ?? prepared.cwd;
       const useShellMode = inspection === undefined && prepared.useShellMode;
       const execCommand = inspection?.program ?? (useShellMode ? shellPath : command);

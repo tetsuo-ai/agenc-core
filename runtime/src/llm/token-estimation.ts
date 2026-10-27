@@ -130,7 +130,7 @@ export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
   {
     modelFamily: "meta",
     providerNames: ["meta"],
-    modelMatchers: [/muse-spark/i],
+    modelMatchers: [/muse-spark/i, /muse-wonder/i],
     bytesPerToken: DEFAULT_BYTES_PER_TOKEN,
     supportsJson: true,
     supportsCode: true,

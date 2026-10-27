@@ -584,9 +584,14 @@ describe("bootstrapLocalRuntimeSession", () => {
       const providerTools = createProviderSpy.mock.calls[0]?.[1].tools as
         | readonly SpawnToolSchema[]
         | undefined;
-      const startupSpawnSchema = providerTools?.find(
-        (tool) => tool.function?.name === "spawn_agent",
-      )?.function?.parameters;
+      // A standard session starts with spawn_agent deferred behind
+      // system.searchTools; loading it yields the same canonical schema.
+      expect(providerTools?.some((tool) => tool.function?.name === "spawn_agent")).toBe(false);
+      const startupSpawnSchema = boot.registry.tools
+        .find((tool) => tool.name === "spawn_agent")?.inputSchema as
+        | NonNullable<SpawnToolSchema["function"]>["parameters"]
+        | undefined;
+      boot.registry.discoverToolNames?.(["spawn_agent"]);
       const liveSpawnSchema = boot.registry
         .toLLMTools()
         .find((tool) => tool.function.name === "spawn_agent")
@@ -695,13 +700,22 @@ describe("bootstrapLocalRuntimeSession", () => {
         | undefined;
       const providerToolNames =
         providerTools?.map((tool) => tool.function?.name).filter(Boolean) ?? [];
+      // write_stdin is registered but loads when exec_command leaves a
+      // session running (standard tool deferral).
+      expect(boot.registry.tools.map((tool) => tool.name)).toContain("write_stdin");
+      expect(providerToolNames).not.toContain("write_stdin");
+      // TodoWrite is registered too; a standard session loads it when long
+      // work needs a visible plan.
+      expect(boot.registry.tools.map((tool) => tool.name)).toContain("TodoWrite");
+      expect(providerToolNames).not.toContain("TodoWrite");
+      // The plan-mode tools are registered too and load on demand outside plan mode.
+      for (const name of ["EnterPlanMode", "ExitPlanMode"]) {
+        expect(boot.registry.tools.map((tool) => tool.name)).toContain(name);
+        expect(providerToolNames).not.toContain(name);
+      }
       expect(providerToolNames).toEqual(
         expect.arrayContaining([
           "exec_command",
-          "write_stdin",
-          "TodoWrite",
-          "EnterPlanMode",
-          "ExitPlanMode",
           "system.searchTools",
           extraTool.name,
         ]),
@@ -1682,7 +1696,10 @@ describe("bootstrapLocalRuntimeSession", () => {
         {
           role: "user",
           content: "driver prompt",
-          runtimeOnly: { userMessageId: expect.stringMatching(/^user-msg-/) },
+          runtimeOnly: {
+            userMessageId: expect.stringMatching(/^user-msg-/),
+            responseItemId: state.history[0]?.runtimeOnly?.userMessageId,
+          },
         },
         { role: "assistant", content: "driver reply" },
       ]);
@@ -2648,162 +2665,6 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("defers managed-key vending until the first provider operation", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    const calls: string[] = [];
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: (provider, sessionId) => {
-        calls.push(`vendKey:${provider}:${sessionId}`);
-        return {
-          kind: "api-key",
-          provider,
-          sessionId,
-          apiKey: "managed-key",
-          baseUrl: "https://llm.agenc.tech",
-        };
-      },
-      inferAgencModel: () => {
-        calls.push("inferAgencModel");
-        throw new Error("not expected");
-      },
-      getSubscriptionTier: ({ sessionId } = {}) => {
-        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
-        return "pro";
-      },
-    };
-
-    const providerMod = await import("../llm/provider.js");
-    const createProviderSpy = vi
-      .spyOn(providerMod, "createProvider")
-      .mockImplementation(
-        () =>
-          ({
-            name: "stub",
-            chat: async () => ({
-              content: "ok",
-              toolCalls: [],
-              usage: {
-                promptTokens: 1,
-                completionTokens: 1,
-                totalTokens: 2,
-              },
-            }),
-          }) as never,
-      );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-
-    let shutdown: (() => Promise<void>) | null = null;
-    try {
-      const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
-        fetchImpl: offlineFetchFixture(),
-        conversationId: "conv-auth",
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
-          // Managed subscription vending is live for OpenRouter only
-          // (e4a54ec1 "route managed bootstrap through OpenRouter").
-          AGENC_MODEL: "x-ai/grok-4.3",
-          AGENC_PROVIDER: "openrouter",
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-          GROK_API_KEY: "",
-          OPENROUTER_API_KEY: "",
-          XAI_API_KEY: "",
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(boot.authSubscriptionTier).toBe("pro");
-      expect(createProviderSpy).toHaveBeenCalledWith(
-        "openrouter",
-        expect.objectContaining({
-          model: "x-ai/grok-4.3",
-          extra: expect.objectContaining({
-            authBackend,
-            managedCredential: true,
-            maxTokens: 2_048,
-            sessionId: "conv-auth",
-            subscriptionTier: "pro",
-          }),
-        }),
-      );
-      const startupOptions = createProviderSpy.mock.calls[0]?.[1];
-      expect(startupOptions).not.toHaveProperty("apiKey");
-      expect(startupOptions).not.toHaveProperty("baseURL");
-      expect(calls).toEqual(["getSubscriptionTier:conv-auth"]);
-    } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("does not vend managed keys during provider startup unless enabled", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    const calls: string[] = [];
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: (provider, sessionId) => {
-        calls.push(`vendKey:${provider}:${sessionId}`);
-        return {
-          kind: "api-key",
-          provider,
-          sessionId,
-          apiKey: "managed-key",
-        };
-      },
-      inferAgencModel: () => {
-        calls.push("inferAgencModel");
-        throw new Error("not expected");
-      },
-      getSubscriptionTier: ({ sessionId } = {}) => {
-        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
-        return "pro";
-      },
-    };
-
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-
-    try {
-      await expect(
-        bootstrapLocalRuntimeSession({
-          authBackend,
-          conversationId: "conv-auth-disabled",
-          env: {
-            ...process.env,
-            AGENC_HOME: home,
-            AGENC_WORKSPACE: workspace,
-            AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
-            // OpenRouter is the only provider with a live managed route, so
-            // it is the only one that can surface the managed-keys-disabled
-            // hint (other providers report "OpenRouter only" instead).
-            AGENC_PROVIDER: "openrouter",
-            HOME: home,
-            GROK_API_KEY: "",
-            OPENROUTER_API_KEY: "",
-            XAI_API_KEY: "",
-          },
-        }),
-      ).rejects.toThrow(/auth\.managedKeys\.enabled/);
-
-      expect(calls).toEqual(["getSubscriptionTier:conv-auth-disabled"]);
-    } finally {
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
   it("uses locally saved BYOK keys before managed key vending", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -3159,272 +3020,6 @@ describe("bootstrapLocalRuntimeSession", () => {
       await shutdown?.().catch(() => {
         /* best effort */
       });
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps the hosted model shortcut behind the AgenC provider boundary", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    const calls: string[] = [];
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: (provider, sessionId) => {
-        calls.push(`vendKey:${provider}:${sessionId}`);
-        return {
-          kind: "api-key",
-          provider,
-          sessionId,
-          apiKey: "managed-key",
-        };
-      },
-      inferAgencModel: ({ provider, requestedModel, subscriptionTier } = {}) => {
-        calls.push(
-          `inferAgencModel:${provider ?? ""}:${requestedModel ?? ""}:${subscriptionTier ?? ""}`,
-        );
-        // The concrete route seeds capability metadata, while the live
-        // provider remains the single hosted routing boundary.
-        return {
-          provider: "openrouter",
-          model: "x-ai/grok-4.3",
-          subscriptionTier,
-        };
-      },
-      getSubscriptionTier: ({ sessionId } = {}) => {
-        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
-        return "team";
-      },
-    };
-
-    const providerMod = await import("../llm/provider.js");
-    const createProviderSpy = vi
-      .spyOn(providerMod, "createProvider")
-      .mockImplementation(
-        () =>
-          ({
-            name: "stub",
-            chat: async () => ({
-              content: "ok",
-              toolCalls: [],
-              usage: {
-                promptTokens: 1,
-                completionTokens: 1,
-                totalTokens: 2,
-              },
-            }),
-          }) as never,
-      );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-    const readByokSpy = vi
-      .spyOn(LocalAuthBackend.prototype, "readByokKey")
-      .mockRejectedValue(
-        new Error("hosted AgenC must not probe local BYOK secure storage"),
-      );
-
-    let shutdown: (() => Promise<void>) | null = null;
-    try {
-      const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
-        fetchImpl: offlineFetchFixture(),
-        conversationId: "conv-hosted",
-        argv: ["node", "agenc", "--model", "agenc"],
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-          GROK_API_KEY: "",
-          OPENROUTER_API_KEY: "",
-          XAI_API_KEY: "",
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(boot.authSubscriptionTier).toBe("team");
-      expect(boot.resolvedProvider).toBe("agenc");
-      expect(boot.model).toBe("x-ai/grok-4.3");
-      expect(createProviderSpy).toHaveBeenCalledWith(
-        "agenc",
-        expect.objectContaining({
-          model: "agenc",
-          extra: expect.objectContaining({
-            authBackend,
-            sessionId: "conv-hosted",
-            subscriptionTier: "team",
-          }),
-        }),
-      );
-      expect(calls).toEqual([
-        "getSubscriptionTier:conv-hosted",
-        "inferAgencModel:agenc:agenc:team",
-      ]);
-      expect(readByokSpy).not.toHaveBeenCalled();
-    } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("constructs the hosted AgenC provider as the normal routing boundary", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    await writeFile(
-      join(home, "config.toml"),
-      [
-        "config_version = 2",
-        "",
-        "[providers.grok]",
-        'base_url = "http://127.0.0.1:8000/v1"',
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    const calls: string[] = [];
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: (provider, sessionId) => {
-        calls.push(`vendKey:${provider}:${sessionId}`);
-        return {
-          kind: "api-key",
-          provider,
-          sessionId,
-          apiKey: "managed-key",
-        };
-      },
-      inferAgencModel: ({ provider, requestedModel, subscriptionTier } = {}) => {
-        calls.push(
-          `inferAgencModel:${provider ?? ""}:${requestedModel ?? ""}:${subscriptionTier ?? ""}`,
-        );
-        return {
-          provider: "grok",
-          model: "grok-4.3",
-          subscriptionTier,
-        };
-      },
-      getSubscriptionTier: ({ sessionId } = {}) => {
-        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
-        return "team";
-      },
-    };
-
-    const providerMod = await import("../llm/provider.js");
-    const createProviderSpy = vi
-      .spyOn(providerMod, "createProvider")
-      .mockImplementation(
-        () =>
-          ({
-            name: "stub",
-            chat: async () => ({
-              content: "ok",
-              toolCalls: [],
-              usage: {
-                promptTokens: 1,
-                completionTokens: 1,
-                totalTokens: 2,
-              },
-            }),
-          }) as never,
-      );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-
-    let shutdown: (() => Promise<void>) | null = null;
-    try {
-      const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
-        fetchImpl: offlineFetchFixture(),
-        conversationId: "conv-agenc-provider",
-        argv: ["node", "agenc", "--provider", "agenc"],
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-          GROK_API_KEY: "",
-          XAI_API_KEY: "",
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(boot.resolvedProvider).toBe("agenc");
-      expect(boot.config.model).toBeTruthy();
-      expect(boot.modelInfo.slug).toBeTruthy();
-      expect(boot.ctx.modelInfo.slug).toBeTruthy();
-      expect(boot.initialState.sessionConfiguration.provider).toEqual({
-        slug: "agenc",
-      });
-      expect(
-        boot.initialState.sessionConfiguration.collaborationMode.model,
-      ).toBeTruthy();
-      expect(createProviderSpy).toHaveBeenCalledWith(
-        "agenc",
-        expect.objectContaining({
-          model: "agenc",
-          extra: expect.objectContaining({
-            authBackend,
-            sessionId: "conv-agenc-provider",
-            subscriptionTier: "team",
-          }),
-        }),
-      );
-      expect(createProviderSpy.mock.calls[0]?.[1]).not.toHaveProperty(
-        "baseURL",
-      );
-      expect(calls).toEqual([
-        "getSubscriptionTier:conv-agenc-provider",
-        "inferAgencModel:agenc:agenc:team",
-      ]);
-    } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects hosted AgenC model inference responses with empty models", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: () => {
-        throw new Error("vendKey should not run");
-      },
-      inferAgencModel: () => ({
-        provider: "grok",
-        model: "   ",
-      }),
-      getSubscriptionTier: () => "team",
-    };
-
-    try {
-      await expect(
-        bootstrapLocalRuntimeSession({
-          authBackend,
-          conversationId: "conv-empty-model",
-          argv: ["node", "agenc", "--provider", "agenc"],
-          env: {
-            ...process.env,
-            AGENC_HOME: home,
-            AGENC_WORKSPACE: workspace,
-            HOME: home,
-            GROK_API_KEY: "",
-            XAI_API_KEY: "",
-          },
-        }),
-      ).rejects.toThrow(/empty model/);
-    } finally {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
@@ -4890,6 +4485,41 @@ describe("warm daemon auxiliary setup ceiling", () => {
 
 describe("bootstrap private endpoint metadata reuse", () => {
   afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+
+  it.each([
+    ["https://api.deepseek.com/v1", 0],
+    ["http://localhost:8888/v1", 1],
+  ])("does not duplicate catalogued DeepSeek discovery at %s", async (base, count) => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-deepseek-metadata-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-deepseek-metadata-project-"));
+    const { OpenAIProvider } = await import("../llm/providers/openai/adapter.js");
+    const { markCapabilityDrift } = await import("../llm/capabilities.js");
+    markCapabilityDrift({ provider: "deepseek", model: "deepseek-flash" });
+    const healthChecks = vi.spyOn(OpenAIProvider.prototype, "healthCheck");
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => jsonResponse({
+      data: [{ id: "deepseek-flash", context_window: 1_048_576 }],
+    }));
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        env: { AGENC_HOME: home, AGENC_WORKSPACE: workspace, HOME: home, SHELL: "/bin/sh",
+          AGENC_PROVIDER: "deepseek", AGENC_MODEL: "deepseek-flash",
+          DEEPSEEK_API_KEY: "test-key", DEEPSEEK_BASE_URL: base },
+        fetchImpl: transport,
+        argv: ["node", "agenc"],
+      });
+      shutdown = boot.shutdown;
+      expect(boot.modelInfo.contextWindow).toBe(1_048_576);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(healthChecks).not.toHaveBeenCalled();
+      expect(transport).toHaveBeenCalledTimes(count);
+    } finally {
+      await shutdown?.();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 
   it("shares only default transport discovery across fresh projects, preserves model limits, and rotates accounts/endpoints", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-metadata-home-"));

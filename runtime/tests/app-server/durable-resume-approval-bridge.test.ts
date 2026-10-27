@@ -224,6 +224,9 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async (options?: LLMChatOptions) => ({ provider: "stub",
+            model: options?.model ?? "base-model", supportsMaxOutputTokens: true,
+            maxOutputTokens: 8192, usageReporting: "authoritative" }),
           chat: async () => reply(),
           ...(stream ? { chatStream: async () => reply() } : {}),
         }) as never,
@@ -730,11 +733,12 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
         messageId: "reject-during-review", streamId: "reject-during-review",
         acceptedAt: recordedAt, ifBusy: "reject",
       })).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
-      const queued = runner.submitAgentMessage(CONVERSATION_ID, {
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
         sessionId: CONVERSATION_ID, content: "do more", originalContent: "do more",
         messageId: "queued-during-review", streamId: "queued-during-review",
         acceptedAt: recordedAt,
-      });
+      })).rejects.toThrow("requires effect review");
+      expect(observations).toEqual([]);
       const resolution = createOperatorEffectReviewResolution({
         disposition: "confirmed_no_effect", actorId: "operator",
         evidenceRef: "test:verified-no-write", evidenceSha256: "a".repeat(64),
@@ -744,7 +748,11 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
         sessionId: CONVERSATION_ID, toolCallId: "write", resolution,
       })).resolves.toMatchObject({ kind: "resolved", durable: true });
       await waitUntil(() => observations.length >= 1, "reviewed turn continuation");
-      await expect(queued).resolves.toMatchObject({ disposition: "started" });
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "do more", originalContent: "do more",
+        messageId: "resubmit-after-review", streamId: "resubmit-after-review",
+        acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
       expect(booted!.rolloutStore.hasPendingEffectReviews()).toBe(false);
       expect(observations[0]).toMatchObject({ resume: true, hasApprovalResolver: true });
       expect(observations).toContainEqual(expect.objectContaining({ resume: false }));
@@ -1068,13 +1076,25 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
       expect(ensureAgentControl(booted!.session).control.getLive("worker-at-restart"))
         .toBeUndefined();
       expect(() => booted!.rolloutStore.assertModelExecutionAllowed()).not.toThrow();
-      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, {
+      const workerReview = {
         sessionId: "worker-at-restart", toolCallId: "worker-call",
         resolution: createOperatorEffectReviewResolution({
           disposition: "confirmed_no_effect", actorId: "operator",
           evidenceRef: "test:worker", evidenceSha256: "a".repeat(64),
           reviewedAt: new Date().toISOString(),
         }),
+      };
+      // #2607 lets the parent address a durable descendant even when its
+      // worker is not running. This nonexistent call has nothing to review;
+      // it must neither construct the worker nor resume its orphaned turn.
+      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, workerReview))
+        .resolves.toEqual({ kind: "not_found" });
+      expect(ensureAgentControl(booted!.session).control.getLive("worker-at-restart"))
+        .toBeUndefined();
+      expect(booted!.rolloutStore.readAll().some(item => item.type === "event_msg" &&
+        item.payload.msg.type === "effect_review_resolved")).toBe(false);
+      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, {
+        ...workerReview, sessionId: "unrelated-worker",
       })).rejects.toThrow(/does not own session/);
       await expect(runner.submitAgentMessage(CONVERSATION_ID, {
         sessionId: CONVERSATION_ID, content: "New turn", originalContent: "New turn",
@@ -1223,6 +1243,9 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     };
     vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
       name: "stub",
+      getExecutionProfile: async (options?: LLMChatOptions) => ({ provider: "stub",
+        model: options?.model ?? "base-model", supportsMaxOutputTokens: true,
+        maxOutputTokens: 8192, usageReporting: "authoritative" }),
       chat: modelRequest,
       chatStream: modelRequest,
     }) as never);
@@ -1589,6 +1612,57 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
   }, 60_000);
 
+  it("keeps a cleared conversation cleared and seals the replayed tool result", async () => {
+    // Live on RC4.3: the user ran /clear, the idle daemon restarted, and the
+    // restore refilled the empty history from a snapshot taken before the
+    // clear. Its rebuilt tool results carried no seal, so the next turn's
+    // first checkpoint failed ("checkpoint v2 requires every tool result to
+    // be sealed"). The rollout records the clear; it is the record.
+    const cleared = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    cleared.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    cleared.append({ eventId: "history-cleared-before-restart",
+      id: "history-cleared-before-restart", seq: 3,
+      msg: { type: "history_cleared", payload: { timestamp: Date.now() } } },
+    { durable: true });
+    cleared.close();
+
+    await stubProvider();
+    stubProviderAndMcp();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => {
+      booted = bootstrap;
+    });
+
+    await expect(
+      runner.restoreAgent(restoreParams(recoveredRunState())),
+    ).resolves.toBe(true);
+    const bootstrap = booted!;
+
+    const history = await sessionHistory(bootstrap);
+    expect(hasRecoveredUserMessage(history)).toBe(false);
+    expect(hasReplayedToolResult(history)).toBe(true);
+    const tools = history.filter((message) => message.role === "tool");
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(
+        (tool.runtimeOnly as { readonly toolResultIntegrity?: unknown } | undefined)
+          ?.toolResultIntegrity,
+      ).toBeDefined();
+    }
+
+    await waitUntil(
+      () => bootstrap.session.activeTurn.unsafePeek() === null,
+      "any recovered turn to settle",
+    );
+    expect(hasRecoveredUserMessage(await sessionHistory(bootstrap))).toBe(false);
+
+    await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+  }, 60_000);
+
   it("re-applies the recovered conversation once a newer turn releases the slot", async () => {
     // Moving the resume after `#hydrateRecoveredAgentState` created a window
     // that did not exist on base: `syncSessionState` republishes
@@ -1660,6 +1734,9 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     };
     vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
       name: "stub",
+      getExecutionProfile: async (options?: LLMChatOptions) => ({ provider: "stub",
+        model: options?.model ?? "base-model", supportsMaxOutputTokens: true,
+        maxOutputTokens: 8192, usageReporting: "authoritative" }),
       chat: request,
       chatStream: (messages: unknown, _onChunk: unknown, options?: LLMChatOptions) =>
         request(messages, options),

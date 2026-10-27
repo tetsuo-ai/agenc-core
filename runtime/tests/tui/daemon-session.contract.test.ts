@@ -1120,7 +1120,7 @@ describe("AgenC TUI daemon session adapter", () => {
 
     expect(session.conversationId).toBe("agent_runtime");
     expect(session.getInitialTranscriptEvents()).toEqual([
-      { id: "snapshot:epoch_1:user_1", type: "user_message", payload: { message: "Build a notes CLI" } },
+      { id: "snapshot:epoch_1:user_1", type: "user_message", payload: { message: "Build a notes CLI", canonicalUserMessageId: "user_1" } },
       { id: "snapshot:epoch_1:assistant_1", type: "agent_message", payload: { message: "The notes CLI passes its tests" } },
     ]);
     expect(client.requests).toEqual([
@@ -1551,7 +1551,7 @@ describe("AgenC TUI daemon session adapter", () => {
       if (
         method === "session.mcp.reconnectServer" ||
         method === "session.mcp.enableServer" ||
-        method === "session.mcp.disableServer"
+        method === "session.mcp.disableServer" || method === "session.mcp.removeServer"
       ) {
         return {
           sessionId: "session_1",
@@ -1607,6 +1607,7 @@ describe("AgenC TUI daemon session adapter", () => {
       reconnectServer: localReconnect,
       enableServer: localEnable,
       disableServer: localDisable,
+      removeServer: localDisable,
     };
 
     const session = await attachDaemonTuiSession({
@@ -1619,11 +1620,13 @@ describe("AgenC TUI daemon session adapter", () => {
       reconnectServer(name: string): Promise<unknown>;
       enableServer(name: string): Promise<unknown>;
       disableServer(name: string): Promise<unknown>;
+      removeServer(name: string): Promise<unknown>;
     };
 
     const reconnectResult = await manager.reconnectServer("audit-ping");
     const enableResult = await manager.enableServer("audit-ping");
     const disableResult = await manager.disableServer("audit-ping");
+    const removeResult = await manager.removeServer("audit-ping");
 
     const projected = {
       serverName: "audit-ping",
@@ -1633,6 +1636,7 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(reconnectResult).toEqual(projected);
     expect(enableResult).toEqual(projected);
     expect(disableResult).toEqual(projected);
+    expect(removeResult).toEqual(projected);
 
     expect(
       client.requests.filter((request) => request.method !== "session.mcp.status"),
@@ -1653,15 +1657,19 @@ describe("AgenC TUI daemon session adapter", () => {
         method: "session.mcp.disableServer",
         params: { sessionId: "session_1", serverName: "audit-ping" },
       },
+      {
+        method: "session.mcp.removeServer",
+        params: { sessionId: "session_1", serverName: "audit-ping" },
+      },
     ]);
     expect(
       client.requests.filter((request) => request.method === "session.mcp.status"),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     expect(localReconnect).not.toHaveBeenCalled();
     expect(localEnable).not.toHaveBeenCalled();
     expect(localDisable).not.toHaveBeenCalled();
     expect(session.mcpSurfaceSnapshot?.()).toMatchObject({
-      revision: 3,
+      revision: 4,
       servers: [
         expect.objectContaining({
           name: "audit-ping",
@@ -1886,7 +1894,7 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     });
-    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "daemon-turn" });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
 
     client.emit("session_1", {
       method: "event.session_event",
@@ -2119,6 +2127,71 @@ describe("AgenC TUI daemon session adapter", () => {
     });
   });
 
+  it.each(["foreign", "local abort", "matching", "matching after status", "matching after successor", "matching without start", "matching without start after successor"])("retains inputs after an unknown RPC failure but consumes them after a matching terminal (terminal=%s)", async terminal => {
+    const confirmed = terminal.startsWith("matching");
+    const client = createClient();
+    const original = client.request.bind(client);
+    const rpc = Promise.withResolvers<never>();
+    let messageCalls = 0;
+    client.request = (async (method, params, options) => {
+      if (method !== "message.stream") return original(method, params, options);
+      client.requests.push({ method, params });
+      messageCalls += 1;
+      if (messageCalls === 1) return rpc.promise;
+      return {};
+    }) as AgenCDaemonTuiClient["request"];
+    const session = createDaemonTuiSession({ baseSession: createBaseSession(), client,
+      sessionId: "session_1", clientId: "tui_1" });
+    const stop = session.subscribeToEvents(() => undefined);
+    try {
+      session.enqueueIdleInputBatch([{ role: "user", content: "old private paste" }]);
+      const pending = session.submit("first", { clientMessageId: "owned-message" });
+      const observed = pending.then(() => "resolved", () => "rejected");
+      await vi.waitFor(() => expect(messageCalls).toBe(1));
+      if (!terminal.includes("without start")) {
+        client.emit("session_1", { method: "event.session_event", params: {
+          clientMessageId: "owned-message", turnId: "owned-turn",
+          event: { type: "turn_started", payload: { turnId: "owned-turn" } },
+        } });
+      }
+      if (terminal.includes("after")) {
+        client.emit("session_1", { msg: { type: "background_agent_status", payload: { status: "failed", turnId: "owned-turn" } } });
+      }
+      if (terminal.includes("after successor")) {
+        client.emit("session_1", { method: "event.session_event", params: {
+          clientMessageId: "sibling-message", turnId: "successor-turn",
+          event: { type: "turn_started", payload: { turnId: "successor-turn" } },
+        } });
+      }
+      client.emit("session_1", { method: "event.session_event", params: terminal === "local abort" ? {
+        event: { type: "turn_aborted", payload: { reason: "interrupted" } },
+      } : {
+        clientMessageId: confirmed ? "owned-message" : "foreign-message",
+        turnId: confirmed ? "owned-turn" : "foreign-turn",
+        event: { type: "turn_failed", payload: {
+          turnId: confirmed ? "owned-turn" : "foreign-turn", code: "fixture_failed", message: "failed",
+        } },
+      } });
+      rpc.reject(new Error("late socket failure"));
+      expect(await observed).toBe(confirmed ? "resolved" : "rejected");
+      if (terminal.includes("after successor")) expect(session.activeTurn?.unsafePeek()).toMatchObject({ turnId: "successor-turn" });
+      await session.submit("next");
+      const content = client.requests.filter(request => request.method === "message.stream").at(-1)!.params!.content;
+      if (confirmed) expect(content).toBe("next");
+      else expect(JSON.stringify(content)).toContain("old private paste");
+    } finally { stop(); }
+  });
+
+  it("discards queued pasted inputs and their admission leases on clear", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+    const lease = session.enqueueIdleInputBatchOwned?.([{ role: "user", content: "private stale paste" }], { workspaceView: "agent" });
+    await session.clearDaemonSession?.();
+    expect(session.rollbackIdleInputAdmission?.(lease!.token)).toBe(false);
+    await session.submit?.("after clear");
+    expect(client.requests.at(-1)).toMatchObject({ method: "message.stream", params: { content: "after clear" } });
+  });
+
   it("clears daemon-owned session history through session.clear", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
@@ -2253,9 +2326,45 @@ describe("AgenC TUI daemon session adapter", () => {
           direction: "up_to",
           feedback: "keep decisions",
         },
-        signal: abortController.signal,
+        signal: expect.any(AbortSignal),
       },
     ]);
+    const composed = client.requests[0]!.signal!;
+    expect(composed).not.toBe(abortController.signal);
+    expect(composed.aborted).toBe(false);
+    abortController.abort("caller cancelled");
+    expect(composed.aborted).toBe(true);
+    expect(composed.reason).toBe("caller cancelled");
+  });
+
+  it.each(["caller", "local"])("forwards %s cancellation to the outstanding manual compaction RPC", async (origin) => {
+    const client = createClient();
+    const original = client.request.bind(client);
+    const rpc = Promise.withResolvers<SessionPartialCompactFromMessageResult>();
+    let signal: AbortSignal | undefined;
+    client.request = (async (method, params, options) => {
+      if (method !== "session.partialCompactFromMessage") return original(method, params, options);
+      signal = options?.signal;
+      client.requests.push({ method, params, signal });
+      return rpc.promise;
+    }) as typeof client.request;
+    const caller = new AbortController();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const pending = session.partialCompactFromMessage!({
+      messageOrdinal: 2, direction: "up_to", signal: caller.signal,
+    });
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal!.aborted).toBe(false);
+    if (origin === "caller") caller.abort("cancel fixture");
+    else await session.cancelActiveTurn!("cancel fixture");
+    expect(signal!.aborted).toBe(true);
+    expect(signal!.reason).toBe("cancel fixture");
+    expect(caller.signal.aborted).toBe(origin === "caller");
+    expect(client.requests.map(request => request.method)).toEqual(["session.partialCompactFromMessage"]);
+    rpc.resolve({ sessionId: "session_1", ok: true, eventAlreadyEmitted: true });
+    await pending;
   });
 
   it("routes compaction operator requests through the daemon session", async () => {
@@ -2587,6 +2696,103 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(authority.currentMode()).toBe("plan");
   });
 
+  it("reconciles an idempotent permission-mode retry after a response timeout without fencing later input", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const request = client.request.bind(client);
+    let attempts = 0;
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") return request(method, params, options);
+      attempts += 1;
+      if (attempts === 1) throw new Error("Timed out waiting for daemon response to session.setPermissionMode");
+      client.emit("session_1", runtimeSettingsEvent("E1", "E0", "plan", "default"));
+      return { sessionId: "session_1", applied: false, previousMode: "plan", mode: "plan" } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession, client, sessionId: "session_1", clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    await session.setDaemonPermissionMode?.("plan");
+    await session.submit("continue after acknowledged mode change");
+    expect(attempts).toBe(2);
+    expect(authority.currentMode()).toBe("plan");
+    expect(authority.abortTerminal).not.toHaveBeenCalled();
+  });
+
+  it("explains a queued live mode change, retains canonical mode and allows Escape while it waits", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const original = client.request.bind(client);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") return original(method, params, options);
+      client.requests.push({ method, params });
+      entered.resolve();
+      await release.promise;
+      client.emit("session_1", runtimeSettingsEvent("E1", "E0", "plan", "default"));
+      return { sessionId: "session_1", applied: true, previousMode: "default", mode: "plan" } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession, client, sessionId: "session_1", clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    const events: unknown[] = [];
+    const unsubscribe = session.subscribeToEvents(event => events.push(event));
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION, method: "event.session_event",
+      params: { sessionId: "session_1", agentId: "agent_1", eventId: "P1",
+        event: { id: "start", type: "turn_started", payload: { turnId: "turn-live" } } },
+    });
+    await vi.waitFor(() => expect(session.activeTurn?.unsafePeek?.()?.turnId).toBe("turn-live"));
+    const change = session.setDaemonPermissionMode?.("plan");
+    try {
+      await entered.promise;
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "warning", payload: expect.objectContaining({ cause: "permission_mode_queued",
+          message: expect.stringContaining("after the current turn") }),
+      }));
+      expect(authority.currentMode()).toBe("default");
+      await session.cancelActiveTurn?.("interrupted");
+      expect(client.requests).toContainEqual(expect.objectContaining({ method: "session.cancelTurn",
+        params: expect.objectContaining({ expectedTurnId: "turn-live" }) }));
+      expect(authority.abortTerminal).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await change;
+      unsubscribe();
+    }
+    expect(authority.currentMode()).toBe("plan");
+  });
+
+  it("keeps repeated transport timeouts recoverable and checks canonical settings before later input", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const request = client.request.bind(client);
+    let attempts = 0;
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") return request(method, params, options);
+      attempts += 1;
+      if (attempts <= 4) throw new Error("Timed out waiting for daemon response to session.setPermissionMode");
+      client.emit("session_1", runtimeSettingsEvent("E1", "E0", "plan", "default"));
+      return { sessionId: "session_1", applied: false, previousMode: "plan", mode: "plan" } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession, client, sessionId: "session_1", clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    await expect(session.setDaemonPermissionMode?.("plan")).rejects.toThrow("Timed out");
+    await expect(session.submit("retry while the daemon is unavailable")).rejects.toThrow("Timed out");
+    expect(authority.abortTerminal).not.toHaveBeenCalled();
+    expect(authority.currentMode()).toBe("default");
+    expect(client.requests.some(entry => entry.method === "message.stream")).toBe(false);
+    await session.submit("continue once the daemon confirms the mode");
+    expect(attempts).toBe(5);
+    expect(authority.currentMode()).toBe("plan");
+    expect(authority.abortTerminal).not.toHaveBeenCalled();
+    expect(client.requests.some(entry => entry.method === "message.stream")).toBe(true);
+  });
+
   it.each([false, true])("holds immediate input until an in-flight permission-mode change settles (cancelled: %s)", async (cancelled) => {
     const authority = runtimeAuthorityBase();
     const client = createClient();
@@ -2881,6 +3087,29 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(abortTerminal).not.toHaveBeenCalled();
     await expect(session.submit("still allowed")).resolves.toBeUndefined();
     expect(client.requests.at(-1)?.method).toBe("message.stream");
+  });
+
+  it.each([{ taskBudgetLevel: "eco", tokens: 1_000_000 }, { taskBudgetLevel: "balanced", tokens: 2_400_000 }, { taskBudgetLevel: "max", tokens: 0 }, { taskTokenBudget: 3_000_000, tokens: 3_000_000 }])("applies $tokens tokens without mutating the frozen daemon TUI config", async ({ tokens, ...update }) => {
+    const client = createClient();
+    const request = client.request.bind(client);
+    client.request = async (method, params, options) => {
+      if (method === "session.applyConfig") {
+        client.requests.push({ method, params });
+        return { sessionId: "session_1", applied: true, taskTokenBudget: tokens, summary: "Budget updated" } as never;
+      }
+      return request(method, params, options) as never;
+    };
+    const config = Object.freeze({ taskTokenBudget: 219_000 });
+    const session = createDaemonTuiSession({ baseSession: { ...createBaseSession(), config } as never, client, sessionId: "session_1", clientId: "tui_1" });
+    expect(await session.applyDaemonConfig?.(update as never)).toMatchObject({ taskTokenBudget: tokens });
+    expect((session as unknown as { config: typeof config }).config.taskTokenBudget).toBe(tokens);
+    expect(config.taskTokenBudget).toBe(219_000);
+    expect(client.requests).toEqual([
+      { method: "daemon.reload", params: {} },
+      { method: "session.applyConfig", params: { sessionId: "session_1", ...update } },
+    ]);
+    // A successful budget update cannot poison subsequent daemon requests.
+    await expect(session.submit("still allowed")).resolves.toBeUndefined();
   });
 
   it("reloads daemon-global config before applying it to the live session", async () => {
@@ -3431,6 +3660,16 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("keeps expanded human prompt metadata separate from compact paste display", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+    const text = "Build independently:\n1. health\n2. version";
+    await session.submit(text, { displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: text });
+    expect(client.requests).toEqual([expect.objectContaining({ method: "message.stream", params: expect.objectContaining({
+      content: text, metadata: { displayUserMessage: "[Pasted text #1 +2 lines]", userPromptText: text },
+    }) })]);
+  });
+
   it("combines queued idle input with explicit attached submit text", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
@@ -3816,6 +4055,29 @@ describe("AgenC TUI daemon session adapter", () => {
         payload: { ok: true },
       },
     ]);
+  });
+
+  it.each([undefined, "explicit-prompt-id"])("preserves the checkpoint prompt id before scoping live user events (%s)", (canonical) => {
+    const client = createClient();
+    const received: JsonObject[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents?.(event => { received.push(event as JsonObject); });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION, method: "event.session_event",
+      params: {
+        sessionId: "session_1", agentId: "run_1", eventId: "event:4", clientMessageId: "client-submission",
+        event: { id: "user-initial-run_1", type: "user_message", payload: {
+          message: "Edit files", ...(canonical === undefined ? {} : { canonicalUserMessageId: canonical }),
+        } },
+      },
+    });
+    unsubscribe?.();
+    expect(received).toEqual([expect.objectContaining({
+      id: "daemon:run_1:event%3A4",
+      payload: { message: "Edit files", canonicalUserMessageId: canonical ?? "user-initial-run_1" },
+    })]);
   });
 
   it("scopes repeated canonical event ids by daemon run", () => {

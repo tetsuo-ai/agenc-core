@@ -1,3 +1,4 @@
+import { isKimiChatModel, isKimiK3Model } from "./registry/kimi-models.js";
 import {
   supportsAnthropicStructuredOutputToolUse,
   supportsOpenAIStructuredOutputs,
@@ -5,11 +6,15 @@ import {
   supportsXaiStructuredOutputs,
   supportsXaiStructuredOutputsWithTools,
 } from "./structured-output.js";
-import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
+import {
+  resolveModelCapabilityHints,
+  resolveRegisteredModelCatalogEntry,
+} from "./registry/model-catalog.js";
 import { supportsGrokServerSideTools } from "./provider-native-search.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
-import { ollamaCloudModel } from "./registry/ollama-cloud-models.js";
 import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
+import { isRegisteredMetaChatModel } from "./registry/meta-models.js";
+import { isOllamaGptOssModel } from "./registry/ollama-gpt-oss.js";
 
 export interface ProviderModelCapabilities {
   readonly provider: string;
@@ -108,6 +113,27 @@ function isVisionishOllamaModel(model: string): boolean {
   return /(?:llava|bakllava|vision|(?:^|[-_.:])vl(?:$|[-_.:])|qwen(?:2\.?5)?-vl|minicpm-v|moondream|llama3(?:\.2)?-vision|gemma3)/i.test(
     model,
   );
+}
+
+/**
+ * Per-model flags read from the registered catalog row, which is the
+ * provider's published live row once discovery has read it (Venice, Ollama
+ * Cloud, OpenRouter) and the bundled snapshot row otherwise.
+ */
+function catalogRow(provider: string, model: string) {
+  return resolveRegisteredModelCatalogEntry({ provider, model });
+}
+
+function catalogThinks(provider: string): (model: string) => boolean {
+  return (model) => catalogRow(provider, model)?.supportsThinking === true;
+}
+
+function catalogSeesImages(provider: string): (model: string) => boolean {
+  return (model) => catalogRow(provider, model)?.inputModalities.includes("image") === true;
+}
+
+function catalogTakesEffort(provider: string): (model: string) => boolean {
+  return (model) => (catalogRow(provider, model)?.supportedReasoningLevels.length ?? 0) > 0;
 }
 
 function resolveCapabilityFlag(value: CapabilityFlagValue, model: string): boolean {
@@ -247,12 +273,6 @@ function isGeminiThinkingModel(model: string): boolean {
   return matchesModelFamily(model, /(?:^|[/:])gemini-2\.5(?:$|[-_.:])/);
 }
 
-function isMetaMuseSparkModel(model: string): boolean {
-  return matchesModelFamily(
-    model,
-    /(?:^|[/:])muse-spark-(?:1\.3(?:-contributor)?|1\.2(?:-contributor)?|1\.1)$/,
-  );
-}
 
 function isCerebrasReasoningModel(model: string): boolean {
   return matchesModelFamily(
@@ -281,17 +301,6 @@ function isZaiEffortModel(model: string): boolean {
 
 function isZaiGlm53VisionModel(model: string): boolean {
   return matchesModelFamily(model, /(?:^|[/:])glm-5\.3-flashx?$/);
-}
-
-function isKimiGlobalChatModel(model: string): boolean {
-  return matchesModelFamily(
-    model,
-    /(?:^|[/:])kimi-(?:k3|k2\.7-code(?:-highspeed)?|k2\.6)$/,
-  );
-}
-
-function isKimiK3Model(model: string): boolean {
-  return matchesModelFamily(model, /(?:^|[/:])kimi-k3$/);
 }
 
 function isQwen38ThinkingModel(model: string): boolean {
@@ -395,7 +404,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsImageHistory: isVisionishOllamaModel,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: false,
-    acceptsReasoningEffort: false,
+    // gpt-oss takes Ollama's `think` level (registry/ollama-gpt-oss.ts).
+    acceptsReasoningEffort: isOllamaGptOssModel,
   },
   openai: {
     supportsToolUse: true,
@@ -418,8 +428,10 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsReasoningEffort: isOpenAiReasoningFamilyModel,
   },
   openrouter: {
-    // Routed upstreams vary by model/provider and the runtime does not have a
-    // catalog handshake here, so model-switch checks must fail closed.
+    // Image input and effort come from the model's catalog row (hints); a
+    // model no row knows keeps these fail-closed defaults for switch checks.
+    // Thinking follows the row: OpenRouter lists `reasoning` for models that
+    // think, and the chat wire drops another model's reasoning on replay.
     supportsToolUse: true,
     supportsPromptCaching: false,
     supportsContextEdits: false,
@@ -429,11 +441,29 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsStructuredOutput: false,
     supportsStructuredOutputWithTools: false,
     supportsProviderNativeWebSearch: false,
-    supportsExtendedThinking: false,
+    supportsExtendedThinking: catalogThinks("openrouter"),
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
-    acceptsThinkingHistory: false,
+    acceptsThinkingHistory: catalogThinks("openrouter"),
     acceptsReasoningEffort: false,
+  },
+  venice: {
+    // Venice publishes each model's capabilities with its live list; the
+    // bundled snapshot answers only until that list has been read.
+    supportsToolUse: true,
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: catalogSeesImages("venice"),
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsStructuredOutput: model => catalogRow("venice", model)?.supportsStructuredOutput === true,
+    supportsStructuredOutputWithTools: false,
+    supportsProviderNativeWebSearch: false,
+    supportsExtendedThinking: catalogThinks("venice"),
+    acceptsImageHistory: catalogSeesImages("venice"),
+    acceptsAudioHistory: false,
+    acceptsThinkingHistory: catalogThinks("venice"),
+    acceptsReasoningEffort: catalogTakesEffort("venice"),
   },
   groq: {
     supportsToolUse: true,
@@ -469,19 +499,31 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
   },
   meta: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
-    supportsImageInput: isMetaMuseSparkModel,
-    supportsStructuredOutput: isMetaMuseSparkModel,
-    supportsStructuredOutputWithTools: isMetaMuseSparkModel,
-    acceptsImageHistory: isMetaMuseSparkModel,
-    acceptsReasoningEffort: isMetaMuseSparkModel,
+    supportsImageInput: isRegisteredMetaChatModel,
+    supportsStructuredOutput: isRegisteredMetaChatModel,
+    supportsStructuredOutputWithTools: isRegisteredMetaChatModel,
+    acceptsImageHistory: isRegisteredMetaChatModel,
+    acceptsReasoningEffort: isRegisteredMetaChatModel,
+  },
+  abliteration: {
+    // abliteration.ai lists each model's modalities and features with its
+    // live list; the bundled rows answer until that list has been read. Only
+    // abliterated-model takes images.
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: catalogSeesImages("abliteration"),
+    acceptsImageHistory: catalogSeesImages("abliteration"),
+    supportsExtendedThinking: catalogThinks("abliteration"),
+    acceptsThinkingHistory: catalogThinks("abliteration"),
+    acceptsReasoningEffort: catalogTakesEffort("abliteration"),
   },
   "ollama-cloud": {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
-    supportsImageInput: model => ollamaCloudModel(model)?.vision === true,
-    acceptsImageHistory: model => ollamaCloudModel(model)?.vision === true,
-    supportsExtendedThinking: model => ollamaCloudModel(model)?.thinking === true,
-    acceptsThinkingHistory: model => ollamaCloudModel(model)?.thinking === true,
-    acceptsReasoningEffort: model => (ollamaCloudModel(model)?.efforts.length ?? 0) > 0,
+    supportsToolUse: model => catalogRow("ollama-cloud", model)?.supportsToolUse !== false,
+    supportsImageInput: catalogSeesImages("ollama-cloud"),
+    acceptsImageHistory: catalogSeesImages("ollama-cloud"),
+    supportsExtendedThinking: catalogThinks("ollama-cloud"),
+    acceptsThinkingHistory: catalogThinks("ollama-cloud"),
+    acceptsReasoningEffort: catalogTakesEffort("ollama-cloud"),
   },
   cerebras: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
@@ -509,10 +551,11 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
   },
   kimi: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
-    supportsImageInput: isKimiGlobalChatModel,
-    supportsExtendedThinking: isKimiGlobalChatModel,
-    acceptsImageHistory: isKimiGlobalChatModel,
-    acceptsThinkingHistory: isKimiGlobalChatModel,
+    supportsPromptCaching: isKimiChatModel,
+    supportsImageInput: isKimiChatModel,
+    supportsExtendedThinking: isKimiChatModel,
+    acceptsImageHistory: isKimiChatModel,
+    acceptsThinkingHistory: isKimiChatModel,
     acceptsReasoningEffort: isKimiK3Model,
   },
   qwen: {

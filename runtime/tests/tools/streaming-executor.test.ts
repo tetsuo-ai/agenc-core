@@ -6,6 +6,7 @@ import {
   type StreamingToolUpdate,
 } from "./streaming-executor.js";
 import { routerFromRegistry, ToolRouter } from "./router.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { EventLog } from "../session/event-log.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
@@ -243,7 +244,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(results).toEqual(["a", "b", "c"]);
   });
 
-  test("Bash error cascades sibling-abort", async () => {
+  test("Bash error leaves an independent read runnable", async () => {
     let bashErrored = 0;
     const exec = new StreamingToolExecutor({
       ...mockGuardedDispatch(async (call) => {
@@ -277,17 +278,15 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     }
     expect(bashErrored).toBe(1);
     expect(results[0]).toMatchObject({ id: "bash1", status: "completed" });
-    // Sibling read gets a synthetic error after bash failed.
+    // The failed call has no declared dependency on its sibling read.
     const read = results.find((r) => r.id === "read1");
     expect(read).toBeDefined();
-    expect(read?.status).toBe("synthetic_error");
-    expect(read?.content).toContain(
-      "sibling tool errored; this tool was cancelled",
-    );
+    expect(read?.status).toBe("completed");
+    expect(read?.content).toBe("safe");
     expect(read?.content).not.toContain("Streaming fallback occurred");
   });
 
-  test("exec_command error cascades sibling-abort", async () => {
+  test("exec_command error leaves an independent write runnable", async () => {
     const dispatched: string[] = [];
     const siblingReasons: string[] = [];
     const exec = new StreamingToolExecutor({
@@ -324,14 +323,12 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       });
     }
 
-    expect(dispatched).toEqual(["shell1"]);
-    expect(siblingReasons).toEqual(["bash_error:exec_command"]);
+    expect(dispatched).toEqual(["shell1", "write1"]);
+    expect(siblingReasons).toEqual([]);
     const write = results.find((r) => r.id === "write1");
     expect(write).toBeDefined();
-    expect(write?.status).toBe("synthetic_error");
-    expect(write?.content).toContain(
-      "sibling tool errored; this tool was cancelled",
-    );
+    expect(write?.status).toBe("completed");
+    expect(write?.content).toBe("ran Write");
   });
 
   test("results carry the real execution duration", async () => {
@@ -393,7 +390,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(siblingReasons).toEqual([]);
   });
 
-  test("[bash(error), FileRead]: a still-queued read is cancelled and warns once", async () => {
+  test("[bash(error), FileRead]: a still-queued read runs without a cancellation", async () => {
     const { exec, dispatched, siblingReasons } = shellErrorExecutor();
     exec.addTool(
       makeBlock("shell1", "exec_command"),
@@ -404,13 +401,10 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
 
     const results = await drainResults(exec);
 
-    expect(dispatched).toEqual(["shell1"]);
-    expect(siblingReasons).toEqual(["bash_error:exec_command"]);
+    expect(dispatched).toEqual(["shell1", "read1"]);
+    expect(siblingReasons).toEqual([]);
     expect(results[0]).toMatchObject({ id: "shell1", status: "completed" });
-    expect(results[1]).toMatchObject({ id: "read1", status: "synthetic_error" });
-    expect(results[1]?.content).toContain(
-      "sibling tool errored; this tool was cancelled",
-    );
+    expect(results[1]).toMatchObject({ id: "read1", status: "completed", content: "read read1" });
   });
 
   test.skipIf(process.platform === "win32")(
@@ -650,13 +644,14 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(siblingReasons).toEqual([]);
   });
 
-  test("live dispatch rejects retired model tool aliases before dispatch", async () => {
+  test.each(["allowed", "denied", "unavailable"])("live dispatch accepts common Read aliases with validated numeric strings: %s", async (policy) => {
     const execute = vi.fn(async (args: Record<string, unknown>) => ({
       content: `read ${String(args.file_path)}`,
     }));
     const readTool = testTool({
       name: "FileRead",
       concurrencyClass: SHARED_READ,
+      inputSchema: { type: "object", properties: { file_path: { type: "string" }, offset: { type: "integer", minimum: 1 } }, required: ["file_path"], additionalProperties: false },
       execute,
     });
     const registry = mockRegistry(
@@ -666,18 +661,19 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     const exec = new StreamingToolExecutor({
       registry,
       liveToolDispatch: {
-        router: routerFromRegistry(registry),
+        router: policy === "unavailable" ? new ToolRouter([{ tool: readTool, supportsParallelToolCalls: false, unavailable: true }]) : routerFromRegistry(registry),
         options: {
           session: {
             eventLog: new EventLog(),
-            services: { admissionRequired: false },
+            services: { admissionRequired: false, runtimeOptions: resolveAgentRuntimeOptions({}) },
           } as never,
-          turn: { subId: "turn-read-alias" } as never,
+          turn: { subId: "turn-read-alias", cwd: process.cwd() } as never,
           tracker: {
             appendFileDiff: () => {},
             snapshot: () => [],
             clear: () => {},
           },
+          ...(policy === "denied" ? { toolDenylist: new Set(["FileRead"]) } : {}),
           approvalPolicy: "never",
           sandboxMode: "workspace_write",
         },
@@ -686,7 +682,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     const call: LLMToolCall = {
       id: "read-alias",
       name: "Read",
-      arguments: JSON.stringify({ file_path: "main.c" }),
+      arguments: JSON.stringify({ file_path: "main.c", offset: "490" }),
     };
 
     exec.addTool(makeBlock(call.id, call.name), call);
@@ -696,18 +692,20 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       results.push(result);
     }
 
-    expect(execute).not.toHaveBeenCalled();
+    if (policy !== "allowed") {
+      expect(execute).not.toHaveBeenCalled();
+      expect(results[0]!.result.isError).toBe(true);
+      expect(results[0]!.result.content).toContain(policy === "unavailable" ? "unavailable" : "denylisted");
+      return;
+    }
+    expect(results[0]!.result.content).toBe("read main.c");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]![0]).toEqual({ file_path: "main.c", offset: 490 });
     expect(results).toHaveLength(1);
-    expect(results[0]!.result.isError).toBe(true);
-    expect(results[0]!.result.content).toContain("No such tool available: Read");
-    // Not an alias: the call fails, and the error names the real tool.
-    expect(JSON.parse(results[0]!.result.content)).toEqual({
-      tool_use_id: "read-alias",
-      is_error: true,
-      content:
-        "<tool_use_error>Error: No such tool available: Read. " +
-        "The closest available tool is FileRead, which has its own parameters.</tool_use_error>",
-    });
+    expect(results[0]!.result.isError).not.toBe(true);
+    expect(results[0]!.toolCall).toEqual(call);
+    expect(call.name).toBe("Read");
+    expect(JSON.parse(call.arguments!).offset).toBe("490");
   });
 
   test("unknown foreign tool names get the closest available tool, never a dispatch", async () => {
@@ -717,11 +715,11 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     );
     const exec = new StreamingToolExecutor(mockGuardedDispatch(dispatch, tools));
     const calls = [
-      ["c-read", "Read", "FileRead"],
-      ["c-edit", "edit_file", "Edit"],
-      ["c-write", "write_file", "Write"],
-      ["c-bash", "bash", "exec_command"],
-      ["c-grep", "grep", "Grep"],
+      ["c-read", "view_file", "FileRead"],
+      ["c-edit", "FileEditTool", "Edit"],
+      ["c-write", "write_to_file", "Write"],
+      ["c-bash", "run_shell_command", "exec_command"],
+      ["c-grep", "grep_search", "Grep"],
     ] as const;
     for (const [id, name] of calls) exec.addTool(makeBlock(id, name), makeCall(id, name));
     exec.close();
@@ -765,18 +763,18 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     // A deferred tool is registered but its schema was not sent.
     const registry = unknownToolRegistry([glob, listDir], ["Glob"]);
 
-    expect(await unknownToolError(registry, "ls")).toContain(
+    expect(await unknownToolError(registry, "list_files")).toContain(
       "The closest available tool is Glob,",
     );
     expect(
-      await unknownToolError(registry, "ls", {
+      await unknownToolError(registry, "list_files", {
         advertisedToolNames: ["Glob", "system.listDir"],
       }),
     ).toContain("The closest available tool is system.listDir,");
     // Nothing offered and no tool search: a deferred tool cannot be loaded.
     expect(
-      await unknownToolError(registry, "ls", { advertisedToolNames: [] }),
-    ).toBe("<tool_use_error>Error: No such tool available: ls</tool_use_error>");
+      await unknownToolError(registry, "list_files", { advertisedToolNames: [] }),
+    ).toBe("<tool_use_error>Error: No such tool available: list_files</tool_use_error>");
   });
 
   test("unknown tool suggestions skip router specs marked unavailable", async () => {
@@ -788,8 +786,8 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       const router = new ToolRouter([
         { tool: fileRead, supportsParallelToolCalls: false, unavailable: true },
       ]);
-      expect(await unknownToolError(registry, "Read", { router })).toBe(
-        "<tool_use_error>Error: No such tool available: Read</tool_use_error>",
+      expect(await unknownToolError(registry, "view_file", { router })).toBe(
+        "<tool_use_error>Error: No such tool available: view_file</tool_use_error>",
       );
     }
   });
@@ -805,11 +803,11 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     const grep = testTool({ name: "Grep" });
     const registry = unknownToolRegistry([search, bash, grep], ["system.searchTools"]);
     const offered = { advertisedToolNames: ["system.searchTools"] };
-    expect(await unknownToolError(registry, "bash", offered)).toBe(
-      "<tool_use_error>Error: No such tool available: bash</tool_use_error>",
+    expect(await unknownToolError(registry, "run_shell_command", offered)).toBe(
+      "<tool_use_error>Error: No such tool available: run_shell_command</tool_use_error>",
     );
-    expect(await unknownToolError(registry, "grep", offered)).toBe(
-      "<tool_use_error>Error: No such tool available: grep</tool_use_error>",
+    expect(await unknownToolError(registry, "grep_search", offered)).toBe(
+      "<tool_use_error>Error: No such tool available: grep_search</tool_use_error>",
     );
   });
 
@@ -818,19 +816,19 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     const listDir = testTool({ name: "system.listDir", metadata: { deferred: true } });
     const registry = unknownToolRegistry([search, listDir], ["system.searchTools"]);
     expect(
-      await unknownToolError(registry, "ls", {
+      await unknownToolError(registry, "list_files", {
         advertisedToolNames: ["system.searchTools"],
       }),
     ).toBe(
-      "<tool_use_error>Error: No such tool available: ls. " +
+      "<tool_use_error>Error: No such tool available: list_files. " +
         "The closest available tool is system.listDir, which has its own parameters. " +
         "Its schema is not loaded yet; system.searchTools with select:system.listDir loads it." +
         "</tool_use_error>",
     );
     // Without the search tool on offer, the deferred tool cannot be loaded.
     expect(
-      await unknownToolError(registry, "ls", { advertisedToolNames: [] }),
-    ).toBe("<tool_use_error>Error: No such tool available: ls</tool_use_error>");
+      await unknownToolError(registry, "list_files", { advertisedToolNames: [] }),
+    ).toBe("<tool_use_error>Error: No such tool available: list_files</tool_use_error>");
   });
 
   test("external abort reasons are preserved in synthetic terminal results", async () => {
@@ -967,6 +965,42 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
 
     expect(seenIds).toEqual(["a", "b", "c"]);
     expect(peak).toBe(1);
+  });
+
+  test("records concurrent results in submission order when a later call finishes first", async () => {
+    let active = 0;
+    let peak = 0;
+    const finished: string[] = [];
+    const readTool = testTool({
+      name: "FileRead",
+      isConcurrencySafe: () => true,
+    });
+    const exec = new StreamingToolExecutor({
+      ...mockGuardedDispatch(async (call) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        // The first call is the slowest: it finishes last.
+        await delay(call.id === "a" ? 40 : call.id === "b" ? 20 : 1);
+        active -= 1;
+        finished.push(call.id);
+        return { content: `ok-${call.id}` };
+      }, [readTool]),
+    });
+
+    for (const id of ["a", "b", "c"]) {
+      exec.addTool(makeBlock(id, "FileRead"), makeCall(id, "FileRead"));
+    }
+    exec.dispatchPending();
+    exec.close();
+
+    const seenIds: string[] = [];
+    for await (const result of exec.getRemainingResults()) {
+      seenIds.push(result.toolCall.id);
+    }
+
+    expect(peak).toBe(3);
+    expect(finished).toEqual(["c", "b", "a"]);
+    expect(seenIds).toEqual(["a", "b", "c"]);
   });
 });
 

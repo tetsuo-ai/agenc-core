@@ -112,7 +112,7 @@ describe("independent binary carrier boundary review", () => {
   });
 
   test("a media projection must not hide changed ordinary user text", async () => {
-    const wire: LLMMessage[] = [{ role: "user", content: [
+    const wire: LLMMessage[] = [...Array.from({ length: 18 }, (_, index): LLMMessage => ({ role: index % 2 ? "assistant" : "user", content: `old-${index}:${"x".repeat(4000)}` })), { role: "user", content: [
       { type: "text", text: "original user instruction" },
       { type: "image_url", image_url: { url: syntheticPng(true) } },
     ] }];
@@ -120,10 +120,10 @@ describe("independent binary carrier boundary review", () => {
       sessionId: "user-media-pin-tampered-text", compactionMode: "automatic",
     });
     try {
-      harness.store.appendRollout({
-        type: "response_item", payload: llmMessageToDurableResponseItem(wire[0]!),
+      for (const message of wire) harness.store.appendRollout({
+        type: "response_item", payload: llmMessageToDurableResponseItem(message),
       }, { durable: true });
-      wire[0] = { role: "user", content: [
+      wire[wire.length - 1] = { role: "user", content: [
         { type: "text", text: "different forged instruction" },
         { type: "image_url", image_url: { url: syntheticPng(true) } },
       ] };

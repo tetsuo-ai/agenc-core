@@ -123,9 +123,9 @@ export function buildInheritedCliFlags(options?: {
   if (runtimeOptions.simpleMode) {
     flags.push('--bare')
   }
-  if (runtimeOptions.lightMode) {
-    flags.push('--light')
-  }
+  // Always name the leader's mode: a teammate without a flag would start in
+  // the default (or config.toml light_mode), not in the leader's mode.
+  flags.push(runtimeOptions.lightMode === true ? '--light' : '--standard')
 
   // Propagate --plugin-dir for each inline plugin
   const inlinePlugins = getInlinePlugins()

@@ -139,7 +139,7 @@ export async function evaluateStopHooks(
   if (state.stopHookBlockingCount >= MAX_STOP_HOOK_BLOCKS) {
     emitError(session.eventLog, session.nextInternalSubId(), {
       cause: "stop_hook_loop",
-      message: `stop-hook blocked ${state.stopHookBlockingCount} times in a row — forcing terminal (I-17)`,
+      message: `stop-hook blocked ${state.stopHookBlockingCount} times in a row: forcing terminal (I-17)`,
     });
     return {
       allowStop: true,
@@ -189,7 +189,7 @@ export async function evaluateStopHooks(
       if (!trimmedReason) {
         emitError(session.eventLog, session.nextInternalSubId(), {
           cause: "stop_hook_threw",
-          message: `${hook.name}: stop_hook_blank_reason — shouldBlock without a non-empty blockReason`,
+          message: `${hook.name}: stop_hook_blank_reason: shouldBlock without a non-empty blockReason`,
           stack: "stop_hook_blank_reason",
         });
       } else {

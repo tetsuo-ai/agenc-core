@@ -369,6 +369,8 @@ const CREDENTIAL_OWNED_GLOBAL_FIELDS = Object.freeze([
 export const GLOBAL_RUNTIME_STATE_FIELDS = Object.freeze([
   "projects",
   "installMethod",
+  // Acknowledgement of one release, never an operator setting.
+  "skippedUpdateVersion",
   "userID",
   "hasAcknowledgedCostThreshold",
   "hasUsedBackslashReturn",

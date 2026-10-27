@@ -36,6 +36,7 @@ describe("the blocked-effect error names its own remedy", () => {
     expect(error.message).toContain("write_stdin");
     expect(error.message).toContain("/resolve call-abc123");
     expect(error.message).toContain("confirmed_no_effect");
+    expect(error.message).toContain("owning session conv-test");
     expect(error.message).toMatch(/recoverable without restarting/i);
   });
 

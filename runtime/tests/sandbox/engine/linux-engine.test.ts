@@ -21,6 +21,21 @@ import { resolveAgentRuntimeOptions } from "../../../src/session/runtime-options
 const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-linux-engine-session-root";
 
 describe("Linux sandbox engine", () => {
+  it.each([false, true])("passes local binding opt-in %s without enabling external networking", (allowLocalBinding) => {
+    const plan = new SandboxManager().transform({
+      command: { program: "/bin/true", args: [], cwd: "/repo", env: {} },
+      permissions: { fileSystem: restrictedFileSystemPolicy([
+        { path: { kind: "path", path: "/repo" }, access: "write" },
+      ]), network: "disabled" },
+      sandbox: "linux_seccomp", enforceManagedNetwork: false,
+      network: { allowLocalBinding }, sandboxPolicyCwd: "/repo",
+      sessionTempRoot: "/session-temp", agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+      windowsSandboxLevel: "disabled", windowsSandboxPrivateDesktop: false, platform: "linux",
+    });
+    expect(plan.command.includes("--allow-local-binding")).toBe(allowLocalBinding);
+    expect(plan.networkSandboxPolicy).toBe("disabled");
+    expect(plan.command).not.toContain("--allow-network-for-proxy");
+  });
   it("serializes permission profiles for the Linux launcher handoff", () => {
     const profile: PermissionProfile = {
       fileSystem: restrictedFileSystemPolicy([

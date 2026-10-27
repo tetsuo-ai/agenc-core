@@ -38,11 +38,8 @@ const GITHUB_CATALOG = [
   "github:copilot:claude-opus-5.5",
   "github:copilot:claude-sonnet-4.6",
   "github:copilot:claude-sonnet-5",
-  "github:copilot:gemini-3.5-flash",
-  "github:copilot:gemini-3.6-flash",
   "github:copilot:gemini-3.7-flash",
   "github:copilot:mai-code-1.1-flash",
-  "github:copilot:kimi-k2.7-code",
   "github:copilot:kimi-k3",
   "github:copilot:grok-4.5",
   "github:copilot:grok-4.6",
@@ -63,8 +60,9 @@ function unavailableResponse(): Response {
 }
 
 describe("GitHub model authority", () => {
-  test("locks the supported Copilot wire-model catalog as of 2026-09-29", () => {
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toHaveLength(28);
+  // GitHub deprecated Gemini 3.5 Flash, Gemini 3.6 Flash and Kimi K2.7 Code on 2026-10-02.
+  test("locks the supported Copilot wire-model catalog as of 2026-10-17", () => {
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toHaveLength(25);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toEqual(GITHUB_CATALOG);
   });
 

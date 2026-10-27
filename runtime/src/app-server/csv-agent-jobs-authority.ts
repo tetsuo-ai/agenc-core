@@ -16,6 +16,12 @@ export interface CsvAgentJobsRepositoryAccessOptions {
 export interface CsvAgentJobsRepositoryProvider {
   /** Hold a workspace cache while a session can issue CSV operations. */
   retainWorkspace?(cwd: string): () => Promise<void>;
+  /**
+   * The state database `withRepository(cwd)` opens. The CSV tools that write
+   * job state declare it to the runtime sandbox; a provider without it has
+   * no verifiable store, so those tools stay refused.
+   */
+  stateDatabasePath?(cwd: string): string;
   withRepository<Result>(
     cwd: string,
     operation: (
@@ -100,6 +106,10 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
     this.#openDriver = options.openDriver ??
       ((paths) => openStateDatabasePaths(paths, undefined, { deferLogs: true }));
     this.#openRepository = options.openRepository ?? openCsvAgentJobsRepository;
+  }
+
+  stateDatabasePath(cwd: string): string {
+    return resolve(this.#resolvePaths(realpathSync(resolve(cwd))).stateDbPath);
   }
 
   retainWorkspace(cwd: string): () => Promise<void> {

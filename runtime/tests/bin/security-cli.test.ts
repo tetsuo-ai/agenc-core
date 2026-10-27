@@ -104,6 +104,25 @@ describe("security audit against a temp home", () => {
     expect(statSync(home).mode & 0o777).toBe(0o700);
   });
 
+  test("Windows: POSIX modes are synthetic there, so mode checks report not checked", async () => {
+    // Node on Windows reports 0666 for every writable file; that is not world access.
+    chmodSync(home, 0o755);
+    writeFileSync(join(home, "auth.json"), "{}");
+    chmodSync(join(home, "auth.json"), 0o644);
+    const report = await buildSecurityAuditReport({ env, platform: "win32" });
+    expect(report.criticalCount).toBe(0);
+    expect(report.findings.find((f) => f.id === "home-dir-perms")).toMatchObject({
+      severity: "ok",
+      title: "AgenC home permissions are not checked on Windows",
+    });
+    expect(report.findings.find((f) => f.id === "sensitive-file-perms")).toMatchObject({
+      severity: "ok",
+      title: "Sensitive file permissions are not checked on Windows",
+    });
+    expect(report.findings.some((f) => f.id.startsWith("sensitive-file-perms:"))).toBe(false);
+    expect(formatSecurityAuditSummaryLine(report)).not.toContain("CRITICAL");
+  });
+
   test("group/world-readable auth.json is critical; --fix chmods to 600", async () => {
     writeFileSync(join(home, "auth.json"), "{}");
     chmodSync(join(home, "auth.json"), 0o644);

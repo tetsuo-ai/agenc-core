@@ -13,6 +13,11 @@
  *   4. Prefix alias match (shorter alias wins)
  *   5. Fuse score (lower is better; difference must exceed 0.1)
  *   6. Usage score (higher is better, prompt-type only)
+ *
+ * The slash picker puts two rules in front of that order (see
+ * compareSlashCommandMatches): an exact name or alias match comes first, and
+ * AgenC's built-in commands come before skills, plugin commands and MCP
+ * prompts.
  */
 
 export interface RankableMeta {
@@ -20,6 +25,11 @@ export interface RankableMeta {
   readonly aliases: readonly string[];
   readonly usage: number;
   readonly score?: number;
+}
+
+export interface SlashCommandRankableMeta extends RankableMeta {
+  /** AgenC's own command, not a skill, plugin command or MCP prompt. */
+  readonly builtin: boolean;
 }
 
 export function hasNameOrAliasPrefixMatch(
@@ -78,4 +88,26 @@ export function compareSuggestionsByPriority(
     return scoreDiff;
   }
   return b.usage - a.usage;
+}
+
+function isExactNameOrAlias(item: RankableMeta, query: string): boolean {
+  return item.name === query || item.aliases.includes(query);
+}
+
+/**
+ * Slash picker order for a typed query. An exact name or alias match leads,
+ * because it is what the user typed and Enter takes the first row. Built-in
+ * commands come next, so a catalog of thousands of skills never pushes them
+ * down, and skills follow. Each group keeps compareSuggestionsByPriority.
+ */
+export function compareSlashCommandMatches(
+  a: SlashCommandRankableMeta,
+  b: SlashCommandRankableMeta,
+  query: string,
+): number {
+  const aExact = isExactNameOrAlias(a, query);
+  const bExact = isExactNameOrAlias(b, query);
+  if (aExact !== bExact) return aExact ? -1 : 1;
+  if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
+  return compareSuggestionsByPriority(a, b, query);
 }

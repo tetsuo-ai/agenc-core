@@ -2,10 +2,21 @@ import type {
   CompactionProjectionMessageV1,
   CompactionRollbackCommittedV1,
 } from "./transaction-types.js";
+import { CompactionCannotReduceError } from "./transaction-types.js";
 
 const MAX_SESSION_ID_LENGTH = 128;
 const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000;
 const CANONICAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
+
+/** Keep accounting diagnostics on the underlying error, with plain operator text. */
+export function compactionCannotShrinkDisplay(error: unknown): string | undefined {
+  if (!(error instanceof CompactionCannotReduceError) || error.code !== "no_shrink") {
+    return undefined;
+  }
+  const attempt = error.message.match(/\nCompaction attempt ID: ([^\n]+)$/u)?.[1];
+  return "Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed." +
+    (attempt === undefined ? "" : `\nCompaction attempt ID: ${attempt}`);
+}
 
 export interface CompactionOperatorStore {
   rollbackCompaction(params: {

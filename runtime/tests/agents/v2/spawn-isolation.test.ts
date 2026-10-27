@@ -544,60 +544,20 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
-  /** A grok session that may reach DeepSeek through the managed AgenC route. */
-  async function managedRouteFixture(agents: Partial<AgentsConfig>) {
-    const fixture = await crossProviderFixture(["agenc", "deepseek"], true, "grok", agents);
-    const infer = vi.fn(async () => ({ provider: "deepseek", model: "deepseek-v4-pro" }));
-    Object.assign(fixture.session, { providerService: {
+  it("rejects retired account child routes without inference or delegation", async () => {
+    const { session } = await crossProviderFixture(["agenc", "deepseek"], true, "grok", {});
+    const infer = vi.fn();
+    Object.assign(session, { providerService: {
       current: () => ({ provider: "grok", model: "grok-4.6" }),
       resolveManagedChildDestination: infer,
     } });
-    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
-    const spawn = () => createSpawnAgentTool(makeOptions(fixture.session)).execute({
-      message: "review the docs", task_name: `reviewer_${mockDelegate.mock.calls.length}`, provider: "agenc", model: "agenc",
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "review the docs", task_name: "reviewer", provider: "agenc", model: "agenc",
     });
-    return { ...fixture, infer, spawn };
-  }
-
-  it("checks a managed AgenC child against the provider it resolves to", async () => {
-    const { session, infer, spawn } = await managedRouteFixture({ cross_provider_auto: false });
-    // "agenc" names this product, not the destination.
-    humanTurn(session, "update the agenc docs");
-    const refused = await spawn();
-    expect(refused.content).toContain('"code":"not_requested"');
-    expect(refused.content).toContain("deepseek");
-    expect(infer).toHaveBeenCalledOnce();
-    expect(mockDelegate).not.toHaveBeenCalled();
-
-    humanTurn(session, "have DeepSeek review the agenc docs");
-    const allowed = await spawn();
-    expect(allowed.isError).not.toBe(true);
-    expect(mockDelegate.mock.calls[0]?.[0].plan?.destination).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
-  });
-
-  it("announces a managed AgenC child whose route consent is refused before it ends", async () => {
-    const { session, infer, spawn } = await managedRouteFixture({});
-    const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
-    Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
-    Object.assign(session.services, { crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "test-interactive-session",
-      request: async () => ({ kind: "consent_denied" as const, reason: "User denied" }) } });
-    const result = await spawn();
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("consent_denied");
+    expect(result.content).toContain("AgenC accounts no longer provide models");
     expect(infer).not.toHaveBeenCalled();
-    expect(events.map((event) => event.msg.type)).toEqual(["collab_agent_spawn_begin", "collab_agent_spawn_end"]);
-  });
-
-  it("runs a managed AgenC child at its destination's limits, not the route's", async () => {
-    const { spawn } = await managedRouteFixture({ subagent_limits: { deepseek: { effort: "high" }, agenc: { effort: "max" } } });
-    expect((await spawn()).isError).not.toBe(true);
-    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({
-      destination: { provider: "deepseek", model: "deepseek-v4-pro" }, reasoningEffort: "high",
-    });
-    const unset = await managedRouteFixture({ subagent_limits: { agenc: { effort: "max" } } });
-    mockDelegate.mockClear();
-    expect((await unset.spawn()).isError).not.toBe(true);
-    expect(mockDelegate.mock.calls[0]?.[0].plan?.reasoningEffort).toBe("low");
+    expect(mockDelegate).not.toHaveBeenCalled();
   });
 
   it("reports a role-selected destination and effort in spawn events and result", async () => {

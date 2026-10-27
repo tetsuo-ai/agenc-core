@@ -1465,6 +1465,9 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Allow newlines in single quotes (safe) but not in double quotes (could be dangerous with variable expansion)
   // Also allow optional 2>&1 stderr redirection at the end
   /^echo(?:\s+(?:'[^']*'|"[^"$<>\n\r]*"|[^|;&`$(){}><#\\!"'\s]+))*(?:\s+2>&1)?\s*$/,
+  // A literal text-only printf is an inspection in plan mode. Keep this
+  // narrow: no format directives, variable targets, expansions or redirects.
+  /^printf\s+[A-Za-z0-9_.:]+(?:\s+[A-Za-z0-9_.:-]+)*\s*$/,
 
   // AgenC CLI help
   /^agenc -h$/,

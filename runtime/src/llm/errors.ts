@@ -174,6 +174,19 @@ export class LLMProviderError extends RuntimeError {
   }
 }
 
+/**
+ * The provider could not load the model at all (not enough memory, a runner
+ * that exits while loading). Asking again gets the same answer, so the turn
+ * fails at once with the provider's own message instead of waiting out an
+ * outage.
+ */
+export class LLMModelLoadError extends LLMProviderError {
+  constructor(providerName: string, message: string, statusCode?: number) {
+    super(providerName, message, statusCode);
+    this.name = "LLMModelLoadError";
+  }
+}
+
 /** An in-stream failure explicitly forbids resampling this attempt. */
 export class LLMStreamRetryDeniedError extends LLMProviderError {
   constructor(

@@ -209,7 +209,7 @@ describe("helpCommand", () => {
     expect(text).toContain("/plan - Enter plan mode");
     expect(text).toContain("/model - Choose a model");
     expect(text).toContain("/provider, /providers - Connect providers and pick a model");
-    expect(text).toContain("/hooks - Inspect and test AgenC hook configuration");
+    expect(text).toContain("/hooks - Inspect AgenC hook configuration and diagnostics");
     expect(text).toContain("/compact - Compact the current conversation");
     expect(text).toContain("/context, /ctx - Show current context usage");
     expect(text).toContain("/claim - Claim an open task from the AgenC marketplace");

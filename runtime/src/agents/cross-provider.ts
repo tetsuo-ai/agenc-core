@@ -176,19 +176,11 @@ export async function createChildExecutionPlan(params: {
   readonly maxModelCalls?: number;
   /** Destination provenance inherited through a same-provider child. */
   readonly inheritedConsentPlan?: ChildExecutionPlan;
-  /**
-   * For a managed AgenC route: called once the concrete destination is
-   * resolved, after the route's preliminary consent. It may refuse the
-   * destination by throwing, and it gives the effort and service tier the
-   * child runs at there, in place of `reasoningEffort` and `serviceTier`,
-   * which were chosen for the route's model.
-   */
-  readonly managedDestinationSettings?: (destination: ProviderSelection, modelInfo: ModelInfo) => {
-    readonly reasoningEffort?: ReasoningEffort;
-    readonly serviceTier?: string;
-  };
-}, preliminaryManaged = false): Promise<ChildExecutionPlan> {
+}): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
+  if (selection.provider === "agenc") {
+    throw new Error("AgenC accounts no longer provide models.");
+  }
   // Automatic selection may keep the parent's own provider, which needs no
   // allowed_providers entry. Another provider is checked below.
   if (params.routing !== undefined) assertAutomaticSelectionEnabled(session);
@@ -196,26 +188,8 @@ export async function createChildExecutionPlan(params: {
   const crossProvider = selection.provider !== currentChildProvider(session).provider ||
     params.inheritedConsentPlan?.crossProvider === true;
   if (crossProvider) assertCrossProviderAllowed(session, selection.provider);
-  if (crossProvider && selection.provider === "agenc" && !preliminaryManaged) {
-    // Concrete managed routing may contact the authenticated AgenC backend.
-    // First disclose the locally known managed route, then request separate
-    // consent for the concrete provider/model after routing is resolved.
-    const preliminary = await createChildExecutionPlan(params, true);
-    const consent = await authorizeChildExecutionPlan(session, preliminary);
-    if (consent.kind !== "granted") throw new Error(`${consent.kind}: ${consent.reason}`);
-  }
-  const destination = selection.provider === "agenc"
-    ? preliminaryManaged ? selection
-      : await session.providerService.resolveManagedChildDestination(selection.model)
-    : selection;
-  if (crossProvider && selection.provider === "agenc") assertCrossProviderAllowed(session, destination.provider);
-  if (selection.provider === "agenc" &&
-      !(buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true })[destination.provider] ?? [])
-        .includes(destination.model)) {
-    throw new Error(`Managed AgenC child resolved unknown destination ${destination.provider}/${destination.model}`);
-  }
-  const destinationModelInfo = selection.provider === "agenc"
-    ? await childModelInfo(session, destination) : params.modelInfo;
+  const destination = selection;
+  const destinationModelInfo = params.modelInfo;
   if (params.requiresVision && resolveRegisteredModelCatalogEntry(destination)?.inputModalities.includes("image") !== true) {
     throw new Error(`Model ${destination.provider}/${destination.model} does not support image input.`);
   }
@@ -223,23 +197,19 @@ export async function createChildExecutionPlan(params: {
       params.contextTokens > destinationModelInfo.contextWindow * 0.95)) {
     throw new Error(`Model ${destination.provider}/${destination.model} cannot fit the required context.`);
   }
-  const managed = selection.provider === "agenc" && !preliminaryManaged
-    ? params.managedDestinationSettings?.(destination, destinationModelInfo) : undefined;
-  const reasoningEffort = managed !== undefined ? managed.reasoningEffort : params.reasoningEffort;
-  const serviceTier = managed !== undefined ? managed.serviceTier : params.serviceTier;
+  const reasoningEffort = params.reasoningEffort;
+  const serviceTier = params.serviceTier;
   if (!params.toolFree && (destinationModelInfo.supportsToolUse === false ||
       resolveRegisteredModelCatalogEntry({ provider: destination.provider, model: destination.model })?.supportsToolUse === false)) {
     throw new Error(`Model ${destination.provider}/${destination.model} does not support client-side tool calling. Set tool_free = true for an explicitly tool-free task.`);
   }
   let endpoint = resolveBuiltInProviderInfo(destination.provider)?.baseURL ?? "";
   let authProfile: ChildAuthProfile = destination.provider === "ollama" || destination.provider === "lmstudio"
-    ? "local" : selection.provider === "agenc" ? "managed" :
-      destination.provider === "amazon-bedrock" ? "aws_sigv4" : "api_key";
-  let billingSource: ChildBillingSource = authProfile === "local" ? "local" : authProfile === "managed" ? "managed" : "byok";
+    ? "local" : destination.provider === "amazon-bedrock" ? "aws_sigv4" : "api_key";
+  let billingSource: ChildBillingSource = authProfile === "local" ? "local" : "byok";
   if (crossProvider && typeof session.providerService?.previewChildDestination === "function") {
     // Disclose from local configuration; authenticated discovery follows consent.
-    const preview = await session.providerService.previewChildDestination(selection,
-      selection.provider === "agenc" ? destination : undefined);
+    const preview = await session.providerService.previewChildDestination(selection);
     endpoint = preview.endpoint;
     authProfile = preview.authProfile;
     billingSource = preview.billingSource;
@@ -383,6 +353,10 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
   { readonly kind: "granted"; readonly plan: ChildExecutionPlan } |
   { readonly kind: "consent_denied" | "consent_unavailable"; readonly reason: string }
 > {
+  if (plan.route.provider === "agenc" || plan.destination.provider === "agenc" ||
+      plan.destination.authProfile === "managed" || plan.destination.billingSource === "managed") {
+    return { kind: "consent_unavailable", reason: "AgenC accounts no longer provide models." };
+  }
   if (!plan.crossProvider) return { kind: "granted", plan };
   const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
   if (service === undefined) return { kind: "consent_unavailable", reason: "No attached client can answer cross-provider consent. Continue this task yourself." };
@@ -407,6 +381,10 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
 }
 
 export async function assertChildExecutionPlan(session: Session, plan: ChildExecutionPlan): Promise<void> {
+  if (plan.route.provider === "agenc" || plan.destination.provider === "agenc" ||
+      plan.destination.authProfile === "managed" || plan.destination.billingSource === "managed") {
+    throw new Error("AgenC accounts no longer provide models.");
+  }
   if (plan.routing !== undefined) {
     assertAutomaticSelectionEnabled(session);
     if (plan.route.provider !== currentChildProvider(session).provider) assertCrossProviderAllowed(session, plan.route.provider);
@@ -439,17 +417,7 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
   if (selected.provider !== plan.route.provider || selected.model !== plan.route.model) {
     throw new Error("child execution plan route changed");
   }
-  if (plan.route.provider === "agenc") {
-    if (plan.crossProvider) assertCrossProviderAllowed(session, plan.destination.provider);
-    if (!(buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true })[plan.destination.provider] ?? [])
-        .includes(plan.destination.model)) {
-      throw new Error("managed child destination is no longer in the catalog");
-    }
-    const destination = await session.providerService.resolveManagedChildDestination(plan.route.model);
-    if (destination.provider !== plan.destination.provider || destination.model !== plan.destination.model) {
-      throw new Error("managed child destination changed from execution plan");
-    }
-  } else if (plan.destination.provider !== plan.route.provider || plan.destination.model !== plan.route.model) {
+  if (plan.destination.provider !== plan.route.provider || plan.destination.model !== plan.route.model) {
     throw new Error("child execution plan destination changed");
   }
   if (plan.modelInfo.slug !== plan.destination.model ||
@@ -622,6 +590,7 @@ export async function resolveChildSelection(
     }
   }
   provider ??= active.provider;
+  if (provider === "agenc") throw new Error("AgenC accounts no longer provide models.");
   model ??= session.sessionConfiguration.collaborationMode.model ?? active.model;
   if (!model) throw new Error("spawn_agent requires a model for the selected provider.");
   if (provider !== active.provider) {

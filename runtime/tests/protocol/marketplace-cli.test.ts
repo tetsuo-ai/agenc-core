@@ -13,12 +13,24 @@
  *   - every mutating verb returns VERB_NOT_ENABLED (owner-gated).
  */
 
-import { mkdtempSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MarketplaceKitCliAdapter } from "../../src/protocol/marketplace-cli.js";
+import {
+  CLI_ENV_ALLOWLIST,
+  MarketplaceKitCliAdapter,
+  minimalCliEnv,
+  resolveInstalledKitBinary,
+} from "../../src/protocol/marketplace-cli.js";
 import { createProtocolTransport } from "../../src/protocol/index.js";
 import { isValidTaskPda, sanitizeUntrustedText } from "../../src/protocol/types.js";
 import {
@@ -213,6 +225,239 @@ describe("MarketplaceKitCliAdapter — binary resolution and failure mapping", (
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("CLI_BAD_OUTPUT");
+  });
+});
+
+/** Copy the fixture binary to `target`, creating its directory. */
+function plantBinary(fixtureBin: string, target: string, mode = 0o755): void {
+  mkdirSync(join(target, ".."), { recursive: true });
+  copyFileSync(fixtureBin, target);
+  chmodSync(target, mode);
+}
+
+describe("MarketplaceKitCliAdapter — binary location is never repository-controlled", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not run node_modules/.bin/agenc-marketplace from the working directory", async () => {
+    const fixture = writeCliFixture();
+    const repo = mkdtempSync(join(tmpdir(), "agenc-protocol-planted-repo-"));
+    const emptyHome = mkdtempSync(join(tmpdir(), "agenc-protocol-planted-home-"));
+    plantBinary(fixture.binPath, join(repo, "node_modules", ".bin", "agenc-marketplace"));
+    const adapter = new MarketplaceKitCliAdapter({
+      cwd: repo,
+      homeDir: emptyHome,
+      env: CLEAN_SPAWN_ENV,
+    });
+
+    const list = await adapter.listClaimable();
+    const detail = await adapter.taskDetail(FIXTURE_TASK_PDA_1);
+
+    for (const result of [list, detail]) {
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.error.code).toBe("CLI_NOT_FOUND");
+      expect(result.error.message).toContain("never searched");
+    }
+    // The planted binary never ran.
+    expect(fixture.invocations()).toEqual([]);
+  });
+
+  it("does not run a cwd binary even when the process also sits in that directory", async () => {
+    const fixture = writeCliFixture();
+    const repo = mkdtempSync(join(tmpdir(), "agenc-protocol-planted-cwd-"));
+    plantBinary(fixture.binPath, join(repo, "node_modules", ".bin", "agenc-marketplace"));
+    const emptyHome = mkdtempSync(join(tmpdir(), "agenc-protocol-planted-home2-"));
+    const adapter = new MarketplaceKitCliAdapter({
+      homeDir: emptyHome,
+      env: CLEAN_SPAWN_ENV,
+    });
+    const previous = process.cwd();
+    process.chdir(repo);
+    try {
+      const result = await adapter.listClaimable();
+      expect(result.ok).toBe(false);
+    } finally {
+      process.chdir(previous);
+    }
+    expect(fixture.invocations()).toEqual([]);
+  });
+
+  const posixOnly = typeof process.getuid === "function" ? it : it.skip;
+
+  posixOnly("runs the installer's own ~/.agenc/bin/agenc-marketplace when it is trusted", async () => {
+    const fixture = writeCliFixture();
+    const home = mkdtempSync(join(tmpdir(), "agenc-protocol-installed-"));
+    const installed = join(home, ".agenc", "bin", "agenc-marketplace");
+    plantBinary(fixture.binPath, installed);
+    chmodSync(join(home, ".agenc", "bin"), 0o755);
+
+    expect(resolveInstalledKitBinary(home)).toBe(installed);
+    const adapter = new MarketplaceKitCliAdapter({ homeDir: home, env: CLEAN_SPAWN_ENV });
+    const result = await adapter.listClaimable();
+    expect(result.ok).toBe(true);
+    expect(fixture.invocations()).toHaveLength(1);
+  });
+
+  posixOnly("refuses an installed binary that is world-writable", async () => {
+    const fixture = writeCliFixture();
+    const home = mkdtempSync(join(tmpdir(), "agenc-protocol-ww-file-"));
+    const installed = join(home, ".agenc", "bin", "agenc-marketplace");
+    plantBinary(fixture.binPath, installed, 0o757);
+
+    expect(resolveInstalledKitBinary(home)).toBeUndefined();
+    const result = await new MarketplaceKitCliAdapter({
+      homeDir: home,
+      env: CLEAN_SPAWN_ENV,
+    }).listClaimable();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("CLI_NOT_FOUND");
+    expect(fixture.invocations()).toEqual([]);
+  });
+
+  posixOnly("refuses an installed binary in a world-writable directory", () => {
+    const fixture = writeCliFixture();
+    const home = mkdtempSync(join(tmpdir(), "agenc-protocol-ww-dir-"));
+    plantBinary(fixture.binPath, join(home, ".agenc", "bin", "agenc-marketplace"));
+    chmodSync(join(home, ".agenc", "bin"), 0o777);
+
+    expect(resolveInstalledKitBinary(home)).toBeUndefined();
+  });
+
+  posixOnly("refuses an installed binary that another user owns", () => {
+    const fixture = writeCliFixture();
+    const home = mkdtempSync(join(tmpdir(), "agenc-protocol-foreign-"));
+    plantBinary(fixture.binPath, join(home, ".agenc", "bin", "agenc-marketplace"));
+    chmodSync(join(home, ".agenc", "bin"), 0o755);
+    expect(resolveInstalledKitBinary(home)).toBeDefined();
+
+    // As a different account, the same files are not ours.
+    vi.spyOn(process, "getuid").mockReturnValue((process.getuid?.() ?? 0) + 1);
+    expect(resolveInstalledKitBinary(home)).toBeUndefined();
+  });
+
+  it("finds nothing when the installer's directory does not exist", () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-protocol-no-install-"));
+    expect(resolveInstalledKitBinary(home)).toBeUndefined();
+  });
+
+  posixOnly("prefers cli_path, then AGENC_MARKETPLACE_CLI, over the installed binary", async () => {
+    const viaConfig = writeCliFixture();
+    const viaEnv = writeCliFixture();
+    const installedFixture = writeCliFixture();
+    const home = mkdtempSync(join(tmpdir(), "agenc-protocol-precedence-"));
+    plantBinary(installedFixture.binPath, join(home, ".agenc", "bin", "agenc-marketplace"));
+    chmodSync(join(home, ".agenc", "bin"), 0o755);
+
+    await new MarketplaceKitCliAdapter({
+      cliPath: viaConfig.binPath,
+      homeDir: home,
+      env: { ...CLEAN_SPAWN_ENV, AGENC_MARKETPLACE_CLI: viaEnv.binPath },
+    }).listClaimable();
+    await new MarketplaceKitCliAdapter({
+      homeDir: home,
+      env: { ...CLEAN_SPAWN_ENV, AGENC_MARKETPLACE_CLI: viaEnv.binPath },
+    }).listClaimable();
+
+    expect(viaConfig.invocations()).toHaveLength(1);
+    expect(viaEnv.invocations()).toHaveLength(1);
+    expect(installedFixture.invocations()).toEqual([]);
+  });
+});
+
+describe("MarketplaceKitCliAdapter — minimal child environment", () => {
+  function envDumpBinary(): { readonly binPath: string; readonly dumpPath: string } {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-protocol-env-"));
+    const binPath = join(dir, "agenc-marketplace.cjs");
+    const dumpPath = join(dir, "env.json");
+    writeFileSync(
+      binPath,
+      `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(dumpPath)}, JSON.stringify(process.env));
+process.stdout.write(JSON.stringify({ success: true, tasks: [] }));
+`,
+      "utf8",
+    );
+    chmodSync(binPath, 0o755);
+    return { binPath, dumpPath };
+  }
+
+  it("passes the child only the allowlisted variables, never secrets", async () => {
+    const { binPath, dumpPath } = envDumpBinary();
+    const adapter = new MarketplaceKitCliAdapter({
+      cliPath: binPath,
+      env: {
+        PATH: process.env.PATH,
+        HOME: "/home/user",
+        LANG: "en_US.UTF-8",
+        https_proxy: "http://proxy.local:3128",
+        AGENC_RPC_URL: "https://rpc.example/v1",
+        AGENC_MARKETPLACE_CLI: binPath,
+        OPENAI_API_KEY: "sk-must-not-leak",
+        ANTHROPIC_API_KEY: "sk-ant-must-not-leak",
+        AGENC_WALLET: "/home/user/wallet.json",
+        AGENC_WALLET_VAULT_PASSPHRASE: "passphrase-must-not-leak",
+        AGENC_UNATTENDED_AUTONOMOUS: "1",
+        GITHUB_TOKEN: "ghp_must_not_leak",
+        NODE_OPTIONS: "--require /tmp/evil.js",
+        LD_PRELOAD: "/tmp/evil.so",
+        DYLD_INSERT_LIBRARIES: "/tmp/evil.dylib",
+      },
+    });
+
+    const result = await adapter.listClaimable();
+    expect(result.ok).toBe(true);
+
+    const childEnv = JSON.parse(readFileSync(dumpPath, "utf8")) as Record<string, string>;
+    expect(childEnv.HOME).toBe("/home/user");
+    expect(childEnv.https_proxy).toBe("http://proxy.local:3128");
+    expect(childEnv.AGENC_RPC_URL).toBe("https://rpc.example/v1");
+    expect(childEnv.PATH).toBe(process.env.PATH);
+    const allowed = new Set(CLI_ENV_ALLOWLIST);
+    for (const key of Object.keys(childEnv)) {
+      // The runtime may add a few of its own (for example __CF_USER_TEXT_ENCODING
+      // on macOS); nothing from the session environment beyond the allowlist.
+      if (!allowed.has(key.toUpperCase())) {
+        expect(
+          ["__CF_USER_TEXT_ENCODING", "PWD", "SHLVL", "_", "OLDPWD"],
+          `unexpected variable ${key}`,
+        ).toContain(key);
+      }
+    }
+    for (const leaked of [
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "AGENC_WALLET",
+      "AGENC_WALLET_VAULT_PASSPHRASE",
+      "AGENC_UNATTENDED_AUTONOMOUS",
+      "AGENC_MARKETPLACE_CLI",
+      "GITHUB_TOKEN",
+      "NODE_OPTIONS",
+      "LD_PRELOAD",
+      "DYLD_INSERT_LIBRARIES",
+    ]) {
+      expect(childEnv, leaked).not.toHaveProperty(leaked);
+    }
+  });
+
+  it("minimalCliEnv keeps case-insensitive matches and drops unset and unknown names", () => {
+    expect(
+      minimalCliEnv({
+        Path: "C:\\bin",
+        SystemRoot: "C:\\Windows",
+        HOME: "/h",
+        EMPTY: undefined,
+        SECRET_TOKEN: "x",
+      }),
+    ).toEqual({ Path: "C:\\bin", SystemRoot: "C:\\Windows", HOME: "/h" });
+    expect(minimalCliEnv({})).toEqual({});
+  });
+
+  it("allowlists no credential-shaped names", () => {
+    for (const name of CLI_ENV_ALLOWLIST) {
+      expect(name).not.toMatch(/KEY|TOKEN|SECRET|PASS|WALLET|SIGNER|POLICY|NODE_OPTIONS|PRELOAD|INSERT/i);
+    }
   });
 });
 

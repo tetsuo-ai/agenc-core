@@ -34,14 +34,17 @@ import type { Stats } from "node:fs";
 import {
   copyFile,
   mkdir,
+  open,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
-import { createHash } from "node:crypto";
-import { join } from "node:path";
-import { collectShellWorkspaceDeletionTargets } from "../llm/shell-write-policy.js";
+import { createHash, randomUUID } from "node:crypto";
+import { join, resolve, sep } from "node:path";
+import { syncDirectory } from "../utils/durable-atomic-file.js";
+import { collectShellWorkspaceMutationTargets } from "../llm/shell-write-policy.js";
 import { monotonicMs } from "./_deps/utils.js";
 import { DegradedStore } from "./degraded-store.js";
 import type { Event } from "./event-log.js";
@@ -201,8 +204,12 @@ export function computeDiffStats(prior: string, current: string): DiffStats {
 
 export interface FileHistoryOptions {
   readonly projectDir: string;
+  /** Isolate durable backups and their snapshot index by conversation. */
+  readonly sessionId?: string;
   readonly maxSnapshots?: number;
   readonly enabled?: boolean;
+  /** Serialize journal diagnostics with canonical compaction. */
+  readonly withCanonicalBackgroundWork?: <T>(work: () => T | Promise<T>) => Promise<T>;
   readonly onDiagnostic?: (d: {
     readonly cause: string;
     readonly message: string;
@@ -238,13 +245,21 @@ export class FileHistory {
   private evictionWarningEmitted = false;
   /** I-43: per-sidecar DegradedStore for failed snapshots. */
   private readonly degraded: DegradedStore<DeferredBackup>;
+  private readonly statePath: string | undefined;
+  private pending: Promise<void> = Promise.resolve();
+  private pendingDiagnostics: Promise<void> = Promise.resolve();
+  private readonly withCanonicalBackgroundWork: FileHistoryOptions["withCanonicalBackgroundWork"];
 
   constructor(opts: FileHistoryOptions) {
     this.projectDir = opts.projectDir;
-    this.historyDir = join(opts.projectDir, "file-history");
+    this.historyDir = opts.sessionId === undefined
+      ? join(opts.projectDir, "file-history")
+      : join(opts.projectDir, "file-history", `session-${pathHash(opts.sessionId)}`);
+    this.statePath = opts.sessionId === undefined ? undefined : join(this.historyDir, "snapshots.json");
     this.maxSnapshots = opts.maxSnapshots ?? MAX_SNAPSHOTS;
     this.enabled = opts.enabled !== false;
     this.onDiagnostic = opts.onDiagnostic;
+    this.withCanonicalBackgroundWork = opts.withCanonicalBackgroundWork;
     this.degraded = new DegradedStore<DeferredBackup>({
       capacity: 500,
       flushFn: async (entries) => this.replayDegraded(entries),
@@ -264,12 +279,90 @@ export class FileHistory {
     return this.state;
   }
 
+  /** Load only this conversation's published index, before subscribing to events. */
+  async loadFromDisk(): Promise<void> {
+    if (this.statePath === undefined) return;
+    try {
+      const raw = JSON.parse(await readFile(this.statePath, "utf8"));
+      if (raw.version !== 1 || !Array.isArray(raw.snapshots) ||
+          raw.snapshots.length > this.maxSnapshots ||
+          !Number.isSafeInteger(raw.snapshotSequence) || raw.snapshotSequence < 0 ||
+          !Number.isSafeInteger(raw.evictedCount) || raw.evictedCount < 0 ||
+          typeof raw.isFileHistoryComplete !== "boolean") throw new Error("Invalid file-history index");
+      const trackedFiles = new Set<string>();
+      for (const snapshot of raw.snapshots) {
+        if (!isPersistedSnapshot(snapshot)) throw new Error("Invalid file-history snapshot");
+        for (const [filePath, backup] of Object.entries(snapshot.trackedFileBackups)) {
+          if (resolve(filePath) !== filePath || !backup ||
+              !Number.isSafeInteger(backup.version) || backup.version < 1 ||
+              !Number.isFinite(backup.backupTimeMs) ||
+              (backup.backupFileName !== null &&
+               (typeof backup.backupFileName !== "string" ||
+                resolve(backup.backupFileName) !== backup.backupFileName ||
+                !backup.backupFileName.startsWith(`${this.historyDir}${sep}`)))) {
+            throw new Error("Invalid file-history backup");
+          }
+          trackedFiles.add(filePath);
+        }
+      }
+      this.state = { snapshots: raw.snapshots, trackedFiles,
+        snapshotSequence: raw.snapshotSequence, evictedCount: raw.evictedCount,
+        isFileHistoryComplete: raw.isFileHistoryComplete };
+    } catch (err) {
+      if ((err as { code?: string }).code !== "ENOENT") {
+        this.emitDiagnostic({ cause: "file_history_load_failed", message: String(err) });
+      }
+    }
+  }
+
+  async flush(): Promise<void> {
+    await this.pending;
+    await this.pendingDiagnostics;
+  }
+
+  private enqueue(operation: () => Promise<void>): Promise<void> {
+    const next = this.pending.then(operation);
+    this.pending = next.catch((err: unknown) => {
+      this.emitDiagnostic({ cause: "file_history_save_failed", message: String(err) });
+    });
+    return this.pending;
+  }
+
+  private runCanonicalWork<T>(work: () => T | Promise<T>): Promise<T> {
+    return this.withCanonicalBackgroundWork === undefined
+      ? Promise.resolve().then(work)
+      : this.withCanonicalBackgroundWork(work);
+  }
+
+  private async persistState(): Promise<void> {
+    if (this.statePath === undefined) return;
+    await mkdir(this.historyDir, { recursive: true });
+    const tmp = `${this.statePath}.${randomUUID()}.tmp`;
+    try {
+      const handle = await open(tmp, "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify({ version: 1, ...this.state,
+          trackedFiles: undefined }));
+        await handle.sync();
+      } finally { await handle.close(); }
+      await rename(tmp, this.statePath);
+      await syncDirectory(this.historyDir);
+    } finally { await rm(tmp, { force: true }); }
+  }
+
   /**
    * Call BEFORE a file edit so the current contents are preserved as
    * v1 (or the current-max-version+1) in the backup store. Idempotent
    * within the same messageId/snapshot.
    */
   async trackEdit(filePath: string, messageId: string): Promise<void> {
+    return this.enqueue(async () => {
+      await this.trackEditNow(filePath, messageId);
+      await this.persistState();
+    });
+  }
+
+  private async trackEditNow(filePath: string, messageId: string): Promise<void> {
     if (!this.enabled) return;
     const mostRecent = this.state.snapshots.at(-1);
     if (mostRecent && mostRecent.trackedFileBackups[filePath]) {
@@ -290,7 +383,7 @@ export class FileHistory {
         this.degraded.append({ filePath, messageId, isTrackEdit: true });
         this.emitDiagnostic({
           cause: "file_history_degraded",
-          message: `${(err as { code?: string }).code} — deferred trackEdit for ${filePath}`,
+          message: `${(err as { code?: string }).code}: deferred trackEdit for ${filePath}`,
         });
       } else {
         this.emitDiagnostic({
@@ -337,6 +430,13 @@ export class FileHistory {
    * `maxSnapshots`, evict the oldest and flip `isFileHistoryComplete=false`.
    */
   async makeSnapshot(messageId: string): Promise<void> {
+    return this.enqueue(async () => {
+      await this.makeSnapshotNow(messageId);
+      await this.persistState();
+    });
+  }
+
+  private async makeSnapshotNow(messageId: string): Promise<void> {
     if (!this.enabled) return;
     const mostRecent = this.state.snapshots.at(-1);
     const trackedFileBackups: Record<string, FileHistoryBackup> = {};
@@ -448,7 +548,7 @@ export class FileHistory {
         this.evictionWarningEmitted = true;
         this.emitDiagnostic({
           cause: "file_history_cap_reached",
-          message: `file-history LRU cap ${this.maxSnapshots} reached — evicting oldest snapshots (isFileHistoryComplete=false)`,
+          message: `file-history LRU cap ${this.maxSnapshots} reached: evicting oldest snapshots (isFileHistoryComplete=false)`,
         });
       }
     }
@@ -472,6 +572,7 @@ export class FileHistory {
    * `fileHistoryRewind`, which owns the origin-fallback semantics.
    */
   async rewindToMessage(messageId: string): Promise<ReadonlyArray<string>> {
+    await this.flush();
     if (!this.enabled) return [];
     try {
       return await fileHistoryRewind(this.state, messageId);
@@ -498,6 +599,7 @@ export class FileHistory {
   async previewRewind(
     messageId: string,
   ): Promise<FileHistoryRewindPreview | null> {
+    await this.flush();
     if (!this.enabled) return null;
     const target = findSnapshotByMessageId(this.state, messageId);
     if (!target) return null;
@@ -530,6 +632,7 @@ export class FileHistory {
 
   /** Clear all tracked files + backups. Used on `/clear` or session end. */
   async clear(): Promise<void> {
+    await this.flush();
     this.state = emptyFileHistoryState();
     try {
       await rm(this.historyDir, { recursive: true, force: true });
@@ -557,7 +660,9 @@ export class FileHistory {
     }
     const backupDir = join(this.historyDir, pathHash(filePath));
     await mkdir(backupDir, { recursive: true });
-    const backupFileName = join(backupDir, `v${version}`);
+    // Published snapshots must never point at a file overwritten by a later
+    // snapshot, rewind, or another engine. Version is logical, not a filename.
+    const backupFileName = join(backupDir, `v${version}-${randomUUID()}`);
     await copyFile(filePath, backupFileName);
     return {
       backupFileName,
@@ -567,7 +672,16 @@ export class FileHistory {
   }
 
   private emitDiagnostic(d: { cause: string; message: string }): void {
-    this.onDiagnostic?.(d);
+    if (this.withCanonicalBackgroundWork === undefined) {
+      this.onDiagnostic?.(d);
+      return;
+    }
+    // Filesystem backups keep their existing scheduling. Only publication
+    // writes the parent journal, so defer it until the canonical owner is free.
+    this.pendingDiagnostics = this.pendingDiagnostics.then(() =>
+      this.runCanonicalWork(() => { this.onDiagnostic?.(d); })).catch(() => {});
+    // Diagnostics are best-effort. A failed delivery must not poison later
+    // publications or prevent restore, preview, clear, or stop from draining.
   }
 
   /**
@@ -632,6 +746,7 @@ const SHELL_TOOL_ARG_KEYS: Readonly<
 };
 
 const APPLY_PATCH_FILE_MARKERS = [
+  "*** Move to: ",
   "*** Add File: ",
   "*** Delete File: ",
   "*** Update File: ",
@@ -684,6 +799,7 @@ export class FileHistorySidecar implements Sidecar {
   }
 
   async stop(): Promise<void> {
+    await this.history.flush();
     this.history.stop();
   }
 
@@ -698,7 +814,10 @@ export class FileHistorySidecar implements Sidecar {
         this.lastEditStartedAtMs = monotonicMs();
         const args = this.tryParseArgs(msg.payload.args);
         for (const filePath of extractEditedFilePaths(args)) {
-          void this.history.trackEdit(filePath, event.id);
+          // Daemon cwd is AGENC_HOME, while tool paths are relative to the
+          // session workspace. Backups and restores must use the tool path.
+          void this.history.trackEdit(this.workspaceRoot === undefined
+            ? filePath : resolve(this.workspaceRoot, filePath), event.id);
         }
       } else {
         const deleted = this.shellDeletionPaths(
@@ -753,7 +872,7 @@ export class FileHistorySidecar implements Sidecar {
     const command = args[keys.command];
     if (typeof command !== "string" || command.trim().length === 0) return [];
     const cwd = args[keys.cwd];
-    return collectShellWorkspaceDeletionTargets({
+    return collectShellWorkspaceMutationTargets({
       toolName,
       args: {
         command,
@@ -774,13 +893,13 @@ export class FileHistorySidecar implements Sidecar {
     messageId: string,
   ): Promise<void> {
     for (const filePath of paths) {
-      let isFile = false;
+      let isDirectory = false;
       try {
-        isFile = (await stat(filePath)).isFile();
+        isDirectory = (await stat(filePath)).isDirectory();
       } catch {
-        isFile = false;
+        // Missing paths must be tracked so rewind removes new shell files.
       }
-      if (isFile) await this.history.trackEdit(filePath, messageId);
+      if (!isDirectory) await this.history.trackEdit(filePath, messageId);
     }
   }
 

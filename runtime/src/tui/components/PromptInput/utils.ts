@@ -23,12 +23,29 @@ export function getNewlineInstructions(
     : 'backslash (\\) + return (⏎) for newline'
 }
 
-export function clampPromptTextInputColumns(columns: number): number {
-  // Bordered prompt layout consumes: left/right border (2), horizontal
-  // padding (2), and the prompt glyph cell (1). TextCursor subtracts one
-  // more display column internally for the cursor, so return the editable
-  // area plus that cursor column.
-  return Math.max(0, columns - 5)
+/** Margin and padding of the borderless prompt band, on each side. */
+export const PROMPT_BAND_MARGIN_X = 2
+export const PROMPT_BAND_PADDING_X = 1
+/** The mode indicator in front of the text: the prompt glyph and a space. */
+const PROMPT_MODE_INDICATOR_COLUMNS = 2
+
+/**
+ * Width to give the prompt's text input: exactly the columns the layout
+ * leaves for text. TextCursor keeps one of them for the cursor. A larger
+ * value makes every full line spill its last characters onto an extra row,
+ * and the cursor then lands one row too low.
+ */
+export function clampPromptTextInputColumns(
+  columns: number,
+  layout: 'band' | 'banner' = 'band',
+): number {
+  const chrome =
+    layout === 'banner'
+      ? PROMPT_MODE_INDICATOR_COLUMNS
+      : 2 * PROMPT_BAND_MARGIN_X +
+        2 * PROMPT_BAND_PADDING_X +
+        PROMPT_MODE_INDICATOR_COLUMNS
+  return Math.max(0, columns - chrome)
 }
 
 export function pasteReferenceLineThreshold(rows: number): number {

@@ -529,6 +529,27 @@ describe("useTypeahead hook paths", () => {
     }
   });
 
+  test("keeps the selected slash command when commands reload and clamps when removed", async () => {
+    // A bare '/' lists built-in commands, so the reload fixture uses them.
+    const builtin = (name: string) => ({ ...command(name), type: "local" });
+    const commands = [builtin("help"), builtin("history"), builtin("logout")];
+    const rendered = await renderHookHarness({ commands, input: "/" });
+    try {
+      await waitFor(() => rendered.getSnapshot().suggestions.length === 3, "commands");
+      harness.keybindings["autocomplete:next"]?.();
+      await waitFor(() => rendered.getSnapshot().suggestionsState.selectedSuggestion === 1, "selection");
+      const selectedId = rendered.getSnapshot().suggestions[1]!.id;
+      rendered.rerender({ commands: [builtin("about"), ...commands] });
+      await waitFor(() => rendered.getSnapshot().suggestions.length === 4, "reload");
+      expect(rendered.getSnapshot().suggestions[rendered.getSnapshot().suggestionsState.selectedSuggestion]!.id).toBe(selectedId);
+      rendered.rerender({ commands: [builtin("help"), builtin("logout")] });
+      await waitFor(() => rendered.getSnapshot().suggestions.length === 2, "removal");
+      expect(rendered.getSnapshot().suggestionsState.selectedSuggestion).toBe(1);
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("accepts prompt suggestion ghost text with right arrow and mode detection", async () => {
     harness.appState.promptSuggestion = {
       acceptedAt: 0,
@@ -1492,13 +1513,13 @@ describe("useTypeahead hook paths", () => {
     }
   });
 
-  test("enters partial slash commands without executing until the command text is exact", async () => {
+  test("runs highlighted /model on /mod Enter and preserves exact command execution", async () => {
     const onInputChange = vi.fn();
     const onSubmit = vi.fn();
     const setCursorOffset = vi.fn();
     const rendered = await renderHookHarness({
-      commands: [command("help")],
-      input: "/h",
+      commands: [command("model")],
+      input: "/mod",
       onInputChange,
       onSubmit,
       setCursorOffset,
@@ -1511,25 +1532,41 @@ describe("useTypeahead hook paths", () => {
       );
 
       rendered.getSnapshot().handleKeyDown(createKey("return"));
-      expect(onInputChange).toHaveBeenCalledWith("/help ");
-      expect(setCursorOffset).toHaveBeenCalledWith("/help ".length);
-      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onInputChange).toHaveBeenCalledWith("/model ");
+      expect(setCursorOffset).toHaveBeenCalledWith("/model ".length);
+      expect(onSubmit).toHaveBeenCalledOnce();
+      expect(onSubmit).toHaveBeenCalledWith("/model ", true);
 
       onInputChange.mockClear();
       setCursorOffset.mockClear();
-      rendered.rerender({ input: "/help", cursorOffset: "/help".length });
+      rendered.rerender({ input: "/model", cursorOffset: "/model".length });
       await waitFor(
         () => rendered.getSnapshot().suggestionType === "command",
         "exact command suggestions",
       );
 
       rendered.getSnapshot().handleKeyDown(createKey("return"));
-      expect(onInputChange).toHaveBeenCalledWith("/help ");
-      expect(setCursorOffset).toHaveBeenCalledWith("/help ".length);
-      expect(onSubmit).toHaveBeenCalledWith("/help ", true);
+      expect(onInputChange).toHaveBeenCalledWith("/model ");
+      expect(setCursorOffset).toHaveBeenCalledWith("/model ".length);
+      expect(onSubmit).toHaveBeenCalledWith("/model ", true);
     } finally {
       await rendered.dispose();
     }
+  });
+
+  test.each([
+    { ...command("review"), argumentHint: "<target>" },
+    { ...command("review"), type: "prompt" as const, argNames: ["target"], progressMessage: "Reviewing", contentLength: 0 },
+  ])("completes an argument-requiring command on Enter: $type", async selected => {
+    const onInputChange = vi.fn();
+    const onSubmit = vi.fn();
+    const rendered = await renderHookHarness({ commands: [selected], input: "/rev", onInputChange, onSubmit });
+    try {
+      await waitFor(() => rendered.getSnapshot().suggestionType === "command", "required argument suggestions");
+      rendered.getSnapshot().handleKeyDown(createKey("return"));
+      expect(onInputChange).toHaveBeenCalledWith("/review ");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally { await rendered.dispose(); }
   });
 
   test("shows command argument hints on a trailing space and clears them once args start", async () => {
@@ -1980,8 +2017,8 @@ describe("useTypeahead hook paths", () => {
     const onSubmit = vi.fn();
     const setCursorOffset = vi.fn();
     const rendered = await renderHookHarness({
-      commands: [command("help"), command("resume")],
-      input: "/h",
+      commands: [command("model"), command("resume")],
+      input: "/mod",
       onInputChange,
       onSubmit,
       setCursorOffset,
@@ -1994,8 +2031,8 @@ describe("useTypeahead hook paths", () => {
       );
 
       harness.keybindings["autocomplete:accept"]?.();
-      expect(onInputChange).toHaveBeenCalledWith("/help ");
-      expect(setCursorOffset).toHaveBeenCalledWith("/help ".length);
+      expect(onInputChange).toHaveBeenCalledWith("/model ");
+      expect(setCursorOffset).toHaveBeenCalledWith("/model ".length);
       expect(onSubmit).not.toHaveBeenCalled();
 
       onInputChange.mockClear();

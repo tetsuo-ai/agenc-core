@@ -244,6 +244,7 @@ const isResponseItemShape = objectShape(
     // The recovery envelope is additive. The checkpoint-v2 reader validates
     // the exact integrity shape, body digest, and owning run before replay.
     toolResultIntegrity: isUnknown,
+    toolResultIsError: (value: unknown): value is true => value === true,
     // The strict checkpoint reader authenticates the three-channel sequence,
     // reader version, envelope digest, and per-channel content identity.
     agentInvocation: isUnknown,
@@ -257,7 +258,9 @@ type ResponseItemPayload = RolloutPayload<"response_item">;
 const isResponseItem: Validator<
   ResponseItemPayload,
   AllKeys<ResponseItemPayload>
-> = (value): value is ResponseItemPayload => isResponseItemShape(value);
+> = (value): value is ResponseItemPayload =>
+  isResponseItemShape(value) &&
+  (value.toolResultIsError === undefined || value.role === "tool");
 
 const isSessionAgentTask = objectShape({
   agentRuntimeId: isString,
@@ -455,6 +458,7 @@ const isCheckpointSlice = objectShape(
   {
     planToolRequiredRetryCount: isNonNegativeInteger,
     completionGateRound: isNonNegativeInteger,
+    completionGateSampleStart: isNonNegativeInteger,
     editorToolCallsAdmitted: isNonNegativeInteger,
     pendingAdmissionFallback: isPendingAdmissionFallback,
     reasoningCapPolicy: isReasoningCapPolicy,
@@ -712,6 +716,23 @@ const isSessionUsage: Validator<
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
+const isGoalBaselinePath: Validator<string> = (value): value is string =>
+  typeof value === "string" && value.length > 0 &&
+  !/^(?:[\\/]|[A-Za-z]:)/u.test(value) &&
+  !value.split(/[\\/]/u).some((part) => part === ".." || part === ".");
+const isGoalFileMode: Validator<number> = (value): value is number =>
+  isNonNegativeInteger(value) && value <= 0o7777;
+const isGoalContentHash: Validator<string> = (value): value is string =>
+  typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+const isGoalBaselineFile = objectShape({
+  path: isGoalBaselinePath,
+  identity: nullable(objectShape({
+    kind: oneOf("file", "symlink"),
+    mode: isGoalFileMode,
+    sha256: isGoalContentHash,
+  })),
+});
+
 const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   session_meta: objectShape(
     {
@@ -728,6 +749,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       model: isString,
       modelProvider: isString,
       memoryMode: isString,
+      lightMode: isBoolean,
       admissionOwner: objectShape(
         { workspaceId: isNonEmptyString, runId: isNonEmptyString },
         { parentRunId: isNonEmptyString },
@@ -818,6 +840,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       model: isString,
       provider: isString,
       speed: literal("fast"),
+      providerCostUsd: isNumber,
     },
   ),
   mcp_tool_call_begin: objectShape({
@@ -854,11 +877,14 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     { callId: isString, command: isString },
     { reason: isString },
   ),
-  tool_call_started: objectShape({
-    callId: isString,
-    toolName: isString,
-    args: isString,
-  }),
+  tool_call_started: objectShape(
+    {
+      callId: isString,
+      toolName: isString,
+      args: isString,
+    },
+    { recoveryCategory: isToolRecoveryCategory },
+  ),
   tool_input_block_start: objectShape({
     callId: isString,
     index: isNonNegativeInteger,
@@ -964,6 +990,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   context_compacted: objectShape(
     {},
     {
+      activeUserMessageIds: isStringArray,
       turnId: isString,
       summary: isString,
       preCompactTokens: isNumber,
@@ -1003,12 +1030,17 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       lastAgentMessage: isString,
       completedAt: isNumber,
       durationMs: isNumber,
+      usableFinalAnswer: isBoolean,
     },
   ),
   turn_aborted: objectShape({ reason: isString }, { turnId: isString }),
   turn_failed: objectShape(
     { turnId: isTurnFailureId, code: validFailureCode, message: isTurnFailureMessage },
-    { completedAt: isTurnFailureTime, durationMs: isTurnFailureTime },
+    { completedAt: isTurnFailureTime, durationMs: isTurnFailureTime,
+      remainingDeadlineMs: isTurnFailureTime, usableFinalAnswer: isBoolean,
+      transportFailure: objectShape({ category: oneOf("stream_truncated", "http_5xx", "connection_lost", "timeout") },
+        { status: isNonNegativeInteger }),
+    },
   ),
   turn_checkpoint: isTurnCheckpoint,
   turn_resumed: objectShape(
@@ -1051,6 +1083,11 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
         },
         {
           baseCommit: isString,
+          worktreeBaseline: objectShape({
+            version: oneOf(1, 2),
+            trackedChanges: arrayOf(isGoalBaselineFile),
+            untrackedFiles: arrayOf(isGoalBaselineFile),
+          }),
           pauseReason: isString,
           lastVerdict: objectShape({
             verdict: oneOf(
@@ -1085,6 +1122,8 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
         "unavailable_checks",
         "rounds_exhausted",
         "no_tool_use",
+        "literal_file_verified",
+        "answer_only",
         "deadline_reserve",
       ),
       toolCallsSinceInjection: isNonNegativeInteger,
@@ -1097,7 +1136,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   ),
   error: objectShape(
     { cause: isString, message: isString },
-    { turnId: isString, stack: isString },
+    { turnId: isString, stack: isString, callId: isString },
   ),
   stream_error: objectShape(
     { cause: isString, message: isString },
@@ -1516,6 +1555,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     },
     {
       timedOut: isBoolean,
+      interrupted: isBoolean,
       agentStatuses: arrayOf(isCollabAgentStatusEntry),
     },
   ),

@@ -1,3 +1,6 @@
+import { applyCanonicalConfigPatchSync } from "../config/update-sync.js";
+import { asRecord } from "../utils/record.js";
+import { resolveWebSearchMode, type WebSearchMode } from "../tools/web-search-mode.js";
 /**
  * What the `/providers` screen does: check and save a pasted key, switch to a
  * provider and model and keep them as the default, and remove a saved key.
@@ -9,6 +12,7 @@
 import { removeProviderKey, saveProviderKey } from "../auth/provider-keys.js";
 import { AgenCConfigEditsBuilder } from "../config/edit.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
+import { canonicalProviderApiKeyEnvVar } from "../llm/registry/provider-ingress.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { verifyApiKey } from "../onboarding/useApiKeyVerification.js";
 import {
@@ -24,11 +28,12 @@ import {
   type SignInProvider,
   type SignInResult,
 } from "./provider-sign-in.js";
+import { NativeSecureStorageUnavailableError } from "../utils/secureStorage/native.js";
 import { env as hostEnv } from "../utils/env.js";
 import type { SlashCommandContext } from "./types.js";
 
 export type ProvidersHubActionResult =
-  | { readonly ok: true; readonly message: string }
+  | { readonly ok: true; readonly message: string; readonly sessionOnly?: boolean }
   | { readonly ok: false; readonly message: string };
 
 /** Check a pasted key against the provider, then save it on this computer. */
@@ -55,8 +60,43 @@ export async function connectProviderWithKey(
       message: verification.error?.trim() || "The provider did not accept this key.",
     };
   }
-  saveProviderKey(configStore.homeContext, provider, key);
-  return { ok: true, message: "Key checked and saved." };
+  const session = ctx.session as unknown as {
+    useSessionProviderKey?: (provider: string, apiKey: string) => Promise<void>;
+  };
+  try {
+    if (session.useSessionProviderKey !== undefined) {
+      await session.useSessionProviderKey(provider, key);
+    } else if (ctx.session.services.providerService !== undefined) {
+      await ctx.session.services.providerService.useSessionApiKey(provider, key);
+    } else {
+      throw new Error("Session credential ingress is unavailable.");
+    }
+  } catch {
+    return {
+      ok: false,
+      message: "The key was accepted, but could not be activated in this session. Wait for the current turn or model switch to finish, then try again.",
+    };
+  }
+  try {
+    saveProviderKey(configStore.homeContext, provider, key);
+    return { ok: true, message: "Key checked and saved. Ready for your next prompt." };
+  } catch (error) {
+    // Never echo a backend exception: a helper may include secret input in it.
+    const reason = error instanceof NativeSecureStorageUnavailableError
+      ? process.platform === "linux"
+        ? "Linux Secret Service is unavailable (no usable keyring or session bus)."
+        : "Native secure storage is unavailable on this computer."
+      : "Native secure storage could not save the key (locked, unreadable, or write failed).";
+    const envName = canonicalProviderApiKeyEnvVar(provider);
+    return {
+      ok: true,
+      sessionOnly: true,
+      message: `Key checked and active for this session only; it was not saved. ${reason} ` +
+        `You can close this dialog and send your next prompt. After quitting or restarting the daemon, enter the key again. ` +
+        `For headless use, set ${envName ?? "the provider API key environment variable"} in the environment before launching AgenC. ` +
+        "To save it here, enable and unlock your system keyring, then try again.",
+    };
+  }
 }
 
 /**
@@ -156,4 +196,30 @@ export function signOutOfAccount(
 ): ProvidersHubActionResult {
   const result = signOutOfProvider(requireCommandConfigStore(ctx).homeContext, provider);
   return result.ok ? { ok: true, message: result.message } : { ok: false, message: result.message };
+}
+
+/** Save first, then acknowledge the live daemon before updating client chrome. */
+export async function chooseWebSearchMode(
+  ctx: SlashCommandContext,
+  mode: WebSearchMode,
+): Promise<ProvidersHubActionResult> {
+  const store = requireCommandConfigStore(ctx);
+  applyCanonicalConfigPatchSync(store.homeContext.configTomlPath, { web_search: mode }, "user");
+  try {
+    const apply = asRecord(ctx.session)?.applyDaemonConfig;
+    if (typeof apply === "function") {
+      const receipt = asRecord(await apply.call(ctx.session, { reload: true }));
+      if (receipt?.applied !== true && receipt?.sessionId !== "pending") {
+        throw new Error(typeof receipt?.summary === "string" ? receipt.summary : "Daemon did not apply the configuration.");
+      }
+    }
+    await store.reload();
+  } catch {
+    return { ok: false, message: "Web search preference saved. Live update was not confirmed. Run /config reload to retry." };
+  }
+  const effective = resolveWebSearchMode(providerEnvironmentFromCommandContext(ctx), store.current().web_search);
+  const label = effective === "on" ? "On" : "Auto";
+  return { ok: true, message: effective === mode
+    ? `Web search: ${label}. Saved for future sessions.`
+    : `Preference saved. Web search remains ${label} because an override is active.` };
 }

@@ -298,12 +298,8 @@ describe("provider authority architecture", () => {
 
     const providerFactory = readFileSync(`${SRC}/llm/provider.ts`, "utf8");
     expect(providerFactory).not.toMatch(/apiKeyEnvironmentLabelFor/u);
-    expect(providerFactory.match(/\bapiKeyEnvLabel\s*:/gu)).toEqual([
-      "apiKeyEnvLabel:",
-    ]);
-    expect(providerFactory).toMatch(
-      /apiKeyEnvLabel:\s*"AgenC subscription"/u,
-    );
+    expect(providerFactory).not.toMatch(/\bapiKeyEnvLabel\s*:/u);
+    expect(providerFactory).not.toContain("AgenC subscription");
   });
 
   test("provider metadata does not invent transport policy or websocket support", () => {
@@ -876,9 +872,12 @@ describe("provider authority architecture", () => {
       `${SRC}/tui/components/spinner/Spinner.tsx`,
       "utf8",
     );
-    expect(spinnerSource).toContain("getEffortSuffixForContext");
+    // EffortIndicator owns the captured-context effort label. The spinner
+    // intentionally omits a duplicate label while retaining session authority.
+    expect(spinnerSource).toContain("providerAuthContext: ProviderAuthReadContext");
+    expect(spinnerSource).toContain('effortSuffix=""');
     expect(spinnerSource).not.toMatch(
-      /\b(?:getEffortSuffix|getMainLoopModel)\(/u,
+      /\b(?:getEffortSuffix(?:ForContext)?|getMainLoopModel)\(/u,
     );
   });
 });

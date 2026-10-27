@@ -102,6 +102,13 @@ export interface SessionTranscriptV2Event extends JsonObject {
   readonly type: "token_count" | "turn_failed" | "turn_aborted";
 }
 
+export interface PendingEffectReview extends JsonObject {
+  readonly callId: string;
+  readonly toolName: string;
+  readonly description: string;
+  readonly error: string;
+}
+
 export interface SessionTranscriptV2Result extends JsonObject {
   readonly messages: readonly SessionTranscriptV2Message[];
 }

@@ -1,6 +1,8 @@
 import { suggestToolForUnknownName } from "./tools/tool-name-suggestion.js";
 import { unknownToolResult } from "./tools/results.js";
 import { oneShotFastModeActive } from "./one-shot-fast-mode.js";
+import { resolveModelToolAlias } from "./tools/model-tool-aliases.js";
+import { prepareModelToolArgs, validateToolPreflight } from "./tools/execution.js";
 /**
  * Tool registry — the lean coding-profile surface.
  *
@@ -26,8 +28,9 @@ import { oneShotFastModeActive } from "./one-shot-fast-mode.js";
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
-import { lightPresentation } from "./tools/light-presentation.js";
-import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch } from "./tools/light-profile.js";
+import { lightPresentation, standardPresentation } from "./tools/light-presentation.js";
+import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -46,7 +49,11 @@ import {
 import { SYSTEM_SEARCH_TOOLS_NAME } from "./tools/system/tool-search-name.js";
 import {
   isRareDeferredTool,
+  isStandardDeferredTool,
+  PLAN_MODE_TOOLS,
+  PROCESS_SESSION_TOOLS,
   rareToolPointer,
+  withDeferredCompanions,
 } from "./tools/rare-tool-deferral.js";
 import { createBashTool } from "./tools/system/bash.js";
 import { registerBuiltinTool } from "./tools/builtin-provenance.js";
@@ -68,6 +75,7 @@ import {
 } from "./tools/system/file-read.js";
 import {
   createFileEditTool,
+  createFileBatchEditTool,
   createFileMultiEditTool,
   FILE_EDIT_TOOL_NAME,
   FILE_MULTI_EDIT_TOOL_NAME,
@@ -106,6 +114,11 @@ import {
   type ConfiguredToolSpec,
 } from "./tools/router.js";
 import { resolvePerToolConfig, toolConfigAllowsTool } from "./tools/config.js";
+import {
+  sessionToolPolicyAllowsTool,
+  toolPolicyRefusalMessage,
+  type SessionToolPolicy,
+} from "./permissions/session-tool-policy.js";
 import {
   attachSandboxExecutionBroker,
   type SandboxExecutionBrokerLike,
@@ -168,6 +181,23 @@ export interface ToolRegistry {
   ): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
+  /**
+   * Catalog tools a request does not carry until system.searchTools (or the
+   * runtime) loads them, whether or not they have been loaded since. Fixed for
+   * the session, so prompt text derived from it stays byte-stable.
+   */
+  getDeferredToolNames?(): ReadonlySet<string>;
+  /**
+   * The session's fixed tool allowlist, when it has one. Tools outside it were
+   * never built, so they are in neither `tools` nor dispatch; routers use this
+   * to answer a call to one with an explicit refusal.
+   */
+  readonly toolPolicy?: SessionToolPolicy;
+  /**
+   * A standard session with the default deferral: compact tool wording, and
+   * the permission section in the same compact words (prompts/permissions-prompt.ts).
+   */
+  readonly compactPresentation?: boolean;
 }
 
 /**
@@ -637,6 +667,14 @@ export interface BuildToolRegistryOptions {
    */
   readonly toolsConfig?: ToolsConfig;
   /**
+   * Session tool policy (`agent.create` `toolPolicy`). Tools outside
+   * `enabledTools` are never built, so they are absent from the model-visible
+   * catalog and from dispatch by name, whatever `toolsConfig` says. It composes
+   * with `toolsConfig` by intersection: a tool must pass both. Its
+   * `deferMcpTools` takes precedence over the option of the same name.
+   */
+  readonly toolPolicy?: SessionToolPolicy;
+  /**
    * `[providers.grok]` capability profile. Passed through to model-facing
    * LIVE tools (XSearch) so Pattern A one-shots can gate on config.
    */
@@ -657,6 +695,8 @@ export interface BuildToolRegistryOptions {
    * from the session's `AGENC_DEFER_RARE_TOOLS`.
    */
   readonly deferRareTools?: boolean;
+  /** Read for every request so a live config reload updates tool exposure. */
+  readonly webSearchEnabled?: () => boolean;
   /**
    * Session-configured structured-output JSON schema. Consumed by the
    * bootstrap model-facing tool assembly (`bin/bootstrap-tool-registry.ts`):
@@ -679,6 +719,20 @@ export interface BuildToolRegistryOptions {
  * inventory tools are registered as deferred entries and load through
  * `system.searchTools`.
  */
+/**
+ * Core tools whose Light wording standard sessions send too: the same fields
+ * and schema with shorter descriptions. FileRead keeps its own text because
+ * Light's describes sparse line numbers.
+ */
+const STANDARD_COMPACT_PRESENTATION: ReadonlySet<string> = new Set([
+  "exec_command",
+  "write_stdin",
+  "Edit",
+  "Write",
+  "Glob",
+  "Grep",
+]);
+
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,
 ): ToolRegistry {
@@ -686,8 +740,12 @@ export function buildToolRegistry(
     options.unifiedExecManager ??
     new UnifiedExecProcessManager({ cwd: options.workspaceRoot });
   const discoveredToolNames = new Set<string>();
+  // Standard sessions defer the tools most sessions never call (see
+  // tools/rare-tool-deferral.ts); Light keeps its own initial tool set.
+  const deferRareTools = options.deferRareTools === true;
+  const standardDeferral = deferRareTools && options.lightMode !== true;
   const markDiscovered = (toolNames: readonly string[]): void => {
-    for (const name of toolNames) {
+    for (const name of withDeferredCompanions(toolNames)) {
       if (typeof name === "string" && name.trim().length > 0) {
         discoveredToolNames.add(name);
       }
@@ -722,10 +780,15 @@ export function buildToolRegistry(
           isDeferredSpec(spec) ? { ...spec, deferred: true } : spec,
         )),
     onDiscoverTools: markDiscovered,
+    ...(options.lightMode === true ? { compactResults: true } : {}),
     ...(options.mcpToolsProvider?.primeCatalogs !== undefined
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
       : {}),
   });
+  // A sandbox notice that tells the model to retry with sandbox_permissions
+  // loads exec_command's full schema for the next request: the lean schema
+  // Light and deferred standard sessions present hides that field.
+  const onEscalationAdvised = (): void => markDiscovered(["exec_command"]);
   const shellTools = [
     createExecCommandTool({
       lightMode: options.lightMode,
@@ -733,8 +796,14 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
       ...(options.lightMode === true
-        ? { onSessionYielded: () => markDiscovered(["write_stdin"]) }
-        : {}),
+        ? {
+            onSessionYielded: () => markDiscovered(["write_stdin", "kill_process"]),
+            serverChecksDescribed: () => describesServerChecks(),
+          }
+        : standardDeferral
+          ? { onSessionYielded: () => markDiscovered(PROCESS_SESSION_TOOLS) }
+          : {}),
+      onEscalationAdvised,
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
@@ -744,6 +813,7 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
+      onEscalationAdvised,
     }),
     createKillProcessTool({
       cwd: options.workspaceRoot,
@@ -1025,6 +1095,7 @@ export function buildToolRegistry(
     },
   ]);
   function applyConfiguredTool(tool: Tool): Tool | null {
+    if (!sessionToolPolicyAllowsTool(options.toolPolicy, tool.name)) return null;
     if (!toolConfigAllowsTool(options.toolsConfig, tool.name)) return null;
     const config = resolvePerToolConfig(options.toolsConfig, tool.name);
     if (config.defaultPermissionMode === undefined) return tool;
@@ -1047,6 +1118,43 @@ export function buildToolRegistry(
       ),
     ),
   );
+  const legacyBuiltinEdit = defaultBuiltinTools.find(tool => tool.name === FILE_EDIT_TOOL_NAME);
+  const batchBuiltinEdit = configuredTools([tagTool(createFileBatchEditTool({
+    lightMode: options.lightMode,
+    allowedPaths: [options.workspaceRoot],
+  }))])[0];
+  /**
+   * The provider instance's name and, when the session's binding is for that
+   * provider, the bound model: a gateway's model id names the family Light
+   * tunes for (light-profile.ts).
+   */
+  function sessionModelIdentity(): { readonly provider: string | undefined; readonly model: string | undefined } {
+    const services = options.getSession?.()?.services;
+    const provider = services?.provider?.name;
+    let model: string | undefined;
+    try {
+      const binding = services?.providerService?.current();
+      model = binding !== undefined && binding.provider === provider ? binding.model : undefined;
+    } catch {
+      model = undefined;
+    }
+    return { provider, model };
+  }
+  function usesBatchEdit(): boolean {
+    if (options.lightMode !== true) return false;
+    const identity = sessionModelIdentity();
+    return lightUsesBatchEdit(identity.provider, identity.model);
+  }
+  /**
+   * Whether this session's exec_command description says how to check a
+   * server (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS). Its exec
+   * results then leave the same guidance out of their notes.
+   */
+  function describesServerChecks(): boolean {
+    if (options.lightMode !== true) return false;
+    const identity = sessionModelIdentity();
+    return lightUsesGlmTuning(identity.provider, identity.model);
+  }
   // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
   // names even when the canonical tool is disabled or unavailable so an
   // extension cannot become the physical execution target by collision.
@@ -1073,6 +1181,8 @@ export function buildToolRegistry(
   );
   const staticTools: Tool[] = [...defaultBuiltinTools, ...extraTools];
 
+  const deferMcpTools = options.toolPolicy?.deferMcpTools ?? options.deferMcpTools ?? true;
+
   // T7: tag each registered tool with its ConcurrencyClass + flags.
   // Tools without explicit metadata get sensible defaults:
   //   - readFile/listDir/stat/glob/grep → SharedRead + isReadOnly
@@ -1089,7 +1199,7 @@ export function buildToolRegistry(
           withMetadata(tool, {
             source: "mcp",
             family: "mcp",
-            deferred: options.deferMcpTools ?? true,
+            deferred: deferMcpTools,
           }),
           serverId ? { serverId } : {},
         );
@@ -1159,6 +1269,7 @@ export function buildToolRegistry(
       // The supplied TOML policy is live, including nested per-tool defaults.
       // Snapshot its value rather than its object identity or array references.
       [JSON.stringify(options.toolsConfig)],
+      [usesBatchEdit()],
     ];
   }
 
@@ -1207,7 +1318,9 @@ export function buildToolRegistry(
     );
     const withoutManagedMcpCollisions = (tools: readonly Tool[]): Tool[] =>
       preserveTrustedRuntimeOwnedTools(tools).filter(tool => !managedMcpNames.has(tool.name));
-    const baseSpecs = withoutManagedMcpCollisions(staticTools).map(specForTool);
+    const baseSpecs = withoutManagedMcpCollisions(staticTools.map(tool =>
+      usesBatchEdit() && tool === legacyBuiltinEdit && batchBuiltinEdit !== undefined ? batchBuiltinEdit : tool,
+    )).map(specForTool);
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );
@@ -1229,6 +1342,7 @@ export function buildToolRegistry(
       ...(options.parallelMcpServerNames !== undefined
         ? { parallelMcpServerNames: options.parallelMcpServerNames }
         : {}),
+      ...(options.toolPolicy !== undefined ? { toolPolicy: options.toolPolicy } : {}),
     });
   }
 
@@ -1236,10 +1350,37 @@ export function buildToolRegistry(
     return buildRouter().getSpecs();
   }
 
-  const deferRareTools = options.deferRareTools === true;
+  function manualWebTool(name: string): boolean {
+    return options.webSearchEnabled?.() === true && WEB_SEARCH_INITIAL_TOOLS.has(name);
+  }
+
   function isDeferredSpec(spec: ConfiguredToolSpec): boolean {
+    if (manualWebTool(spec.tool.name)) return false;
+    if (standardDeferral && PLAN_MODE_TOOLS.has(spec.tool.name) && planModeActive()) return false;
     return spec.deferred === true ||
-      (deferRareTools && isRareDeferredTool(spec.tool.name));
+      (deferRareTools && (standardDeferral
+        // A policy without system.searchTools (coordinator mode, for one)
+        // could never load them, so they stay advertised there.
+        ? isStandardDeferredTool(spec.tool.name) && searchToolAvailable()
+        : isRareDeferredTool(spec.tool.name)));
+  }
+
+  function planModeActive(): boolean {
+    return options.getSession?.()?.services?.permissionModeRegistry?.current().mode === "plan";
+  }
+
+  // Called for every spec while a request's tool list is built, so the answer
+  // is kept per router instead of rebuilding the router inputs each time.
+  const searchAvailability = new WeakMap<ToolRouter, boolean>();
+  function searchToolAvailable(): boolean {
+    const router = routerMemo?.router ?? buildRouter();
+    let available = searchAvailability.get(router);
+    if (available === undefined) {
+      available = router.getSpecs()
+        .some((spec) => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME && spec.unavailable !== true);
+      searchAvailability.set(router, available);
+    }
+    return available;
   }
 
   function visibleSpecs(router?: ToolRouter): readonly ConfiguredToolSpec[] {
@@ -1249,12 +1390,20 @@ export function buildToolRegistry(
     if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
       return specs;
     }
+    const lightIdentity = options.lightMode === true ? sessionModelIdentity() : { provider: undefined, model: undefined };
     return specs.filter(
       (spec) =>
-        (options.lightMode === true
-          ? (lightEditsWithApplyPatch(options.getSession?.()?.services?.provider?.name)
+        manualWebTool(spec.tool.name) || (options.lightMode === true
+          ? (lightEditsWithApplyPatch(lightIdentity.provider, lightIdentity.model)
             ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
-            (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined)
+            (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined) ||
+            // The plan-mode reminder ends planning with AskUserQuestion or
+            // ExitPlanMode, so a session in plan mode sees both, as in standard.
+            (PLAN_MODE_TOOLS.has(spec.tool.name) && planModeActive()) ||
+            // A policy that opts out of MCP deferral wants its allowlisted MCP
+            // tools in front of the model with no search step; Light mode is
+            // the small-model profile that most needs that.
+            (deferMcpTools === false && spec.tool.metadata?.source === "mcp" && !isDeferredSpec(spec))
           : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
     );
   }
@@ -1335,45 +1484,85 @@ export function buildToolRegistry(
     });
   }
 
+  /**
+   * The tools every request starts with keep their order; a deferred tool
+   * joins at the end once loaded, in load order. A loaded tool never moves the
+   * tools before it, so the cached prompt prefix up to them stays valid.
+   */
+  function loadOrderedSpecs(visible: readonly ConfiguredToolSpec[]): readonly ConfiguredToolSpec[] {
+    const initial = visible.filter((spec) => !isDeferredSpec(spec));
+    if (initial.length === visible.length) return visible;
+    const loaded = new Map(visible.filter((spec) => isDeferredSpec(spec)).map((spec) => [spec.tool.name, spec]));
+    return [...initial, ...[...discoveredToolNames].flatMap((name) => {
+      const spec = loaded.get(name);
+      return spec === undefined ? [] : [spec];
+    })];
+  }
+
   let presentationMemo: { router: ToolRouter; discovered: readonly string[];
-    provider: string | undefined; tools: LLMTool[] } | undefined;
+    provider: string | undefined; planMode: boolean; webSearch: boolean; tools: LLMTool[] } | undefined;
   function buildPresentedTools(router: ToolRouter): LLMTool[] {
-      const visible = visibleSpecs(router);
-      const leanExec = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) &&
-        !discoveredToolNames.has("exec_command");
+      const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
+      const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
+      const leanExec = searchVisible && !discoveredToolNames.has("exec_command");
+      const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
+      const leanSearch = !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
+      const leanRead = searchVisible && !discoveredToolNames.has("FileRead");
       const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
-        return options.lightMode === true && spec.tool.metadata?.source === "builtin"
-          ? lightPresentation(tool, { leanExec }) : tool;
+        if (spec.tool.metadata?.source !== "builtin") return tool;
+        if (options.lightMode === true) {
+          return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true,
+            glmServerChecks: describesServerChecks() });
+        }
+        // Standard sessions with the default deferral send compact wording for
+        // the core tools (same fields, same schema) and the lean exec_command,
+        // Grep and system.searchTools until system.searchTools selects them.
+        return standardDeferral
+          ? standardPresentation(tool, { lightWording: STANDARD_COMPACT_PRESENTATION.has(spec.tool.name), leanExec, leanGrep, leanSearch })
+          : tool;
       });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(router.getSpecs()
-        .filter(spec => spec.unavailable !== true && isRareDeferredTool(spec.tool.name))
-        .map(spec => spec.tool.name)));
+        .filter(spec => spec.unavailable !== true && !manualWebTool(spec.tool.name) && (standardDeferral
+          ? isStandardDeferredTool(spec.tool.name)
+          : isRareDeferredTool(spec.tool.name)))
+        .map(spec => spec.tool.name)), { standard: standardDeferral });
       return pointer === undefined ? tools : tools.map(tool => tool.function.name === SYSTEM_SEARCH_TOOLS_NAME
         ? { ...tool, function: { ...tool.function, description: `${tool.function.description ?? ""}\n\n${pointer}`.trim() } }
         : tool);
   }
 
   return {
+    ...(options.toolPolicy !== undefined ? { toolPolicy: options.toolPolicy } : {}),
+    compactPresentation: standardDeferral,
     get tools(): readonly Tool[] {
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
       const router = buildRouter();
       if (!oneShotFastModeActive()) return buildPresentedTools(router);
-      const provider = options.getSession?.()?.services?.provider?.name;
+      const identity = sessionModelIdentity();
+      const provider = `${identity.provider ?? ""}\u0000${identity.model ?? ""}`;
       const discovered = [...discoveredToolNames];
+      // Plan mode adds AskUserQuestion and ExitPlanMode (visibleSpecs, isDeferredSpec).
+      const planMode = planModeActive();
+      const webSearch = options.webSearchEnabled?.() === true;
       const memo = presentationMemo;
-      if (memo?.router === router && memo.provider === provider &&
+      if (memo?.router === router && memo.provider === provider && memo.planMode === planMode && memo.webSearch === webSearch &&
           memo.discovered.length === discovered.length &&
           memo.discovered.every((name, i) => name === discovered[i])) return memo.tools;
       const tools = buildPresentedTools(router);
-      presentationMemo = { router, provider, discovered, tools };
+      presentationMemo = { router, provider, planMode, webSearch, discovered, tools };
       return tools;
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;
+    },
+    getDeferredToolNames(): ReadonlySet<string> {
+      return new Set(allSpecs()
+        .filter((spec) => spec.unavailable !== true && isDeferredSpec(spec))
+        .map((spec) => spec.tool.name));
     },
     getUnavailableToolNames(): ReadonlySet<string> {
       return new Set(
@@ -1387,8 +1576,13 @@ export function buildToolRegistry(
     },
     async dispatch(toolCall: LLMToolCall, dispatchOptions?: ToolRegistryDispatchOptions): Promise<ToolDispatchResult> {
       const router = buildRouter();
+      const canonicalName = resolveModelToolAlias(toolCall.name, router.getSpecs().map(spec => spec.tool.name));
+      if (canonicalName !== toolCall.name) toolCall = { ...toolCall, name: canonicalName };
       const spec = router.findSpec(toolCall.name);
       if (!spec) {
+        if (!sessionToolPolicyAllowsTool(options.toolPolicy, toolCall.name)) {
+          return { content: safeStringify({ error: toolPolicyRefusalMessage(toolCall.name) }), isError: true };
+        }
         if (dispatchOptions?.advertisedToolNames === undefined) {
           return { content: safeStringify({ error: `unknown tool: ${toolCall.name}` }), isError: true };
         }
@@ -1419,7 +1613,17 @@ export function buildToolRegistry(
             isError: true,
           };
         }
-        return await executeConfiguredTool(spec, toolCall.id, dispatchOptions?.prepareArguments?.(parseResult.args, spec.tool) ?? parseResult.args, dispatchOptions);
+        prepareModelToolArgs(spec.tool, parseResult.args);
+        const executionArgs = dispatchOptions?.prepareArguments?.(parseResult.args, spec.tool) ?? parseResult.args;
+        // The minimal loop supplies the authenticated invocation context here.
+        // Run the same strict schema and tool preflight before physical dispatch.
+        if (dispatchOptions?.prepareArguments !== undefined) {
+          const failure = validateToolPreflight(spec.tool, executionArgs, {
+            discoveredToolNames,
+          });
+          if (failure !== null) return failure;
+        }
+        return await executeConfiguredTool(spec, toolCall.id, executionArgs, dispatchOptions);
       } catch (error) {
         return {
           content: safeStringify({
@@ -1443,7 +1647,14 @@ export function buildToolRegistry(
       const router = buildRouter();
       const spec = router.findSpec(toolCall.name);
       if (!spec) {
-        return { content: safeStringify({ error: `unknown tool: ${toolCall.name}` }), isError: true };
+        return {
+          content: safeStringify({
+            error: sessionToolPolicyAllowsTool(options.toolPolicy, toolCall.name)
+              ? `unknown tool: ${toolCall.name}`
+              : toolPolicyRefusalMessage(toolCall.name),
+          }),
+          isError: true,
+        };
       }
       if (spec.unavailable === true) return unavailableToolResult(spec.tool.name);
       if (!canDirectDispatchFromCodeMode(spec.tool)) {

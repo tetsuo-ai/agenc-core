@@ -7,6 +7,7 @@ import type {
 } from "../app-server/protocol/index.js";
 import { isRecord } from "../utils/record.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
+import { isStreamAttemptDiscard } from "../contracts/stream-attempt-boundary.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 
 /** Resolve text references before the adapter can mark a replay as covered. */
@@ -65,6 +66,10 @@ export function daemonTranscriptSnapshotEvents(
   ) {
     throw new Error("Daemon returned an invalid transcript snapshot");
   }
+  const partialSequence = snapshot.activeTurn?.partialSequence;
+  if (partialSequence !== undefined && (
+    !Number.isSafeInteger(partialSequence) || partialSequence < 0 || partialSequence > snapshot.asOfSequence
+  )) throw new Error("Daemon returned an invalid partial transcript watermark");
   const events: { readonly sequence: number; readonly event: JsonObject }[] = snapshot.messages.map((message) => {
     if (
       (message.role !== "user" && message.role !== "assistant") ||
@@ -73,19 +78,32 @@ export function daemonTranscriptSnapshotEvents(
       typeof message.commitEventId !== "string" ||
       !Number.isSafeInteger(message.committedSequence) ||
       message.committedSequence < 0 ||
-      message.committedSequence > snapshot.asOfSequence
+      message.committedSequence > snapshot.asOfSequence ||
+      (message.partial !== undefined && (
+        message.role !== "assistant" ||
+        (message.partial !== "streaming" && message.partial !== "interrupted") ||
+        (message.partial === "streaming" && message.turnId !== snapshot.activeTurn?.turnId)
+      )) ||
+      (message.partialTruncated !== undefined && typeof message.partialTruncated !== "boolean")
     ) {
       throw new Error("Daemon returned an invalid transcript message");
     }
     if (message.textArtifact !== undefined) {
       throw new Error("Daemon returned an unresolved text artifact");
     }
+    const text = message.text + (message.partialTruncated === true
+      ? "\n\n[Partial answer truncated at 64 KiB.]" : "") + (message.partial === "interrupted"
+      ? "\n\n[Interrupted partial answer]" : "");
     return {
       sequence: message.committedSequence,
       event: {
         id: `snapshot:${snapshot.historyEpoch}:${message.messageId}`,
-        type: message.role === "user" ? "user_message" : "agent_message",
-        payload: { message: message.text },
+        type: message.partial === "streaming" ? "agent_message_delta"
+          : message.role === "user" ? "user_message" : "agent_message",
+        payload: { ...(message.partial === "streaming" ? { delta: text } : { message: text }),
+          ...(message.role === "user"
+            ? { canonicalUserMessageId: message.canonicalUserMessageId ?? message.clientMessageId ?? message.messageId,
+              ...(message.acceptedAt !== undefined ? { acceptedAt: message.acceptedAt } : {}) } : {}) },
       } satisfies JsonObject,
     };
   });
@@ -147,6 +165,18 @@ export function daemonTranscriptSnapshotEvents(
       payload: { turnId: snapshot.activeTurn.turnId },
     });
   }
+  if (snapshot.activeUserMessageIds !== undefined) {
+    if (!Array.isArray(snapshot.activeUserMessageIds) ||
+        snapshot.activeUserMessageIds.some((id) => typeof id !== "string")) {
+      throw new Error("Daemon returned invalid active user identities");
+    }
+    transcript.push({ id: `snapshot:${snapshot.historyEpoch}:active-users:${snapshot.asOfSequence}`,
+      type: "active_conversation", payload: { activeUserMessageIds: snapshot.activeUserMessageIds } });
+  }
+  if (snapshot.pendingEffectReviews !== undefined) transcript.push({
+    id: `snapshot:${snapshot.historyEpoch}:reviews:${snapshot.asOfSequence}`,
+    type: "effect_reviews_snapshot", payload: { reviews: snapshot.pendingEffectReviews },
+  });
   return transcript;
 }
 
@@ -203,6 +233,16 @@ export function daemonTranscriptSnapshotCoversEvent(
   }
   if (transcriptEvent.type === "turn_started" || transcriptEvent.type === "turn_start") {
     return true;
+  }
+  if (
+    (transcriptEvent.type === "agent_message_delta" || isStreamAttemptDiscard(transcriptEvent)) &&
+    snapshot.activeTurn.partialSequence !== undefined &&
+    sequence <= snapshot.activeTurn.partialSequence
+  ) return true;
+  if (isStreamAttemptDiscard(transcriptEvent)) {
+    // A canonical commit can cover a discard even when the stream has not
+    // produced a subsequent delta watermark in this turn.
+    return snapshot.messages.some(message => message.turnId === turnId && message.committedSequence >= sequence);
   }
   if (
     transcriptEvent.type === "user_message" ||

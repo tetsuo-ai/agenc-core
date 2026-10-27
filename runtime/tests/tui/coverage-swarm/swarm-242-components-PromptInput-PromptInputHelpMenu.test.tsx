@@ -50,8 +50,9 @@ describe("PromptInputHelpMenu coverage swarm row 242", () => {
 
     const output = await renderHelpMenu();
 
-    expect(output).not.toContain("for terminal");
-    expect(output).toContain("ctrl + z to suspend");
+    expect(output).not.toContain("meta+shift+j");
+    expect(output).not.toContain("alt+shift+j");
+    expect(output).toMatch(/ctrl\+z\s+suspend/);
   });
 
   test("hides the suspend hint on windows", async () => {
@@ -59,7 +60,8 @@ describe("PromptInputHelpMenu coverage swarm row 242", () => {
 
     const output = await renderHelpMenu();
 
-    expect(output).not.toContain("for terminal");
-    expect(output).not.toContain("ctrl + z to suspend");
+    expect(output).not.toContain("meta+shift+j");
+    expect(output).not.toContain("ctrl+z");
+    expect(output).not.toContain("suspend");
   });
 });

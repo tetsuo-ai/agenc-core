@@ -1,3 +1,10 @@
+/** Content-free facts that survive phase wrappers and can be persisted safely. */
+export type TransportFailure = {
+  readonly category: "stream_truncated" | "http_5xx" | "connection_lost" | "timeout";
+  readonly status?: number;
+};
+
+
 export const MAX_TURN_FAILURE_MESSAGE_LENGTH = 2_000;
 /**
  * `turn_aborted` reason for a turn the user ended by denying a permission
@@ -13,6 +20,9 @@ export interface TurnFailedEvent {
   readonly message: string;
   readonly completedAt?: number;
   readonly durationMs?: number;
+  readonly transportFailure?: TransportFailure;
+  readonly remainingDeadlineMs?: number;
+  readonly usableFinalAnswer?: boolean;
 }
 
 export interface TurnEventInput {
@@ -31,6 +41,23 @@ interface TurnTerminalDetails {
   readonly message?: string;
   readonly completedAt?: number;
   readonly durationMs?: number;
+  readonly transportFailure?: TransportFailure;
+  readonly remainingDeadlineMs?: number;
+  readonly usableFinalAnswer?: boolean;
+}
+
+function diagnosticFields(payload: Record<string, unknown>): Pick<TurnTerminalDetails,
+  "transportFailure" | "remainingDeadlineMs" | "usableFinalAnswer"> {
+  const failure = payload.transportFailure as TransportFailure | undefined;
+  const remainingDeadlineMs = nonNegativeFinite(payload.remainingDeadlineMs);
+  return {
+    ...(failure && ["stream_truncated", "http_5xx", "connection_lost", "timeout"].includes(failure.category)
+      ? { transportFailure: { category: failure.category,
+          ...(typeof failure.status === "number" && Number.isInteger(failure.status) && failure.status >= 500 && failure.status <= 599
+            ? { status: failure.status } : {}) } } : {}),
+    ...(remainingDeadlineMs !== undefined ? { remainingDeadlineMs } : {}),
+    ...(typeof payload.usableFinalAnswer === "boolean" ? { usableFinalAnswer: payload.usableFinalAnswer } : {}),
+  };
 }
 
 export type TurnTerminal = TurnTerminalDetails & (
@@ -38,6 +65,16 @@ export type TurnTerminal = TurnTerminalDetails & (
   | { readonly outcome: "aborted"; readonly code: 130 }
   | { readonly outcome: "errored"; readonly code: 1; readonly failureCode: string }
 );
+
+/** Preserve terminal evidence when the RPC result wins a race with events. */
+export function turnTerminalResult(terminal: TurnTerminal) {
+  return { code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+    ...(terminal.outcome === "errored" ? { failureCode: terminal.failureCode } : {}),
+    ...(terminal.durationMs !== undefined ? { durationMs: terminal.durationMs } : {}),
+    ...diagnosticFields({ ...terminal }),
+  };
+}
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
@@ -75,6 +112,7 @@ export function createTurnFailedEvent(payload: TurnFailedEvent): {
       message: payload.message.slice(0, MAX_TURN_FAILURE_MESSAGE_LENGTH),
       ...(completedAt !== undefined ? { completedAt } : {}),
       ...(durationMs !== undefined ? { durationMs } : {}),
+      ...diagnosticFields({ ...payload }),
     },
   };
 }
@@ -114,6 +152,7 @@ function readTurnScope(
   const completedAt = nonNegativeFinite(payload.completedAt);
   const durationMs = nonNegativeFinite(payload.durationMs);
   const details = {
+    ...diagnosticFields(payload),
     ...(turnId !== undefined ? { turnId } : {}),
     ...(completedAt !== undefined ? { completedAt } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),

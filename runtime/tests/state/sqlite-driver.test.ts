@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, toNamespacedPath } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
@@ -24,6 +24,10 @@ import {
   STATE_WAL_AUTOCHECKPOINT_PAGES,
 } from "./sqlite-driver.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
+
+function openFixtureDatabase(path: string, options?: Database.Options): Database.Database {
+  return new Database(toNamespacedPath(path), options);
+}
 
 let home = "";
 let cwd = "";
@@ -186,7 +190,7 @@ describe("openStateDatabases", () => {
   it("upgrades a populated v34 effect table for idempotent unknown outcomes", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-    const raw = new Database(paths.stateDbPath);
+    const raw = openFixtureDatabase(paths.stateDbPath);
     try {
       applyMigrations(raw, STATE_DB_MIGRATIONS.filter((migration) => migration.version < 35));
       raw.prepare("INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at) VALUES (?, ?, ?)")
@@ -304,7 +308,7 @@ describe("openStateDatabases", () => {
     driver.close();
 
     const paths = resolveStateDatabasePaths({ cwd });
-    const raw = new Database(paths.stateDbPath);
+    const raw = openFixtureDatabase(paths.stateDbPath);
     try {
       raw
         .prepare("INSERT INTO schema_migrations (version, name) VALUES (?, ?)")
@@ -319,7 +323,7 @@ describe("openStateDatabases", () => {
   it("creates a verified pre-v12 backup that an older runtime can restore", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-    const raw = new Database(paths.stateDbPath);
+    const raw = openFixtureDatabase(paths.stateDbPath);
     try {
       applyMigrations(
         raw,
@@ -384,7 +388,7 @@ describe("openStateDatabases", () => {
 
     const backupPath = join(paths.projectDir, STATE_PRE_V12_BACKUP_FILENAME);
     expect(existsSync(backupPath)).toBe(true);
-    const backup = new Database(backupPath, {
+    const backup = openFixtureDatabase(backupPath, {
       readonly: true,
       fileMustExist: true,
     });
@@ -431,7 +435,7 @@ describe("openStateDatabases", () => {
 
     const restoredPath = join(paths.projectDir, "restored-pre-v12.sqlite");
     copyFileSync(backupPath, restoredPath);
-    const restored = new Database(restoredPath);
+    const restored = openFixtureDatabase(restoredPath);
     try {
       expect(() =>
         applyMigrations(
@@ -461,7 +465,7 @@ describe("openStateDatabases", () => {
   it("decides the pre-v12 backup under the writer lock with a v11 connection open", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-    const v11 = new Database(paths.stateDbPath);
+    const v11 = openFixtureDatabase(paths.stateDbPath);
     try {
       applyMigrations(
         v11,
@@ -489,7 +493,7 @@ describe("openStateDatabases", () => {
       const upgraded = openStateDatabases({ cwd });
       upgraded.close();
 
-      const backup = new Database(
+      const backup = openFixtureDatabase(
         join(paths.projectDir, STATE_PRE_V12_BACKUP_FILENAME),
         { readonly: true, fileMustExist: true },
       );
@@ -517,7 +521,7 @@ describe("openStateDatabases", () => {
   it("creates a verified pre-v15 backup before installing durable run state", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-    const v14 = new Database(paths.stateDbPath);
+    const v14 = openFixtureDatabase(paths.stateDbPath);
     try {
       applyMigrations(
         v14,
@@ -546,7 +550,7 @@ describe("openStateDatabases", () => {
       STATE_PRE_V15_BACKUP_FILENAME,
     );
     expect(existsSync(backupPath)).toBe(true);
-    const backup = new Database(backupPath, {
+    const backup = openFixtureDatabase(backupPath, {
       readonly: true,
       fileMustExist: true,
     });
@@ -580,7 +584,7 @@ describe("openStateDatabases", () => {
 
     const restoredPath = join(paths.projectDir, "restored-pre-v15.sqlite");
     copyFileSync(backupPath, restoredPath);
-    const restored = new Database(restoredPath);
+    const restored = openFixtureDatabase(restoredPath);
     try {
       expect(() =>
         applyMigrations(
@@ -601,7 +605,7 @@ describe("openStateDatabases", () => {
   it("creates a restorable pre-v17 backup before the effect evidence cutover", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-    const v16 = new Database(paths.stateDbPath);
+    const v16 = openFixtureDatabase(paths.stateDbPath);
     try {
       applyMigrations(
         v16,
@@ -623,7 +627,7 @@ describe("openStateDatabases", () => {
       STATE_PRE_V17_BACKUP_FILENAME,
     );
     expect(existsSync(backupPath)).toBe(true);
-    const backup = new Database(backupPath, {
+    const backup = openFixtureDatabase(backupPath, {
       readonly: true,
       fileMustExist: true,
     });
@@ -669,7 +673,7 @@ describe("openStateDatabases", () => {
       STATE_PRE_V19_BACKUP_FILENAME,
     );
     expect(existsSync(backupPath)).toBe(true);
-    const backup = new Database(backupPath, {
+    const backup = openFixtureDatabase(backupPath, {
       readonly: true,
       fileMustExist: true,
     });
@@ -716,7 +720,7 @@ describe("openStateDatabases", () => {
 
     expect(() => openStateDatabases({ cwd })).toThrow();
 
-    const unmigrated = new Database(paths.stateDbPath, {
+    const unmigrated = openFixtureDatabase(paths.stateDbPath, {
       readonly: true,
       fileMustExist: true,
     });
@@ -752,7 +756,7 @@ function seedCurrentMainStateWithoutMigration19(): ReturnType<
 > {
   const paths = resolveStateDatabasePaths({ cwd });
   mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-  const raw = new Database(paths.stateDbPath);
+  const raw = openFixtureDatabase(paths.stateDbPath);
   try {
     applyMigrations(
       raw,
@@ -846,7 +850,7 @@ describe("WAL checkpoint policy", () => {
     } finally {
       driver.close();
     }
-    const reopened = new Database(resolveStateDatabasePaths({ cwd, agencHome: home }).stateDbPath, { readonly: true });
+    const reopened = openFixtureDatabase(resolveStateDatabasePaths({ cwd, agencHome: home }).stateDbPath, { readonly: true });
     try {
       expect(reopened.prepare("SELECT count(*) AS rows FROM wal_policy").get()).toEqual({ rows: 1_500 });
     } finally {
@@ -900,7 +904,7 @@ describe("free-page reclaim", () => {
   it("rewrites a legacy database once when most of it is free, then it is incremental", () => {
     const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
     mkdirSync(paths.projectDir, { recursive: true });
-    const legacy = new Database(paths.stateDbPath);
+    const legacy = openFixtureDatabase(paths.stateDbPath);
     fillAndEmpty(legacy, 4_000);
     expect(autoVacuum(legacy)).toBe(0);
     expect(freePages(legacy)).toBeGreaterThan(3_000);
@@ -934,7 +938,7 @@ describe("free-page reclaim", () => {
   it("leaves a legacy database alone below the free-space threshold and reports why", () => {
     const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
     mkdirSync(paths.projectDir, { recursive: true });
-    const legacy = new Database(paths.stateDbPath);
+    const legacy = openFixtureDatabase(paths.stateDbPath);
     legacy.exec("CREATE TABLE keep (id INTEGER PRIMARY KEY, blob BLOB NOT NULL)");
     const insert = legacy.prepare("INSERT INTO keep (blob) VALUES (?)");
     for (let index = 0; index < 400; index += 1) insert.run(Buffer.alloc(PAGE - 64, 2));

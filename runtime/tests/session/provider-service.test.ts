@@ -3,6 +3,7 @@ import { resolveHomeContext } from "../../src/config/home.js";
 import { resolveProviderFactoryOptions } from "../../src/llm/provider-options.js";
 import { createProvider } from "../../src/llm/provider.js";
 import { resolveProviderRuntimeRequest } from "../../src/llm/provider-request.js";
+import { resolveProviderApiKeyEnvironment } from "../../src/llm/registry/provider-ingress.js";
 import { resolveBuiltInProviderSlug } from "../../src/llm/registry/provider-info.js";
 import { defaultConfig } from "../../src/config/schema.js";
 import {
@@ -47,6 +48,50 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
+  test("replaces a live provider key in memory and uses it again on later preparation", async () => {
+    const environment = Object.freeze({ DEEPSEEK_API_KEY: "old-placeholder" });
+    const service = new SessionProviderService({
+      initialProvider: createProvider("deepseek", { model: "deepseek-flash", apiKey: "old-placeholder" }),
+      environment,
+      resolvePreparationRequest: ({ model }) => ({ requested: { model, apiKey: "old-placeholder" } }),
+    });
+    await service.useSessionApiKey("deepseek", "new-placeholder");
+    expect(service.current().factoryOptions.apiKey).toBe("new-placeholder");
+    expect(service.environment().DEEPSEEK_API_KEY).toBe("new-placeholder");
+    expect(environment.DEEPSEEK_API_KEY).toBe("old-placeholder");
+    const next = await service.prepare({ provider: "deepseek", model: "deepseek-pro" });
+    expect(next.binding.factoryOptions.apiKey).toBe("new-placeholder");
+  });
+
+  test.each([
+    ["grok", "XAI_API_KEY", "GROK_API_KEY"],
+    ["gemini", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  ])("keeps %s alias precedence for an explicit session key without changing ingress", async (provider, canonical, fallback) => {
+    const environment = Object.freeze({ [canonical]: "original-primary", [fallback]: "original-fallback" });
+    const service = new SessionProviderService({
+      initialProvider: createProvider("deepseek", { model: "deepseek-flash", apiKey: "other-provider-key" }),
+      environment,
+    });
+    const binding = service.current();
+    await service.useSessionApiKey(provider, "session-placeholder");
+    expect(resolveProviderApiKeyEnvironment(provider, service.environment())).toEqual({ envVar: canonical, value: "session-placeholder" });
+    expect(service.environment()[fallback]).toBe("original-fallback");
+    expect(environment).toEqual({ [canonical]: "original-primary", [fallback]: "original-fallback" });
+    expect(service.current()).toBe(binding);
+  });
+
+  test("rolls back failed credential preparation without exposing the key", async () => {
+    const service = new SessionProviderService({
+      initialProvider: createProvider("deepseek", { model: "deepseek-flash", apiKey: "old-placeholder" }),
+      environment: { DEEPSEEK_API_KEY: "old-placeholder" },
+      resolvePreparationRequest: () => { throw new Error("new-placeholder"); },
+    });
+    const binding = service.current();
+    await expect(service.useSessionApiKey("deepseek", "new-placeholder")).rejects.toThrow("Could not activate");
+    expect(service.current()).toBe(binding);
+    expect(service.environment().DEEPSEEK_API_KEY).toBe("old-placeholder");
+  });
+
   test("router readiness checks only the selected local credential without vending or network", async () => {
     const readSavedApiKey = vi.fn(async (provider: string) => provider === "deepseek" ? "child-secret" : undefined);
     const authBackend = { kind: "local" as const, vendKey: vi.fn() } as never;
@@ -91,19 +136,6 @@ describe("SessionProviderService", () => {
     expect(prepared).toMatchObject({ authProfile: preview.authProfile, billingSource: preview.billingSource });
     expect(prepared.binding.factoryOptions.apiKey).toBe("saved-deepseek-key");
     await prepared.binding.instance.dispose?.();
-  });
-
-  test("preview applies the same managed entitlement decision as preparation", async () => {
-    const service = new SessionProviderService({
-      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
-      environment: {},
-      authBackend: { kind: "remote" } as never,
-      sessionId: "signed-in-session", subscriptionTier: "free",
-      resolvePreparationRequest: ({ model }) => ({ requested: { model }, runtime: { managedKeysEnabled: true } }),
-    });
-    const selection = { provider: "openrouter", model: "openai/gpt-5" };
-    await expect(service.previewChildDestination(selection)).rejects.toThrow(/active AgenC subscription/u);
-    await expect(service.prepareChild(selection)).rejects.toThrow(/active AgenC subscription/u);
   });
 
   test.each([
@@ -211,94 +243,6 @@ describe("SessionProviderService", () => {
       .rejects.toThrow(/new execution plan/u);
     await expect(service.prepare({ provider: "deepseek", model: "deepseek-flash" }, { apiKey: "child-key" }))
       .rejects.toThrow(/new execution plan/u);
-  });
-
-  test("managed child refuses a vended noncanonical endpoint before sending its key", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => completion("unexpected"));
-    const vendKey = vi.fn((provider: string, sessionId: string) => ({
-      kind: "api-key" as const, provider, sessionId, apiKey: "vended-secret",
-      baseUrl: "https://receiver.example/v1",
-    }));
-    const authBackend = {
-      kind: "local" as const,
-      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(), vendKey,
-      inferAgencModel: vi.fn(), getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
-    };
-    const service = new SessionProviderService({
-      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
-      authBackend,
-      sessionId: "child-session",
-      subscriptionTier: "pro",
-    });
-    const prepared = await service.prepareChild(
-      { provider: "openrouter", model: "x-ai/grok-4.5" },
-      { model: "x-ai/grok-4.5", extra: { fetchImpl } },
-      { managedKeysEnabled: true },
-      true,
-    );
-    await expect(prepared.binding.instance.chat([{ role: "user", content: "hello" }]))
-      .rejects.toThrow(/vended.*endpoint|default endpoint/u);
-    expect(vendKey).toHaveBeenCalledOnce();
-    expect(fetchImpl).not.toHaveBeenCalled();
-    await prepared.binding.instance.dispose?.();
-  });
-
-  test("AgenC child refuses a noncanonical concrete endpoint from vending", async () => {
-    const wire = vi.fn<typeof fetch>(async () => completion("unexpected"));
-    const authBackend = {
-      kind: "local" as const,
-      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(),
-      vendKey: vi.fn(async (provider: string, sessionId: string) => ({
-        kind: "api-key" as const, provider, sessionId,
-        apiKey: "vended-secret", baseUrl: "https://receiver.example/v1",
-      })),
-      inferAgencModel: vi.fn(async () => ({ provider: "deepseek", model: "deepseek-v4-pro" })),
-      getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
-    };
-    const service = new SessionProviderService({
-      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent" }),
-      authBackend,
-      sessionId: "child-session",
-    });
-    const prepared = await service.prepareChild(
-      { provider: "agenc", model: "deepseek-v4-pro" },
-      { model: "deepseek-v4-pro", extra: { fetchImpl: wire } },
-      { managedKeysEnabled: true },
-      true,
-      { provider: "deepseek", model: "deepseek-v4-pro" },
-    );
-    await expect(prepared.binding.instance.chat([{ role: "user", content: "hello" }]))
-      .rejects.toThrow(/endpoint|refused/u);
-    expect(authBackend.vendKey).toHaveBeenCalledOnce();
-    expect(wire).not.toHaveBeenCalled();
-  });
-
-  test("managed child refuses a different inferred concrete provider before vending or sending data", async () => {
-    const wire = vi.fn<typeof fetch>(async () => completion("unexpected"));
-    const authBackend = {
-      kind: "local" as const,
-      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(),
-      vendKey: vi.fn(async (provider: string, sessionId: string) => ({
-        kind: "api-key" as const, provider, sessionId, apiKey: "vended-secret",
-      })),
-      inferAgencModel: vi.fn(async () => ({ provider: "deepseek", model: "deepseek-v4-pro" })),
-      getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
-    };
-    const service = new SessionProviderService({
-      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent" }),
-      authBackend, sessionId: "child-session",
-    });
-    const prepared = await service.prepareChild(
-      { provider: "agenc", model: "agenc" },
-      { model: "agenc", extra: { fetchImpl: wire } },
-      { managedKeysEnabled: true }, true,
-      { provider: "openai", model: "gpt-5.4" },
-    );
-    await expect(prepared.binding.instance.chat([{ role: "user", content: "private task" }]))
-      .rejects.toThrow(/destination changed/u);
-    expect(authBackend.vendKey).not.toHaveBeenCalled();
-    expect(wire).not.toHaveBeenCalled();
-    await prepared.binding.instance.dispose?.();
   });
 
   test("Gemini implicit Vertex routing is refused after credentials resolve", async () => {

@@ -145,6 +145,43 @@ describe("swarmModeProducer", () => {
     );
   });
 
+  test("tells a Light session to load the deferred spawn tools instead of calling them unavailable", async () => {
+    // Live on d0ffc3d2bed8 (--light, swarm on, DeepSeek): the reminder said
+    // spawn_agent "is not available", so the model kept all work local.
+    await persistSwarmMode(true);
+    const attachments = await swarmModeProducer(
+      makeProducerOpts(
+        "turn-light-deferred",
+        "Parallelize these independent checks:\n- API\n- TUI",
+        { lightMode: true, loadedTools: [] },
+      ),
+      {} as never,
+    );
+    const content = (attachments[0] as { content: string }).content;
+    expect(content).toContain('"mode":"parallel"');
+    expect(content).toContain("This parallel route recommends delegation");
+    expect(content).toContain(
+      'load them first with `system.searchTools` and `select: ["spawn_agent", "wait_agent"]`',
+    );
+    expect(content).toContain("If the search reports them missing, continue locally");
+    expect(content).not.toContain("is not available in the visible tool catalog");
+  });
+
+  test("still reports unavailable delegation outside Light when spawn_agent is absent", async () => {
+    await persistSwarmMode(true);
+    const attachments = await swarmModeProducer(
+      makeProducerOpts(
+        "turn-full-missing",
+        "Parallelize these independent checks:\n- API\n- TUI",
+        { loadedTools: [] },
+      ),
+      {} as never,
+    );
+    const content = (attachments[0] as { content: string }).content;
+    expect(content).toContain("is not available in the visible tool catalog");
+    expect(content).not.toContain("system.searchTools");
+  });
+
   test("emits nothing when swarm mode is off", async () => {
     await persistSwarmMode(false);
     expect(await swarmModeProducer(opts, {} as never)).toEqual([]);

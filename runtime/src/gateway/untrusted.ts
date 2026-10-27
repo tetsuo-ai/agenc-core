@@ -93,7 +93,7 @@ export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "- AgenC Core is AgenC's own agent harness/runtime, not just marketplace tooling. It powers the agenc CLI, TUI, daemon, gateway, sessions, tools, skills, providers, permissions, and sandbox.",
   "- Core can do general engineering work in a repo: inspect files, edit code, apply patches, run shell/build/test commands through the permission system, manage sessions, and use reusable skills/plugins.",
   "- The AgenC TUI supports slash commands such as /login, /logout, /whoami, /subscription, /usage, /provider, /model, /skills, /tools, /status, /diff, and /init. Exact command availability depends on the installed build.",
-  "- Core supports BYOK provider keys and managed subscription-backed model access. Paid managed routing can go through the AgenC/OpenRouter gateway; BYOK still works without a subscription.",
+  "- Core uses your own provider keys, your sign-in with a model provider, or a local server. AgenC accounts do not provide models or model proxies.",
   "- The gateway connects Core to Telegram, WebChat, and stdio. Telegram is an answer-only public surface here: group users can ask questions and request generated media, but cannot approve tools, run privileged commands, change sandbox, change wallet policy, or access private host state.",
   "- Private Telegram DMs are owner-only when configured. Public group users should talk to the bot by mention, reply, or slash command in the group.",
   "- Telegram /start, /stop, /status, and /help are owner controls and should be used from the owner's private DM, not the public group.",

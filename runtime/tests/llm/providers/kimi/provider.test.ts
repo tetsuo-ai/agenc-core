@@ -76,6 +76,8 @@ describe("KimiProvider", () => {
     );
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.kimi).toEqual([
       "kimi-k3",
+      "kimi-k3.1-pro",
+      "kimi-k3.1-pro-highspeed",
       "kimi-k2.7-code",
       "kimi-k2.7-code-highspeed",
       "kimi-k2.6",
@@ -101,6 +103,8 @@ describe("KimiProvider", () => {
 
   test.each([
     ["kimi-k3", 1_048_576, 131_072, ["low", "high", "max"], "max"],
+    ["kimi-k3.1-pro", 1_048_576, 131_072, ["low", "high", "max"], "max"],
+    ["kimi-k3.1-pro-highspeed", 1_048_576, 131_072, ["low", "high", "max"], "max"],
     ["kimi-k2.7-code", 262_144, undefined, [], undefined],
     ["kimi-k2.7-code-highspeed", 262_144, undefined, [], undefined],
     ["kimi-k2.6", 262_144, undefined, [], undefined],
@@ -130,7 +134,8 @@ describe("KimiProvider", () => {
           acceptsImageHistory: true,
           supportsExtendedThinking: true,
           acceptsThinkingHistory: true,
-          acceptsReasoningEffort: model === "kimi-k3",
+          acceptsReasoningEffort: levels.length > 0,
+          supportsPromptCaching: true,
         });
     },
   );
@@ -285,8 +290,7 @@ describe("KimiProvider", () => {
     });
   });
 
-  test("replays every intact historical reasoning block only to identical provenance", async () => {
-    const model = "kimi-k3";
+  test.each(["kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"])("replays intact reasoning for %s", async (model) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model),
     );
@@ -680,6 +684,8 @@ describe("KimiProvider", () => {
 
   test.each([
     "kimi-k3",
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
     "kimi-k2.7-code-highspeed",
     "kimi-k2.6",
   ])("blocks unverified structured-output tool loops for %s", async (model) => {

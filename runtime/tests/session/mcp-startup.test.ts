@@ -2871,6 +2871,24 @@ describe("session MCP mutation transactions", () => {
     } finally { await service.dispose?.(); await otherSession.dispose?.(); fixture.cleanup(); }
   });
 
+  it("gives an attached server the session toolPolicy grant that names it, never one the client sent", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const config = { name: "agenc-marketplace-task", transport: "http" as const, endpoint: "http://127.0.0.1:43120/mcp", headers: { Authorization: `Bearer ${"e".repeat(48)}` }, localOnly: true };
+    const service = createSessionMcpService(createSessionMcpManager([]), {
+      authority: fixture.store, environment: {}, noFsWriteToolsFor: (name: string) => name === config.name ? ["echo"] : undefined,
+    });
+    const plainService = createSessionMcpService(createSessionMcpManager([]), { authority: fixture.store, environment: {} });
+    try {
+      await expect(service.addServer?.(config, { replace: true })).resolves.toMatchObject({ success: true });
+      expect(mockCreateToolBridge.mock.calls.at(-1)?.[3]?.serverConfig).toMatchObject({ virtualNoFsWriteTools: ["echo"] });
+      // A client that sends the runtime-owned field itself gets nothing from it.
+      mockCreateToolBridge.mockClear();
+      const forged = await plainService.addServer?.({ ...config, toolPolicyNoFsWriteTools: ["echo"] } as never, { replace: true });
+      if (forged?.success) expect(mockCreateToolBridge.mock.calls.at(-1)?.[3]?.serverConfig?.virtualNoFsWriteTools).toBeUndefined();
+      else expect(mockCreateToolBridge).not.toHaveBeenCalled();
+    } finally { await service.dispose?.(); await plainService.dispose?.(); fixture.cleanup(); }
+  });
+
   it("attaches, idempotently replaces and rotates authenticated local HTTP state without persisting credentials", async () => {
     const fixture = await createMcpAuthorityFixture();
     const before = readFileSync(fixture.userConfigPath, "utf8");
@@ -3009,6 +3027,26 @@ describe("session MCP mutation transactions", () => {
       await service.dispose?.();
       fixture.cleanup();
     }
+  });
+
+  it("removes session additions and restores a shadowed plugin default", async () => {
+    const fixture = await createMcpAuthorityFixture({ base: { mcp_servers: { shared: { command: "plugin-default" } } } });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, { authority: fixture.store, environment: {} });
+    try {
+      await service.refreshFromAuthority?.();
+      await expect(service.addServer?.({ name: "shared", command: "session" })).resolves.toMatchObject({ success: true });
+      await expect(service.removeServer?.("shared")).resolves.toMatchObject({ success: true });
+      expect(harness.configured).toEqual([expect.objectContaining({ name: "shared", command: "plugin-default" })]);
+      await expect(service.removeServer?.("shared")).resolves.toMatchObject({ success: false });
+      await service.addServer?.({ name: "ephemeral", command: "session" });
+      await service.disableServer?.("ephemeral");
+      await expect(service.removeServer?.("ephemeral")).resolves.toMatchObject({ success: true, toolCount: 0 });
+      expect(harness.configured.map(config => config.name)).not.toContain("ephemeral");
+      expect((await service.effectiveServers({}, {})).has("ephemeral")).toBe(false);
+      await service.refreshFromAuthority?.();
+      expect(harness.configured.map(config => config.name)).not.toContain("ephemeral");
+    } finally { await service.dispose?.(); fixture.cleanup(); }
   });
 
   it("serializes concurrent session additions without losing either overlay", async () => {

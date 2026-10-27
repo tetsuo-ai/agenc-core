@@ -60,10 +60,17 @@ export interface ToolMetadata {
    * path argument, such as a media output directory under the workspace
    * root. The runtime sandbox verifies them exactly like `*path` arguments:
    * they must lie inside the writable workspace under workspace_write and
-   * they are refused under read_only. Declare the narrowest location the
-   * tool actually writes to. A tool that writes wherever the model points
-   * keeps its path arguments instead, and `virtualNoFsWrites` stays reserved
-   * for tools that write nothing the sandbox should verify.
+   * they are refused under read_only. The only locations admitted outside
+   * the workspace are the runtime-owned project stores directly under
+   * `<agenc-home>/projects/<key>/` (the task board's `tasks`, the project
+   * state and logs databases, WorkflowTool's `workflow-handoffs`) of the
+   * session's bound AgenC home, through the same AgenC-home carve-out as the
+   * session plan file and durable memory, so operator denies still win. A
+   * target inside the workspace may sit in `.agenc` or `.git` (the protected
+   * metadata rule keeps only model-directed writes out). Declare the narrowest
+   * location the tool actually writes to. A tool that writes wherever the
+   * model points keeps its path arguments instead, and `virtualNoFsWrites`
+   * stays reserved for tools that write nothing the sandbox should verify.
    */
   readonly fixedWriteTargets?: () => readonly string[];
   /**
@@ -226,6 +233,8 @@ export interface Tool {
   readonly maxResultBytes?: number;
   /** MCP-style server id when the tool's class is `shared_server`. */
   readonly serverId?: string;
+  /** Runtime-owned MCP bridge identity, independent of server annotations. */
+  readonly mcpInfo?: { readonly serverName: string; readonly toolName: string };
   /** Router flag: whether this tool supports the model's
    *  `parallel_tool_calls` request knob. Used by `router.ts`. */
   readonly supportsParallelToolCalls?: boolean;

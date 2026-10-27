@@ -167,6 +167,37 @@ function resolveSecureStorageAccount(platform: NodeJS.Platform): string {
   }
 }
 
+/** Select path coordinates only; filesystem identity belongs to the caller's root. */
+function selectHomePathInput(
+  env: HomeEnvironment,
+  platformHome: string | undefined,
+): { readonly path: string; readonly source: "agenc-home" | "default" } | null {
+  const configured = nonEmpty(env.AGENC_HOME);
+  const path = configured ?? (platformHome === undefined ? undefined : join(platformHome, ".agenc"));
+  return path === undefined
+    ? null
+    : { path, source: configured === undefined ? "default" : "agenc-home" };
+}
+
+/**
+ * Inspect an explicit foreign process environment without consulting this
+ * process's home or filesystem. These are unresolved coordinates, not a
+ * HomeContext: discovery must prove their identity inside the candidate root.
+ */
+export function resolveProcessHomePathInput(env: HomeEnvironment): string | null {
+  assertNoRetiredConfigDir(env);
+  return selectHomePathInput(env, nonEmpty(env.HOME))?.path ?? null;
+}
+
+/** Resolve host filesystem coordinates without constructing credential identity. */
+export function resolveHomePath(
+  env: HomeEnvironment = process.env,
+  options: Pick<ResolveHomeContextOptions, "platformHome"> = {},
+): string {
+  assertNoRetiredConfigDir(env);
+  return canonicalizeHomePath(selectHomePathInput(env, options.platformHome ?? homedir())!.path);
+}
+
 /** Resolve the sole normal-runtime home authority: AGENC_HOME. */
 export function resolveHomeContext(
   env: HomeEnvironment = process.env,
@@ -176,10 +207,10 @@ export function resolveHomeContext(
   const platformHome = options.platformHome ?? homedir();
   const platform = options.platform ?? process.platform;
   const defaultPath = join(platformHome, ".agenc");
-  const configured = nonEmpty(env.AGENC_HOME);
+  const input = selectHomePathInput(env, platformHome)!;
   return createHomeContext(
-    configured ?? defaultPath,
-    configured === undefined ? "default" : "agenc-home",
+    input.path,
+    input.source,
     defaultPath,
     platform,
     env,

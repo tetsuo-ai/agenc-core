@@ -1,4 +1,7 @@
 import { resolveHomeContext } from "../config/home.js";
+import { daemonMemoryEvidence, type DaemonMemoryEvidence } from "./daemon-memory-evidence.js";
+import { redactSecrets } from "../secrets/sanitizer.js";
+import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
 import { installAgencDaemonWinSWService } from "../packaging/windows-winsw-service.js";
 import { readAgenCDaemonPid } from "./daemon-discovery.js";
 export { readAgenCDaemonPid, AGENC_DAEMON_PID_MAX_BYTES } from "./daemon-discovery.js";
@@ -8,6 +11,7 @@ import { resolveAgenCDaemonHome, resolveAgenCDaemonPidPath, resolveAgenCDaemonSo
 export { resolveAgenCDaemonHome, resolveAgenCDaemonPidPath, resolveAgenCDaemonSocketPath, resolveAgenCDaemonCookiePath, AGENC_DAEMON_PID_FILENAME, AGENC_DAEMON_COOKIE_FILENAME } from "./daemon-discovery.js";
 /** Canonical daemon lifecycle/control surface. Foreground runtime loads only on run. */
 import { agenCProvisionalAdmissionMessage, observeAgenCSpawnedChildExit, AGENC_DAEMON_PROVISIONAL_ENV } from "./daemon-provisional-admission.js";
+import { findLaunchdDaemonJob, kickstartLaunchdDaemonJob, nodeLaunchdDaemonJobDeps } from "./daemon-launchd-service.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -317,6 +321,13 @@ export interface AgenCDaemonCliIo {
 }
 
 
+export interface AgenCLaunchdDaemonJobHandle {
+  readonly label: string;
+  /** Run the job now: the pid launchd reports, or why it could not. */
+  kickstart(): { readonly pid: number } | { readonly error: string };
+}
+
+
 export interface AgenCDaemonCliHost {
   readonly env: NodeJS.ProcessEnv;
   readonly userHome: string;
@@ -330,6 +341,11 @@ export interface AgenCDaemonCliHost {
     "runtimeVersion" | "commit" | "buildTime"
   > | null;
   spawnDetachedDaemon(env: NodeJS.ProcessEnv): number;
+  /**
+   * macOS: the loaded user launchd job (install.sh or brew services) that runs
+   * this home's daemon. Starts go through it instead of a detached child.
+   */
+  launchdDaemonJob?(env: NodeJS.ProcessEnv): AgenCLaunchdDaemonJobHandle | null;
   /** Private admission capability; present only on this exact provisional child. */
   admitProvisionalDaemon?(pid: number): Promise<boolean>;
   /** Exact child capability retained only for this detached start invocation. */
@@ -912,20 +928,25 @@ export function installAgenCDaemonExitDiagnostics(options: {
   readonly proc?: DaemonExitDiagnosticsProcess;
   readonly now?: () => string;
   readonly exit?: (code: number) => void;
+  readonly memoryEvidence?: () => DaemonMemoryEvidence;
 }): () => void {
   const proc = options.proc ?? (process as DaemonExitDiagnosticsProcess);
   const now = options.now ?? (() => new Date().toISOString());
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const line = (text: string): void => {
     try {
-      options.sink.write(`agenc: daemon ${text} (pid ${proc.pid}) at ${now()}\n`);
+      options.sink.write(`agenc: daemon ${redactSecrets(text)} (pid ${proc.pid}) at ${now()}\n`);
     } catch {
       /* the sink may already be closed; the exit must not fail on its own log */
     }
   };
   const describe = (thrown: unknown): string =>
     thrown instanceof Error ? (thrown.stack ?? thrown.message) : String(thrown);
-  const onExit = (code: number): void => line(`process exit code=${code}`);
+  const evidence = (code: number | null, signal: NodeJS.Signals | null): void => {
+    try { options.sink.write(JSON.stringify({ type: "daemon_exit", pid: proc.pid, at: now(), code, signal,
+      memory: (options.memoryEvidence ?? daemonMemoryEvidence)() }) + "\n"); } catch { /* best effort at exit */ }
+  };
+  const onExit = (code: number): void => { evidence(code, null); line(`process exit code=${code}`); };
   const onUncaught = (error: unknown): void => {
     line(`uncaught exception: ${describe(error)}`);
     exit(1);
@@ -941,6 +962,7 @@ export function installAgenCDaemonExitDiagnostics(options: {
   };
   for (const signal of DAEMON_EXIT_SIGNALS) {
     const handler = (): void => {
+      evidence(null, signal);
       line(`received ${signal}`);
       // Re-raise with our handlers gone so the default termination, and the
       // exit code that goes with it, stands.
@@ -1295,6 +1317,8 @@ export async function startAgenCDaemon(
     | { readonly kind: "provisional-fallback" }
     | { readonly kind: "pending"; readonly pid: number }
     | { readonly kind: "spawned"; readonly pid: number }
+    | { readonly kind: "launchd-started"; readonly pid: number; readonly label: string }
+    | { readonly kind: "launchd-failed"; readonly message: string }
   > => {
     let existingPid = await readAgenCDaemonPid(pidPath);
     const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(dirname(pidPath));
@@ -1485,6 +1509,23 @@ export async function startAgenCDaemon(
         binding: { kind: "legacy", process: untracked.process },
       };
     }
+    const launchdJob = host.launchdDaemonJob?.(host.env) ?? null;
+    if (launchdJob !== null) {
+      // A launchd job with KeepAlive owns this home's daemon. A detached
+      // child here would hold the singleton while launchd respawned its own
+      // copy, which refuses and exits, every few seconds for as long as the
+      // child lives. Let the job start; its foreground admission publishes
+      // the pid once this lock is released.
+      if (options.provisionalStart !== undefined) return { kind: "provisional-fallback" };
+      const started = launchdJob.kickstart();
+      if ("error" in started) {
+        return {
+          kind: "launchd-failed",
+          message: `launchd could not start ${launchdJob.label}: ${started.error}`,
+        };
+      }
+      return { kind: "launchd-started", pid: started.pid, label: launchdJob.label };
+    }
     const childPid = host.spawnDetachedDaemon({
       ...userRuntimeEnvironment(host.env),
       AGENC_DAEMON_RUN: "1",
@@ -1567,9 +1608,24 @@ export async function startAgenCDaemon(
     io.stderr.write(`agenc: refusing daemon start: ${decision.message}\n`);
     return 1;
   }
+  if (decision.kind === "launchd-failed") {
+    io.stderr.write(`agenc: ${decision.message}\n`);
+    return 1;
+  }
+  let targetPid = decision.pid;
+  if (decision.kind === "launchd-started") {
+    // Callers, including the TUI autostart, read the pid file next.
+    const published = await waitForLaunchdDaemonPublication(host, io, pidPath, decision.pid);
+    if (published === null) {
+      io.stderr.write(
+        `agenc: launchd started ${decision.label} (pid ${decision.pid}), but no daemon published its pid before timeout\n`,
+      );
+      return 1;
+    }
+    targetPid = published;
+  }
   if (options.deferDaemonReadyWaitToCaller === true) return 0;
 
-  const targetPid = decision.pid;
   const waitForReady =
     options.waitForDaemonReady ?? defaultWaitForAgenCDaemonReady;
   let ready = await waitForReady(host, false);
@@ -1637,7 +1693,11 @@ export async function startAgenCDaemon(
     }
     return 1;
   }
-  if (decision.kind === "pending" || decision.kind === "spawned") {
+  if (
+    decision.kind === "pending" ||
+    decision.kind === "spawned" ||
+    decision.kind === "launchd-started"
+  ) {
     try {
       // Socket listen precedes the foreground child's sidecar/final-pid
       // commit. Wait through its lifecycle transaction before authenticating
@@ -1710,9 +1770,53 @@ export async function startAgenCDaemon(
   io.stdout.write(
     decision.kind === "spawned"
       ? `AgenC daemon started (pid ${targetPid})\n`
-      : `AgenC daemon already running (pid ${targetPid})\n`,
+      : decision.kind === "launchd-started"
+        ? `AgenC daemon started by launchd ${decision.label} (pid ${targetPid})\n`
+        : `AgenC daemon already running (pid ${targetPid})\n`,
   );
   return 0;
+}
+
+
+/**
+ * Wait for the daemon a launchd kickstart started to publish its pid. With no
+ * detached parent to publish a provisional pid, it writes daemon.pid only at
+ * readiness, which a large home can take minutes to reach. Past the readiness
+ * budget, keep waiting while its startup log advances, as a detached start
+ * does. Another daemon may win admission first; its live pid is just as good.
+ */
+async function waitForLaunchdDaemonPublication(
+  host: AgenCDaemonCliHost,
+  io: AgenCDaemonCliIo,
+  pidPath: string,
+  launchedPid: number,
+): Promise<number | null> {
+  const startedAt = Date.now();
+  const budgetMs = resolveAgenCDaemonReadyTimeoutMs(host.env);
+  const maxWaitMs = Math.max(budgetMs, resolveAgenCDaemonStartMaxWaitMs(host.env));
+  let launchedExitedAt: number | null = null;
+  let reportedSlowStart = false;
+  while (Date.now() - startedAt < maxWaitMs) {
+    const published = await readAgenCDaemonPid(pidPath);
+    if (published !== null && host.isPidRunning(published)) return published;
+    if (!host.isPidRunning(launchedPid)) {
+      // A launch that lost admission exits; the winner publishes right after.
+      launchedExitedAt ??= Date.now();
+      if (Date.now() - launchedExitedAt > 2_000) return null;
+    } else if (Date.now() - startedAt > budgetMs) {
+      const ageMs = daemonStartupLogAgeMs(host);
+      if (ageMs === undefined || ageMs > budgetMs) return null;
+      if (!reportedSlowStart) {
+        reportedSlowStart = true;
+        io.stderr.write(
+          `agenc: daemon process (pid ${launchedPid}) is still starting; its ` +
+            `startup log advanced ${Math.round(ageMs / 1000)} s ago, waiting\n`,
+        );
+      }
+    }
+    await host.sleep(DEFAULT_DAEMON_READY_POLL_MS * 4);
+  }
+  return null;
 }
 
 
@@ -2566,16 +2670,17 @@ export async function requestAgenCDaemonHealthStats(
  */
 export async function requestAgenCDaemonInstanceIdentity(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+  timeoutCeilingMs = Number.POSITIVE_INFINITY,
 ): Promise<AgenCDaemonInstanceIdentity> {
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
   const authCookie = await readAgenCDaemonCookie(cookiePath);
   const responses = await sendAgenCDaemonJsonLineRequests(
     socketPath,
-    resolveAgenCDaemonRequestTimeoutMs(
+    Math.min(timeoutCeilingMs, resolveAgenCDaemonRequestTimeoutMs(
       host.env,
       DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
-    ),
+    )),
     [
       {
         jsonrpc: JSON_RPC_VERSION,
@@ -3001,7 +3106,9 @@ export function sendAgenCDaemonJsonLineRequests(
     let settled = false;
     const timeout = setTimeout(() => {
       finish(
-        new Error(`Timed out waiting for daemon response at ${socketPath}`),
+        Object.assign(new Error(`Timed out waiting for daemon response at ${socketPath}`), {
+          code: "ETIMEDOUT",
+        }),
       );
     }, timeoutMs);
 
@@ -3188,6 +3295,17 @@ export function createNodeDaemonCliHost(
     pid: process.pid,
     platform: process.platform,
     ...(startupGuardReceiver === undefined ? {} : { startupGuardReceiver }),
+    ...(process.platform === "darwin"
+      ? {
+          launchdDaemonJob: (env: NodeJS.ProcessEnv) => {
+            const deps = nodeLaunchdDaemonJobDeps();
+            const job = findLaunchdDaemonJob(resolveAgenCDaemonHome(env, userHome), deps);
+            return job === null
+              ? null
+              : { label: job.label, kickstart: () => kickstartLaunchdDaemonJob(job, deps) };
+          },
+        }
+      : {}),
     spawnDetachedDaemon: (env) => {
       const daemonHome = resolveAgenCDaemonHome(env, userHome);
       // The child works from its home, never from this caller's directory,
@@ -3250,6 +3368,15 @@ export function createNodeDaemonCliHost(
         throw new Error("AgenC daemon child process did not expose a pid");
       }
       const childPid = child.pid;
+      // A parent that is still alive can observe even SIGKILL. No exit status
+      // is inferred from a disappeared PID when this observer is unavailable.
+      child.once("exit", (code, signal) => {
+        try {
+          const path = join(daemonHome, "daemon-exit.json");
+          writeDurableAtomicFileSync(path, `${path}.${childPid}.${randomUUID()}.tmp`,
+            JSON.stringify({ pid: childPid, at: new Date().toISOString(), code, signal }) + "\n");
+        } catch { /* retain the existing log and heartbeat if writing fails */ }
+      });
       const controller = createAgenCDaemonStartupGuardController(
         startupGuardToken,
         createChildProcessStartupGuardChannel(child),

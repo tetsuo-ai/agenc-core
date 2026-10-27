@@ -1,4 +1,5 @@
 #!/usr/bin/env node
 import { main } from "../src/launcher.mjs";
 
+try { process.title = "agenc-launcher"; } catch { /* platform may not support it */ }
 process.exitCode = await main();

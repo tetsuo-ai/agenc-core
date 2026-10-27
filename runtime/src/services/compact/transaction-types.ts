@@ -14,6 +14,7 @@ import type { ProviderReasoningReplay } from "../../llm/types.js";
 export const COMPACTION_EVENT_FORMAT_VERSION = 1 as const;
 /** Minimum reader stamped by writers of the current event format. */
 export const COMPACTION_MINIMUM_READER_RUNTIME = "0.14.0" as const;
+export const MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME = "0.19.0" as const;
 export const COMPACTION_SUMMARY_VERSION = 1 as const;
 export const COMPACTION_SUMMARY_KIND = "compaction_summary" as const;
 export const COMPACTION_BOUNDARY_MARKER_V1 =
@@ -111,6 +112,11 @@ export const MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES = 4_096;
 
 export const MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS = 1_024;
 export const MIN_COMPACTION_RELATIVE_TOKEN_SAVINGS = 0.2;
+export function minimumCompactionTokenSavings(sourceTokens: number, automatic = true): number {
+  return automatic ? MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS
+    : Math.min(MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS,
+      Math.max(1, Math.ceil(sourceTokens * MIN_COMPACTION_RELATIVE_TOKEN_SAVINGS)));
+}
 export const MAX_COMPACTION_FAILURES_PER_HISTORY_DIGEST = 2;
 
 export type CompactionStage = "map" | "reduce" | "final";
@@ -266,6 +272,8 @@ export interface CompactionPersistedIntentV1 extends CompactionEventBaseV1 {
 }
 
 export interface CompactionAccountingObservationV1 {
+  /** Runtime-owned policy, bound to a manual intent by canonical validation. */
+  readonly savings_policy?: "manual_proportional";
   readonly accounting_ref: string;
   readonly source_tokens: number;
   readonly candidate_tokens: number;
@@ -347,6 +355,7 @@ export interface CompactionProjectionMessageV1 {
   readonly endTurn?: boolean;
   readonly providerReasoning?: ProviderReasoningReplay;
   readonly toolResultIntegrity?: ToolResultIntegrity;
+  readonly toolResultIsError?: true;
   readonly agentInvocation?: AgentInvocationChannelMetadata;
   readonly compactionHistory?: CompactionHistoryMarkerV1;
 }
@@ -484,6 +493,7 @@ export interface CompactionTransactionAdapter {
   readonly epoch: number;
   acquireCompactionLease(
     attemptId: string,
+    signal?: AbortSignal,
   ): CompactionTransactionLease | Promise<CompactionTransactionLease>;
   prepareSource(
     attemptId: string,

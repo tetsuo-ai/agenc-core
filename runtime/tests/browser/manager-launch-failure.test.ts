@@ -29,6 +29,7 @@ vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => {
 
 import { BrowserManager } from "../../src/browser/manager.js";
 import type { BrowserPolicy } from "../../src/browser/config.js";
+import { readEffectBoundaryNotCrossed } from "../../src/tools/effect-boundary.js";
 import {
   SandboxExecutionBroker,
   type SandboxPreparedSpawn,
@@ -131,12 +132,14 @@ exitWhenReady();
       let descendant: number | undefined;
       try {
         terminationSeam.failuresRemaining = 1;
-        await expect(manager.newTab()).rejects.toMatchObject({
+        const error = await manager.newTab().catch((failure: unknown) => failure);
+        expect(error).toMatchObject({
           name: "BrowserLaunchCleanupError",
           cleanupError: expect.objectContaining({
             message: "injected browser launch cleanup failure",
           }),
         });
+        expect(readEffectBoundaryNotCrossed(error, new Date().toISOString())).toBeUndefined();
         expect(existsSync(marker)).toBe(true);
         descendant = (
           JSON.parse(readFileSync(marker, "utf8")) as { descendant: number }

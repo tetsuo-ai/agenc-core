@@ -2,6 +2,7 @@ import { withOneShotWriteScope } from "../durability/one-shot-durability.js";
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { updateAgentRunStatus } from "./agent-runs.js";
+import { turnDurabilityOpen } from "../durability/turn-durability.js";
 import {
   writeSessionSnapshotAtomically,
   type SessionSnapshotWriteRecord,
@@ -184,6 +185,12 @@ interface SnapshotRow {
 
 const DEFAULT_PERIODIC_INTERVAL_MS = 30_000;
 const DEFAULT_COALESCE_INTERVAL_MS = 1_000;
+/**
+ * Inside a running turn, how long the first change after a quiet period waits
+ * for its snapshot write (at most the coalescing window). See
+ * `#requestSnapshot`.
+ */
+const IN_TURN_SNAPSHOT_DELAY_MS = 250;
 const DEFAULT_MAX_CONVERSATION_EVENTS = 200;
 const DEFAULT_MAX_TRACKED_SESSIONS = 1_024;
 // Completed calls are already persisted row-by-row in in_flight_tool_calls
@@ -515,8 +522,15 @@ export class AgenCSessionSnapshotPolicy {
       },
       conversationKey("user", exchange.messageId),
     );
-    if (!appended) return undefined;
-    return this.#requestSnapshot(state, "message_exchange");
+    // The exchange is complete (message.stream is returning): write what it
+    // changed now, including what its turn deferred, so a client that reads
+    // state right after message.stream returns sees it.
+    if (!appended) {
+      return state.dirty && !state.writing
+        ? this.#writeSnapshot(state, state.pendingTrigger ?? "message_exchange")
+        : undefined;
+    }
+    return this.#requestSnapshot(state, "message_exchange", true);
   }
 
   recordAgentStatusTransition(
@@ -632,7 +646,7 @@ export class AgenCSessionSnapshotPolicy {
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
           unknownOutcomeGate: "flag",
-        }));
+        }), toolRecoveryCategoryField(params, "recoveryCategory"));
         if (startOutcome.gateViolation !== undefined) {
           state.toolState.inFlight[requestId] = {
             ...state.toolState.inFlight[requestId],
@@ -768,7 +782,7 @@ export class AgenCSessionSnapshotPolicy {
           ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
-        }));
+        }), toolRecoveryCategoryField(previous ?? {}, "recoveryCategory"));
         delete state.toolState.inFlight[callId];
         state.toolState.completed[callId] = {
           ...(previous ?? {}),
@@ -866,7 +880,7 @@ export class AgenCSessionSnapshotPolicy {
           ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
-        }));
+        }), toolRecoveryCategoryField(previous ?? {}, "recoveryCategory"));
         state.toolState.inFlight[callId] = {
           ...(previous ?? {}),
           requestId: callId,
@@ -978,14 +992,22 @@ export class AgenCSessionSnapshotPolicy {
    * this project WAL at close/promotion. Do not batch across tool events or
    * skip the unknown-outcome checks: live readers need these rows now.
    */
-  #writeToolIndex<T>(state: SessionSnapshotState, write: () => T): T {
+  #writeToolIndex<T>(
+    state: SessionSnapshotState,
+    write: () => T,
+    recoveryCategory?: string,
+  ): T {
     const runId = state.agentId;
     if (runId === undefined || this.#driver.state.inTransaction ||
         !this.#driver.isRelaxedOneShotRun(runId) ||
         this.#driver.prepareState<[string], { agent_id: string }>(
           "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
         ).get(state.sessionId)?.agent_id !== runId) {
-      return write();
+      // An idempotent call's row is observer state only: the unknown-outcome
+      // gate, recovery and effect reviews never depend on it. Skip its fsync.
+      return recoveryCategory === "idempotent" && !this.#driver.state.inTransaction
+        ? this.#driver.transactionImmediate(write, "observational")
+        : write();
     }
     return withOneShotWriteScope(this.#driver.projectDir, runId, () =>
       this.#driver.transaction(write),
@@ -1047,10 +1069,23 @@ export class AgenCSessionSnapshotPolicy {
    * period) or fold the change into one trailing write at most
    * `coalesceIntervalMs` after the previous write. The decision uses the
    * policy clock so the write cadence is deterministic under injected clocks.
+   *
+   * Inside a running turn nothing is written at once: the first change after
+   * a quiet period waits {@link IN_TURN_SNAPSHOT_DELAY_MS}, later ones fold
+   * into the trailing write as usual. Between two model requests a turn
+   * records a reply, its tool calls and their results, and a snapshot written
+   * at the first of them was a synchronous SQLite commit on the path to the
+   * next request; delayed, it usually lands while the model works on that
+   * request. The snapshot is the daemon's recovery convenience next to the
+   * canonical rollout, which every such event is already written to, so a
+   * change waiting less than the coalescing window is what tool bursts
+   * already accepted. The exchange boundary (`recordMessageExchange`, after
+   * the turn) still writes at once.
    */
   #requestSnapshot(
     state: SessionSnapshotState,
     trigger: SnapshotPolicyTrigger,
+    exchangeBoundary = false,
   ): SnapshotPolicySnapshotRecord | undefined {
     state.dirty = true;
     state.revision += 1;
@@ -1062,6 +1097,8 @@ export class AgenCSessionSnapshotPolicy {
       state.lastWriteMs === undefined || !Number.isFinite(nowMs)
         ? Number.POSITIVE_INFINITY
         : nowMs - state.lastWriteMs;
+    const inTurn = !exchangeBoundary && this.#coalesceIntervalMs > 0 &&
+      turnDurabilityOpen(state.agentId ?? state.sessionId);
     // A completed message exchange is a turn boundary: it is written at once
     // (carrying any coalesced tool state with it) so a client that reads state
     // right after message.stream returns sees it. Only streaming chunks and
@@ -1070,17 +1107,21 @@ export class AgenCSessionSnapshotPolicy {
     // bumped past a clock that did not advance; that still counts as inside
     // the window.
     if (
-      trigger === "message_exchange" ||
-      this.#coalesceIntervalMs === 0 ||
-      sinceLastWriteMs >= this.#coalesceIntervalMs
+      !inTurn && (
+        trigger === "message_exchange" ||
+        this.#coalesceIntervalMs === 0 ||
+        sinceLastWriteMs >= this.#coalesceIntervalMs
+      )
     ) {
       return this.#writeSnapshot(state, trigger, nowIso);
     }
     if (state.coalesceTimer === undefined) {
-      const delayMs = Math.min(
-        this.#coalesceIntervalMs,
-        Math.max(1, this.#coalesceIntervalMs - sinceLastWriteMs),
-      );
+      const delayMs = inTurn && sinceLastWriteMs >= this.#coalesceIntervalMs
+        ? Math.min(this.#coalesceIntervalMs, IN_TURN_SNAPSHOT_DELAY_MS)
+        : Math.min(
+          this.#coalesceIntervalMs,
+          Math.max(1, this.#coalesceIntervalMs - sinceLastWriteMs),
+        );
       this.#scheduleSnapshot(state, delayMs);
     }
     return undefined;
@@ -1108,6 +1149,9 @@ export class AgenCSessionSnapshotPolicy {
           writeSessionSnapshotAtomically(this.#driver, pending.record, {
             updateRunLastSnapshotAt: true, replayOnStartup: true, verifyExisting: true,
             oneShotRunId: state.agentId,
+            // Between a running turn's steps: process-crash durable, flushed
+            // at the turn boundary (turn-scoped durability).
+            deferSync: turnDurabilityOpen(state.agentId ?? state.sessionId),
           }),
         );
         state.pendingWrite = undefined;

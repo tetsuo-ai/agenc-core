@@ -95,13 +95,14 @@ describe.each(["deepseek", "kimi"] as const)("%s buffered tool progress", name =
     expect(run.chunks.filter(chunk => chunk.toolCalls?.length).every(chunk => chunk.done)).toBe(true);
   });
 
-  test.each(["", "   "])("empty tool argument deltas (%j) cannot keep reasoning alive", async arguments_ => {
+  test.each(["", "   "])("empty tool argument deltas (%j) do not invent a reasoning-silence deadline", async arguments_ => {
     vi.useFakeTimers();
     const run = probe(name, Array.from({ length: 4 }, () => ({ tool_calls: [{
       index: 0, function: { arguments: arguments_ },
     }] })));
-    await vi.advanceTimersByTimeAsync(REASONING_NO_PROGRESS_MS + 1);
-    expect((await run.pending).cause).toMatchObject({ reason: "stream_no_progress" });
+    await vi.advanceTimersByTimeAsync(4 * 60_000 + 1);
+    const result = await run.pending;
+    expect(result?.cause).not.toMatchObject({ reason: "stream_no_progress" });
     expect(run.fetchImpl).toHaveBeenCalledOnce();
     expect(run.chunks.some(chunk => chunk.bufferedContentProgress || chunk.toolCalls)).toBe(false);
   });
@@ -190,11 +191,12 @@ describe.each([true, false])("delayed terminal tool progress (Responses=%s)", us
   });
 });
 
-test("replayed Responses items cannot keep the idle watchdog alive", async () => {
+test("replayed Responses items are byte liveness until the terminal event", async () => {
   vi.useFakeTimers();
   const run = delayedTerminalProbe(true, false, true);
-  await vi.advanceTimersByTimeAsync(105_001);
-  expect((await run.pending).message).toMatch(/^stream_idle:/);
+  await vi.advanceTimersByTimeAsync(180_001);
+  expect(await run.pending).toBeUndefined();
+  expect(run.signal()?.aborted).toBe(false);
   expect(run.fetchImpl).toHaveBeenCalledOnce();
-  expect(run.chunks).toEqual([{ content: "", done: false, bufferedContentProgress: true }]);
+  expect(run.chunks.filter(chunk => chunk.bufferedContentProgress)).toEqual([{ content: "", done: false, bufferedContentProgress: true }]);
 });

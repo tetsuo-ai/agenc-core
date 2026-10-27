@@ -14,7 +14,6 @@ import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
 import { loadCanonicalConfig } from "../config/repository.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import { readAccountModelAccess } from "../auth/account-access.js";
-import { saveAccountDefaultModel } from "../auth/account-default.js";
 
 export type AgenCAuthCliCommand =
   | { readonly kind: "account-access" }
@@ -50,7 +49,7 @@ export function formatAgenCAuthCliHelpText(): string {
     "  login     Sign in using the configured AgenC auth backend",
     "  logout    Clear the current AgenC auth session",
     "  whoami    Show the current AgenC auth identity",
-    "  account-access --json  Show current AgenC model access and credits (may claim an eligible promotion)",
+    "  account-access --json  Show account sign-in status (models are no longer provided)",
     "",
     "Examples:",
     "  agenc login",
@@ -132,21 +131,6 @@ async function runAuthBackendCommand(
       io.stdout.write(
         `Logged in as ${formatAgenCAuthIdentity(result.identity)}\n`,
       );
-      // Authentication succeeds independently of campaign availability. Keep
-      // configured BYOK defaults, but make a fresh account ready for AgenC.
-      if (backend.kind === "remote") {
-        const access = await readAccountModelAccess(backend);
-        if (access.models.length > 0) {
-          const ingress = captureSecureStorageIngress(options.env ?? process.env, options.agencHome);
-          try {
-            const selected = saveAccountDefaultModel(ingress.home.path, access);
-            io.stdout.write(selected ? "AgenC model access is ready for new sessions.\n" :
-              "AgenC model access is ready. Your current provider was kept.\n");
-          } catch {
-            io.stderr.write("Signed in. Select AgenC in Providers to finish model setup.\n");
-          }
-        }
-      }
       return 0;
     }
     if (action === "logout") {

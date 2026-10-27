@@ -10,8 +10,9 @@
  * download the platform tarball named in agenc-runtime-manifest-v2.json, verify
  * its sha256, extract under <AGENC_HOME>/runtime/<version>/, record the sha in
  * the .agenc-runtime-ok marker, then repoint the generated shell wrapper at
- * the new runtime. Old runtime trees stay in place so a running daemon keeps
- * working until it is restarted.
+ * the new runtime. On macOS, activation also replaces a stable signed Node
+ * executable and then prunes unused runtimes, keeping current and previous
+ * versions plus any version still used by a running process.
  *
  * npm-launcher installs pin their runtime through the manifest bundled into
  * @tetsuo-ai/agenc, so there is no wrapper to rewrite — update detects that
@@ -25,6 +26,7 @@
  * installer generation signature are ever rewritten.
  */
 
+import { detectHomebrew, HOMEBREW_UPDATE_COMMAND } from "../utils/nativeInstaller/homebrew.js";
 import {
   spawn,
   spawnSync,
@@ -108,13 +110,45 @@ import {
   resolveTrustedWindowsSystemPaths,
 } from "../utils/windows-system-path.js";
 
+import {
+  describeStableNode, installStableNode, stableNodePath,
+  type StableNodeDescription,
+} from "../../../packages/agenc/lib/stable-node.mjs";
+import {
+  beginRuntimeUpdate, endRuntimeUpdate, recordRuntimeActivation, pruneRuntimes,
+  type RuntimePruneResult,
+} from "../../../packages/agenc/lib/runtime-maintenance.mjs";
+
 export const DEFAULT_RELEASE_REPO = OFFICIAL_RELEASE_REPOSITORY;
 export const MINIMUM_PRIVATE_NODE_UPDATE_VERSION =
   MINIMUM_PRIVATE_NODE_RUNTIME_VERSION;
 const RUNTIME_MARKER = ".agenc-runtime-ok";
 const OFFICIAL_PROVENANCE_RECEIPT = ".agenc-official-provenance-v1.json";
 const PRIVATE_NODE_IDENTITY_REL = "node_modules/.agenc-node/identity.json";
-const DEFAULT_UPDATE_FETCH_TIMEOUT_MS = 120_000;
+/**
+ * Every HTTPS transfer the updater makes (manifest, runtime artifact, Sigstore
+ * bundles, GitHub CLI bootstrap) gets its own limits, and those limits follow
+ * progress. One fixed 120 s deadline used to cover the whole download and
+ * verification chain, so a link under about 2 MB/s could not update.
+ *
+ * - Response: connect, TLS and response headers of one request, per redirect
+ *   hop. undici still bounds the TCP connect at 10 s underneath.
+ * - Idle: the longest wait for the next body bytes. 30 s spans about five
+ *   back-to-back TCP retransmission timeouts (1+2+4+8+16 s). A transfer with
+ *   no data for that long rarely recovers, and a rerun reconnects at once.
+ * - Total: the signed size at a 128 KiB/s floor plus 30 s, and never under
+ *   2 minutes. install.sh uses the same formula, so a link that can install
+ *   can also update. A ~127 MB runtime may take about 17 minutes while bytes
+ *   flow; the 256 MiB artifact ceiling bounds a byzantine trickle at about
+ *   35 minutes.
+ */
+const UPDATE_RESPONSE_TIMEOUT_MS = 30_000;
+const UPDATE_IDLE_TIMEOUT_MS = 30_000;
+const UPDATE_MINIMUM_BYTES_PER_SECOND = 128 * 1024;
+const UPDATE_TRANSFER_ALLOWANCE_MS = 30_000;
+const UPDATE_MINIMUM_TRANSFER_TIMEOUT_MS = 120_000;
+/** Each local verification step (hashing, extraction, verifier runs). */
+const DEFAULT_UPDATE_STEP_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGED_PRIVATE_NODE_TIMEOUT_MS = 15_000;
 const STAGED_PRIVATE_NODE_MAX_OUTPUT_BYTES = 16 * 1024;
 
@@ -641,37 +675,206 @@ export function updatePlatformSlug(
   return { os: platform === "win32" ? "win" : platform, arch };
 }
 
+/** Overrides for one transfer's limits. Omitted fields keep the defaults. */
+export interface UpdateTransferLimits {
+  /** Connect, TLS and response headers of one request hop. */
+  readonly responseTimeoutMs?: number;
+  /** Longest wait for the next body bytes. */
+  readonly idleTimeoutMs?: number;
+  /** Whole transfer; defaults to the size-scaled cap. */
+  readonly totalTimeoutMs?: number;
+}
+
+export interface UpdateDownloadProgress {
+  /** The transfer, for example "runtime artifact" or "GitHub CLI bootstrap". */
+  readonly resource: string;
+  readonly receivedBytes: number;
+  readonly totalBytes: number;
+  readonly elapsedMs: number;
+}
+
+export type UpdateDownloadProgressListener = (progress: UpdateDownloadProgress) => void;
+
+/** A transfer hit one of its limits. Nothing was installed, so a rerun is safe. */
+export class UpdateTransferTimeoutError extends Error {
+  readonly code = "UPDATE_TRANSFER_TIMEOUT";
+
+  constructor(
+    message: string,
+    readonly resource: string,
+    readonly limit: "response" | "idle" | "total",
+  ) {
+    super(message);
+    this.name = "UpdateTransferTimeoutError";
+  }
+}
+
+/** The total cap for one transfer: its signed size at the floor rate, plus slack. */
+function updateTransferTimeoutMs(expectedBytes?: number): number {
+  if (expectedBytes === undefined) return UPDATE_MINIMUM_TRANSFER_TIMEOUT_MS;
+  return Math.max(
+    UPDATE_MINIMUM_TRANSFER_TIMEOUT_MS,
+    Math.ceil(expectedBytes / UPDATE_MINIMUM_BYTES_PER_SECOND) * 1000 +
+      UPDATE_TRANSFER_ALLOWANCE_MS,
+  );
+}
+
+interface TransferState {
+  readonly resource: string;
+  readonly responseTimeoutMs: number;
+  readonly idleTimeoutMs: number;
+  readonly expectedBytes?: number;
+  received: number;
+}
+
 interface FetchDeadline {
   readonly controller: AbortController;
+  readonly startedAt: number;
   readonly deadline: number;
   readonly timeoutMs: number;
+  /** Present for network transfers, whose waits also have progress limits. */
+  readonly transfer?: TransferState;
+  /**
+   * The limit that ended the operation. Aborting the transport can surface
+   * its own "aborted" error first, so callers report this one instead.
+   */
+  expired?: Error;
 }
+
+/** What a transfer is waiting for. Each wait gets its own window. */
+type FetchWait = "response" | "body" | "cleanup";
 
 function createFetchDeadline(timeoutMs: number): FetchDeadline {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError("update fetch timeoutMs must be a positive safe integer");
   }
+  const startedAt = performance.now();
   return {
     controller: new AbortController(),
-    deadline: performance.now() + timeoutMs,
+    startedAt,
+    deadline: startedAt + timeoutMs,
     timeoutMs,
   };
 }
 
+function createTransferDeadline(
+  resource: string,
+  expectedBytes: number | undefined,
+  limits: UpdateTransferLimits = {},
+): FetchDeadline {
+  const responseTimeoutMs = limits.responseTimeoutMs ?? UPDATE_RESPONSE_TIMEOUT_MS;
+  const idleTimeoutMs = limits.idleTimeoutMs ?? UPDATE_IDLE_TIMEOUT_MS;
+  for (const value of [responseTimeoutMs, idleTimeoutMs]) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new TypeError("update transfer limits must be positive safe integers");
+    }
+  }
+  return {
+    ...createFetchDeadline(limits.totalTimeoutMs ?? updateTransferTimeoutMs(expectedBytes)),
+    transfer: {
+      resource,
+      responseTimeoutMs,
+      idleTimeoutMs,
+      ...(expectedBytes === undefined ? {} : { expectedBytes }),
+      received: 0,
+    },
+  };
+}
+
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${milliseconds} ms`;
+  const seconds = Math.round(milliseconds / 1_000);
+  if (seconds < 60) return `${seconds} s`;
+  const remainder = seconds % 60;
+  return `${Math.floor(seconds / 60)} min${remainder === 0 ? "" : ` ${remainder} s`}`;
+}
+
+function formatMegabytes(bytes: number): string {
+  return (bytes / 1_000_000).toFixed(1);
+}
+
+function describeTransferredBytes(transfer: TransferState): string {
+  const { received, expectedBytes } = transfer;
+  if (expectedBytes === undefined) {
+    return received >= 1_000_000
+      ? `${formatMegabytes(received)} MB received`
+      : `${received} bytes received`;
+  }
+  return expectedBytes >= 1_000_000
+    ? `${formatMegabytes(received)} of ${formatMegabytes(expectedBytes)} MB received`
+    : `${received} of ${expectedBytes} bytes received`;
+}
+
+function fetchTimeoutError(
+  guard: FetchDeadline,
+  label: string,
+  wait: FetchWait,
+  totalExpired: boolean,
+): Error {
+  const transfer = guard.transfer;
+  if (transfer === undefined || wait === "cleanup") {
+    return new Error(`${label} timed out after ${guard.timeoutMs}ms`);
+  }
+  if (totalExpired) {
+    return new UpdateTransferTimeoutError(
+      `${transfer.resource} download did not finish within ` +
+        `${formatDuration(guard.timeoutMs)} (${describeTransferredBytes(transfer)})`,
+      transfer.resource,
+      "total",
+    );
+  }
+  if (wait === "response") {
+    return new UpdateTransferTimeoutError(
+      `${transfer.resource} server did not respond within ` +
+        formatDuration(transfer.responseTimeoutMs),
+      transfer.resource,
+      "response",
+    );
+  }
+  return new UpdateTransferTimeoutError(
+    `${transfer.resource} download stalled: no data for ` +
+      `${formatDuration(transfer.idleTimeoutMs)} (${describeTransferredBytes(transfer)})`,
+    transfer.resource,
+    "idle",
+  );
+}
+
+/**
+ * Race one operation against its guard. A local step waits up to the guard's
+ * fixed deadline. A transfer wait also ends when its own window passes: the
+ * response limit while headers are pending, the idle limit while body bytes or
+ * cleanup are pending. The window starts with each wait, so time spent writing
+ * to disk never counts as network silence.
+ */
 async function waitForFetchDeadline<T>(
   operation: PromiseLike<T>,
   guard: FetchDeadline,
   label: string,
+  wait: FetchWait = "body",
 ): Promise<T> {
-  const remaining = Math.ceil(guard.deadline - performance.now());
+  const now = performance.now();
+  const windowMs = guard.transfer === undefined
+    ? Number.POSITIVE_INFINITY
+    : wait === "response"
+      ? guard.transfer.responseTimeoutMs
+      : guard.transfer.idleTimeoutMs;
+  const totalExpired = guard.deadline <= now + windowMs;
+  const remaining = Math.ceil(Math.min(guard.deadline, now + windowMs) - now);
+  const expire = (): Error => {
+    const error = fetchTimeoutError(guard, label, wait, totalExpired);
+    // A cleanup wait never replaces the error that started the cleanup.
+    if (wait !== "cleanup") guard.expired ??= error;
+    return error;
+  };
   if (remaining <= 0) {
+    const error = expire();
     guard.controller.abort();
-    throw new Error(`${label} timed out after ${guard.timeoutMs}ms`);
+    throw error;
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${guard.timeoutMs}ms`));
+      reject(expire());
       guard.controller.abort();
     }, remaining);
   });
@@ -682,20 +885,25 @@ async function waitForFetchDeadline<T>(
   }
 }
 
+function recordTransferBytes(guard: FetchDeadline, count: number): void {
+  if (guard.transfer !== undefined) guard.transfer.received += count;
+}
+
 async function fetchToFile(
   url: string,
   dest: string,
   expectedBytes: number,
   trustMode: RuntimeManifestTrustMode,
   fetchImpl: typeof fetch,
-  timeoutMs: number,
-  limits: {
+  transferLimits: UpdateTransferLimits,
+  options: {
     readonly maximumBytes?: number;
     readonly label?: string;
+    readonly onProgress?: UpdateDownloadProgressListener;
   } = {},
 ): Promise<void> {
-  const maximumBytes = limits.maximumBytes ?? MAX_RUNTIME_ARTIFACT_BYTES;
-  const label = limits.label ?? "runtime artifact";
+  const maximumBytes = options.maximumBytes ?? MAX_RUNTIME_ARTIFACT_BYTES;
+  const label = options.label ?? "runtime artifact";
   if (
     !Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 ||
     expectedBytes > maximumBytes
@@ -766,7 +974,7 @@ async function fetchToFile(
   if (trustMode === "explicitLocal" || parsed.protocol !== "https:") {
     throw new Error("remote runtime manifests may only use HTTPS artifact URLs");
   }
-  const guard = createFetchDeadline(timeoutMs);
+  const guard = createTransferDeadline(label, expectedBytes, transferLimits);
   let response: Response | undefined;
   try {
     response = await fetchHttpsWithReviewedRedirects(
@@ -799,12 +1007,18 @@ async function fetchToFile(
     await pipeline(
       readable,
       (source: AsyncIterable<unknown>) =>
-        requireExactRuntimeBytes(source, expectedBytes, guard, label),
+        requireExactRuntimeBytes(
+          source,
+          expectedBytes,
+          guard,
+          label,
+          options.onProgress,
+        ),
       createWriteStream(dest, { flags: "wx", mode: 0o600 }),
     );
   } catch (error) {
     if (response !== undefined) await cancelResponseBody(response, guard);
-    throw error;
+    throw guard.expired ?? error;
   } finally {
     guard.controller.abort();
   }
@@ -815,6 +1029,7 @@ async function* requireExactRuntimeBytes(
   expectedBytes: number,
   guard?: FetchDeadline,
   label = "runtime artifact",
+  onProgress?: UpdateDownloadProgressListener,
 ): AsyncGenerator<Buffer> {
   let received = 0;
   const iterator = source[Symbol.asyncIterator]();
@@ -838,6 +1053,15 @@ async function* requireExactRuntimeBytes(
           `(expected ${expectedBytes}, received at least ${received})`,
         );
       }
+      if (guard !== undefined) {
+        recordTransferBytes(guard, chunk.length);
+        onProgress?.({
+          resource: label,
+          receivedBytes: received,
+          totalBytes: expectedBytes,
+          elapsedMs: performance.now() - guard.startedAt,
+        });
+      }
       yield chunk;
     }
   } finally {
@@ -853,6 +1077,7 @@ async function* requireExactRuntimeBytes(
             returning,
             guard,
             `${label} body cancellation`,
+            "cleanup",
           );
         } catch {
           void Promise.resolve(returning).catch(() => undefined);
@@ -893,6 +1118,7 @@ async function fetchHttpsWithReviewedRedirects(
       }),
       guard,
       `${label} response`,
+      "response",
     );
     if (!REDIRECT_STATUSES.has(response.status)) {
       let responseUrl: URL | undefined;
@@ -1033,6 +1259,7 @@ async function cancelResponseBody(
       cancellation,
       guard,
       "runtime response cancellation",
+      "cleanup",
     );
   } catch {
     // The transport is also aborted by the owning fetch boundary. Never let a
@@ -1083,6 +1310,7 @@ async function readBoundedManifestResponse(
       if (received > MAX_RUNTIME_MANIFEST_BYTES) {
         throw new Error(`runtime manifest exceeds ${MAX_RUNTIME_MANIFEST_BYTES} bytes`);
       }
+      recordTransferBytes(guard, chunk.length);
       chunks.push(chunk);
     }
   } catch (error) {
@@ -1093,6 +1321,7 @@ async function readBoundedManifestResponse(
           returning,
           guard,
           "runtime manifest body cancellation",
+          "cleanup",
         );
       } catch {
         void Promise.resolve(returning).catch(() => undefined);
@@ -1151,9 +1380,12 @@ export async function fetchRuntimeManifest(
   if (trustMode === "explicitLocal") {
     raw = await readBoundedLocalManifest(url);
   } else {
-    const guard = createFetchDeadline(
-      options.timeoutMs ?? DEFAULT_UPDATE_FETCH_TIMEOUT_MS,
-    );
+    // The manifest declares no size up front, so its cap stays fixed (2 min by
+    // default, shorter for interactive checks). It still fails early when the
+    // server does not respond or stops sending.
+    const guard = createTransferDeadline("runtime manifest", undefined, {
+      totalTimeoutMs: options.timeoutMs ?? UPDATE_MINIMUM_TRANSFER_TIMEOUT_MS,
+    });
     try {
       const response = await fetchHttpsWithReviewedRedirects(
         url,
@@ -1168,6 +1400,8 @@ export async function fetchRuntimeManifest(
         );
       }
       raw = await readBoundedManifestResponse(response, guard);
+    } catch (error) {
+      throw guard.expired ?? error;
     } finally {
       guard.controller.abort();
     }
@@ -1690,9 +1924,11 @@ function syncRuntimeTree(path: string): void {
   if (!metadata.isFile()) {
     throw new Error(`runtime staging tree contains an unsupported entry: ${path}`);
   }
+  // fsyncSync is FlushFileBuffers on Windows, which needs write access; a
+  // read-only handle fails with EPERM there.
   const descriptor = openSync(
     path,
-    fsConstants.O_RDONLY |
+    (process.platform === "win32" ? fsConstants.O_RDWR : fsConstants.O_RDONLY) |
       (fsConstants.O_NOFOLLOW ?? 0) |
       (fsConstants.O_NONBLOCK ?? 0),
   );
@@ -1910,6 +2146,13 @@ export async function resolveTrustedSystemTar(
     USERPROFILE: powershellRoot,
     WINDIR: systemRoot,
   };
+  // `-Command` appends any argument after it to the command text, so `$args`
+  // stayed empty, -LiteralPath got $null and the check failed on every
+  // Windows host. The path travels in the environment and the script as
+  // -EncodedCommand.
+  const authenticodeScript =
+    "$s=Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:AGENC_AUTHENTICODE_PATH;" +
+    "if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'Microsoft'){exit 51}";
   const signature = await runProcess(
     powershell,
     [
@@ -1918,15 +2161,13 @@ export async function resolveTrustedSystemTar(
       "-NonInteractive",
       "-ExecutionPolicy",
       "Bypass",
-      "-Command",
-      "$s=Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $args[0];" +
-        "if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'Microsoft'){exit 51}",
-      tarPath,
+      "-EncodedCommand",
+      Buffer.from(authenticodeScript, "utf16le").toString("base64"),
     ],
     {
       cwd: powershellRoot,
       encoding: "utf8",
-      env: toolEnv,
+      env: { ...toolEnv, AGENC_AUTHENTICODE_PATH: tarPath },
       maxBuffer: 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
       timeout: timeoutMs,
@@ -2285,7 +2526,12 @@ export interface OfficialRuntimeArtifactProvenanceOptions {
   readonly artifact: RuntimeManifestArtifact;
   readonly artifactPath: string;
   readonly fetchImpl?: typeof fetch;
+  /** Bound for each local verification step. Downloads use transferLimits. */
   readonly timeoutMs?: number;
+  /** Overrides for the bundle and GitHub CLI downloads. */
+  readonly transferLimits?: UpdateTransferLimits;
+  /** Progress of the GitHub CLI bootstrap download. */
+  readonly onDownloadProgress?: UpdateDownloadProgressListener;
   readonly platform?: NodeJS.Platform;
   readonly arch?: string;
   readonly tmpDir?: string;
@@ -2562,15 +2808,19 @@ export async function runPreparedOfficialAttestationVerifier(options: {
  * archive parsing or extraction. The verifier itself is fetched from a source-
  * pinned GitHub CLI release, checked by exact byte count and SHA-256, and run
  * from an isolated configuration directory without ambient GitHub credentials.
+ *
+ * Each download has its own transfer limits and each local step its own
+ * timeoutMs, so a slow earlier transfer never shortens a later check.
  */
 export async function verifyOfficialRuntimeArtifactProvenance(
   options: OfficialRuntimeArtifactProvenanceOptions,
 ): Promise<void> {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_UPDATE_FETCH_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError("provenance verification timeoutMs must be a positive safe integer");
   }
-  const guard = createFetchDeadline(timeoutMs);
+  const stepGuard = (): FetchDeadline => createFetchDeadline(timeoutMs);
+  const transferLimits = options.transferLimits ?? {};
   validateRuntimeReleaseManifest(
     options.manifest as unknown as RuntimeReleaseManifest,
     { trustMode: "official" },
@@ -2617,7 +2867,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
     options.artifactPath,
     artifact.bytes,
     "runtime artifact",
-    guard,
+    stepGuard(),
   );
   if (actualArtifactSha !== artifact.sha256) {
     throw new Error(
@@ -2633,7 +2883,6 @@ export async function verifyOfficialRuntimeArtifactProvenance(
       prefix: "agenc-provenance-",
       label: "provenance work directory validation",
       timeoutMs,
-      deadline: guard.deadline,
     });
     const bundleContracts = [
       ...(hasBuildProvenance
@@ -2667,7 +2916,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
         bundle.bytes,
         "official",
         options.fetchImpl ?? globalThis.fetch,
-        remainingProvenanceTimeout(guard.deadline, timeoutMs, "provenance verification"),
+        transferLimits,
         {
           maximumBytes: MAX_RUNTIME_ATTESTATION_BYTES,
           label: bundle.label,
@@ -2677,7 +2926,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
         bundle.path,
         bundle.bytes,
         bundle.label,
-        guard,
+        stepGuard(),
       );
       if (actualBundleSha !== bundle.sha256) {
         throw new Error(
@@ -2693,17 +2942,20 @@ export async function verifyOfficialRuntimeArtifactProvenance(
       pinnedCli.bytes,
       "official",
       options.fetchImpl ?? globalThis.fetch,
-      remainingProvenanceTimeout(guard.deadline, timeoutMs, "provenance verification"),
+      transferLimits,
       {
         maximumBytes: MAX_RUNTIME_ARTIFACT_BYTES,
         label: "GitHub CLI bootstrap",
+        ...(options.onDownloadProgress === undefined
+          ? {}
+          : { onProgress: options.onDownloadProgress }),
       },
     );
     const actualCliSha = await hashStableRegularFile(
       cliArchivePath,
       pinnedCli.bytes,
       "GitHub CLI bootstrap",
-      guard,
+      stepGuard(),
     );
     if (actualCliSha !== pinnedCli.sha256) {
       throw new Error(
@@ -2720,11 +2972,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
       env: processEnv,
       maxBuffer: 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: remainingProvenanceTimeout(
-        guard.deadline,
-        timeoutMs,
-        "provenance verification",
-      ),
+      timeout: timeoutMs,
       windowsHide: true,
     });
     const extractArgs = pinnedCli.file.endsWith(".tar.gz")
@@ -2733,11 +2981,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
     const trustedTar = await resolveTrustedSystemTar(
       platform,
       runProcess,
-      remainingProvenanceTimeout(
-        guard.deadline,
-        timeoutMs,
-        "trusted extractor validation",
-      ),
+      timeoutMs,
     );
     const extraction = await runProcess(
       trustedTar.path,
@@ -2763,7 +3007,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
         artifactPath: options.artifactPath,
         bundlePath: bundle.path,
         workDir,
-        deadline: guard.deadline,
+        deadline: performance.now() + timeoutMs,
         timeoutMs,
         runProcess,
         provenanceKind: bundle.kind,
@@ -2775,7 +3019,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
       options.artifactPath,
       artifact.bytes,
       "runtime artifact",
-      guard,
+      stepGuard(),
     );
     if (afterVerificationSha !== artifact.sha256) {
       throw new Error("runtime artifact changed during provenance verification");
@@ -2785,7 +3029,7 @@ export async function verifyOfficialRuntimeArtifactProvenance(
         bundle.path,
         bundle.bytes,
         bundle.label,
-        guard,
+        stepGuard(),
       );
       if (afterBundleSha !== bundle.sha256) {
         throw new Error(`${bundle.label} changed during provenance verification`);
@@ -2795,7 +3039,6 @@ export async function verifyOfficialRuntimeArtifactProvenance(
     operationError = error;
     throw error;
   } finally {
-    guard.controller.abort();
     if (workDir !== undefined) {
       try {
         rmSync(workDir, { recursive: true, force: true });
@@ -2816,7 +3059,13 @@ export async function installRuntimeFromManifest(options: {
   readonly artifact: RuntimeManifestArtifact;
   readonly agencHome: string;
   readonly acquireLock?: typeof acquireLocalSqliteLock;
+  /**
+   * Caps each transfer's total time and each local verification step. By
+   * default transfers scale with their signed size and steps get 2 minutes.
+   */
   readonly downloadTimeoutMs?: number;
+  /** Progress of the runtime artifact and GitHub CLI bootstrap downloads. */
+  readonly onDownloadProgress?: UpdateDownloadProgressListener;
   readonly fetchImpl?: typeof fetch;
   readonly manifestTrust: RuntimeManifestTrustMode;
   readonly verifyOfficialProvenance?: typeof verifyOfficialRuntimeArtifactProvenance;
@@ -2938,25 +3187,29 @@ export async function installRuntimeFromManifest(options: {
       timeoutMs: 60_000,
     });
     const tmp = join(downloadDir, "runtime.tar.gz");
-    const verificationTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_UPDATE_FETCH_TIMEOUT_MS;
-    const verificationGuard = createFetchDeadline(verificationTimeoutMs);
+    // The download has its own progress-aware limits. Every verification step
+    // after it starts with a full budget of its own, so a slow but steady
+    // download can never leave the checks without time.
+    const stepTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
+    const transferLimits: UpdateTransferLimits = options.downloadTimeoutMs === undefined
+      ? {}
+      : { totalTimeoutMs: options.downloadTimeoutMs };
     await fetchToFile(
       artifact.url,
       tmp,
       artifact.bytes,
       manifestTrust,
       options.fetchImpl ?? globalThis.fetch,
-      remainingProvenanceTimeout(
-        verificationGuard.deadline,
-        verificationTimeoutMs,
-        "runtime installation",
-      ),
+      transferLimits,
+      options.onDownloadProgress === undefined
+        ? {}
+        : { onProgress: options.onDownloadProgress },
     );
     const actual = await hashStableRegularFile(
       tmp,
       artifact.bytes,
       "runtime artifact",
-      verificationGuard,
+      createFetchDeadline(stepTimeoutMs),
     );
     if (actual !== artifact.sha256) {
       throw new Error(
@@ -2975,19 +3228,15 @@ export async function installRuntimeFromManifest(options: {
         artifact,
         artifactPath: tmp,
         fetchImpl: options.fetchImpl ?? globalThis.fetch,
-        timeoutMs: remainingProvenanceTimeout(
-          verificationGuard.deadline,
-          verificationTimeoutMs,
-          "runtime installation",
-        ),
+        timeoutMs: stepTimeoutMs,
+        transferLimits,
+        ...(options.onDownloadProgress === undefined
+          ? {}
+          : { onDownloadProgress: options.onDownloadProgress }),
         tmpDir: downloadDir,
       });
     }
-    remainingProvenanceTimeout(
-      verificationGuard.deadline,
-      verificationTimeoutMs,
-      "runtime archive validation",
-    );
+    const archiveValidationDeadline = performance.now() + stepTimeoutMs;
     const archiveInventory = validateEmbeddedNodeRuntimeArchive(tmp, artifact.platform);
     const embeddedNodeIdentity = archiveInventory.embeddedNodeIdentity;
     assertEmbeddedNodeIdentityMatchesManifest(
@@ -2996,8 +3245,8 @@ export async function installRuntimeFromManifest(options: {
       artifact,
     );
     remainingProvenanceTimeout(
-      verificationGuard.deadline,
-      verificationTimeoutMs,
+      archiveValidationDeadline,
+      stepTimeoutMs,
       "runtime archive validation",
     );
     releaseLock = await acquireLock(lockPath, {
@@ -3020,7 +3269,7 @@ export async function installRuntimeFromManifest(options: {
     const trustedTar = await resolveTrustedSystemTar(
       process.platform,
       runBoundedProcess,
-      options.downloadTimeoutMs ?? DEFAULT_UPDATE_FETCH_TIMEOUT_MS,
+      stepTimeoutMs,
     );
     const res = await runBoundedProcess(
       trustedTar.path,
@@ -3031,7 +3280,7 @@ export async function installRuntimeFromManifest(options: {
       env: trustedTar.env,
       maxBuffer: 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: options.downloadTimeoutMs ?? DEFAULT_UPDATE_FETCH_TIMEOUT_MS,
+      timeout: stepTimeoutMs,
       windowsHide: true,
     },
     );
@@ -3067,10 +3316,7 @@ export async function installRuntimeFromManifest(options: {
       stagingDir,
       identity: embeddedNodeIdentity,
       artifact,
-      timeoutMs: Math.min(
-        options.downloadTimeoutMs ?? DEFAULT_UPDATE_FETCH_TIMEOUT_MS,
-        DEFAULT_STAGED_PRIVATE_NODE_TIMEOUT_MS,
-      ),
+      timeoutMs: Math.min(stepTimeoutMs, DEFAULT_STAGED_PRIVATE_NODE_TIMEOUT_MS),
     });
     writeFileSync(join(stagingDir, RUNTIME_MARKER), artifact.sha256, {
       flag: "wx",
@@ -3138,11 +3384,14 @@ interface WrapperActivationTransaction {
   readonly version: 1;
   readonly targetVersion: string;
   readonly entries: readonly WrapperActivationEntry[];
+  readonly stableNode?: StableNodeDescription;
+  readonly previousVersion?: string;
 }
 
 export interface WrapperActivationResult {
   readonly activated: boolean;
   readonly retainedVersion?: string;
+  readonly nodeBin?: string;
 }
 
 function readOptionalFile(path: string): string | null {
@@ -3193,6 +3442,10 @@ function validateActivationTransaction(raw: string): WrapperActivationTransactio
     parsed.entries.length === 0 ||
     parsed.entries.length > 64
   ) throw new Error("wrapper activation journal is invalid");
+  if (parsed.previousVersion !== undefined &&
+      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(parsed.previousVersion)) {
+    throw new Error("wrapper activation previous version is invalid");
+  }
   const seen = new Set<string>();
   for (const candidate of parsed.entries) {
     const entry = candidate as Partial<WrapperActivationEntry>;
@@ -3233,10 +3486,25 @@ function completeActivationTransaction(journalPath: string): void {
       );
     }
   }
+  if (transaction.stableNode !== undefined) {
+    const home = dirname(dirname(journalPath));
+    const checked = describeStableNode(home, transaction.stableNode.source);
+    if (checked.sha256 !== transaction.stableNode.sha256 ||
+        runtimeVersionFromBin(checked.source, home) !== transaction.targetVersion ||
+        transaction.entries.some((entry) => {
+          const wrapper = recognizedGeneratedWrapperContent(entry.path, entry.desired)!;
+          return wrapper.agencHome !== home || wrapper.nodeBin !== stableNodePath(home) ||
+            runtimeVersionFromBin(wrapper.runtimeBin, home) !== transaction.targetVersion;
+        })) throw new Error("stable Node activation journal is invalid");
+    installStableNode(home, checked);
+  }
   for (const entry of transaction.entries) {
     if (readOptionalFile(entry.path) !== entry.desired) {
       replaceFileAtomically(entry.path, entry.desired, entry.mode);
     }
+  }
+  if (transaction.stableNode !== undefined) {
+    recordRuntimeActivation(dirname(dirname(journalPath)), transaction.targetVersion, transaction.previousVersion);
   }
   rmSync(journalPath, { force: true });
   syncDirectoryEntry(dirname(journalPath));
@@ -3429,6 +3697,11 @@ export async function activateGeneratedWrappers(options: {
       }
     }
 
+    const stableNode = process.platform === "darwin" && basename(targetRuntimeTree).startsWith("darwin-")
+      ? describeStableNode(agencHome, options.nodeBin)
+      : undefined;
+    const nodeBin = stableNode === undefined ? options.nodeBin : stableNodePath(agencHome);
+    const previousVersion = runtimeVersionFromBin(freshWrappers[0]!.runtimeBin, agencHome);
     const entries: WrapperActivationEntry[] = freshWrappers.map((wrapper) => ({
       path: wrapper.path,
       original: readFileSync(wrapper.path, "utf8"),
@@ -3436,7 +3709,7 @@ export async function activateGeneratedWrappers(options: {
         kind: wrapper.kind,
         agencHome,
         runtimeBin: options.runtimeBin,
-        nodeBin: options.nodeBin,
+        nodeBin,
         ...(options.nodeLibraryPath === undefined
           ? {}
           : { nodeLibraryPath: options.nodeLibraryPath }),
@@ -3444,6 +3717,7 @@ export async function activateGeneratedWrappers(options: {
       mode: wrapper.kind === "cmd" ? 0o644 : 0o755,
     }));
     const transaction: WrapperActivationTransaction = {
+      ...(stableNode === undefined ? {} : { stableNode, previousVersion }),
       version: 1,
       targetVersion: options.targetVersion,
       entries,
@@ -3463,7 +3737,7 @@ export async function activateGeneratedWrappers(options: {
         { cause: activationError },
       );
     }
-    return { activated: true };
+    return { activated: true, ...(stableNode === undefined ? {} : { nodeBin }) };
   } catch (error) {
     operationError = error;
     throw error;
@@ -3507,6 +3781,145 @@ export interface UpdateCliDeps {
   readonly runtimeCompatibility?: UpdateRuntimeCompatibility;
   readonly userHome?: string;
   readonly verifyStagedPrivateNode?: StagedPrivateNodeVerifier;
+  readonly manifestTimeoutMs?: number;
+  readonly expectedVersion?: string;
+  readonly onProgress?: (line: string) => void;
+  /**
+   * Where download progress is drawn. Defaults to process.stderr unless the
+   * caller replaced stderr. Nothing is drawn unless it is a TTY.
+   */
+  readonly progressTerminal?: UpdateProgressTerminal;
+}
+
+/** A terminal stream that can redraw one progress line in place. */
+export interface UpdateProgressTerminal {
+  readonly isTTY?: boolean;
+  write(chunk: string): unknown;
+}
+
+const DOWNLOAD_PROGRESS_INTERVAL_MS = 1_000;
+
+function downloadProgressSubject(resource: string, version: string): string {
+  if (resource === "runtime artifact") return `Downloading runtime ${version}`;
+  if (resource === "GitHub CLI bootstrap") {
+    return `Downloading GitHub CLI ${PINNED_GITHUB_CLI_VERSION} for provenance checks`;
+  }
+  return `Downloading ${resource}`;
+}
+
+function formatUpdateDownloadProgress(
+  subject: string,
+  progress: UpdateDownloadProgress,
+): string {
+  const percent = Math.floor((progress.receivedBytes * 100) / progress.totalBytes);
+  const seconds = progress.elapsedMs / 1_000;
+  const rate = seconds >= 1
+    ? `, ${formatMegabytes(progress.receivedBytes / seconds)} MB/s`
+    : "";
+  return `${subject}: ${percent}% (${formatMegabytes(progress.receivedBytes)} of ` +
+    `${formatMegabytes(progress.totalBytes)} MB${rate})`;
+}
+
+/**
+ * Draws download progress as one line redrawn on a TTY, and passes the same
+ * text to a caller's progress surface such as the TUI. With neither, it adds
+ * nothing, so piped output and logs stay unchanged. Progress never fails the
+ * update.
+ */
+function createUpdateDownloadReporter(options: {
+  readonly version: string;
+  readonly terminal?: UpdateProgressTerminal;
+  readonly onLine?: (line: string) => void;
+}): { readonly report: UpdateDownloadProgressListener; readonly endLine: () => void } {
+  const terminal = options.terminal?.isTTY === true ? options.terminal : undefined;
+  let lastResource: string | undefined;
+  let lastShownAt = Number.NEGATIVE_INFINITY;
+  let openWidth = 0;
+  const endLine = (): void => {
+    if (terminal === undefined || openWidth === 0) return;
+    openWidth = 0;
+    try { terminal.write("\n"); } catch { /* progress is best effort */ }
+  };
+  const report = (progress: UpdateDownloadProgress): void => {
+    if (terminal === undefined && options.onLine === undefined) return;
+    const done = progress.receivedBytes >= progress.totalBytes;
+    const now = performance.now();
+    if (
+      progress.resource === lastResource && !done &&
+      now - lastShownAt < DOWNLOAD_PROGRESS_INTERVAL_MS
+    ) return;
+    if (progress.resource !== lastResource) endLine();
+    lastResource = progress.resource;
+    lastShownAt = now;
+    const line = formatUpdateDownloadProgress(
+      downloadProgressSubject(progress.resource, options.version),
+      progress,
+    );
+    try {
+      if (terminal !== undefined) {
+        const padding = " ".repeat(Math.max(0, openWidth - line.length));
+        terminal.write(`\r${line}${padding}${done ? "\n" : ""}`);
+        openWidth = done ? 0 : line.length;
+      }
+      options.onLine?.(done ? "Verifying the runtime." : line);
+    } catch { /* progress is best effort */ }
+  };
+  return { report, endLine };
+}
+
+function isUpdateTransferTimeout(error: unknown, depth = 0): boolean {
+  if (depth > 4 || error === null || typeof error !== "object") return false;
+  if (error instanceof UpdateTransferTimeoutError) return true;
+  if (
+    error instanceof AggregateError &&
+    error.errors.some((inner) => isUpdateTransferTimeout(inner, depth + 1))
+  ) return true;
+  return isUpdateTransferTimeout((error as { readonly cause?: unknown }).cause, depth + 1);
+}
+
+/** One plain line. A transfer timeout also says how to recover. */
+function describeUpdateFailure(error: unknown, platform: NodeJS.Platform): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!isUpdateTransferTimeout(error)) return message;
+  const installer = platform === "win32"
+    ? "iwr -useb https://get.agenc.ag/install.ps1 | iex"
+    : "curl -fsSL https://get.agenc.ag/install.sh | sh";
+  return `${message}. Rerun agenc update, or reinstall with the installer ` +
+    `(${installer}) or npm (npm install -g @tetsuo-ai/agenc@latest).`;
+}
+
+/** Read-only release check shared by CLI and TUI. Local overrides retain the
+ * existing explicit-local trust seam; remote data cannot select trust policy. */
+export async function checkAgenCUpdate(
+  command: Extract<AgenCUpdateCliCommand, { kind: "update" }> = { kind: "update", check: true, json: false },
+  deps: UpdateCliDeps = {},
+) {
+  const currentVersion = deps.currentVersion ?? VERSION;
+  const manifestRequest = resolveUpdateManifestRequest({ ...command, env: deps.env ?? process.env });
+  const manifest = await fetchRuntimeManifest(manifestRequest.url, deps.fetchImpl, {
+    trustMode: manifestRequest.trustMode,
+    ...(manifestRequest.expectedRuntimeVersion === undefined ? {} : { expectedRuntimeVersion: manifestRequest.expectedRuntimeVersion }),
+    ...(manifestRequest.expectedRepository === undefined ? {} : { expectedRepository: manifestRequest.expectedRepository }),
+    ...(deps.manifestTimeoutMs === undefined ? {} : { timeoutMs: deps.manifestTimeoutMs }),
+  });
+  if (command.pinVersion !== undefined && manifest.runtimeVersion !== command.pinVersion) {
+    throw new Error(`manifest runtime ${manifest.runtimeVersion} does not match pinned version ${command.pinVersion}`);
+  }
+  if (deps.expectedVersion !== undefined && manifest.runtimeVersion !== deps.expectedVersion) {
+    throw new Error("The release changed since the check. Open /update to check again.");
+  }
+  const artifact = selectUpdateArtifact(manifest, updatePlatformSlug(deps.platform, deps.arch),
+    deps.runtimeCompatibility ?? currentUpdateRuntimeCompatibility(deps.platform, deps.arch, deps.nodeModuleAbi ?? process.versions.modules));
+  const latestVersion = manifest.runtimeVersion;
+  const pinned = command.pinVersion !== undefined;
+  // Unpinned updates only when remote is semver-greater; --pin installs that exact release even if lower.
+  let updateAvailable: boolean;
+  try {
+    updateAvailable = pinned ? latestVersion !== currentVersion : semverGt(latestVersion, currentVersion);
+  } catch {
+    updateAvailable = latestVersion !== currentVersion;
+  }
+  return { currentVersion, latestVersion, updateAvailable, manifestRequest, manifest, artifact };
 }
 
 export async function runAgenCUpdateCli(
@@ -3527,66 +3940,26 @@ export async function runAgenCUpdateCli(
     return 1;
   }
 
+  // Package-manager ownership takes precedence over any standalone wrapper
+  // on PATH or supplied explicitly. Only Homebrew may replace this runtime.
+  const homebrew = detectHomebrew();
+  if (homebrew && !command.check) {
+    stderr(`agenc: Homebrew manages this installation. Run in your terminal: ${HOMEBREW_UPDATE_COMMAND}`);
+    return 1;
+  }
+
   const env = deps.env ?? process.env;
   const currentVersion = deps.currentVersion ?? VERSION;
-  let manifestRequest: ResolvedUpdateManifestRequest;
+  const platform = deps.platform ?? process.platform;
+  let checked: Awaited<ReturnType<typeof checkAgenCUpdate>>;
   try {
-    manifestRequest = resolveUpdateManifestRequest({ ...command, env });
+    checked = await checkAgenCUpdate(command, deps);
   } catch (error) {
-    stderr(`agenc: update failed: ${error instanceof Error ? error.message : String(error)}`);
+    stderr(`agenc: update failed: ${describeUpdateFailure(error, platform)}`);
     return 1;
   }
-
-  let manifest: RuntimeManifest;
-  let artifact: RuntimeManifestArtifact;
-  try {
-    manifest = await fetchRuntimeManifest(
-      manifestRequest.url,
-      deps.fetchImpl,
-      {
-        trustMode: manifestRequest.trustMode,
-        ...(manifestRequest.expectedRuntimeVersion === undefined
-          ? {}
-          : { expectedRuntimeVersion: manifestRequest.expectedRuntimeVersion }),
-        ...(manifestRequest.expectedRepository === undefined
-          ? {}
-          : { expectedRepository: manifestRequest.expectedRepository }),
-      },
-    );
-    if (
-      command.pinVersion !== undefined &&
-      manifest.runtimeVersion !== command.pinVersion
-    ) {
-      throw new Error(
-        `manifest runtime ${manifest.runtimeVersion} does not match pinned version ${command.pinVersion}`,
-      );
-    }
-    artifact = selectUpdateArtifact(
-      manifest,
-      updatePlatformSlug(deps.platform, deps.arch),
-      deps.runtimeCompatibility ?? currentUpdateRuntimeCompatibility(
-        deps.platform,
-        deps.arch,
-        deps.nodeModuleAbi ?? process.versions.modules,
-      ),
-    );
-  } catch (error) {
-    stderr(`agenc: update failed: ${error instanceof Error ? error.message : String(error)}`);
-    return 1;
-  }
-
-  const latestVersion = manifest.runtimeVersion;
-  // Unpinned updates only when remote is semver-greater (todo-121).
-  // --pin installs that exact release even if lower.
+  const { manifestRequest, manifest, artifact, latestVersion, updateAvailable } = checked;
   const pinned = command.pinVersion !== undefined;
-  let updateAvailable = false;
-  try {
-    updateAvailable = pinned
-      ? latestVersion !== currentVersion
-      : semverGt(latestVersion, currentVersion);
-  } catch {
-    updateAvailable = latestVersion !== currentVersion;
-  }
 
   if (!updateAvailable) {
     if (command.json) {
@@ -3615,7 +3988,7 @@ export async function runAgenCUpdateCli(
       stdout(JSON.stringify({ currentVersion, latestVersion, updateAvailable: true }));
     } else {
       stdout(
-        `Update available: ${currentVersion} -> ${latestVersion}. Run 'agenc update' to install.`,
+        `Update available: ${currentVersion} -> ${latestVersion}. Run '${homebrew ? HOMEBREW_UPDATE_COMMAND : "agenc update"}' to install.`,
       );
     }
     return 0;
@@ -3623,7 +3996,6 @@ export async function runAgenCUpdateCli(
 
   // Locate the wrapper BEFORE downloading: without one there is nothing to
   // repoint, and downloading a runtime nothing will launch helps nobody.
-  const platform = deps.platform ?? process.platform;
   let wrappers: GeneratedWrapper[];
   if (command.wrapper !== undefined) {
     try {
@@ -3693,25 +4065,40 @@ export async function runAgenCUpdateCli(
     stderr(`agenc: wrapper belongs to a different AGENC_HOME: ${foreignWrapper.path}`);
     return 1;
   }
+  const progressTerminal = deps.progressTerminal ??
+    (deps.stderr === undefined ? process.stderr : undefined);
+  const downloads = createUpdateDownloadReporter({
+    version: latestVersion,
+    ...(progressTerminal === undefined ? {} : { terminal: progressTerminal }),
+    ...(deps.onProgress === undefined ? {} : { onLine: deps.onProgress }),
+  });
   let result: InstallRuntimeResult;
+  let updateLease: string | undefined;
   try {
+    if (platform === "darwin") updateLease = await beginRuntimeUpdate(agencHome);
+    deps.onProgress?.("Downloading and verifying the runtime.");
     result = await installRuntimeFromManifest({
       manifest,
       artifact,
       agencHome,
       manifestTrust: manifestRequest.trustMode,
+      onDownloadProgress: downloads.report,
       ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
       ...(deps.verifyStagedPrivateNode === undefined
         ? {}
         : { verifyStagedPrivateNode: deps.verifyStagedPrivateNode }),
     });
   } catch (error) {
-    stderr(`agenc: update failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (updateLease !== undefined) endRuntimeUpdate(updateLease);
+    downloads.endLine();
+    stderr(`agenc: update failed: ${describeUpdateFailure(error, platform)}`);
     return 1;
   }
+  downloads.endLine();
 
   let activation: WrapperActivationResult;
   try {
+    deps.onProgress?.("Activating the verified runtime for the next launch.");
     activation = await activateGeneratedWrappers({
       wrappers,
       runtimeBin: result.binPath,
@@ -3724,10 +4111,21 @@ export async function runAgenCUpdateCli(
       allowDowngrade: pinned,
     });
   } catch (error) {
+    if (updateLease !== undefined) endRuntimeUpdate(updateLease);
     stderr(
       `agenc: installed runtime ${latestVersion} but wrapper activation failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     return 1;
+  }
+
+  if (updateLease !== undefined) endRuntimeUpdate(updateLease);
+  let pruning: RuntimePruneResult | undefined;
+  if (platform === "darwin" && activation.activated) {
+    try { pruning = await pruneRuntimes(agencHome); }
+    catch (error) {
+      pruning = { removed: [], freedBytes: 0,
+        skipped: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   if (command.json) {
@@ -3739,7 +4137,8 @@ export async function runAgenCUpdateCli(
         installed: true,
         downloaded: result.downloaded,
         runtimeBin: result.binPath,
-        nodeBin: result.nodeBinPath,
+        nodeBin: activation.nodeBin ?? result.nodeBinPath,
+        ...(pruning === undefined ? {} : { pruning }),
         ...(result.nodeLibraryPath === undefined
           ? {}
           : { nodeLibraryPath: result.nodeLibraryPath }),
@@ -3757,6 +4156,10 @@ export async function runAgenCUpdateCli(
       );
       for (const wrapper of wrappers) {
         stdout(`  wrapper repointed: ${wrapper.path}`);
+      }
+      if (pruning !== undefined) {
+        stdout(`Runtime cleanup: ${pruning.removed.length} trees, ${pruning.freedBytes} bytes freed` +
+          (pruning.skipped === undefined ? "." : ` (deferred: ${sanitizeTerminalText(pruning.skipped, 512)}).`));
       }
       stdout("Restart the daemon to pick it up: agenc daemon restart");
     } else {

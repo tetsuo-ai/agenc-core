@@ -44,9 +44,9 @@ function ctx(): TurnContext {
 
 const MEMORY_INSTRUCTIONS = "# auto memory\n\nYou have persistent, file-based memory directories.";
 
-// DeepSeek keeps the standard head unless the switch selects the lean one, so
+// Anthropic keeps the standard head unless the switch selects the lean one, so
 // the comparisons below start from the standard head.
-async function assemble(env: Record<string, string>, nonInteractive = false, provider = "deepseek") {
+async function assemble(env: Record<string, string>, nonInteractive = false, provider = "anthropic") {
   return assembleSystemPrompt({
     session: { services: { providerEnvironment: env, runtimeOptions: { nonInteractive } } },
     ctx: ctx(),
@@ -58,16 +58,20 @@ async function assemble(env: Record<string, string>, nonInteractive = false, pro
 }
 
 describe("lean system prompt", () => {
-  test("is the default for OpenAI and Grok sessions, not for DeepSeek", async () => {
+  test("is the default for OpenAI and Grok sessions, not for DeepSeek or others", async () => {
     expect(leanSystemPromptEnabled({}, "openai")).toBe(true);
     expect(leanSystemPromptEnabled({}, "grok")).toBe(true);
     expect(leanSystemPromptEnabled({}, "deepseek")).toBe(false);
+    expect(leanSystemPromptEnabled({}, "anthropic")).toBe(false);
     expect(leanSystemPromptEnabled({}, undefined)).toBe(false);
-    expect(leanSystemPromptEnabled({ [LEAN_SYSTEM_PROMPT_ENV]: "1" }, "deepseek")).toBe(true);
+    expect(leanSystemPromptEnabled({ [LEAN_SYSTEM_PROMPT_ENV]: "1" }, "anthropic")).toBe(true);
     expect(leanSystemPromptEnabled({ [LEAN_SYSTEM_PROMPT_ENV]: "0" }, "grok")).toBe(false);
+    expect(leanSystemPromptEnabled({ [LEAN_SYSTEM_PROMPT_ENV]: "0" }, "deepseek")).toBe(false);
     const grok = await assemble({}, false, "grok");
+    const deepseek = await assemble({}, false, "deepseek");
     const lean = await assemble({ [LEAN_SYSTEM_PROMPT_ENV]: "1" });
     expect(grok.staticPrefix).toBe(lean.staticPrefix);
+    expect(deepseek.staticPrefix).not.toBe(lean.staticPrefix);
     const grokOff = await assemble({ [LEAN_SYSTEM_PROMPT_ENV]: "0" }, false, "grok");
     expect(grokOff.staticPrefix).toContain("IMPORTANT: Go straight to the point.");
   });
@@ -127,6 +131,9 @@ describe("lean system prompt", () => {
       "isolation: \"worktree\"",
       "file_path:line_number",
       "Report results as they are",
+      // Every response is a full round trip that resends the whole context,
+      // so batching independent reads and commands is the main call saver.
+      "Put independent tool calls in one response",
       // Targeted lines for quirks seen in eval transcripts: DeepSeek calling a
       // "Read" tool that does not exist, and asking what to build next after
       // finishing a step of a scripted session.
@@ -175,9 +182,24 @@ describe("lean system prompt", () => {
     expect(contract(lean.staticPrefix)).toBe(contract(standard.staticPrefix));
   });
 
-  test("is at least a third shorter than the standard head", async () => {
+  test("is at least a quarter shorter than the standard head", async () => {
+    // The standard head is itself condensed now, so the margin is smaller
+    // than the third it once was.
     const standard = await assemble({});
     const lean = await assemble({ [LEAN_SYSTEM_PROMPT_ENV]: "1" });
-    expect(lean.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * (2 / 3));
+    expect(lean.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * 0.75);
+  });
+});
+
+describe("lean default follows the GPT family through gateways", () => {
+  test.each([
+    ["openrouter", "openai/gpt-6-luna", true],
+    ["venice", "openai-gpt-6-luna", true],
+    ["openrouter", "deepseek/deepseek-v4.1-flash-1017", false],
+    ["ollama-cloud", "gpt-oss:120b", false],
+  ] as const)("%s %s -> lean %s", (provider, model, lean) => {
+    expect(leanSystemPromptEnabled({}, provider, undefined, model)).toBe(lean);
+    expect(leanSystemPromptEnabled({ AGENC_LEAN_SYSTEM_PROMPT: "0" }, provider, undefined, model)).toBe(false);
+    expect(leanSystemPromptEnabled({}, provider, false, model)).toBe(false);
   });
 });

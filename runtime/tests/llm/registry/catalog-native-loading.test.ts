@@ -1,12 +1,13 @@
 import { expect, test } from 'vitest'
 import { build } from 'esbuild'
-import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { copyFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { makeRuntimeScratch } from '../../helpers/runtime-scratch.js'
 
 test('native bundled startup selection works without full rows; first full lookup throws and retries', async () => {
-  const directory = await mkdtemp(join(process.cwd(), '.catalog-native-'))
+  const { directory, cleanup } = await makeRuntimeScratch('agenc-catalog-native-')
   try {
     const fixture = join(directory, 'fixture.ts')
     await writeFile(fixture, `
@@ -54,5 +55,5 @@ test('native bundled startup selection works without full rows; first full looku
     })
     expect(child.status, child.stderr).toBe(0)
     expect(child.stdout.trim()).toBe('catalog-native-ok')
-  } finally { await rm(directory, { recursive: true, force: true }) }
+  } finally { await cleanup() }
 })

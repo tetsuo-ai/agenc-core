@@ -55,8 +55,6 @@ function dispatchFixture(tool: Tool, args: Record<string, unknown>) {
 
 describe("shell policy before approval", () => {
   const blockedCommands = [
-    "git commit -m \"$(cat <<'EOF'\naudit commit\nEOF\n)\"",
-    "printf changed > src.js",
     "rm -rf .git",
   ];
   for (const name of ["exec_command", "system.bash", "write_stdin"]) {
@@ -77,13 +75,13 @@ describe("shell policy before approval", () => {
         expect(fixture.execute).not.toHaveBeenCalled();
       });
     }
-    test.each(["rm src.js", "mv src.js renamed.js", "git status", "node --test"])(`${name} leaves authorizable %s to permission evaluation`, (command) => {
+    test.each(["printf changed > src.js", "rm src.js", "mv src.js renamed.js", "git status", "node --test"])(`${name} leaves authorizable %s to permission evaluation`, (command) => {
       const { tool, args } = shellTool(name, command);
       expect(tool.preflight?.(args)).toBeNull();
     });
   }
 
-  test("model hook rewrites are checked before approval", async () => {
+  test("model hook content writes are routed to approval", async () => {
     const { tool, args } = shellTool("exec_command", "git status");
     const fixture = dispatchFixture(tool, args);
     const result = await fixture.router.dispatchModelToolCall({ id: "rewritten-shell", name: tool.name, arguments: fixture.rawArgs }, {
@@ -91,8 +89,8 @@ describe("shell policy before approval", () => {
       preHooks: [async () => ({ kind: "continue", args: { cmd: "printf changed > src.js" } })],
     });
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("shell_workspace_");
-    expect(fixture.resolver.request).not.toHaveBeenCalled();
+    expect(result.content).toContain("Permission denied");
+    expect(fixture.resolver.request).toHaveBeenCalledOnce();
     expect(fixture.execute).not.toHaveBeenCalled();
   });
 

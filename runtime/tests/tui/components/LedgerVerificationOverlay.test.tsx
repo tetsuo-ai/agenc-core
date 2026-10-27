@@ -125,4 +125,26 @@ describe("LedgerVerificationOverlay", () => {
       phase: "idle",
     });
   });
+  test("does not consume letters from /exit", async () => {
+    beginLedgerVerification({ source: "prompt" });
+    const { LedgerVerificationOverlay } = await import("./LedgerVerificationOverlay.js");
+    await renderToString(<Box width={100} height={30}><LedgerVerificationOverlay /></Box>, 100);
+    for (const input of "/exit") {
+      const event = { stopImmediatePropagation: vi.fn() };
+      harness.inputHandler?.(input, {}, event);
+      expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
+      expect(getLedgerVerificationSnapshot().phase).toBe("waiting");
+    }
+  });
+
+  test("Ctrl+C dismisses the popup so subsequent interrupts reach normal exit handling", async () => {
+    beginLedgerVerification({ source: "prompt" });
+    const { LedgerVerificationOverlay } = await import("./LedgerVerificationOverlay.js");
+    await renderToString(<Box width={100} height={30}><LedgerVerificationOverlay /></Box>, 100);
+    const event = { stopImmediatePropagation: vi.fn() };
+    harness.inputHandler?.("c", { ctrl: true }, event);
+    expect(event.stopImmediatePropagation).toHaveBeenCalledOnce();
+    expect(getLedgerVerificationSnapshot().phase).toBe("idle");
+  });
+
 });

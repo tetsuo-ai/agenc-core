@@ -9,6 +9,8 @@ plus the `gpt-6-sol` and `gpt-6-luna` rows that the Desktop
 (levels none through max; `none` is sent on the wire for these two models).
 Core lands first, so the contract covers them before Desktop offers them;
 refresh from Desktop main once that change is merged.
+The `meta`/`muse-wonder-1.0` row (levels minimal through max, default high)
+likewise comes from the Desktop Muse Wonder change and lands with Core first.
 The source is `src/renderer/src/modelCatalog.ts`, including its shared catalog imports.
 
 To refresh, fetch that repository, bundle the source with esbuild for Node (ESM),

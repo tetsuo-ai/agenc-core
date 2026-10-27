@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -99,3 +100,24 @@ describe('Messages welcome state', () => {
     }
   })
 })
+
+ it('abbreviates home paths before streaming replies reach the terminal', async () => {
+  const path = `${homedir()}/.agenc/memory/MEMORY.md`;
+  const streamingText = `Saved in ${path}.\n\n` + '```text\n' + path + '\n```\n\n' + `Read ${path}`;
+  const output = await renderToString(
+    <Messages {...baseProps} hideLogo={true} streamingText={streamingText} />,
+    { columns: 120, rows: 40 },
+  );
+  expect(output).toContain('~/.agenc/memory/MEMORY.md');
+  expect(output).not.toContain(homedir());
+});
+
+ it('withholds a trailing partial home path while assistant text streams', async () => {
+  const partial = homedir().slice(0, -2);
+  const output = await renderToString(
+    <Messages {...baseProps} hideLogo={true} streamingText={`Output:\n\n-rw-r--r-- 1 node node 88 Oct 19 ${partial}`} />,
+    { columns: 120, rows: 40 },
+  );
+  expect(output).toContain('Oct 19');
+  expect(output).not.toContain(partial);
+});

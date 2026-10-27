@@ -7,7 +7,7 @@ import { createCompactionTransactionHarness } from "../../helpers/compaction-tra
 
 afterEach(() => vi.restoreAllMocks());
 
-const source = Array.from({ length: 8 }, (_, index) => ({
+const source = Array.from({ length: 20 }, (_, index) => ({
   role: index % 2 === 0 ? "user" as const : "assistant" as const,
   content: `Original message ${index}: ${"preserve exact history ".repeat(150)}`,
 }));
@@ -45,7 +45,7 @@ describe("durably rejected summaries can defer to context admission", () => {
           { type: "compaction_failed", payload: { reason: "provenance_invalid" } },
         ]);
       expect(() => harness.store.assertCompactionProjectionReady()).not.toThrow();
-      const lease = harness.store.acquireCompactionLease("after-rejected-summary");
+      const lease = await harness.store.acquireCompactionLease("after-rejected-summary");
       await lease.release();
     } finally {
       harness.close();

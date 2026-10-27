@@ -128,6 +128,10 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   // NVIDIA NIM - popular models
   'nvidia/llama-3.1-nemotron-70b-instruct': 128_000,
   'nvidia/llama-3.1-nemotron-ultra-253b-v1': 128_000,
+  // The NIM default since 2026-10-17. NVIDIA's card says up to 1M tokens but
+  // publishes no hosted limit, so this keeps the 128K window AgenC already
+  // assumed for the id and lookups stay free of the unknown-model warning.
+  'nvidia/nemotron-3-super-120b-a12b': 128_000,
   'nvidia/nemotron-mini-4b-instruct': 32_768,
   'meta/llama-3.1-405b-instruct': 128_000,
   'meta/llama-3.1-70b-instruct': 128_000,

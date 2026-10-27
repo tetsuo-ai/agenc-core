@@ -249,6 +249,14 @@ describe("first-run onboarding wizard", () => {
     );
   });
 
+  test("lists abliteration.ai with the key name that set it up", () => {
+    const row = (env: Record<string, string>) => createInitialFirstRunOnboardingState({ config: defaultConfig(), env })
+      .providerRows.find((entry) => entry.provider === "abliteration");
+    expect(row({})).toEqual({ provider: "abliteration", name: "abliteration.ai", status: "not set", connected: false });
+    expect(row({ ABLITERATION_API_KEY: "ak_fixture" })).toMatchObject({ status: "env ABLITERATION_API_KEY", connected: true });
+    expect(row({ ABLIT_KEY: "ak_fixture", ABLITERATION_API_KEY: "ak_other" })).toMatchObject({ status: "env ABLIT_KEY", connected: true });
+  });
+
   test("uses layered config rather than stale environment selectors for its initial provider", () => {
     const config = {
       ...defaultConfig(),
@@ -277,7 +285,7 @@ describe("first-run onboarding wizard", () => {
     let state = createInitialFirstRunOnboardingState(context);
 
     expect(firstRunOnboardingInputPresentation(state)).toMatchObject({
-      placeholder: "Enter keeps dark",
+      placeholder: "Enter keeps olive",
       allowEmptySubmit: true,
     });
     state = (await submitFirstRunOnboardingInput(state, "", context)).state;
@@ -968,20 +976,6 @@ describe("first-run onboarding wizard", () => {
     }
   });
 
-  test("uses the managed-auth readiness path for the AgenC provider", async () => {
-    await expect(
-      checkOnboardingProviderConnection(
-        { config: defaultConfig(), env: {} },
-        "agenc",
-        "agenc",
-      ),
-    ).resolves.toMatchObject({
-      ok: false,
-      status: "credentials-required",
-      detail: expect.stringContaining("requires account auth"),
-    });
-  });
-
   test("rejects reachable local providers that do not list the selected model", async () => {
     const config = defaultConfig();
     const ollamaFetch = vi.fn<typeof fetch>().mockResolvedValue(
@@ -1053,149 +1047,6 @@ describe("first-run onboarding wizard", () => {
       status: "local-down",
       detail: expect.stringContaining("readable model catalog"),
     });
-  });
-
-  test("treats signed-in remote auth as managed provider readiness", async () => {
-    await withRemoteAuthSession(
-      "agenc-onboarding-remote-auth-",
-      "pro",
-      async ({ env, remoteAuthSessionContext }) => {
-        await expect(
-          checkOnboardingProviderConnection(
-            {
-              config: defaultConfig(),
-              env,
-              remoteAuthSessionContext,
-            },
-            "openrouter",
-            "x-ai/grok-4.3",
-          ),
-        ).resolves.toMatchObject({
-          ok: true,
-          status: "ready",
-          detail:
-            "AgenC Pro is signed in. Hosted OpenRouter model access is ready.",
-        });
-      },
-    );
-  });
-
-  test("keeps the configured startup provider for signed-in Pro users", async () => {
-    await withRemoteAuthSession(
-      "agenc-onboarding-pro-default-",
-      "pro",
-      ({ env, remoteAuthSessionContext }) => {
-        const context = {
-          config: defaultConfig(),
-          env,
-          remoteAuthSessionContext,
-        };
-        const state = createInitialFirstRunOnboardingState(context);
-
-        expect(state.selectedProvider).toBe("grok");
-        expect(state.selectedModel).toBe("grok-4.6");
-        // The configured provider stays highlighted; the paid account's
-        // managed route (OpenRouter) lists as connected, above it.
-        const providerLines = detailLinesForStep(
-          { ...state, currentStepId: "provider" },
-          context,
-        );
-        expect(providerLines).toContain("› xAI Grok  not set");
-        expect(providerLines[1]).toBe("  OpenRouter  AgenC account");
-        expect(
-          detailLinesForStep(
-            { ...state, currentStepId: "model-access" },
-            context,
-          ).join("\n"),
-        ).toContain("AgenC account  sign in for hosted models, free plan");
-      },
-    );
-  });
-
-  test("requires BYOK during onboarding when remote auth is free", async () => {
-    await withRemoteAuthSession(
-      "agenc-onboarding-free-auth-",
-      "free",
-      async ({ env, remoteAuthSessionContext }) => {
-        const context = {
-          config: defaultConfig(),
-          env,
-          remoteAuthSessionContext,
-        };
-        await expect(
-          checkOnboardingProviderConnection(
-            context,
-            "openrouter",
-            "x-ai/grok-4.3",
-          ),
-        ).resolves.toMatchObject({
-          ok: false,
-          status: "credentials-required",
-          credentialLabel: "OPENROUTER_API_KEY",
-          canSkip: false,
-        });
-
-        const state = {
-          ...createInitialFirstRunOnboardingState(context),
-          currentStepId: "model-access" as const,
-          selectedProvider: "openrouter" as const,
-          selectedModel: "x-ai/grok-4.3",
-          connection: {
-            provider: "openrouter",
-            model: "x-ai/grok-4.3",
-            status: "credentials-required" as const,
-            ok: false,
-            detail: "AgenC account is signed in on the free plan.",
-            credentialLabel: "OPENROUTER_API_KEY",
-            canSkip: false,
-          },
-        };
-
-        const result = await submitFirstRunOnboardingInput(
-          state,
-          "next",
-          context,
-        );
-
-        expect(result.completed).toBe(false);
-        expect(result.state.currentStepId).toBe("model-access");
-        expect(result.state.error).toContain("OPENROUTER_API_KEY is required");
-      },
-    );
-  });
-
-  test("recognizes a signed-in free account's hosted free model as ready", async () => {
-    await withRemoteAuthSession(
-      "agenc-onboarding-free-ready-",
-      "free",
-      async ({ env, remoteAuthSessionContext }) => {
-        const context = {
-          config: {
-            ...defaultConfig(),
-            model_provider: "openrouter",
-            model: "cohere/north-mini-code:free",
-          },
-          env,
-          remoteAuthSessionContext,
-        };
-        const state = createInitialFirstRunOnboardingState(context);
-
-        expect(state.selectedProvider).toBe("openrouter");
-        expect(state.selectedModel).toMatch(/:free$/);
-        await expect(
-          checkOnboardingProviderConnection(
-            context,
-            state.selectedProvider,
-            state.selectedModel,
-          ),
-        ).resolves.toMatchObject({
-          ok: true,
-          status: "ready",
-          detail:
-            "AgenC account is signed in. Free hosted model access is ready.",
-        });
-      },
-    );
   });
 
   test("describes verified provider credentials without asking users to add them later", () => {
@@ -1340,7 +1191,7 @@ describe("first-run onboarding wizard", () => {
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     // A short word on the menu is a mistyped choice, never sent as a key.
     result = await submitFirstRunOnboardingInput(state, "hello", context);
-    expect(result.state.error).toBe("Choose 1 to 4, or paste a key.");
+    expect(result.state.error).toBe("Choose 1 to 3, or paste a key.");
     expect(fetchImpl).not.toHaveBeenCalled();
 
     result = await submitFirstRunOnboardingInput(
@@ -2024,7 +1875,7 @@ describe("account sign-in from the model-access step", () => {
     return state;
   }
 
-  test("lists the key, AgenC account, X / xAI and set-up-later options for Grok", async () => {
+  test("lists only the provider key, provider sign-in and setup later", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
     const state = await advanceToGrokModelAccess(context);
@@ -2032,7 +1883,6 @@ describe("account sign-in from the model-access step", () => {
     expect(detailLinesForStep(state, context)).toEqual([
       "How should AgenC reach grok / grok-4.6?",
       "› XAI_API_KEY  paste a key next",
-      "  AgenC account  sign in for hosted models, free plan",
       "  X / xAI account  sign in to use Grok with your subscription",
       "  Set up later  AgenC can't answer until you do",
       "You can also paste a key here.",
@@ -2054,7 +1904,7 @@ describe("account sign-in from the model-access step", () => {
     const details = detailLinesForStep(state, context).join("\n");
     expect(details).toContain("DEEPSEEK_API_KEY  paste a key next");
     expect(details).not.toContain("X / xAI");
-    expect(firstRunOnboardingChoiceCount(state)).toBe(3);
+    expect(firstRunOnboardingChoiceCount(state)).toBe(2);
 
     const result = await submitFirstRunOnboardingInput(state, "xai", context);
     expect(result.state.error).toBe(
@@ -2062,51 +1912,7 @@ describe("account sign-in from the model-access step", () => {
     );
   });
 
-  test("choice 1 signs in or creates an AgenC account and selects its free hosted route", async () => {
-    const config = defaultConfig();
-    const runAgenCAccountLogin = vi
-      .fn<
-        () => Promise<{
-          ok: true;
-          accountLabel: string;
-          subscriptionTier: "free";
-        }>
-      >()
-      .mockResolvedValue({
-        ok: true,
-        accountLabel: "new-user@example.com",
-        subscriptionTier: "free",
-      });
-    const context = {
-      config,
-      env: {},
-      checkLocalProviders: false,
-      runAgenCAccountLogin,
-    };
-    const state = await advanceToGrokModelAccess(context);
-
-    const result = await submitFirstRunOnboardingInput(state, "2", context);
-
-    expect(runAgenCAccountLogin).toHaveBeenCalledTimes(1);
-    expect(result.state.currentStepId).toBe("model-access");
-    expect(result.state.modelAccessInput).toBe("result");
-    expect(result.state.selectedProvider).toBe("openrouter");
-    expect(result.state.selectedModel).toMatch(/:free$/);
-    expect(result.state.connection).toMatchObject({
-      ok: true,
-      status: "ready",
-    });
-    expect(result.state.connection?.detail).toContain(
-      "Free hosted model access is ready.",
-    );
-    const next = await submitFirstRunOnboardingInput(result.state, "", context);
-    expect(next.state.currentStepId).toBe("ready");
-    expect(detailLinesForStep(next.state, context)).toContain(
-      "Access: AgenC account",
-    );
-  });
-
-  test("choice 3 runs X / xAI sign-in, then lists Grok's models", async () => {
+  test("choice 2 runs X / xAI sign-in, then lists Grok's models", async () => {
     const config = defaultConfig();
     const runProviderSignIn = vi
       .fn<(provider: "openai" | "grok") => Promise<{ ok: true; accountLabel: string }>>()
@@ -2119,7 +1925,7 @@ describe("account sign-in from the model-access step", () => {
     };
     const state = await advanceToGrokModelAccess(context);
 
-    const result = await submitFirstRunOnboardingInput(state, "3", context);
+    const result = await submitFirstRunOnboardingInput(state, "2", context);
     expect(runProviderSignIn).toHaveBeenCalledExactlyOnceWith("grok");
     expect(result.state.currentStepId).toBe("model-access");
     expect(result.state.modelAccessInput).toBe("models");
@@ -2159,7 +1965,6 @@ describe("account sign-in from the model-access step", () => {
     expect(detailLinesForStep(state, context)).toEqual([
       "How should AgenC reach openai / gpt-5?",
       "› OPENAI_API_KEY  paste a key next",
-      "  AgenC account  sign in for hosted models, free plan",
       "  ChatGPT account  sign in to use OpenAI with your plan",
       "  Set up later  AgenC can't answer until you do",
       "You can also paste a key here.",
@@ -2210,7 +2015,7 @@ describe("account sign-in from the model-access step", () => {
     };
     const state = await advanceToGrokModelAccess(context);
 
-    const result = await submitFirstRunOnboardingInput(state, "3", context);
+    const result = await submitFirstRunOnboardingInput(state, "2", context);
     expect(result.state.currentStepId).toBe("model-access");
     expect(result.state.error).toContain("Browser sign-in did not complete");
   });
@@ -2438,7 +2243,7 @@ describe("model access checks in place", () => {
     };
     expect(detailLinesForStep(state, context)).toEqual([
       "AgenC is set up for this machine.",
-      "Theme: dark",
+      "Theme: olive",
       "Model: grok / grok-4.6",
       "Access: not set up yet",
       "Mode: default, asks before tools that need it",
@@ -2553,10 +2358,10 @@ describe("first-run onboarding arrow-key selection", () => {
 
   test("the model-access menu defaults to the provider key and an arrow move changes what Enter does", async () => {
     let state = await atStep("model-access");
-    expect(firstRunOnboardingChoiceCount(state)).toBe(4);
+    expect(firstRunOnboardingChoiceCount(state)).toBe(3);
     expect(firstRunOnboardingHighlightedChoice(state)).toBe(1);
     state = moveFirstRunOnboardingHighlight(state, -1);
-    expect(state.highlightedChoice).toBe(4);
+    expect(state.highlightedChoice).toBe(3);
     const next = (await submitFirstRunOnboardingInput(state, "", context)).state;
     expect(next.currentStepId).toBe("ready");
   });

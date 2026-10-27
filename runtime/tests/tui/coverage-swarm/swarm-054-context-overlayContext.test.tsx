@@ -269,6 +269,25 @@ describe('overlayContext coverage swarm 054', () => {
     }
   })
 
+  test('keeps mode-toast keybindings active while preserving other modal ownership', async () => {
+    appStateHarness.state = { activeOverlays: new Set(['mode-switcher-toast']) };
+    await expect(renderToString(<OverlayStatus />, 40)).resolves.toContain('active:nonmodal');
+    appStateHarness.state = { activeOverlays: new Set(['mode-switcher-toast', 'select']) };
+    await expect(renderToString(<OverlayStatus />, 40)).resolves.toContain('active:modal');
+  });
+
+  test('allows composer input under Ledger guidance while retaining modal dismissal ownership', async () => {
+    function ComposerStatus() {
+      const blocksInput = useIsModalOverlayActive("ledger-verification");
+      const blocksCancel = useIsModalOverlayActive();
+      return <Text>{blocksInput ? 'blocked' : 'input-enabled'}:{blocksCancel ? 'modal' : 'unowned'}</Text>;
+    }
+    appStateHarness.state = { activeOverlays: new Set(['ledger-verification']) };
+    await expect(renderToString(<ComposerStatus />, 40)).resolves.toContain('input-enabled:modal');
+    appStateHarness.state = { activeOverlays: new Set(['ledger-verification', 'select']) };
+    await expect(renderToString(<ComposerStatus />, 40)).resolves.toContain('blocked:modal');
+  });
+
   test('distinguishes any overlay from modal overlays', async () => {
     appStateHarness.state = {
       activeOverlays: new Set(),

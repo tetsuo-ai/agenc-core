@@ -96,9 +96,9 @@ describe('default keybindings coverage swarm row 196', () => {
     expect(chat).toMatchObject({
       'ctrl+v': 'chat:imagePaste',
       'shift+tab': 'chat:cycleMode',
+      'meta+m': 'chat:cycleMode',
     })
     expect(chat).not.toHaveProperty('alt+v')
-    expect(chat).not.toHaveProperty('meta+m')
     expect(chat).not.toHaveProperty('shift+up')
     expect(global).not.toHaveProperty('ctrl+shift+b')
     expect(global).not.toHaveProperty('ctrl+shift+f')
@@ -138,8 +138,8 @@ describe('default keybindings coverage swarm row 196', () => {
     expect(chat).toMatchObject({
       'alt+v': 'chat:imagePaste',
       'shift+tab': 'chat:cycleMode',
+      'meta+m': 'chat:cycleMode',
     })
-    expect(chat).not.toHaveProperty('meta+m')
   })
 
   test('checks Bun terminal VT support using fallback and explicit versions', async () => {
@@ -162,6 +162,7 @@ describe('default keybindings coverage swarm row 196', () => {
     const supportedBlocks = await loadDefaultBindings()
     expect(bindingsFor(supportedBlocks, 'Chat')).toMatchObject({
       'shift+tab': 'chat:cycleMode',
+      'meta+m': 'chat:cycleMode',
     })
     expect(harness.satisfiesCalls).toEqual([
       { range: '>=1.2.23', version: '1.2.23' },

@@ -73,6 +73,65 @@ function approvalCtx(inv = invocation()): ApprovalCtx {
 }
 
 describe("guardian arbiter", () => {
+  test("MCP filesystem attestation requires a human and uses its own tool-scoped cache", async () => {
+    const store = new ApprovalStore();
+    const inv = invocation({ services: { toolApprovals: store } });
+    const ctx = { ...approvalCtx(inv), toolName: "mcp.inventory.get_stock", mcpFilesystemApproval: {
+      serverName: "inventory", toolName: "get_stock", toolIdentity: "installed-tool-1",
+    } };
+    const request = vi.fn(async () => APPROVED_FOR_SESSION);
+    const reviewApprovalRequest = vi.fn(async () => ({ decision: APPROVED, source: "guardian" as const }));
+    const reviewer = { reviewApprovalRequest } as unknown as GuardianApprovalReviewer;
+    const ordinary = { toolName: ctx.toolName, cwd: "/repo", sandboxMode: "workspace_write", approvalPolicy: "on_request", args: {} };
+    await store.withCachedApproval({ keys: [ordinary], fetchDecision: async () => APPROVED_FOR_SESSION });
+    const options = { ctx, args: {}, hooks: [async () => APPROVED], resolver: { request }, guardianApprovalReviewer: reviewer };
+    expect(await requestApproval(options)).toMatchObject({ decision: APPROVED_FOR_SESSION, source: "resolver" });
+    expect(await requestApproval(options)).toMatchObject({ decision: APPROVED_FOR_SESSION, source: "cache" });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(reviewApprovalRequest).not.toHaveBeenCalled();
+    await requestApproval({ ...options, ctx: { ...ctx, mcpFilesystemApproval: { ...ctx.mcpFilesystemApproval, toolIdentity: "replacement-tool" } } });
+    expect(request).toHaveBeenCalledTimes(2);
+    await requestApproval({ ...options, ctx: { ...ctx, mcpFilesystemApproval: { ...ctx.mcpFilesystemApproval, toolName: "lookup_product" } } });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  test("session file approval covers later edits to that file, preserving tool and policy scope", async () => {
+    const store = new ApprovalStore<unknown>();
+    const inv = invocation({ services: { toolApprovals: store } });
+    const request = vi.fn(async () => APPROVED_FOR_SESSION);
+    const ask = (name: string, file_path: string, old_string: string, policy = "on_request") =>
+      requestApproval({
+        ctx: { ...approvalCtx(inv), toolName: name, invocation: {
+          ...inv, toolName: { name }, turn: { ...inv.turn, approvalPolicy: { value: policy } } as never,
+        } },
+        args: { file_path, old_string, new_string: `${old_string}!` },
+        resolver: { request },
+      });
+    await ask("Edit", "README.md", "one");
+    await ask("Edit", "/repo/README.md", "two");
+    expect(request).toHaveBeenCalledTimes(1);
+    await ask("Edit", "other.md", "one");
+    await ask("Write", "README.md", "one");
+    await ask("Edit", "README.md", "three", "unless_trusted");
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  test("simultaneous edits recheck a matching session grant before opening another prompt", async () => {
+    const store = new ApprovalStore<unknown>();
+    const inv = invocation({ services: { toolApprovals: store } });
+    const answer = Promise.withResolvers<typeof APPROVED_FOR_SESSION>();
+    const request = vi.fn(() => answer.promise);
+    const pending = ["one", "two"].map(old_string => requestApproval({
+      ctx: { ...approvalCtx(inv), toolName: "Edit" },
+      args: { file_path: "/repo/README.md", old_string, new_string: `${old_string}!` },
+      resolver: { request },
+    }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    answer.resolve(APPROVED_FOR_SESSION);
+    await Promise.all(pending);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   test("defers new maintenance approval without invoking the foreground resolver", async () => {
     const defer = vi.fn();
     const request = vi.fn(async () => APPROVED);

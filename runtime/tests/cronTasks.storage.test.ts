@@ -6,6 +6,7 @@ import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { describeOnDarwin } from "./helpers/platform-registration.js";
 import { CronDeliveryOutboxStore } from "../src/gateway/cron-outbox.js";
 import { addSessionCronTask, getSessionCronTasks, resetStateForTests, setScheduledTasksEnabled } from "../src/bootstrap/state.js";
 import { EventLog, type Event } from "../src/session/event-log.js";
@@ -450,7 +451,7 @@ describe("cron tools without durable storage", () => {
   });
 });
 
-describe.runIf(process.platform === "darwin")("darwin cron tools", () => {
+describeOnDarwin("darwin cron tools", () => {
   test("creates, lists, and deletes a session job while refusing durable record reads", async () => {
     const metadata = join(workspace, ".agenc");
     await mkdir(metadata, { mode: 0o700 });

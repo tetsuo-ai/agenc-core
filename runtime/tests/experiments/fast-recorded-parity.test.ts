@@ -17,21 +17,45 @@ const fixtures = ["t016-recorded.json", "t017-recorded.json"].flatMap(name =>
   source: string; system: string; user: string; history: LLMMessage[]; responses: LLMResponse[]; toolResults: Record<string, string>;
 }[];
 
-for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identical fast/normal request bodies`, async () => {
+for (const fixture of fixtures) test(`recorded ${fixture.source} with current alias semantics has byte-identical fast/normal request bodies`, async () => {
+  // Keep the historical recordings immutable. Their unknown-Read receipts
+  // predate aliases; project only those calls onto the current FileRead contract.
+  // The live filesystem parity test separately proves actual alias execution.
+  const projectedResults = { ...fixture.toolResults };
+  const calls = fixture.responses.flatMap(response => response.toolCalls);
+  const failedReadIds = new Set<string>();
+  for (const call of calls.filter(call => call.name === "Read")) {
+    const args = JSON.parse(call.arguments);
+    const matchingRead = calls.find(candidate => {
+      if (candidate.name !== "FileRead") return false;
+      const other = JSON.parse(candidate.arguments);
+      return other.file_path === args.file_path &&
+        Number(other.offset ?? 1) === Number(args.offset ?? 1) &&
+        Number(other.limit ?? 2000) === Number(args.limit ?? 2000);
+    });
+    if (matchingRead !== undefined) {
+      projectedResults[call.id] = fixture.toolResults[matchingRead.id]!;
+    } else {
+      // This trace reads a missing examples path before retrying a boltons path.
+      projectedResults[call.id] = `AGENC_DATA\nENOENT: no such file or directory, open '${args.file_path}'\nAGENC_DATA`;
+      failedReadIds.add(call.id);
+    }
+  }
   const run = async (fast: boolean) => {
     const registry = buildToolRegistry({ workspaceRoot: "/workspace", lightMode: true, requireAdmission: false,
       sandboxExecutionBroker: explicitDangerBroker });
     for (const tool of registry.tools) {
       tool.execute = async args => {
         const callId = String(args.__callId);
-        const content = fixture.toolResults[callId];
+        const content = projectedResults[callId];
         expect(content, `${tool.name} ${callId} must have recorded output`).toBeDefined();
         // Fixtures contain already projected wire text. Remove the compact
         // outer frame before replaying it as a raw tool result; the production
         // unframe helper recognizes the legacy verbose frame only.
         const raw = content.startsWith("AGENC_DATA\n") && content.endsWith("\nAGENC_DATA")
           ? content.slice("AGENC_DATA\n".length, -"\nAGENC_DATA".length) : content;
-        return { content: String(unframeUntrustedToolResultContent(tool.name, raw)) };
+        return { content: String(unframeUntrustedToolResultContent(tool.name, raw)),
+          ...(failedReadIds.has(callId) ? { isError: true } : {}) };
       };
     }
     const provider = { ...mkProvider(), name: "deepseek" };
@@ -51,12 +75,14 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
       runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
         dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true }),
     } });
+    Object.assign(session.config, { taskTokenBudget: 0 });
     Object.assign(session.services, { permissionModeRegistry: new PermissionModeRegistry({
       ...session.permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
     }) });
     const ctx = mkCtx({ cwd: "/workspace", permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
       modelInfo: { ...mkCtx().modelInfo, contextWindow: 1_048_576, maxOutputTokens: 8192 },
-      config: { ...mkCtx().config, bypassFastMode: fast } });
+      // Replay the complete recorded trace; task-budget stopping has separate coverage.
+      config: { ...mkCtx().config, taskTokenBudget: 0, bypassFastMode: fast } });
     await drain(runTurn(session, ctx, fixture.user, { systemPrompt: fixture.system, history: fixture.history,
       exactOutput: true }));
     expect(bodies).toHaveLength(fixture.responses.length);
@@ -64,15 +90,8 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
     for (const body of bodies) {
       for (const message of JSON.parse(body).messages) {
         if (message.role === "tool") {
-          const recorded = fixture.toolResults[message.tool_call_id];
-          // 1046 predates the intentional canonical unknown-tool repair.
-          // Keep the original fixture and assert the exact repaired receipt.
-          const expected = recorded === 'AGENC_DATA\n{"error":"unknown tool: Read"}\nAGENC_DATA'
-            ? `AGENC_DATA\n${JSON.stringify({ tool_use_id: message.tool_call_id, is_error: true,
-                content: "<tool_use_error>Error: No such tool available: Read. The closest available tool is FileRead, which has its own parameters.</tool_use_error>" })}\nAGENC_DATA`
-            : recorded;
-          expect(message.content, `recorded output ${message.tool_call_id}`)
-            .toBe(expected);
+          expect(message.content, `projected recorded output ${message.tool_call_id}`)
+            .toBe(projectedResults[message.tool_call_id]);
         }
       }
     }

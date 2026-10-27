@@ -369,6 +369,14 @@ function McpMenuView({
     void runMutation(() => controller.reconnect(selectedServer.name));
   }, [controller, runMutation, selectedServer]);
 
+  const removeSelected = React.useCallback(() => {
+    if (!selectedServer || selectedServer.empty) {
+      setFeedback("No MCP server selected.");
+      return;
+    }
+    void runMutation(() => controller.remove(selectedServer.name));
+  }, [controller, runMutation, selectedServer]);
+
   const saveAdd = React.useCallback(() => {
     const errors = addValidation(addForm);
     if (errors.length > 0) {
@@ -422,6 +430,10 @@ function McpMenuView({
         }
         return;
       }
+      if (input === "d") {
+        removeSelected();
+        return;
+      }
       if (input === "x") {
         toggleSelected();
         return;
@@ -460,6 +472,10 @@ function McpMenuView({
       if (input === "t") {
         setToolIndex(0);
         setMode({ name: "tools", serverName: mode.serverName });
+        return;
+      }
+      if (input === "d") {
+        removeSelected();
         return;
       }
       if (input === "x") {
@@ -670,7 +686,7 @@ function McpMenuView({
         title="mcp server"
         count={row.name}
         summary={stateLabel(row.state)}
-        headerRight="t tools · x toggle · r reconnect"
+        headerRight="t tools · x toggle · r reconnect · d remove"
         columns={[14, 88]}
         headers={["field", "value"]}
         items={details}
@@ -693,6 +709,7 @@ function McpMenuView({
               <KeyHint k="t" label="tools" />
               <KeyHint k="x" label={row.state === "disabled" ? "enable" : "disable"} />
               <KeyHint k="r" label="reconnect" />
+              <KeyHint k="d" label="remove session server" />
             </Box>
           </Box>
         }
@@ -700,6 +717,7 @@ function McpMenuView({
           { keyName: "t", label: "tools" },
           { keyName: "x", label: row.state === "disabled" ? "enable" : "disable" },
           { keyName: "r", label: "reconnect" },
+          { keyName: "d", label: "remove session server" },
           { keyName: "esc", label: "back" },
         ]}
         hint="actions use the live session MCP manager"
@@ -710,7 +728,6 @@ function McpMenuView({
   return (
     <MenuModal
       title="mcp"
-      count={`${servers.length}`}
       summary={`${rows.filter(row => row.state === "connected").length} connected`}
       headerRight="enter detail · a add · n new"
       columns={[3, 14, 22, 8, 36, 10]}
@@ -762,6 +779,7 @@ function McpMenuView({
           <Box flexDirection="row" gap={2} flexWrap="wrap">
             <KeyHint k="enter" label="detail" />
             <KeyHint k="t" label="tools" />
+            <KeyHint k="d" label="remove session server" />
             <KeyHint k="a/i" label="add/import" />
             <KeyHint k="n" label="new" />
           </Box>
@@ -773,6 +791,7 @@ function McpMenuView({
         { keyName: "t", label: "tools" },
         { keyName: "x", label: "toggle" },
         { keyName: "r", label: "reconnect" },
+        { keyName: "d", label: "remove session server" },
         { keyName: "a/i", label: "add/import" },
         { keyName: "n", label: "new" },
         { keyName: "q", label: "close" },

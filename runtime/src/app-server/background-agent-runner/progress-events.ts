@@ -80,7 +80,7 @@ export function phaseEventToProgressEvent(
         max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
         effect_review_required:
-          "Turn stopped: a tool effect has an unknown outcome and needs operator review; run /resolve <call-id> …, then send a new prompt to continue.",
+          "Turn stopped: a tool effect needs operator review. Review the call at the prompt, or use /resolve <call-id> <disposition>. Queued prompts continue after review.",
         deadline_reached:
           "Run stopped at its deadline; the files on disk are what was saved before it.",
         compact_failed:

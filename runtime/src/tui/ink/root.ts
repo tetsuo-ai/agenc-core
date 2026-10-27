@@ -33,6 +33,9 @@ export type RenderOptions = {
   /** Captured startup choice for stdin event delivery. */
   stdinMode?: 'readable' | 'data'
 
+  /** Keep queued input across an interactive session handoff. */
+  shouldPreserveInputOnExit?: () => boolean
+
   /**
    * Patch console methods to ensure console output doesn't mix with Ink output.
    *
@@ -135,6 +138,7 @@ export async function createRoot({
   stderr = process.stderr,
   exitOnCtrlC = true,
   stdinMode,
+  shouldPreserveInputOnExit,
   patchConsole = true,
   onFrame,
 }: RenderOptions = {}): Promise<Root> {
@@ -146,6 +150,7 @@ export async function createRoot({
     stderr,
     exitOnCtrlC,
     stdinMode,
+    shouldPreserveInputOnExit,
     patchConsole,
     onFrame,
   })

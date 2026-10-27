@@ -12,13 +12,13 @@ import type { RemoteService } from "../../src/remote/service.js";
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const request = (method: string, params: JsonObject = {}): JsonObject => ({ jsonrpc: "2.0", id: method, method, params });
-function fixture() {
+function fixture(remoteControlEnabled = () => true) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "remote-dispatch-"))); const workspace = join(root, "workspace"); const home = join(root, "private"); mkdirSync(workspace); mkdirSync(home);
   const authenticate = vi.fn((params: JsonObject) => params.authCookie === "fixture-cookie");
   const manage = vi.fn(async () => ({ enabled: false }));
   const agents = new AgenCDaemonAgentManager({ agencHome: home });
   const transcript = vi.spyOn(agents, "getSessionTranscriptV2").mockImplementation(async (params) => ({ schemaVersion: 2, sessionId: params.sessionId, runId: "run", historyEpoch: "epoch", asOfSequence: 0, messages: [] }));
-  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: agents, initializeAuthenticator: authenticate, remote: { handle: manage } as unknown as RemoteService });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: agents, initializeAuthenticator: authenticate, remoteControlEnabled, remote: { handle: manage } as unknown as RemoteService });
   const connection = dispatcher.createConnection();
   const grant = { workspacePath: workspace, workspaceId: "opaque-id", sessionIds: ["allowed"], role: "control" as const, allowFiles: false, allowApprovals: true };
   let active = true;
@@ -32,6 +32,22 @@ function fixture() {
 }
 
 describe("Core browser dispatcher authority", () => {
+  it("rejects bridge registration and enrollment when owner policy is off", async () => {
+    const f = fixture(() => false);
+    await expect(f.connection.dispatch(request("initialize", { ...f.initialize, remoteControlBridge: true }))).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
+    expect(f.authenticate).not.toHaveBeenCalled();
+    await f.connection.dispatch(request("initialize", f.initialize));
+    await expect(f.connection.dispatch(request("remote.start"))).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
+    expect(f.manage).not.toHaveBeenCalled();
+  });
+  it("admits owner-enabled bridge registration and fences it when policy is disabled", async () => {
+    let enabled = true;
+    const f = fixture(() => enabled);
+    await expect(f.connection.dispatch(request("initialize", { ...f.initialize, remoteControlBridge: true }))).resolves.toHaveProperty("result");
+    enabled = false;
+    await expect(f.connection.dispatch(request("agent.list"))).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
+  });
+
   it("measures legacy transcript replies after remote envelope escaping", async () => {
     const f = fixture();
     await f.browser.dispatch(request("initialize", { protocol: { version: "1.17.0" } }));

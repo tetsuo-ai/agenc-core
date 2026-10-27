@@ -30,6 +30,7 @@ export function supportsClipboardImageFallback(
 type PasteHandlerProps = {
   onPaste?: (text: string) => void
   onInput: (input: string, key: Key) => void
+  onIsPastingChange?: (isPasting: boolean) => void
   onImagePaste?: (
     base64Image: string,
     mediaType?: string,
@@ -61,6 +62,7 @@ export function usePasteHandler({
   onPaste,
   onInput,
   onImagePaste,
+  onIsPastingChange,
 }: PasteHandlerProps): {
   wrappedOnInput: (input: string, key: Key, event: InputEvent) => void
   pasteState: {
@@ -82,14 +84,34 @@ export function usePasteHandler({
     chunks: string[]
     timeoutId: ReturnType<typeof setTimeout> | null
   }>({ chunks: [], timeoutId: null })
-  const [isPasting, setIsPasting] = React.useState(false)
+  const [isPasting, setIsPastingState] = React.useState(false)
   const isMountedRef = React.useRef(true)
+  const isPastingRef = React.useRef(false)
+  const setIsPasting = React.useCallback((next: boolean) => {
+    if (!isMountedRef.current) return
+    isPastingRef.current = next
+    setIsPastingState(next)
+    onIsPastingChange?.(next)
+  }, [onIsPastingChange])
+  React.useEffect(() => {
+    onIsPastingChange?.(isPastingRef.current)
+  }, [onIsPastingChange])
   // Mirrors pasteState.timeoutId but updated synchronously. When paste + a
   // keystroke arrive in the same stdin chunk, both wrappedOnInput calls run
   // in the same discreteUpdates batch before React commits — the second call
   // reads stale pasteState.timeoutId (null) and takes the onInput path. If
   // that key is Enter, it submits the old input and the paste is lost.
   const pastePendingRef = React.useRef(false)
+  const deferredEnterRef = React.useRef<{ input: string; key: Key } | null>(null)
+
+  // onPaste updates the controlled draft. Wait for that render before
+  // forwarding Enter, so submission reads the complete, current value.
+  React.useEffect(() => {
+    if (isPasting || pastePendingRef.current || !deferredEnterRef.current) return
+    const enter = deferredEnterRef.current
+    deferredEnterRef.current = null
+    onInput(enter.input, enter.key)
+  }, [isPasting, onInput])
 
   const platform = React.useMemo(() => getPlatform(), [])
   const isMacOS = platform === 'macos'
@@ -125,7 +147,7 @@ export function usePasteHandler({
           setIsPasting(false)
         }
       })
-  }, [onImagePaste])
+  }, [onImagePaste, setIsPasting])
 
   const checkClipboardForImage = useDebounceCallback(
     checkClipboardForImageImpl,
@@ -283,6 +305,7 @@ export function usePasteHandler({
       isMacOS,
       onImagePaste,
       onPaste,
+      setIsPasting,
     ],
   )
 
@@ -296,6 +319,17 @@ export function usePasteHandler({
     // Detect paste from the parsed keypress event.
     // The keypress parser sets isPasted=true for content within bracketed paste.
     const isFromPaste = event.keypress.isPasted
+    if (!isFromPaste && (key.escape || (key.ctrl && input === 'c'))) {
+      deferredEnterRef.current = null
+      onInput(input, key)
+      return
+    }
+    if (!isFromPaste && key.return && (pastePendingRef.current || isPasting)) {
+      // Enter is a submission gesture, not another byte of the paste. Keep
+      // one gesture even if several arrive before paste processing finishes.
+      deferredEnterRef.current = { input, key }
+      return
+    }
 
     // Handle large pastes (>PASTE_THRESHOLD chars)
     // Usually we get one or two input characters at a time. If we

@@ -190,6 +190,10 @@ describe("getPermissionsSection", () => {
     expect(out).toContain("`sandbox_permissions` with the value `\"require_escalated\"`");
     expect(out).toContain("Keep file changes inside the workspace");
     expect(out).toContain("such as starting an app's binary directly");
+    // exec_command's notice for protected .git metadata offers one retry of
+    // the operation the user asked for; the mode's text must allow it.
+    expect(out).toContain("one retry of an operation the user explicitly asked for that the sandbox refused on a protected path, such as a git command on protected .git metadata");
+    expect(out).toContain("do not write protected files another way");
     // An escalated command skips the shell write guards: the text must not
     // invite escalating writes.
     expect(out).not.toMatch(/write the sandbox forbids/u);

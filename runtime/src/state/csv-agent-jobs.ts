@@ -2304,6 +2304,11 @@ export class CsvAgentJobsRepository {
     }
   >();
 
+  /** The state database file this repository writes. */
+  get stateDatabasePath(): string {
+    return this.driver.stateDbPath;
+  }
+
   constructor(
     private readonly driver: StateSqliteDriver,
     options: CsvAgentJobsRepositoryOptions = {},

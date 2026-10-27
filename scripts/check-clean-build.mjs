@@ -431,10 +431,6 @@ async function reproduce({ runRoot, source, cache, metadata, offline, timezone, 
     const dependencyTree = dependencyInventory(source);
 
     console.error("[clean-build] build SDK + runtime declarations");
-    run("npm", ["test", "--workspace=@tetsuo-ai/agenc"], {
-      cwd: source,
-      env,
-    });
     run("npm", ["run", "build", "--workspace=@tetsuo-ai/agenc-sdk"], {
       cwd: source,
       env,
@@ -444,6 +440,12 @@ async function reproduce({ runRoot, source, cache, metadata, offline, timezone, 
       env,
     });
     requireFile(join(source, "runtime", "dist", "index.d.ts"), "runtime declaration");
+    // The launcher's public-startup test runs the linked in-repository
+    // runtime, which only resolves once runtime/dist exists.
+    run("npm", ["test", "--workspace=@tetsuo-ai/agenc"], {
+      cwd: source,
+      env,
+    });
     requireFile(join(source, "packages", "agenc-sdk", "dist", "index.d.ts"), "SDK declaration");
 
     const artifacts = join(runRoot, "artifacts");

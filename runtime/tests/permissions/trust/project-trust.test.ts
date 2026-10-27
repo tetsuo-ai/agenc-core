@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "vitest";
+import { itWhen } from "../../helpers/platform-registration.js";
 
 import { isPathTrusted } from "../../../src/utils/config.js";
 
@@ -78,7 +79,7 @@ describe("project trust store", () => {
     }
   });
 
-  test.skipIf(!volumeIgnoresCase)(
+  itWhen(volumeIgnoresCase)(
     "a project trusted under one spelling is trusted under every spelling of the same directory",
     () => {
       // Observed on a default macOS disk: the app trusted /Users/x/agenc,

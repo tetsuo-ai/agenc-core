@@ -63,6 +63,18 @@ describe("configuredContextWindow", () => {
 });
 
 describe("projectResidentContextUsage", () => {
+  it("uses the prepared input/window/threshold and keeps output reservation separate", () => {
+    const resident = {
+      ...breakdown({ messageTokens: 2_000_000, effectiveWindowTokens: 83_000 }),
+      compactionInputTokens: 75_000,
+      compactionWindowTokens: 100_000,
+      compactionThresholdTokens: 75_000,
+      compactionReservedOutputTokens: 64_000,
+    };
+    const projected = projectResidentContextUsage(resident, { providerEnvironment: {} });
+    expect(projected).toMatchObject({ totalUsed: 75_000, hardLimit: 100_000, compactionThreshold: 75_000, usedPercentage: 75, freeUntilCompact: 0 });
+  });
+
   it("does not re-apply the client compact window when the daemon already published capacity", () => {
     const resident = breakdown({
       windowTokens: 200_000,
@@ -90,6 +102,19 @@ describe("projectResidentContextUsage", () => {
     expect(projected.hardLimit).toBe(50_000);
     expect(projected.totalUsed).toBe(24_600);
     expect(projected.usedPercentage).toBe(49);
+  });
+
+  it.each([true, false])("uses the daemon's compaction enabled state (%s) over the client's environment", enabled => {
+    const projected = projectResidentContextUsage({
+      ...breakdown({ effectiveWindowTokens: 48_000 }),
+      compactionWindowTokens: 48_000,
+      compactionInputTokens: 36_000,
+      compactionThresholdTokens: enabled ? 35_000 : 48_000,
+    }, {
+      providerEnvironment: enabled ? { AGENC_DISABLE_AUTO_COMPACT: "1" } : {},
+    });
+    expect(projected.autoCompactEnabled).toBe(enabled);
+    expect(projected.compactionThreshold).toBe(enabled ? 35_000 : 48_000);
   });
 
   it("treats the hard limit as the compact line when auto-compact is disabled", () => {

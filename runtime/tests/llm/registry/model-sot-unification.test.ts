@@ -199,32 +199,29 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
 
   it("keeps the complete unique NVIDIA NIM selection surface", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
-    expect(models).toHaveLength(115);
-    expect(new Set(models)).toHaveLength(115);
+    // 115 ids until 2026-10-17, when GET /v1/models stopped listing 80 of them (end of life, HTTP
+    // 410, or gone, HTTP 404). The 35 NVIDIA still lists are the complete surface; the retired
+    // ids are pinned in nvidia-nim-catalog.test.ts.
+    expect(models).toHaveLength(35);
+    expect(new Set(models)).toHaveLength(35);
     expect(models).toEqual(
       expect.arrayContaining([
-        "openai/gpt-oss-120b",
         "nvidia/cosmos-reason2-8b",
         "meta/codellama-70b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/llama3-chatqa-1.5-70b",
-        "meta/llama-4-maverick-17b-128e-instruct",
+        "meta/llama-3.2-90b-vision-instruct",
         "google/gemma-4-31b-it",
-        "mistralai/mistral-large-3-675b-instruct-2512",
-        "mistralai/devstral-2-123b-instruct-2512",
-        "mistralai/magistral-small-2506",
-        "mistralai/mathstral-7b-v0.1",
-        "microsoft/phi-4-multimodal-instruct",
-        "microsoft/phi-3-mini-4k-instruct",
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
-        "ibm/granite-3.3-8b-instruct",
+        "mistralai/mistral-large",
+        "ibm/granite-3.0-8b-instruct",
         "databricks/dbrx-instruct",
-        "z-ai/glm5",
-        "minimaxai/minimax-m2.5",
-        "moonshotai/kimi-k2-instruct-0905",
+        "writer/palmyra-med-70b-32k",
+        "moonshotai/kimi-k2.6",
+        "meta/muse-glimmer-30b",
+        "openai/gpt-oss-20b",
       ]),
     );
+    expect(models).not.toContain("openai/gpt-oss-120b");
     expect(buildProviderModelCatalog(defaultConfig())["nvidia-nim"]).toEqual(
       models,
     );

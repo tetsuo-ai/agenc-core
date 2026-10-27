@@ -59,6 +59,18 @@ describe("normalizeHistoryMessages", () => {
     expect(llmMessageToCheckpointResponseItem(live!).id).toBe("summary-id");
   });
 
+  it("restores the file-history join from a durable user id only", () => {
+    const [user, assistant, unidentified] = normalizeHistoryMessages([
+      { role: "user", content: "edit", id: "user-barrier" },
+      { role: "assistant", content: "done", id: "answer" },
+      { role: "user", content: "legacy" },
+    ]);
+    expect(user?.runtimeOnly).toEqual({ responseItemId: "user-barrier", userMessageId: "user-barrier" });
+    expect(assistant?.runtimeOnly?.userMessageId).toBeUndefined();
+    expect(unidentified?.runtimeOnly?.userMessageId).toBeUndefined();
+    expect(llmMessageToCheckpointResponseItem(user!).id).toBe("user-barrier");
+  });
+
   it("prefers the runtimeOnly seal when both shapes are present", () => {
     const other = createToolResultIntegrity({
       runId: "conv-resumed",

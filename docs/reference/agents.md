@@ -574,6 +574,48 @@ in the permission mode its routine stores (`runtime/src/routines/`).
   or hands it to an external sandbox, fails with that reason instead of
   running with a different authority.
 
+#### Permission-blocked explanation
+
+A scheduled run has nobody attached. A tool action that would ask a person
+ends the run as `failed` instead of waiting. `run.error` is the
+client-visible field. `describePermissionDenial`
+(`runtime/src/routines/service.ts`) chooses a fixed string from the
+permission mode supplied by the writer, as described below:
+
+| Mode | `run.error` |
+| --- | --- |
+| `default` or `plan` | `A tool action was blocked by this routine's read-only permissions. Update its instructions to use only read-only actions, then run it again. Open its session for details.` |
+| `acceptEdits` | `A tool action needed approval, and nobody is attached to a scheduled run to give it. This routine may edit files in its workspace without asking; anything else that needs approval is refused. Open its session for details.` |
+| `bypassPermissions` | `A tool action was refused: this routine writes files only inside its workspace, and nothing it asks for can be approved while it runs unattended. Open its session for details.` |
+
+Two writers produce those strings:
+
+1. The executor returns `permission_denied`. `#launch` stores the
+   explanation from the snapshot frozen at launch
+   (`snapshot.permissionMode`).
+2. A Core `run_terminal` with `stopReason: "routine_permission_denied"`
+   arrives while the run is still unfinished. `observeSessionEvent` stores
+   the explanation from the stored routine's current mode.
+
+The runner sets that stop reason when a canonical `error` whose `cause`
+starts with `permission_denied:` is attributed to the routine's in-flight
+message (`finishAgentRun` / `#applyCanonicalEventBookkeeping` in
+`runtime/src/app-server/background-agent-runner.ts`). A turn that would
+otherwise complete with code 0 still closes as failed with code 1 when
+`permissionDenied` is set.
+
+The record persists across daemon restart. There is no env or
+`config.toml` override for the strings, the `failed` status, or the stop
+reason.
+
+Distinct from startup refusals in `describeRunFailure` (workspace
+changed, missing credentials, untrusted bypass folder, managed bypass
+disable, sandbox off), from a generic Core failure
+(`Core could not complete this run. Open its session for details.`), and
+from `unknown_outcome`
+(`An action's outcome could not be confirmed. Open the session for details.`).
+Those are not permission-blocked explanations.
+
 The channel gateway provisions passive agents
 (`initialContent: []` suppresses an objective turn) and adopts each agent's
 session so one conversation maps to one agent = one session. Details:

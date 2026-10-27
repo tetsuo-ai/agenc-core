@@ -84,8 +84,13 @@ export const agentListingDeltaProducer: AttachmentProducer = async (
 ) => {
   // Subagents never see the agent listing — they cannot spawn agents.
   if (opts.subagentDepth > 0) return [];
-  if (opts.lightMode === true &&
-      !opts.loadedTools.some(tool => tool.function.name === "spawn_agent")) return [];
+  // The listing serves spawn_agent's agent_type argument. While spawn_agent
+  // is still deferred behind system.searchTools (Light, or a standard session
+  // with the default tool deferral) it waits until the tool is loaded.
+  const spawnLoaded = opts.loadedTools.some(tool => tool.function.name === "spawn_agent");
+  const spawnLoadable = opts.lightMode === true ||
+    opts.loadedTools.some(tool => tool.function.name === "system.searchTools");
+  if (spawnLoadable && !spawnLoaded) return [];
 
   const agents = readActiveAgents(opts.sessionKey);
   // Build a deterministic Map of agentType → rendered line.

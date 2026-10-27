@@ -62,6 +62,7 @@ export interface TurnFileChangeResolution {
   readonly resolvedToolUseIDs: ReadonlySet<string>;
   /** Tool-use ids whose result was an ERROR (`✕`). */
   readonly erroredToolUseIDs: ReadonlySet<string>;
+  readonly toolResultByToolUseID?: ReadonlyMap<string, { readonly fileMutation?: unknown }>;
 }
 
 /**
@@ -114,9 +115,10 @@ export function deriveTurnFileChanges(
       if (resolution.erroredToolUseIDs.has(id)) continue;
     }
 
+    const fileMutation = resolution?.toolResultByToolUseID?.get(typeof block.id === "string" ? block.id : "")?.fileMutation;
     let preview: ReturnType<typeof buildEditDiffPreview>;
     try {
-      preview = buildEditDiffPreview(name, block.input);
+      preview = buildEditDiffPreview(name, block.input, fileMutation);
     } catch {
       // A malformed input that throws contributes nothing (the diff card also
       // renders nothing for it) — never let one bad block sink the summary.
@@ -127,7 +129,7 @@ export function deriveTurnFileChanges(
     const file = preview.file.length > 0 ? preview.file : "file";
     // The op's intrinsic kind: a Write births a file, an Edit/MultiEdit changes
     // one. The MERGED kind keeps 'create' if ANY op this turn created the file.
-    const opKind: "create" | "edit" = name === "Write" ? "create" : "edit";
+    const opKind: "create" | "edit" = name === "Write" && (!isRecord(fileMutation) || fileMutation.operation !== "write") ? "create" : "edit";
 
     const existing = byFile.get(file);
     if (existing === undefined) {

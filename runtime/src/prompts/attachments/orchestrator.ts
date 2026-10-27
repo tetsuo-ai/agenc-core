@@ -23,6 +23,7 @@
  */
 
 import type { LLMMessage, LLMTool } from "../../llm/types.js";
+import type { SessionToolPolicy } from "../../permissions/session-tool-policy.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { AttachmentTrackingState } from "../../session/attachment-state.js";
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
@@ -35,6 +36,8 @@ import { instructionUpdateProducer } from "./instruction-update.js";
 import { deferredToolsDeltaProducer } from "./deferred-tools-delta.js";
 import { mcpInstructionsDeltaProducer } from "./mcp-delta.js";
 import { outputStyleProducer } from "./output-style.js";
+import { productHelpProducer } from "./product-help.js";
+import { memoryOnRequestProducer } from "./memory-on-request.js";
 import { planModeProducer } from "./plan-mode.js";
 import { verifyPlanReminderProducer } from "./verify-plan-reminder.js";
 import { changedFilesProducer } from "./changed-files.js";
@@ -77,6 +80,26 @@ export interface GetAttachmentsOptions {
   readonly lightMode?: boolean;
   /** Captured print-session presentation; never changes approval policy. */
   readonly lightPrint?: boolean;
+  /**
+   * The permission instructions sent with this request already carry the
+   * head's bypass autonomy note (prompts/permissions-prompt.ts
+   * LIGHT_BYPASS_AUTONOMY_NOTE or COMPACT_BYPASS_AUTONOMY_NOTE), which says
+   * what the auto-mode pulse says. The session tail that holds it rides on
+   * every request, so the pulse would only repeat it.
+   */
+  readonly autonomyStatedInPermissions?: boolean;
+  /**
+   * Present for an interactive session whose fixed prefix carries no memory
+   * rules (its memory was empty when the prompt was assembled): resolves the
+   * rules and directories for the memory-on-request reminder.
+   */
+  readonly memoryOnRequest?: () => Promise<string | undefined>;
+  /**
+   * The instructions sent with this request carry loaded instruction files,
+   * framed with prompts/live-instructions.ts LIGHT_LOADED_INSTRUCTIONS_NOTE,
+   * which says they are AgenC's and already in the prompt.
+   */
+  readonly lightInstructionFilesLoaded?: boolean;
   /**
    * Exact turn identity plus the authoritative root-human turn currently
    * bound to the session. The root turn can be absent or belong to another
@@ -165,6 +188,11 @@ export interface GetAttachmentsOptions {
       }>;
     }>;
   };
+  /**
+   * The session's fixed tool policy, when it has one (`agent.create`
+   * `toolPolicy`). Decides which bundled skills the skill listing may name.
+   */
+  readonly toolPolicy?: SessionToolPolicy;
   /** Current loaded config snapshot for config-gated skill/plugin discovery. */
   readonly config?: unknown;
   /** Current model context window, if known, for listing budget sizing. */
@@ -207,6 +235,8 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   dateChangeProducer,
   instructionUpdateProducer,
   criticalReminderProducer,
+  productHelpProducer,
+  memoryOnRequestProducer,
   outputStyleProducer,
   //
   // Phase 5 — Memory + file injections:

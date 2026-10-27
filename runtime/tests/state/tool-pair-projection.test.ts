@@ -45,6 +45,23 @@ function validate(
 }
 
 describe("StateToolPairProjection", () => {
+  it("uses rebuildable WAL commits only for an explicit canonical owner", () => {
+    expect(projection.runAtomically(() =>
+      driver.state.pragma("synchronous", { simple: true }))).toBe(2);
+    const canonical = new StateToolPairProjection(driver, { rebuildable: true });
+    expect(canonical.runAtomically(() => {
+      canonical.reset({ projectionId: "canonical", sourceKey: "journal" });
+      return driver.state.pragma("synchronous", { simple: true });
+    })).toBe(1);
+    expect(driver.state.pragma("synchronous", { simple: true })).toBe(2);
+    expect(() => canonical.runAtomically(() => {
+      canonical.reset({ projectionId: "rolled-back", sourceKey: "journal" });
+      throw new Error("injected rollback");
+    })).toThrow("injected rollback");
+    expect(driver.state.pragma("synchronous", { simple: true })).toBe(2);
+    expect(driver.prepareState("SELECT 1 FROM tool_pair_projection_runs WHERE projection_id = 'rolled-back'").get()).toBeUndefined();
+  });
+
   it("pairs parallel results by ID and persists exact resolution rows", () => {
     const outcome = validate([
       {

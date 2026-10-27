@@ -69,13 +69,16 @@ describe("configured MCP first-use boundary", () => {
       listenStarted.resolve();
       return listening.promise;
     });
+    // Settle the setup registrations before replacing the same mock factory.
+    // Competing pending registrations can otherwise overwrite this handshake.
+    const { startMcpServerFromConfig } = await import("../../../src/mcp/server/configured-start.js");
+    expect(implementationLoads).toBe(0);
     vi.doMock(implementationPath, async () => {
       implementationLoads++;
       importStarted.resolve();
       await importAllowed.promise;
       return { startMcpSseServe: startServer };
     });
-    const { startMcpServerFromConfig } = await import("../../../src/mcp/server/configured-start.js");
     const serverConfig = { enabled: true, transport: "sse" as const, host: "127.0.0.1", port: 0, workspace: "/requested" };
     const firstIo = {} as NonNullable<McpServerStartOptions["io"]>;
     const beforeImportIo = {} as NonNullable<McpServerStartOptions["io"]>;

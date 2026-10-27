@@ -1,3 +1,4 @@
+import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
@@ -44,7 +45,13 @@ function committed(summary: string): AutoCompactResult {
  * defers and the pre-dispatch check makes one mandatory attempt (the seam
  * the ladder hangs off). Mirrors `run-turn.advisory-compaction.test.ts`.
  */
-function createToolExercise(options: { readonly fastMode?: boolean; readonly nonInteractive?: boolean; readonly emergencyMode?: "always" | "never" } = {}) {
+function createToolExercise(options: {
+  readonly fastMode?: boolean;
+  readonly nonInteractive?: boolean;
+  readonly emergencyMode?: "always" | "never";
+  /** The fourth reply's own text is larger than the window: nothing can shorten it. */
+  readonly assistantPressure?: boolean;
+} = {}) {
   let samples = 0;
   let tools = 0;
   const requests: LLMMessage[][] = [];
@@ -53,7 +60,7 @@ function createToolExercise(options: { readonly fastMode?: boolean; readonly non
     requests.push([...messages]);
     samples += 1;
     return {
-      content: options.fastMode && samples === 4 ? "assistant context pressure ".repeat(30_000) : samples <= 4 ? "Continue the implementation." : "finished",
+      content: (options.fastMode || options.assistantPressure) && samples === 4 ? "assistant context pressure ".repeat(30_000) : samples <= 4 ? "Continue the implementation." : "finished",
       toolCalls: samples <= 4
         ? [{ id: `read-${samples}`, name: "read_probe", arguments: JSON.stringify({ round: samples }) }]
         : [],
@@ -139,8 +146,38 @@ describe("degraded compaction ladder", () => {
       .toHaveLength(0);
   });
 
-  test("every tier declining ends the turn with compact_failed naming the exhausted ladder", async () => {
+  test("every tier declining shortens the newest tool result instead of ending the turn", async () => {
     const exercise = createToolExercise({ nonInteractive: true });
+    const compact = vi.fn(async (...args: unknown[]) =>
+      args[4] === "before_last_user_message" ? noShrink() : { wasCompacted: false });
+    setAutoCompactImplForTests(compact);
+
+    await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
+
+    const mandatory = compact.mock.calls.filter((call) => call[4] === "before_last_user_message");
+    // The first episode climbs the whole ladder; later samples of this
+    // fixture stay above its limit and decline again without new tiers.
+    expect(mandatory.map(tierOf).slice(0, 4)).toEqual(["standard", "standard", "aggressive_summary", "emergency_local"]);
+    expect(terminals(exercise.events)).toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
+    const fitted = JSON.stringify(exercise.requests[4]);
+    expect(fitted).toContain("finish the implementation");
+    expect(fitted).toContain("fresh oversized result");
+    expect(fitted).toContain("AgenC shortened this tool result to fit the model's context window");
+    expect(fitted).toMatch(/\[\.\.\. [\d,]+ of [\d,]+ characters omitted \.\.\.\]/u);
+    // Declines are diagnostic only: every one led to a shortened request.
+    const causes = exercise.events.flatMap((event) => event.msg.type === "warning" ? [event.msg.payload.cause] : []);
+    expect(causes.filter((cause) => cause === "auto_compact_failed")).toHaveLength(0);
+    const declined = causes.filter((cause) => cause === "auto_compact_declined").length;
+    expect(declined).toBeGreaterThanOrEqual(1);
+    expect(causes.filter((cause) => cause === "context_fit_shortened")).toHaveLength(declined);
+    expect(exercise.events).toContainEqual(expect.objectContaining({ msg: { type: "warning", payload: {
+      cause: "context_fit_shortened",
+      message: "Shortened 1 tool result to fit the context window. The exact output is kept in the session history.",
+    } } }));
+  });
+
+  test("every tier declining ends the turn only when even the shortened request cannot fit, with plain recovery guidance", async () => {
+    const exercise = createToolExercise({ nonInteractive: true, assistantPressure: true });
     const compact = vi.fn(async (...args: unknown[]) =>
       args[4] === "before_last_user_message" ? noShrink() : { wasCompacted: false });
     setAutoCompactImplForTests(compact);
@@ -151,15 +188,18 @@ describe("degraded compaction ladder", () => {
     expect(mandatory.map(tierOf)).toEqual(["standard", "standard", "aggressive_summary", "emergency_local"]);
     expect(terminals(exercise.events)).toContainEqual(expect.objectContaining({ outcome: "errored", failureCode: "compact_failed" }));
     const failed = exercise.events.find((event) => event.msg.type === "turn_failed");
-    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]") } });
+    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringMatching(
+      /^The conversation is too large for the next reply: it needs about [\d,]+ tokens, more than the 4,096-token context window allows with room for a reply, even with every tool result shortened\.$/u,
+    ) } });
     expect(JSON.stringify(failed?.msg)).not.toContain("/compact");
+    expect(JSON.stringify(failed?.msg)).not.toContain("tiers=");
     // Exactly one dispatcher decline warning for the whole ladder.
     expect(exercise.events.filter((event) => event.msg.type === "warning" && event.msg.payload.cause === "auto_compact_failed"))
       .toHaveLength(1);
   });
 
   test("emergency_mode never keeps the model-free tier off and hints interactive users at /compact", async () => {
-    const exercise = createToolExercise({ emergencyMode: "never" });
+    const exercise = createToolExercise({ emergencyMode: "never", assistantPressure: true });
     const compact = vi.fn(async (...args: unknown[]) =>
       args[4] === "before_last_user_message" ? noShrink() : { wasCompacted: false });
     setAutoCompactImplForTests(compact);
@@ -169,8 +209,8 @@ describe("degraded compaction ladder", () => {
     const mandatory = compact.mock.calls.filter((call) => call[4] === "before_last_user_message");
     expect(mandatory.map(tierOf)).toEqual(["standard", "standard", "aggressive_summary"]);
     const failed = exercise.events.find((event) => event.msg.type === "turn_failed");
-    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("tiers=[aggressive_summary]") } });
-    expect(JSON.stringify(failed?.msg)).toContain("run /compact to retry manually");
+    expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("The conversation is too large") } });
+    expect(JSON.stringify(failed?.msg)).toContain("Run /compact to retry");
   });
 
   test("a provider-side failure skips the second summarizer pass and goes straight to the emergency tier", async () => {
@@ -213,6 +253,7 @@ describe("degraded compaction ladder", () => {
     let streamCount = 0;
     const seen: LLMMessage[][] = [];
     const provider = mkProvider({});
+    installPreparedCompactionPressure(provider, request => Math.max(request.messages.some(m => m.role === "tool" || (m.toolCalls?.length ?? 0) > 0) ? 18_130 : 100, Math.ceil(Buffer.byteLength(JSON.stringify(request.messages)) / 4)));
     provider.chatStream = async (messages): Promise<LLMResponse> => {
       seen.push([...messages]);
       streamCount += 1;

@@ -1099,6 +1099,18 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       .toBe("never");
   });
 
+  test("server read-only annotations never grant filesystem or retry authority", async () => {
+    const bridge = await createToolBridge({
+      listTools: async () => ({ tools: [{ name: "get_stock", inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }] }),
+      callTool: async () => ({ content: [] }), close: async () => {},
+    }, "inventory");
+    expect(bridge.tools[0]?.isReadOnly).not.toBe(true);
+    expect(bridge.tools[0]?.metadata?.virtualNoFsWrites).not.toBe(true);
+    expect(bridge.tools[0]?.recoveryCategory).not.toBe("idempotent");
+    await bridge.dispose();
+  });
+
   test("marks only explicitly audited raw MCP tools as virtual non-filesystem writers", async () => {
     const fakeClient = {
       listTools: async () => ({

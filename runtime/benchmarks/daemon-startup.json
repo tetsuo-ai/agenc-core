@@ -1,0 +1,59 @@
+{
+  "baseRevision": "bc43c6e4b5b374931de020364f2e0d267bd481a6",
+  "environment": {
+    "os": "macOS 26.6.2",
+    "architecture": "arm64",
+    "node": "26.8.1",
+    "cpuProfiling": true
+  },
+  "fixture": {
+    "activeRuns": 193,
+    "completedRuns": 1,
+    "snapshots": 678,
+    "projects": 6,
+    "totalDatabaseBytes": 1911005184,
+    "largestDatabaseBytes": 1283969024
+  },
+  "measurement": "Foreground admission after module imports; fresh synthetic home; fixture generation excluded; injected runner; single samples",
+  "before": {
+    "readyMs": 8207.62,
+    "healthMs": 21.009,
+    "createMs": 33.409,
+    "restoredMs": 8263.305,
+    "restoringAtFirstHealth": 0,
+    "shutdownExitCode": 1,
+    "phasesMs": {
+      "database open": 32,
+      "terminal retention": 2,
+      "session snapshot retention": 3696,
+      "snapshot table retention": 929,
+      "space reclaim": 0,
+      "journal and snapshot recovery": 2250
+    },
+    "otherPhasesMs": {
+      "admissionRecoveryMs": 41.258,
+      "snapshotHydrationMs": 1110.926
+    }
+  },
+  "after": {
+    "readyMs": 1702.357,
+    "healthMs": 31.774,
+    "createMs": 83.006,
+    "restoredMs": 2864.824,
+    "restoringAtFirstHealth": 173,
+    "shutdownExitCode": 0,
+    "phasesMs": {
+      "database open": 27,
+      "terminal retention": 3,
+      "session snapshot retention": 47,
+      "snapshot table retention": 10,
+      "space reclaim": 0,
+      "journal and snapshot recovery": 1468
+    },
+    "otherPhasesMs": {
+      "admissionRecoveryMs": 24.345,
+      "snapshotRegistrationMs": 0.199,
+      "snapshotHydrationMs": 1113.996
+    }
+  }
+}

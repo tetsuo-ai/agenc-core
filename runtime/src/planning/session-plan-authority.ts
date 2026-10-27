@@ -2,6 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getExistingPlanFilePath, type PlanFileContext } from "./plan-files.js";
 import { asRecord } from "../utils/record.js";
+import { fileEditTargetPath } from "../tools/system/file-edit-target.js";
 import { resolveHomeContext } from "../config/home.js";
 
 export interface SessionPlanFileAuthority {
@@ -112,16 +113,19 @@ export function isSessionPlanMutation(
   const descriptor = asRecord(tool);
   const metadata = asRecord(descriptor?.metadata);
   const args = asRecord(input);
+  if (args === null) return false;
+  const target = descriptor?.name === "Edit" ? fileEditTargetPath(args)
+    : typeof args.file_path === "string" ? args.file_path : undefined;
   if (
     metadata?.source !== "builtin" || metadata.family !== "filesystem" ||
     !["Write", "Edit", "MultiEdit"].includes(String(descriptor?.name)) ||
-    typeof args?.file_path !== "string"
+    target === undefined
   ) return false;
   const owner = asRecord(session);
   const configuration = asRecord(owner?.sessionConfiguration);
   const cwd = typeof args.cwd === "string" ? args.cwd : configuration?.cwd;
   return matchesSessionPlanFile(
-    args.file_path,
+    target,
     sessionPlanFileAuthority(session),
     typeof cwd === "string" ? cwd : undefined,
   );

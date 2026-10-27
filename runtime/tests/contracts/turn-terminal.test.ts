@@ -4,10 +4,19 @@ import { isCanonicalEventPayload } from "../../src/state/recovery-journal-schema
 import {
   classifyTurnTerminal,
   createTurnFailedEvent,
+  turnTerminalResult,
   MAX_TURN_FAILURE_MESSAGE_LENGTH,
 } from "../../src/contracts/turn-terminal.js";
 
 describe("turn terminal classification", () => {
+  it("keeps transport diagnostics through durable validation and classification", () => {
+    const diagnostics = { transportFailure: { category: "http_5xx" as const, status: 502 },
+      remainingDeadlineMs: 500, durationMs: 1200, usableFinalAnswer: false };
+    const msg = createTurnFailedEvent({ turnId: "transport-turn", code: "transport_error", message: "interrupted", ...diagnostics });
+    expect(isCanonicalEventPayload(msg.type, msg.payload)).toBe(true);
+    expect(classifyTurnTerminal(msg)).toMatchObject({ outcome: "errored", failureCode: "transport_error", ...diagnostics });
+    expect(turnTerminalResult(classifyTurnTerminal(msg)!)).toMatchObject({ code: 1, failureCode: "transport_error", ...diagnostics });
+  });
   it("recognizes failed turns as durable journal events", () => {
     const msg = createTurnFailedEvent({
       turnId: "turn-1", code: "provider_error", message: "provider disconnected",

@@ -1,3 +1,4 @@
+import { sessionDurableMemoryDirectories } from "../services/extractMemories/memory-paths.js";
 import { deferSidecar } from "../session/deferred-sidecar.js";
 import { oneShotFastModeSelected } from "../one-shot-fast-mode.js";
 import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
@@ -17,11 +18,13 @@ import {
   type ProviderName,
 } from "../llm/provider.js";
 import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
-import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
+
 import type { LLMProvider } from "../llm/types.js";
 import { endpointMetadataForTransport } from "../llm/endpoint-metadata-cache.js";
+import { readLocalByokCredential } from "../auth/native-credentials.js";
 import { SHARED_PUBLIC_MODEL_CATALOGS } from "../llm/model-metadata.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
+import { resolveModelCatalogMetadata } from "../llm/registry/model-catalog.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
 import {
   markCapabilityDrift,
@@ -39,6 +42,7 @@ import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import { initializeToolPermissionContext } from "../permissions/settings.js";
+import { sessionToolPolicyNoFsWriteTools } from "../permissions/session-tool-policy.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
@@ -86,7 +90,6 @@ import {
   SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
   shutdownSessionLifecycle,
 } from "../session/lifecycle.js";
-import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunResumeReason } from "../contracts/run-contracts.js";
 import { AgentControl } from "../agents/control.js";
@@ -138,7 +141,6 @@ import {
 } from "../session/runtime-options.js";
 import {
   assertHostedAgencModelAuthority,
-  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
   requireProviderRuntimeCredential,
   resolveProviderRuntimeAuthority,
   snapshotProviderEnvironment,
@@ -150,11 +152,12 @@ import { runWithStartupProviderSelection } from "../utils/model/providers.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
-import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
+
 import { bindSessionAgentControl } from "./delegate-tool.js";
 import {
   readStartupCliFlags,
   resolveCanonicalStartupSelection,
+  resolveDiscoveredStartupDefault,
   resolvedStartupProfileName,
   startupConfigLayerOptions,
   type StartupCliFlags,
@@ -206,10 +209,6 @@ interface ResolvedAuthModelSelection {
   readonly profileModel: string;
 }
 
-function isHostedAgencProvider(provider: string): boolean {
-  return provider.trim().toLowerCase() === "agenc";
-}
-
 function firstNonEmptyString(
   ...values: Array<string | undefined>
 ): string | undefined {
@@ -236,43 +235,12 @@ async function resolveAuthModelSelection(params: {
   readonly sessionId: string;
   readonly subscriptionTier: AuthSubscriptionTier;
 }): Promise<ResolvedAuthModelSelection> {
-  if (
-    params.authBackend === undefined ||
-    !isHostedAgencProvider(params.provider)
-  ) {
-    return {
-      provider: params.provider,
-      model: params.model,
-      profileProvider: params.provider,
-      profileModel: params.model,
-    };
-  }
-  await assertHostedAgencModelAuthority({
-    provider: params.provider,
-    model: params.model,
-    sessionId: params.sessionId,
-    authBackend: params.authBackend,
-    subscriptionTier: params.subscriptionTier,
-  });
-  const inferred = await params.authBackend.inferAgencModel({
-    provider: params.provider,
-    requestedModel: params.model,
-    sessionId: params.sessionId,
-    subscriptionTier: params.subscriptionTier,
-  });
-  const inferredProvider = resolveBuiltInProviderSlug(inferred.provider);
-  const inferredModel = firstNonEmptyString(inferred.model);
-  if (inferredModel === undefined) {
-    throw new Error("AuthBackend model inference returned an empty model");
-  }
+  await assertHostedAgencModelAuthority(params);
   return {
     provider: params.provider,
     model: params.model,
-    profileProvider:
-      inferredProvider !== undefined && inferredProvider !== "agenc"
-        ? inferredProvider
-        : params.provider,
-    profileModel: inferredModel,
+    profileProvider: params.provider,
+    profileModel: params.model,
   };
 }
 
@@ -467,18 +435,6 @@ function transcriptEventsFromRollout(
   return out;
 }
 
-function transcriptMessagesFrom(
-  events: ReadonlyArray<BootstrapTranscriptEvent>,
-): EventMsg[] {
-  return events.map(
-    (event) =>
-      ({
-        type: event.type,
-        payload: event.payload,
-      }) as EventMsg,
-  );
-}
-
 /**
  * Map operator `max_turns` (schema / TOML) onto turn-loop `maxTurns`.
  * Exported so tests can prove the mapping without booting a full session.
@@ -554,6 +510,9 @@ function buildDeferredConfig(
     // Snake config key → camel turn Config (todo-105). Unset = no iteration cap.
     ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
+    ...(config.task_token_budget !== undefined ? { taskTokenBudget: config.task_token_budget } : {}),
+    ...(config.task_max_calls !== undefined ? { taskMaxCalls: config.task_max_calls } : {}),
+    ...(config.experimental_task_budget_progress !== undefined ? { experimentalTaskBudgetProgress: config.experimental_task_budget_progress } : {}),
     ...(config.durableTurns !== undefined
       ? { durableTurns: config.durableTurns }
       : {}),
@@ -756,6 +715,42 @@ export interface PreparedConfiguredExecutionAuthority {
   rollback(): void;
 }
 
+let ordinarySubmitModulesPreload: Promise<void> | undefined;
+
+/**
+ * A daemon session defers its startup side effects to its first ordinary
+ * submit (see `deferAgentStartupSideEffects`), and that submit then loads the
+ * code it runs: the turn kernel for the prompt check and the turn, the
+ * model-facing tools for interrupted-job recovery and the cron runner, and the
+ * cron store, and MCP startup builds and compiles its configuration schema on
+ * first use. That took about 13 ms of the time between the user's Enter and
+ * the first model request. Do it while the session waits for the user instead.
+ * Only modules are evaluated and a schema parses an empty configuration (no
+ * I/O); every startup side effect still runs at the submit, under its
+ * authority, in its order. Once per process; a module that fails to load fails
+ * again where the submit imports it.
+ */
+export function preloadOrdinarySubmitModules(): Promise<void> {
+  return ordinarySubmitModulesPreload ??= new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  }).then(async () => {
+    for (const load of [
+      () => import("../session/run-turn.js"),
+      () => import("./model-facing-tools.js"),
+      () => import("../utils/cronTasks.js"),
+      () => import("../services/mcp/types.js").then(({ McpJsonConfigSchema }) => {
+        McpJsonConfigSchema().safeParse({ mcpServers: {} });
+      }),
+    ]) {
+      try {
+        await load();
+      } catch {
+        // Reported where the submit path imports the module.
+      }
+    }
+  });
+}
+
 function waitForPartialMcpDisposal(task: Promise<void>): Promise<void> {
   return withTimeout(
     task,
@@ -846,7 +841,9 @@ export async function bootstrapLocalRuntimeSession(
     options.runtimeOptions ??
     resolveAgentRuntimeOptions(env, {
       simpleMode: cli.simpleMode === true,
-      ...(cli.lightMode === true ? { lightMode: true } : {}),
+      // Explicit flags only. This fallback also rebuilds existing sessions,
+      // so it never applies the new-session default.
+      ...(cli.lightMode !== undefined ? { lightMode: cli.lightMode } : {}),
       dangerouslyBypassApprovalsAndSandbox: (() => {
         const sandboxBypass = resolveStartupSandboxBypass(cli, {
           cwd: process.cwd(),
@@ -928,8 +925,13 @@ async function bootstrapLocalRuntimeSessionScoped(
     options.providerEnvironment,
     configStore.current(),
   );
-  const startup = resolveCanonicalStartupSelection({
+  let startup = resolveCanonicalStartupSelection({
     config: configStore.current(),
+    env: providerEnvironment,
+    metadata: {
+      catalogHome: configStore.homeContext.path,
+      readSavedApiKey: provider => readLocalByokCredential(configStore.homeContext, provider)?.apiKey,
+    },
     ...(profileName !== undefined ? { profileName } : {}),
   });
   const cli = options.cli;
@@ -1199,6 +1201,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     mode: initialSandboxExecutionAuthority.mode,
     cwd: workspaceRoot,
     env,
+    sessionMemoryRoots: cwd => sessionDurableMemoryDirectories({ configStore, providerEnvironment: env, runtimeOptions }, cwd)?.roots ?? [],
     sessionTempRoot,
     // A scheduled routine run: its commands write only in the workspace and
     // get a scratch folder there (or the workspace itself) as TMPDIR.
@@ -1214,6 +1217,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     windowsSandboxLevel:
       initialSandboxExecutionAuthority.windowsSandboxLevel,
     allowGpu: initialSandboxExecutionAuthority.allowGpu,
+    allowLocalBinding: initialSandboxExecutionAuthority.allowLocalBinding,
     persistentSession: initialSandboxExecutionAuthority.persistentSession,
   });
   const sandboxStartupStatus = sandboxExecutionBroker.status();
@@ -1234,6 +1238,15 @@ async function bootstrapLocalRuntimeSessionScoped(
     conversationId,
   );
   const localByokAuthBackend = new LocalAuthBackend({ agencHome, env });
+  startup = await resolveDiscoveredStartupDefault(startup, configStore.modelSelectionSource(), {
+    catalogHome: configStore.homeContext.path,
+    // A default bound global fetch is not an injected test transport. Keep
+    // OpenRouter background discovery local unless a fixture opts into it.
+    fetchImpl: startup.provider === "openrouter" && process.env.NODE_ENV === "test"
+      ? options.fetchImpl : fetchImpl,
+    env: providerEnvironment,
+    readSavedApiKey: provider => readLocalByokCredential(configStore.homeContext, provider)?.apiKey,
+  });
   const modelSelection = await resolveAuthModelSelection({
     authBackend: options.authBackend,
     provider: startup.provider,
@@ -1284,6 +1297,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     baseEnv: env,
     shellPath: commandExecutionAuthority.path,
     commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv,
+    prepareContainedLaunches: true,
   });
   const unifiedExecLifecycleParticipantName = "unified-exec-manager";
   let unifiedExecQuiesceToken:
@@ -1364,6 +1378,14 @@ async function bootstrapLocalRuntimeSessionScoped(
     workspaceRoot,
     agencHome,
     environment: providerEnvironment,
+    ...(startup.config.web_search !== undefined
+      ? { configuredWebSearch: startup.config.web_search } : {}),
+    ...(startup.config.defer_rare_tools !== undefined
+      ? { configuredDeferRareTools: startup.config.defer_rare_tools }
+      : {}),
+    ...(startup.config.providers?.deepseek?.web_search !== undefined
+      ? { configuredDeepSeekWebSearch: startup.config.providers.deepseek.web_search }
+      : {}),
     mcpManager,
     getSession: () => sessionRef,
     roleCatalog,
@@ -1469,13 +1491,6 @@ async function bootstrapLocalRuntimeSessionScoped(
         ...(explicitApiKey !== undefined ? { apiKey: explicitApiKey } : {}),
       },
       runtime: {
-        managedKeysEnabled: resolveAuthManagedKeysEnabled(currentConfig),
-        freeManagedCredential:
-          authSubscriptionTier === "free" &&
-          isFreeSubscriptionManagedModel(provider, selection.model),
-        applyManagedDefaultOutputCap:
-          provider === "openrouter" &&
-          runtimeRequest.settings?.maxOutputTokens === undefined,
       },
     };
   };
@@ -1499,7 +1514,6 @@ async function bootstrapLocalRuntimeSessionScoped(
     },
   );
   requireProviderRuntimeCredential(resolvedProvider, initialAuthority);
-  const hasManagedCredential = initialAuthority.managedCredential;
   const provider: LLMProvider = createProvider(
     resolvedProvider,
     initialAuthority.factoryOptions,
@@ -1510,8 +1524,14 @@ async function bootstrapLocalRuntimeSessionScoped(
     overrides: providerSettings?.capabilityOverrides,
   });
   const providerHealthCheck = provider.healthCheck;
+  // GET /models tests reachability, not the registered model's capabilities.
+  // Catalogued DeepSeek models already refresh custom-endpoint metadata in the
+  // background; another health GET duplicates that work. Actual chat errors
+  // still report capability drift, and explicit health checks remain available.
+  const cataloguedDeepSeek = resolvedProvider === "deepseek" &&
+    resolveModelCatalogMetadata({ provider: resolvedProvider, model }) !== undefined;
   if (
-    !hasManagedCredential &&
+    !cataloguedDeepSeek &&
     shouldProbeCapabilityEntry(capabilityEntry) &&
     typeof providerHealthCheck === "function"
   ) {
@@ -1545,8 +1565,11 @@ async function bootstrapLocalRuntimeSessionScoped(
     config: startup.config,
     fallbackProvider: profileProvider,
     metadata: {
-      fetchImpl,
+      catalogHome: configStore.homeContext.path,
+      fetchImpl: profileProvider === "openrouter" && process.env.NODE_ENV === "test"
+        ? options.fetchImpl : fetchImpl,
       env,
+      readSavedApiKey: provider => readLocalByokCredential(configStore.homeContext, provider)?.apiKey,
       // Sessions on the real network share one download of each public model
       // catalog. An injected fetch keeps its own, so it sees only its data.
       ...(options.fetchImpl === undefined
@@ -1564,9 +1587,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   // A Grok session on the xAI sign-in route never sends priority processing,
   // so its model info does not offer the Fast tier.
-  // Two providers can list the same model id (the managed AgenC route and
-  // public OpenRouter share DeepSeek ids), so the bound provider decides
-  // whose limits the session plans with.
+  // The bound provider decides which model limits the session plans with.
   const rawModelInfo = withoutXaiSignInFastTier(
     await modelsManager.getModelInfoForProvider(resolvedProvider, model),
     {
@@ -1574,22 +1595,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       factoryOptions: readProviderFactoryOptions(provider),
     },
   );
-  const modelInfo =
-    hasManagedCredential &&
-    initialPreparation.runtime.applyManagedDefaultOutputCap
-      ? {
-          ...rawModelInfo,
-          maxOutputTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
-          maxOutputTokensUpperLimit:
-            rawModelInfo.maxOutputTokensUpperLimit !== undefined
-              ? Math.min(
-                  rawModelInfo.maxOutputTokensUpperLimit,
-                  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
-                )
-              : MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
-          maxOutputTokensCappedDefault: true,
-        }
-      : rawModelInfo;
+  const modelInfo = rawModelInfo;
   const configuredSessionConfiguration = {
     ...sessionConfigurationFromAgenCConfig({
       config: startup.config,
@@ -1651,7 +1657,6 @@ async function bootstrapLocalRuntimeSessionScoped(
       : {}),
   };
   let initialTranscriptEvents: readonly BootstrapTranscriptEvent[] = [];
-  let initialMessages: ReadonlyArray<EventMsg> = [];
 
   const sessionProjectRootMarkers = startup.config.project_root_markers;
   const ownedExecutionAdmissionKernel =
@@ -1679,6 +1684,10 @@ async function bootstrapLocalRuntimeSessionScoped(
       runId: conversationId,
       sessionId: conversationId,
       autonomous: executionAdmissionAutonomous,
+      ...((startup.config.task_max_calls ?? 0) > 0
+        ? { maxModelCalls: startup.config.task_max_calls } : {}),
+      ...((startup.config.task_token_budget ?? 0) > 0
+        ? { maxTokens: startup.config.task_token_budget } : {}),
       ...(maxBudgetUsdFromAgenCConfig(startup.config) !== undefined
         ? { maxCostUsd: maxBudgetUsdFromAgenCConfig(startup.config) }
         : {}),
@@ -1710,10 +1719,14 @@ async function bootstrapLocalRuntimeSessionScoped(
   let ctxForReturn: TurnContext | null = null;
   let conversationThreadManagerForReturn: ConversationThreadManager | null =
     null;
+  const sessionToolPolicy = options.toolRegistryOptions?.toolPolicy;
   const mcpService = createSessionMcpService(mcpManager, {
     authority: configStore,
     environment: sessionMcpRequestEnvironment,
     pluginStorageRoot: options.runtimeOptions.pluginStorageRoot,
+    ...(sessionToolPolicy?.noFsWriteTools !== undefined
+      ? { noFsWriteToolsFor: (serverName: string) => sessionToolPolicyNoFsWriteTools(sessionToolPolicy, serverName) }
+      : {}),
   });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
@@ -1911,7 +1924,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       ...(options.deferAgentStartupSideEffects === true
         ? { deferOrdinaryStartup: true }
         : {}),
-      // Lazy payload — `rolloutPath`, `initialMessages`, and
+      // Lazy payload — `rolloutPath` and
       // `historyEntryCount` are populated inside the before-hook when
       // the rollout store mounts and resume-history reconstruction
       // updates `initialState`.
@@ -1922,7 +1935,10 @@ async function bootstrapLocalRuntimeSessionScoped(
         cwd: workspaceRoot,
         historyLogId: 0,
         historyEntryCount: initialState.history.length,
-        initialMessages,
+        // The transcript is already canonical and supplied separately to the
+        // TUI. Copying it into every resume's metadata row creates unbounded
+        // duplicates and eventually exceeds the strict record ceiling.
+        initialMessages: [],
         ...(rolloutStoreForReturn !== null
           ? { rolloutPath: rolloutStoreForReturn.rolloutPath }
           : {}),
@@ -2027,6 +2043,7 @@ async function bootstrapLocalRuntimeSessionScoped(
           cwd: workspaceRoot,
           originator: "agenc-cli",
           source: "interactive-root",
+          lightMode: runtimeOptions.lightMode === true,
           agencVersion: VERSION,
           model,
           modelProvider: resolvedProvider,
@@ -2091,7 +2108,6 @@ async function bootstrapLocalRuntimeSessionScoped(
               ...existingItems,
               ...reconstruction.synthesizedEvents,
             ]);
-            initialMessages = transcriptMessagesFrom(initialTranscriptEvents);
             s.setInitialTranscriptEvents(initialTranscriptEvents);
             copyPlanForResume(
               { sessionId: conversationId, agencHome },
@@ -2134,6 +2150,10 @@ async function bootstrapLocalRuntimeSessionScoped(
 
         const deferredCost = deferredSetup !== undefined && oneShotFastModeSelected(runtimeOptions, startup.config)
           ? deferSidecar(s.eventLog) : undefined;
+        // The daemon can emit its first user prompt before the first request
+        // initializes sidecars. Retain that file-history barrier as well.
+        const deferredFileHistory = deferredSetup !== undefined
+          ? deferSidecar(s.eventLog) : undefined;
         const initializeSidecars = async (): Promise<void> => {
         s.abortController.signal.throwIfAborted();
         const projectDir = getProjectDir(
@@ -2158,6 +2178,10 @@ async function bootstrapLocalRuntimeSessionScoped(
 
         const fileHistory = new FileHistory({
           projectDir,
+          sessionId: conversationId,
+          withCanonicalBackgroundWork: (work) => s.rolloutStore === null
+            ? Promise.resolve().then(work)
+            : s.rolloutStore.withCanonicalBackgroundWork(work),
           onDiagnostic: (diagnostic) =>
             sidecarManager?.recordDiagnostic({
               sidecar: "file-history",
@@ -2167,9 +2191,9 @@ async function bootstrapLocalRuntimeSessionScoped(
               at: Date.now(),
             }),
         });
-        sidecarManager.register(
-          new FileHistorySidecar({ fileHistory, workspaceRoot }),
-        );
+        await fileHistory.loadFromDisk();
+        const fileHistorySidecar = new FileHistorySidecar({ fileHistory, workspaceRoot });
+        sidecarManager.register(deferredFileHistory?.attach(fileHistorySidecar) ?? fileHistorySidecar);
         s.attachFileHistory(fileHistory);
 
         errorLogSidecar = new ErrorLogSidecar({
@@ -2183,6 +2207,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         sidecarManager.register(errorLogSidecar);
 
         const costSidecar = new CostSidecar({
+          ...(profileProvider === "venice" ? { registry: modelsManager.modelCostRegistry() } : {}),
           defaultModel: model,
           defaultProvider: resolvedProvider,
           exitSummary:
@@ -2245,7 +2270,7 @@ async function bootstrapLocalRuntimeSessionScoped(
               cwd: workspaceRoot,
               historyLogId: 0,
               historyEntryCount: initialState.history.length,
-              initialMessages,
+              initialMessages: [],
               ...(rolloutPath !== undefined ? { rolloutPath } : {}),
             },
           },
@@ -2404,6 +2429,7 @@ async function bootstrapLocalRuntimeSessionScoped(
 
         if (options.deferAgentStartupSideEffects === true) {
           s.appendDeferredOrdinarySubmitHook(activateAgentStartupSideEffects);
+          void preloadOrdinarySubmitModules();
         } else {
           await activateAgentStartupSideEffects();
         }

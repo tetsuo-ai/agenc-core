@@ -51,8 +51,8 @@ describe("Ink facade loading", () => {
       ]);
       root.render(createElement(ThemeProbe));
       await vi.waitFor(() => {
-        expect(first.output()).toContain("active theme: dark");
-        expect(second.output()).toContain("active theme: dark");
+        expect(first.output()).toContain("active theme: olive");
+        expect(second.output()).toContain("active theme: olive");
       });
       expect(loading.evaluations).toBe(1);
     } finally {

@@ -547,7 +547,7 @@ describe("commit", () => {
           type: "error",
           payload: {
             cause: "stop_hook_loop",
-            message: `stop hooks blocked ${MAX_STOP_HOOK_BLOCKS} times in a row — forcing terminal (stop_hook_blocked)`,
+            message: `stop hooks blocked ${MAX_STOP_HOOK_BLOCKS} times in a row: forcing terminal (stop_hook_blocked)`,
           },
         },
       },

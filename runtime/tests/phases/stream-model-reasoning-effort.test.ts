@@ -257,8 +257,10 @@ test.each(desktopEffortCatalog.filter(row => row.levels.length > 0))(
     for (const effort of row.levels) {
       // The session "none" sentinel omits the wire effort field, except on
       // OpenAI models that document none (GPT-6 Sol and Luna), where an
-      // omitted field would run their medium default.
-      const noneOnWire = row.provider === "openai" && modelLevels.includes("none");
+      // omitted field would run their medium default, and on Ollama Cloud and
+      // Venice models that list none, which think at their default without it.
+      const noneOnWire = (row.provider === "openai" || row.provider === "ollama-cloud" || row.provider === "venice") &&
+        modelLevels.includes("none");
       expect(resolveSessionReasoningEffort(effort as ReasoningEffort, modelLevels, row))
         .toBe(effort === "none" && !noneOnWire ? undefined : effort);
     }

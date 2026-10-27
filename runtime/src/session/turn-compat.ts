@@ -1,3 +1,4 @@
+import { runtimeOptionsForChildSession } from "../one-shot-fast-mode.js";
 import { legacyCacheCreationUsage } from "../llm/usage.js";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
 import { attachExecOwnerBinding, execOwnerBindingFromToolArgs } from "../unified-exec/process-ownership.js";
@@ -328,6 +329,7 @@ export async function createTurnCompatSession(
       mcpManagerOwnership: "borrowed",
       services: {
         ...parent.services,
+        runtimeOptions: runtimeOptionsForChildSession(parent.services.runtimeOptions),
         // The compat child owns its selected model/provider revision. Sharing
         // the parent's provider service would silently retain the parent model.
         providerService: undefined,
@@ -1066,6 +1068,9 @@ function messageToLlmMessages(message: Message): LLMMessage[] {
             role: "tool",
             toolCallId: part.tool_use_id,
             content: toolResultContentToText(part.content),
+            ...(part.is_error === true
+              ? { runtimeOnly: { toolResultIsError: true as const } }
+              : {}),
           });
         } else if (part.type === "text") {
           userParts.push({ type: "text", text: part.text });

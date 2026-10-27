@@ -1568,13 +1568,10 @@ export class StateRunDurabilityRepository {
         if (reviewContent === existingContent) {
           return { applied: false, value: existing };
         }
-        if (
-          existing.reviewStatus === "pending" &&
-          resolution.workflowStatus !== "pending"
-        ) {
-          // A later authoritative/operator resolution may close a prior
-          // remains-unknown system observation. The canonical journal retains
-          // both events; this row is only the latest rebuildable projection.
+        if (existing.reviewStatus === "pending") {
+          // Later reviews may retain the block or close it. The canonical
+          // journal retains every observation and operator attestation;
+          // this row is only the latest rebuildable projection.
         } else {
           throw conflict(
             "RUN_EFFECT_REVIEW_CONFLICT",

@@ -15,7 +15,7 @@ import { delegate } from "../delegate.js";
 import { terminalFromAgentStatus } from "../status.js";
 import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
-import { AGENT_MESSAGE_REFERENCE_GUIDANCE, agentMessageReferenceSchema, resolveAgentMessage } from "../message-reference.js";
+import { AGENT_MESSAGE_REFERENCE_GUIDANCE, agentMessageReferenceSchema, normalizeAgentMessageArgs, resolveAgentMessage } from "../message-reference.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
 import {
@@ -31,7 +31,6 @@ import {
 import type { SubagentSpeed } from "../../config/schema.js";
 import { CROSS_PROVIDER_AUTH_DESCRIPTION } from "../../llm/cross-provider-auth.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../../session/cost.js";
-import type { ProviderSelection } from "../../session/provider-service.js";
 import { automaticChildSelectionEnabled, routeChildTask, childRoutingBudget, recordChildRoutingVerification } from "../child-routing.js";
 import { CHILD_TASK_KINDS, CHILD_TASK_COMPLEXITIES, type ChildSelectionTask, type RankedChildCandidate } from "../provider-selector.js";
 import type { ChildExecutionPlan } from "../cross-provider.js";
@@ -478,16 +477,6 @@ function tierResult(serviceTier: string | undefined): { readonly serviceTier?: s
   return serviceTier === undefined ? {} : { serviceTier };
 }
 
-function modelSettings(
-  reasoningEffort: ReasoningEffort | undefined,
-  serviceTier: string | undefined,
-): { readonly reasoningEffort?: ReasoningEffort; readonly serviceTier?: string } {
-  return {
-    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-    ...tierResult(serviceTier),
-  };
-}
-
 /** The service tier of a child on another provider: its speed limit, never the parent's tier. */
 function resolveCrossProviderServiceTier(opts: {
   readonly modelInfo: ModelInfo;
@@ -645,7 +634,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         return { code: `missing-${key}`, message: `${key} is required` };
       }
     }
-    if (args.message_ref === undefined && (typeof args.message !== "string" || args.message.trim().length === 0)) {
+    const message = normalizeAgentMessageArgs(args);
+    if (message.message_ref === undefined && message.message === undefined) {
       return { code: "missing-message", message: "message or message_ref is required" };
     }
     return null;
@@ -987,9 +977,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       const policy = childProviderPolicy(session);
       // Settings are the consent, and with automatic choice off only the
       // user picks a provider: the message they sent for this turn must name
-      // it. A managed AgenC route is checked by the provider it resolves to,
-      // once that is known (createChildExecutionPlan).
-      if (selection.provider !== "agenc" && policy.cross_provider_auto !== true &&
+      // it.
+      if (policy.cross_provider_auto !== true &&
           !userNamedProvider(rootSession, selection.provider, selection.model)) {
         return refuseNotRequested(new ProviderNotRequestedError(selection.provider));
       }
@@ -1108,23 +1097,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       }
       if (selection !== undefined && targetModelInfo !== undefined) {
         const keptServiceTier = serviceTierResult.serviceTier;
-        // A managed AgenC route resolves its destination only after its
-        // preliminary consent. The destination is what the user must have
-        // named, and it sets the limits: the route's own do not apply.
-        const managedDestinationSettings = selection.provider !== "agenc" ? undefined
-          : (destination: ProviderSelection, destinationModelInfo: ModelInfo) => {
-              const policyNow = childProviderPolicy(session);
-              if (crossProviderRequested && policyNow.cross_provider_auto !== true &&
-                  !userNamedProvider(rootSession, destination.provider, destination.model)) {
-                throw new ProviderNotRequestedError(destination.provider);
-              }
-              if (fullHistoryFork) return modelSettings(selectedReasoningEffort, keptServiceTier);
-              const limit = subagentLimit(policyNow, destination.provider);
-              return modelSettings(
-                limitedReasoningEffort(destinationModelInfo, effectiveReasoningEffort, limit.effort),
-                limitedServiceTier(destinationModelInfo, roleConfiguredServiceTier ?? requestedServiceTier, limit.speed),
-              );
-            };
         let proposedPlan: Awaited<ReturnType<typeof createChildExecutionPlan>>;
         try {
           proposedPlan = await createChildExecutionPlan({
@@ -1141,7 +1113,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
             ...(keptServiceTier !== undefined ? { serviceTier: keptServiceTier } : {}),
             ...(inheritedConsentPlan !== undefined ? { inheritedConsentPlan } : {}),
-            ...(managedDestinationSettings !== undefined ? { managedDestinationSettings } : {}),
           });
         } catch (error) {
           if (error instanceof ProviderNotRequestedError) return refuseNotRequested(error);
@@ -1496,6 +1467,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     return json({
       task_name: live.agentPath,
+      collect: "Use wait_agent to collect this helper: queued results return immediately, otherwise it wakes when a message or completion arrives. Do useful independent work first; do not wait with shell sleep or file polling.",
       ...(routingReason !== undefined ? { routing_reason: routingReason } : {}),
       ...(routingCandidates !== undefined ? { automatic_fallback: verifiedRouting === undefined
         ? "If this child fails on a provider error before it runs a tool, up to two retry workers may start on other providers while this turn lasts. A routing message names each one. Without such a message, this child's own result is final."

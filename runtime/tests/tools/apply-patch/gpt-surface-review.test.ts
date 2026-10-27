@@ -98,7 +98,8 @@ test("current provider changes prompt and initial tools together; discovered edi
     expect(names.includes("Edit")).toBe(!wantsPatch);
     expect(names.includes("Write")).toBe(!wantsPatch);
     expect(prompt.staticPrefix.includes("Edit and create files with apply_patch;")).toBe(wantsPatch);
-    expect(prompt.staticPrefix.includes("Edit the shortest unique text; Write complete files.")).toBe(!wantsPatch);
+    // Edit and Write carry their own guidance; the prompt names apply_patch only beside it.
+    expect(prompt.staticPrefix.includes("apply_patch")).toBe(wantsPatch);
   }
   provider = "openai";
   registry.discoverToolNames?.(["Edit", "Write"]);

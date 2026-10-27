@@ -29,6 +29,11 @@ describe("Desktop Goal provider, model and effort release admission gate", () =>
         const overrides = selected.key ? { [selected.key]: "test-current-credential", ...(row.provider === "venice" ? { OPENAI_COMPATIBLE_BASE_URL: "https://api.venice.ai/api/v1" } : {}) } : row.provider === "amazon-bedrock"
           ? { AWS_ACCESS_KEY_ID: "test-access", AWS_SECRET_ACCESS_KEY: "test-secret", AWS_REGION: "us-east-1" } : {};
         const env = mergeDaemonClientEnvironment({}, overrides)!;
+        if (providerName === "agenc") {
+          await expect(resolveProviderRuntimeAuthority(providerName, { model }, env))
+            .rejects.toThrow("AgenC accounts no longer provide models");
+          return;
+        }
         const authority = await resolveProviderRuntimeAuthority(providerName, { model }, env);
         expect(() => requireProviderRuntimeCredential(providerName, authority)).not.toThrow();
         if (effort !== undefined) expect(resolveReasoningEffort({ provider: providerName, model }).levels).toContain(effort);

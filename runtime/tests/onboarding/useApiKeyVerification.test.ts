@@ -292,6 +292,26 @@ describe("verifyApiKey", () => {
     });
   });
 
+  test.each([
+    ["venice", "https://api.venice.ai/api/v1/api_keys/rate_limits"],
+  ] as const)("verifies %s keys against an endpoint that rejects a wrong key", async (provider, url) => {
+    // Venice's models listing is public: it answers 200 to a bogus key
+    // (checked live), so a mistyped key used to read as valid.
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 }));
+    await expect(
+      verifyApiKey({ provider, apiKey: "test-key", config: defaultConfig(), fetchImpl }),
+    ).resolves.toEqual({ status: "valid" });
+    expect(fetchImpl).toHaveBeenCalledWith(url, expect.objectContaining({
+      headers: { Authorization: "Bearer test-key" },
+    }));
+    await expect(
+      verifyApiKey({
+        provider, apiKey: "wrong-key", config: defaultConfig(),
+        fetchImpl: async () => new Response("unauthorized", { status: 401 }),
+      }),
+    ).resolves.toMatchObject({ status: "invalid", error: "Provider rejected this API key." });
+  });
+
   test("gives the one-time check a realistic timeout default", async () => {
     // Live probes measured 0.8–1.6s per provider on a healthy connection;
     // the previous 1.5s default aborted OpenRouter checks on GOOD keys.

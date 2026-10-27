@@ -778,7 +778,7 @@ export class CronScheduler {
     this.clearTimer();
     logForDebugging(
       `[CronScheduler] invocation cap (${this.opts.maxInvocationsPerWindow}/` +
-        `${this.opts.windowMs}ms) hit — schedule PAUSED; call resume() to continue`,
+        `${this.opts.windowMs}ms) hit: schedule PAUSED; call resume() to continue`,
       { level: "warn" },
     );
   }

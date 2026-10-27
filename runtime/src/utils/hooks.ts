@@ -2031,7 +2031,7 @@ export async function getMatchingHooks(
         ? ifFilteredHooks.filter((h) => {
             if (h.hook.type === "http") {
               logForDebugging(
-                `Skipping HTTP hook ${(h.hook as { url: string }).url} — HTTP hooks are not supported for ${hookEvent}`,
+                `Skipping HTTP hook ${(h.hook as { url: string }).url}: HTTP hooks are not supported for ${hookEvent}`,
               );
               return false;
             }

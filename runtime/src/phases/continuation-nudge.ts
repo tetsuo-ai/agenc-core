@@ -5,7 +5,7 @@
  *   - the stream produced an assistant message
  *   - AND the turn has not hit maxTurns
  *   - AND continuationNudgeCount < MAX_CONTINUATION_NUDGES (=3)
- *   - AND the assistant text contains a continuation-signal pattern
+ *   - AND the final prose paragraph announces unfinished execution
  *     (e.g. "now I'll create...", "let me add...")
  *   - AND the text does NOT contain a completion marker
  *     (e.g. "done", "finished", "that's all")
@@ -24,6 +24,7 @@
  * @module
  */
 
+import { Lexer } from "marked";
 import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -35,17 +36,17 @@ export const CONTINUATION_NUDGE_TEXT =
   "Continue with the task. Use the appropriate tools to proceed.";
 
 const CONTINUATION_SIGNALS: RegExp[] = [
-  /\bso now (i|let me|we) (need to|have to|should|must|will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up)\b/,
-  /\bnow i('ll| will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|go|proceed)\b/,
-  /\blet me (go ahead and |now )?(do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|proceed)\b/,
-  /\btime to (do|create|write|edit|update|fix|implement|add|run|check|make|build|get started|begin)\b/,
-  /\b(continuing|proceeding|executing|starting|moving on to)\b.{0,120}\b(do|create|write|edit|update|fix|implement|add|run|check|make|build|test|verify|wire|parse|dispatch|execute)\b/,
-  /\b(source|eval|tests?|edits?|tool calls?|verification)\b.{0,80}\b(incoming|queued|sequential)\b/,
+  /^so now (i|let me|we) (need to|have to|should|must|will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up)\b/,
+  /^now i('ll| will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|go|proceed)\b/,
+  /^let me (go ahead and |now )?(do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|proceed)\b/,
+  /^time to (do|create|write|edit|update|fix|implement|add|run|check|make|build|get started|begin)\b/,
+  /^(continuing|proceeding|executing|starting|moving on to)\b.{0,120}\b(do|create|write|edit|update|fix|implement|add|run|check|make|build|test|verify|wire|parse|dispatch|execute)\b/,
+  /^(source|eval|tests?|edits?|tool calls?|verification)\b.{0,80}\b(incoming|queued|sequential)\b/,
 ];
 
 const SHORT_TEXT_SIGNALS: RegExp[] = [
-  /\b(i('ll| will| need to| have to| must) (now )?(do|create|write|edit|update|fix|implement|add|run|check|make|build|set up))\b/,
-  /\bnext,?\s+(i('ll| will)|let me|i need to) (do|create|write|edit|update|fix|implement|add|run|check|make|build)\b/,
+  /^(i('ll| will| need to| have to| must) (now )?(do|create|write|edit|update|fix|implement|add|run|check|make|build|set up))\b/,
+  /^next,?\s+(i('ll| will)|let me|i need to) (do|create|write|edit|update|fix|implement|add|run|check|make|build)\b/,
 ];
 
 const COMPLETION_MARKERS =
@@ -55,13 +56,24 @@ const CONSENT_MARKERS =
   /\b(?:if|when|once|after|until|unless) you(?:['’]d| would)? (?:want|like|approve|agree|confirm|prefer|allow|authorize|permit|give)\b|\b(?:your|user) (?:approval|permission|confirmation|consent|go[- ]ahead)\b|\b(?:would|do) you (?:like|want)\b|\b(?:may|shall|should|can|could) i\b|\blet me know\b/;
 
 function matchesContinuationSignal(text: string): boolean {
-  const lowered = text.toLowerCase();
+  const lowered = text.toLowerCase().replaceAll("’", "'");
   if (COMPLETION_MARKERS.test(lowered) || CONSENT_MARKERS.test(lowered)) return false;
-  if (CONTINUATION_SIGNALS.some((re) => re.test(lowered))) return true;
-  if (lowered.length < 80 && SHORT_TEXT_SIGNALS.some((re) => re.test(lowered))) {
-    return true;
-  }
-  return false;
+
+  // Only an unfinished execution announcement at the end can justify another
+  // turn. Examples in a capabilities answer, code, lists and quotations do not
+  // establish work to continue, and a closing question waits for the user.
+  const ending = Lexer.lex(lowered).filter((token) => token.type !== "space").at(-1);
+  if (ending?.type !== "paragraph" || typeof ending.text !== "string") return false;
+  const prose = ending.text
+    .replace(/`+[^`]*`+|"[^"]*"|“[^”]*”/g, "")
+    .replace(/[*_]/g, "")
+    .trim();
+  if (/[?？]$/.test(prose)) return false;
+  return prose.split(/[.!?]\s+|\n+/).some((sentence) => {
+    const announcement = sentence.trim();
+    return CONTINUATION_SIGNALS.some((re) => re.test(announcement)) ||
+      (prose.length < 80 && SHORT_TEXT_SIGNALS.some((re) => re.test(announcement)));
+  });
 }
 
 export function injectNudgeMessage(state: TurnState): void {

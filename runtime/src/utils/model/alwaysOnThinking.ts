@@ -3,7 +3,7 @@ import { CLAUDE_OPUS_5_5, isClaudeModel } from './claudeModelId.js'
 /**
  * Always-on-thinking Claude detection: the Fable/Mythos 5 family
  * (`claude-fable-5`, `claude-mythos-5`, provider spellings like
- * `us.anthropic.agenc-fable-5-v1`, and future minors such as
+ * `us.anthropic.claude-fable-5-v1`, and future minors such as
  * `claude-fable-5-1`) plus Claude Opus 5.5 (`claude-opus-5-5`,
  * Bedrock `anthropic.claude-opus-5-5`).
  *

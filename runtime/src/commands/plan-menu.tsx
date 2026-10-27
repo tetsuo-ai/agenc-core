@@ -2,6 +2,7 @@ import React from "react";
 
 import type { PermissionMode } from "../permissions/types.js";
 import { Box, useInput } from "../tui/ink.js";
+import type { Key } from "../tui/ink.js";
 import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import {
@@ -38,22 +39,48 @@ function itemState(line: string): PlanItemState {
   return "active";
 }
 
-function itemText(line: string): string {
-  return line
-    .replace(/^\s*[-*]\s+\[[xX!\s]\]\s*/u, "")
-    .replace(/^\s*[-*]\s*/u, "")
-    .replace(/^#+\s*/u, "")
-    .trim();
-}
+type PlanSourceItem = {
+  readonly state: PlanItemState;
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+  readonly newline: string;
+};
 
-function markerForState(state: PlanItemState): string {
-  if (state === "done") return "x";
-  if (state === "failed") return "!";
-  return " ";
-}
-
-function formatPlanMarkdown(items: PlanDashboardSnapshot["items"]): string {
-  return `${items.map(item => `- [${markerForState(item.state)}] ${item.text}`).join("\n")}\n`;
+/** Editable source spans, never the compact dashboard preview. */
+function planSourceItems(text: string): PlanSourceItem[] {
+  const candidates: PlanSourceItem[] = [];
+  const fallback: PlanSourceItem[] = [];
+  let offset = 0;
+  let fence: string | undefined;
+  for (const fullLine of text.match(/[^\r\n]*(?:\r\n|\n|\r|$)/gu) ?? []) {
+    const newline = fullLine.match(/(?:\r\n|\n|\r)$/u)?.[0] ?? "";
+    const line = fullLine.slice(0, fullLine.length - newline.length);
+    const lineStart = offset;
+    offset += fullLine.length;
+    const marker = line.trimStart().match(/^(`{3,}|~{3,})/u)?.[1];
+    if (fence !== undefined) {
+      if (marker?.[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = undefined;
+      continue;
+    }
+    if (marker !== undefined) { fence = marker; continue; }
+    if (line.trim().length === 0) continue;
+    const prefix = line.match(/^[\t ]*(?:(?:[-*][\t ]+(?:\[[xX!\t ]\][\t ]*)?)|(?:#+[\t ]+))?/u)?.[0] ?? "";
+    const entry: PlanSourceItem = {
+      state: itemState(line),
+      text: line.slice(prefix.length),
+      start: lineStart + prefix.length,
+      end: lineStart + line.length,
+      lineStart,
+      lineEnd: offset,
+      newline,
+    };
+    fallback.push(entry);
+    if (/^\s*[-*]\s+/u.test(line) || /^\s*#+\s+/u.test(line)) candidates.push(entry);
+  }
+  return candidates.length > 0 ? candidates : fallback;
 }
 
 export function planItemsFromText(planText: string | null): PlanDashboardSnapshot["items"] {
@@ -63,20 +90,9 @@ export function planItemsFromText(planText: string | null): PlanDashboardSnapsho
       text: "No plan written yet.",
     }];
   }
-  const candidateLines = planText
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line =>
-      line.length > 0 &&
-      !line.startsWith("```") &&
-      (/^\s*[-*]\s+/u.test(line) || /^#+\s+/u.test(line)),
-    );
-  const lines = candidateLines.length > 0
-    ? candidateLines
-    : planText.split("\n").map(line => line.trim()).filter(Boolean).slice(0, 8);
-  return lines.slice(0, 12).map((line, index) => ({
-    state: index === 0 && itemState(line) === "active" ? "active" : itemState(line),
-    text: compact(itemText(line) || line),
+  return planSourceItems(planText).slice(0, 12).map(item => ({
+    state: item.state,
+    text: compact(item.text),
   }));
 }
 
@@ -91,9 +107,33 @@ export function createPlanDashboardSnapshot(params: {
     ...params,
     items: planItemsFromText(params.planText),
     message: hasPlan
-      ? "Review the current plan before approving edits or shell actions."
-      : "Plan mode is active. Ask AgenC to draft a plan, then approve it before execution.",
+      ? "Review or edit the plan here. Ask AgenC to use ExitPlanMode to request execution approval."
+      : "Plan mode is active. Ask AgenC to draft a plan and use ExitPlanMode to request execution approval.",
   };
+}
+
+type EditorState = {
+  readonly planText: string;
+  readonly activeIndex: number;
+  readonly editing: boolean;
+  readonly adding: boolean;
+  readonly draft: string;
+};
+
+type Press = {
+  readonly input: string;
+  readonly key: Key;
+  readonly pasted: boolean;
+};
+
+/**
+ * Typed text reaches useInput as one event per run, so "e ADDED" is a single
+ * input. Split it into the keys a slow typist would send. Pasted text, control
+ * keys and shortcuts stay whole.
+ */
+function pressesFor(input: string, key: Key, pasted: boolean): Press[] {
+  if (input.length < 2 || pasted || key.ctrl || key.meta) return [{ input, key, pasted }];
+  return Array.from(input, character => ({ input: character, key, pasted }));
 }
 
 function PlanDashboardView({
@@ -103,31 +143,107 @@ function PlanDashboardView({
 }: {
   readonly snapshot: PlanDashboardSnapshot;
   readonly onDone: () => void;
-  readonly onPlanTextChange?: (nextPlanText: string) => void | Promise<void>;
+  readonly onPlanTextChange?: (nextPlanText: string, previousPlanText: string) => void | Promise<void>;
 }): React.ReactNode {
-  const [items, setItems] = React.useState(() => [...snapshot.items]);
-  const [activeIndex, setActiveIndex] = React.useState(0);
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState("");
+  const [editor, setEditor] = React.useState<EditorState>(() => ({
+    planText: snapshot.planText ?? "",
+    activeIndex: 0,
+    editing: false,
+    adding: false,
+    draft: "",
+  }));
+  const { planText, activeIndex, editing, adding, draft } = editor;
+  const sourceItems = React.useMemo(() => planSourceItems(planText), [planText]);
   const [notice, setNotice] = React.useState<string | undefined>();
+  const saving = React.useRef(false);
+  // Keys that share a stdin read all run before React re-renders. Each key
+  // reads the state the previous one left here and mirrors it into `editor`
+  // for rendering, the way useTextInput keeps its live value.
+  const live = React.useRef(editor);
+  // Keys that arrive while a save is in flight wait here and run in order
+  // once it ends, as they would for a typist who pauses.
+  const queued = React.useRef<Press[]>([]);
+  const draining = React.useRef(false);
+  const finished = React.useRef(false);
+  const items: readonly { state: PlanItemState; text: string }[] = sourceItems.length > 0
+    ? sourceItems
+    : [{ state: "pending", text: "No plan written yet." }];
+  const visibleItems = adding
+    ? [...items.slice(0, activeIndex), { state: "pending" as const, text: "new plan step" }, ...items.slice(activeIndex)]
+    : items;
+  const windowStart = Math.max(0, activeIndex - 11);
 
-  const persistItems = React.useCallback((nextItems: PlanDashboardSnapshot["items"]) => {
-    setItems([...nextItems]);
-    setNotice("plan updated");
-    if (onPlanTextChange) void onPlanTextChange(formatPlanMarkdown(nextItems));
-  }, [onPlanTextChange]);
+  React.useLayoutEffect(() => {
+    finished.current = false;
+    return () => {
+      finished.current = true;
+      queued.current = [];
+    };
+  }, []);
 
-  const commitDraft = React.useCallback(() => {
-    const text = draft.trim();
-    if (text.length === 0) return;
-    persistItems(items.map((item, index) => index === activeIndex ? { ...item, text } : item));
-    setEditing(false);
-  }, [activeIndex, draft, items, persistItems]);
+  const update = (patch: Partial<EditorState>): void => {
+    live.current = { ...live.current, ...patch };
+    setEditor(live.current);
+  };
 
-  useInput((input, key) => {
-    if (editing) {
+  const close = (): void => {
+    finished.current = true;
+    queued.current = [];
+    onDone();
+  };
+
+  const persistPlan = async (nextPlanText: string): Promise<void> => {
+    if (saving.current) return;
+    saving.current = true;
+    setNotice("saving plan");
+    try {
+      await onPlanTextChange?.(nextPlanText, live.current.planText);
+      if (finished.current) return;
+      update({
+        planText: nextPlanText,
+        activeIndex: Math.min(live.current.activeIndex, Math.max(0, planSourceItems(nextPlanText).length - 1)),
+        editing: false,
+        adding: false,
+      });
+      setNotice("plan updated");
+    } catch (error) {
+      if (finished.current) return;
+      setNotice(`Failed to save plan: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      saving.current = false;
+    }
+    runQueued();
+  };
+
+  const commitDraft = (): void => {
+    const state = live.current;
+    if (state.draft.trim().length === 0) return;
+    const entries = planSourceItems(state.planText);
+    const entry = entries[state.activeIndex];
+    if (state.adding || entry === undefined) {
+      const previous = state.adding ? entries[state.activeIndex - 1] : undefined;
+      const at = previous?.lineEnd ?? state.planText.length;
+      const newline = previous?.newline || state.planText.match(/\r\n|\n|\r/u)?.[0] || "\n";
+      const separator = at > 0 && !/[\r\n]$/u.test(state.planText.slice(0, at)) ? newline : "";
+      void persistPlan(`${state.planText.slice(0, at)}${separator}- [ ] ${state.draft}${newline}${state.planText.slice(at)}`);
+    } else {
+      void persistPlan(`${state.planText.slice(0, entry.start)}${state.draft}${state.planText.slice(entry.end)}`);
+    }
+  };
+
+  const press = ({ input, key, pasted }: Press): void => {
+    const state = live.current;
+    // A paste is text, even when it consists of one command character. Keep
+    // that distinction while queued so it is interpreted in the right mode.
+    if (pasted) {
+      if (state.editing) update({ draft: `${state.draft}${input}` });
+      return;
+    }
+    if (state.editing) {
       if (key.escape) {
-        setEditing(false);
+        update(state.adding
+          ? { activeIndex: Math.max(0, state.activeIndex - 1), adding: false, editing: false }
+          : { editing: false });
         return;
       }
       if (key.return) {
@@ -135,64 +251,79 @@ function PlanDashboardView({
         return;
       }
       if (key.backspace || key.delete) {
-        setDraft(value => value.slice(0, -1));
+        update({ draft: state.draft.slice(0, -1) });
         return;
       }
       if (input && !key.ctrl && !key.meta) {
-        setDraft(value => `${value}${input}`);
+        update({ draft: `${state.draft}${input}` });
       }
       return;
     }
 
     if (key.escape || input === "q") {
-      onDone();
+      close();
       return;
     }
     if (key.upArrow || input === "k") {
-      setActiveIndex(index => Math.max(0, index - 1));
+      update({ activeIndex: Math.max(0, state.activeIndex - 1) });
       return;
     }
+    const entries = planSourceItems(state.planText);
+    const count = Math.max(1, entries.length);
     if (key.downArrow || input === "j") {
-      setActiveIndex(index => Math.min(items.length - 1, index + 1));
+      update({ activeIndex: Math.min(count - 1, state.activeIndex + 1) });
       return;
     }
     if (input === "e") {
-      setDraft(items[activeIndex]?.text ?? "");
-      setEditing(true);
+      update({ draft: entries[state.activeIndex]?.text ?? "", editing: true });
       return;
     }
-    if (input === "d" && items.length > 1) {
-      const nextItems = items.filter((_item, index) => index !== activeIndex);
-      persistItems(nextItems);
-      setActiveIndex(index => Math.min(index, nextItems.length - 1));
+    if (input === "d" && count > 1) {
+      const entry = entries[state.activeIndex];
+      if (entry !== undefined) void persistPlan(`${state.planText.slice(0, entry.lineStart)}${state.planText.slice(entry.lineEnd)}`);
       return;
     }
     if (input === "a") {
-      const nextItems = [
-        ...items.slice(0, activeIndex + 1),
-        { state: "pending" as const, text: "new plan step" },
-        ...items.slice(activeIndex + 1),
-      ];
-      persistItems(nextItems);
-      setActiveIndex(activeIndex + 1);
-      setDraft("new plan step");
-      setEditing(true);
+      update({ adding: true, activeIndex: state.activeIndex + 1, draft: "new plan step", editing: true });
       return;
     }
-    if (key.return) onDone();
+    if (key.return) close();
+  };
+
+  const runQueued = (): void => {
+    // A save callback can throw synchronously and try to resume this drain
+    // before it has consumed the triggering key.
+    if (draining.current) return;
+    draining.current = true;
+    const pending = queued.current;
+    let done = 0;
+    try {
+      while (done < pending.length && !saving.current && !finished.current) {
+        press(pending[done++]!);
+      }
+    } finally {
+      queued.current = finished.current ? [] : pending.slice(done);
+      draining.current = false;
+    }
+  };
+
+  useInput((input, key, event) => {
+    if (finished.current) return;
+    for (const next of pressesFor(input, key, event.keypress.isPasted)) queued.current.push(next);
+    runQueued();
   });
 
   return (
     <Popup
       title="plan mode · full plan"
-      status="e edit · d delete · a add · ↵ accept & run"
+      status="e edit · d delete · a add · ↵ close"
       accentColor="worker"
       bodyBackgroundColor="planModeWash"
       footer={[
         { keyName: "e", label: "edit step" },
         { keyName: "d", label: "delete" },
         { keyName: "a", label: "add" },
-        { keyName: "↵", label: "accept & run" },
+        { keyName: "↵", label: "close" },
         { keyName: "esc", label: "close" },
       ]}
     >
@@ -216,10 +347,11 @@ function PlanDashboardView({
             {notice ? <ThemedText color="agenc">{notice}</ThemedText> : null}
           </ThemedBox>
           <Box flexDirection="column" paddingX={1} paddingY={1}>
-            {items.map((item, index) => {
+            {visibleItems.slice(windowStart, windowStart + 12).map((item, localIndex) => {
+              const index = localIndex + windowStart;
               const active = index === activeIndex;
               const glyph = AURA_PLAN_GLYPHS[item.state];
-              const text = active && editing ? `${draft}█` : item.text;
+              const text = active && editing ? `${draft}█` : compact(item.text);
               return (
                 <ThemedBox
                   key={`${index}-${item.text}`}
@@ -236,7 +368,7 @@ function PlanDashboardView({
                     <ThemedText color={item.state === "pending" ? "muted3" : "agenc"}>{glyph}</ThemedText>
                   </Box>
                   <Box flexGrow={1} overflow="hidden">
-                    <ThemedText color={active ? "agenc" : "text2"} wrap="truncate-end">
+                    <ThemedText color={active ? "agenc" : "text2"} wrap={active && editing ? "truncate-start" : "truncate-end"}>
                       {text}
                     </ThemedText>
                   </Box>
@@ -254,7 +386,7 @@ export function openPlanDashboard(
   ctx: SlashCommandContext,
   snapshot: PlanDashboardSnapshot,
   options: {
-    readonly onPlanTextChange?: (nextPlanText: string) => void | Promise<void>;
+    readonly onPlanTextChange?: (nextPlanText: string, previousPlanText: string) => void | Promise<void>;
   } = {},
 ): boolean {
   return openLocalJsxCommand(ctx, close => (

@@ -241,11 +241,31 @@ export function classifyOpenAINetworkFailure(
   };
 }
 
+/**
+ * A provider that gates one model by rollout or region refuses it with 403
+ * or 451 although the key is fine (Ollama Cloud, 2026-10-20: "This model is
+ * currently being rolled out and is not yet available to you", "... is not
+ * available in your region"). That is the model, not the credential.
+ */
+const MODEL_ACCESS_REFUSAL =
+  /\b(?:not yet available to you|being rolled out|not available in your region)\b/i;
+
 export function classifyOpenAIHttpFailure(options: {
   readonly status: number;
   readonly body: string;
 }): OpenAICompatibilityFailure {
   const body = options.body ?? "";
+
+  if ((options.status === 403 || options.status === 451) && MODEL_ACCESS_REFUSAL.test(body)) {
+    return {
+      source: "http",
+      category: "model_not_found",
+      retryable: false,
+      status: options.status,
+      message: body,
+      hint: "The provider does not offer this model to this account yet (rollout or region). Choose another model; the API key is fine.",
+    };
+  }
 
   if (options.status === 401 || options.status === 403) {
     return {
@@ -325,11 +345,16 @@ export function classifyOpenAIHttpFailure(options: {
     };
   }
 
+  // A 5xx with an HTML or other non-JSON body is a gateway or load-balancer
+  // error page (502, 503, 504 during an outage), so it falls through to the
+  // retryable server failure below instead of ending the turn.
   if (
     (options.status >= 200 &&
       options.status < 300 &&
       isMalformedProviderResponse(body)) ||
-    (options.status >= 400 && isMalformedProviderResponse(body))
+    (options.status >= 400 &&
+      options.status < 500 &&
+      isMalformedProviderResponse(body))
   ) {
     return {
       source: "http",

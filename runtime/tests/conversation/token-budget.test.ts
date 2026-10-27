@@ -50,15 +50,17 @@ describe("token budget prompt text", () => {
     );
   });
 
-  test("copied system prompt path uses the shared prompt section", () => {
+  // No turn loop calls createBudgetTracker or getBudgetContinuationMessage,
+  // so the paragraph's promise ("the system will automatically continue you")
+  // did not hold; the system prompt heads leave it out.
+  test("system prompts do not promise token-target continuation", () => {
     const source = readFileSync(
       sourceUrl("prompts/system-prompt.ts"),
       "utf8",
     );
 
-    expect(source).toContain("getTokenBudgetPromptSection");
-    expect(source).toContain('"token_budget"');
-    expect(source).toContain("() => getTokenBudgetPromptSection()");
+    expect(source).not.toContain("getTokenBudgetPromptSection");
+    expect(source).not.toContain('"token_budget"');
   });
 });
 

@@ -131,8 +131,24 @@ describe("shared-prefix tail placement", () => {
     ]);
   });
 
+  it.each(["kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"])(
+    "moves the dynamic tail after the stable prefix for native %s",
+    (model) => {
+      const hints = chatCompletionsCapabilityHintsForProvider("kimi", model);
+      expect(hints.sharesPromptPrefixAcrossSessions).toBe(true);
+      const messages = request("alpha", [...SETUP, user("fix sum.js")], hints);
+      expect(messages[0]).toEqual({ role: "system", content: STATIC_HEAD });
+      expect(messages[3]).toEqual({
+        role: "user",
+        content: `<system-reminder>\n${tail("alpha")}\n</system-reminder>`,
+      });
+      expect(messages[4]).toEqual({ role: "user", content: "fix sum.js" });
+      expect(messages).toHaveLength(5);
+    },
+  );
+
   it("leaves providers without the hint unchanged", () => {
-    const hints = chatCompletionsCapabilityHintsForProvider("kimi", "kimi-k3");
+    const hints = chatCompletionsCapabilityHintsForProvider("openai", "gpt-4.1");
     expect(hints.sharesPromptPrefixAcrossSessions).toBeUndefined();
     const messages = request("alpha", [...SETUP, user("fix sum.js")], hints);
     expect(messages[0]).toEqual({ role: "system", content: prompt("alpha") });

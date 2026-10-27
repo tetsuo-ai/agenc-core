@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  compareSlashCommandMatches,
   compareSuggestionsByPriority,
   hasNameOrAliasPrefixMatch,
   type RankableMeta,
+  type SlashCommandRankableMeta,
 } from "../../../utils/suggestions/sortBySearchPriority.js";
 
 /**
@@ -105,3 +107,67 @@ describe("slash typeahead: exact-match wins index 0", () => {
     ).toBe(true);
   });
 });
+
+const slashMeta = (
+  name: string,
+  builtin: boolean,
+  opts: { aliases?: string[]; usage?: number } = {},
+): SlashCommandRankableMeta => ({ ...meta(name, opts), builtin });
+
+const sortSlash = (items: SlashCommandRankableMeta[], query: string): string[] =>
+  [...items]
+    .sort((a, b) => compareSlashCommandMatches(a, b, query))
+    .map((i) => i.name);
+
+describe("slash picker ranking: built-in commands before skills", () => {
+  it("puts built-in prefix matches before shorter skill names", () => {
+    expect(
+      sortSlash(
+        [
+          slashMeta("coach", false),
+          slashMeta("compact", true),
+          slashMeta("commit", false),
+          slashMeta("cost", true),
+          slashMeta("config", true),
+        ],
+        "co",
+      ),
+    ).toEqual(["cost", "config", "compact", "coach", "commit"]);
+  });
+
+  it("puts an exact skill name ahead of built-ins that only start with it", () => {
+    expect(
+      sortSlash([slashMeta("compact", true), slashMeta("comp", false)], "comp"),
+    ).toEqual(["comp", "compact"]);
+  });
+
+  it("puts an exact skill alias ahead of built-in prefix matches", () => {
+    expect(
+      sortSlash(
+        [slashMeta("compact", true), slashMeta("compare-files", false, { aliases: ["comp"] })],
+        "comp",
+      ),
+    ).toEqual(["compare-files", "compact"]);
+  });
+
+  it("prefers the built-in command when both match exactly", () => {
+    const [first] = [slashMeta("status", false), slashMeta("status", true)].sort(
+      (a, b) => compareSlashCommandMatches(a, b, "status"),
+    );
+    expect(first?.builtin).toBe(true);
+  });
+
+  it("orders skills among themselves by the shared priority", () => {
+    expect(
+      sortSlash(
+        [
+          slashMeta("cobalt-cost-tuning", false),
+          slashMeta("coach", false),
+          slashMeta("code-review", false),
+        ],
+        "co",
+      ),
+    ).toEqual(["coach", "code-review", "cobalt-cost-tuning"]);
+  });
+});
+

@@ -1,3 +1,5 @@
+import { StartupResumeCwdPermissionError } from "../state/startup-resume-cwd.js";
+import { armDaemonExitWatchdog } from "./daemon-exit-watchdog.js";
 import { refreshEndpointMetadata } from "../llm/endpoint-metadata-cache.js";
 /**
  * AgenC daemon foreground runtime: the daemon process itself (startup state
@@ -30,9 +32,7 @@ import { resolveHomeContext } from "../config/home.js";
 
 import { createLazyWhisperService } from "../audio/lazy-whisper.js";
 
-import { createLazyRemoteService } from "../remote/lazy-service.js";
-
-import { createRemoteBackend } from "../remote/backend.js";
+import type { createLazyRemoteService } from "../remote/lazy-service.js";
 
 import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
 
@@ -146,7 +146,6 @@ import { PluginSettingsService } from "../plugins/settings-service.js";
 
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 
-
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 
 import { summarizeAgenCShutdown } from "../lifecycle/shutdown-message.js";
@@ -159,7 +158,6 @@ import { createAuthBackend } from "../auth/selection.js";
 import type { AuthBackend } from "../auth/backend.js";
 
 import type { ToolRecoveryCategory } from "../tools/types.js";
-
 
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 
@@ -180,6 +178,7 @@ import {
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
+import { resolveDefaultLightMode } from "../session/light-mode-default.js";
 
 import { RoutineService } from "../routines/service.js";
 
@@ -200,6 +199,7 @@ import type { StartedMcpSseServer } from "../mcp/server/start.js";
 
 import {
   recoverDaemonStateOnStartup,
+  materializeRecoveredRunSnapshot,
   StartupResumeSourceBudget,
   type DaemonStartupRecoveryReport,
   type RecoveredAgentRun,
@@ -265,6 +265,10 @@ import { classifyUntrustedToolResult, frameUntrustedToolHistoryMessages, frameUn
 import { logForDebugging } from "../utils/debug.js";
 
 import { installAgenCDaemonErrorLogSink } from "./daemon-error-log.js";
+import {
+  TOOL_POLICY_METADATA_KEY,
+  TOOL_POLICY_MODE_CEILING_METADATA_KEY,
+} from "../permissions/session-tool-policy.js";
 
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 import { scheduleDaemonCompileCacheFlush } from "../bin/compile-cache.js";
@@ -378,6 +382,9 @@ export async function runAgenCDaemonForeground(
           .acknowledgeAfterCleanup(foregroundCompleted && releaseOk)
           .catch(() => {});
       }
+      // Only this process can arm its own final exit guard. Embedded hosts
+      // return to their owner instead. All durable cleanup has finished here.
+      if (host.pid === process.pid) await armDaemonExitWatchdog();
     }
   }
 }
@@ -662,6 +669,7 @@ async function runAgenCDaemonForegroundLocked(
       process.cwd(),
       activeConfig,
       (message) => io.stderr.write(`agenc: ${message}\n`),
+      distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined,
     );
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
     writeAgenCDaemonStartupDebug(
@@ -707,6 +715,7 @@ async function runAgenCDaemonForegroundLocked(
       agencLinuxSandboxExe: resolveDefaultLinuxSandboxExecutable(),
       sessionTempRoot: resolveSessionTempRootAtIngress(host.env),
       allowGpu: activeConfig.sandbox?.allow_gpu === true,
+      allowLocalBinding: activeConfig.sandbox?.network?.allowLocalBinding === true,
     });
     const closeCommandExec = async () => {
       await commandExec.closeAll("daemon_shutdown");
@@ -813,7 +822,12 @@ async function runAgenCDaemonForegroundLocked(
           );
         },
       });
-      cleanup.register("daemon-heartbeat", disposeHeartbeat);
+      // A beat still being written when the daemon stops publishes nothing;
+      // waiting for it removes its temporary file before the process exits.
+      cleanup.register("daemon-heartbeat", async () => {
+        disposeHeartbeat();
+        await disposeHeartbeat.idle();
+      });
     }
     // daemon.log appends across daemons, so this is the durable record that a
     // daemon was replaced; a foreground run writes it to its terminal instead.
@@ -919,13 +933,28 @@ async function runAgenCDaemonForegroundLocked(
         run,
       })),
       concurrency: STARTUP_RUNTIME_RESTORE_CONCURRENCY,
-      task: ({ run }, context): Promise<"published" | "unavailable"> =>
-        restoreAndPublishRecoveredRun(
+      task: ({ run }, context): Promise<"published" | "unavailable"> => {
+        let hydratedRun: RecoveredAgentRun;
+        try {
+          hydratedRun = snapshotPolicies.hydrateStartupRun(startupRecovery, run);
+        } catch (error) {
+          try {
+            run.resumeSource?.close();
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              "startup snapshot hydration and resume-source cleanup failed",
+              { cause: error },
+            );
+          }
+          throw error;
+        }
+        return restoreAndPublishRecoveredRun(
           sessionManager,
           agentManager,
           runner,
           startupRecovery,
-          run,
+          hydratedRun,
           context,
           {
             recordReplayToolResult: (result) =>
@@ -936,7 +965,8 @@ async function runAgenCDaemonForegroundLocked(
               );
             },
           },
-        ),
+        );
+      },
       onSettled: (settled) => {
         writeAgenCDaemonStartupDebug(
           host,
@@ -991,6 +1021,9 @@ async function runAgenCDaemonForegroundLocked(
       threadStore,
       // DAE-02: prefer client/workspace env over frozen OS cwd when params omit cwd.
       defaultCwd: () => resolveDaemonDefaultCwd(host.env),
+      // A new agent created without a mode (an API client, a phone or
+      // Telegram session, a routine run) starts in the operator's default.
+      defaultLightMode: () => resolveDefaultLightMode(activeConfig.light_mode),
       snapshotFlush: (snapshot) =>
         writeAgenCDaemonSnapshot(snapshotPath, snapshot),
       broadcastSessionEvent: async (sessionId, event) => {
@@ -1120,7 +1153,7 @@ async function runAgenCDaemonForegroundLocked(
       agentManager.handleRunnerTerminated(agentId, snapshot),
     );
     try {
-      snapshotPolicies.hydrateStartupRecovery(startupRecovery);
+      snapshotPolicies.registerStartupRecovery(startupRecovery);
       snapshotPolicies.startPeriodic();
     } catch (error) {
       snapshotPolicies.close();
@@ -1172,6 +1205,7 @@ async function runAgenCDaemonForegroundLocked(
         snapshotPolicies.recordAgentRun(run);
       },
       warn: (message) => io.stderr.write(`agenc: ${message}\n`),
+      defaultLightMode: () => resolveDefaultLightMode(activeConfig.light_mode),
     });
     const workflowControlService = new DaemonWorkflowControlService(workflowWiring.controller);
     const health = createLazyDaemonHealth({
@@ -1239,6 +1273,7 @@ async function runAgenCDaemonForegroundLocked(
                 sessionLimit: next.config.agent_max_threads,
               }),
             );
+            if (next.config.remote_control?.enabled !== true) remote?.stop();
             activeConfig = next.config;
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
@@ -1340,15 +1375,20 @@ async function runAgenCDaemonForegroundLocked(
         }
         return { sessionId: agent.sessionId, agentId: agent.agentId };
       };
-    remote = createLazyRemoteService({
-      home: authStartup.daemonHome,
-      backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
-      lookupSession: (sessionId) => sessionManager.getSession(sessionId),
-      createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
-      createSession: createRemoteSession,
-      assertControlSession: assertRemoteControlSession,
-    });
-    cleanup.register("daemon-browser-remote", () => remote?.close());
+    if (activeConfig.remote_control?.enabled === true) {
+      const [{ createLazyRemoteService }, { createRemoteBackend }] = await Promise.all([
+        import("../remote/lazy-service.js"), import("../remote/backend.js"),
+      ]);
+      remote = createLazyRemoteService({
+        home: authStartup.daemonHome,
+        backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
+        lookupSession: (sessionId) => sessionManager.getSession(sessionId),
+        createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
+        createSession: createRemoteSession,
+        assertControlSession: assertRemoteControlSession,
+      });
+      cleanup.register("daemon-browser-remote", () => remote?.close());
+    }
     try {
       ownerTelegram = createLazyOwnerTelegramService({
         home: authStartup.daemonHome,
@@ -1374,6 +1414,7 @@ async function runAgenCDaemonForegroundLocked(
         env: { ...host.env, AGENC_HOME: authStartup.daemonHome },
       }),
       remote,
+      remoteControlEnabled: () => activeConfig.remote_control?.enabled === true,
       ownerTelegram,
       agentManager,
       routines,
@@ -1951,6 +1992,11 @@ async function removeOwnedForegroundDaemonMetadata(params: {
   readonly pidPath: string;
   readonly runtimeInfoPath: string;
 }): Promise<void> {
+  // A process can hang inside Node's native exit after its JS cleanup. Keep
+  // its identity visible until it actually dies. Stop/restart and the next
+  // admission remove stale metadata after proving process exit. Embedded
+  // hosts finish their lifecycle here without terminating this process.
+  if (params.expected.pid === process.pid) return;
   const runtimeInfoPathExists = existsSync(params.runtimeInfoPath);
   const recorded = daemonInstanceIdentityFromRuntimeInfo(
     readDaemonRuntimeInfo(params.runtimeInfoPath),
@@ -2249,6 +2295,7 @@ export function recoverAgenCDaemonStartupState(
   cwd: string,
   config: AgenCConfig,
   log: (message: string) => void = () => {},
+  canonicalProjectionEpoch?: string,
 ): DaemonStartupRecoveryReport {
   const recoveredAt = new Date().toISOString();
   const paths = discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd);
@@ -2261,29 +2308,37 @@ export function recoverAgenCDaemonStartupState(
 
   try {
     for (const pathSet of paths) {
-      const driver = openStateDatabasePaths(pathSet);
+      const phase = <T>(name: string, work: () => T): T => {
+        const started = performance.now();
+        try {
+          return work();
+        } finally {
+          log(`daemon startup ${name} ${Math.round(performance.now() - started)}ms in ${pathSet.projectDir}`);
+        }
+      };
+      const driver = phase("database open", () => openStateDatabasePaths(pathSet));
       try {
         const walPath = `${pathSet.stateDbPath}-wal`;
         log(
           `daemon opened state DB ${pathSet.stateDbPath} (${describeFileSizeMb(pathSet.stateDbPath)}, wal ${describeFileSizeMb(walPath)})`,
         );
-        const prunedRuns = pruneTerminalAgentRuns(
+        const prunedRuns = phase("terminal retention", () => pruneTerminalAgentRuns(
           driver,
           config.agent?.retention,
-        );
+        ));
         // Per-session hard cap first, so the table-wide agent-grouped sweep
         // below only measures the rows that survive it.
-        const prunedPerSession = pruneSessionSnapshotsPerSession(
+        const prunedPerSession = phase("session snapshot retention", () => pruneSessionSnapshotsPerSession(
           driver,
           config.agent?.retention,
-        );
-        const prunedTable = pruneSessionStateSnapshots(
+        ));
+        const prunedTable = phase("snapshot table retention", () => pruneSessionStateSnapshots(
           driver,
           config.agent?.retention,
-        );
-        // Before the socket opens is the one moment a full VACUUM cannot stall a
-        // client; a database created without auto-vacuum is converted here once.
-        const reclaimed = driver.reclaimFreePages({ allowFullVacuum: true });
+        ));
+        // A full VACUUM rewrites the entire database. Startup is an admission
+        // path, so only bounded incremental reclamation belongs here.
+        const reclaimed = phase("space reclaim", () => driver.reclaimFreePages());
         if (reclaimed.mode !== "none") {
           log(describeStateReclaim(reclaimed, pathSet.stateDbPath));
         }
@@ -2298,11 +2353,13 @@ export function recoverAgenCDaemonStartupState(
               `${new Set([...prunedRuns.prunedSessionIds, ...prunedPerSession.prunedSessionIds, ...prunedTable.prunedSessionIds]).size} session(s) in ${pathSet.projectDir}`,
           );
         }
-        const report = recoverDaemonStateOnStartup(driver, {
+        const report = phase("journal and snapshot recovery", () => recoverDaemonStateOnStartup(driver, {
           now: () => recoveredAt,
           retainRuntimeResumeSources: true,
+          deferSnapshots: true,
           startupResumeSourceBudget,
-        });
+          ...(canonicalProjectionEpoch !== undefined ? { canonicalProjectionEpoch } : {}),
+        }));
         recoveredRuns.push(...report.recoveredRuns);
         recoveredToolCalls.push(...report.recoveredToolCalls);
         warnings.push(...report.warnings);
@@ -2555,34 +2612,45 @@ export class AgenCDaemonSnapshotPolicyRegistry {
     }
   }
 
-  hydrateStartupRecovery(report: DaemonStartupRecoveryReport): void {
-    const reconciledSessionIds = new Set(
-      report.recoveredToolCalls.map((call) => call.sessionId),
-    );
+  registerStartupRecovery(report: DaemonStartupRecoveryReport): void {
     for (const run of report.recoveredRuns) {
       if (run.currentSessionId === undefined) continue;
-      const policy = this.#policyForProjectDir(run.projectDir);
-      this.#rememberSession(run.currentSessionId, policy.driver.stateDbPath);
+      this.#rememberSession(run.currentSessionId, join(run.projectDir, STATE_DATABASE_FILENAME));
       this.#liveSessions.add(run.currentSessionId);
-      policy.policy.trackSession(run.currentSessionId, run.id);
-      if (run.latestSnapshot !== undefined) {
-        policy.policy.hydrateSession({
-          sessionId: run.currentSessionId,
-          snapshotAt: run.latestSnapshot.snapshotAt,
-          conversation: run.latestSnapshot.conversation,
-          toolState: run.latestSnapshot.toolState,
-          mcpConnectionState: run.latestSnapshot.mcpConnectionState,
-        });
-        // Startup recovery reconciled this session's stale tool calls
-        // (replayed, poisoned or cancelled) into the hydrated state: write
-        // that outcome now, before the daemon advertises readiness, instead
-        // of leaving it to the first periodic tick. A session recovery left
-        // untouched keeps its rows exactly as startup pruning left them.
-        if (reconciledSessionIds.has(run.currentSessionId)) {
-          policy.policy.flushSession(run.currentSessionId);
-        }
+    }
+  }
+
+  hydrateStartupRun(
+    report: DaemonStartupRecoveryReport,
+    recovered: RecoveredAgentRun,
+  ): RecoveredAgentRun {
+    if (recovered.currentSessionId === undefined) return recovered;
+    const policy = this.#policyForProjectDir(recovered.projectDir);
+    const warnings: DaemonStartupRecoveryReport["warnings"][number][] = [];
+    const run = materializeRecoveredRunSnapshot(
+      policy.driver, recovered, report.recoveredToolCalls, warnings,
+    );
+    for (const warning of warnings) this.#log(warning.message);
+    const sessionId = recovered.currentSessionId;
+    policy.policy.trackSession(sessionId, run.id);
+    if (run.latestSnapshot !== undefined) {
+      policy.policy.hydrateSession({
+        sessionId,
+        snapshotAt: run.latestSnapshot.snapshotAt,
+        conversation: run.latestSnapshot.conversation,
+        toolState: run.latestSnapshot.toolState,
+        mcpConnectionState: run.latestSnapshot.mcpConnectionState,
+      });
+      // Startup recovery reconciled this session's stale tool calls
+      // (replayed, poisoned or cancelled) into the hydrated state: write
+      // that outcome before this session can replay tools or be published.
+      // The durable in-flight rows survive a crash before this write and
+      // are reconciled again by the next startup.
+      if (report.recoveredToolCalls.some(call => call.sessionId === sessionId && call.projectDir === run.projectDir)) {
+        policy.policy.flushSession(sessionId);
       }
     }
+    return run;
   }
 
   startPeriodic(): void {
@@ -3212,6 +3280,7 @@ async function publishRecoveredAgentRun(
     report,
     run,
     runtimeRestore.available,
+    runtimeRestore.unavailableReason,
   );
   let restoredSessionId: string | undefined;
   try {
@@ -3313,12 +3382,22 @@ function recoveryMetadataForRun(
   report: DaemonStartupRecoveryReport,
   run: RecoveredAgentRun,
   runtimeAvailable: boolean,
+  unavailableReason?: string,
 ): JsonObject {
   const canonicalSource = run.resumeSource;
   const runtimeOptions = runtimeOptionsForRecoveredRun(run);
   return {
     ...(typeof run.metadata?.routineId === "string" ? { routineId: run.metadata.routineId } : {}),
     ...(typeof run.metadata?.routineRunId === "string" ? { routineRunId: run.metadata.routineRunId } : {}),
+    // The published agent's metadata is what later snapshots persist, so a
+    // session's tool policy has to survive the restart or the next snapshot
+    // would erase it.
+    ...(run.metadata?.[TOOL_POLICY_METADATA_KEY] !== undefined
+      ? { [TOOL_POLICY_METADATA_KEY]: run.metadata[TOOL_POLICY_METADATA_KEY] }
+      : {}),
+    ...(run.metadata?.[TOOL_POLICY_MODE_CEILING_METADATA_KEY] !== undefined
+      ? { [TOOL_POLICY_MODE_CEILING_METADATA_KEY]: run.metadata[TOOL_POLICY_MODE_CEILING_METADATA_KEY] }
+      : {}),
     ...(canonicalSource !== undefined
       ? {
           agentPath: canonicalSource.agentPath,
@@ -3334,6 +3413,7 @@ function recoveryMetadataForRun(
       runStatus: run.status,
       runnable: runtimeAvailable,
       runtimeRestore: runtimeAvailable ? "available" : "unavailable",
+      ...(unavailableReason !== undefined ? { runtimeRestoreReason: unavailableReason } : {}),
       toolRecoveryMode: "category_policy",
       ...(run.createdByClient !== undefined
         ? { createdByClient: run.createdByClient }
@@ -3364,6 +3444,7 @@ export async function restoreRecoveredAgentRuntime(
 ): Promise<{
   readonly available: boolean;
   readonly restoreAttemptId?: string;
+  readonly unavailableReason?: string;
 }> {
   const resumeSource = run.resumeSource;
   // Workflow stages own their child adoption and checkpoint resume. Generic
@@ -3415,8 +3496,17 @@ export async function restoreRecoveredAgentRuntime(
   const initialMessages = recoveredInitialMessages(run.latestSnapshot, runtimeOptions.lightMode === true);
   const replayToolCalls = recoveredReplayToolCalls(run.latestSnapshot);
   const restoreAttemptId = randomUUID();
-  let outcome: { readonly available: boolean; readonly restoreAttemptId?: string };
+  let outcome: {
+    readonly available: boolean;
+    readonly restoreAttemptId?: string;
+    readonly unavailableReason?: string;
+  };
   try {
+    // Recovery retained only the canonical rollout. A protected or remote
+    // workspace must never be opened on the startup readiness path.
+    const cwd = await resumeSource.prepareCwd({
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    });
     const restored = await runner.restoreAgent({
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
       agentId: run.id,
@@ -3424,8 +3514,8 @@ export async function restoreRecoveredAgentRuntime(
       cwd: resumeSource.cwd,
       resumeRolloutPath: resumeSource.rolloutPath,
       resumeRolloutLease: resumeSource.rolloutLease,
-      resumeCwdIdentity: resumeSource.cwdIdentity,
-      resumeCwdFd: resumeSource.cwdFd,
+      resumeCwdIdentity: cwd.identity,
+      resumeCwdFd: cwd.fd,
       explicitColdResume: true,
       restoreAttemptId,
       runtimeOptions,
@@ -3461,6 +3551,7 @@ export async function restoreRecoveredAgentRuntime(
             ...optionalMetadataString(run.metadata, "provider"),
             ...optionalMetadataString(run.metadata, "profile"),
           }),
+      ...retainedTaskBudget(run.metadata),
       ...optionalAbsoluteMetadataPath(run.metadata, "configPath"),
       ...(initialMessages !== undefined ? { initialMessages } : {}),
       ...(replayToolCalls.length > 0 ? { replayToolCalls } : {}),
@@ -3485,8 +3576,13 @@ export async function restoreRecoveredAgentRuntime(
     outcome = restored
       ? { available: true, restoreAttemptId }
       : { available: false };
-  } catch {
-    outcome = { available: false };
+  } catch (error) {
+    outcome = {
+      available: false,
+      ...(error instanceof StartupResumeCwdPermissionError
+        ? { unavailableReason: error.message }
+        : {}),
+    };
   }
   // The catch above takes every failure, so the source is always closed here.
   // A caller that handles close errors keeps the restore's outcome; without a
@@ -3581,9 +3677,8 @@ function recoverySnapshotMetadata(
     projectDir: snapshot.projectDir,
     sessionId: snapshot.sessionId,
     snapshotAt: snapshot.snapshotAt,
-    conversation: snapshot.conversation as JsonValue,
-    toolState: snapshot.toolState as JsonValue,
-    mcpConnectionState: snapshot.mcpConnectionState as JsonValue,
+    // Summary metadata is copied into listings and the daemon shutdown file.
+    // Keep payloads in SQLite and the runtime, not in every summary copy.
     recoveredToolCalls: snapshot.recoveredToolCalls.map(
       recoveryToolCallMetadata,
     ),
@@ -3988,19 +4083,16 @@ class AgenCDaemonReloadableAuthBackend implements AuthBackend {
     return this.#current.whoami(params);
   }
 
-  vendKey(
-    provider: Parameters<AuthBackend["vendKey"]>[0],
-    sessionId: Parameters<AuthBackend["vendKey"]>[1],
-  ) {
-    return this.#current.vendKey(provider, sessionId);
+  async vendKey(): Promise<never> {
+    throw new Error("AgenC accounts no longer provide models.");
   }
 
-  inferAgencModel(params?: Parameters<AuthBackend["inferAgencModel"]>[0]) {
-    return this.#current.inferAgencModel(params);
+  async inferAgencModel(): Promise<never> {
+    throw new Error("AgenC accounts no longer provide models.");
   }
 
-  getLlmUsage(params?: Parameters<AuthBackend["getLlmUsage"]>[0]) {
-    return this.#current.getLlmUsage(params);
+  async getLlmUsage(): Promise<never> {
+    throw new Error("AgenC accounts no longer provide models.");
   }
 
   getSubscriptionTier(
@@ -4043,7 +4135,7 @@ export function resolveAgenCDaemonRealtimeBaseUrl(
 }
 
 export function createAgenCDaemonRealtimeHeaderResolver(
-  authBackend: AuthBackend,
+  _authBackend: AuthBackend,
   env: NodeJS.ProcessEnv,
 ): AgenCRealtimeHeadersProvider {
   const apiKey = readNonEmptyString(env.OPENAI_API_KEY);
@@ -4051,18 +4143,8 @@ export function createAgenCDaemonRealtimeHeaderResolver(
     return { authorization: `Bearer ${apiKey}` };
   }
 
-  return async (sessionConfig) => {
-    const sessionId = readNonEmptyString(sessionConfig?.sessionId);
-    if (sessionId === undefined) {
-      throw new Error("realtime provider key vending requires a session id");
-    }
-    const vended = await authBackend.vendKey("openai", sessionId);
-    if (vended.kind !== "api-key") {
-      throw new Error(
-        "realtime provider credential vending returned non-API-key credentials",
-      );
-    }
-    return { authorization: `Bearer ${vended.apiKey}` };
+  return async () => {
+    throw new Error("OpenAI realtime requires your own OPENAI_API_KEY.");
   };
 }
 
@@ -4255,4 +4337,19 @@ function isDaemonConnectionAuthenticationFailure(message: JsonObject): boolean {
 function readNonEmptyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function retainedTaskBudget(metadata: JsonObject | undefined): {
+  taskTokenBudget?: number; taskMaxCalls?: number;
+} {
+  const result: { taskTokenBudget?: number; taskMaxCalls?: number } = {};
+  for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+    const value = metadata?.[key];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`invalid retained ${key}`);
+    }
+    result[key] = value;
+  }
+  return result;
 }

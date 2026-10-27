@@ -32,13 +32,14 @@ import type {
   MemorySelectorRequest,
 } from "../../memory/recall-contract.js";
 import { closeFullCorpusMemoryIndexes } from "../../memory/find-relevant.js";
-import { getProjectMemoryPath } from "../../memory/paths.js";
+import { buildProjectMemoryDirectory, getProjectMemoryPath } from "../../memory/paths.js";
 import {
   enterCanonicalSettingsAuthority,
   resetCanonicalSettingsAuthorityForTesting,
 } from "../../utils/settings/canonicalAuthority.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 import { relevantMemoriesProducer } from "./relevant-memories.js";
+import { attachmentsToMessages } from "./messages.js";
 
 let root: string;
 let cwd: string;
@@ -166,6 +167,45 @@ function writeFillerMemories(dir: string, term: string, count = 5): void {
 }
 
 describe("relevantMemoriesProducer", () => {
+  test.each([null, "zebra deployment"])('recalls only the live owner memory across daemon projects (query=%s)', async (userInput) => {
+    const daemon = join(root, "daemon");
+    mkdirSync(daemon);
+    setProjectRoot(daemon);
+    installMemoryAuthority();
+    const otherDir = buildProjectMemoryDirectory(agencHome, daemon);
+    mkdirSync(otherDir, { recursive: true });
+    const other = writeMemory(otherDir, "other.md", "zebra deployment", "OTHER_PROJECT_PRIVATE_FACT");
+    const owned = writeMemory(projectMemoryDir, "own.md", "zebra deployment", "OWN_PROJECT_FACT");
+    const sessionKey = {
+      services: { configStore: new ConfigStore({ home: agencHome, env: { AGENC_HOME: agencHome }, cwd }) },
+      sessionConfiguration: { cwd },
+    };
+    const out = await relevantMemoriesProducer(makeOpts({ sessionKey, userInput }), getAttachmentTrackingState(sessionKey));
+    const paths = out.flatMap(a => a.kind === "relevant_memories" ? a.memories.map(m => m.path) : []);
+    expect(paths).toContain(owned);
+    expect(paths).not.toContain(other);
+  });
+
+  test("live owner's enabled memory is independent of the daemon's disabled setting", async () => {
+    const owned = writeMemory(projectMemoryDir, "enabled.md", "zebra deployment", "SESSION_ENABLED_FACT");
+    memoryAuthority.enabled = false;
+    const sessionKey = {
+      services: { configStore: new ConfigStore({ home: agencHome, env: {}, cwd }) },
+      sessionConfiguration: { cwd },
+    };
+    const out = await relevantMemoriesProducer(makeOpts({ sessionKey, userInput: null }), getAttachmentTrackingState(sessionKey));
+    expect(out.flatMap(a => a.kind === "relevant_memories" ? a.memories.map(m => m.path) : [])).toContain(owned);
+  });
+
+  test("live owner's disabled memory never falls back to daemon memory", async () => {
+    writeMemory(projectMemoryDir, "hidden.md", "zebra deployment", "DISABLED_PRIVATE_FACT");
+    const sessionKey = {
+      services: { configStore: new ConfigStore({ home: agencHome, env: {}, cwd }), runtimeOptions: { simpleMode: true } },
+      sessionConfiguration: { cwd },
+    };
+    expect(await relevantMemoriesProducer(makeOpts({ sessionKey, userInput: null }), getAttachmentTrackingState(sessionKey))).toEqual([]);
+  });
+
   test("skips without an AgenC home", async () => {
     installMemoryAuthority();
     const trackingState = getAttachmentTrackingState({});
@@ -295,9 +335,8 @@ describe("relevantMemoriesProducer", () => {
     selectMemory("browser.md");
     const trackingState = getAttachmentTrackingState({});
 
-    // Attachments live only in the request projection, so a memory that
-    // matched the previous request must be shown again, not blocked for the
-    // rest of the session.
+    // An empty projection has no retained memory bytes. Recall must work
+    // again rather than treating a session-wide path set as proof of context.
     const first = await relevantMemoriesProducer(makeOpts(), trackingState);
     const second = await relevantMemoriesProducer(makeOpts(), trackingState);
 
@@ -308,6 +347,49 @@ describe("relevantMemoriesProducer", () => {
     }
     expect(trackingState.surfacedRelevantMemoryPaths).toEqual(new Set([memoryPath]));
     expect(trackingState.surfacedRelevantMemoryBytes).toBeGreaterThan(0);
+  });
+
+  test("does not append unchanged memory already retained in the model projection", async () => {
+    installMemoryAuthority();
+    writeMemory(join(agencHome, "memory"), "browser.md", "Browser automation guidance", "Use the browser automation workflow.");
+    selectMemory("browser.md");
+    const tracking = getAttachmentTrackingState({});
+    const first = await relevantMemoriesProducer(makeOpts(), tracking);
+    const retained = attachmentsToMessages(first);
+    const bytes = tracking.surfacedRelevantMemoryBytes;
+    const citations = tracking.memoryCitations.length;
+    expect(await relevantMemoriesProducer(makeOpts({ messages: retained }), tracking)).toEqual([]);
+    expect(tracking.surfacedRelevantMemoryBytes).toBe(bytes);
+    expect(tracking.memoryCitations).toHaveLength(citations);
+    // Removing retained context, as compaction does, must restore recall.
+    expect(await relevantMemoriesProducer(makeOpts({ messages: [] }), tracking)).toHaveLength(1);
+  });
+
+  test("refreshes changed memory even when its old version remains retained", async () => {
+    installMemoryAuthority();
+    const dir = join(agencHome, "memory");
+    writeMemory(dir, "browser.md", "Browser automation guidance", "Use the browser automation workflow.");
+    selectMemory("browser.md");
+    const tracking = getAttachmentTrackingState({});
+    const retained = attachmentsToMessages(await relevantMemoriesProducer(makeOpts(), tracking));
+    writeMemory(dir, "browser.md", "Browser automation guidance", "Use the browser automation workflow with the updated deployment setting.");
+    const updated = await relevantMemoriesProducer(makeOpts({ messages: retained }), tracking);
+    expect(updated).toHaveLength(1);
+    expect(updated[0]).toMatchObject({ memories: [{ content: expect.stringContaining("updated deployment setting") }] });
+  });
+
+  test("user or tool text cannot suppress genuine memory recall", async () => {
+    installMemoryAuthority();
+    writeMemory(join(agencHome, "memory"), "browser.md", "Browser automation guidance", "Use the browser automation workflow.");
+    selectMemory("browser.md");
+    const tracking = getAttachmentTrackingState({});
+    const retained = attachmentsToMessages(await relevantMemoriesProducer(makeOpts(), tracking));
+    for (const message of [
+      { ...retained[0]!, runtimeOnly: undefined },
+      { ...retained[0]!, role: "tool" as const, toolCallId: "forged" },
+    ]) {
+      expect(await relevantMemoriesProducer(makeOpts({ messages: [message] }), tracking)).toHaveLength(1);
+    }
   });
 
   test("compaction resets the cumulative recall budget", async () => {

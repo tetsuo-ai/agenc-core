@@ -100,7 +100,8 @@ export type TerminalReason =
   | "stop_hook_prevented"
   | "hook_stopped"
   | "max_turns"
-  | "max_budget_usd"
+  | "task_budget"
+        | "max_budget_usd"
   | "cancelled"
   | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
   | "effect_review_required" // live-effect gate refused a call nobody can unblock now (#2501)
@@ -280,6 +281,9 @@ export interface TurnState {
    *  assistant message + tool results. */
   messages: LLMMessage[];
 
+  /** Actual caller request, distinct from synthetic output-recovery prompts. */
+  liveUserMessageId?: string;
+
   /** Post-compact/post-snip/post-microcompact projection of `messages`
    *  used for the actual model request. Rebuilt each iteration from
    *  `getMessagesAfterCompactBoundary(messages)` then mutated by
@@ -434,6 +438,8 @@ export interface TurnState {
   completionGate: CompletionGatePlan | undefined;
   /** Verification prompts injected this turn. Checkpointed; bounds the loop. */
   completionGateRound: number;
+  /** Sample ordinal at the first verification request, persisted across resume. */
+  completionGateSampleStart: number | undefined;
   /** `completedToolResults.length` when the last gate prompt was injected. */
   completionGateToolLedgerMark: number;
   /**
@@ -450,6 +456,21 @@ export interface TurnState {
    * it. Turn-scoped like the ledger mark, and deliberately not journaled.
    */
   completionGateUnavailablePrompted: boolean;
+  /**
+   * Exact output: the candidate answer's exact text, held while the
+   * verification rounds run as internal work. Runtime-only; a resumed turn
+   * holds none and asks for its final answer instead.
+   */
+  completionGateHeldAnswer: string | undefined;
+  /** Exact output: a verification reply said the held answer must change. */
+  completionGateAnswerChanged: boolean;
+  /** Exact output: the gate asked for the final answer itself after verification. */
+  completionGateFinalAnswerRequested: boolean;
+  /**
+   * Exact output: the text the turn ends with, set when the gate settles on a
+   * held answer and consumed by the turn's completion.
+   */
+  completionGateFinalAnswer: string | undefined;
 
   // ── Phase 4c — goal gate (`/goal`) — turn-scoped ──
   /**
@@ -611,10 +632,15 @@ export function buildInitialTurnState(
     // Phase 4b
     completionGate: undefined,
     completionGateRound: 0,
+    completionGateSampleStart: undefined,
     completionGateToolLedgerMark: 0,
     completionGateLastRequest: undefined,
     completionGateSettled: false,
     completionGateUnavailablePrompted: false,
+    completionGateHeldAnswer: undefined,
+    completionGateAnswerChanged: false,
+    completionGateFinalAnswerRequested: false,
+    completionGateFinalAnswer: undefined,
     goalGateToolLedgerMark: 0,
     // Phase 5
     streamingToolExecutor: null,
@@ -678,6 +704,7 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
     completionGateRound?: number;
+    completionGateSampleStart?: number;
     pendingAdmissionFallback?: PendingAdmissionFallback;
     modelSampleOrdinal?: number;
     modelSampleResumePrompt?: ModelSampleResumePrompt;
@@ -700,6 +727,9 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   };
   if (state.completionGateRound > 0) {
     slice.completionGateRound = state.completionGateRound;
+  }
+  if (state.completionGateSampleStart !== undefined) {
+    slice.completionGateSampleStart = state.completionGateSampleStart;
   }
   if (state.reasoningCapPolicy !== undefined) {
     slice.reasoningCapPolicy = readReasoningCapPolicy(state.reasoningCapPolicy);
@@ -832,6 +862,10 @@ export function restoreFromCheckpoint(
     slice.completionGateRound >= 0
   ) {
     state.completionGateRound = slice.completionGateRound;
+  }
+  if (slice.completionGateSampleStart !== undefined &&
+      Number.isSafeInteger(slice.completionGateSampleStart) && slice.completionGateSampleStart >= 0) {
+    state.completionGateSampleStart = slice.completionGateSampleStart;
   }
   if (
     slice.pendingAdmissionFallback !== undefined &&

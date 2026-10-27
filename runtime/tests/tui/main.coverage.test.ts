@@ -9,6 +9,8 @@ const harness = vi.hoisted(() => {
     onExitUnsubscribe: vi.fn(),
     renderInk: vi.fn(),
     recordTuiBackpressure: vi.fn(),
+    startCapturingEarlyInput: vi.fn(),
+    isCapturingEarlyInput: vi.fn(() => false),
     onExit: undefined as unknown as (callback: () => void) => () => void,
   };
   state.onExit = vi.fn((callback: () => void) => {
@@ -43,6 +45,12 @@ import {
   EXIT_ALT_SCREEN,
   SHOW_CURSOR,
 } from "./ink/termio/dec.js";
+vi.mock("../utils/earlyInput.js", () => ({
+  startCapturingEarlyInput: harness.startCapturingEarlyInput,
+  isCapturingEarlyInput: harness.isCapturingEarlyInput,
+}));
+
+import { setPendingResumeSessionId, resetPendingResumeSessionIdForTestingOnly } from "../../src/tui/pending-resume.js";
 import { bootTUI, RENDER_BACKPRESSURE_THRESHOLD_MS } from "./main.js";
 import { AgenCTuiApp } from "./components/App.js";
 
@@ -86,6 +94,8 @@ describe("TUI main coverage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     harness.exitCallback = undefined;
+    harness.isCapturingEarlyInput.mockReturnValue(false);
+    resetPendingResumeSessionIdForTestingOnly();
   });
 
   test("bootTUI wires Ink startup, render backpressure, and terminal restoration", async () => {
@@ -163,6 +173,27 @@ describe("TUI main coverage", () => {
     expect(stdout.write).toHaveBeenNthCalledWith(3, DISABLE_KITTY_KEYBOARD);
     expect(stdout.write).toHaveBeenNthCalledWith(4, DISABLE_MODIFY_OTHER_KEYS);
     expect(stdout.write).toHaveBeenNthCalledWith(5, SHOW_CURSOR);
+  });
+
+  test("captures resume input before draining teardown and keeps raw mode until the next TUI", async () => {
+    const stdin = new TestReadStream();
+    const stdout = new TestWriteStream();
+    harness.renderInk.mockResolvedValue({ unmount: vi.fn(), waitUntilExit: vi.fn(async () => undefined) });
+    const handle = await bootTUI({ session: {} as never, stdin: stdin as never,
+      stdout: stdout as never, stderr: new TestWriteStream() as never });
+    const [element] = harness.renderInk.mock.calls[0] as [RenderedTuiElement];
+    const teardown = vi.fn(async () => {
+      expect(harness.startCapturingEarlyInput).toHaveBeenCalledOnce();
+      expect(stdout.write).toHaveBeenCalledWith("\r\x1b[2KResuming selected session...\n");
+    });
+    element.props.registerTuiTeardown(teardown);
+    setPendingResumeSessionId("conv-loading");
+    harness.isCapturingEarlyInput.mockReturnValue(true);
+    try {
+      await handle.waitUntilExit();
+      expect(teardown).toHaveBeenCalledOnce();
+      expect(stdin.setRawMode).not.toHaveBeenCalledWith(false);
+    } finally { resetPendingResumeSessionIdForTestingOnly(); }
   });
 
   test("waitUntilExit drains registered editor teardown before resolving", async () => {

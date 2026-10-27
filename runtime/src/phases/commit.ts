@@ -34,6 +34,7 @@
 import { basename } from "node:path";
 
 import type { Session } from "../session/session.js";
+import { isSelectableHistoryUserMessage, splitActiveHistory } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
   AssistantMessage,
@@ -463,6 +464,10 @@ export async function commit(
         type: "context_compacted",
         payload: {
           summary: `auto-compact boundary (turnId=${tracking.turnId})`,
+          activeUserMessageIds: splitActiveHistory(state.messages).activeHistory.flatMap((message) =>
+            isSelectableHistoryUserMessage(message) &&
+            typeof message.runtimeOnly?.responseItemId === "string"
+              ? [message.runtimeOnly.responseItemId] : []),
         },
       },
     });
@@ -507,7 +512,7 @@ export async function commit(
             type: "error",
             payload: {
               cause: "stop_hook_loop",
-              message: `stop hooks blocked ${state.stopHookBlockingCount} times in a row — forcing terminal (${result.reason ?? "no_reason"})`,
+              message: `stop hooks blocked ${state.stopHookBlockingCount} times in a row: forcing terminal (${result.reason ?? "no_reason"})`,
             },
           },
         });

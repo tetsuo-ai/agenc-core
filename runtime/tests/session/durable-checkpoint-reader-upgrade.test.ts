@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   computeCheckpointPrefixHashV2,
   computeCheckpointPrefixHashV3,
+  computeCheckpointPrefixHashV4,
   DurableCheckpointReadError,
   readTurnCheckpoint,
   validateCheckpointPrefix,
   validateCheckpointPrefixV2,
   validateCheckpointPrefixV3,
+  validateCheckpointPrefixV4,
 } from "../../src/session/durable-checkpoint-reader.js";
 import {
   MAX_CHECKPOINT_UPGRADE_HISTORY_WORK,
@@ -81,6 +83,14 @@ afterEach(() => {
 });
 
 describe("durable checkpoint reader", () => {
+  it("preserves and validates the completion gate sample allowance", () => {
+    const base = legacyCheckpoint("a".repeat(64));
+    const checkpoint = {...base, checkpointVersion: 4, toolResultIntegrityVersion: 1, prefixHashVersion: 3,
+      resumableState: {...base.resumableState, completionGateRound: 1, completionGateSampleStart: 4}};
+    expect(readTurnCheckpoint(checkpoint)).toMatchObject({checkpoint: {resumableState: {completionGateSampleStart: 4}}});
+    expect(() => readTurnCheckpoint({...checkpoint, resumableState: {...checkpoint.resumableState, completionGateSampleStart: -1}})).toThrow();
+  });
+
   it("layers strict checkpoint validation over the additive recovery envelope", () => {
     const checkpoint = {
       ...legacyCheckpoint("a".repeat(64)),
@@ -556,7 +566,7 @@ describe("durable checkpoint reader", () => {
     const history = responseHistory(upgraded);
     const checkpoint = v4Checkpoint(upgraded);
     expect(
-      validateCheckpointPrefixV3({
+      validateCheckpointPrefixV4({
         checkpoint,
         expectedRunId: "checkpoint-pair-v1",
         messages: history,
@@ -570,7 +580,7 @@ describe("durable checkpoint reader", () => {
       message.role === "tool" ? { ...message, content: "omega" } : message,
     );
     expect(
-      validateCheckpointPrefixV3({
+      validateCheckpointPrefixV4({
         checkpoint,
         expectedRunId: "checkpoint-pair-v1",
         messages: substituted,
@@ -593,7 +603,7 @@ describe("durable checkpoint reader", () => {
       "upgrade-bounded",
     );
     expect(
-      validateCheckpointPrefixV3({
+      validateCheckpointPrefixV4({
         checkpoint: v4Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: responseHistory(upgraded),
@@ -1037,6 +1047,31 @@ describe("durable checkpoint reader", () => {
 });
 
 describe("legacy durable checkpoint upgrade planner", () => {
+  it("reads legacy failure flags and authenticates them in new checkpoints", () => {
+    const history = toolPairHistory([{ callId: "failed", integrityRunId: "legacy-failed" }])
+      .map((item) => item.role === "tool" ? { ...item, toolResultIsError: true as const } : item);
+    const source: RolloutItem[] = [
+      ...history.map((payload): RolloutItem => ({ type: "response_item", payload })),
+      checkpointItem(v4CheckpointForHistory(history)),
+    ];
+    const params = { runId: "legacy-failed", projection, projectionId: "legacy-failure-upgrade", sourceKey: "legacy-failure-upgrade" };
+    const result = planLegacyDurableCheckpointUpgrade({ ...params, items: source });
+    expect(result.status).toBe("planned");
+    if (result.status !== "planned") throw new Error("upgrade failed");
+    expect(v4Checkpoint(result.plan.upgradedItems).prefixHashVersion).toBe(3);
+    expect(responseHistory(result.plan.upgradedItems)).toEqual(history);
+    expect(planLegacyDurableCheckpointUpgrade({ ...params, items: result.plan.upgradedItems })).toMatchObject({ status: "planned", plan: { changed: false } });
+    const current = result.plan.upgradedItems.map((item): RolloutItem => {
+      if (item.type !== "event_msg" || item.payload.msg.type !== "turn_checkpoint") return item;
+      return checkpointItem({ ...v4CheckpointForHistory(history), prefixHashVersion: 4, prefixHash: computeCheckpointPrefixHashV4(history, history.length) });
+    });
+    const tampered = current.map((item): RolloutItem => {
+      if (item.type !== "response_item" || item.payload.role !== "tool") return item;
+      const { toolResultIsError: _removed, ...payload } = item.payload;
+      return { ...item, payload };
+    });
+    expect(planLegacyDurableCheckpointUpgrade({ ...params, items: tampered })).toMatchObject({ status: "invalid", failure: { code: "checkpoint_invalid" } });
+  });
   it("cuts the live rollout writer over to schema v5", () => {
     expect(ROLLOUT_SCHEMA_VERSION).toBe(5);
   });
@@ -1096,7 +1131,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
     if (outcome.status !== "planned") throw new Error("upgrade failed");
     expect(v4Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
       checkpointVersion: 4,
-      prefixHashVersion: 3,
+      prefixHashVersion: 4,
       resumableState: {
         pendingAdmissionFallback: {
           fromModel: "grok-4.5",
@@ -1182,7 +1217,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
     });
     expect(v4Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
       checkpointVersion: 4,
-      prefixHashVersion: 3,
+      prefixHashVersion: 4,
       resumableState: {
         pendingAdmissionFallback: {
           fromProvider: "grok",

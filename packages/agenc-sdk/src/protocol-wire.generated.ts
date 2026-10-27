@@ -52,10 +52,15 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.29 adds the model_loop child terminal reason.
  * 1.30 adds authenticated local resident print invocations.
  * 1.31 adds optional child routing explanations.
+ * 1.32 adds the optional `toolPolicy` on `agent.create`: a fixed tool
+ * allowlist for the session, with an optional frozen permission mode.
+ * 1.33 adds memory-only provider API key replacement for an idle session.
+ * 1.34 adds parent review of descendant effects, an optional effectSessionId
+ * owner selector, and owning-session metadata on pending effect reviews.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.31.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.34.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -217,6 +222,7 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
     "AGENC_COORDINATOR_MODE",
     "AGENC_LEAN_SYSTEM_PROMPT",
     "AGENC_STREAM_IDLE_TIMEOUT_MS",
+    "AGENC_STREAM_QUIET_WARNING_MS",
     "AGENC_AUTH_BACKEND",
     "AGENC_AUTH_MANAGED_KEYS_ENABLED",
     "AGENC_ONBOARDING",
@@ -249,6 +255,7 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
     "AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES",
     "AGENC_XAI_STORE",
     "AGENC_SHARED_PREFIX_TAIL",
+    "AGENC_KIMI_CACHE_TTL",
     "AGENC_GROK_CLI",
     "AGENC_GROK_ACP_PERMISSIONS",
     "AGENC_DISABLE_1M_CONTEXT",
@@ -267,6 +274,9 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
     "AGENC_OPENAI_MAX_OUTPUT_TOKENS",
     "AGENC_OPENAI_CONTEXT_WINDOWS",
     "AGENC_OPENAI_REASONING_REPLAY",
+    "AGENC_DEEPSEEK_REASONING_ONLY_REPLAY",
+    "AGENC_DEEPSEEK_WEB_SEARCH",
+    "AGENC_WEB_SEARCH",
     "AGENC_SESSION_ACCESS_TOKEN",
     "AGENC_AFTER_LAST_COMPACT",
     "AGENC_CACHE_SESSION_TAIL",
@@ -323,6 +333,9 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
     "WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS",
     "WEB_CUSTOM_MAX_BODY_KB",
     "WEB_CUSTOM_TIMEOUT_SEC",
+    "AGENC_WEB_SEARCH_ENDPOINT",
+    "AGENC_WEB_SEARCH_KIND",
+    "AGENC_WEB_SEARCH_API_KEY",
     "XAI_API_KEY",
     "GROK_API_KEY",
     "GROK_AUTH_MODE",
@@ -341,6 +354,11 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
     "OPENROUTER_API_KEY",
     "AGENC_OPENROUTER_HTTP_REFERER",
     "AGENC_OPENROUTER_TITLE",
+    "VENICE_API_KEY",
+    "VENICE_BASE_URL",
+    "ABLIT_KEY",
+    "ABLITERATION_API_KEY",
+    "ABLITERATION_BASE_URL",
     "GROQ_API_KEY",
     "DEEPSEEK_API_KEY",
     "MODEL_API_KEY",
@@ -605,6 +623,8 @@ export interface InitializeParams extends JsonObject {
      */
     readonly protocol?: DaemonProtocolInfo;
     readonly clientName?: string;
+    /** Local connector registration, admitted only by owner remote_control policy. */
+    readonly remoteControlBridge?: boolean;
     readonly authCookie?: string;
     readonly capabilities?: JsonObject;
 }
@@ -635,9 +655,59 @@ export type MessageContentBlock = (JsonObject & {
 
 export type MessageContent = string | readonly MessageContentBlock[];
 
+/**
+ * A session's fixed tool allowlist (`agent.create` `toolPolicy`).
+ *
+ * Tools outside `enabledTools` are removed from the model-visible catalog AND
+ * from dispatch by name (a call to one is refused, never run), and are denied
+ * by the bypass-immune permission floor as well. Names are exact dispatch
+ * names: built-ins such as `FileRead`, MCP tools as `mcp.<server>.<tool>`. The
+ * policy is persisted with the agent, so a restored session keeps it, and it
+ * cannot be changed after creation.
+ */
+export interface AgentToolPolicy extends JsonObject {
+    /**
+     * Non-empty, well-formed, without duplicates. Two rules apply:
+     * - Bundled skills (the ones that ship inside the daemon) are offered only
+     *   when named `Skill:<name>` beside `Skill`. `Skill:` entries without
+     *   `Skill` are refused, and `Skill:agenc-marketplace-kit-installer` is
+     *   always refused. The slash commands `/claim`, `/delegate`, `/proof`,
+     *   `/settle` and `/stake` are never available in such a session.
+     * - MCP tools behind deferral are reached only through
+     *   `system.searchTools`, so a policy that defers them (`deferMcpTools: true`,
+     *   or omitted while an `mcp.` tool is listed) must list it too.
+     */
+    readonly enabledTools: readonly string[];
+    /**
+     * The session's permission mode may not become wider than it is at
+     * creation: `allowAllToolsForSession`, a wider `session.setPermissionMode`
+     * and widening `session.permissions.mutateRule` calls are refused.
+     * Narrowing (for example to `plan`) stays allowed.
+     */
+    readonly frozenPermissionMode?: boolean;
+    /**
+     * `false` advertises the allowlisted MCP tools directly instead of behind
+     * `system.searchTools` discovery. Omitted keeps the daemon default (deferred).
+     */
+    readonly deferMcpTools?: boolean;
+    /**
+     * MCP tools (`mcp.<server>.<tool>`, each also in `enabledTools`) that the
+     * client vouches write nothing through Core, so the sandbox does not try to
+     * infer their filesystem targets. It applies only to servers attached to
+     * this session (`session.mcp.addServer`), never to configured or plugin
+     * servers.
+     */
+    readonly noFsWriteTools?: readonly string[];
+}
+
 export interface AgentRuntimeOptionsParams extends JsonObject {
     readonly simpleMode: boolean;
-    /** Deferred tool exposure; omitted means false. Instructions, schemas and execution policy are unchanged. */
+    /**
+     * Light mode: deferred tool exposure. Instructions, schemas and execution
+     * policy are unchanged. A new agent that omits it starts in the daemon
+     * default (config.toml `light_mode`, else Light); send false for standard.
+     * A resume keeps the mode the session recorded.
+     */
     readonly lightMode?: boolean;
     /** Omission by an older client is normalized to false. */
     readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
@@ -694,6 +764,8 @@ export interface AgentCreateParams extends JsonObject {
     readonly profile?: string;
     /** Absolute explicit config layer selected by the invoking client. */
     readonly configPath?: string;
+    readonly taskTokenBudget?: number;
+    readonly taskMaxCalls?: number;
     /** Additional working directories selected by repeated CLI flags. */
     readonly addDirs?: readonly string[];
     readonly instructions?: string;
@@ -715,8 +787,15 @@ export interface AgentCreateParams extends JsonObject {
      * the daemon must validate it before the first model turn is admitted.
      */
     readonly initialDisplayUserMessage?: string | null;
+    /** Expanded human input for first-turn decisions, before skill/hook transforms. */
+    readonly initialUserPromptText?: string;
     readonly unattendedAllow?: readonly string[];
     readonly unattendedDeny?: readonly string[];
+    /**
+     * Fixed tool allowlist for this session. An older daemon rejects the unknown
+     * param, so a client that needs the restriction fails closed.
+     */
+    readonly toolPolicy?: AgentToolPolicy;
     readonly metadata?: JsonObject;
     /**
      * Session-wide permission mode override for the spawned agent. When
@@ -834,7 +913,12 @@ export interface RunStartParams extends JsonObject {
     };
     /** The engineering goal / issue text driving the change. */
     readonly goal: string;
-    /** Run the Goal and all of its child sessions in Light mode. Defaults to standard mode. */
+    /**
+     * Run the Goal and all of its child sessions in Light mode (true) or
+     * standard mode (false). Omitted: a new Goal takes the daemon default
+     * (config.toml `light_mode`, else Light) and a continuation keeps its
+     * source Goal's mode.
+     */
     readonly lightMode?: boolean;
     /** Absolute directory inside the target git repository (daemon cwd default). */
     readonly cwd?: string;
@@ -985,6 +1069,7 @@ export interface SessionCancelTurnParams extends JsonObject {
  */
 export interface SessionResolveToolCallLegacyParams extends JsonObject {
     readonly sessionId: string;
+    readonly effectSessionId?: string;
     /** When omitted, review every eligible legacy effect in the session. */
     readonly toolCallId?: string;
     readonly reviewer?: string;
@@ -1014,6 +1099,8 @@ export interface SessionResolveToolCallAttempt extends JsonObject {
 /** Evidence-bearing resolution required for every durable effect record. */
 export interface SessionResolveToolCallEvidenceParams extends JsonObject {
     readonly sessionId: string;
+    /** Canonical owner, restricted to this attached session's descendant tree. */
+    readonly effectSessionId?: string;
     readonly toolCallId: string;
     readonly disposition: "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
     readonly evidenceRef: string;
@@ -1031,6 +1118,7 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
  */
 export interface SessionResolveToolCallAttestationParams extends JsonObject {
     readonly sessionId: string;
+    readonly effectSessionId?: string;
     readonly toolCallId: string;
     readonly disposition: "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
     readonly attestation: "operator";
@@ -1289,6 +1377,7 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
     "session.previewFileRewind",
     "session.rewindFilesToMessage",
     "session.shell.execute",
+    "session.setProviderKey",
     "session.setModel",
     "session.setPermissionMode",
     "session.permissions.mutateRule",
@@ -1299,6 +1388,7 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
     "session.mcp.reconnectServer",
     "session.mcp.enableServer",
     "session.mcp.disableServer",
+    "session.mcp.removeServer",
 ] as const;
 
 export type AgenCDaemonInternalMethod = (typeof AGENC_DAEMON_INTERNAL_METHODS)[number];
@@ -2276,6 +2366,14 @@ export interface SessionSnapshotResult extends JsonObject {
         readonly windowTokens: number;
         /** Daemon-owned capacity after effective-model and compaction-window policy. */
         readonly effectiveWindowTokens?: number;
+        /** The prepared main request's input pressure, including image accounting. */
+        readonly compactionInputTokens?: number;
+        /** Same effective denominator used by the pre-request compaction gate. */
+        readonly compactionWindowTokens?: number;
+        /** Exact configured trigger in the same input-token accounting scale. */
+        readonly compactionThresholdTokens?: number;
+        /** Reported separately; never subtracted from the window denominator. */
+        readonly compactionReservedOutputTokens?: number;
         readonly messageTokens: number;
         readonly systemPromptTokens: number;
         /** Always-loaded built-in tool schemas. */
@@ -2320,6 +2418,23 @@ export interface SessionGoalBudget extends JsonObject {
     readonly deadlineAt?: string;
 }
 
+export interface SessionGoalFileIdentity extends JsonObject {
+    readonly kind: "file" | "symlink";
+    readonly mode: number;
+    readonly sha256: string;
+}
+
+export interface SessionGoalBaselineFile extends JsonObject {
+    readonly path: string;
+    readonly identity: SessionGoalFileIdentity | null;
+}
+
+export interface SessionGoalWorkingTreeBaseline extends JsonObject {
+    readonly version: 1 | 2;
+    readonly trackedChanges: SessionGoalBaselineFile[];
+    readonly untrackedFiles: SessionGoalBaselineFile[];
+}
+
 export interface SessionGoalVerdict extends JsonObject {
     readonly verdict: "met" | "not_met" | "impossible" | "blocked" | "verification_failed";
     readonly reason: string;
@@ -2340,6 +2455,7 @@ export interface SessionGoalSnapshot extends JsonObject {
     readonly startedAt: string;
     readonly startCostUsd: number;
     readonly baseCommit?: string;
+    readonly worktreeBaseline?: SessionGoalWorkingTreeBaseline;
     readonly lastVerdict?: SessionGoalVerdict;
     readonly pauseReason?: string;
 }
@@ -2366,11 +2482,28 @@ export interface SessionTranscriptResult extends JsonObject {
     readonly messages: readonly SessionTranscriptMessage[];
 }
 
+export interface PendingEffectReview extends JsonObject {
+    readonly sessionId?: string;
+    /** False for a descendant's review: its parent can still take prompts. */
+    readonly blocksSession?: boolean;
+    readonly callId: string;
+    readonly toolName: string;
+    readonly description: string;
+    readonly error: string;
+}
+
 export interface SessionTranscriptV2Message extends JsonObject {
+    /** Runtime user event ID shared with the file checkpoint and history. */
+    readonly canonicalUserMessageId?: string;
     readonly messageId: string;
     readonly commitEventId: string;
     readonly role: "user" | "assistant";
     readonly text: string;
+    /** Original user submission time, when retained by the durable journal. */
+    readonly acceptedAt?: string;
+    /** Display-only delta prefix, never a committed response or model-history item. */
+    readonly partial?: "streaming" | "interrupted";
+    readonly partialTruncated?: boolean;
     /** Full UTF-8 text when the snapshot substitutes a bounded reference. */
     readonly textArtifact?: {
         readonly id: string;
@@ -2387,6 +2520,8 @@ export interface SessionTranscriptV2Message extends JsonObject {
 export interface SessionTranscriptV2ActiveTurn extends JsonObject {
     readonly turnId: string;
     readonly clientMessageId?: string;
+    /** Display-delta replay watermark, including discarded attempts with no fresh text. */
+    readonly partialSequence?: number;
 }
 
 /**
@@ -2437,6 +2572,16 @@ export interface SessionTranscriptV2Event extends JsonObject {
         readonly modelCalls?: number;
         readonly hasUnknownCost?: boolean;
         readonly costEstimated?: boolean;
+        readonly unpricedCallCount?: number;
+        readonly unpricedCalls?: readonly {
+            readonly reservationId: string;
+            readonly runId: string;
+            readonly stepId: string;
+            readonly kind: string;
+            readonly model?: string;
+            readonly provider?: string;
+            readonly reason: string;
+        }[];
         readonly models?: readonly {
             readonly model: string;
             readonly provider?: string;
@@ -2486,6 +2631,10 @@ export interface SessionTranscriptV2Event extends JsonObject {
 }
 
 export interface SessionTranscriptV2Result extends JsonObject {
+    /** Independent of the visible transcript boundary and truncation. */
+    readonly pendingEffectReviews?: readonly PendingEffectReview[];
+    /** Active selectable canonical user IDs; archived display rows are not targets. */
+    readonly activeUserMessageIds?: readonly string[];
     readonly schemaVersion: 2;
     readonly sessionId: string;
     readonly runId: string;
@@ -2594,9 +2743,20 @@ export interface PluginSettingsResult extends JsonObject {
     readonly needsSetup: readonly string[];
 }
 
+/** Content-free facts that survive phase wrappers and can be persisted safely. */
+export type TransportFailure = {
+    readonly category: "stream_truncated" | "http_5xx" | "connection_lost" | "timeout";
+    readonly status?: number;
+};
+
 export interface MessageSendTerminalResult extends JsonObject {
     readonly code: 0 | 1 | 130;
     readonly message?: string;
+    readonly failureCode?: string;
+    readonly durationMs?: number;
+    readonly remainingDeadlineMs?: number;
+    readonly usableFinalAnswer?: boolean;
+    readonly transportFailure?: TransportFailure;
 }
 
 export interface MessageSendResult extends JsonObject {

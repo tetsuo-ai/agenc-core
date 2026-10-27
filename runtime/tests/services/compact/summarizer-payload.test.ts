@@ -68,6 +68,16 @@ function toolPairs(count: number): CompactionToolPairV1[] {
 }
 
 describe("summarizer map transcript", () => {
+  it("uses a short call-local citation while retaining the frozen canonical source", () => {
+    const source: RuntimeMessage[] = [{ role: "user", content: "keep the parser fix" }];
+    const plan = buildCompactionMapReducePlan(source, compactionPlanOptions(source));
+    const chunk = plan.chunks[0]!;
+    const payload = JSON.parse(String(chunk.messages[0]!.content));
+    expect(payload.allowed_source_ref_ids).toEqual(["s1"]);
+    expect(plan.calls[0]!.source_ref_ids).toEqual([chunk.source_ref.ref_id]);
+    expect(chunk.source_ref.ref_id).not.toBe("s1");
+    expect(String(chunk.messages[0]!.content)).not.toContain(chunk.source_ref.ref_id);
+  });
   it("links calls and results by per-unit refs, without digests or provider call ids", () => {
     const providerIds = ["call_Qm9vYmFyMTIz", "toolu_01ABCdefGHIjkl", "call_c2VhbGVk"];
     const source: RuntimeMessage[] = [
@@ -282,7 +292,7 @@ describe("summarizer reduction payload", () => {
     });
 
     expect(JSON.parse(String(message!.content))).toEqual({
-      allowed_source_ref_ids: ["attempt:summary:001"],
+      allowed_source_ref_ids: ["s1"],
       coverage_priority: "parser",
       kind: "untrusted_compaction_summaries",
       stage: "final",
@@ -290,7 +300,7 @@ describe("summarizer reduction payload", () => {
         facts: [{ id: "f1", text: "parse() returns 1." }],
         narrative: "Parser fixed.",
         open_actions: [{ id: "a1", text: "Run the tests." }],
-        ref_id: "attempt:summary:001",
+        ref_id: "s1",
       }],
       version: 1,
     });

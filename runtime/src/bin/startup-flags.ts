@@ -14,6 +14,12 @@ export const AUTONOMOUS_FLAG = "--autonomous" as const;
  */
 export const BYPASS_APPROVALS_FLAG = "--bypass-approvals" as const;
 
+/** Start a new session in Light mode. Light is the default, so this only overrides `light_mode = false`. */
+export const LIGHT_FLAG = "--light" as const;
+
+/** Start a new session in standard mode instead of Light. */
+export const STANDARD_FLAG = "--standard" as const;
+
 const RETIRED_STARTUP_FLAG_REPLACEMENTS = Object.freeze({
   "--yolo": DANGEROUS_BYPASS_FLAG,
   "--allow-dangerously-skip-permissions": DANGEROUS_BYPASS_FLAG,

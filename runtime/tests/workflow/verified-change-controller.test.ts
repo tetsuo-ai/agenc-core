@@ -1129,6 +1129,37 @@ describe("workflow terminal persistence failures", () => {
     await runToTerminal(harness, { runId: "after-recovery" });
   });
 
+  it("repairs the exact journaled terminal on a status read after persistent ENOSPC, even with a live writer", async () => {
+    harness.spawner.queue("plan", { status: "failed", finalMessage: "Plan failed", usage: null });
+    harness.spawner.queue("plan", { status: "failed", finalMessage: "Plan failed", usage: null });
+    const original = harness.repo.recordTerminalResult.bind(harness.repo);
+    const writes: Parameters<typeof original>[0][] = [];
+    let full = true;
+    vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(input => {
+      if (input.result.runId === RUN_ID) writes.push(structuredClone(input));
+      if (full) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      return original(input);
+    });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)?.state).toBe("stopped");
+    full = false;
+    // The session may still own its rollout lease while async shutdown drains.
+    // The controller can project the exact append it already fsync-committed.
+    const inspection = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [harness.driver],
+      runtimeFailure: runId => harness.controller.currentRuntimeFailure(runId),
+    });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(inspection.status({ runId: RUN_ID })).toMatchObject({
+        status: "failed", terminal: true, statusSource: "run_terminal_result",
+      });
+    }
+    expect(writes.length).toBeGreaterThanOrEqual(3);
+    expect(writes.every(write => JSON.stringify(write) === JSON.stringify(writes[0]))).toBe(true);
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toBeUndefined();
+  });
+
   it("keeps the observed stop when status storage reads also fail", async () => {
     harness.hooks.failTerminalWith = new Error("journal disk full");
     vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => { throw new Error("SQLite disk full"); });
@@ -2221,6 +2252,7 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
 
   it("completes a Goal with an unpriced provider fixture and persists estimated spend", async () => {
     let client!: ExecutionAdmissionClient;
+    // A Meta release AgenC has no price for yet (the Qwen Token Plan is now a known $0 plan).
     const project = makeHarness({ admission: () => client });
     const kernel = new ExecutionAdmissionKernel({ agencHome: project.home });
     try {
@@ -2228,20 +2260,20 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
         autonomous: false, maxCostUsd: 2, hasHardCostCap: true } });
       const session = { conversationId: RUN_ID, services: { executionAdmission: client, admissionRequired: true },
         abortTerminal: vi.fn() } as unknown as Session;
-      const provider = { name: "qwen-token-plan", getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }) } as unknown as LLMProvider;
+      const provider = { name: "meta", getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }) } as unknown as LLMProvider;
       let settledUsage = client.getUsageSummary?.();
       client.subscribeUsage?.(usage => { settledUsage = usage; });
       const spawn = project.spawner.spawn.bind(project.spawner);
       vi.spyOn(project.spawner, "spawn").mockImplementation(async input => {
-        const response = await runAdmittedModelCall({ session, provider, model: "qwen3.8-max", providerName: "qwen-token-plan",
+        const response = await runAdmittedModelCall({ session, provider, model: "muse-spark-1.4", providerName: "meta",
           messages: [{ role: "user", content: input.prompt }], options: { maxOutputTokens: 128 },
-          stepId: `${input.kind}:fixture-model-call`, invoke: async () => ({ model: "qwen3.8-max", content: "fixture answer",
+          stepId: `${input.kind}:fixture-model-call`, invoke: async () => ({ model: "muse-spark-1.4", content: "fixture answer",
             toolCalls: [], finishReason: "stop", usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20,
               availability: "reported", provenance: "provider" } }) });
         expect(response.content).toBe("fixture answer");
         return spawn(input);
       });
-      await runToTerminal(project, { provider: "qwen-token-plan", model: "qwen3.8-max", maxCostUsd: 2 });
+      await runToTerminal(project, { provider: "meta", model: "muse-spark-1.4", maxCostUsd: 2 });
       expect(project.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "completed" });
       expect(project.spawner.spawn).toHaveBeenCalledTimes(3);
       expect(settledUsage).toMatchObject({ costEstimated: true, hasUnknownCost: false });

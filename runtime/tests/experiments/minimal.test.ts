@@ -23,7 +23,7 @@ test("tool bypass still propagates cancellation and the actual result", async ()
   vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "1");
   const controller = new AbortController();
   const result = { content: "captured stdout", isError: false };
-  const params = { session: { services: {} }, turnId: "turn", callId: "call", args: {},
+  const params = { session: { conversationId: "one-shot", services: {} }, turnId: "turn", callId: "call", args: {},
     tool: { name: "fixture", recoveryCategory: "idempotent" }, signal: controller.signal, invoke: async (context: { signal: AbortSignal; crossEffectBoundary(): void }) => {
     context.crossEffectBoundary();
     controller.abort(new Error("stop"));
@@ -31,7 +31,7 @@ test("tool bypass still propagates cancellation and the actual result", async ()
     expect(() => context.crossEffectBoundary()).toThrow("stop");
     return result;
   } } as unknown as Parameters<typeof runAdmittedToolCall>[0];
-  expect(await withOneShotFastMode(() => runAdmittedToolCall(params))).toBe(result);
+  expect(await withOneShotFastMode(() => runAdmittedToolCall(params), String(params.session.conversationId))).toBe(result);
 });
 
 test("one-shot rollout is written and redacted at close, then mirrored", () => {

@@ -121,7 +121,7 @@ describe("spawn_agent with automatic selection off", () => {
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread } as Awaited<ReturnType<typeof delegate>>);
     const result = await tool.execute({ message: "Extract names", task_name: "worker", __callId: "spawn-1" });
     expect(result.isError).not.toBe(true);
-    expect(JSON.parse(result.content)).toEqual({ task_name: "/root/worker", nickname: "worker" });
+    expect(JSON.parse(result.content)).toEqual({ task_name: "/root/worker", nickname: "worker", collect: expect.stringContaining("Use wait_agent") });
     expect(mockDelegate).toHaveBeenCalledOnce();
     const request = mockDelegate.mock.calls[0]![0];
     // No plan, so no model-call cap, forced wrap-up budget, task dollar cap,

@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const fileRace = vi.hoisted(() => ({ target: "", switched: false, restored: false, switchAncestor: undefined as undefined | (() => Promise<void>), restoreAncestor: undefined as undefined | (() => Promise<void>) }));
 const fsyncFailure = vi.hoisted(() => ({ enabled: false, directoryCalls: 0 }));
 const fileOpens = vi.hoisted(() => ({ count: 0 }));
+// Reload helpers imported by test setup so filesystem fault injection reaches them.
+vi.hoisted(() => vi.resetModules());
+
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return { ...fs, fsyncSync: (fd: number) => {

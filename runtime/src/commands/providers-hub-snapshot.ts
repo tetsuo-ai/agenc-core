@@ -1,3 +1,6 @@
+import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
+import { withSecureStorageDisplaySnapshot } from "../utils/secureStorage/index.js";
+import { modelCapabilityTags } from "./model-capability-tags.js";
 /**
  * Data for the `/providers` screen: every built-in provider with one plain
  * status ("key saved", "env DEEPSEEK_API_KEY", "running", "not set"), how it
@@ -10,6 +13,9 @@
 
 import { hasSavedProviderKey } from "../auth/provider-keys.js";
 import { PROVIDER_AUTH_ENV } from "../llm/provider-auth-selection.js";
+import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { openRouterModelHasZdrEndpoint } from "../llm/registry/openrouter-zdr-endpoints.js";
+import { openRouterZeroDataRetentionEnabled } from "../llm/zero-data-retention.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
 import {
   providerCredentialEnvironmentLabel,
@@ -74,10 +80,19 @@ export type ProvidersHubModelRow = {
   readonly displayModel: string;
   readonly current: boolean;
   readonly isDefault: boolean;
+  /** Capability tags such as "vision · thinking · free" (model-capability-tags). */
+  readonly tags?: string;
+  /** The catalog's name for the model ("Google: Gemma 4 31B"), which search also reads. */
+  readonly label?: string;
+  /**
+   * OpenRouter while requests ask for zero data retention: the model has no
+   * zero-retention endpoint, so OpenRouter would refuse it.
+   */
+  readonly zdrUnavailable?: true;
+  readonly catalogDetail?: string;
 };
 
 function plainStatus(row: ProviderMenuRow, keySaved: boolean): string {
-  if (row.authState === "managed") return "AgenC account";
   const source = row.credentialSource;
   if (keySaved || source === "native secure storage") return "key saved";
   if (source.startsWith("env ")) return source;
@@ -109,8 +124,8 @@ function notSetStatus(access: BuiltInProviderOnboardingAccess): string {
   switch (access) {
     case "environment":
       return "needs AWS credentials";
-    case "managed":
-      return "sign in with /login";
+    case "retired":
+      return "unavailable";
     case "local":
       return "not running";
     default:
@@ -132,6 +147,10 @@ function rank(connection: ProvidersHubConnection): number {
 }
 
 export function readProvidersHubSnapshot(ctx: SlashCommandContext): ProvidersHubSnapshot {
+  return withSecureStorageDisplaySnapshot(requireCommandConfigStore(ctx).homeContext, () => readProvidersHubSnapshotFromStorage(ctx));
+}
+
+function readProvidersHubSnapshotFromStorage(ctx: SlashCommandContext): ProvidersHubSnapshot {
   const menu = readProviderMenuSnapshot(ctx);
   const home = requireCommandConfigStore(ctx).homeContext;
   const captured = capturedProviderEnvironment(ctx);
@@ -271,12 +290,32 @@ export function readProvidersHubModels(
   provider: ProviderSlug,
 ): readonly ProvidersHubModelRow[] {
   const snapshot = readModelMenuSnapshot(ctx);
+  const checksZdr = provider === "openrouter" &&
+    openRouterZeroDataRetentionEnabled(readCommandConfig(ctx));
   return snapshot.rows
     .filter((row) => row.provider === provider && row.selectable)
-    .map((row) => ({
-      model: row.model,
-      displayModel: row.displayModel,
-      current: row.status === "current",
-      isDefault: row.status === "default",
-    }));
+    .map((row) => {
+      const metadata = resolveRegisteredModelCatalogEntry({ provider, model: row.displayModel });
+      const label = metadata?.displayName;
+      const cost = resolveModelCostEntry({ provider, model: row.displayModel }, DEFAULT_MODEL_COSTS)?.entry;
+      const catalogDetail = provider === "openrouter" ? [
+        ...(metadata?.contextWindow === undefined ? [] : [`${metadata.contextWindow.toLocaleString("en-US")} context`]),
+        ...(cost === undefined || cost.costEstimated ? [] : [
+          `$${Number((cost.inputUsdPer1K * 1000).toPrecision(6))}/M input`,
+          `$${Number((cost.outputUsdPer1K * 1000).toPrecision(6))}/M output`,
+        ]),
+      ].join(" · ") : undefined;
+      return {
+        model: row.model,
+        displayModel: row.displayModel,
+        current: row.status === "current",
+        isDefault: row.status === "default",
+        tags: modelCapabilityTags(provider, row.displayModel),
+        ...(catalogDetail ? { catalogDetail } : {}),
+        ...(label === undefined ? {} : { label }),
+        ...(checksZdr && openRouterModelHasZdrEndpoint(row.displayModel) === false
+          ? { zdrUnavailable: true as const }
+          : {}),
+      };
+    });
 }

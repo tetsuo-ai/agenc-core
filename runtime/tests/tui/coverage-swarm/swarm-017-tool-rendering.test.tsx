@@ -324,6 +324,6 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
     expect(
       (objectError as { readonly props: { readonly content: string } }).props
         .content,
-    ).toContain("<tool-error>{\"code\":500}</tool-error>");
+    ).toContain("<tool-error>Tool execution failed (code 500)</tool-error>");
   });
 });

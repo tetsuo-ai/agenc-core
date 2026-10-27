@@ -32,6 +32,36 @@ function resolveGeminiSessionReasoningEffort(
 }
 
 /**
+ * Ollama Cloud, Venice and abliteration.ai list, per model, the levels it
+ * takes and the one it thinks at when a request names none, and the status
+ * line shows the model's default (that one, or DeepSeek's own high for a
+ * DeepSeek model, model-family.ts). Send the level the status line shows instead of leaving
+ * the field out and trusting the model to apply a default: the chosen level
+ * when listed, the same stand-in the status line names for a top tier the
+ * model lacks, otherwise the default. Undefined when the model lists no
+ * levels, which sends nothing.
+ */
+function listedGatewayEffort(
+  requested: ReasoningEffort | undefined,
+  contract: { readonly levels: readonly string[]; readonly defaultLevel?: ReasoningEffort },
+): WireReasoningEffort | undefined {
+  const listed = (level: ReasoningEffort | undefined): level is ReasoningEffort =>
+    level !== undefined && contract.levels.includes(level);
+  if (listed(requested)) return requested;
+  const standIn: ReasoningEffort | undefined = requested === "max"
+    ? (contract.levels.includes("xhigh") ? "xhigh" : "high")
+    : requested === "xhigh"
+      ? (contract.levels.includes("max") ? "max" : "high")
+      : undefined;
+  if (listed(standIn)) return standIn;
+  return listed(contract.defaultLevel) ? contract.defaultLevel : undefined;
+}
+
+function usesListedGatewayEffort(provider: string | undefined): boolean {
+  return provider === "ollama-cloud" || provider === "venice" || provider === "abliteration";
+}
+
+/**
  * Sessions created without an explicit reasoning effort — every
  * daemon-spawned interactive session today — must still honor the
  * persisted `reasoning_effort` from canonical config. Without this fallback the
@@ -60,7 +90,9 @@ export function resolveSessionReasoningEffort(
   },
 ): WireReasoningEffort | undefined {
   if (turnEffort === undefined && selection?.followsModelDefault === true) {
-    return undefined;
+    return usesListedGatewayEffort(selection.provider)
+      ? listedGatewayEffort(undefined, resolveReasoningEffort(selection))
+      : undefined;
   }
   if (selection?.provider === "gemini") {
     return resolveGeminiSessionReasoningEffort(
@@ -70,12 +102,27 @@ export function resolveSessionReasoningEffort(
     );
   }
   const requested = turnEffort ?? getInitialEffortSetting();
-  if (requested === undefined) return undefined;
   // Hosted providers can expose an effort contract absent from ModelInfo.
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
   const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
+  const listedGateway = usesListedGatewayEffort(selection?.provider) &&
+      contract !== undefined && contract.levels.length > 0
+    ? contract
+    : undefined;
+  if (requested === undefined) {
+    return listedGateway === undefined ? undefined : listedGatewayEffort(undefined, listedGateway);
+  }
   if (requested === "none") {
     if (selection?.provider === "anthropic" && (anthropicSupportsBetweenToolsThinking(selection.model) || isHaiku55(selection.model))) {
+      return "none";
+    }
+    // Ollama Cloud and Venice models that list `none` (Ollama: thinking value
+    // false) think at their own default when the field is omitted, so "off"
+    // is sent literally (probed jobs/pv, 2026-10-20: deepseek, glm, kimi,
+    // gemma and nemotron stop thinking only with `none`). So does
+    // abliterated-model, which reasons at its native depth without a level.
+    if (usesListedGatewayEffort(selection?.provider) &&
+        contract?.levels.includes("none") === true) {
       return "none";
     }
     // OpenAI models that document `none` (GPT-6 Sol and Luna) run a
@@ -87,6 +134,7 @@ export function resolveSessionReasoningEffort(
       ? "none"
       : undefined;
   }
+  if (listedGateway !== undefined) return listedGatewayEffort(requested, listedGateway);
   if (selection?.provider === "anthropic" && contract !== undefined && !contract.levels.includes("xhigh")) {
     // Settings fallback is legacy configuration, not a literal session choice.
     // Configured max is seeded as xhigh for these older models; an explicit

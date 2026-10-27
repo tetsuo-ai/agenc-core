@@ -216,7 +216,7 @@ export function pruneSessionStateSnapshots(
 
 /**
  * Rows kept per session regardless of configuration. The daemon-side snapshot
- * is a recovery convenience whose consumers (loadLatest, hydrateStartupRecovery)
+ * is a recovery convenience whose consumers (loadLatest, hydrateStartupRun)
  * read only the newest row, so a deep history has no reader. One 82-minute
  * session accumulated 5,607 rows / 1.16 GB before this cap existed because the
  * configured retention never deleted a row.
@@ -272,11 +272,13 @@ export function pruneSessionSnapshotsForSession(
     }
     if (maxBytes !== undefined) {
       const rows = driver
+        // octet_length(column) uses SQLite's record length without reading the
+        // overflow pages of a multi-megabyte JSON value. Retention is in bytes.
         .prepareState<[string], { snapshot_at: string; bytes: number }>(
           `SELECT snapshot_at,
-                  LENGTH(conversation_json)
-                    + LENGTH(COALESCE(tool_state_json, ''))
-                    + LENGTH(COALESCE(mcp_connection_state_json, '')) AS bytes
+                  octet_length(conversation_json)
+                    + COALESCE(octet_length(tool_state_json), 0)
+                    + COALESCE(octet_length(mcp_connection_state_json), 0) AS bytes
            FROM session_state_snapshots
            WHERE session_id = ?
            ORDER BY snapshot_at DESC`,
@@ -830,9 +832,9 @@ function loadSnapshotPruneCandidates(
       `SELECT
          snapshots.session_id,
          snapshots.snapshot_at,
-         LENGTH(snapshots.conversation_json) AS conversation_bytes,
-         LENGTH(COALESCE(snapshots.tool_state_json, '')) AS tool_state_bytes,
-         LENGTH(COALESCE(snapshots.mcp_connection_state_json, '')) AS mcp_connection_state_bytes,
+         octet_length(snapshots.conversation_json) AS conversation_bytes,
+         COALESCE(octet_length(snapshots.tool_state_json), 0) AS tool_state_bytes,
+         COALESCE(octet_length(snapshots.mcp_connection_state_json), 0) AS mcp_connection_state_bytes,
          session_agent_links.agent_id AS linked_agent_id,
          agent_runs.id AS agent_run_id,
          threads.source_json AS thread_source_json

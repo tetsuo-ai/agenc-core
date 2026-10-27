@@ -205,9 +205,143 @@ describe("daemon instance identity", () => {
   );
 
   it.skipIf(process.platform !== "linux")(
+    "ignores an unavailable entrypoint only for a proven different daemon home",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-foreign-home-"));
+      const targetHome = join(root, "target-home");
+      const foreignHome = join(root, "foreign-home");
+      await mkdir(targetHome);
+      await mkdir(foreignHome);
+      const child = spawn(process.execPath, [
+        "-e", "setInterval(() => {}, 1_000)",
+        join(root, "missing", "bin", "agenc"),
+        "daemon", "start", "--foreground",
+      ], { stdio: "ignore", env: { ...process.env, AGENC_HOME: foreignHome } });
+      try {
+        await once(child, "spawn");
+        await expect(findLinuxAgenCDaemonProcesses({
+          entrypointPath: join(process.cwd(), "bin", "agenc"),
+          pid: process.pid,
+          platform: "linux",
+          isPidRunning: pid => pid === child.pid && child.exitCode === null,
+        }, targetHome, "any-install")).resolves.toEqual([]);
+        expect(child.exitCode).toBeNull();
+      } finally {
+        const exited = once(child, "exit");
+        child.kill("SIGTERM");
+        await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux").each([true, false])(
+    "still refuses an unavailable entrypoint for a same or unknown home (known=%s)",
+    async (knownHome) => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-same-home-"));
+      const child = spawn(process.execPath, [
+        "-e", "setInterval(() => {}, 1_000)",
+        join(root, "missing", "bin", "agenc"),
+        "daemon", "start", "--foreground",
+      ], {
+        stdio: "ignore",
+        env: knownHome
+          ? { ...process.env, AGENC_HOME: root }
+          : { PATH: process.env.PATH },
+      });
+      try {
+        await once(child, "spawn");
+        await expect(findLinuxAgenCDaemonProcesses({
+          entrypointPath: join(process.cwd(), "bin", "agenc"),
+          pid: process.pid,
+          platform: "linux",
+          isPidRunning: pid => pid === child.pid && child.exitCode === null,
+        }, root, "any-install")).rejects.toBeInstanceOf(AgenCDaemonProcessScanIncompleteError);
+        expect(child.exitCode).toBeNull();
+      } finally {
+        const exited = once(child, "exit");
+        child.kill("SIGTERM");
+        await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux").each(["direct", "absolute-alias", "relative-alias", "alias-parent"] as const)(
+    "compares a foreign home in the candidate root before entrypoint or cwd reads (%s)",
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-process-root-"));
+      const targetHome = join(root, "target-home");
+      const processRoot = join(root, "process-root");
+      await mkdir(targetHome);
+      await mkdir(join(processRoot, "private", "home"), { recursive: true });
+      await mkdir(join(processRoot, "private", "leaf"));
+      if (kind !== "direct") await symlink(
+        kind === "relative-alias" ? "private/home" : kind === "alias-parent" ? "/private/leaf" : "/private/home",
+        join(processRoot, "alias"),
+      );
+      const child = spawn(process.execPath, [
+        "-e", "setInterval(() => {}, 1_000)", "/core/runtime/bin/agenc",
+        "daemon", "start", "--foreground",
+      ], { stdio: "ignore", env: { ...process.env, AGENC_HOME: kind === "direct" ? "/private/home" : kind === "alias-parent" ? "/alias/../home" : "/alias" } });
+      const readProcessCwdPath = vi.fn(async () => { throw new Error("foreign cwd unavailable on host"); });
+      try {
+        await once(child, "spawn");
+        await expect(findLinuxAgenCDaemonProcesses({
+          entrypointPath: join(process.cwd(), "bin", "agenc"),
+          pid: process.pid, platform: "linux",
+          isPidRunning: pid => pid === child.pid && child.exitCode === null,
+        }, targetHome, "any-install", {
+          readProcessCwdPath,
+          readProcessRootPath: async () => processRoot,
+        })).resolves.toEqual([]);
+        expect(readProcessCwdPath).not.toHaveBeenCalled();
+        expect(child.exitCode).toBeNull();
+      } finally {
+        const exited = once(child, "exit");
+        child.kill("SIGTERM");
+        await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux").each(["same-home", "unreadable-root", "relative-home", "symlink-loop"] as const)(
+    "fails closed with a PID and remedy for a candidate root that cannot prove a different home (%s)",
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-root-guard-"));
+      if (kind === "symlink-loop") await symlink("loop", join(root, "loop"));
+      const child = spawn(process.execPath, [
+        "-e", "setInterval(() => {}, 1_000)", "/core/runtime/bin/agenc",
+        "daemon", "start", "--foreground",
+      ], { stdio: "ignore", env: { ...process.env,
+        AGENC_HOME: kind === "relative-home" ? "relative" : kind === "symlink-loop" ? "/loop" : "/",
+      } });
+      try {
+        await once(child, "spawn");
+        await expect(findLinuxAgenCDaemonProcesses({
+          entrypointPath: join(process.cwd(), "bin", "agenc"),
+          pid: process.pid, platform: "linux",
+          isPidRunning: pid => pid === child.pid && child.exitCode === null,
+        }, root, "any-install", {
+          readProcessRootPath: async () => kind === "unreadable-root" ? join(root, "missing") : root,
+        })).rejects.toThrow(new RegExp(`process ${child.pid}:.*stop that process in its namespace`));
+        expect(child.exitCode).toBeNull();
+      } finally {
+        const exited = once(child, "exit");
+        child.kill("SIGTERM");
+        await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
     "fails closed for a missing agenc path with the foreground daemon tail",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "agenc-daemon-argv-"));
+      const daemonHome = join(root, "daemon-home");
+      await mkdir(daemonHome);
       const missingEntrypoint = join(root, "missing", "bin", "agenc");
       const child = spawn(
         process.execPath,
@@ -219,7 +353,7 @@ describe("daemon instance identity", () => {
           "start",
           "--foreground",
         ],
-        { stdio: "ignore" },
+        { stdio: "ignore", env: { ...process.env, AGENC_HOME: daemonHome } },
       );
       const readProcessCwdPath = vi.fn(async () => process.cwd());
 
@@ -234,7 +368,7 @@ describe("daemon instance identity", () => {
               isPidRunning: (pid) =>
                 pid === child.pid && child.exitCode === null,
             },
-            join(root, "daemon-home"),
+            daemonHome,
             "any-install",
             { readProcessCwdPath },
           ),
@@ -246,6 +380,67 @@ describe("daemon instance identity", () => {
         const exited = once(child, "exit");
         child.kill("SIGKILL");
         await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "refuses a live same-home process when its cwd path is unavailable on the host",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-live-missing-cwd-"));
+      const entrypoint = join(root, "daemon-entrypoint.js");
+      await writeFile(entrypoint, "setInterval(() => {}, 1_000);\n");
+      const child = spawn(process.execPath, [entrypoint, "daemon", "start", "--foreground"], {
+        stdio: "ignore", env: { ...process.env, AGENC_HOME: root },
+      });
+      try {
+        await once(child, "spawn");
+        await expect(findLinuxAgenCDaemonProcesses({
+          entrypointPath: entrypoint, pid: process.pid, platform: "linux",
+          isPidRunning: pid => pid === child.pid && child.exitCode === null,
+        }, root, "exact", {
+          readProcessCwdPath: async () => join(root, "container-only-cwd"),
+        })).rejects.toThrow(new RegExp(`process ${child.pid}.*stop that process in its namespace`));
+        expect(child.exitCode).toBeNull();
+      } finally {
+        const exited = once(child, "exit");
+        child.kill("SIGTERM");
+        await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "skips a candidate only after a missing cwd read confirms process disappearance",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-vanished-cwd-"));
+      const entrypoint = join(root, "daemon-entrypoint.js");
+      await writeFile(entrypoint, "setInterval(() => {}, 1_000);\n");
+      const child = spawn(process.execPath, [entrypoint, "daemon", "start", "--foreground"], {
+        stdio: "ignore", env: { ...process.env, AGENC_HOME: root },
+      });
+      try {
+        await once(child, "spawn");
+        await expect(findLinuxAgenCDaemonProcesses({
+          entrypointPath: entrypoint, pid: process.pid, platform: "linux",
+          isPidRunning: pid => pid === child.pid && child.exitCode === null,
+        }, root, "exact", {
+          readProcessCwdPath: async () => {
+            const exited = once(child, "exit");
+            child.kill("SIGKILL");
+            await exited;
+            throw Object.assign(new Error("process disappeared"), { code: "ENOENT" });
+          },
+        })).resolves.toEqual([]);
+        expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, "exit");
+          child.kill("SIGTERM");
+          await exited.catch(() => {});
+        }
         await rm(root, { recursive: true, force: true });
       }
     },

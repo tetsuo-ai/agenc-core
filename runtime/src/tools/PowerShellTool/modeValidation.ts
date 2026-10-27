@@ -219,7 +219,7 @@ export function checkPermissionMode(
       return {
         behavior: 'passthrough',
         message:
-          'Compound command contains a directory-changing command (Set-Location/Push-Location/Pop-Location) with a write operation — cannot auto-allow because path validation uses stale cwd',
+          'Compound command contains a directory-changing command (Set-Location/Push-Location/Pop-Location) with a write operation: cannot auto-allow because path validation uses stale cwd',
       }
     }
     // SECURITY: Link-create compound guard (finding #18). Mirrors the cd
@@ -236,7 +236,7 @@ export function checkPermissionMode(
       return {
         behavior: 'passthrough',
         message:
-          'Compound command creates a filesystem link (New-Item -ItemType SymbolicLink/Junction/HardLink) — cannot auto-allow because path validation cannot follow just-created links',
+          'Compound command creates a filesystem link (New-Item -ItemType SymbolicLink/Junction/HardLink): cannot auto-allow because path validation cannot follow just-created links',
       }
     }
   }
@@ -300,7 +300,7 @@ export function checkPermissionMode(
           if (t !== 'StringConstant' && t !== 'Parameter') {
             return {
               behavior: 'passthrough',
-              message: `Command argument has unvalidatable type (${t}) — variable paths cannot be statically resolved`,
+              message: `Command argument has unvalidatable type (${t}): variable paths cannot be statically resolved`,
             }
           }
           if (t === 'Parameter') {

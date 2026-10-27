@@ -13,6 +13,8 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
+  rmSync,
   statSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -46,6 +48,7 @@ import {
   readAndValidateSchemaVersion,
   SessionLock,
   SessionLockedError,
+  type RolloutCommitNotice,
 } from "../session/session-store.js";
 import {
   LOGS_DATABASE_FILENAME,
@@ -357,6 +360,31 @@ export interface FileThreadStoreOpts {
 }
 
 /**
+ * A session directory whose rollout moved to archived_sessions/ keeps only the
+ * advisory index snapshot, which is rebuilt from the rollout when needed.
+ * Remove it and the directory, so an archived thread leaves nothing under
+ * sessions/. A directory that still holds a rollout file is left as it is.
+ */
+function removeArchivedSessionDir(sessionDir: string): void {
+  removeDisplayArtifacts(sessionDir);
+  let names: string[];
+  try {
+    names = readdirSync(sessionDir);
+  } catch {
+    return;
+  }
+  if (names.some((name) => name.startsWith("rollout-"))) return;
+  for (const name of ["index.json", "index.json.tmp"]) {
+    rmSync(join(sessionDir, name), { force: true });
+  }
+  try {
+    rmdirSync(sessionDir);
+  } catch {
+    // Another file still lives here: keep the directory.
+  }
+}
+
+/**
  * Default filesystem-backed `ThreadStore`. Tracks live thread writers
  * (via the caller-supplied `RolloutStore` per thread) in memory, and
  * persists thread metadata in the per-project AgenC state database.
@@ -367,6 +395,12 @@ export interface FileThreadStoreOpts {
  *   - No on-disk `ThreadNameUpdated` rows: name updates only rewrite the
  *     state row. Memory-mode updates append a new `session_meta` row.
  */
+/**
+ * How long in-turn commits of a live rollout may wait for their SQLite mirror
+ * (see `FileThreadStore.bindLiveRecorder`).
+ */
+export const LIVE_ROLLOUT_INDEX_DELAY_MS = 500;
+
 export class FileThreadStore implements ThreadStore {
   private readonly registryPath: string;
   private readonly projectDir: string;
@@ -375,6 +409,11 @@ export class FileThreadStore implements ThreadStore {
   private readonly stateDriver: StateSqliteDriver;
   private readonly threadIndex: StateThreadRepository;
   private readonly liveRecorders = new Map<ThreadId, RolloutStore>();
+  /**
+   * Live rollouts whose newest in-turn commits are not mirrored yet, with the
+   * timer that mirrors them (see `scheduleLiveRolloutIndex`).
+   */
+  private readonly pendingLiveIndexes = new Map<string, ReturnType<typeof setTimeout>>();
   private closed = false;
   /** One legacy sessions-dir import per store instance (see readRegistryUnlocked). */
   private legacyImportDone = false;
@@ -593,7 +632,7 @@ export class FileThreadStore implements ThreadStore {
         updatedAt: new Date().toISOString(),
       });
       this.writeRegistryUnlocked(registry);
-      if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+      if (archivedSessionDir !== undefined) removeArchivedSessionDir(archivedSessionDir);
     });
   }
 
@@ -985,7 +1024,7 @@ export class FileThreadStore implements ThreadStore {
             if (existing.rolloutPath && (archivedRolloutPath !== undefined || !existsSync(existing.rolloutPath))) archivedSessionDir = dirname(existing.rolloutPath);
           }
           this.writeRegistryUnlocked(registry);
-          if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+          if (archivedSessionDir !== undefined) removeArchivedSessionDir(archivedSessionDir);
           if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
           return;
         }
@@ -1005,7 +1044,7 @@ export class FileThreadStore implements ThreadStore {
           ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
         });
         this.writeRegistryUnlocked(registry);
-        if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+        if (archivedSessionDir !== undefined) removeArchivedSessionDir(archivedSessionDir);
         if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
       }),
     );
@@ -1079,6 +1118,11 @@ export class FileThreadStore implements ThreadStore {
 
   close(): void {
     if (this.closed) return;
+    // Bring every live mirror up to its rollout before the database closes,
+    // as when each commit was mirrored at once.
+    for (const rolloutPath of [...this.pendingLiveIndexes.keys()]) {
+      this.catchUpLiveRolloutIndex(rolloutPath);
+    }
     this.closed = true;
     for (const recorder of this.liveRecorders.values()) {
       recorder.setOnRolloutCommitted(undefined);
@@ -1334,6 +1378,8 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private indexRolloutFile(rolloutPath: string): void {
+    // This index covers every line a pending in-turn index would have read.
+    this.cancelPendingLiveRolloutIndex(rolloutPath);
     backfillRolloutFile({
       rolloutPath,
       threads: this.threadIndex,
@@ -1345,14 +1391,58 @@ export class FileThreadStore implements ThreadStore {
    * flushes. Sessions normally append via `RolloutStore` directly, so
    * without this hook the mirror only updates on explicit store calls
    * (`appendItems`, metadata patches, path lookups).
+   *
+   * Outside a turn every commit is mirrored at once. Inside a turn the
+   * commits of one step (a model reply, its tool calls, the checkpoints and
+   * the next request's admission: a dozen appends between two model
+   * requests, more while a reply streams) are mirrored together, at most
+   * {@link LIVE_ROLLOUT_INDEX_DELAY_MS} after the first of them, instead of
+   * one SQLite transaction per append on the path to the next model request.
+   * The mirror is rebuildable: its receipts record the indexed size, so the
+   * later pass reads exactly the appended tail, and a crash before it only
+   * leaves that tail for the next index of the file. The end of the turn
+   * (the journal announces it), explicit reads, unbinding, closing and every
+   * commit outside a turn mirror at once, so the mirror is current at each
+   * turn boundary as before.
    */
   private bindLiveRecorder(threadId: ThreadId, rolloutStore: RolloutStore): void {
-    rolloutStore.setOnRolloutCommitted((rolloutPath) => {
+    rolloutStore.setOnRolloutCommitted((rolloutPath, commit: RolloutCommitNotice) => {
       if (this.closed) return;
       if (this.liveRecorders.get(threadId) !== rolloutStore) return;
-      this.indexRolloutFile(rolloutPath);
+      if (commit.withinTurn) this.scheduleLiveRolloutIndex(rolloutPath);
+      else this.indexRolloutFile(rolloutPath);
     });
     this.liveRecorders.set(threadId, rolloutStore);
+  }
+
+  private scheduleLiveRolloutIndex(rolloutPath: string): void {
+    if (this.pendingLiveIndexes.has(rolloutPath)) return;
+    const timer = setTimeout(() => {
+      if (this.pendingLiveIndexes.get(rolloutPath) !== timer) return;
+      this.catchUpLiveRolloutIndex(rolloutPath);
+    }, LIVE_ROLLOUT_INDEX_DELAY_MS);
+    timer.unref?.();
+    this.pendingLiveIndexes.set(rolloutPath, timer);
+  }
+
+  private cancelPendingLiveRolloutIndex(rolloutPath: string): boolean {
+    const timer = this.pendingLiveIndexes.get(rolloutPath);
+    if (timer === undefined) return false;
+    clearTimeout(timer);
+    this.pendingLiveIndexes.delete(rolloutPath);
+    return true;
+  }
+
+  /** Mirror a live rollout's pending in-turn commits now, if it has any. */
+  private catchUpLiveRolloutIndex(rolloutPath: string): void {
+    if (!this.cancelPendingLiveRolloutIndex(rolloutPath) || this.closed) return;
+    try {
+      this.indexRolloutFile(rolloutPath);
+    } catch {
+      // As when the commit callback indexed directly: the mirror is
+      // best-effort and rebuildable, and the next index of this file reads the
+      // tail its receipts do not cover yet.
+    }
   }
 
   private prepareLiveRecorder(rolloutStore: RolloutStore): void {
@@ -1365,6 +1455,9 @@ export class FileThreadStore implements ThreadStore {
     threadId: ThreadId,
     rolloutStore: RolloutStore,
   ): void {
+    // A pending in-turn index must run before the file can move (archive) or
+    // lose its writer.
+    this.catchUpLiveRolloutIndex(rolloutStore.rolloutPath);
     if (this.liveRecorders.get(threadId) === rolloutStore) {
       this.liveRecorders.delete(threadId);
     }

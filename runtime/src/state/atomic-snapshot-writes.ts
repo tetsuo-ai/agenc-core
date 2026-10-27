@@ -15,6 +15,8 @@ import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import type { SqliteDatabase, StateSqliteDriver } from "./sqlite-driver.js";
 
+import { isUnsupportedDirectorySync } from "../utils/durable-atomic-file.js";
+
 const PENDING_SNAPSHOT_DIR = "session_state_snapshots.pending";
 const SNAPSHOT_WRITE_FORMAT = "agenc.session_state_snapshot_write";
 const SNAPSHOT_WRITE_SCHEMA_VERSION = 1;
@@ -33,6 +35,14 @@ export interface SessionSnapshotAtomicWriteOptions {
   readonly updateRunLastSnapshotAt?: boolean;
   readonly replayOnStartup?: boolean;
   readonly verifyExisting?: boolean;
+  /**
+   * Written inside a running turn (turn-scoped durability): the staged
+   * intent, its rename, the SQLite commit and the intent's removal complete
+   * in order without waiting on fsync, which survives the process dying. The
+   * turn boundary flushes. An intent left for startup replay after a failed
+   * commit is still synced.
+   */
+  readonly deferSync?: boolean;
 }
 
 export interface PendingSessionSnapshotWrite {
@@ -81,16 +91,29 @@ export function writeSessionSnapshotAtomically(
     }));
     return;
   }
+  const deferSync = options.deferSync === true;
   const pending = stageSessionSnapshotWrite(driver.projectDir, record, options);
+  const mode = options.verifyExisting ? "verify" : "strict";
   try {
-    commitPendingSessionSnapshotWrite(
-      driver.state, pending, options.verifyExisting ? "verify" : "strict",
-    );
+    if (deferSync) {
+      // Through the driver, so the commit takes its turn-scoped durability.
+      driver.transaction(() => commitPendingSessionSnapshotWrite(driver.state, pending, mode));
+    } else {
+      commitPendingSessionSnapshotWrite(driver.state, pending, mode);
+    }
   } catch (error) {
-    if (!pending.replayOnStartup) removePendingSessionSnapshotWrite(pending);
+    if (!pending.replayOnStartup) removePendingSessionSnapshotWrite(pending, deferSync);
+    else if (deferSync) {
+      try {
+        syncStagedSessionSnapshotWrite(pending);
+      } catch {
+        // The commit failure is what the caller has to see; the intent is
+        // still written for a replay after a process crash.
+      }
+    }
     throw error;
   }
-  removePendingSessionSnapshotWrite(pending);
+  removePendingSessionSnapshotWrite(pending, deferSync);
 }
 
 export function replayAtomicSessionSnapshotWrites(
@@ -160,8 +183,24 @@ export function stageSessionSnapshotWrite(
     ...(pending.verifyExisting ? { verifyExisting: true } : {}),
     record,
   };
-  atomicWriteFile(pending.directory, pending.path, `${JSON.stringify(payload)}\n`);
+  atomicWriteFile(
+    pending.directory,
+    pending.path,
+    `${JSON.stringify(payload)}\n`,
+    options.deferSync !== true,
+  );
   return pending;
+}
+
+/** Make a staged intent that startup must replay survive power loss too. */
+function syncStagedSessionSnapshotWrite(pending: PendingSessionSnapshotWrite): void {
+  const fd = openSync(pending.path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  fsyncDirectory(pending.directory);
 }
 
 function describeSessionSnapshotWrite(
@@ -264,6 +303,7 @@ function updateRunLastSnapshotAt(
 
 function removePendingSessionSnapshotWrite(
   pending: PendingSessionSnapshotWrite,
+  deferSync = false,
 ): void {
   try {
     unlinkSync(pending.path);
@@ -271,7 +311,7 @@ function removePendingSessionSnapshotWrite(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return;
   }
-  fsyncDirectory(pending.directory);
+  if (!deferSync) fsyncDirectory(pending.directory);
 }
 
 function readPendingSessionSnapshotWrite(
@@ -339,6 +379,7 @@ function atomicWriteFile(
   directory: string,
   targetPath: string,
   contents: string,
+  sync = true,
 ): void {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
@@ -346,11 +387,11 @@ function atomicWriteFile(
   try {
     fd = openSync(tmpPath, "wx", 0o600);
     writeFileSync(fd, contents, "utf8");
-    fsyncSync(fd);
+    if (sync) fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
     renameSync(tmpPath, targetPath);
-    fsyncDirectory(directory);
+    if (sync) fsyncDirectory(directory);
   } catch (error) {
     if (fd !== undefined) closeSync(fd);
     try {
@@ -370,8 +411,9 @@ function fsyncDirectory(directory: string): void {
     fd = openSync(directory, "r");
     fsyncSync(fd);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EINVAL" && code !== "EPERM") throw error;
+    // Snapshot writes historically tolerate EPERM on POSIX filesystems too.
+    if (!isUnsupportedDirectorySync(error) &&
+        (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }

@@ -58,6 +58,12 @@ afterEach(() => {
 });
 
 describe("SpinnerAnimationRow liveness + token grammar", () => {
+  test("shows thinking without duplicating the effort status", async () => {
+    const output = await renderRow({ thinkingStatus: "thinking", effortSuffix: " with high effort" });
+    expect(output).toContain("thinking");
+    expect(output).not.toContain("effort");
+  });
+
   // #3a: the counter must read "1 token", never "1 tokens".
   test("uses the singular noun for exactly one token", async () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
@@ -172,16 +178,20 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     expect(output).toContain("thinking");
   });
 
-  test("shows a quiet-stream warning during long thinking", async () => {
+  test.each([80, 120])("shows a quiet-stream warning during long thinking at %s columns", async columns => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
       loadingStartTimeRef: makeRef(NOW - STREAM_QUIET_WARNING_MS),
+      columns,
       responseLengthRef: makeRef(0),
       thinkingStatus: "thinking",
+      streamQuietWarning: "no output from the model for 10 minutes (high effort)",
+      effortSuffix: "",
     });
 
-    expect(output).toContain("no output from the model for 5 minutes");
+    expect(output).toContain("no output from the model for 10 minutes");
+    expect(output).toContain("high effort");
     expect(output).toContain("thinking");
     expect(output).toContain("esc to interrupt");
   });

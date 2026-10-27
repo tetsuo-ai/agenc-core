@@ -43,7 +43,8 @@ const DEFAULT_SYNC_OPERATIONS: DurableAtomicSyncOperations = {
   remove: (path) => rmSync(path, { force: true }),
 };
 
-const DEFAULT_ASYNC_OPERATIONS: DurableAtomicAsyncOperations = {
+/** The file-system operations {@link writeDurableAtomicFile} uses by default. */
+export const DEFAULT_DURABLE_ATOMIC_ASYNC_OPERATIONS: DurableAtomicAsyncOperations = Object.freeze<DurableAtomicAsyncOperations>({
   mkdir: async (path) =>
     mkdir(path, { recursive: true, mode: 0o700 }).then(() => {}),
   openTemporary: (path, mode) => open(path, "wx", mode),
@@ -54,7 +55,7 @@ const DEFAULT_ASYNC_OPERATIONS: DurableAtomicAsyncOperations = {
   rename,
   syncDirectory: syncDirectory,
   remove: async (path) => rm(path, { force: true }),
-};
+});
 
 export function writeDurableAtomicFileSync(
   path: string,
@@ -110,7 +111,7 @@ export async function writeDurableAtomicFile(
   temporaryPath: string,
   data: string,
   mode = 0o600,
-  operations: DurableAtomicAsyncOperations = DEFAULT_ASYNC_OPERATIONS,
+  operations: DurableAtomicAsyncOperations = DEFAULT_DURABLE_ATOMIC_ASYNC_OPERATIONS,
 ): Promise<void> {
   await operations.mkdir(dirname(path));
   let handle: unknown;
@@ -178,7 +179,7 @@ function throwDurableAtomicFileErrors(
   }
 }
 
-function syncDirectorySync(path: string): void {
+export function syncDirectorySync(path: string): void {
   let descriptor: number | undefined;
   let primaryError: unknown;
   let hasPrimaryError = false;
@@ -202,7 +203,7 @@ function syncDirectorySync(path: string): void {
   throwDurableAtomicFileErrors(hasPrimaryError, primaryError, cleanupErrors);
 }
 
-async function syncDirectory(path: string): Promise<void> {
+export async function syncDirectory(path: string): Promise<void> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let primaryError: unknown;
   let hasPrimaryError = false;
@@ -226,6 +227,8 @@ async function syncDirectory(path: string): Promise<void> {
   throwDurableAtomicFileErrors(hasPrimaryError, primaryError, cleanupErrors);
 }
 
+// Some filesystems do not support directory fsync; Windows reports additional
+// unsupported codes. File fsync must not use this exception.
 /** @internal Exported for the cross-platform durability contract test. */
 export function isUnsupportedDirectorySync(
   error: unknown,

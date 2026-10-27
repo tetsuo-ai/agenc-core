@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
+  cpSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -22,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { createHermeticRunRoot } from "../tests/helpers/hermetic-env.mjs";
 
 export const PINNED_NODE_IMAGE =
-  "node:26.5.0-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271";
+  "node:26.12.1-bookworm@sha256:dc5ba49acad07ed5c0defe487a0f14726a8882064683460bcb8168e03e2f74f3";
 export const DOCKER_LOG_BOUNDARY_ARGS = Object.freeze(["--log-driver=none"]);
 export const DOCKER_GATE_LABEL_ARGS = Object.freeze([
   "--label",
@@ -83,6 +84,7 @@ let activeContainer;
 let activeDockerChild;
 let activeDockerSeccompProfile;
 let activePasswdFile;
+let activePinnedNpm;
 let activeRipgrepBinary;
 let interruptedSignal;
 
@@ -470,6 +472,66 @@ export function containerIdentityForDockerHost({
   return Object.freeze({ uid: hostUid, gid: hostGid });
 }
 
+/**
+ * The pinned image bundles its own npm (node:26.12.1 ships npm 11.20.0), but
+ * the repository pins npm (release-toolchain.json, devEngines) and some tests
+ * run npm inside the container. The host npm that runs `npm test` (or, when
+ * the boundary is started with node directly, the npm installed next to that
+ * node) is copied and mounted read-only over the image's npm. Any npm other
+ * than the pinned version is refused.
+ */
+export function pinnedNpmPackageRoot(
+  npmExecPath = process.env.npm_execpath,
+  root = repositoryRoot,
+  nodeExecPath = process.execPath,
+) {
+  const candidates = [
+    npmExecPath,
+    join(dirname(nodeExecPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter((candidate) => typeof candidate === "string" && candidate !== "");
+  const cli = candidates.find((candidate) => {
+    try {
+      return lstatSync(candidate).isFile() || lstatSync(realpathSync(candidate)).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (cli === undefined) {
+    throw new Error(
+      `Hermetic tests need the pinned npm on the host; none of ${candidates.join(", ")} exists`,
+    );
+  }
+  const packageRoot = realpathSync(join(dirname(realpathSync(cli)), ".."));
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  } catch (error) {
+    throw new Error(`Cannot read the npm package that runs npm test: ${packageRoot}`, {
+      cause: error,
+    });
+  }
+  const pinned = JSON.parse(
+    readFileSync(join(root, "release-toolchain.json"), "utf8"),
+  ).npmVersion;
+  if (manifest?.name !== "npm" || manifest?.version !== pinned) {
+    throw new Error(
+      `Hermetic tests require npm ${pinned}; npm test ran with ${String(manifest?.name)}@${String(manifest?.version)} from ${packageRoot}`,
+    );
+  }
+  return packageRoot;
+}
+
+function snapshotPinnedNpm(snapshotRoot) {
+  const snapshot = join(snapshotRoot, "npm");
+  cpSync(pinnedNpmPackageRoot(), snapshot, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    verbatimSymlinks: true,
+  });
+  return snapshot;
+}
+
 function snapshotBoundaryPasswd(snapshotRoot) {
   const passwd = join(snapshotRoot, "passwd");
   const identity = containerIdentityForDockerHost();
@@ -567,6 +629,9 @@ function commonContainerArgs(name, boundaryMountMode = "readonly") {
   if (activePasswdFile === undefined) {
     throw new Error("Hermetic account identity input was not initialized");
   }
+  if (activePinnedNpm === undefined) {
+    throw new Error("Hermetic pinned npm input was not initialized");
+  }
   return [
     "run",
     "--rm",
@@ -607,6 +672,10 @@ function commonContainerArgs(name, boundaryMountMode = "readonly") {
     bindMount(activeRipgrepBinary, "/usr/local/bin/rg"),
     "--mount",
     bindMount(activePasswdFile, "/etc/passwd"),
+    "--mount",
+    bindMount(activePinnedNpm, "/usr/local/lib/node_modules/npm", {
+      recursiveReadonly: true,
+    }),
     "--mount",
     bindMount(activeBoundaryRoot, "/boundary", {
       readonly: boundaryMountMode === "readonly",
@@ -1061,6 +1130,7 @@ async function main() {
     }
     activeDockerSeccompProfile = snapshotDockerSeccompProfile(toolInputRoot);
     activePasswdFile = snapshotBoundaryPasswd(toolInputRoot);
+    activePinnedNpm = snapshotPinnedNpm(toolInputRoot);
     activeRipgrepBinary = snapshotBundledRipgrep(toolInputRoot);
     mkdirSync(join(activeBoundaryRoot, "docker-config"), {
       mode: 0o700,

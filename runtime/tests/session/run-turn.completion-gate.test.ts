@@ -7,7 +7,7 @@ import {
 } from "../../src/app-server/background-agent-runner/daemon-events.js";
 import type { ActiveBackgroundAgent } from "../../src/app-server/background-agent-runner/shared.js";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
-import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
+import type { LLMChatOptions, LLMMessage, LLMResponse } from "../../src/llm/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
@@ -47,9 +47,11 @@ function textStep(content: string): Partial<LLMResponse> {
 
 function scriptedProvider(script: readonly Partial<LLMResponse>[]) {
   const requests: LLMMessage[][] = [];
+  const options: (LLMChatOptions | undefined)[] = [];
   const provider = mkProvider();
   let index = 0;
-  provider.chatStream = async (messages): Promise<LLMResponse> => {
+  provider.chatStream = async (messages, _onChunk, opts): Promise<LLMResponse> => {
+    options.push(opts);
     requests.push(messages.map((message) => ({ ...message })));
     const step = script[Math.min(index, script.length - 1)] ?? {};
     index += 1;
@@ -62,7 +64,7 @@ function scriptedProvider(script: readonly Partial<LLMResponse>[]) {
       ...step,
     };
   };
-  return { provider, requests };
+  return { provider, requests, options };
 }
 
 function toolRegistry(
@@ -112,6 +114,13 @@ function headlessSession(
       runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive }),
     },
   });
+}
+
+/** Exact-output turns are checked only with `completion_gate.exact_output = "verify"`. */
+function verifyExactCtx(): ReturnType<typeof mkCtx> {
+  const ctx = mkCtx();
+  return { ...ctx, config: { ...(ctx.config as Record<string, unknown>),
+    completionGate: { exact_output: "verify" } } } as typeof ctx;
 }
 
 function gatePayloads(events: readonly Event[]) {
@@ -188,6 +197,51 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test("verification respects lower output limits and caps recovery requests", async () => {
+    const {provider, requests, options} = scriptedProvider([
+      toolStep("work"), textStep("Done."),
+      {...textStep("Unfinished verification"), finishReason: "length"},
+    ]);
+    const {session} = headlessSession(provider, true);
+    const ctx = mkCtx();
+    await collect(session, {...ctx, modelInfo: {...ctx.modelInfo, maxOutputTokens: 1024}});
+    expect(options[2]?.maxOutputTokens).toBe(1024);
+    expect(requests.length).toBeLessThanOrEqual(8);
+    expect(options.slice(2).every(option => (option?.maxOutputTokens ?? Infinity) <= 1024)).toBe(true);
+  });
+
+  test("bounds tool-only verification continuations and every gated output request", async () => {
+    const { provider, requests, options } = scriptedProvider([
+      toolStep("work"), textStep("Done."),
+      ...Array.from({ length: 10 }, (_, i) => toolStep(`verify-${i}`)),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    await collect(session);
+    expect(requests).toHaveLength(8); // two work samples plus six gate samples
+    expect(options.slice(2).every(option => option?.maxOutputTokens === 8192)).toBe(true);
+    expect(gateWarnings(events).at(-1)?.message).toContain("sample limit");
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item !== undefined);
+    expect(terminal?.outcome).not.toBe("completed");
+  });
+
+  test("finishes a tool-backed data answer without a new model request", async () => {
+    const task = "Look up current stock using the inventory service. Return JSON with available.";
+    const final = '{"available":137}';
+    const { provider, requests } = scriptedProvider([toolStep("lookup"), textStep(final)]);
+    const { registry, execute } = queuedToolRegistry([{ content: final, isError: false }]);
+    const { session, events } = headlessSession(provider, true, registry);
+    await drain(runTurn(session, mkCtx(), task));
+    expect(requests).toHaveLength(2);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "skipped", reason: "answer_only", round: 0 }),
+    ]);
+    expectCompletedTurn(events);
+    expect(isCanonicalEventPayload("completion_gate", gatePayloads(events)[0])).toBe(true);
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(final);
+  });
+
   test.each(["turn", "session"] as const)("preserves explicit %s exact output after tool work", async (scope) => {
     const task = "Read the file and report its values.";
     const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
@@ -205,6 +259,110 @@ describe("completion gate in the turn loop", () => {
     expectCompletedTurn(events);
     const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
     expect(terminal?.message).toBe(exact);
+  });
+
+  test.each(["turn", "session"] as const)("completion_gate.exact_output = verify checks explicit %s exact output after tool work and keeps its final bytes", async (scope) => {
+    const task = "Read the file and report its values.";
+    const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
+    expect(() => JSON.parse(exact)).not.toThrow();
+    const review = "- [x] /app/out.txt values: completion_probe showed /app/out.txt contains done";
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"), textStep(exact), toolStep("verify-1"), textStep(review),
+    ]);
+    const { session, events, state } = headlessSession(provider, true);
+    const phases: PhaseEvent[] = [];
+    if (scope === "session") Object.assign(session.services, {
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, exactOutput: true }),
+    });
+    for await (const phase of runTurn(session, verifyExactCtx(), task,
+      scope === "turn" ? { exactOutput: true } : {})) phases.push(phase);
+    // The check ran: one request, a tool-backed review, no request for a new answer.
+    expect(requests).toHaveLength(4);
+    expect(lastUserText(requests[2] ?? [])).toContain('<completion_gate round="1" of="3">');
+    expect(lastUserText(requests[2] ?? [])).toContain("the caller receives your earlier final answer unchanged");
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial", round: 1 }),
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", round: 1 }),
+    ]);
+    for (const payload of gatePayloads(events)) {
+      expect(isCanonicalEventPayload("completion_gate", payload)).toBe(true);
+    }
+    expectCompletedTurn(events);
+    // The final answer is the model's own answer, byte for byte; the review is internal.
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(exact);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", content: exact, stopReason: "completed" });
+    expect(state.history).toContainEqual(expect.objectContaining({ role: "assistant", content: review }));
+    // No event kind beyond what the same gated turn emits with text output.
+    const text = scriptedProvider([toolStep("work-1"), textStep(exact), toolStep("verify-1"), textStep(review)]);
+    const textRun = headlessSession(text.provider, true);
+    await drain(runTurn(textRun.session, mkCtx(), task));
+    const textTypes = new Set(textRun.events.map(event => event.msg.type));
+    expect([...new Set(events.map(event => event.msg.type))].filter(type => !textTypes.has(type))).toEqual([]);
+    const textTerminal = textRun.events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(textTerminal?.message).toBe(review);
+  });
+
+  test.each(["turn", "session"] as const)("completion_gate.exact_output = skip keeps %s exact output unchecked", async (scope) => {
+    const task = "Read the file and report its values.";
+    const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
+    const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep(exact)]);
+    const { session, events } = headlessSession(provider, true);
+    const phases = [];
+    if (scope === "session") Object.assign(session.services, {
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, exactOutput: true }),
+    });
+    const ctx = mkCtx();
+    const skip = { ...ctx, config: { ...(ctx.config as Record<string, unknown>), completionGate: { exact_output: "skip" } } } as typeof ctx;
+    for await (const phase of runTurn(session, skip, task,
+      scope === "turn" ? { exactOutput: true } : {})) phases.push(phase);
+    expect(requests).toHaveLength(2);
+    expect(gatePayloads(events)).toEqual([]);
+    expectCompletedTurn(events);
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(exact);
+  });
+
+  test("an exact-output review that says the answer changed ends with the corrected answer", async () => {
+    const task = "Count the TODO lines in /app/out.txt and reply with JSON only.";
+    const first = '{"count":12}';
+    const corrected = '{"count":13}';
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"), textStep(first), toolStep("verify-1"),
+      textStep("- [ ] count: completion_probe on /app/out.txt shows 13, not 12\n<final_answer_changed/>"),
+      toolStep("verify-2"),
+      textStep("- [x] count 13: completion_probe on /app/out.txt\n<final_answer_changed/>"),
+      textStep(corrected),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    await drain(runTurn(session, verifyExactCtx(), task, { exactOutput: true }));
+    expect(requests).toHaveLength(7);
+    expect(lastUserText(requests[6] ?? [])).toContain('<completion_gate final_answer="requested">');
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial", round: 1 }),
+      expect.objectContaining({ outcome: "injected", reason: "unmet_items", round: 2 }),
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", round: 2 }),
+    ]);
+    expectCompletedTurn(events);
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(corrected);
+  });
+
+  test("an exact-output turn whose review uses up its samples completes with the held answer", async () => {
+    const exact = '{"ok":true}';
+    const { provider, requests } = scriptedProvider([
+      toolStep("work"), textStep(exact),
+      ...Array.from({ length: 10 }, (_, i) => toolStep(`verify-${i}`)),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    const phases: PhaseEvent[] = [];
+    for await (const phase of runTurn(session, verifyExactCtx(), TASK, { exactOutput: true })) phases.push(phase);
+    expect(requests).toHaveLength(8); // two work samples plus six gate samples
+    expect(gateWarnings(events).at(-1)?.message).toContain("sample limit");
+    expectCompletedTurn(events);
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(exact);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", content: exact, stopReason: "completed" });
   });
 
   test.each([
@@ -672,6 +830,7 @@ describe("completion gate in the turn loop", () => {
     const state = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateRound");
     state.completionGateRound = 2;
+    state.completionGateSampleStart = 7;
     expect(toCheckpointSlice(state).completionGateRound).toBe(2);
     // The last request is runtime-only: a resumed turn asks once more.
     state.completionGateLastRequest = { reason: "no_checklist", unmetItems: [], unlinkedItems: [] };
@@ -680,6 +839,7 @@ describe("completion gate in the turn loop", () => {
     const restored = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     restoreFromCheckpoint(restored, { ...toCheckpointSlice(state), completionGateRound: 2 });
     expect(restored.completionGateRound).toBe(2);
+    expect(restored.completionGateSampleStart).toBe(7);
   });
 
   test("the event schema rejects a payload without its required fields", () => {

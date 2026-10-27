@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { secureStorageIdentityKey } from './home.js'
 import type { HomeContext } from '../../config/home.js'
 import { createMacOsKeychainStorage } from './macOsKeychainStorage.js'
 import { createLinuxSecretStorage } from './linuxSecretStorage.js'
@@ -206,6 +208,38 @@ const unavailableSecureStorage: SecureStorage = {
   delete: () => true,
 }
 
+const displayReads = new AsyncLocalStorage<{ identity: string; storage: SecureStorage; active: boolean }>()
+
+/** One atomic credential read for a synchronous UI projection, never for later actions. */
+export function withSecureStorageDisplaySnapshot<T>(home: HomeContext, operation: () => T): T {
+  const identity = secureStorageIdentityKey(home)
+  const parent = displayReads.getStore()
+  if (parent?.active && parent.identity === identity) return operation()
+  const storage = getSecureStorage(home)
+  let outcome: { ok: true; data: SecureStorageData | null } | { ok: false; error: unknown } | undefined
+  const scope = { identity, storage, active: true }
+  const read = (): SecureStorageData | null => {
+    if (!scope.active) return storage.read()
+    if (outcome === undefined) {
+      try { outcome = { ok: true, data: storage.read() } }
+      catch (error) { outcome = { ok: false, error } }
+    }
+    if (!outcome.ok) throw outcome.error
+    return outcome.data === null ? null : structuredClone(outcome.data)
+  }
+  scope.storage = {
+    ...storage,
+    read,
+    readAsync: async () => read(),
+    // Locked authorization, migration and mutation preconditions stay fresh.
+    readFresh: () => (storage.readFresh ?? storage.read)(),
+    update: data => { try { return storage.update(data) } finally { outcome = undefined } },
+    delete: () => { try { return storage.delete() } finally { outcome = undefined } },
+  }
+  try { return displayReads.run(scope, operation) }
+  finally { scope.active = false; outcome = undefined }
+}
+
 /**
  * Get the native secure storage implementation for the current platform.
  * AgenC never falls back to a plaintext credential file during ordinary
@@ -214,6 +248,8 @@ const unavailableSecureStorage: SecureStorage = {
 export function getSecureStorage(
   home: HomeContext,
 ): SecureStorage {
+  const scope = displayReads.getStore()
+  if (scope?.active && scope.identity === secureStorageIdentityKey(home)) return scope.storage
   if (process.platform === 'darwin') {
     return createMacOsKeychainStorage(home)
   }

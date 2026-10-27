@@ -14,7 +14,8 @@ function goal(overrides: Partial<SessionGoal> = {}): SessionGoal {
   return {
     id: "g", objective: "npm test passes after adding clear()", verification: [{ label: "tests", script: "npm test" }], criteria: [],
     constraints: [GOAL_INTEGRITY_CONSTRAINT], budget: { maxRounds: 4 }, status: "active", rounds: 0, stalledRounds: 0,
-    startedAt: "2026-09-19T00:00:00.000Z", startCostUsd: 0, baseCommit: "abc1234", ...overrides,
+    startedAt: "2026-09-19T00:00:00.000Z", startCostUsd: 0, baseCommit: "abc1234",
+    worktreeBaseline: { version: 1, trackedChanges: [], untrackedFiles: [] }, ...overrides,
   };
 }
 const pass: GoalVerificationResult = { label: "tests", script: "npm test", exitCode: 0, timedOut: false, durationMs: 5, excerpt: "4 passed" };
@@ -55,6 +56,16 @@ beforeEach(() => {
 afterEach(() => restore());
 
 describe("goalGate", () => {
+  test("a restored legacy goal warns and preserves the conservative integrity check", async () => {
+    const f = fixture(goal({ worktreeBaseline: undefined }));
+    deps.changedPaths.mockResolvedValueOnce(["test/existing.test.js"]);
+    await goalGate(f.state, f.ctx, f.session);
+    expect(deps.changedPaths).toHaveBeenCalledWith("/repo", "abc1234", undefined);
+    expect(f.causes()).toEqual(["goal_worktree_baseline_unavailable", "goal_met"]);
+    expect(deps.judge.mock.calls[0]?.[0].userMessage).toContain("test/existing.test.js");
+    expect(deps.judge.mock.calls[0]?.[0].userMessage).toContain("which may predate the goal");
+  });
+
   test("does nothing, and leaves Phase 4b in charge, when no goal is active", async () => {
     for (const g of [undefined, goal({ status: "paused" }), goal({ status: "met" })]) {
       const f = fixture(g);

@@ -37,6 +37,7 @@ export function createLinuxSandboxCommandArgsForPermissionProfile(
   sessionTempRoot: string,
   inheritedReadOnlyCwd = false,
   boundReadOnlyCwd?: BoundReadOnlyCwdIdentity,
+  allowLocalBinding = false,
 ): string[] {
   const args = [
     ...(inheritedReadOnlyCwd
@@ -54,6 +55,7 @@ export function createLinuxSandboxCommandArgsForPermissionProfile(
   ];
   if (boundReadOnlyCwd !== undefined) args.push("--bound-readonly-cwd-identity", JSON.stringify(boundReadOnlyCwd));
   if (allowNetworkForProxyValue) args.push("--allow-network-for-proxy");
+  if (allowLocalBinding) args.push("--allow-local-binding");
   args.push("--", ...command);
   return args;
 }

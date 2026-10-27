@@ -36,10 +36,12 @@ export {
 } from "./marketplace-cli.js";
 
 export interface CreateProtocolTransportOptions {
-  /** Base dir for the `node_modules/.bin` fallback (default `process.cwd()`). */
+  /** Working directory of the spawned binary. It is never searched for the binary. */
   readonly cwd?: string;
   /** Env snapshot consulted for `AGENC_MARKETPLACE_CLI` (default `process.env`). */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Home directory holding the installer's `.agenc/bin` (default `os.homedir()`). */
+  readonly homeDir?: string;
 }
 
 export function createProtocolTransport(
@@ -50,5 +52,6 @@ export function createProtocolTransport(
     cliPath: config.cli_path,
     cwd: opts.cwd,
     env: opts.env,
+    ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
   });
 }

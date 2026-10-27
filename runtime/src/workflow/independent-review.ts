@@ -88,7 +88,7 @@ export function extractBlockers(review: ReviewOutput): readonly string[] {
   }
   if (review.overallCorrectness.toLowerCase() === "incorrect") {
     blockers.push(
-      `reviewer overall verdict: incorrect — ${review.overallExplanation.slice(0, 200)}`,
+      `reviewer overall verdict: incorrect: ${review.overallExplanation.slice(0, 200)}`,
     );
   }
   return blockers;

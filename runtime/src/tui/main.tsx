@@ -20,6 +20,8 @@ import type { Event } from "../session/event-log.js";
 import { FpsTracker } from "../utils/fpsTracker.js";
 import { recordTuiBackpressure } from "./backpressure.js";
 import { setIsInteractive } from "../bootstrap/state.js";
+import { hasPendingResumeSession } from "./pending-resume.js";
+import { startCapturingEarlyInput, isCapturingEarlyInput } from "../utils/earlyInput.js";
 import { TuiTeardownBarrier } from "./teardownBarrier.js";
 
 export interface StdinLossSession extends AgenCBridgeSession {
@@ -48,6 +50,12 @@ export interface BootTUIOptions {
   readonly initialPrompt?: string;
   readonly initialUserMessages?: AgenCTuiProps["initialUserMessages"];
   readonly initialComposerText?: string;
+  /**
+   * Runs after the teardown barrier when the terminal went away (stdin closed
+   * or failed) and before the process exits, so the session owner can retire
+   * what its ordinary close would retire.
+   */
+  readonly beforeTerminalLossExit?: () => Promise<void>;
 }
 
 export interface BootTUIHandle {
@@ -202,7 +210,12 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
           unmountRef?.();
         } catch {}
       },
-      { beforeExit: () => teardownBarrier.drain() },
+      {
+        beforeExit: async () => {
+          await teardownBarrier.drain();
+          await options.beforeTerminalLossExit?.();
+        },
+      },
     );
   };
   stdin.once("close", onStdinLoss);
@@ -236,6 +249,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         patchConsole: true,
         exitOnCtrlC: false,
         stdinMode: options.stdinMode,
+        shouldPreserveInputOnExit: () => !firedStdinLoss && hasPendingResumeSession(),
         onFrame: (event) => {
           fpsTracker.record(event.durationMs);
           if (event.durationMs >= RENDER_BACKPRESSURE_THRESHOLD_MS) {
@@ -261,6 +275,16 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
       instance.unmount();
     } catch {}
   };
+  // Own orderly termination while the TUI is mounted so signal-exit cannot
+  // end the process before the existing awaitable teardown has flushed drafts.
+  const onTerminate = (): void => { unmountRef?.(); };
+  // Keep our listener present through signal-exit's remaining listeners too.
+  // A once-handler disappears before invocation and can be mistaken for an
+  // unhandled signal while asynchronous draft persistence is still pending.
+  process.on("SIGTERM", onTerminate);
+  // Closing the terminal window sends SIGHUP. Take the same orderly teardown
+  // instead of signal-exit's immediate exit, which skipped the session close.
+  process.on("SIGHUP", onTerminate);
   let waitPromise: Promise<void> | null = null;
   return {
     unmount: unmountRef,
@@ -269,12 +293,22 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         waitPromise = (async () => {
           try {
             await instance.waitUntilExit();
+            // Ink has released stdin. Keep new typing through teardown and
+            // the next session's attach, instead of handing it to an empty UI.
+            if (!firedStdinLoss && hasPendingResumeSession()) {
+              startCapturingEarlyInput();
+              // Ink is unmounted, so write outside its frame before awaiting
+              // editor teardown, session detach, or the replacement attach.
+              stdout.write("\r\x1b[2KResuming selected session...\n");
+            }
             await teardownBarrier.drain();
           } finally {
+            process.removeListener("SIGTERM", onTerminate);
+            process.removeListener("SIGHUP", onTerminate);
             stdin.removeListener("close", onStdinLoss);
             stdin.removeListener("end", onStdinLoss);
             stdin.removeListener("error", onStdinLoss);
-            releaseStartupRawMode?.();
+            if (!isCapturingEarlyInput()) releaseStartupRawMode?.();
             unsubscribeExit();
             restoreTerminal(stdout);
           }

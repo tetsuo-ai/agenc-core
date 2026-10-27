@@ -1051,7 +1051,7 @@ export const connectToServer = memoize(
           name: 'agenc-code',
           title: 'AgenC',
           version: MACRO.VERSION ?? 'unknown',
-          description: 'AgenC — coding-agent CLI for any LLM provider',
+          description: 'AgenC: coding-agent CLI for any LLM provider',
           websiteUrl: PRODUCT_URL,
         },
         {

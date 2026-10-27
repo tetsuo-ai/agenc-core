@@ -617,6 +617,7 @@ describe("UnifiedExecProcessManager", () => {
         }),
       ).rejects.toMatchObject({
         code: "stdin_closed",
+        message: "This session cannot receive input. Stop it with kill_process and this session_id, poll output with write_stdin and empty chars, or rerun with tty=true if the command needs input.",
       } satisfies Partial<UnifiedExecError>);
 
       const polled = await manager.writeStdin({
@@ -717,7 +718,7 @@ describe("UnifiedExecProcessManager", () => {
     10_000,
   );
 
-  test("rejects restricted write_stdin for a non-sandboxed PTY session", async () => {
+  test("polls approved unsandboxed output without another escalation but rejects restricted input", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
     const permissionProfile = permissionProfileFromRuntimePermissions(
       restrictedFileSystemPolicy(),
@@ -741,9 +742,7 @@ describe("UnifiedExecProcessManager", () => {
             preference: "require",
           },
         }),
-      ).rejects.toMatchObject({
-        code: "write_stdin",
-      } satisfies Partial<UnifiedExecError>);
+      ).resolves.toMatchObject({ process_id: started.process_id });
 
       await expect(
         manager.writeStdin({
@@ -803,7 +802,7 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test("rejects write_stdin when sandbox-affecting fields differ", async () => {
+  test("rejects stdin writes when sandbox-affecting fields differ", async () => {
     const permissionProfile = permissionProfileFromRuntimePermissions(
       restrictedFileSystemPolicy(),
       "enabled",
@@ -831,7 +830,7 @@ describe("UnifiedExecProcessManager", () => {
       await expect(
         manager.writeStdin({
           session_id: sessionId,
-          chars: "",
+          chars: "printf denied\\n\n",
           yield_time_ms: 250,
           runtimeSandbox: {
             ...runtimeSandbox,
@@ -844,7 +843,7 @@ describe("UnifiedExecProcessManager", () => {
       await expect(
         manager.writeStdin({
           session_id: sessionId,
-          chars: "",
+          chars: "printf denied\\n\n",
           yield_time_ms: 250,
           runtimeSandbox: {
             ...runtimeSandbox,
@@ -857,7 +856,7 @@ describe("UnifiedExecProcessManager", () => {
       await expect(
         manager.writeStdin({
           session_id: sessionId,
-          chars: "",
+          chars: "printf denied\\n\n",
           yield_time_ms: 250,
           runtimeSandbox: {
             ...runtimeSandbox,
@@ -870,7 +869,7 @@ describe("UnifiedExecProcessManager", () => {
       await expect(
         manager.writeStdin({
           session_id: sessionId,
-          chars: "",
+          chars: "printf denied\\n\n",
           yield_time_ms: 250,
           runtimeSandbox: {
             ...runtimeSandbox,

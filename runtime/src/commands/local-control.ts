@@ -4,6 +4,9 @@ import { parseSlashCommand, type ParsedSlashCommand } from "./dispatcher.js";
 export function parseLocalControlCommand(input: string): ParsedSlashCommand | null {
   const parsed = parseSlashCommand(input);
   if (parsed === null || parsed.isMcp) return null;
+  if (parsed.name === "goal") {
+    return ["", "status", "pause", "clear", "stop", "off", "cancel", "reset", "none"].includes(parsed.argsRaw.toLowerCase()) ? parsed : null;
+  }
   if (parsed.name === "swarm") {
     return parsed.argsRaw === "" || parsed.argsRaw.toLowerCase() === "status" ? parsed : null;
   }

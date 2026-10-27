@@ -9,6 +9,10 @@
  */
 
 import { createConnection } from "node:net";
+import {
+  createStartupRestoreWait,
+  STARTUP_RESTORE_PROGRESS_METHOD,
+} from "./startup-restore-progress.js";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
@@ -201,9 +205,17 @@ const MAX_DAEMON_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
 // tools, approvals, or collaboration workers make progress. Explicit aborts,
 // request.cancel, socket closure, and daemon shutdown still terminate them.
 const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> = new Set([
+  // Large cold resumes include source validation and runtime restoration.
+  // The daemon's bounded scans, cancellation and socket lifetime own this
+  // operation; a 30s client timer must not abandon a legitimate load.
+  "agent.create",
   // Both message methods await the full daemon turn before responding.
   "message.send",
   "message.stream",
+  // Mode changes retain FIFO order with turns and ordinary writes. Their
+  // response can legitimately wait for the entire preceding turn, while
+  // cancellation stays available on the connection's control lane.
+  "session.setPermissionMode",
   // Compact and rewind can run model summarization over large transcripts.
   "session.partialCompactFromMessage",
   "session.rollbackCompaction",
@@ -1050,6 +1062,7 @@ function connectPersistentDaemonClient(
         readonly resolve: (value: unknown) => void;
         readonly reject: (error: Error) => void;
         readonly timeout: ReturnType<typeof setTimeout> | null;
+        readonly startupRestore?: (remaining: number) => void;
       }
     >();
     const sessionListeners = new Map<
@@ -1145,7 +1158,8 @@ function connectPersistentDaemonClient(
           const requestTimeoutMs = method === "initialize" && initializeDeadline !== undefined
             ? Math.max(1, initializeDeadline - Date.now())
             : pingTimeoutMs ?? requestTimeoutMsForMethod(method, timeoutMs);
-          const requestTimeout =
+          let requestTimeout: ReturnType<typeof setTimeout> | null = null;
+          const armRequestTimeout = () =>
             requestTimeoutMs === null
               ? null
               : setTimeout(() => {
@@ -1161,18 +1175,40 @@ function connectPersistentDaemonClient(
                     ),
                   );
                 }, requestTimeoutMs);
+          requestTimeout = armRequestTimeout();
+          const restoreWait = createStartupRestoreWait({
+            write: line => { process.stderr.write(line); },
+            timedOut: () => {
+              sendCancel("startup session restore timeout");
+              pending.delete(id);
+              removeAbortListener?.();
+              requestReject(new Error(
+                "Timed out reopening the session after 120 seconds. Try resuming it again.",
+              ));
+            },
+          });
           pending.set(id, {
             resolve: (value) => {
+              restoreWait.close();
               if (requestTimeout !== null) clearTimeout(requestTimeout);
               removeAbortListener?.();
               requestResolve(value);
             },
             reject: (error) => {
+              restoreWait.close();
               if (requestTimeout !== null) clearTimeout(requestTimeout);
               removeAbortListener?.();
               requestReject(error);
             },
-            timeout: requestTimeout,
+            get timeout() { return requestTimeout; },
+            startupRestore: (remaining) => {
+              const state = restoreWait.update(remaining);
+              if (state === undefined) return;
+              if (requestTimeout !== null) clearTimeout(requestTimeout);
+              // Restore waiting has its own bound. Once it finishes, turns
+              // retain their existing unbounded execution/cancellation rules.
+              requestTimeout = state === "finished" ? armRequestTimeout() : null;
+            },
           });
           options.signal?.addEventListener("abort", sendAbortCancel, {
             once: true,
@@ -1302,6 +1338,7 @@ function handlePersistentDaemonMessage(
       readonly resolve: (value: unknown) => void;
       readonly reject: (error: Error) => void;
       readonly timeout: ReturnType<typeof setTimeout> | null;
+      readonly startupRestore?: (remaining: number) => void;
     }
   >,
   sessionListeners: Map<string, Set<(event: JsonObject) => void>>,
@@ -1310,6 +1347,14 @@ function handlePersistentDaemonMessage(
 ): void {
   const message = JSON.parse(line) as JsonValue;
   if (!isJsonObject(message)) return;
+  if (message.method === STARTUP_RESTORE_PROGRESS_METHOD && isRecord(message.params)) {
+    const { requestId, remaining } = message.params;
+    if ((typeof requestId === "string" || typeof requestId === "number") &&
+        typeof remaining === "number" && Number.isSafeInteger(remaining) && remaining >= 0) {
+      pending.get(requestId)?.startupRestore?.(remaining);
+    }
+    return;
+  }
   if (typeof message.id === "string" || typeof message.id === "number") {
     const waiter = pending.get(message.id);
     if (waiter === undefined) return;

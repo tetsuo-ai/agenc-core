@@ -34,6 +34,8 @@ import {
   type SessionConfiguration,
   type SessionForTurn,
 } from "./turn-context.js";
+import { runtimeSandboxForExec } from "../../src/tools/system/exec-command.js";
+import { attachToolRuntimeContext } from "../../src/tools/runtimes/context.js";
 import type { LLMProvider } from "../llm/types.js";
 import { defaultConfig, type AgenCConfig } from "../../src/config/schema.js";
 import { resolveProfile } from "../../src/config/profiles.js";
@@ -127,6 +129,42 @@ function mkProvider(): LLMProvider {
     }),
   } as unknown as LLMProvider;
 }
+
+describe("reasoning summary default provenance", () => {
+  test.each([undefined, "none", "auto"] as const)("preserves whether %s was explicitly selected", (summary) => {
+    const provider = { ...mkProvider(), name: "openai" } as LLMProvider;
+    const sc: SessionConfiguration = {
+      ...mkSessionConfiguration(),
+      collaborationMode: { model: "gpt-6-luna", reasoningEffort: "max" },
+      ...(summary !== undefined ? { modelReasoningSummary: summary } : {}),
+    };
+    const ctx = buildTurnContext({
+      config: { ...mkConfig(), model: "gpt-6-luna" },
+      sessionConfiguration: sc,
+      modelInfo: {
+        ...mkModelInfo(), slug: "gpt-6-luna", defaultReasoningSummary: "none",
+        supportedReasoningLevels: ["none", "low", "medium", "high", "max"],
+      },
+      provider,
+      subId: "summary-default-test",
+      conversationId: "summary-default-conversation",
+    });
+    expect(ctx.reasoningSummary).toBe(summary ?? "none");
+    expect(ctx.reasoningSummaryIsDefault).toBe(summary === undefined ? true : undefined);
+    const messages = [{ role: "user" as const, content: "solve" }];
+    const options = buildProviderOptions({
+      input: messages, tools: [], baseInstructions: "", maxOutputTokens: 8192,
+    }, ctx, new AbortController().signal, {
+      services: { provider }, sessionConfiguration: sc,
+    } as unknown as Session);
+    const wire = buildOpenAIResponsesRequest({
+      model: "gpt-6-luna", messages, tools: [], options, reasoningReplayProvider: "openai",
+    });
+    expect(wire.reasoning).toEqual({
+      effort: "max", ...(summary === "auto" ? { summary: "auto" } : {}),
+    });
+  });
+});
 
 function mkNetworkProxy(): NetworkProxy {
   return {
@@ -852,4 +890,51 @@ describe("configured response detail reaches provider requests", () => {
       expect(JSON.stringify(result.wire)).toContain("Concise: keep every user-facing message short.");
     }
   });
+});
+
+
+test("projects the local binding authority onto the real turn consumed by command tools", () => {
+  const config = { ...mkConfig(), agencLinuxSandboxExe: "/bin/true" };
+  for (const allowLocalBinding of [undefined, false, true]) {
+    const sessionConfiguration = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), sandbox: { network: { allowLocalBinding } } },
+      workspaceRoot: "/tmp", model: "test-model",
+    });
+    const turn = buildTurnContext({
+      conversationId: "local-binding-config", subId: "local-binding-turn", config,
+      modelInfo: mkModelInfo(), provider: mkProvider(), sessionConfiguration,
+    });
+    expect(turn.sandboxAllowLocalBinding).toBe(allowLocalBinding === true ? true : undefined);
+    expect(turn.config).not.toHaveProperty("sandboxAllowLocalBinding");
+    const args = {};
+    attachToolRuntimeContext(args, {
+      callId: "local-binding-config", toolName: "exec_command",
+      sandboxMode: "workspace_write", requestedSandboxMode: "workspace_write", approvalPolicy: "on_request",
+      invocation: { turn, session: { services: { runtimeOptions: { sessionTempRoot: "/tmp" } } } },
+    } as never);
+    expect(runtimeSandboxForExec(args, "/tmp")?.network?.allowLocalBinding).toBe(allowLocalBinding === true ? true : undefined);
+  }
+});
+
+test("projects persistent sandbox opt-out onto the real turn consumed by command tools", () => {
+  const config = { ...mkConfig(), agencLinuxSandboxExe: "/bin/true" };
+  for (const persistentSession of [undefined, false, true]) {
+    const sessionConfiguration = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), sandbox: { persistent_session: persistentSession } },
+      workspaceRoot: "/tmp", model: "test-model",
+    });
+    const turn = buildTurnContext({
+      conversationId: "persistent-config", subId: "persistent-turn", config,
+      modelInfo: mkModelInfo(), provider: mkProvider(), sessionConfiguration,
+    });
+    expect(turn.sandboxPersistentSession).toBe(persistentSession === false ? false : undefined);
+    expect(turn.config).not.toHaveProperty("sandboxPersistentSession");
+    const args = {};
+    attachToolRuntimeContext(args, {
+      callId: "persistent-config", toolName: "exec_command",
+      sandboxMode: "workspace_write", requestedSandboxMode: "workspace_write", approvalPolicy: "on_request",
+      invocation: { turn, session: { services: { runtimeOptions: { sessionTempRoot: "/tmp" } } } },
+    } as never);
+    expect(runtimeSandboxForExec(args, "/tmp")?.persistentSession).toBe(persistentSession === false ? false : undefined);
+  }
 });

@@ -543,6 +543,12 @@ const SECRET_PATTERNS: ReadonlyArray<{
     replacement: REDACTED_SECRET,
   },
   {
+    // abliteration.ai project keys: `ak_` and 43 URL-safe base64 characters.
+    // The long tail keeps ordinary `ak_` identifiers visible.
+    pattern: /(?<![A-Za-z0-9_-])ak_[A-Za-z0-9_-]{40,}(?=$|[^A-Za-z0-9_-])/g,
+    replacement: REDACTED_SECRET,
+  },
+  {
     pattern: /(?<![A-Za-z0-9_])(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}(?=$|[^A-Za-z0-9_])/g,
     replacement: REDACTED_SECRET,
   },
@@ -655,7 +661,7 @@ export function redactSecrets(input: string): string {
 
 /** Redacts strings inside JSON-like artifacts without mutating the original value. */
 export function redactSecretsInValue<T>(value: T): T {
-  return redactValue(value, new WeakMap<object, unknown>()) as T;
+  return redactValue(value, createRedactionSeen()) as T;
 }
 
 
@@ -690,37 +696,49 @@ export function createMemoizedSecretRedactor(): typeof redactSecretsInValue {
     return output;
   };
   return <T>(value: T): T =>
-    redactValue(value, new WeakMap<object, unknown>(), redactString) as T;
+    redactValue(value, createRedactionSeen(), redactString) as T;
+}
+
+function createRedactionSeen() {
+  // A shared object can occur under both an ordinary and a sensitive key.
+  // Keep separate projections so the ordinary traversal cannot exempt its
+  // sensitive occurrence from credential-value redaction.
+  return { ordinary: new WeakMap<object, unknown>(), sensitive: new WeakMap<object, unknown>() };
 }
 
 function redactValue(
   value: unknown,
-  seen: WeakMap<object, unknown>,
+  seen: ReturnType<typeof createRedactionSeen>,
   redactString: (input: string) => string = redactSecrets,
+  sensitive = false,
 ): unknown {
-  if (typeof value === "string") return redactString(value);
-  if (value === null || typeof value !== "object") return value;
+  // Flags such as request_user_input.isSecret are protocol structure, not
+  // credentials. Preserve their type even when their field name matches.
+  if (value === null || value === undefined || typeof value === "boolean") return value;
+  if (typeof value === "string") return sensitive ? REDACTED_SECRET : redactString(value);
+  if (typeof value !== "object") return sensitive ? REDACTED_SECRET : value;
+  // Numeric key material retains the existing whole-value mask. Containers
+  // of typed fields are traversed instead of being replaced by a string.
+  if (sensitive && Array.isArray(value) && value.length > 0 &&
+      value.every(item => typeof item === "number")) return REDACTED_SECRET;
 
-  const existing = seen.get(value);
+  const contextSeen = sensitive ? seen.sensitive : seen.ordinary;
+  const existing = contextSeen.get(value);
   if (existing !== undefined) return existing;
 
   if (Array.isArray(value)) {
     const output: unknown[] = [];
-    seen.set(value, output);
+    contextSeen.set(value, output);
     for (const item of value) {
-      output.push(redactValue(item, seen, redactString));
+      output.push(redactValue(item, seen, redactString, sensitive));
     }
     return output;
   }
 
   const output: Record<string, unknown> = {};
-  seen.set(value, output);
+  contextSeen.set(value, output);
   for (const [key, nested] of Object.entries(value)) {
-    if (isSensitiveKey(key) && nested !== null && nested !== undefined) {
-      output[key] = REDACTED_SECRET;
-      continue;
-    }
-    output[key] = redactValue(nested, seen, redactString);
+    output[key] = redactValue(nested, seen, redactString, sensitive || isSensitiveKey(key));
   }
   return output;
 }
@@ -742,6 +760,8 @@ function isSensitiveKey(key: string): boolean {
     normalized.endsWith("secretaccesskey") ||
     normalized.endsWith("secretkey") ||
     normalized.endsWith("accesskeyid") ||
+    // abliteration.ai documents its key as ABLIT_KEY, which matches no other rule.
+    normalized === "ablitkey" ||
     normalized === "password" ||
     normalized.endsWith("password") ||
     normalized.endsWith("passwordvalue") ||

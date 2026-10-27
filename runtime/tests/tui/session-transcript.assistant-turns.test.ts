@@ -31,6 +31,19 @@ function assistantRows(transcript: AdaptedTranscript): readonly { readonly uuid:
 const answer = [{ type: "text", text: "Done." }];
 
 describe.each<InputMode>(["replay", "live", "batch"])("assistant output correlation through %s input", mode => {
+  it.each(["assistant_text", "agent_message_delta"])("renders %s before the following tool row", type => {
+    const transcript = project([
+      event("start", "turn_started", { turnId: "turn" }),
+      event("text", type, { content: "Exploring files.", delta: "Exploring files." }),
+      event("tool", "tool_call_started", { callId: "call", toolName: "Read", input: { file_path: "a.ts" } }),
+      event("done", "turn_complete", { turnId: "turn", lastAgentMessage: "Exploring files." }),
+    ], mode);
+    const rows = assistantRows(transcript);
+    expect(rows[0]?.content).toEqual([{ type: "text", text: "Exploring files." }]);
+    expect(JSON.stringify(rows[1]?.content)).toContain('"tool_use"');
+    expect(rows).toHaveLength(2);
+  });
+
   it.each(["turn_start", "turn_started"])("preserves identical answers with distinct %s, event, and message identities", startType => {
     const events = [1, 2].flatMap(turn => [
       event(`start-${turn}`, startType, { turnId: `turn-${turn}` }),

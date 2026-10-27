@@ -17,10 +17,13 @@ import type { Session } from "../session/session.js";
 
 function stubSession(opts: {
   availableSkills?: ReadonlyArray<{ readonly name: string }>;
+  config?: Record<string, unknown>;
+  toolPolicy?: unknown;
 }): Session {
   return {
-    config: { model: "test" },
+    config: opts.config ?? { model: "test" },
     services: {
+      registry: opts.toolPolicy === undefined ? {} : { toolPolicy: opts.toolPolicy },
       skillsManager: {
         skillsForConfig: async () => ({
           invokedSkills: [],
@@ -45,7 +48,6 @@ describe("/skills bundled skill listing", () => {
 
     const names = snapshot.availableSkills.map((skill) => skill.name);
     expect(names).toContain("browser-automation");
-    expect(names).toContain("agenc-marketplace-kit-installer");
     expect(
       snapshot.availableSkills.find(
         (skill) => skill.name === "browser-automation",
@@ -55,6 +57,39 @@ describe("/skills bundled skill listing", () => {
     const text = formatSkillsSnapshot(snapshot, { showAll: true });
     expect(text).toContain("$browser-automation");
     expect(text).toMatch(/\$browser-automation - .+ \[bundled\]/);
+  });
+
+  it("keeps the kit installer out of the listing until the marketplace is enabled", async () => {
+    const { collectSkillsSnapshot } = await import("./skills.js");
+    const names = async (config: Record<string, unknown>) =>
+      (await collectSkillsSnapshot(stubSession({ config }))).availableSkills.map(
+        (skill) => skill.name,
+      );
+
+    expect(await names({ model: "test" })).not.toContain("agenc-marketplace-kit-installer");
+    expect(await names({ protocol: { enabled: false } })).not.toContain(
+      "agenc-marketplace-kit-installer",
+    );
+    expect(
+      await names({ protocol: { enabled: true, adapter: "marketplace-cli" } }),
+    ).toContain("agenc-marketplace-kit-installer");
+  });
+
+  it("lists only the bundled skills a toolPolicy enables, and never the installer", async () => {
+    const { collectSkillsSnapshot } = await import("./skills.js");
+    const marketplaceOn = { protocol: { enabled: true, adapter: "marketplace-cli" } };
+    const names = async (toolPolicy: unknown) =>
+      (await collectSkillsSnapshot(stubSession({ toolPolicy, config: marketplaceOn }))).availableSkills
+        .filter((skill) => skill.loadedFrom === "bundled")
+        .map((skill) => skill.name);
+
+    expect(await names({ enabledTools: ["Skill", "Skill:browser-automation"] })).toEqual([
+      "browser-automation",
+    ]);
+    expect(await names({ enabledTools: ["Skill"] })).toEqual([]);
+    expect(
+      await names({ enabledTools: ["Skill", "Skill:agenc-marketplace-kit-installer"] }),
+    ).toEqual([]);
   });
 
   it("lets a local skill shadow a bundled skill with the same name", async () => {

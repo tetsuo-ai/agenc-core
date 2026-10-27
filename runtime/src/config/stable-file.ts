@@ -376,7 +376,9 @@ export async function ensurePrivateDescendantDirectory(
           "private directory changed identity while it was secured",
         );
       }
-      await handle.chmod(0o700);
+      // Windows directory handles do not support fchmod or POSIX mode bits.
+      // Keep the handle/path identity checks on every platform.
+      if (process.platform !== "win32") await handle.chmod(0o700);
       const afterChmod = await handle.stat({ bigint: true });
       const afterPath = await lstatBigIntOrMissing(canonicalPath);
       if (

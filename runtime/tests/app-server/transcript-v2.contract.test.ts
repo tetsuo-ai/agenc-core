@@ -43,6 +43,21 @@ function settingsEvent(
 }
 
 describe("session.transcript.v2 durable projection", () => {
+  it("keeps pending effect context across transcript boundaries and reattachment", async () => {
+    const { daemonTranscriptSnapshotEvents } = await import("../../src/tui/daemon-transcript-snapshot.js");
+    const items: RolloutItem[] = [
+      event(1, "call", { type: "tool_call_started", payload: { callId: "call-browser", toolName: "Browser", args: JSON.stringify({ action: "navigate", url: "http://127.0.0.1:4173" }) } }),
+      event(2, "unknown", { type: "effect_unknown_outcome", payload: { runId: "run-1", stepId: "step-1", callId: "call-browser", toolName: "Browser", recoveryCategory: "interactive", intentEventSeq: 1, outcome: "unknown_outcome", reason: "tool_error_result_without_authoritative_effect_disposition", requiresReview: true, recordedAt: "2026-10-15T00:00:00Z" } }),
+      event(3, "error", { type: "tool_call_completed", payload: { callId: "call-browser", result: "Chrome crashed at launch", isError: true } }),
+      event(4, "clear", { type: "history_cleared", payload: {} }),
+    ];
+    const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
+    expect(snapshot.pendingEffectReviews).toEqual([{ sessionId: "run-1", callId: "call-browser", toolName: "Browser", description: "navigate http://127.0.0.1:4173", error: "Chrome crashed at launch" }]);
+    expect(daemonTranscriptSnapshotEvents(snapshot, "session-1")).toContainEqual(expect.objectContaining({
+      type: "effect_reviews_snapshot", payload: { reviews: snapshot.pendingEffectReviews },
+    }));
+  });
+
   it("keeps a shutdown notice and the resumed completion on the original turn", () => {
     const items: RolloutItem[] = [
       event(1, "user", { type: "user_message", payload: { message: "Write twelve files", messageId: "client-1" } }),

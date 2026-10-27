@@ -200,14 +200,14 @@ describe("createTuiTool('FileRead').renderToolResultMessage — end-to-end dispa
     expect((node as { type: unknown }).type).toBe(FileReadView);
   });
 
-  test("'Read' (the wrong pre-seeded name) is not registered in the TUI dispatch table — even with the right envelope it falls through to generic", () => {
+  test("the exact Read compatibility alias routes its envelope to FileReadView", () => {
     const tool = createTuiTool("Read");
     const node = tool.renderToolResultMessage(
       "<read-content>x</read-content>",
       [],
       { verbose: false },
     );
-    expect((node as { type: unknown }).type).not.toBe(FileReadView);
+    expect((node as { type: unknown }).type).toBe(FileReadView);
   });
 
   test("FileReadView renders an 'N lines' result line using the line range", () => {
@@ -497,7 +497,7 @@ describe("Tool error cross-cutting dispatch", () => {
     expect(props.content).toContain("<tool-error-name>FileRead</tool-error-name>");
   });
 
-  test("createTuiTool().renderToolUseErrorMessage with an arbitrary plain object falls back to short JSON in the <tool-error> body (third branch — neither string nor Error instance)", () => {
+  test("createTuiTool().renderToolUseErrorMessage preserves error kind and code in plain text", () => {
     const tool = createTuiTool("Bash");
     const node = tool.renderToolUseErrorMessage({ code: 17, kind: "EEXIST" });
     expect((node as { type: unknown }).type).toBe(ToolErrorView);
@@ -505,6 +505,7 @@ describe("Tool error cross-cutting dispatch", () => {
     expect(props.content).toContain("<tool-error-name>Bash</tool-error-name>");
     expect(props.content).toContain("EEXIST");
     expect(props.content).toContain("17");
+    expect(props.content).not.toContain("{\"code\"");
   });
 
   test("createTuiTool().renderToolUseErrorMessage handles null without throwing", () => {

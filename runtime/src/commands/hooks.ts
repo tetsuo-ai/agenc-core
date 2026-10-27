@@ -32,7 +32,7 @@ function findHooksRuntime(ctx: SlashCommandContext): ConfiguredHooksRuntime | nu
  * daemon path (built from the `session.hooks.status` RPC snapshot), so the
  * rendering helpers stay path-agnostic.
  */
-interface HooksSnapshot {
+export interface HooksSnapshot {
   readonly sourcePath: string;
   readonly disabled: boolean;
   readonly hardSuppressed: boolean;
@@ -210,7 +210,7 @@ function metadataFor(event: HookEventName): {
   }
 }
 
-function formatOverview(snapshot: HooksSnapshot): string {
+function formatOverview(snapshot: HooksSnapshot, canTest = true): string {
   const hooks = snapshot.hooks;
   const grouped = groupHooksByEvent(hooks);
   const issues = snapshot.issues;
@@ -244,7 +244,7 @@ function formatOverview(snapshot: HooksSnapshot): string {
     }
   }
   lines.push("");
-  lines.push("Commands: /hooks show <event> [index], /hooks test <event> [index], /hooks diagnostics, /hooks enable, /hooks disable");
+  lines.push(`Commands: /hooks show <event> [index], ${canTest ? "/hooks test <event> [index], " : ""}/hooks diagnostics, /hooks enable, /hooks disable`);
   return lines.join("\n");
 }
 
@@ -339,6 +339,7 @@ async function handleDaemonHooksCommand(
   daemon: DaemonHooksFns,
   args: readonly string[],
   hardSuppressed: boolean,
+  ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
   const subcommand = (args[0] ?? "list").toLowerCase();
   if (subcommand === "test" || subcommand === "run") {
@@ -389,9 +390,11 @@ async function handleDaemonHooksCommand(
     case "list":
     case "show-all":
     case "overview":
-      // The interactive hooks menu requires a live ConfiguredHooksRuntime;
-      // on the daemon path render the text overview instead (menu deferred).
-      return { kind: "text", text: formatOverview(snapshot) };
+      if (ctx.argsRaw.trim().length === 0 &&
+          (await import("./hooks-menu.js")).openDaemonHooksMenu(ctx, snapshot)) {
+        return { kind: "skip" };
+      }
+      return { kind: "text", text: formatOverview(snapshot, false) };
     case "validate":
       return { kind: "text", text: renderValidate(snapshot) };
     case "diagnostics":
@@ -406,7 +409,7 @@ async function handleDaemonHooksCommand(
       return {
         kind: "error",
         message:
-          "Usage: /hooks [list|show|validate|enable|disable|test|diagnostics|clear-diagnostics]",
+          "Usage: /hooks [list|show|validate|enable|disable|diagnostics]",
       };
   }
 }
@@ -423,6 +426,7 @@ async function handleHooksCommand(
       daemon,
       args,
       ownerHooksHardSuppressed(ctx),
+      ctx,
     );
   }
   const runtime = findHooksRuntime(ctx);
@@ -500,7 +504,7 @@ async function handleHooksCommand(
 
 const hooksCommand: SlashCommand = {
   name: "hooks",
-  description: "Inspect and test AgenC hook configuration",
+  description: "Inspect AgenC hook configuration and diagnostics",
   supportedSurfaces: ["runtime", "daemon-tui"],
   immediate: true,
   execute: (ctx) => safeExecute(() => handleHooksCommand(ctx)),

@@ -1,3 +1,4 @@
+import { sideEffectFreeTool } from "../side-effect-free.js";
 /**
  * `Grep` — AgenC-owned ripgrep wrapper.
  *
@@ -94,8 +95,6 @@ import { bindWorkspaceDirectoryReadCapability, bindWorkspaceFileReadCapability }
 
 export const GREP_TOOL_NAME = "Grep";
 
-const BASH_TOOL_NAME = "system.bash";
-const AGENT_TOOL_NAME = "spawn_agent";
 
 const VCS_DIRECTORIES_TO_EXCLUDE = [
   ".git",
@@ -160,19 +159,11 @@ function operationTimedOutResult(): LimitedRipgrepResult {
   };
 }
 
-/** Verbatim adaptation of the donor Grep prompt. */
-const GREP_DESCRIPTION = `A powerful search tool built on ripgrep
-
-  Usage:
-  - ALWAYS use ${GREP_TOOL_NAME} for search tasks. NEVER invoke \`grep\` or \`rg\` as a ${BASH_TOOL_NAME} command. The ${GREP_TOOL_NAME} tool has been optimized for correct permissions and access.
-  - Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
-  - Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or type parameter (e.g., "js", "py", "rust")
-  - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
-  - Use ${AGENT_TOOL_NAME} tool for open-ended searches requiring multiple rounds
-  - Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use \`interface\\{\\}\` to find \`interface{}\` in Go code)
-  - Multiline matching: By default patterns match within single lines only. For cross-line patterns like \`struct \\{[\\s\\S]*?field\`, use \`multiline: true\`
-  - Requires AgenC's packaged, lockfile-pinned ripgrep executable. If it is unavailable, run \`agenc doctor\` and reinstall the same AgenC version; Grep never falls back to JavaScript regex search or a PATH-resolved \`rg\`.
-`;
+const GREP_DESCRIPTION = `Search file contents with ripgrep; use it instead of grep or rg in the shell.
+- Regex syntax is ripgrep's: escape literal braces (\`interface\\{\\}\` finds \`interface{}\`). Patterns match within one line unless multiline is true.
+- Narrow the files with glob (e.g. "*.js", "**/*.tsx") or type (e.g. js, py, rust).
+- output_mode: files_with_matches lists paths (default), content shows matching lines, count shows counts.
+- Skips gitignored and build or vendored directories unless includeIgnored is true.`;
 
 type OutputMode = "content" | "files_with_matches" | "count";
 
@@ -543,55 +534,24 @@ async function isRipgrepAvailable(
   const ripgrepPath = selectPinnedRipgrepPath();
   if (ripgrepPath === undefined) return false;
   if (readCapability !== undefined) {
-    const probeArgs = ["--no-config", "--no-follow", "--version"];
+    // Authenticate the bound sandbox before consulting the process-wide
+    // availability cache, exactly as the former probe did: a missing or
+    // failed boundary rejects here. The prepared spawn is settled without a
+    // launch. The bound search is its own probe: it runs the same pinned
+    // executable through the same helper and sandbox, and a launch that
+    // cannot execute it reports PINNED_RIPGREP_UNAVAILABLE (see
+    // boundRipgrepUnavailable). A cached success never skips that sandboxed
+    // launch; a cached failure still fails closed.
     const command = await prepareBoundRipgrepCommand({
       readCapability,
       toolArgs,
       fallbackCwd: cwd,
       program: ripgrepPath,
-      args: probeArgs,
+      args: ["--no-config", "--no-follow", "--version"],
       env: scrubEnvForChildProcess(process.env),
     });
-    if (ripgrepAvailability === false) return false;
-    try {
-      const remaining =
-        deadline === undefined
-          ? RIPGREP_PROBE_TIMEOUT_MS
-          : Math.min(
-              RIPGREP_PROBE_TIMEOUT_MS,
-              remainingGrepOperationMs(deadline),
-            );
-      if (remaining < 1) return false;
-      const result = await withBoundRipgrepCommand(
-        command,
-        (resolved, lifecycleSignal) =>
-          readCapability.runRipgrep({
-            program: resolved.program,
-            args: resolved.args,
-            env: resolved.env,
-            ...(resolved.argv0 !== undefined
-              ? { argv0: resolved.argv0 }
-              : {}),
-            timeoutMs: remaining,
-            maxOutputBytes: RIPGREP_PROBE_MAX_OUTPUT_BYTES,
-            ...(signal !== undefined || lifecycleSignal !== undefined
-              ? {
-                  signal:
-                    signal !== undefined && lifecycleSignal !== undefined
-                      ? AbortSignal.any([signal, lifecycleSignal])
-                      : (signal ?? lifecycleSignal),
-                }
-              : {}),
-          }),
-      );
-      return (
-        result.exitCode === 0 &&
-        result.stopReason === undefined &&
-        result.spawnError === undefined
-      );
-    } catch {
-      return false;
-    }
+    if (isSandboxPreparedSpawn(command)) command.runSync(() => undefined);
+    return ripgrepAvailability !== false;
   }
   if (ripgrepAvailability === false) return false;
   // Authenticate and prepare the probe before consulting the process-wide
@@ -1851,6 +1811,7 @@ async function runRipgrepCollectRecords(params: {
               : {}),
           }),
       );
+      if (boundRipgrepUnavailable(result)) return pinnedRipgrepUnavailableResult();
       const parser = createCollectionWireParser(
         params.outputMode,
         helperMaximumLines,
@@ -2548,6 +2509,23 @@ function pinnedRipgrepUnavailableResult(): LimitedRipgrepResult {
   };
 }
 
+/**
+ * Ripgrep itself exits 0, 1 or 2. 126/127 with no output means the sandboxed
+ * launch could not execute the pinned binary: the outcome the removed
+ * --version probe reported as PINNED_RIPGREP_UNAVAILABLE.
+ */
+function boundRipgrepUnavailable(result: {
+  readonly stdout: Buffer;
+  readonly exitCode: number | null;
+  readonly aborted: boolean;
+  readonly stopReason?: string;
+  readonly spawnError?: Error;
+}): boolean {
+  return (result.exitCode === 126 || result.exitCode === 127) &&
+    result.stdout.byteLength === 0 && !result.aborted &&
+    result.stopReason === undefined && result.spawnError === undefined;
+}
+
 function descriptorRelativePath(
   candidatePath: string,
   capabilityRoot: string,
@@ -2979,7 +2957,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
   const operationBudgetLimits = config?.__testOperationBudgetLimits;
   const afterRootIgnoreSnapshot = config?.__testAfterRootIgnoreSnapshot;
 
-  return {
+  return sideEffectFreeTool({
     name: GREP_TOOL_NAME,
     description: GREP_DESCRIPTION,
     metadata: {
@@ -3002,15 +2980,13 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           minLength: 1,
           maxLength: MAX_GREP_PATTERN_UTF8_BYTES,
           "x-agenc-maxUtf8Bytes": MAX_GREP_PATTERN_UTF8_BYTES,
-          description:
-            "The regular expression pattern to search for in file contents",
+          description: "Regular expression.",
         },
         path: {
           type: "string",
           maxLength: MAX_GREP_RAW_PATH_UTF8_BYTES,
           "x-agenc-maxUtf8Bytes": MAX_GREP_RAW_PATH_UTF8_BYTES,
-          description:
-            "File or directory to search in (rg PATH). Defaults to current working directory.",
+          description: "File or directory to search; defaults to the working directory.",
         },
         glob: {
           type: "string",
@@ -3018,75 +2994,64 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           "x-agenc-maxUtf8Bytes": MAX_GREP_RAW_GLOB_UTF8_BYTES,
           "x-agenc-maxEntries": MAX_GREP_GLOBS,
           "x-agenc-maxEntryUtf8Bytes": MAX_GREP_GLOB_UTF8_BYTES,
-          description:
-            'Glob pattern to filter files (e.g. "*.js", "*.{ts,tsx}") - maps to rg --glob',
+          description: 'Glob filter for files, e.g. "*.js" or "*.{ts,tsx}" (rg --glob).',
         },
         output_mode: {
           type: "string",
           enum: ["content", "files_with_matches", "count"],
-          description:
-            'Output mode: "content" shows matching lines (supports -A/-B/-C context, -n line numbers, head_limit), "files_with_matches" shows file paths, "count" shows match counts. Defaults to "files_with_matches".',
+          description: 'Defaults to "files_with_matches". Context lines and -n apply to "content".',
         },
         "-B": {
           type: "integer",
           minimum: 0,
           maximum: MAX_GREP_CONTEXT_LINES,
-          description:
-            'Number of lines to show before each match (rg -B). Requires output_mode: "content", ignored otherwise.',
+          description: "Lines before each match (content mode).",
         },
         "-A": {
           type: "integer",
           minimum: 0,
           maximum: MAX_GREP_CONTEXT_LINES,
-          description:
-            'Number of lines to show after each match (rg -A). Requires output_mode: "content", ignored otherwise.',
+          description: "Lines after each match (content mode).",
         },
         "-C": {
           type: "integer",
           minimum: 0,
           maximum: MAX_GREP_CONTEXT_LINES,
-          description:
-            'Number of lines to show before and after each match (rg -C). Requires output_mode: "content", ignored otherwise.',
+          description: "Lines before and after each match (content mode).",
         },
         "-n": {
           type: "boolean",
-          description:
-            'Show line numbers in output (rg -n). Requires output_mode: "content", ignored otherwise. Defaults to true.',
+          description: "Line numbers in content mode (default true).",
         },
         "-i": {
           type: "boolean",
-          description: "Case insensitive search (rg -i)",
+          description: "Case-insensitive search.",
         },
         type: {
           type: "string",
           maxLength: MAX_GREP_TYPE_UTF8_BYTES,
           "x-agenc-maxUtf8Bytes": MAX_GREP_TYPE_UTF8_BYTES,
-          description:
-            "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types.",
+          description: "File type (rg --type), e.g. js, py, rust, go.",
         },
         head_limit: {
           type: "integer",
           minimum: 0,
           maximum: MAX_GREP_HEAD_LIMIT,
-          description:
-            'Limit output to first N lines/entries, equivalent to "| head -N". Works across all output modes. Defaults to 250. Pass 0 for unpaginated output up to the hard search safety ceilings.',
+          description: "Return at most N lines or entries (default 250; 0 for no limit within the safety ceilings).",
         },
         offset: {
           type: "integer",
           minimum: 0,
           maximum: MAX_GREP_OFFSET,
-          description:
-            'Skip first N lines/entries before applying head_limit, equivalent to "| tail -n +N | head -N". Defaults to 0.',
+          description: "Skip the first N lines or entries (default 0).",
         },
         multiline: {
           type: "boolean",
-          description:
-            "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false.",
+          description: "Let patterns span lines, with . matching newlines (default false).",
         },
         includeIgnored: {
           type: "boolean",
-          description:
-            "Search gitignored and build/vendored output too (node_modules, target, dist, build, .localnet). Defaults to false: the search respects .gitignore and skips generated/build dirs.",
+          description: "Include gitignored and build or vendored files (default false).",
         },
       },
       required: ["pattern"],
@@ -3298,7 +3263,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         }
       }
     },
-  };
+  });
 }
 
 // Re-export internal symbols used solely by the test file. Kept at the

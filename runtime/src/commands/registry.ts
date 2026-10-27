@@ -1,3 +1,5 @@
+import { updateCommand } from "./update.js";
+import { budgetCommand } from "./budget.js";
 /**
  * Minimal slash-command registry.
  *
@@ -21,6 +23,7 @@ import { exitCommand } from "./exit.js";
 import { clearCommand } from "./clear.js";
 import { permissionsCommand } from "./permissions.js";
 import { configCommand } from "./config.js";
+import { themeCommand } from "./theme.js";
 import { keybindingsCommand } from "./keybindings.js";
 import hooksCommand from "./hooks.js";
 import { planCommand } from "./plan.js";
@@ -137,6 +140,8 @@ export class CommandRegistry implements CommandRegistryInterface {
 
 export interface BuildDefaultRegistryOptions {
   readonly surface?: SlashCommandSurface;
+  /** Explicit TUI authority; React callbacks need not inherit async-local context. */
+  readonly remoteControlEnabled?: () => boolean;
 }
 
 function commandSupportsSurface(
@@ -152,9 +157,9 @@ function commandSupportsSurface(
  *
  * Presentation order matches the runtime stabilization minimal surface:
  * /help, /hello, /status, auth commands, /cost, /model, /provider, /permissions,
- * /plan, /agents, /tasks, /todos, /config, /keybindings, /hooks, /skills, /mcp, /plugins,
- * /memory, /resume, /init, /output-style, /clear, /compact, /context, /diff,
- * protocol commands, /exit.
+ * /plan, /agents, /tasks, /todos, /config, /theme, /keybindings, /hooks, /skills,
+ * /mcp, /plugins, /memory, /resume, /init, /output-style, /clear, /compact,
+ * /context, /diff, protocol commands, /exit.
  */
 export function buildDefaultRegistry(
   options: BuildDefaultRegistryOptions = {},
@@ -169,6 +174,8 @@ export function buildDefaultRegistry(
     ...openaiAuthCommands,
     costCommand,
     modelCommand,
+    updateCommand,
+    budgetCommand,
     providerCommand,
     effortCommand,
     resolveCommand,
@@ -180,11 +187,15 @@ export function buildDefaultRegistry(
     tasksCommand,
     todosCommand,
     configCommand,
+    themeCommand,
     keybindingsCommand,
     hooksCommand,
     skillsCommand,
     mcpCommand,
-    remoteCommand,
+    options.remoteControlEnabled === undefined ? remoteCommand : {
+      ...remoteCommand,
+      get isHidden() { return options.remoteControlEnabled!() !== true; },
+    },
     pluginsCommand,
     memorySlashCommand,
     resumeCommand,
