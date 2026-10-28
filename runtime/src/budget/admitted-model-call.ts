@@ -733,12 +733,25 @@ export async function runAdmittedModelCall(
   // for. Everything downstream — cost ceiling, lease, provider request — reads
   // the admitted value, so the reservation and the wire request cannot drift.
   let admittedMaxOutputTokens = maxOutputTokens;
+  // Without a hard token or cost cap or a task budget the reservation is an
+  // estimate that settles at the reported usage, so the count can only change
+  // the context-window fit. A provider that reports exact prompt usage is not
+  // asked to count while the local estimate is far below that fit.
+  const nativeCountFromTokens =
+    hasHardCostCap || hasHardTokenCap || taskBudget?.limit !== undefined
+      ? undefined
+      : Math.max(
+        0,
+        contextWindowTokens - maxOutputTokens -
+          Math.max(0, Math.floor(profile?.contextSafetyBufferTokens ?? 0)),
+      );
   try {
     accountingResult = await tokenAccountingService.count(accountingRequest, {
       ...(tokenCountCapability !== undefined
         ? { capability: tokenCountCapability }
         : {}),
       ...(params.signal !== undefined ? { signal: params.signal } : {}),
+      ...(nativeCountFromTokens !== undefined ? { nativeCountFromTokens } : {}),
     });
     if (!accountingResult.admissible) {
       accountingFailureReason = "token_accounting_uncertain";

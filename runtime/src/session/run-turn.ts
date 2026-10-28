@@ -1751,21 +1751,32 @@ async function preparedRequestContextPressure(
     assertTokenAccountingRequestWithinByteLimit(accountingRequest, provider.tokenCountCapability);
     return { fits: false, inputTokens: Number.POSITIVE_INFINITY, inputTokenLimit, fitInputTokenLimit, windowTokens: window };
   }
+  const compactionPolicy = getAutoCompactPolicyForEnvironment({ options: {
+    mainLoopModel: ctx.modelInfo.slug, contextWindowTokens: window,
+  } }, getSelectedProviderEnvironment());
+  const autoCompactThresholdTokens =
+    getPreSamplingAutoCompactTokenLimit(ctx) ?? compactionPolicy.compactionThresholdTokens;
+  // This gate decides two things from the count: whether the request fits
+  // with its full reply room, and whether it reached the auto-compaction
+  // threshold. Below both, a provider that reports exact prompt usage need
+  // not count natively (see TokenAccountingCountOptions.nativeCountFromTokens).
+  const fullReplyInputLimit = Math.max(0, window - maxOutputTokens - safetyBufferTokens);
+  const nativeCountFromTokens = Number.isFinite(autoCompactThresholdTokens)
+    ? Math.min(fullReplyInputLimit, autoCompactThresholdTokens)
+    : fullReplyInputLimit;
   const accounting = await tokenAccountingService.count(accountingRequest, {
     ...(provider.tokenCountCapability !== undefined &&
       (purpose === "dispatch" || provider.tokenCountCapability.runsLocally === true)
       ? { capability: provider.tokenCountCapability }
       : {}),
     signal,
+    ...(purpose === "dispatch" ? { nativeCountFromTokens } : {}),
   });
-  const compactionPolicy = getAutoCompactPolicyForEnvironment({ options: {
-    mainLoopModel: ctx.modelInfo.slug, contextWindowTokens: window,
-  } }, getSelectedProviderEnvironment());
   if (purpose === "dispatch") recordPreparedContextPressure(session, {
     provider: providerName, model,
     inputTokens: accounting.inputTokens,
     effectiveWindowTokens: compactionPolicy.effectiveWindowTokens,
-    autoCompactThresholdTokens: getPreSamplingAutoCompactTokenLimit(ctx) ?? compactionPolicy.compactionThresholdTokens,
+    autoCompactThresholdTokens,
     reservedOutputTokens: accounting.reservedOutputTokens,
     source: accounting.source,
     measuredAtMs: Date.now(),

@@ -68,6 +68,13 @@ export const TOKEN_ACCOUNTING_CALIBRATION_MAX_SCOPES = 256;
 export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM = 1.1;
 export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES = 8;
 export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_MIN_FACTOR = 0.3;
+/**
+ * How far below a caller's nearest decision limit the calibrated local estimate must stay before a provider that
+ * reports exact prompt usage skips its native counter (see {@link ProviderTokenCountCapability.reportsExactPromptUsage}).
+ * The estimate is already an upper bound (a catalogued bytes-per-token floor plus a margin, raised by every usage
+ * report of the conversation); this factor covers content denser than that floor on a first call.
+ */
+export const TOKEN_ACCOUNTING_NATIVE_COUNT_DECISION_HEADROOM = 1.25;
 export const TOKEN_FALLBACK_MARGIN_RATIO = 0.1;
 export const TOKEN_FALLBACK_MARGIN_TOKENS = 256;
 
@@ -276,6 +283,13 @@ export interface ProviderNativeTokenCountResult {
 export interface ProviderTokenCountCapability {
   /** Pure in-process counters may opt into advisory prompt preflight. */
   readonly runsLocally?: true;
+  /**
+   * The provider's response usage states the exact prompt size of every call, so billing and calibration never
+   * depend on this counter. A caller that names the input size where its decision changes
+   * ({@link TokenAccountingCountOptions.nativeCountFromTokens}) gets the calibrated local estimate while that
+   * estimate stays far below it, without a provider round trip.
+   */
+  readonly reportsExactPromptUsage?: true;
   readonly capabilityVersion: string;
   readonly adapterRevision: string;
   /** A digest/revision only. It must not contain credentials or raw prompts. */
@@ -324,6 +338,11 @@ export interface CreateTokenAccountingRequestOptions {
 export interface TokenAccountingCountOptions {
   readonly capability?: ProviderTokenCountCapability;
   readonly signal?: AbortSignal;
+  /**
+   * The smallest input size at which the caller's decision depends on the exact count: the context-window fit or the
+   * auto-compaction threshold. Only consulted for a capability that sets `reportsExactPromptUsage`.
+   */
+  readonly nativeCountFromTokens?: number;
 }
 
 export interface TokenAccountingServiceLimits {
@@ -517,6 +536,28 @@ export class TokenAccountingService {
     request: TokenAccountingRequest,
     options: TokenAccountingCountOptions = {},
   ): Promise<TokenAccountingResult> {
+    const decisionTokens = options.nativeCountFromTokens;
+    if (
+      options.capability?.reportsExactPromptUsage === true &&
+      decisionTokens !== undefined &&
+      Number.isFinite(decisionTokens)
+    ) {
+      // The provider's own usage report settles every call exactly, so its
+      // counter is only worth a round trip when the answer can change a
+      // decision. The calibrated local estimate stays an upper bound with
+      // headroom; while it is that far below the caller's nearest limit, the
+      // exact count could not move the decision either.
+      throwIfAborted(options.signal);
+      const prepared = prepareAccountingRequest(request, options.capability, this.#maxRequestBytes);
+      const estimate = this.#calibrate(request, prepared.fallback);
+      if (
+        estimate.admissible &&
+        Math.ceil(estimate.inputTokens * TOKEN_ACCOUNTING_NATIVE_COUNT_DECISION_HEADROOM) <= decisionTokens
+      ) {
+        return estimate;
+      }
+      return this.#calibrate(request, await this.#countUncalibrated(request, options, prepared));
+    }
     return this.#calibrate(request, await this.#countUncalibrated(request, options));
   }
 
@@ -534,9 +575,10 @@ export class TokenAccountingService {
   async #countUncalibrated(
     request: TokenAccountingRequest,
     options: TokenAccountingCountOptions,
+    preparedRequest?: PreparedAccountingRequest,
   ): Promise<TokenAccountingResult> {
     throwIfAborted(options.signal);
-    const prepared = prepareAccountingRequest(
+    const prepared = preparedRequest ?? prepareAccountingRequest(
       request,
       options.capability,
       this.#maxRequestBytes,

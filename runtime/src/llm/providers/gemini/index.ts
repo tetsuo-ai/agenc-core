@@ -3348,6 +3348,11 @@ export class GeminiProvider implements LLMProvider {
       supportsStreaming: true,
     });
     this.tokenCountCapability = Object.freeze({
+      // Every generateContent response states the whole prompt it read in
+      // usageMetadata.promptTokenCount, cached tokens included
+      // (ai.google.dev/api/generate-content#UsageMetadata), so countTokens
+      // is only needed when an exact count can change a decision.
+      reportsExactPromptUsage: true,
       capabilityVersion: "gemini-generate-content-count-tokens-v1",
       adapterRevision: "gemini-generate-content-wire-v1",
       configurationRevision: createTokenAccountingConfigurationRevision({
