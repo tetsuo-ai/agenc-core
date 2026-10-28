@@ -1,6 +1,8 @@
 # AgenC Core
 
-Turn any model into a stronger agent. Open source and built to outperform.
+Our goal is to multiply model capability per dollar of inference. AgenC is an
+open source framework that improves how any model plans, uses tools and checks
+its work.
 
 AgenC Core is a coding agent for your terminal. It works with any model
 provider: 25 are built in, including OpenAI, Anthropic, xAI Grok, Gemini,

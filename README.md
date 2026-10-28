@@ -5,7 +5,9 @@
 ![node](https://img.shields.io/badge/node-26.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
-Turn any model into a stronger agent. Open source and built to outperform.
+Our goal is to multiply model capability per dollar of inference. AgenC is an
+open source framework that improves how any model plans, uses tools and checks
+its work.
 
 AgenC Core is a coding agent for your terminal. It works with any model
 provider.
