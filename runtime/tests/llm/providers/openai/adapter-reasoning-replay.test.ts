@@ -258,9 +258,10 @@ describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPL
     expect(body.include).toEqual(enabled ? ["reasoning.encrypted_content"] : undefined);
     if (enabled) {
       expect(body.input).toContainEqual(REASONING);
-      // Luna on the platform API keeps its own summary default; other models request auto.
+      // Luna and Terra on the platform API keep their own summary default;
+      // other models request auto.
       const expected = { ...(reasoningEffort ? { effort: reasoningEffort } : {}),
-        ...(model === "gpt-6-luna" ? {} : { summary: "auto" }) };
+        ...(model === "gpt-6-luna" || model === "gpt-6.1-terra" ? {} : { summary: "auto" }) };
       expect(body.reasoning).toEqual(Object.keys(expected).length > 0 ? expected : undefined);
       expect(response.providerReasoningProvenance).toEqual({ provider: "openai", model });
     } else {

@@ -432,6 +432,16 @@ function responsesPromptCacheKey(
   return key ? key : undefined;
 }
 
+/**
+ * Platform API models that keep their own reasoning summary default under
+ * replay instead of being asked for `summary: "auto"` (see the summary note
+ * in `buildOpenAIResponsesRequest`).
+ */
+const MODELS_KEEPING_SUMMARY_DEFAULT: ReadonlySet<string> = new Set([
+  "gpt-6-luna",
+  "gpt-6.1-terra",
+]);
+
 export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
@@ -633,15 +643,18 @@ export function buildOpenAIResponsesRequest(
       effort: reasoningEffort,
     };
   }
-  // Luna's API can spend additional time producing automatic summaries even
-  // for short tool turns. Its encrypted reasoning replays with an empty
-  // summary, so keep the model's summary default instead of forcing `auto`.
-  // Explicit summary choices, other models and ChatGPT keep their behavior.
-  const preserveLunaSummaryDefault = replayProvider === "openai" &&
+  // Luna's and Terra's APIs spend additional time producing automatic
+  // summaries even for short tool turns. On Terra (2026-10-28) the first
+  // visible output came 0.59 s later with `summary: "auto"` (median of 8 paired
+  // requests), and Light tasks ran 2.4 s and 6 percent cheaper without it.
+  // Their encrypted reasoning replays with an empty summary, so keep the
+  // model's summary default instead of forcing `auto`. Explicit summary
+  // choices, other models and ChatGPT keep their behavior.
+  const preserveSummaryDefault = replayProvider === "openai" &&
     input.chatgptBackend !== true &&
-    input.model.trim().toLowerCase() === "gpt-6-luna";
+    MODELS_KEEPING_SUMMARY_DEFAULT.has(input.model.trim().toLowerCase());
   // An omitted effort can still run reasoning at the model's default tier.
-  const useReplaySummaryDefault = !preserveLunaSummaryDefault &&
+  const useReplaySummaryDefault = !preserveSummaryDefault &&
     replayProvider !== undefined &&
     reasoningEffort !== "none" &&
     (reasoningEffort !== undefined ||
