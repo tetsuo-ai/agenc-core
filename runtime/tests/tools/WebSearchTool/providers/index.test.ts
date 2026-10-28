@@ -96,6 +96,15 @@ describe('getProviderChain', () => {
   test('unknown mode returns empty chain', () => {
     expect(getProviderChain('nonexistent' as ProviderMode)).toHaveLength(0)
   })
+
+  test('keenable joins the auto chain only with KEENABLE_API_KEY, after the other keys', () => {
+    expect(withEnvironment({}, () => getProviderChain('auto')).some(p => p.name === 'keenable')).toBe(false)
+    const chain = withEnvironment(
+      { KEENABLE_API_KEY: 'test-key', LINKUP_API_KEY: 'test-key' },
+      () => getProviderChain('auto'),
+    )
+    expect(chain.map(p => p.name)).toEqual(['linkup', 'keenable', 'duckduckgo'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -136,6 +145,27 @@ describe('runSearch', () => {
       else delete process.env.TAVILY_API_KEY
       if (savedProvider !== undefined) process.env.WEB_SEARCH_PROVIDER = savedProvider
       else delete process.env.WEB_SEARCH_PROVIDER
+    }
+  })
+
+  test('explicit keenable runs without a key on the keyless endpoint', async () => {
+    const savedFetch = globalThis.fetch
+    const calls: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify({ results: [{ title: 'T', url: 'https://example.com/', description: '', snippet: 'S' }] }))
+    }) as typeof fetch
+    try {
+      const { runSearch } = await import('../../../../src/tools/WebSearchTool/providers/index.ts')
+      const output = await withEnvironment(
+        { WEB_SEARCH_PROVIDER: 'keenable' },
+        () => runSearch({ query: 'test' }),
+      )
+      expect(calls).toEqual(['https://api.keenable.ai/v1/search/public'])
+      expect(output.providerName).toBe('keenable')
+      expect(output.hits).toEqual([{ title: 'T', url: 'https://example.com/', description: 'S', source: 'example.com' }])
+    } finally {
+      globalThis.fetch = savedFetch
     }
   })
 })
