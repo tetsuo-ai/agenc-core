@@ -11,6 +11,8 @@ autostart and the TUI 10 s lost-turn probe:
 [`#recovery-after-a-disappeared-daemon`](#recovery-after-a-disappeared-daemon).
 Max-output-tokens escalate, continuation, and exhaustion:
 [`#max-output-tokens-recovery`](#max-output-tokens-recovery).
+A user stop persists a durable assistant boundary:
+[`#interrupted-requests-as-stopped`](#interrupted-requests-as-stopped).
 Routine permission-blocked explanations:
 [agents.md](agents.md#permission-blocked-explanation).
 
@@ -35,7 +37,10 @@ Reopening with `-c` or `/resume` restores the visible assistant prefix of a
 streaming turn, followed by new deltas. An interrupted answer remains visible
 with an `Interrupted partial answer` label. These partials are display only:
 they are excluded from model history so an unfinished answer cannot be mistaken
-for a completed assistant response on the next turn.
+for a completed assistant response on the next turn. A user stop also writes
+a separate durable assistant boundary so the next prompt is not two
+unanswered user messages. See
+[interrupted requests as stopped](#interrupted-requests-as-stopped).
 
 Transcript reconstruction retains at most 64 KiB of UTF-8 text per uncommitted
 segment and marks omitted text explicitly. A later canonical assistant commit
@@ -1447,6 +1452,40 @@ retries. Both recovery paths discard the in-flight
 
 See the [recovery ladder](../ARCHITECTURE.md#max-output-tokens-recovery).
 
+### Interrupted requests as stopped
+
+A cancelled stream need not return an assistant message. When the turn
+abort reason is `interrupted`, `syncAbortedSessionState` in
+`runtime/src/session/run-turn.ts` appends one durable assistant
+message after in-flight tools are drained:
+
+`[The user stopped this response before it finished. Do not continue the previous request unless the user asks you to.]`
+
+The next prompt is then `user` / `assistant` (this marker) / `user`
+instead of two unanswered user requests. The same boundary is written
+in Light sessions and in child (`cli_subagent`) sessions. It is stored
+as a rollout `response_item`, reconstructed on resume (`-c` / `/resume`),
+and sent on the next model request.
+
+Completed tool pairs from that turn stay in history **before** the
+marker. Incomplete tool calls and provider-specific reasoning from the
+cancelled sample are not replayed.
+
+`TurnAbortReason` values `replaced`, `review_ended`, and
+`daemon_shutdown` do not write the marker. A `--deadline` stop ends as
+`turn_failed` / `deadline_reached` and does not. `turnSignalAbortReason`
+maps any other abort reason string to `interrupted`.
+
+There is no env or `config.toml` override for the string, the
+`interrupted` reason, or which abort reasons write the marker.
+
+Distinct from the TUI `Interrupted partial answer` prefix (display
+only; excluded from model history), from transport stream retries
+(`connection_lost` on the streaming executor), and from
+[max-output-tokens recovery](#max-output-tokens-recovery).
+
+See the [architecture note](../ARCHITECTURE.md#interrupted-requests-as-stopped).
+
 ### Telemetry errors stay session-only
 
 Session `error` records are diagnostics, not lifecycle boundaries.
@@ -1599,6 +1638,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | `no longer running (status: error)` after a compact skip or compact throw | Unexpected on a keep-alive session. Current writers emit a compact warning and canonical `turn_failed` with code `compact_failed`; legacy diagnostic `error` events carry `statusProjection: "session_only"`. The daemon-backed one-shot CLI exits 1, and the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. |
 | Compact runs ~15 min then `compaction_failed` / `wall_time_exceeded` | The whole-transaction 900 s wall budget fired. History should be unchanged. Manual `/compact` retries; two durable auto failures for the same digest suppress later autos. Distinct from `provider_timeout` and `mid_turn_compact_skipped`. See [compaction transaction wall budget](#compaction-transaction-wall-budget). |
 | `Output recovery is exhausted` / `max_output_tokens_exhausted` | The turn used its three counted retries. Escalation does not count. History should still be an ordered projection of the canonical rollout. The escalate retry truncates to `messagesAtSampleStart`, not `messagesForQuery`. Reasoning-only replies ask for a next step instead of "continue from where you left off". Distinct from `compact_failed` and `prompt_too_long_exhausted`. See [max-output-tokens recovery](#max-output-tokens-recovery). |
+| Next prompt after Esc / Stop continues the cancelled request | Unexpected after the durable stop marker. History should contain one assistant boundary with `The user stopped this response before it finished`. Confirm the abort reason was `interrupted`, not `deadline_reached`, `replaced`, `review_ended`, or `daemon_shutdown`. The TUI `Interrupted partial answer` label is display only. See [interrupted requests as stopped](#interrupted-requests-as-stopped). |
 | Follow-up `message.send` after `mid_turn_compact_skipped` | Expected to start a new turn on a keep-alive session. The prior turn closed with `stopReason: "compact_failed"`. |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |

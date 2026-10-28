@@ -324,6 +324,9 @@ Autostart retry cap, hard-kill connectability readiness, hydrating
 Routine permission-blocked explanations have no `AGENC_*` override:
 [agents.md](agents.md#permission-blocked-explanation).
 
+A user-stop history marker has no `AGENC_*` override:
+[daemon.md](daemon.md#interrupted-requests-as-stopped).
+
 ## Browser, budget, heartbeat, sandbox, xAI tools
 
 These have their own pages. Short map:
