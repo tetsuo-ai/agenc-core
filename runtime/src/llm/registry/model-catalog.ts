@@ -716,7 +716,10 @@ export const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
 // ai.google.dev/gemini-api/docs/models does. Without these a Flash model took
 // its window from a public catalog download when one answered in time and the
 // 128K / 32K fallback otherwise; 3.1 Pro only matched through the
-// OpenAI-compatible table's gemini-3.1-pro prefix.
+// OpenAI-compatible table's gemini-3.1-pro prefix. Gemini 4 Argon lists
+// outputTokenLimit 32,768 (2026-10-28): that is its non-streaming cap, and a
+// stream may return 65,536, so its row keeps 65,536 and the adapter lowers
+// non-streaming calls (gemini-thinking-models.ts).
 const GEMINI_CONTEXT_WINDOW = 1_048_576;
 const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
 
@@ -743,7 +746,9 @@ const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportedReasoningLevels: entry.levels,
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: index,
-      visibility: "list",
+      // A deprecated id Google routes to another model stays resolvable for
+      // saved settings but is no longer offered (gemini-thinking-models.ts).
+      visibility: entry.routedTo === undefined ? "list" : "hide",
     })),
   );
 

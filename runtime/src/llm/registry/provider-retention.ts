@@ -166,9 +166,14 @@ export const PROVIDER_RETENTION: Readonly<Record<Exclude<BuiltInProviderSlug, "a
   gemini: facts({
     retention: "retains",
     summary: "The Gemini API logs prompts for abuse monitoring and the free tier trains on them. ZDR is only on Vertex AI.",
+    // Since 2026-10-26 new paid projects keep generateContent requests in
+    // their AI Studio logs unless a request says store: false. AgenC sends it
+    // on the Developer API; it does not stop the abuse-monitoring logs.
+    requestPrivacy: ["store: false"],
     docs: [
       "https://ai.google.dev/gemini-api/docs/zdr",
       "https://ai.google.dev/gemini-api/terms",
+      "https://ai.google.dev/gemini-api/docs/logs-datasets",
     ],
   }),
   kimi: facts({
