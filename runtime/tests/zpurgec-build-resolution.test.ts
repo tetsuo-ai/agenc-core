@@ -43,6 +43,28 @@ describe('Z-PURGEC build resolution boundaries', () => {
     ).toBe(true)
   })
 
+  it('externalizes packages the moved-source resolver loads from node_modules', () => {
+    // One copy per process: bundling these next to the node_modules instance
+    // splits singleton state (chalk color levels are the known case).
+    // check-bundle-duplicates.mjs fails the build if this list and the bundle
+    // graph drift apart (#3274).
+    for (const packageName of [
+      '@alcalzone/ansi-tokenize',
+      '@anthropic-ai/sdk',
+      'chalk',
+      'diff',
+      'figures',
+      'highlight.js',
+      'ignore',
+      'lru-cache',
+      'marked',
+      'shell-quote',
+      'strip-ansi',
+    ]) {
+      expect(__agencBuildConfigTest.external).toContain(packageName)
+    }
+  })
+
   it('bundles lodash-es so its one-file-per-function modules load inside the runtime chunks', () => {
     expect(__agencBuildConfigTest.isBundledBareImport('lodash-es')).toBe(true)
     expect(__agencBuildConfigTest.isBundledBareImport('lodash-es/memoize.js')).toBe(true)
