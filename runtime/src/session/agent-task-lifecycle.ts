@@ -19,6 +19,7 @@
  */
 
 import type { Session } from "./session.js";
+import { restorePromptCacheState } from "./prompt-cache-state.js";
 import {
   sessionStateUpdateAddressesSlot,
   type RolloutItem,
@@ -288,6 +289,7 @@ export async function recordInitialHistoryOnResume(
     readonly currentModel: string;
   },
 ): Promise<void> {
+  restorePromptCacheState(session, session.provider, rolloutItems);
   // 1. Agent-task restore. Run first so the cached task lines up with
   // the restored session
   // identity before any model-dependent state mutations.

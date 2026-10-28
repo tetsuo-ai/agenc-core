@@ -626,7 +626,7 @@ describe("env info section", () => {
     expect(s).toContain("xai");
     expect(s).toContain("Platform:");
     expect(s).toContain("OS:");
-    expect(s).toContain("Current time (UTC):");
+    expect(s).not.toContain("Current time (UTC):");
     expect(s).toContain("Absolute filesystem paths, including Linux paths under /root");
     expect(s).not.toContain("Do NOT use `/root` as a filesystem path");
   });

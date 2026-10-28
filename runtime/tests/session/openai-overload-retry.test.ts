@@ -4,7 +4,7 @@ import { runTurn } from "../../src/session/run-turn.js";
 import { drain, mkCtx, mkSession } from "../fixtures.js";
 import { recordingAdmission } from "../helpers/stream-progress-fixture.js";
 
-const overload = 'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","message":"The server is overloaded."}}}\n\n';
+const overloadedFrame = 'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","message":"The server is overloaded."}}}\n\n';
 const done = `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: {
   id: "completed", status: "completed", model: "gpt-6-luna",
   output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] }],
@@ -13,7 +13,10 @@ const done = `event: response.completed\ndata: ${JSON.stringify({ type: "respons
 
 afterEach(() => vi.restoreAllMocks());
 
-test.each(["success", "exhausted", "cancelled", "directive", "partial", "budget-spent"] as const)("real adapter reconnect preserves %s behavior", async mode => {
+test.each(["server_is_overloaded", "server_error"].flatMap(code =>
+  (["success", "exhausted", "cancelled", "directive", "partial", "budget-spent"] as const).map(mode => ({ code, mode })),
+))("real adapter $code reconnect preserves $mode behavior", async ({ code, mode }) => {
+  const overload = overloadedFrame.replaceAll("server_is_overloaded", code);
   vi.spyOn(Math, "random").mockReturnValue(0);
   if (mode === "budget-spent") {
     const recovery = await import("../../src/recovery/fallback-ladder.js");
@@ -30,7 +33,7 @@ test.each(["success", "exhausted", "cancelled", "directive", "partial", "budget-
     if (mode === "cancelled") abort.abort();
     const prefix = mode === "directive" ? 'event: error\ndata: {"type":"error","code":"server_is_overloaded","headers":{"x-retry-metadata":"NO_MORE_RETRY"}}\n\n'
       : mode === "partial" ? 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Started."}\n\n' : "";
-    return new Response(mode === "success" && calls > 1 ? done : prefix + overload,
+    return new Response(mode === "success" && calls > 1 ? done : prefix.replaceAll("server_is_overloaded", code) + overload,
       { headers: { "content-type": "text/event-stream" } });
   });
   const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-6-luna", useResponsesApi: true, fetchImpl });
@@ -47,7 +50,7 @@ test.each(["success", "exhausted", "cancelled", "directive", "partial", "budget-
   expect(stopped).toHaveLength(mode === "exhausted" || mode === "budget-spent" ? 1 : 0);
   const retries = disconnects.filter(event => !stopped.includes(event));
   expect(retries).toHaveLength(mode === "success" ? 1 : mode === "exhausted" ? 5 : 0);
-  for (const event of retries) expect(event.msg).toMatchObject({ type: "stream_error", payload: { status: 503, provider: "openai" } });
+  for (const event of retries) expect(event.msg).toMatchObject({ type: "stream_error", payload: { status: code === "server_error" ? 500 : 503, provider: "openai" } });
   expect(events.some(event => event.msg.type === "turn_complete")).toBe(mode === "success");
   if (mode === "exhausted" || mode === "directive" || mode === "budget-spent") expect(events.some(event => event.msg.type === "turn_failed")).toBe(true);
   // Reconnect replays the original request, retaining settings and the output ceiling.

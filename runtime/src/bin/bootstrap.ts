@@ -2233,6 +2233,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         // by the ordinary shutdown cleanup, even if loading fails or closes.
         sidecarManager.register(deferredCost?.attach(costSidecar) ?? costSidecar);
         await costSidecar.loadFromDisk();
+        costSidecar.restoreSessionCostsForSession(conversationId);
         deferredSetup?.assertOpen();
         s.abortController.signal.throwIfAborted();
         (s.services as { costSidecar?: CostSidecar }).costSidecar = costSidecar;

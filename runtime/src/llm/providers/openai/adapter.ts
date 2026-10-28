@@ -10,7 +10,7 @@ import { openAiModelRequiresResponses, openAiModelRequiresBufferedResponse } fro
  * @module
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { normalizePromptCacheKey } from "../../prompt-cache-key.js";
 import type {
   LLMChatOptions,
@@ -858,18 +858,19 @@ function mapOpenAIStreamError(args: {
     providerName: args.providerName, body: args.errorBody, ...(status !== undefined ? { status } : {}),
   });
   if (policyFailure !== undefined) return policyFailure;
-  // HTTP 200 can carry a statusless overload in Responses SSE. Only this
-  // structured code, before any output, enters the existing reconnect ladder.
+  // HTTP 200 can carry a statusless server failure in Responses SSE. These
+  // structured codes, before any output, enter the existing reconnect ladder.
   // The earlier `error` event can carry a directive omitted by response.failed.
   if (args.providerName === "openai" && args.responsesAttempt !== undefined &&
-    readNestedProviderCode(args.errorBody) === "server_is_overloaded") {
+    ["server_is_overloaded", "server_error"].includes(readNestedProviderCode(args.errorBody) ?? "")) {
     if (args.responsesAttempt.retryDenied || forbidsStreamRetry(args.errorBody)) {
       return new LLMStreamRetryDeniedError(args.providerName, message, "provider_directive");
     }
     if (args.responsesAttempt.hasOutput) {
       return new LLMStreamRetryDeniedError(args.providerName, message, "partial_output");
     }
-    if (status === undefined) return new LLMServerError(args.providerName, 503, message);
+    if (status === undefined) return new LLMServerError(args.providerName,
+      readNestedProviderCode(args.errorBody) === "server_error" ? 500 : 503, message);
     if (status >= 400 && status < 500 && status !== 429) {
       const failure = mapOpenAIHttpFailureToError({
         providerName: args.providerName, message, status, body: args.errorBody,
@@ -1732,6 +1733,18 @@ export class OpenAIProvider implements LLMProvider {
    * History function calls go back with the item ids this provider issued
    * for them (recorded as responses arrive), or with none.
    */
+  exportFunctionCallItemIds(): readonly (readonly [string, string])[] {
+    return this.functionCallItemIds.snapshotFor(this.name);
+  }
+
+  get functionCallItemIdsScope(): string {
+    return createHash("sha256").update(`${this.name}\n${this.config.baseURL}`).digest("hex");
+  }
+
+  restoreFunctionCallItemIds(entries: unknown): void {
+    this.functionCallItemIds.restoreFor(this.name, entries);
+  }
+
   private functionCallItemIdOptions(): {
     readonly functionCallItemId: (callId: string) => string | undefined;
   } {
@@ -1878,7 +1891,7 @@ export class OpenAIProvider implements LLMProvider {
             (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
           if (eventType === "error" && this.name === "openai") {
             retryDenied ||= forbidsStreamRetry(event.data);
-            if (readNestedProviderCode(event.data) === "server_is_overloaded") {
+            if (["server_is_overloaded", "server_error"].includes(readNestedProviderCode(event.data) ?? "")) {
               overloadEvent = event.data;
               const status = inferErrorStatus(event.data);
               const terminalClientStatus = status !== undefined && status >= 400 && status < 500 && status !== 429;

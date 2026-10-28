@@ -124,6 +124,7 @@ import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
+import { capturePromptCacheState } from "./prompt-cache-state.js";
 import type { QuerySource } from "./_deps/query-source.js";
 import {
   freshDenialTracking,
@@ -5049,6 +5050,18 @@ export class Session {
           return ephemeral;
         },
       };
+    }
+    if (this.rolloutStore && ["turn_complete", "turn_failed", "turn_aborted"].includes(event.msg.type)) {
+      const cache: RolloutItem = { type: "session_state", payload: {
+        promptCache: capturePromptCacheState(this, this.provider),
+      } };
+      // Cache metadata is optional. Oversized state must not prevent a turn
+      // from completing or make its canonical recovery line unreadable.
+      if (Buffer.byteLength(JSON.stringify(cache), "utf8") < MAX_RECOVERY_CANONICAL_LINE_BYTES - 4096) {
+        this.rolloutStore.appendRollout(cache);
+      } else {
+        this.rolloutStore.appendRollout({ type: "session_state", payload: { promptCache: null } });
+      }
     }
     // I-27 + M4: allocate identity/sequence first, but do not let a listener
     // observe a durable transition until its rollout append has fsynced.

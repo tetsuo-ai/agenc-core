@@ -599,12 +599,10 @@ export interface EnvInfoInputs {
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
-/** env_info_simple — cwd, model, git branch, time, OS. AgenC-original. */
+/** env_info_simple — cwd, model, git branch, OS. AgenC-original. */
 export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   const { model, provider, cwd } = inputs;
   const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
-  // I-82: wall-clock OK here — display only, not a deadline.
-  const now = new Date().toISOString();
   // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
   // disambiguation note. Agent-tree identifiers such as `/root/task1` are
   // not files; absolute Linux paths under `/root` are filesystem paths.
@@ -615,7 +613,6 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,
     provider ? `Model: ${model} (provider: ${provider})` : `Model: ${model}`,
-    `Current time (UTC): ${now}`,
   ];
   if (branch !== null) {
     items.push(`Git branch: ${branch}`);
