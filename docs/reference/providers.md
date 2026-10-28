@@ -28,8 +28,16 @@ key and its default remains **`x-ai/grok-4.5`**.
 
 ## Gemini reasoning effort
 
-Core defaults to `gemini-3.8-flash` for the Gemini provider.
-`gemini-3.1-pro-preview` remains selectable through an explicit model setting.
+Core defaults to `gemini-3.8-flash` for the Gemini provider. Gemini 4 Argon
+(`gemini-4-argon`) leads the model list but is not the default: Google does
+not offer it on the free tier, and it costs more per token. Choose it with
+`/model` or an explicit model setting. `gemini-3.1-pro-preview` remains
+selectable the same way.
+
+`gemini-3.7-flash` and `gemini-3.5-flash` are deprecated. Google answers them
+with `gemini-3.8-flash` and `gemini-3.6-flash`, so AgenC hides them from the
+model list, keeps saved settings that name them working, and prices them as
+the model that answers.
 
 The native Gemini adapter sends an explicit effort as
 `generationConfig.thinkingConfig.thinkingLevel`. The model catalog, `/effort`,
@@ -38,12 +46,20 @@ supported-level metadata.
 
 | Model | Explicit levels | Provider default when omitted |
 | --- | --- | --- |
+| `gemini-4-argon` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.8-flash` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.1-pro-preview` | `low`, `medium`, `high` | `high` |
-| `gemini-3.7-flash` | `low`, `medium`, `high` | `medium` |
-| `gemini-3.5-flash` | `minimal`, `low`, `medium`, `high` | `medium` |
+| `gemini-3.6-flash` | `minimal`, `low`, `medium`, `high` | `medium` |
+| `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` | `minimal`, `low`, `medium`, `high` | `minimal` |
+| `gemini-3.7-flash` (deprecated) | `low`, `medium`, `high` | `medium` |
+| `gemini-3.5-flash` (deprecated) | `minimal`, `low`, `medium`, `high` | `medium` |
 | `gemini-3-flash-preview` | `minimal`, `low`, `medium`, `high` | `high` |
 | `gemini-3-pro-preview` | `low`, `high` | `high` |
+
+Gemini 4 Argon shares one 1,048,576-token window between input, thinking and
+output. A streamed response may use 65,536 output tokens, and a non-streaming
+call at most 32,768, so AgenC lowers the limit it sends on non-streaming calls
+to that model. Thinking tokens count toward the limit.
 
 An unconfigured Gemini session leaves thinking controls out of the request.
 An explicit `reasoning_effort = "none"` also omits the control, even when
@@ -62,10 +78,30 @@ Flash, and Flash-Lite use `thinkingBudget` on the native `generateContent`
 API, so AgenC does not accept named effort levels for those models or invent
 a token-budget conversion.
 
-Sources checked on 2026-09-08: Google's
+Sources checked on 2026-09-08 and again on 2026-10-28: Google's
 [native ThinkingConfig reference](https://ai.google.dev/api/generate-content#ThinkingConfig),
-[thinking guide](https://ai.google.dev/gemini-api/docs/thinking), and
+[thinking guide](https://ai.google.dev/gemini-api/docs/generate-content/thinking),
+[Gemini 4 Argon guide](https://ai.google.dev/gemini-api/docs/generate-content/latest-model), and
 [Gemini 3 guide](https://ai.google.dev/gemini-api/docs/gemini-3).
+
+### Gemini prices, logging and credits
+
+Several Gemini prices are introductory and change on a date Google announces:
+Gemini 4 Argon from December 1, 2026, and 3.8 Flash, 3.6 Flash and Robotics
+ER 2 from January 1, 2027. AgenC records both prices and bills each call at
+the rate in effect when it ran, switching at 00:00 UTC on the first day of the
+new price. A Gemini model with no price row shows its cost as unknown; AgenC
+never borrows another model's price for it.
+
+Since October 26, 2026, new paid Gemini API projects keep `generateContent`
+requests in their AI Studio logs unless a request sets `store` to `false`.
+AgenC sends `store: false` on every request to the Gemini Developer API and to
+a custom `GEMINI_BASE_URL`. Vertex AI requests leave the field out. This does
+not stop the abuse-monitoring logs Google keeps on paid requests.
+
+When the Prepay credit balance of a billing account reaches zero, the Gemini
+API answers HTTP 402 for every key on it. AgenC stops the turn instead of
+retrying and says to add credits or turn on auto-reload.
 The Interactions API's level abstraction for Gemini 2.5 does not apply to
 AgenC's native `generateContent` requests.
 
@@ -1087,7 +1123,7 @@ Read on 2026-10-22 from each provider's documentation:
 | Kimi (Moonshot) | Kept while the account is active | Enterprise, on request | Red ([zdr](https://platform.kimi.ai/docs/guide/zero-data-retention)) |
 | Amazon Bedrock | May be kept for abuse detection | Account `data_retention_mode: none` | Red ([retention](https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html)) |
 | GitHub Copilot | Upstream models under ZDR; individual plans may train on interactions | Plan setting | Red ([hosting](https://docs.github.com/en/copilot/reference/ai-models/model-hosting)) |
-| Gemini API | Logged for abuse monitoring; the free tier trains on prompts | Only on Vertex AI | Red ([zdr](https://ai.google.dev/gemini-api/docs/zdr)) |
+| Gemini API | Logged for abuse monitoring; the free tier trains on prompts | Only on Vertex AI; AgenC sends `store: false` | Red ([zdr](https://ai.google.dev/gemini-api/docs/zdr)) |
 | Z.AI, Z.AI Coding Plan | No-storage promise covers business customers; cache retention unannounced | None for individuals | Red ([privacy](https://docs.z.ai/legal-agreement/privacy-policy), [faq](https://docs.z.ai/help/faq)) |
 | DeepSeek | Kept while the account exists | None | Red ([privacy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)) |
 | MiniMax | Kept as long as necessary | None | Red ([privacy](https://platform.minimax.io/protocol/privacy-policy)) |

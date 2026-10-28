@@ -29,6 +29,18 @@ describe("providerFundsMessage", () => {
     expect(providerFundsMessage("openai", error)).toBeUndefined();
   });
 
+  it("tells a Gemini user that the Prepay credits ran out on any 402", () => {
+    const message = "Gemini says the Prepay credit balance is used up. Add credits to the billing account or turn on auto-reload, then try again.";
+    expect(providerFundsMessage("gemini", { status: 402 })).toBe(message);
+    expect(providerFundsMessage("gemini", {
+      name: "Wrapper",
+      cause: { status: 402, body: { error: { code: 402, status: "RESOURCE_EXHAUSTED", message: "x" } } },
+    })).toBe(message);
+    // Other providers keep their own 402 wording.
+    expect(providerFundsMessage("openai", { status: 402 })).toBeUndefined();
+    expect(providerFundsMessage("gemini", { status: 429 })).toBeUndefined();
+  });
+
   it("keeps the existing default for directly constructed funds errors", () => {
     expect(new LLMFundsError("openai", 429).message)
       .toBe("openai error: provider credits or billing quota exhausted");
@@ -68,6 +80,8 @@ describe("isProviderFundsFailure", () => {
 
   it("classifies provider-specific billing refusals and leaves throttling alone", () => {
     expect(isProviderFundsFailure("DeepSeek", { status: 402 })).toBe(true);
+    // Gemini answers 402 only when the Prepay credit balance is depleted.
+    expect(isProviderFundsFailure("gemini", { status: 402 })).toBe(true);
     expect(isProviderFundsFailure("unknown", { status: 402 })).toBe(false);
     expect(isProviderFundsFailure("openai", { status: 429, error: { code: "insufficient_quota" } })).toBe(true);
     expect(isProviderFundsFailure("openai", { status: 429, error: { code: "rate_limit_exceeded" } })).toBe(false);

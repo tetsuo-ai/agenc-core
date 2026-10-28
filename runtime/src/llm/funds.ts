@@ -40,14 +40,24 @@ function nestedText(value: unknown): string {
     .filter((part): part is string => typeof part === "string").join(" ");
 }
 
+/**
+ * The Gemini API answers HTTP 402 only when the billing account's Prepay
+ * credit balance is used up; every key on it fails until credits are added
+ * (ai.google.dev/gemini-api/docs/generate-content/api-errors, /docs/billing).
+ */
+const GEMINI_PREPAY_EXHAUSTED_MESSAGE =
+  "Gemini says the Prepay credit balance is used up. Add credits to the billing account or turn on auto-reload, then try again.";
+
 /** Billing messages never include provider response text. */
 export function providerFundsMessage(providerName: string, error: unknown): string | undefined {
   let current: unknown = error;
   let hasCreditEvidence = false;
+  const isGemini = providerName.toLowerCase() === "gemini";
   for (let depth = 0; depth < 5; depth += 1) {
     const item = record(current);
     if (item === undefined) break;
     const status = item.status ?? item.statusCode;
+    if (isGemini && status === 402) return GEMINI_PREPAY_EXHAUSTED_MESSAGE;
     const code = nestedCode(item) ?? nestedCode(item.body);
     const message = `${nestedText(item)} ${nestedText(item.body)}`;
     if (((status === 402 || status === 403) && EXHAUSTED_CREDITS_RE.test(message)) ||
@@ -118,8 +128,11 @@ function isFundsFailureNode(provider: string, item: Record<string, unknown>): bo
   // https://dev.meta.ai/docs/error-handling
   // abliteration.ai: 402 means insufficient credits.
   // https://docs.abliteration.ai/api/errors
+  // Gemini API: 402 means the Prepay credit balance is depleted.
+  // https://ai.google.dev/gemini-api/docs/generate-content/api-errors
   if ((provider === "deepseek" || provider === "openrouter" || provider === "agenc" ||
-    provider === "meta" || provider === "abliteration") && status === 402) return true;
+    provider === "meta" || provider === "abliteration" || provider === "gemini") &&
+    status === 402) return true;
   if (provider === "openai" || provider === "codex" || provider === "chatgpt") {
     if (["insufficient_quota", "credit_balance_exhausted", "organization_usage_limit_exceeded",
       "organization_spend_limit_exceeded", "project_spend_limit_exceeded",

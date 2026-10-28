@@ -20,7 +20,10 @@ import {
   mapLLMError,
   markLLMInitialHttpRejection,
 } from "../../errors.js";
-import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
+import {
+  geminiOutputTokenCeiling,
+  resolveGeminiReasoningEffort,
+} from "../../registry/gemini-thinking-models.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -178,6 +181,10 @@ function geminiFinishReason(
     case "":
       return "stop";
     case "MAX_TOKENS":
+    // The response reached the per-request output cap before it finished
+    // (Gemini 4 long decode). AgenC does not send continuation tokens, so it
+    // is a length stop, not a failed request.
+    case "CONTINUATION":
       return "length";
     case "SAFETY":
     case "RECITATION":
@@ -2744,11 +2751,15 @@ function geminiGenerationConfig(
   options: LLMChatOptions | undefined,
   defaultMaxTokens: number | undefined,
   schemaCapabilities: GeminiResponseJsonSchemaCapabilities,
+  streaming: boolean,
 ): Record<string, unknown> {
-  const maxOutputTokens =
+  const maxOutputTokens = geminiOutputTokenCeiling(
+    model,
     finiteInteger(options?.maxOutputTokens) ??
-    finiteInteger(defaultMaxTokens) ??
-    DEFAULT_GEMINI_MAX_OUTPUT_TOKENS;
+      finiteInteger(defaultMaxTokens) ??
+      DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+    streaming,
+  );
   const config: Record<string, unknown> = { maxOutputTokens };
   if (
     typeof options?.temperature === "number" &&
@@ -2792,12 +2803,30 @@ function cachedContentName(
   return configured?.startsWith("cachedContents/") ? configured : undefined;
 }
 
+/**
+ * Ask the Gemini Developer API not to keep this request in the project's
+ * AI Studio logs. Projects created on or after 2026-10-26 store
+ * generateContent requests by default, and the request-level `store` field
+ * overrides the project setting
+ * (ai.google.dev/gemini-api/docs/logs-datasets). Google documents the field
+ * for the Developer API only, so Vertex requests leave it out. A custom
+ * GEMINI_BASE_URL speaks the Developer API protocol and carries it too. This
+ * does not stop the abuse-monitoring logs Google keeps on every paid request.
+ */
+function geminiStoreField(
+  endpointPlan: GeminiEndpointPlan,
+): { readonly store?: false } {
+  return endpointPlan.kind === "vertex" ? {} : { store: false };
+}
+
 function buildGeminiRequest(args: {
   readonly config: GeminiProviderConfig;
   readonly model: string;
   readonly messages: readonly LLMMessage[];
   readonly tools: readonly LLMTool[];
   readonly options?: LLMChatOptions;
+  /** The request is a streamGenerateContent call (or counts one). */
+  readonly streaming: boolean;
 }): Record<string, unknown> {
   validateAgentInvocationMessageSequence(args.messages);
   geminiToolNames(args.tools);
@@ -2824,10 +2853,12 @@ function buildGeminiRequest(args: {
       args.options,
       args.config.maxTokens,
       schemaCapabilities,
+      args.streaming,
     ),
     ...(tools.length > 0 ? { tools } : {}),
     ...(toolConfig ? { toolConfig } : {}),
     ...(cachedContent ? { cachedContent } : {}),
+    ...geminiStoreField(args.config.endpointPlan),
   };
 }
 
@@ -3347,6 +3378,8 @@ export class GeminiProvider implements LLMProvider {
       messages: accountingRequest.messages,
       tools,
       options: accountingRequest.options,
+      // Counts the request the agent loop streams.
+      streaming: true,
     });
     const vertexCount = this.config.endpointPlan.kind === "vertex";
     if (
@@ -3418,6 +3451,7 @@ export class GeminiProvider implements LLMProvider {
       messages,
       tools,
       options,
+      streaming: false,
     });
     const metrics = requestMetrics({ messages, tools, body, stream: false });
 
@@ -3469,6 +3503,7 @@ export class GeminiProvider implements LLMProvider {
       messages,
       tools,
       options,
+      streaming: true,
     });
     const metrics = requestMetrics({ messages, tools, body, stream: true });
 
