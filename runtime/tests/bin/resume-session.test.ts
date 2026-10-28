@@ -2,6 +2,7 @@ import {
   closeSync,
   copyFileSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
@@ -709,8 +710,8 @@ describe("append-only resume reproof", () => {
     expect(Number(after.sourceSize)).toBe(statSync(rolloutPath).size);
   });
 
-  it("still refuses a rewritten past, a replaced file and a truncation", () => {
-    for (const change of ["rewritten", "replaced", "truncated"] as const) {
+  it("still refuses a rewritten past, a replaced file, a hardlink and a truncation", () => {
+    for (const change of ["rewritten", "replaced", "hardlinked", "truncated"] as const) {
       const sessionId = `conv-append${change}`;
       const rolloutPath = writeRollout(workHome, sessionId, "2026-01-01T10-00-00-000Z", 1);
       const before = resolved(sessionId);
@@ -720,6 +721,8 @@ describe("append-only resume reproof", () => {
       } else if (change === "replaced") {
         renameSync(rolloutPath, `${rolloutPath}.old`);
         writeFileSync(rolloutPath, `${original}\n`);
+      } else if (change === "hardlinked") {
+        linkSync(rolloutPath, `${rolloutPath}.link`);
       } else {
         truncateSync(rolloutPath, Number(before.sourceSize) - 10);
       }
