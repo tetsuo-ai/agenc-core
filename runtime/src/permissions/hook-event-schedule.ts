@@ -43,8 +43,23 @@ export function hookMatcherInputsForToolName(
   toolName: string,
   aliases: readonly string[] = [],
 ): readonly string[] {
-  const inputs =
-    toolName === "apply_patch" ? ["apply_patch", "Write", "Edit"] : [toolName];
+  let inputs: readonly string[];
+  switch (toolName) {
+    case "apply_patch":
+      inputs = [toolName, "Write", "Edit"];
+      break;
+    case "exec_command":
+    case "system.bash":
+    case "PowerShell":
+      inputs = [toolName, "Bash"];
+      break;
+    case "FileRead":
+    case "NotebookRead":
+      inputs = [toolName, "Read"];
+      break;
+    default:
+      inputs = [toolName];
+  }
   return uniqueStrings([...inputs, ...aliases]);
 }
 

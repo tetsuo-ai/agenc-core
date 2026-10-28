@@ -86,6 +86,36 @@ hooks = [
 Flattened runtime entries carry `source: "config"`, `sourcePath`, and index
 (`IndividualHookConfig` in `hooks/engine/types.ts`).
 
+Tool matchers accept the registered tool name and these compatibility aliases:
+
+| Matcher alias | Registered tools matched |
+| --- | --- |
+| `Bash` | `exec_command`, `system.bash`, `PowerShell` |
+| `Read` | `FileRead`, `NotebookRead` |
+| `Write`, `Edit` | `apply_patch` |
+
+Canonical matchers such as `system.bash` still work. The hook's stdin
+`tool_name` remains the registered name. Aliases apply to tool-matched hook
+events, including `PreToolUse`, `PostToolUse`, and `PermissionRequest`.
+
+### PreToolUse command output
+
+Exit 0 continues unless structured stdout explicitly denies the tool.
+`hookSpecificOutput.permissionDecision: "deny"`, a `decision` of `"deny"`
+or `"block"`, or `decision.behavior: "deny"` blocks execution. Flat and nested
+decision forms are recognized. A deny takes precedence over other output,
+including a conflicting allow or a non-zero exit status. A missing or invalid
+reason uses `Blocked by PreToolUse hook`.
+
+An explicit deny in a parsed JSON object still blocks when other fields fail
+validation. Validation issues, including unknown root keys, remain visible in
+hook diagnostics. Invalid structured output without a recognizable deny is
+diagnostic only; no input rewrite or allow is applied. Ordinary non-JSON
+stdout on exit 0 continues without a structured-output warning.
+
+Exit 2 with non-empty stderr also blocks. Other non-zero exits remain
+diagnostic only when stdout has no explicit deny.
+
 ### Skill frontmatter hook kinds
 
 Skill frontmatter has its own typed metadata surface. Its `hooks:` block is
