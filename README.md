@@ -5,7 +5,9 @@
 ![node](https://img.shields.io/badge/node-26.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
-An open source AI coding agent for your terminal. It works with any model
+Turn any model into a stronger agent. Open source and built to outperform.
+
+AgenC Core is a coding agent for your terminal. It works with any model
 provider.
 
 <p align="center">

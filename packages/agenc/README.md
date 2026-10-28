@@ -1,6 +1,8 @@
 # AgenC Core
 
-An open source AI coding agent for your terminal. It works with any model
+Turn any model into a stronger agent. Open source and built to outperform.
+
+AgenC Core is a coding agent for your terminal. It works with any model
 provider: 25 are built in, including OpenAI, Anthropic, xAI Grok, Gemini,
 DeepSeek, Venice and local models through Ollama or LM Studio.
 
