@@ -1,11 +1,9 @@
 // Stub — global types for Ink renderer.
 //
-// Two JSX resolution paths exist depending on tsconfig:
-//   - tsconfig.tui.json sets "types": [] so @types/react is absent; the
-//     react-jsx transform falls back to the GLOBAL `JSX` namespace below.
-//   - tsconfig.json pulls in @types/react (React 19), whose react-jsx runtime
-//     resolves intrinsic elements from `React.JSX.IntrinsicElements`. The
-//     module augmentation below adds the same Ink host elements there.
+// tsconfig.json pulls in @types/react (React 19), whose react-jsx runtime
+// resolves intrinsic elements from `React.JSX.IntrinsicElements`. The
+// module augmentation below adds the same Ink host elements to the GLOBAL
+// `JSX` namespace for consumers without @types/react.
 declare global {
   namespace JSX {
     interface IntrinsicElements {

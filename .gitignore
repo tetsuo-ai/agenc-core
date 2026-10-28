@@ -59,7 +59,6 @@ obj/
 !.mcp.json
 !Anchor.toml
 !package.json
-!runtime/tsconfig.tui.json
 !runtime/idl/*.json
 !runtime/src/replay/alert-schema-lockfile.json
 !runtime/tests/fixtures/*.json

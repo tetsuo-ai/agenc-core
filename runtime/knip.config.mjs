@@ -599,7 +599,6 @@ export default {
     "src/*.jsx": ["./src/*.tsx"],
   },
   ignoreFiles: [
-    "src/types/generated/**",
     // String-loaded fixture used by MCP client lifecycle tests.
     "src/mcp-client/test-fixtures/**",
     // String-loaded fixture used by plugin registration tests.

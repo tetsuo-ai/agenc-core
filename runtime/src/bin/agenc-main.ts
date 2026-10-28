@@ -839,7 +839,8 @@ export function setOneShotDeadlineBackstopForTests(
 /**
  * Load `tui/main.js` via dynamic import so the main `tsconfig.json`
  * (which excludes `src/tui/**`) can still typecheck `bin/agenc.ts`.
- * The TUI module itself is compiled through `tsconfig.tui.json`.
+ * The TUI module itself ships through the esbuild bundle that
+ * `scripts/build-runtime.mjs` produces.
  */
 async function loadBootTUI(): Promise<
   (opts: {
@@ -857,10 +858,10 @@ async function loadBootTUI(): Promise<
   // directories under `dist/`). We dodge static resolution by passing
   // the specifier through a variable — the main `tsconfig.json`
   // excludes `src/tui/**` so a direct `import("../tui/main.js")`
-  // would fail to typecheck for lack of JSX configuration. The TUI
-  // module is compiled through `tsconfig.tui.json` + tsup; runtime
-  // resolution works unchanged because `dist/tui/main.js` sits next
-  // to `dist/bin/agenc.js`.
+  // would pull the whole TUI tree into the baseline tsc gate. The TUI
+  // module itself is bundled by esbuild (`scripts/build-runtime.mjs`);
+  // runtime resolution works unchanged because `dist/tui/main.js` sits
+  // next to `dist/bin/agenc.js`.
   const specifier = "../tui/main.js";
   const mod = (await import(specifier)) as {
     readonly bootTUI: (opts: {
