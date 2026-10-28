@@ -27,12 +27,23 @@ describe("portable broker ABI and hardening admission", () => {
   it("compares required symbol versions numerically and ignores defined versions", () => {
     expect(assertLinuxBrokerElf("Version definition section: GLIBC_99.0\n" + elf, "2.31").minimumGlibc).toBe("2.17");
     expect(() => assertLinuxBrokerElf(elf + "Name: GLIBC_2.34\n", "2.31")).toThrow("needs GLIBC 2.34");
+    expect(assertLinuxBrokerElf(elf + "Name: GLIBC_2.31.0\n", "2.31").minimumGlibc).toBe("2.31.0");
+    expect(assertLinuxBrokerElf(elf + "Name: GLIBC_2.31\n", "2.31.0").minimumGlibc).toBe("2.31");
+    expect(() => assertLinuxBrokerElf(elf + "Name: GLIBC_2.31.1\n", "2.31")).toThrow("needs GLIBC 2.31.1");
   });
+  it.each(["2", "2.", "2.31.1.1", "", "latest", "GLIBC_2.31", "2.31-1"] as const)(
+    "refuses a malformed GLIBC ceiling before inspecting the artifact (%s)",
+    ceiling => {
+      expect(() => assertLinuxBrokerElf(elf, ceiling)).toThrow("Invalid GLIBC ceiling");
+    },
+  );
   it.each([
     [elf.replace("Type: DYN", "Type: EXEC"), "PIE"],
+    [elf.replace(" PIE", ""), "PIE"],
     [elf.replace("GNU_RELRO", "no-relro"), "RELRO"],
     [elf.replace("BIND_NOW", "LAZY"), "RELRO"],
     [elf.replace(" RW ", " RWE "), "non-executable"],
+    [elf.replace(" RW ", " R "), "non-executable"],
     [elf.replace("__stack_chk_fail", "missing_stack_guard"), "stack protection"],
     [elf.split("Version needs section")[0], "inspectable GLIBC"],
   ])("refuses an incompatible native artifact before installation", (output, reason) => {
@@ -51,6 +62,14 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")("portable
     expect(args).toContain(`${process.getuid!()}:${process.getgid!()}`);
     expect(args).toContain("type=bind,source=/runtime/native,target=/source/native,readonly");
     expect(args).toContain("CC=/usr/bin/cc");
+    expect(args).toContain("--security-opt=no-new-privileges");
+    expect(args).toContain("--cap-drop=ALL");
+    expect(args).toContain("--pids-limit=128");
+    expect(args).toContain("type=bind,source=/runtime/scripts/build-linux-process-broker.mjs,target=/source/build-linux-process-broker.mjs,readonly");
+    expect(args).toContain("type=bind,source=/runtime/scripts/linux-broker-elf.mjs,target=/source/linux-broker-elf.mjs,readonly");
+    expect(args).toContain("type=bind,source=/output,target=/out");
+    expect(args).not.toContain("type=bind,source=/output,target=/out,readonly");
+    expect(args.at(-1)).toBe("2.31");
     expect(args).not.toContain("/untrusted/compiler");
     expect(args).not.toContain("/var/run/docker.sock");
   });
