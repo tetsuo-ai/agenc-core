@@ -54,6 +54,10 @@ obj/
 !/runtime/src/eval-suites/suite-evidence-v1.schema.json
 !/runtime/benchmarks/compaction/held-out-corpus.v1.json
 !/runtime/benchmarks/compaction/offline-results.v1.json
+!/runtime/benchmarks/rejected-write-recovery/trigger-fixtures.json
+!/runtime/benchmarks/rejected-write-recovery/natural-fixtures.json
+!/runtime/benchmarks/rejected-write-recovery/protocol.json
+!/runtime/benchmarks/rejected-write-recovery/results.json
 !/runtime/src/eval-suites/trust-fixture-bundle-v1.schema.json
 !runtime/scripts/hermetic-docker-seccomp.json
 !.mcp.json

@@ -1,0 +1,24 @@
+{
+  "primary": "independent task completion after a rejected Write and whitespace-only model stop",
+  "baseline_revision": "2a25d23c334fc289084d234aeb2070ffcdcdf790",
+  "candidate_archive_sha256": "8d94b5f90831d1ec969099848edd69329928ed8426e53186bb8470d92c63f758",
+  "trigger": "Both builds get the same scripted first Write (actual guard must reject without file mutation), then exact newline-newline final. Further requests go to the unchanged real local DeepSeek server. Report this as fault injection, not natural failure frequency.",
+  "pilot": "one pair, excluded from confirmation; no rerolls of confirmation",
+  "confirmation": {
+    "trigger_pairs": 5,
+    "permanent_blank_pairs": 1,
+    "natural_coding_pairs_per_task": 3,
+    "natural_tasks": "same CSV and SQLite fixtures from prior study, unchanged"
+  },
+  "publication_gate": [
+    "5/5 candidate trigger attempts pass all supplied and heldout checks vs0/5 control; first Write blocked and file unchanged every time",
+    "Persistent whitespace exhausts existing bounded retry ladder as explicit failure, never silent success",
+    "All6 candidate natural task attempts pass, supplied tests unchanged, no permission/sandbox changes; all failures/outliers retained",
+    "Targeted unit and owning recovery/permission tests pass; required broader gates run with baseline failures disclosed"
+  ],
+  "sampler": "same DeepSeek server and settings; 8192 output limit and1M context, thinking off; previous Light switches disabled",
+  "no_scope_changes": "No live install, model server, permissions or sandbox changes. No model-name family inference.",
+  "build_identity": "V2: whitespace presence check plus retry instruction to continue unfinished work within existing permissions. Original V1 failed pilot retained separately.",
+  "fixture_sha256": "0a896f5c50f9d8ebf676165f372b5b748608885915fcb351b3cd2521935da8be",
+  "source_diff_sha256": "5a525cd1914dfaa06db630a9f65e614a8d8bb31d3d3ab7c404c65a72313bdf6e"
+}

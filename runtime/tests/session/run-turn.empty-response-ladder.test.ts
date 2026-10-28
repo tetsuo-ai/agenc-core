@@ -4,7 +4,9 @@ import {
   ProviderHttpClient,
   type ProviderHttpContinuationSnapshot,
 } from "../../src/llm/client.js";
-import type { LLMResponse } from "../../src/llm/types.js";
+import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
+import type { ToolRegistry } from "../../src/tool-registry.js";
+import type { Tool } from "../../src/tools/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
 import {
   EMPTY_RESPONSE_RETRY_CAUSE,
@@ -36,13 +38,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function emptyThenAnswer(emptySamples: number, answer = "done") {
+function emptyThenAnswer(emptySamples: number, answer = "done", emptyContent = "") {
   let samples = 0;
   const provider = mkProvider({});
   provider.chatStream = async (): Promise<LLMResponse> => {
     samples += 1;
     return {
-      content: samples <= emptySamples ? "" : answer,
+      content: samples <= emptySamples ? emptyContent : answer,
       toolCalls: [],
       usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
       model: "test-model",
@@ -80,6 +82,71 @@ const unattended = () => ({
 describe("empty-response retry ladder (#2502)", () => {
   test("the default ladder is 2 s, 8 s, 30 s", () => {
     expect(EMPTY_RESPONSE_RETRY_DELAYS_MS).toEqual([2_000, 8_000, 30_000]);
+  });
+
+  test.each(["\n\n", " \t\r\n"])("retries whitespace-only output instead of reporting a completed turn (%j)", async blank => {
+    const { provider, samples } = emptyThenAnswer(1, "done", blank);
+    const { session, events } = mkSession({ provider, services: unattended() });
+    const ctx = mkCtx();
+
+    const phases = await collect(session, { ...ctx, config: { ...ctx.config, maxTurns: 1 } });
+
+    expect(samples()).toBe(2);
+    expect(phases.at(-1)).toMatchObject({ stopReason: "completed", content: "done" });
+    expect(retryWarnings(events)).toHaveLength(1);
+  });
+
+  test("persistent whitespace exhausts the existing retry bound as a failed empty response", async () => {
+    const { provider, samples } = emptyThenAnswer(10, "done", "\n\n");
+    const { session, events } = mkSession({ provider, services: unattended() });
+
+    const phases = await collect(session);
+
+    expect(samples()).toBe(4);
+    expect(phases.at(-1)).toMatchObject({ stopReason: "empty_response" });
+    expect(terminals(events)).toEqual([
+      expect.objectContaining({ outcome: "errored", failureCode: "empty_response" }),
+    ]);
+  });
+
+  test("retries whitespace after a rejected write without automatically replaying the mutation", async () => {
+    const execute = vi.fn(async () => ({
+      isError: true, content: "File has not been read yet. Call FileRead first.",
+    }));
+    const tool: Tool = { name: "Write", description: "Write file", inputSchema: { type: "object" }, execute };
+    const registry = {
+      tools: [tool],
+      toLLMTools: () => [{ type: "function", function: {
+        name: tool.name, description: tool.description, parameters: tool.inputSchema,
+      } }],
+      dispatch: execute,
+    } as unknown as ToolRegistry;
+    const requests: LLMMessage[][] = [];
+    const provider = mkProvider();
+    provider.chatStream = async messages => {
+      requests.push(structuredClone(messages));
+      return {
+        content: requests.length < 3 ? "\n\n" : "The file must be read before the write can proceed.",
+        toolCalls: requests.length === 1 ? [{ id: "rejected-write", name: "Write",
+          arguments: JSON.stringify({ file_path: "fixture.txt", content: "new contents" }) }] : [],
+        usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+        model: "test-model", finishReason: requests.length === 1 ? "tool_calls" : "stop",
+      };
+    };
+    const { session, events } = mkSession({ provider, registry, services: {
+      approvalResolver: { request: async () => ({ kind: "approved" }) },
+    } });
+
+    const phases = await collect(session);
+
+    expect(requests).toHaveLength(3);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(requests[2])).toContain("File has not been read yet");
+    expect(requests[2]?.at(-1)?.content).toMatch(/continue the user.s task/i);
+    expect(requests[2]?.at(-1)?.content).toContain("existing permissions");
+    expect(retryWarnings(events)).toHaveLength(1);
+    expect(phases.at(-1)).toMatchObject({ stopReason: "completed",
+      content: "The file must be read before the write can proceed." });
   });
 
   test("an unattended turn re-samples three times, resetting the provider continuation from the second retry", async () => {
