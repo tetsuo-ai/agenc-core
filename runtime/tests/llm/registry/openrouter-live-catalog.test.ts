@@ -113,16 +113,16 @@ test("offline refresh keeps an expired disk catalog without requesting or rewrit
   expect(fetchImpl).not.toHaveBeenCalled();
 });
 
-test("a mocked 468-model catalog replaces all 298 menu rows and remains searchable", async () => {
+test("a mocked 468-model catalog replaces all 300 menu rows and remains searchable", async () => {
   const path = home();
   const ctx = context(path);
   let finish!: (response: Response) => void;
   const fetchImpl = vi.fn<typeof fetch>(() => new Promise(resolve => { finish = resolve; }));
   const catalog = openRouterCatalogFor({ home: path, fetchImpl });
-  expect(OPENROUTER_MODEL_IDS).toHaveLength(298);
-  expect(readModelMenuSnapshot(ctx).providerCounts.openrouter).toBe(298);
+  expect(OPENROUTER_MODEL_IDS).toHaveLength(300);
+  expect(readModelMenuSnapshot(ctx).providerCounts.openrouter).toBe(300);
   const pending = catalog.refresh();
-  expect(readProvidersHubModels(ctx, "openrouter")).toHaveLength(298);
+  expect(readProvidersHubModels(ctx, "openrouter")).toHaveLength(300);
   finish(json(listing));
   await pending;
   const rows = readProvidersHubModels(ctx, "openrouter");
@@ -174,7 +174,7 @@ test.each(["network", "http", "malformed", "empty"])("%s failure uses the bundle
   if (failure === "malformed") fetchImpl.mockResolvedValueOnce(json({ data: [{ name: "missing id" }] }));
   if (failure === "empty") fetchImpl.mockResolvedValueOnce(json({ data: [] }));
   expect((await catalog.refresh()).source).toBe("bundled");
-  expect(catalog.read().models).toHaveLength(298);
+  expect(catalog.read().models).toHaveLength(300);
   expect(() => assertModelCatalogSelection({}, "openrouter", "future/new-model", {})).not.toThrow();
   expect(openRouterSelectionNotice("future/new-model")).toContain("unverified");
   expect((await catalog.refresh()).models).toHaveLength(468);
@@ -186,7 +186,7 @@ test("a corrupt disk cache cannot break the menu", async () => {
   await catalog.refresh();
   writeFileSync(catalog.cachePath!, "{bad json");
   const snapshot = readModelMenuSnapshot(context(path));
-  expect(snapshot.providerCounts.openrouter).toBe(298);
+  expect(snapshot.providerCounts.openrouter).toBe(300);
   expect(snapshot.catalogNote).toContain("showing bundled models");
 });
 

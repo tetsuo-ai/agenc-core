@@ -241,6 +241,8 @@ describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPL
   test.each([
     ["gpt-6-luna", undefined, true],
     ["gpt-6.1-sol", undefined, true],
+    ["gpt-6.1-terra", undefined, true],
+    ["gpt-6.1-terra", "none", false],
     ["o3", undefined, true],
     ["gpt-5.4", undefined, false],
     ["gpt-5.4", "medium", true],

@@ -155,7 +155,7 @@ describe("prompt_cache_key on the OpenAI Responses wire", () => {
   const scope = SCOPE;
 
   it("sends the user's cache scope to GPT-5.6 and later on the platform API", () => {
-    for (const model of ["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-terra", "openai/gpt-6-luna",
+    for (const model of ["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-5.6-terra", "openai/gpt-6-luna",
       "gpt-6-luna-2026-09-22"]) {
       expect(openAiModelScopesPromptCacheByKey(model)).toBe(true);
       expect(request([PROMPT], { model }).prompt_cache_key).toBe(scope);
