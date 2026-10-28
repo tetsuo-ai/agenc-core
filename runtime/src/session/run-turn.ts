@@ -1005,6 +1005,10 @@ async function prepareSamplingRequestBoundary(
       ? { fileMentionAllowedRoots }
       : {}),
     skillsManager: session.services.skillsManager,
+    ensureSkillTool: () => {
+      session.services.registry.discoverToolNames?.(["Skill"]);
+      return builtTools(session, ctx).some(tool => tool.function.name === "Skill");
+    },
     ...(session.services.registry.toolPolicy !== undefined
       ? { toolPolicy: session.services.registry.toolPolicy }
       : {}),

@@ -81,14 +81,15 @@ async function bundledRegistrySkills(
  * An absent listing is restored even after compaction or durable resume, when
  * the in-memory ledger and authoritative root-human provenance may be absent.
  *
- * A Light session starts without the Skill tool; system.searchTools loads it,
- * as the listing's guidance says. Until it is loaded, the listing names only
- * installed skills (not the bundled ones), within LIGHT_SKILL_LISTING_MAX_CHARS,
- * and a session without an installed skill gets none.
+ * A Light session starts without the Skill tool. An invocable installed skill
+ * loads its schema before sampling, so invoking the skill does not depend on
+ * model-driven tool discovery. The initial listing still names only installed
+ * skills within LIGHT_SKILL_LISTING_MAX_CHARS. A session without an installed
+ * skill gets neither this listing nor an extra tool schema.
  */
 export const skillListingProducer: AttachmentProducer = async (opts, tracking) => {
   if (opts.subagentDepth > 0) return [];
-  const skillToolListed = opts.loadedTools.some(tool => tool.function.name === "Skill");
+  let skillToolListed = opts.loadedTools.some(tool => tool.function.name === "Skill");
   const lightBeforeSkill = opts.lightMode === true && !skillToolListed;
   if (!opts.skillsManager) return [];
   // A session whose policy leaves out the Skill tool cannot load anything the
@@ -108,11 +109,19 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
   const rootTurnId = provenance?.turnId && rootHumanTurn?.turnId === provenance.turnId
     ? provenance.turnId
     : undefined;
-  if (listingPresent && (rootTurnId === undefined ||
+  // A resumed session may retain the listing but have a fresh registry. Load
+  // its invocation schema before the ordinary listing deduplication below.
+  const needsSkillTool = !skillToolListed && opts.ensureSkillTool !== undefined;
+  if (!needsSkillTool && listingPresent && (rootTurnId === undefined ||
     tracking.lastSkillListingRootTurnId === rootTurnId)) return [];
 
   const outcome = await opts.skillsManager.skillsForConfig(opts.config ?? {}, null);
   const skills = outcome.availableSkills ?? [];
+  if (opts.signal.aborted) return [];
+  if (needsSkillTool && skills.some(skill =>
+    skill.loadedFrom !== "bundled" && skill.disableModelInvocation !== true)) {
+    skillToolListed = opts.ensureSkillTool!();
+  }
   // Roots that hold more skills than the per-root cap loaded: those never
   // reached the listing at all, so a truncated listing is only half the story.
   const truncatedRoots = (outcome.truncatedSkillRoots ?? []).filter(

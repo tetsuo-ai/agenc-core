@@ -1259,6 +1259,37 @@ describe("daemon-owned scheduled turns", () => {
 });
 
 describe("runTurn — T6 gap #119 lifecycle emits", () => {
+  test.each([true, false])("prepares the first Light sampling request with installed skills=%s", async installed => {
+    const skill: LLMTool = { type: "function", function: {
+      name: "Skill", description: "Load a skill", parameters: { type: "object" },
+    } };
+    let visible = false;
+    const discoverToolNames = vi.fn((names: readonly string[]) => {
+      if (names.includes("Skill")) visible = true;
+    });
+    const registry = { ...mkRegistry(), discoverToolNames,
+      toLLMTools: () => visible ? [skill] : [],
+    } as ToolRegistry;
+    const chatStream = vi.fn(mkProvider({ content: "done" }).chatStream);
+    const { session } = mkSession({
+      provider: { ...mkProvider({}), chatStream }, registry,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true }),
+      skillsManager: { skillsForConfig: async () => ({ availableSkills: installed ? [{
+        name: "house-style", description: "Apply the house style", loadedFrom: "skills", scope: "project",
+      }] : [] }) } as unknown as SessionServices["skillsManager"],
+    });
+    await drain(session.runTurn("Apply the house style to this paragraph.", { ctx: mkCtx() }));
+    expect(chatStream).toHaveBeenCalledOnce();
+    expect(chatStream.mock.calls[0]?.[2]?.tools?.map(tool => tool.function.name)).toEqual(installed ? ["Skill"] : []);
+    if (installed) {
+      expect(discoverToolNames).toHaveBeenCalledWith(["Skill"]);
+      expect(JSON.stringify(chatStream.mock.calls[0]?.[0])).toContain("If a skill fits, use Skill.");
+    } else {
+      expect(discoverToolNames).not.toHaveBeenCalled();
+      expect(JSON.stringify(chatStream.mock.calls[0]?.[0])).not.toContain("The following skills");
+    }
+  });
+
   test("stops before sampling when the canonical session cost cap is exhausted", async () => {
     const chatStream = vi.fn(
       mkProvider({ content: "must not run" }).chatStream,
