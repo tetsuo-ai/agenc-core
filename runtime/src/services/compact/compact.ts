@@ -101,6 +101,7 @@ export function buildPostCompactMessages(
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.id !== undefined ? { uuid: message.id } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
+      ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
       ...(message.providerReasoning !== undefined
         ? {
             providerReasoningContent: message.providerReasoning.content,

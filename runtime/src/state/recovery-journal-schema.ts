@@ -241,6 +241,7 @@ const isResponseItemShape = objectShape(
     toolCalls: arrayOf(isToolCall),
     toolCallId: isString,
     toolName: isString,
+    providerContextHistory: isUnknown,
     // The recovery envelope is additive. The checkpoint-v2 reader validates
     // the exact integrity shape, body digest, and owning run before replay.
     toolResultIntegrity: isUnknown,

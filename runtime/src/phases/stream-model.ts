@@ -1732,6 +1732,7 @@ export async function streamModel(
   state.messages.push({
     role: "assistant",
     content: response.content,
+    ...(response.providerContextHistory !== undefined ? { providerContextHistory: response.providerContextHistory } : {}),
     ...(response.providerReasoningContent !== undefined
       ? { providerReasoningContent: response.providerReasoningContent }
       : {}),

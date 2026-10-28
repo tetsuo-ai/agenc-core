@@ -32,6 +32,7 @@ export type RuntimeMessage = {
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
+  readonly providerContextHistory?: import("../../llm/types.js").ProviderContextHistory;
   readonly providerReasoningContent?: string;
   readonly providerReasoningProvenance?: ProviderReasoningProvenance;
   readonly toolCalls?: readonly {

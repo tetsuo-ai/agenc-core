@@ -13,7 +13,7 @@
  */
 
 import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
-import type { ProviderReasoningReplay } from "../llm/types.js";
+import type { ProviderContextHistory, ProviderReasoningReplay } from "../llm/types.js";
 import { redactDurableSecrets } from "./provider-replay-redaction.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
 import type { ToolResultIntegrity } from "./tool-result-integrity.js";
@@ -131,6 +131,7 @@ export interface ResponseItem {
   readonly toolName?: string;
   /** Opaque provider state; never render this as assistant text. */
   readonly providerReasoning?: ProviderReasoningReplay;
+  readonly providerContextHistory?: ProviderContextHistory;
   /** Checkpoint-v2 identity for the exact durable tool-result body. */
   readonly toolResultIntegrity?: ToolResultIntegrity;
   readonly toolResultIsError?: true;
@@ -331,11 +332,11 @@ export function serializeRolloutItem(item: RolloutItem): string {
 
 function rolloutCarriesProviderReasoning(item: RolloutItem): boolean {
   if (item.type === "response_item") {
-    return item.payload.providerReasoning !== undefined;
+    return item.payload.providerReasoning !== undefined || item.payload.providerContextHistory !== undefined;
   }
   if (item.type === "compacted") {
     return item.payload.replacementHistory?.some(
-      (message) => message.providerReasoning !== undefined,
+      (message) => message.providerReasoning !== undefined || message.providerContextHistory !== undefined,
     ) === true;
   }
   return false;

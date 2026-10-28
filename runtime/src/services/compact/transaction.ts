@@ -1798,6 +1798,7 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.runtimeOnly?.toolResultIsError === true
       ? { toolResultIsError: true as const }
       : {}),
+    ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
     ...(typeof message.providerReasoningContent === "string" &&
     (message.providerReasoningContent.length > 0 ||
       (normalizedRole === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
@@ -1860,6 +1861,7 @@ function toLlmMessage(message: RuntimeMessage): LLMMessage {
       : {}),
     ...(projected.toolCallId !== undefined ? { toolCallId: projected.toolCallId } : {}),
     ...(projected.toolName !== undefined ? { toolName: projected.toolName } : {}),
+    ...(projected.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(projected.providerContextHistory) } : {}),
     ...(projected.providerReasoning !== undefined
       ? {
           providerReasoningContent: projected.providerReasoning.content,

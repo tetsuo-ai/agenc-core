@@ -814,6 +814,26 @@ describe("transactional compaction production path", () => {
     });
   });
 
+  it("preserves provider context through a real compaction commit and authenticates its projection", async () => {
+    await withTransactionalStore("transaction-provider-context", async store => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const providerContextHistory = { version: 1 as const, provider: "openai" as const,
+        model: "gpt-6.1-terra", initial: { tools: [], reasoningEffort: "low" as const } };
+      const kept: RuntimeMessage = { role: "assistant", content: "READY", providerContextHistory };
+      store.appendRollout({ type: "response_item", payload: { role: "assistant", content: "READY", providerContextHistory } }, { durable: true });
+      source.push(kept);
+      const result = await runRealTransaction(store, source, compactionProvider(), {
+        messagesToKeep: [kept], messagesToSummarize: source.slice(0, -1),
+      });
+      expect(result.transaction?.committed.replacement_history.at(-1)?.providerContextHistory).toEqual(providerContextHistory);
+      expect(reduceAll(store.readAll()).state.history.at(-1)?.providerContextHistory).toEqual(providerContextHistory);
+      const projection = { role: "assistant" as const, content: "READY", providerContextHistory };
+      const sourceDigest = canonicalizeJson(canonicalCompactionSourceMessages([kept]));
+      expect(canonicalizeJson(canonicalCompactionProjectionMessages([projection]))).toBe(sourceDigest);
+      expect(canonicalizeJson(canonicalCompactionProjectionMessages([{ ...projection, providerContextHistory: undefined }]))).not.toBe(sourceDigest);
+    });
+  });
+
   it("preserves known-empty GLM reasoning through a real compaction commit and disk replay", async () => {
     const sessionId = "transaction-empty-glm-replay";
     await withTransactionalStore(sessionId, async (store) => {

@@ -10,7 +10,7 @@ const MAX_ENTRIES = 256;
 const MAX_RETAINED_CODE_UNITS = 131_072;
 const MAX_CONTENT_CODE_UNITS = 32_768;
 const MESSAGE_KEYS = ["role", "content", "toolCallId", "toolName", "phase", "runtimeOnly"];
-const MESSAGE_READS = [...MESSAGE_KEYS, "toolCalls", "providerReasoningContent", "providerReasoningProvenance"];
+const MESSAGE_READS = [...MESSAGE_KEYS, "toolCalls", "providerReasoningContent", "providerReasoningProvenance", "providerContextHistory"];
 const RUNTIME_KEYS = ["toolResultIntegrity", "responseItemId"];
 const RUNTIME_READS = [...RUNTIME_KEYS, "agentInvocation", "compactionHistory"];
 // Full projection preserves seal insertion order in JSONL. Admit only the

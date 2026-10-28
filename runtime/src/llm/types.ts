@@ -95,6 +95,22 @@ export type ProviderReasoningReplay =
   | ProviderReasoningReplayV1
   | ProviderReasoningReplayV2;
 
+/** A request configuration event, stored on the assistant response it produced. */
+export interface ProviderContextHistory {
+  readonly version: 1;
+  readonly provider: "openai";
+  readonly model: string;
+  /** A fresh prefix after initial use, compaction, or a tool-policy/schema change. */
+  readonly initial?: {
+    readonly tools: readonly Record<string, unknown>[];
+    readonly reasoningEffort?: LLMChatOptions["reasoningEffort"];
+  };
+  readonly tools?: readonly Record<string, unknown>[];
+  readonly reasoningEffort?: LLMChatOptions["reasoningEffort"];
+  /** Hash of the user item immediately following this effort change, when present. */
+  readonly beforeUser?: string;
+}
+
 /**
  * A single message in an LLM conversation.
  *
@@ -113,6 +129,8 @@ export interface LLMMessage {
   providerReasoningContent?: string;
   /** Origin of `providerReasoningContent`; required for provider replay. */
   providerReasoningProvenance?: ProviderReasoningProvenance;
+  /** Provider-bound append-only request configuration, never visible transcript text. */
+  providerContextHistory?: ProviderContextHistory;
   /** Optional local phase metadata for runtime-side replay and completion logic. */
   phase?: LLMAssistantPhase;
   /**
@@ -920,6 +938,8 @@ export interface LLMResponse {
   providerReasoningContent?: string;
   /** Canonical origin that constrains where opaque reasoning may be replayed. */
   providerReasoningProvenance?: ProviderReasoningProvenance;
+  /** Provider-bound append-only request configuration, never visible transcript text. */
+  providerContextHistory?: ProviderContextHistory;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter" | "error";
   /** Underlying error when finishReason is "error". */
   error?: Error;

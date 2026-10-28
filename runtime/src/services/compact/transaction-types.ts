@@ -354,6 +354,7 @@ export interface CompactionProjectionMessageV1 {
   readonly phase?: string;
   readonly endTurn?: boolean;
   readonly providerReasoning?: ProviderReasoningReplay;
+  readonly providerContextHistory?: import("../../llm/types.js").ProviderContextHistory;
   readonly toolResultIntegrity?: ToolResultIntegrity;
   readonly toolResultIsError?: true;
   readonly agentInvocation?: AgentInvocationChannelMetadata;

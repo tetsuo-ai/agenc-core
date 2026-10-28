@@ -32,6 +32,7 @@ export type AgenCMessageRole =
 export interface AgenCMessage {
   readonly role: AgenCMessageRole;
   readonly content: string | readonly LLMContentPart[];
+  readonly providerContextHistory?: LLMMessage["providerContextHistory"];
   readonly providerReasoningContent?: string;
   readonly providerReasoningProvenance?: NonNullable<LLMMessage["providerReasoningProvenance"]>;
   readonly toolCallId?: string;
@@ -50,6 +51,7 @@ export type AgenCRuntimeMessage = Omit<
   readonly originalRole?: AgenCMessage["role"];
   readonly toolCallId?: string;
   readonly toolName?: string;
+  readonly providerContextHistory?: LLMMessage["providerContextHistory"];
   readonly providerReasoningContent?: string;
   readonly providerReasoningProvenance?: NonNullable<LLMMessage["providerReasoningProvenance"]>;
   readonly toolCalls?: readonly {
@@ -187,6 +189,7 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
   return {
     role: message.role,
     content: cloneLlmContent(message.content),
+    ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
     ...(message.providerReasoningContent !== undefined
       ? { providerReasoningContent: message.providerReasoningContent }
       : {}),
@@ -218,10 +221,11 @@ function toAgenCRuntimeWireRole(
  * same call on its next iteration.
  */
 function projectRuntimeWireFields(
-  message: Pick<AgenCRuntimeMessage, "providerReasoningContent" | "providerReasoningProvenance" |
+  message: Pick<AgenCRuntimeMessage, "providerContextHistory" | "providerReasoningContent" | "providerReasoningProvenance" |
     "toolCalls" | "toolCallId" | "toolName" | "phase" | "runtimeOnly">,
 ): Omit<LLMMessage, "role" | "content"> {
   return {
+    ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
     ...(message.providerReasoningContent !== undefined
       ? { providerReasoningContent: message.providerReasoningContent }
       : {}),

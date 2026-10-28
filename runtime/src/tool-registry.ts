@@ -1487,7 +1487,8 @@ export function buildToolRegistry(
   /**
    * The tools every request starts with keep their order; a deferred tool
    * joins at the end once loaded, in load order. A loaded tool never moves the
-   * tools before it, so the cached prompt prefix up to them stays valid.
+   * tools before it. Providers that cache the whole top-level list must
+   * project later loads into conversation items (OpenAI: additional_tools).
    */
   function loadOrderedSpecs(visible: readonly ConfiguredToolSpec[]): readonly ConfiguredToolSpec[] {
     const initial = visible.filter((spec) => !isDeferredSpec(spec));

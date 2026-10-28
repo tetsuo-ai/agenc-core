@@ -7,6 +7,7 @@ import {
   type TurnCheckpointV3Event,
   type TurnCheckpointV4Event,
 } from "./event-log.js";
+import { readProviderContextHistory } from "../llm/wire/responses-openai-context.js";
 import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
@@ -79,6 +80,7 @@ const RESPONSE_ITEM_KEYS = Object.freeze([
   "id",
   "phase",
   "providerReasoning",
+  "providerContextHistory",
   "role",
   "toolCallId",
   "toolCalls",
@@ -519,6 +521,9 @@ function writeCheckpointPrefixMessage(
 
   // Conditional encoding preserves existing checkpoint hashes when the
   // optional field is absent, while authenticating every new replay value.
+  if (message.providerContextHistory !== undefined) {
+    writer.writeString("provider-context-history", JSON.stringify(message.providerContextHistory));
+  }
   if (message.providerReasoning !== undefined) {
     writer.writeCount(
       "provider-reasoning-version",
@@ -1512,6 +1517,10 @@ function assertResponseItemShape(
   }
   if (item.endTurn !== undefined && typeof item.endTurn !== "boolean") {
     throw malformed(`checkpoint response item ${index} has invalid endTurn`);
+  }
+  if (item.providerContextHistory !== undefined &&
+      (item.role !== "assistant" || readProviderContextHistory(item.providerContextHistory) === undefined)) {
+    throw malformed(`checkpoint response item ${index} has invalid provider context history`);
   }
   if (item.providerReasoning !== undefined) {
     if (item.role !== "assistant" || !isRecord(item.providerReasoning)) {
