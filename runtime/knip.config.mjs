@@ -141,11 +141,6 @@ const intentionalToolIssueIgnores = {
   ...Object.fromEntries(
     toolContractExportFiles.map((file) => [file, ["exports", "types"]]),
   ),
-  // Prompt identity tests import these built-in prompt definitions directly.
-  "src/tools/AgentTool/built-in/agencGuideAgent.ts": ["files"],
-  "src/tools/AgentTool/built-in/statuslineSetup.ts": ["files"],
-  "src/tools/AgentTool/built-in/verificationAgent.ts": ["files"],
-  "src/tools/LSPTool/schemas.ts": ["types"],
   "src/tools/MCPTool/MCPTool.ts": ["exports", "types"],
 };
 const sessionContractExportFiles = [
@@ -576,12 +571,20 @@ const isProductionScan = process.argv.includes("--production");
 export default {
   $schema: "https://unpkg.com/knip@6/schema.json",
   entry: [
+    // Mirrors the entry list in build.config.ts: every bundle entry is a
+    // production entry, or Knip flags its file and its exports as unused.
+    "src/index.ts!",
     "src/bin/agenc.ts!",
+    "src/bin/agenc-main.ts!",
+    "src/bin/prepare-peer-credentials.ts!",
     "src/bin/tui-trust-prompt.tsx!",
     // Type-only shim for build-time `bun:bundle` feature flags.
     "src/build/feature.ts!",
+    "src/memory/memory-query-helper.mjs!",
     "src/sandbox/linux-launcher/main.ts!",
+    "src/sandbox/linux-launcher/main-impl.ts!",
     "src/tui/main.tsx!",
+    "src/tui/pending-resume.ts!",
     "build.config.ts",
     "scripts/**/*.mjs",
     "tests/**/*.{test,e2e,contract,parity}.ts",

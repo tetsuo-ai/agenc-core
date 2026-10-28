@@ -69,3 +69,15 @@ jobs:
         run: |
           set -euo pipefail
           npm run test:fast -- --base "$BASE_SHA"
+
+      # The unused-code ratchet (#3279): `check:unused` exits 1 on main today,
+      # so it gates nothing. This step fails only when the total issue count
+      # rises above the pinned budget, and the budget only ever goes down —
+      # when a cleanup lands, lower the number in runtime/package.json
+      # (`check:unused:ratchet`) to the new total so the floor cannot drift
+      # back up unnoticed.
+      - name: Unused-code ratchet
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check:unused:ratchet

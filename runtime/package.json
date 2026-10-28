@@ -63,6 +63,7 @@
     "check:unused": "knip --config knip.config.mjs --production --no-progress",
     "check:unused:all": "knip --config knip.config.mjs --no-progress",
     "check:unused:production": "knip --config knip.config.mjs --production --no-progress",
+    "check:unused:ratchet": "knip --config knip.config.mjs --production --no-progress --max-issues 1291",
     "check:unused:report": "node scripts/check-unused-report.mjs",
     "eval:agent": "node scripts/run-agent-eval.mjs",
     "eval:executor": "tsx src/eval-executor/cli.ts",
