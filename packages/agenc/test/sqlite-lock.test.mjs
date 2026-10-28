@@ -393,22 +393,22 @@ test("large command budgets do not overflow platform-helper timers", {
 Object.defineProperty(process, "platform", { value: "darwin" });
 const [moduleUrl, path] = process.argv.slice(1);
 try {
-  const { readFile } = await import("node:fs/promises");
-  const original = await readFile(new URL(moduleUrl), "utf8");
-  const mountPatched = original.replace(
-    'execFileUtf8("/sbin/mount", []',
-    'execFileUtf8(process.execPath, ["--eval", "process.stdout.write(\'overlay on / (overlay, local)\')"]',
-  );
-  const patched = mountPatched.replace(
-    "async function assertDarwinPathSecurity(path, role, context) {",
-    "async function assertDarwinPathSecurity() { return; }\n" +
-      "async function unusedAssertDarwinPathSecurity(path, role, context) {",
-  );
-  if (mountPatched === original || patched === mountPatched) {
-    throw new Error("Darwin platform-helper test seams did not apply");
-  }
-  const patchedUrl = "data:text/javascript;base64," + Buffer.from(patched).toString("base64");
-  const { acquireLocalSqliteLock } = await import(patchedUrl);
+  const { default: childProcess } = await import("node:child_process");
+  const { syncBuiltinESMExports } = await import("node:module");
+  const execFile = childProcess.execFile;
+  childProcess.execFile = (file, args, options, callback) => {
+    let stdout;
+    if (file === "/bin/df") {
+      stdout = "Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/fixture 1000 100 900 10% /\n";
+    } else if (file === "/bin/ls") {
+      stdout = "directory metadata\n";
+    } else {
+      throw new Error("unexpected Darwin helper: " + file);
+    }
+    return execFile(process.execPath, ["--eval", "process.stdout.write(" + JSON.stringify(stdout) + ")"], options, callback);
+  };
+  syncBuiltinESMExports();
+  const { acquireLocalSqliteLock } = await import(moduleUrl);
   const release = await acquireLocalSqliteLock(path, { timeoutMs: 3_000_000_000 });
   release();
   process.stdout.write("OK\n");

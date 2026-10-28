@@ -40,6 +40,7 @@ const REGISTRY_VERSION = 1;
 const REGISTRY_SYMBOL = Symbol.for("@tetsuo-ai/agenc.sqlite-lock-registry");
 const MAX_BUSY_RETRY_MS = 50;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const DARWIN_FILESYSTEM_PROBE_TIMEOUT_MS = 2_000;
 const UNSUPPORTED_FILE_ID_64 = 0xffff_ffff_ffff_ffffn;
 const WINDOWS_PATH_TRANSPORT_MAX_CHARS = 16_384;
 const WINDOWS_PATH_TRANSPORT_MAX_ENTRIES = 128;
@@ -338,10 +339,7 @@ function execFileUtf8(file, args, options, context, path) {
       { ...options, encoding: "utf8" },
       (error, stdout, stderr) => {
         if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
-        if (expired) {
-          rejectRun(timeoutError(context, path, error ?? undefined));
-          return;
-        }
+        if (expired) return;
         if (error !== null) {
           Object.assign(error, { stdout, stderr });
           rejectRun(error);
@@ -354,7 +352,15 @@ function execFileUtf8(file, args, options, context, path) {
       const remaining = remainingMilliseconds(context);
       if (remaining <= 0) {
         expired = true;
-        child.kill();
+        // A helper stuck in kernel I/O may never exit, even after SIGKILL.
+        // Settle at our deadline and release every event-loop reference rather
+        // than waiting for execFile's exit/stdio-close callback.
+        rejectRun(timeoutError(context, path));
+        child.kill("SIGKILL");
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.unref();
         return;
       }
       deadlineTimer = setTimeout(
@@ -694,6 +700,13 @@ async function assertWindowsPathSecurity(entries, context) {
   throwIfExpired(context, displayPath);
 }
 
+function unsupportedLockFilesystem(parent, filesystemType, cause) {
+  return new Error(
+    `agenc: non-local or unknown lock filesystem is unsupported (${filesystemType ?? "unknown"}): ${parent}`,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
 async function assertLocalFilesystem(parent, context) {
   throwIfExpired(context, parent);
   let filesystemType;
@@ -716,26 +729,53 @@ async function assertLocalFilesystem(parent, context) {
       }
     }
   } else if (process.platform === "darwin") {
-    let stdout;
+    const probeStartedAt = performance.now();
+    const probeDeadline = Math.min(
+      context.deadline,
+      probeStartedAt + DARWIN_FILESYSTEM_PROBE_TIMEOUT_MS,
+    );
+    const probeContext = {
+      ...context,
+      deadline: probeDeadline,
+      timeoutMs: Math.min(
+        DARWIN_FILESYSTEM_PROBE_TIMEOUT_MS,
+        Math.max(1, Math.ceil(probeDeadline - probeStartedAt)),
+      ),
+      label: `${context.label} (macOS lock filesystem probe via /bin/df)`,
+    };
+    let result;
     try {
-      ({ stdout } = await execFileUtf8("/sbin/mount", [], {
-        env: { LC_ALL: "C" },
-        maxBuffer: 4 * 1024 * 1024,
-      }, context, parent));
+      // With an existing directory operand, df calls statfs on that path.
+      // -T filters f_fstypename against our exact allowlist, including on
+      // supported macOS versions that cannot print the type with df -Y.
+      // Never use a bare mount/df or df -l: unrelated filesystems may be stuck.
+      result = await execFileUtf8(
+        "/bin/df",
+        ["-P", "-T", [...LOCAL_FILESYSTEM_TYPES].join(","), parent],
+        { env: { LC_ALL: "C" }, maxBuffer: 64 * 1024 },
+        probeContext,
+        parent,
+      );
     } catch (error) {
-      throw normalizeTimedCommandError(error, context, parent);
+      const normalized = normalizeTimedCommandError(error, probeContext, parent);
+      if (normalized instanceof LocalSqliteLockTimeoutError) throw normalized;
+      throw unsupportedLockFilesystem(parent, undefined, normalized);
     }
-    throwIfExpired(context, parent);
-    let longest = -1;
-    for (const line of stdout.split("\n")) {
-      const match = line.match(/ on (.+) \(([^,]+)/);
-      if (match === null) continue;
-      const mountPoint = decodeMountPath(match[1]);
-      if (pathIsWithin(parent, mountPoint) && mountPoint.length > longest) {
-        longest = mountPoint.length;
-        filesystemType = match[2];
-      }
+    throwIfExpired(probeContext, parent);
+    const lines = result.stdout.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    const row = lines[1]?.match(/^.+[\t ]+\d+[\t ]+\d+[\t ]+-?\d+[\t ]+\d+%[\t ]+(\/.*)$/u);
+    // The type was checked by df on the operand itself. Do not infer it from
+    // the printed mount point: APFS firmlinks can map /Users to the Data volume
+    // mounted at /System/Volumes/Data without changing realpath(/Users/...).
+    if (
+      result.stderr !== "" || lines.length !== 2 ||
+      !/^Filesystem[\t ]+512-blocks[\t ]+Used[\t ]+Avail(?:able)?[\t ]+Capacity[\t ]+Mounted on$/u.test(lines[0]) ||
+      row == null
+    ) {
+      throw unsupportedLockFilesystem(parent);
     }
+    return;
   } else if (process.platform === "win32") {
     await assertWindowsPathSecurity([{ path: parent, role: "leafDirectory" }], context);
     return;
@@ -745,9 +785,7 @@ async function assertLocalFilesystem(parent, context) {
     );
   }
   if (filesystemType === undefined || !LOCAL_FILESYSTEM_TYPES.has(filesystemType)) {
-    throw new Error(
-      `agenc: non-local or unknown lock filesystem is unsupported (${filesystemType ?? "unknown"}): ${parent}`,
-    );
+    throw unsupportedLockFilesystem(parent, filesystemType);
   }
 }
 
