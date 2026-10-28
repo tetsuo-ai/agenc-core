@@ -3,7 +3,7 @@ import { configuredSearchChain, runConfiguredSearchProviders } from "../tools/We
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
@@ -479,7 +479,14 @@ function resolveWorkspacePath(
     ? resolve(input)
     : resolve(opts.workspaceRoot, input);
   const root = resolve(opts.workspaceRoot);
-  if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+  // Separator-agnostic containment: a backslash-separated child must not be
+  // rejected, and a sibling like `<root>-evil` must not pass a prefix check.
+  const contained = relative(root, resolved);
+  const escapes =
+    contained === ".." ||
+    contained.startsWith(`..${sep}`) ||
+    isAbsolute(contained);
+  if (escapes) {
     throw new Error(`path is outside the workspace: ${input}`);
   }
   return resolved;

@@ -19,6 +19,15 @@ import { assertWindowsPrivatePathSecurity } from "../workflow-private-path.js";
 const WINDOWS_LEAF_MUTATION_MASK = 0x500d0156;
 const WINDOWS_ANCESTOR_MUTATION_MASK = 0x500d0152;
 const WINDOWS_INHERITED_READ_MASK = 0x90000001;
+/**
+ * Rights an untrusted principal may hold on a capture-parent directory
+ * without being able to replace, delete, or modify committed entries: add
+ * file, add subdirectory, traverse, synchronize. Container-inherit-only
+ * grants of exactly this shape — the ACE `C:\Windows\Temp` propagates to
+ * every directory beneath it, for example — are the Windows analogue of the
+ * sticky writable parents the Unix boundary already trusts.
+ */
+const WINDOWS_CREATION_ONLY_MASK = 0x100026;
 const WINDOWS_CSV_PATH_TRANSPORT_MAX_CHARS = 16_384;
 const WINDOWS_CSV_PATH_TRANSPORT_MAX_ENTRIES = 128;
 
@@ -27,11 +36,13 @@ export function __csvOutputWindowsAclMasksForTesting(): {
   readonly leafMutation: number;
   readonly ancestorMutation: number;
   readonly inheritedRead: number;
+  readonly creationOnly: number;
 } {
   return {
     leafMutation: WINDOWS_LEAF_MUTATION_MASK,
     ancestorMutation: WINDOWS_ANCESTOR_MUTATION_MASK,
     inheritedRead: WINDOWS_INHERITED_READ_MASK,
+    creationOnly: WINDOWS_CREATION_ONLY_MASK,
   };
 }
 
@@ -57,6 +68,7 @@ $creatorOwnerSid = 'S-1-3-0'
 $leafMutationMask = [int64]${WINDOWS_LEAF_MUTATION_MASK}
 $ancestorMutationMask = [int64]${WINDOWS_ANCESTOR_MUTATION_MASK}
 $inheritedReadMask = [int64]${WINDOWS_INHERITED_READ_MASK}
+$creationOnlyMask = [int64]${WINDOWS_CREATION_ONLY_MASK}
 foreach ($entry in $entries) {
   $separator = $entry.IndexOf([char]58)
   if ($separator -lt 1 -or $separator -eq ($entry.Length - 1)) { throw 'invalid path transport' }
@@ -114,8 +126,15 @@ foreach ($entry in $entries) {
       $reachesNewChild = ($rule.InheritanceFlags -band $childInheritance) -ne 0
       if ($role -ne 'leafDirectory' -or -not $reachesNewChild) { continue }
     }
-    if ($untrusted -and (($rights -band $mask) -ne 0)) {
-      throw "untrusted mutation ACE: $full"
+    $mutationRights = $rights -band $mask
+    if ($untrusted -and $mutationRights -ne 0) {
+      # A creation-only, container-inherit grant lets another principal add
+      # entries but never replace, delete, or modify them: the Windows shape
+      # of the sticky writable parents the Unix boundary already trusts.
+      $creationOnly = (($rights -band $creationOnlyMask) -eq $rights) -and (-not $objectInherit)
+      if (-not $creationOnly) {
+        throw "untrusted mutation ACE: $full"
+      }
     }
   }
 }
@@ -242,7 +261,12 @@ export function initializeDarwinCsvPrivatePath(path: string): void {
   validateDarwinCsvAcl(path, "privatePath");
 }
 
-/** Verify that another Windows user cannot replace capture-parent entries. */
+/** Verify that another Windows user cannot replace capture-parent entries.
+ *
+ * Creation-only, container-inherit grants (add file/subdirectory, traverse,
+ * synchronize — the ACE `C:\Windows\Temp` propagates) are tolerated: they
+ * match the sticky writable parents the Unix boundary trusts and cannot
+ * touch committed entries or their contents. */
 export function assertWindowsCsvMutationBoundary(parentPath: string): void {
   if (process.platform !== "win32") return;
   const entries: Array<{

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolve } from "node:path";
 
 import {
   AgencCapabilityUnavailableError,
@@ -53,6 +54,10 @@ const VALID_ATTACH_RUNTIME_OPTIONS = Object.freeze({
   allowUntrustedHooks: false,
 });
 const VALID_ATTACH_CWD = "/tmp/agenc-sdk-agent-workspace";
+// DAE-02 sends an absolute cwd: resolve() maps the POSIX-style literal onto
+// the current drive on Windows (`C:\tmp\...`), so the wire value is the
+// platform-resolved path, not the literal input.
+const EXPECTED_ATTACH_CWD = resolve(VALID_ATTACH_CWD);
 
 const VALID_ATTACH_RUNTIME_SETTINGS = Object.freeze({
   permissionMode: "default",
@@ -621,7 +626,7 @@ describe("agenc-sdk prompt race safety", () => {
     const forwardedEnv = collectClientEnvOverrides();
     expect(createRequests[0]?.params).toEqual({
       objective: "Interactive session",
-      cwd: VALID_ATTACH_CWD,
+      cwd: EXPECTED_ATTACH_CWD,
       initialContent: "Inspect the current workspace",
       metadata: {
         source: "sdk-contract-test",

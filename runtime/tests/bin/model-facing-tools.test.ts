@@ -63,6 +63,7 @@ import {
   type CsvAgentJobsRepositoryProvider,
 } from "../app-server/csv-agent-jobs-authority.js";
 import {
+  canonicalizePath,
   clearSessionReadState,
   getSessionReadSnapshot,
   SESSION_ID_ARG,
@@ -5828,9 +5829,13 @@ describe("model-facing tools", () => {
       expect(updated.cells[0].source).toBe("print('new')");
       expect(updated.cells[0].execution_count).toBeNull();
       expect(updated.cells[0].outputs).toEqual([]);
-      expect(getSessionReadSnapshot(sessionId, notebookPath)?.rawContent).toBe(
-        updatedRaw,
-      );
+      // The read-state store keys by the canonicalized path; on Windows the
+      // canonical spelling of the temp tree (`C:\Windows\...`) can differ in
+      // case from the environment-provided one (`C:\WINDOWS\...`).
+      expect(
+        getSessionReadSnapshot(sessionId, await canonicalizePath(notebookPath))
+          ?.rawContent,
+      ).toBe(updatedRaw);
     } finally {
       clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
@@ -7010,12 +7015,19 @@ describe("WebFetch prompt extraction (task 4)", () => {
       expect(parsed.extracted).toBe("The current release is 9.9.9.");
       expect(parsed.content).toBeUndefined();
       expect(String(parsed.content_preview).length).toBeLessThanOrEqual(2_000);
-      // Raw content is recoverable from disk.
-      expect(typeof parsed.full_content_path).toBe("string");
-      const { readFileSync } = await import("node:fs");
-      expect(readFileSync(parsed.full_content_path, "utf8")).toContain(
-        "version 9.9.9",
-      );
+      // Raw content is recoverable from disk. Windows durability fails
+      // closed by design (commitArtifactAtomically has no descriptor-relative
+      // child operations there), so the persisted copy only exists where the
+      // atomic artifact layer is supported.
+      if (process.platform === "win32") {
+        expect(parsed.full_content_path).toBeUndefined();
+      } else {
+        expect(typeof parsed.full_content_path).toBe("string");
+        const { readFileSync } = await import("node:fs");
+        expect(readFileSync(parsed.full_content_path, "utf8")).toContain(
+          "version 9.9.9",
+        );
+      }
       // The extraction model saw the page and the task.
       const chatMessages = chat.mock.calls[0]?.[0] as Array<{
         content: string;
