@@ -107,16 +107,18 @@ retrying and says to add credits or turn on auto-reload.
 
 Gemini 3 and newer put a thought signature on the first function call of each
 step. Google refuses a request with HTTP 400 when a step of the current turn
-comes back without one. AgenC returns each call with the signature Google gave
-it. That holds after a resume and after a compaction too, also when the durable
-record had to redact the call's text or arguments: the record keeps the
-signatures without that text.
+comes back without one, and it treats a call that follows a text part as the
+start of a new run that needs its own. AgenC returns each call with the
+signature Google gave it, keeps the calls of a step together, and sends the
+declared call name. That holds after a resume and after a compaction too, also
+when the durable record had to redact the call's text or arguments: the record
+keeps the signatures without that text.
 
 A step that this model did not produce has no signature to return, for example
 after a mid-turn fallback to another model or provider. AgenC then sends
 Google's documented placeholder, `skip_thought_signature_validator`, on the
-first call of that step. Earlier turns are not validated and go back as they
-are.
+first call of each run of calls in that step. Earlier turns are not validated
+and go back as they are.
 
 Each function call goes back with its call id, and each function response
 names the id of its call. The results of one step travel in one user content,
