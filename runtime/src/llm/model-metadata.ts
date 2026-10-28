@@ -7,6 +7,8 @@ import {
 } from "./registry/abliteration-models.js";
 import { recordPublishedModelCosts } from "./registry/published-model-costs.js";
 import { recordPublishedModelCatalog, recordPublishedModelDetail } from "./registry/published-model-catalog.js";
+import { geminiLiveCatalogEntry, parseGeminiLiveModels, type GeminiLiveModel } from "./registry/gemini-live-models.js";
+import { resolveGeminiThinkingModel } from "./registry/gemini-thinking-models.js";
 import { OpenRouterCatalog, openRouterCatalogFor, type OpenRouterCatalogSnapshot } from "./registry/openrouter-live-catalog.js";
 import {
   OPENROUTER_ZDR_ENDPOINTS_URL,
@@ -217,6 +219,8 @@ export class ModelMetadataResolver {
   private veniceModels?: readonly VeniceModel[];
   private abliterationResponse?: MetadataJson;
   private abliterationModels?: readonly AbliterationModel[];
+  private geminiResponse?: MetadataJson;
+  private geminiModels?: readonly GeminiLiveModel[];
   private openRouterCatalog?: OpenRouterCatalog;
   private readonly catalogHome?: string;
   private ollamaCloudTags?: MetadataJson;
@@ -297,6 +301,9 @@ export class ModelMetadataResolver {
     if (provider === "abliteration" && resolveProviderApiKeyEnvironment(provider, this.env) === undefined) {
       return { ...this.env, ABLIT_KEY: this.readSavedApiKey?.("abliteration") };
     }
+    if (provider === "gemini" && resolveProviderApiKeyEnvironment(provider, this.env) === undefined) {
+      return { ...this.env, GEMINI_API_KEY: this.readSavedApiKey?.("gemini") };
+    }
     return this.env;
   }
 
@@ -358,13 +365,18 @@ export class ModelMetadataResolver {
 
   private async resolveMetadata(params: LookupParams): Promise<ResolvedModelMetadata> {
     const metadataProvider = normalizeMetadataProviderIdentity(params.provider);
-    if (metadataProvider === "ollama-cloud" || metadataProvider === "abliteration") {
+    // A Gemini model Core registers keeps its reviewed row and needs no lookup.
+    const unregisteredGemini = metadataProvider === "gemini" &&
+      resolveGeminiThinkingModel(params.model) === undefined;
+    if (metadataProvider === "ollama-cloud" || metadataProvider === "abliteration" || unregisteredGemini) {
       // Record the live row first: the catalog lookups below then read it.
       try {
         if (metadataProvider === "ollama-cloud") {
           await this.discoverOllamaCloudModels(params.config, params.model);
-        } else {
+        } else if (metadataProvider === "abliteration") {
           await this.discoverAbliterationModels(params.config);
+        } else {
+          await this.discoverGeminiModels(params.config);
         }
       } catch {
         // Best effort, as every other live lookup here.
@@ -505,18 +517,20 @@ export class ModelMetadataResolver {
    * Undefined without a key or transport, without a network request.
    */
   private async readKeyedModelList(
-    provider: "venice" | "abliteration",
+    provider: "venice" | "abliteration" | "gemini",
     config: AgenCConfig,
     timeoutMs: number,
     usable: (json: MetadataJson | undefined) => boolean,
+    query = "",
   ): Promise<MetadataJson | undefined> {
     this.cacheRevision({ provider, model: "", config });
     const baseUrl = providerBaseUrl(config, provider, this.env);
     const headers = authHeaders(provider, config, this.credentialEnvironment(provider));
-    if (!baseUrl || !headers?.Authorization || !this.keyedListCatalogs) return undefined;
+    const keyed = headers?.Authorization !== undefined || headers?.["x-goog-api-key"] !== undefined;
+    if (!baseUrl || headers === undefined || !keyed || !this.keyedListCatalogs) return undefined;
     const cache = this.keyedListCatalogs;
     const scope = cache.observe(provider, { baseUrl, headers });
-    const url = modelsUrlFromBaseUrl(baseUrl);
+    const url = `${modelsUrlFromBaseUrl(baseUrl)}${query}`;
     const response = await cache.get(scope, {
       baseUrl, url, method: "GET", headers, timeoutMs,
     }, async () => {
@@ -576,6 +590,34 @@ export class ModelMetadataResolver {
       );
     }
     return this.abliterationModels;
+  }
+
+  /**
+   * Google's `GET /v1beta/models` with the session's API key: the chat
+   * models Core does not register yet, with the window, output limit and
+   * thinking flag Google lists (gemini-live-models.ts). They become the
+   * published Gemini rows, so a model Google ships today runs without a Core
+   * update. Vertex and token credentials are not read here.
+   */
+  async discoverGeminiModels(config: AgenCConfig): Promise<readonly GeminiLiveModel[] | undefined> {
+    const response = await this.readKeyedModelList(
+      "gemini",
+      config,
+      this.liveModelListTimeoutMs(),
+      result => parseGeminiLiveModels(result) !== undefined,
+      "?pageSize=1000",
+    );
+    if (response === undefined) return undefined;
+    if (response !== this.geminiResponse) {
+      this.geminiResponse = response;
+      this.geminiModels = parseGeminiLiveModels(response) ?? [];
+      recordPublishedModelCatalog(
+        "gemini",
+        this.geminiModels.map((model, index) => geminiLiveCatalogEntry(model, index)),
+        { replace: true },
+      );
+    }
+    return this.geminiModels;
   }
 
   private async resolveLiveEndpointMetadata(
@@ -1550,6 +1592,7 @@ function authHeaders(
       envBaseUrl(provider, env) ?? readProviderConfig(config, provider)?.base_url?.trim(),
     )
   ) return undefined;
+  if (credential && provider === "gemini") return { "x-goog-api-key": credential.value };
   return credential ? { Authorization: `Bearer ${credential.value}` } : undefined;
 }
 

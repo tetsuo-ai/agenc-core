@@ -1,4 +1,5 @@
 import { LLMProviderError } from "../errors.js";
+import { publishedModelCatalogEntry } from "./published-model-catalog.js";
 
 export type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high";
 
@@ -67,12 +68,16 @@ export const GEMINI_THINKING_MODELS: readonly GeminiThinkingModel[] = Object.fre
   { model: "gemini-robotics-er-2-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "high", curated: true, contextWindow: 131_072 },
 ] satisfies GeminiThinkingModel[]).map((entry) => Object.freeze(entry)));
 
-export function resolveGeminiThinkingModel(model: string): GeminiThinkingModel | undefined {
-  const normalized = model.trim().toLowerCase()
+function canonicalModelId(model: string): string {
+  return model.trim().toLowerCase()
     .replace(/^gemini:/u, "")
     .replace(/^publishers\/google\/models\//u, "")
     .replace(/^models\//u, "")
     .replace(/^google\//u, "");
+}
+
+export function resolveGeminiThinkingModel(model: string): GeminiThinkingModel | undefined {
+  const normalized = canonicalModelId(model);
   return GEMINI_THINKING_MODELS.find((entry) => entry.model === normalized);
 }
 
@@ -97,6 +102,12 @@ export function resolveGeminiReasoningEffort(
 ): GeminiThinkingLevel | undefined {
   if (effort === undefined || effort === "none") return undefined;
   const metadata = resolveGeminiThinkingModel(model);
+  // A model Google lists but Core has not registered: its levels are unknown,
+  // so the request leaves thinkingConfig out and the model thinks at its own
+  // default instead of the turn failing (gemini-live-models.ts).
+  if (metadata === undefined && publishedModelCatalogEntry("gemini", canonicalModelId(model)) !== undefined) {
+    return undefined;
+  }
   const supported = metadata?.levels.find((level) => level === effort);
   if (metadata?.control === "thinkingLevel" && supported !== undefined) return supported;
   const detail = metadata?.control === "thinkingBudget"
