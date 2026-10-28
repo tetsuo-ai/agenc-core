@@ -22,7 +22,11 @@ import {
   type ToolResultRepresentation,
 } from "./tool-result-integrity.js";
 
-import { isGrokEncryptedReplay, redactDurableSecrets } from "./provider-replay-redaction.js";
+import {
+  geminiSignatureOnlyReplayContent,
+  isGrokEncryptedReplay,
+  redactDurableSecrets,
+} from "./provider-replay-redaction.js";
 import { withCheckpointProjectionCache } from "./checkpoint-projection-cache.js";
 
 type RolloutContentPart = Extract<
@@ -459,6 +463,35 @@ export function durableRedactionDropsProviderReplay(
   );
 }
 
+/**
+ * The provider replay a durable record keeps. Persistence and compaction
+ * projection both use this, for the reason given on
+ * {@link durableRedactionDropsProviderReplay}.
+ *
+ * - A replay that secret redaction leaves unchanged is kept as it is.
+ * - A signed Gemini replay that redaction would alter keeps its signatures
+ *   without text and arguments ({@link geminiSignatureOnlyReplayContent}).
+ *   Gemini 3 and newer refuse a turn whose function calls lost their
+ *   signatures, and Google validates the signature of a call, not its
+ *   arguments, so the resumed turn keeps working with the real signatures.
+ * - Any other replay that redaction would alter is dropped.
+ */
+export function durableProviderReplay(
+  providerReasoning: ProviderReasoningReplay | undefined,
+  redact: typeof redactSecretsInValue = redactSecretsInValue,
+): ProviderReasoningReplay | undefined {
+  if (providerReasoning === undefined) return undefined;
+  if (!durableRedactionDropsProviderReplay(providerReasoning, redact)) return providerReasoning;
+  if (providerReasoning.version === 2 && providerReasoning.provider === "gemini") {
+    const content = geminiSignatureOnlyReplayContent(providerReasoning.content);
+    if (content !== undefined) {
+      const signatures: ProviderReasoningReplay = { ...providerReasoning, content };
+      if (!durableRedactionDropsProviderReplay(signatures, redact)) return signatures;
+    }
+  }
+  return undefined;
+}
+
 function redactResponseItemForPersistence(
   item: ResponseItem,
   integrity: ToolResultIntegrity | undefined,
@@ -484,7 +517,8 @@ function redactResponseItemForPersistence(
             agentInvocation,
           } as ResponseItem;
         })();
-  if (durableRedactionDropsProviderReplay(item.providerReasoning, redact)) {
+  const durableReplay = durableProviderReplay(item.providerReasoning, redact);
+  if (durableReplay !== item.providerReasoning) {
     // The replay is opaque provider state: redacting it would corrupt what
     // the provider gets back, and persisting it unredacted would write the
     // matched secret into the rollout. Neither is acceptable, so the replay
@@ -492,9 +526,12 @@ function redactResponseItemForPersistence(
     // The cost is one lost replay on resume. Failing the turn here cost the
     // whole task: DeepSeek V4 Pro reasoning that quoted a generated password
     // or a long token-shaped string ended every such run with
-    // turn_execution_failed.
+    // turn_execution_failed. A signed Gemini replay keeps its signatures
+    // without the text and arguments (see durableProviderReplay).
     const { providerReasoning: _droppedReplay, ...withoutReplay } = redacted;
-    redacted = withoutReplay as ResponseItem;
+    redacted = (durableReplay === undefined
+      ? withoutReplay
+      : { ...withoutReplay, providerReasoning: durableReplay }) as ResponseItem;
   }
   redacted = withoutAlteredBinaryCarriers(item, redacted, redact);
   assertResponseAgentInvocationItem(redacted);

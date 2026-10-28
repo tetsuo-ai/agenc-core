@@ -113,7 +113,7 @@ import {
 } from "./payload-manifest.js";
 import { redactDurableSecrets } from "../../session/provider-replay-redaction.js";
 import { redactSecretsInValue } from "../../secrets/sanitizer.js";
-import { durableRedactionDropsProviderReplay } from "../../session/message-history-conversion.js";
+import { durableProviderReplay } from "../../session/message-history-conversion.js";
 import type { ProviderReasoningReplay } from "../../llm/types.js";
 import { omitAlteredBinaryCarriers } from "../../llm/content-conversion.js";
 
@@ -1981,13 +1981,23 @@ function createAuthoritativeSelectionMapper(
             model: provenance.model.trim().toLowerCase(),
           }
         : { version: 1, content };
-    if (!durableRedactionDropsProviderReplay(replay)) return withoutMedia(message);
+    const durable = durableProviderReplay(replay);
+    if (durable === replay) return withoutMedia(message);
     const {
       providerReasoningContent: _droppedContent,
       providerReasoningProvenance: _droppedProvenance,
       ...withoutReplay
     } = message;
-    return withoutMedia(withoutReplay as RuntimeMessage);
+    if (durable === undefined) return withoutMedia(withoutReplay as RuntimeMessage);
+    // A signed Gemini replay is kept without text and arguments; project the
+    // live message onto that same durable form.
+    return withoutMedia({
+      ...withoutReplay,
+      providerReasoningContent: durable.content,
+      ...(durable.version === 2
+        ? { providerReasoningProvenance: { provider: durable.provider, model: durable.model } }
+        : {}),
+    } as RuntimeMessage);
   };
   const key = (message: RuntimeMessage): string => {
     const role =

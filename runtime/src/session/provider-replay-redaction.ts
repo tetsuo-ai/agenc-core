@@ -43,6 +43,45 @@ function signedGeminiParts(value: unknown): RecordValue[] | undefined {
   return undefined;
 }
 
+/**
+ * A signed Gemini replay with its text and call arguments removed: each
+ * thought signature stays on its own part and each function call keeps its id
+ * and name. Durable persistence keeps this form when secret redaction would
+ * alter the full replay, so a resumed or compacted turn still sends every call
+ * the signature Google gave it. The text and arguments themselves come back
+ * from the durable message. Undefined when nothing signed remains.
+ */
+export function geminiSignatureOnlyReplayContent(content: string): string | undefined {
+  let parts: unknown;
+  try {
+    parts = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parts) || !parts.every(record)) return undefined;
+  const reduced = parts.flatMap((part): RecordValue[] => {
+    const signature = typeof part.thoughtSignature === "string" && part.thoughtSignature.length > 0
+      ? part.thoughtSignature
+      : undefined;
+    const call = record(part.functionCall) ? part.functionCall : undefined;
+    if (call !== undefined) {
+      if (typeof call.name !== "string") return [];
+      return [{
+        functionCall: {
+          ...(typeof call.id === "string" && call.id.length > 0 ? { id: call.id } : {}),
+          name: call.name,
+          args: {},
+        },
+        ...(signature !== undefined ? { thoughtSignature: signature } : {}),
+      }];
+    }
+    if (signature === undefined) return [];
+    return [{ ...(part.thought === true ? { thought: true } : {}), text: "", thoughtSignature: signature }];
+  });
+  if (!reduced.some((part) => part.thoughtSignature !== undefined)) return undefined;
+  return JSON.stringify(reduced);
+}
+
 /** Only validated ciphertext escapes ordinary redaction, never sibling fields. */
 function redactReplay(
   value: unknown,
