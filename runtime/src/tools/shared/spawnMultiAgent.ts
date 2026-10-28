@@ -54,7 +54,7 @@ import {
 } from '../../utils/swarm/spawnInProcess.js'
 import {
   buildInheritedCliFlags,
-  buildInheritedEnvVars,
+  buildTeammateSpawnCommand,
   getTeammateCommand,
 } from '../../utils/swarm/spawnUtils.js'
 import {
@@ -457,10 +457,9 @@ async function handleSpawnSplitPane(
   })
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
-  // Propagate env vars that teammates need but may not inherit from tmux split-window shells.
-  // Includes AGENCCODE, AGENC_EXPERIMENTAL_AGENT_TEAMS, and API provider vars.
-  const envStr = buildInheritedEnvVars()
-  const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+  const spawnCommand = buildTeammateSpawnCommand(
+    workingDir, `${quote([binaryPath])} ${teammateArgs}${flagsStr}`,
+  )
 
   // Send the command to the new pane
   // Use swarm socket when running outside tmux (external swarm session)
@@ -647,10 +646,9 @@ async function handleSpawnSeparateWindow(
   })
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
-  // Propagate env vars that teammates need but may not inherit from tmux split-window shells.
-  // Includes AGENCCODE, AGENC_EXPERIMENTAL_AGENT_TEAMS, and API provider vars.
-  const envStr = buildInheritedEnvVars()
-  const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+  const spawnCommand = buildTeammateSpawnCommand(
+    workingDir, `${quote([binaryPath])} ${teammateArgs}${flagsStr}`,
+  )
 
   // Send the command to the new window
   const sendKeysResult = await execFileNoThrow(TMUX_COMMAND, [

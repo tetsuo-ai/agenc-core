@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import { main } from "../src/launcher.mjs";
 
-try { process.title = "agenc-launcher"; } catch { /* platform may not support it */ }
+// Darwin process-list readers can mistake environ for argv after a title write.
+// Only use native titles on platforms with a separate, verified command line.
+if (process.platform === "linux" || process.platform === "win32") {
+  try { process.title = "agenc-launcher"; } catch { /* platform may not support it */ }
+}
 process.exitCode = await main();

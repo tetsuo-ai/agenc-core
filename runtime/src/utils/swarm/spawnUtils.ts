@@ -2,6 +2,8 @@
  * Shared utilities for spawning teammates across different backends.
  */
 
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   getChromeFlagOverride,
   getInlinePlugins,
@@ -14,7 +16,9 @@ import { TEAMMATE_COMMAND_ENV_VAR } from './constants.js'
 import {
   getActiveAgentRuntimeOptions,
   projectAgentRuntimeOptionsEnvironment,
+  resolveSessionTempRoot,
 } from '../../session/runtime-options.js'
+import { registerCleanup } from '../cleanupRegistry.js'
 import { getAgenCHomeDir } from '../envUtils.js'
 import { getSelectedProviderSelection } from '../model/providers.js'
 import { requireCurrentRuntimeSession } from '../../session/current-session.js'
@@ -149,7 +153,8 @@ export function buildInheritedCliFlags(options?: {
 }
 
 /**
- * Builds the `env -i -- KEY=VALUE ...` arguments for teammate spawn commands.
+ * Builds shell export statements for a private teammate launch file.
+ * This contains credentials: never put it in argv or send it to a pane.
  * Always includes AGENCCODE=1 and AGENC_EXPERIMENTAL_AGENT_TEAMS=1,
  * plus the provider, home, and subprocess inputs captured for this session.
  */
@@ -194,10 +199,46 @@ export function buildInheritedEnvVars(
     AGENC_HOME: getAgenCHomeDir(),
   }
   return [
-    '-i',
-    '--',
+    'export',
     ...Object.entries(environment).map(([key, value]) =>
       quoteEnvironmentAssignment(key, value),
     ),
   ].join(' ')
+}
+
+/**
+ * A pane command must contain only the path to the environment handoff. Putting
+ * `env KEY=VALUE ...` in send-keys exposes credentials in tmux/iTerm argv and
+ * potentially the pane shell's process arguments and command history.
+ * The shell reads exports from a mode-600 file in a fresh mode-700 directory,
+ * removes it before loading credentials, then execs the teammate. An abandoned
+ * handoff is removed on parent shutdown as well.
+ * `command` must already be shell-quoted, just like the existing pane commands.
+ */
+export function buildTeammateSpawnCommand(
+  workingDir: string,
+  command: string,
+  explicitBaseEnvironment?: Readonly<Record<string, string | undefined>>,
+): string {
+  const exports = buildInheritedEnvVars(explicitBaseEnvironment)
+  const tempRoot = resolveSessionTempRoot()
+  mkdirSync(tempRoot, { recursive: true, mode: 0o700 })
+  const directory = mkdtempSync(join(tempRoot, 'agenc-teammate-'))
+  const script = join(directory, 'launch.sh')
+  try {
+    writeFileSync(script, [
+      '#!/bin/sh',
+      `/bin/rm -f -- ${quote([script])} || exit 125`,
+      `/bin/rmdir -- ${quote([directory])} || exit 125`,
+      exports,
+      `cd ${quote([workingDir])} || exit 125`,
+      `exec ${command}`,
+      '',
+    ].join('\n'), { mode: 0o600, flag: 'wx' })
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true })
+    throw error
+  }
+  registerCleanup(async () => { rmSync(directory, { recursive: true, force: true }) })
+  return `env -i -- /bin/sh ${quote([script])}`
 }

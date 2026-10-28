@@ -11,6 +11,17 @@ import {
 } from "./daemon-cli.js";
 
 describe("daemon child heap cap arg construction", () => {
+  it("does not copy provider credentials from the environment into daemon argv", () => {
+    const secret = "px-fake-provider-credential";
+    const args = buildAgenCDaemonChildNodeArgs("/entry.js", {
+      OPENAI_API_KEY: secret,
+      ANTHROPIC_API_KEY: secret,
+      DEEPSEEK_API_KEY: secret,
+    }, "/private-home");
+    expect(args.join("\0")).not.toContain(secret);
+    expect(args.slice(-4)).toEqual(["/entry.js", "daemon", "start", "--foreground"]);
+  });
+
   it("prepends a default --max-old-space-size ahead of the entrypoint", () => {
     const userHome = join(tmpdir(), "agenc-test-home");
     const args = buildAgenCDaemonChildNodeArgs(

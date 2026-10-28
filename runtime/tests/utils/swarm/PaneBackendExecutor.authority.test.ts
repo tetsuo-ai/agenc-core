@@ -1,4 +1,7 @@
-import { describe, expect, test, vi } from "vitest";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { resolveHomeContext } from "../../../src/config/home.js";
 import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
@@ -42,6 +45,12 @@ vi.mock("../../../src/utils/debug.js", () => ({
 
 import { PaneBackendExecutor } from "../../../src/utils/swarm/backends/PaneBackendExecutor.js";
 
+let tempRoot: string | undefined;
+afterEach(() => {
+  if (tempRoot !== undefined) rmSync(tempRoot, { recursive: true, force: true });
+  tempRoot = undefined;
+});
+
 function settingsAuthority(home: string) {
   return {
     current: () => ({}),
@@ -56,6 +65,7 @@ function settingsAuthority(home: string) {
 
 describe("PaneBackendExecutor runtime authority", () => {
   test("spawns a bare teammate with the complete captured provider and runtime projection", async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), "agenc-pane-authority-"));
     const sendCommandToPane = vi.fn(async () => undefined);
     const backend = {
       type: "tmux",
@@ -85,7 +95,7 @@ describe("PaneBackendExecutor runtime authority", () => {
         "/bin/zsh",
         "-c",
       ]),
-      sessionTempRoot: "/tmp/agenc-pane-session-temp",
+      sessionTempRoot: tempRoot,
       pluginStorageRoot: "/tmp/agenc-pane-plugin-storage",
       allowUntrustedHooks: true,
     }) satisfies AgentRuntimeOptions;
@@ -155,8 +165,13 @@ describe("PaneBackendExecutor runtime authority", () => {
 
     expect(result).toMatchObject({ success: true, paneId: "%17" });
     expect(sendCommandToPane).toHaveBeenCalledOnce();
-    const command = String(sendCommandToPane.mock.calls[0]?.[1]);
-    expect(command).toContain("env -i --");
+    const paneCommand = String(sendCommandToPane.mock.calls[0]?.[1]);
+    for (const secret of ["pane-xai-key", "pane-anthropic-key", "pane-openrouter-key"]) {
+      expect(paneCommand).not.toContain(secret);
+    }
+    expect(paneCommand).toContain("env -i -- /bin/sh");
+    const [handoff] = readdirSync(tempRoot);
+    const command = readFileSync(join(tempRoot, handoff!, "launch.sh"), "utf8");
     expect(command).toContain("--bare");
     expect(command).toContain("--model worker-model");
     expect(command.match(/--model /gu)).toHaveLength(1);
@@ -176,7 +191,7 @@ describe("PaneBackendExecutor runtime authority", () => {
     expect(command).toContain("OPENROUTER_API_KEY\\=pane-openrouter-key");
     expect(command).toContain("AGENC_SHELL\\=/bin/zsh");
     expect(command).toContain("PANE_BOUND\\=1");
-    expect(command).toContain("AGENC_TMPDIR\\=/tmp/agenc-pane-session-temp");
+    expect(command).toContain(`AGENC_TMPDIR\\=${tempRoot}`);
     expect(command).toContain(
       "AGENC_PLUGIN_CACHE_DIR\\=/tmp/agenc-pane-plugin-storage",
     );

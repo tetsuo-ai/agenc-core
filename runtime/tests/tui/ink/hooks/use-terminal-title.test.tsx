@@ -51,15 +51,17 @@ describe('useTerminalTitle', () => {
     expect(writes).toEqual([])
   })
 
-  test('writes a sanitized OSC title on non-Windows platforms', async () => {
+  test.each(['linux', 'darwin'] as const)('writes a sanitized OSC title on %s without changing process.title', async platform => {
     const writes: string[] = []
-    setPlatform('linux')
+    setPlatform(platform)
+    const titleBefore = process.title
 
     await renderProbe('\x1b[31mRed\x1b[0m title', data => writes.push(data))
 
     expect(writes).toHaveLength(1)
     expect(writes[0]).toContain('\x1b]0;Red title')
     expect(writes[0]).not.toContain('\x1b[31m')
+    expect(process.title).toBe(titleBefore)
   })
 
   test('sets process.title on Windows platforms', async () => {
