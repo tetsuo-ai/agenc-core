@@ -30,7 +30,8 @@
     "dist/agenc-process-job-broker.exe",
     "dist/agenc-landlock-run",
     "dist/agenc-secret-service-helper",
-    "dist/agenc-keychain-helper"
+    "dist/agenc-keychain-helper",
+    "dist/agenc-runtime-inventory"
   ],
   "scripts": {
     "postinstall": "node bin/prepare-peer-credentials.mjs",

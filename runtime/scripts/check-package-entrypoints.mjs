@@ -32,7 +32,7 @@ const requiredRuntimeAssetPaths = [
   "dist/yolo-classifier-prompts/permissions_anthropic.txt",
   "dist/yolo-classifier-prompts/permissions_external.txt",
   ...(process.platform === "linux" ? ["dist/agenc-secret-service-helper"] : []),
-  ...(process.platform === "darwin" ? ["dist/agenc-keychain-helper"] : []),
+  ...(process.platform === "darwin" ? ["dist/agenc-keychain-helper", "dist/agenc-runtime-inventory"] : []),
   ...(process.platform === "win32"
     ? ["dist/agenc-process-job-broker.exe"]
     : []),
