@@ -102,6 +102,16 @@ not stop the abuse-monitoring logs Google keeps on paid requests.
 When the Prepay credit balance of a billing account reaches zero, the Gemini
 API answers HTTP 402 for every key on it. AgenC stops the turn instead of
 retrying and says to add credits or turn on auto-reload.
+
+### New Gemini models
+
+A Gemini chat model that Google lists in `GET /v1beta/models` works before
+AgenC registers it. Select it with `--model` or `/model <id>`. With an API key,
+the session reads Google's list and takes the model's context window, output
+limit and thinking flag from it. Until AgenC registers the model, it runs at
+its own default thinking level (an effort setting is not sent), and its cost
+shows as unknown. Registering it adds the price, the thinking levels and the
+model list entry.
 The Interactions API's level abstraction for Gemini 2.5 does not apply to
 AgenC's native `generateContent` requests.
 
