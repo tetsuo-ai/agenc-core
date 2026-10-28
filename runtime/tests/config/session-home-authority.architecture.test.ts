@@ -204,7 +204,10 @@ describe("session home authority architecture", () => {
     expect(spawnUtils).toContain("getAgenCHomeDir()")
     expect(spawnUtils).toContain("Object.entries(selection.environment)")
     expect(spawnUtils).toContain("requireCurrentRuntimeSession(")
-    expect(spawnUtils).toContain("'-i'")
+    // The teammate starts from an empty environment and reads its exports from
+    // a private, single-use launch file instead of command-line arguments.
+    expect(spawnUtils).toContain("env -i -- /bin/sh")
+    expect(spawnUtils).toContain("{ mode: 0o600, flag: 'wx' }")
     expect(spawnUtils).not.toContain("process.env[key]")
   });
 
