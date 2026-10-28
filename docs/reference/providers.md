@@ -103,6 +103,29 @@ When the Prepay credit balance of a billing account reaches zero, the Gemini
 API answers HTTP 402 for every key on it. AgenC stops the turn instead of
 retrying and says to add credits or turn on auto-reload.
 
+### Gemini tool calls and thought signatures
+
+Gemini 3 and newer put a thought signature on the first function call of each
+step. Google refuses a request with HTTP 400 when a step of the current turn
+comes back without one. AgenC returns each call with the signature Google gave
+it. That holds after a resume and after a compaction too, also when the durable
+record had to redact the call's text or arguments: the record keeps the
+signatures without that text.
+
+A step that this model did not produce has no signature to return, for example
+after a mid-turn fallback to another model or provider. AgenC then sends
+Google's documented placeholder, `skip_thought_signature_validator`, on the
+first call of that step. Earlier turns are not validated and go back as they
+are.
+
+Each function call goes back with its call id, and each function response
+names the id of its call. The results of one step travel in one user content,
+after all the calls of that step.
+
+Sources checked on 2026-10-28: Google's
+[thought signatures guide](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures) and
+[function calling guide](https://ai.google.dev/gemini-api/docs/generate-content/function-calling).
+
 ### New Gemini models
 
 A Gemini chat model that Google lists in `GET /v1beta/models` works before
