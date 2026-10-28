@@ -11,6 +11,7 @@ import {
  recordPublishedModelDetail,
 } from "../../../src/llm/registry/published-model-catalog.js";
 import { ModelMetadataResolver } from "../../../src/llm/model-metadata.js";
+import { EndpointMetadataCache } from "../../../src/llm/endpoint-metadata-cache.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../../src/llm/wire/capability-gating.js";
 import type { LLMTool, LLMMessage } from "../../../src/llm/types.js";
 
@@ -101,6 +102,53 @@ describe("direct Ollama Cloud provider",()=>{
    clearPublishedModelCatalogs();
    expect(publishedModelDetailRecordedAt("ollama-cloud",model)).toBeUndefined();
   }finally{clearPublishedModelCatalogs();}
+ });
+
+ test("marks a model's row with the time Ollama answered it, never a cache's time",async()=>{
+  const rows=async(input:RequestInfo|URL)=>{
+   const url=input instanceof Request?input.url:String(input);
+   if(url.endsWith("/api/tags"))return Response.json({models:[{name:model,model,capabilities:["completion","tools"]}]});
+   if(url.endsWith("/api/show"))return Response.json({capabilities:["completion","tools"],model_info:{"deepseek.context_length":1048576}});
+   return new Response("not found",{status:404});
+  };
+  const env={OLLAMA_API_KEY:"fixture-key"};
+  const t0=Date.parse("2026-10-22T12:00:00Z");
+  vi.useFakeTimers({toFake:["Date"]});
+  try{
+   vi.setSystemTime(t0);
+   const fetchImpl=vi.fn<typeof fetch>().mockImplementation(rows);
+   const resolver=new ModelMetadataResolver({fetchImpl,env});
+   await resolver.discoverOllamaCloudModels({},model);
+   expect(publishedModelDetailRecordedAt("ollama-cloud",model)).toBe(t0);
+   // Twenty minutes later the same resolver answers from its own cache: no
+   // request, so the row is no newer than before.
+   vi.setSystemTime(t0+20*60_000);
+   const reads=fetchImpl.mock.calls.length;
+   await resolver.discoverOllamaCloudModels({},model);
+   expect(fetchImpl.mock.calls.length).toBe(reads);
+   expect(publishedModelDetailRecordedAt("ollama-cloud",model)).toBe(t0);
+
+   // A new session's resolver reusing an earlier session's download (the
+   // daemon shares them) is told when that download was answered, so the
+   // provider still skips its own read before the first request.
+   clearPublishedModelCatalogs();
+   const shared=new EndpointMetadataCache();
+   const sharedFetch=vi.fn<typeof fetch>().mockImplementation(rows);
+   const t1=t0+30*60_000;
+   vi.setSystemTime(t1);
+   await new ModelMetadataResolver({fetchImpl:sharedFetch,env,endpointCatalogs:shared}).discoverOllamaCloudModels({},model);
+   expect(publishedModelDetailRecordedAt("ollama-cloud",model)).toBe(t1);
+   vi.setSystemTime(t1+5*60_000);
+   await new ModelMetadataResolver({fetchImpl:sharedFetch,env,endpointCatalogs:shared}).discoverOllamaCloudModels({},model);
+   expect(sharedFetch).toHaveBeenCalledTimes(2);
+   expect(publishedModelDetailRecordedAt("ollama-cloud",model)).toBe(t1);
+
+   // A failed read marks nothing.
+   clearPublishedModelCatalogs();
+   const failing=vi.fn<typeof fetch>().mockImplementation(async()=>new Response("busy",{status:503}));
+   await new ModelMetadataResolver({fetchImpl:failing,env}).discoverOllamaCloudModels({},model);
+   expect(publishedModelDetailRecordedAt("ollama-cloud",model)).toBeUndefined();
+  }finally{vi.useRealTimers();clearPublishedModelCatalogs();}
  });
 
  test("preserves streamed tool calls, usage and thinking for continuation",async()=>{

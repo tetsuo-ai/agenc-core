@@ -57,8 +57,9 @@ export function recordPublishedModelCatalog(
 
 /**
  * Mark that the provider's per-model detail lookup (Ollama Cloud's
- * `/api/show`) answered for `model` and its row is recorded. Call it after
- * recordPublishedModelCatalog.
+ * `/api/show`) answered for `model` at `at` and its row is recorded. Pass the
+ * time the endpoint answered, not when a cache returned the answer. Call it
+ * after recordPublishedModelCatalog.
  */
 export function recordPublishedModelDetail(provider: string, model: string, at: number = Date.now()): void {
   if (!PUBLISHED_CATALOG_PROVIDERS.has(provider)) return;
@@ -67,7 +68,7 @@ export function recordPublishedModelDetail(provider: string, model: string, at: 
   detailed.set(provider, rows);
 }
 
-/** When the provider's per-model detail for `model` was last recorded in this process. */
+/** When the endpoint answered the per-model detail behind `model`'s published row. */
 export function publishedModelDetailRecordedAt(provider: string, model: string): number | undefined {
   return detailed.get(provider)?.get(key(model));
 }

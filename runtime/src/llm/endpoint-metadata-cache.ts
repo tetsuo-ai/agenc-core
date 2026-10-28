@@ -12,12 +12,16 @@ interface Downloaded {
   readonly json: string;
   readonly bytes: number;
   readonly expires: number;
+  /** Wall-clock time the endpoint answered this download. */
+  readonly answeredAt: number;
   readonly keepStale?: boolean;
   retryAt?: number;
 }
 interface Pending {
   readonly scope: EndpointMetadataScope;
   readonly result: Promise<string | undefined>;
+  /** Set when the download answers. */
+  answeredAt?: number;
 }
 
 // Only opaque, process-salted digests are retained as identities. Never export
@@ -167,7 +171,14 @@ export class EndpointMetadataCache {
       readonly timeoutMs: number;
     },
     download: () => Promise<EndpointMetadataJson | undefined>,
-    options: { readonly staleWhileRevalidate?: boolean } = {},
+    options: {
+      readonly staleWhileRevalidate?: boolean;
+      /**
+       * Told when the endpoint answered the JSON this call returns: now for a
+       * new download, earlier for a reused one. Not called without an answer.
+       */
+      readonly onAnswer?: (answeredAt: number) => void;
+    } = {},
   ): Promise<EndpointMetadataJson | undefined> {
     const current = this.#current(scope);
     const key = fingerprint([scope.provider, scope.identity, request.baseUrl,
@@ -182,12 +193,17 @@ export class EndpointMetadataCache {
     if (current && hit?.scope === scope && (now < hit.expires || now < (hit.retryAt ?? 0))) {
       this.#downloaded.delete(key);
       this.#downloaded.set(key, hit);
+      options.onAnswer?.(hit.answeredAt);
       return JSON.parse(hit.json) as EndpointMetadataJson;
     }
     const pending = this.#pending.get(key);
     if (current && pending?.scope === scope) {
-      if (stale !== undefined) return JSON.parse(stale.json) as EndpointMetadataJson;
+      if (stale !== undefined) {
+        options.onAnswer?.(stale.answeredAt);
+        return JSON.parse(stale.json) as EndpointMetadataJson;
+      }
       const json = await pending.result;
+      if (json !== undefined && pending.answeredAt !== undefined) options.onAnswer?.(pending.answeredAt);
       return json === undefined ? undefined : JSON.parse(json) as EndpointMetadataJson;
     }
     const retain = current && this.#pendingCount < this.#maxPending;
@@ -206,6 +222,8 @@ export class EndpointMetadataCache {
         if (value === undefined) {
           return failed();
         }
+        const answeredAt = Date.now();
+        record.answeredAt = answeredAt;
         const json = JSON.stringify(value);
         const bytes = Buffer.byteLength(json);
         // Invalidation revokes publication, not this caller's successful
@@ -215,7 +233,7 @@ export class EndpointMetadataCache {
           while (this.#downloaded.size >= this.#maxEntries || this.#bytes + bytes > this.#maxBytes) {
             this.#remove(this.#downloaded.keys().next().value!);
           }
-          this.#downloaded.set(key, { scope, json, bytes, expires: this.#now() + this.#reuseMs,
+          this.#downloaded.set(key, { scope, json, bytes, expires: this.#now() + this.#reuseMs, answeredAt,
             ...(options.staleWhileRevalidate ? { keepStale: true } : {}) });
           this.#bytes += bytes;
         }
@@ -238,10 +256,12 @@ export class EndpointMetadataCache {
     };
     if (stale !== undefined) {
       void record.result.finally(finish);
+      options.onAnswer?.(stale.answeredAt);
       return JSON.parse(stale.json) as EndpointMetadataJson;
     }
     try {
       const json = await record.result;
+      if (json !== undefined && record.answeredAt !== undefined) options.onAnswer?.(record.answeredAt);
       return json === undefined ? undefined : JSON.parse(json) as EndpointMetadataJson;
     } finally {
       finish();
