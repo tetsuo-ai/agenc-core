@@ -596,6 +596,33 @@ describe("providers/ollama entrypoint", () => {
     expect(options.num_ctx).toBe(expected);
   });
 
+  test.each([
+    undefined,
+    null,
+    [],
+    ["future"],
+    ["tools", 3],
+  ] as const)("sends num_ctx from model_info when capabilities is %j", async (capabilities) => {
+    // resolveToolMode treats these shapes as native tools, but /api/show still
+    // reports the trained window. Dropping it omitted num_ctx while admission
+    // planned against 32k, so Ollama silently discarded the oldest messages.
+    const chat = vi.fn().mockResolvedValue({
+      message: { role: "assistant", content: "ok" }, done: true, done_reason: "stop",
+      prompt_eval_count: 10, eval_count: 2,
+    });
+    const show = vi.fn().mockResolvedValue({
+      capabilities,
+      model_info: { "qwen2.context_length": 131_072 },
+    });
+    const provider = new OllamaProvider({ model: "qwen2.5-coder:7b" });
+    setClient(provider, { chat, show });
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    const options = (chat.mock.calls[0]?.[0] as { options?: Record<string, unknown> }).options ?? {};
+    expect(options.num_ctx).toBe(32_768);
+  });
+
   test("maps refused local connections to a useful Ollama error", async () => {
     const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1"), {
       code: "ECONNREFUSED",

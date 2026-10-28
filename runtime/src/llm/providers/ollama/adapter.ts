@@ -1112,16 +1112,22 @@ export class OllamaProvider implements LLMProvider {
         if (typeof client.show !== "function") return { mode: "native" };
         const metadata = await withTimeout(() => client.show!({ model }), 3_500, this.name);
         const capabilities = isRecord(metadata) ? metadata.capabilities : undefined;
-        // Missing, malformed, or unknown metadata is not proof tools are unsupported.
-        if (!Array.isArray(capabilities) || !capabilities.every((item) => typeof item === "string") ||
-          !capabilities.includes("completion")) return { mode: "native" };
         const trainedContextLength = ollamaTrainedContextLength(metadata);
+        const trained = trainedContextLength !== undefined
+          ? { trainedContextLength }
+          : {};
+        // Missing, malformed, or unknown capabilities is not proof tools are
+        // unsupported. The trained window still has to ride along: admission
+        // already read model_info from this same /api/show, and omitting
+        // num_ctx lets Ollama drop the oldest messages at its GPU default.
+        if (!Array.isArray(capabilities) || !capabilities.every((item) => typeof item === "string") ||
+          !capabilities.includes("completion")) return { mode: "native", ...trained };
         return {
           mode: capabilities.includes("tools") &&
             !ollamaTemplateRequiresTextTools(isRecord(metadata) ? metadata.template : undefined)
             ? "native" : "text",
           ...(!capabilities.includes("vision") ? { toolResultImagePolicy: "strip" as const } : {}),
-          ...(trainedContextLength !== undefined ? { trainedContextLength } : {}),
+          ...trained,
         };
       } catch {
         return { mode: "native" };
