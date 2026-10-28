@@ -1706,10 +1706,13 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   /**
-   * Request rules a Responses destination other than OpenAI documents. Meta
-   * accepts only `tool_choice: "auto"`, requires intermediate assistant text
-   * replayed before a function call to be tagged as commentary, and takes
-   * only its documented effort values.
+   * Request rules of a Responses destination. OpenAI's platform API converts
+   * a function tool sent without `strict` to strict mode, which requires
+   * every property, so tools with optional fields declare `strict: false`
+   * (https://developers.openai.com/api/docs/guides/function-calling#strict-mode).
+   * Meta accepts only `tool_choice: "auto"`, requires intermediate assistant
+   * text replayed before a function call to be tagged as commentary, and
+   * takes only its documented effort values.
    * https://dev.meta.ai/docs/tool-calling
    * https://dev.meta.ai/docs/protocols/responses
    */
@@ -1717,8 +1720,16 @@ export class OpenAIProvider implements LLMProvider {
     model: string,
   ): Pick<
     OpenAIResponsesRequestOptions,
-    "toolChoicePolicy" | "assistantCommentaryPhase" | "reasoningEffortAllowedValues"
+    | "toolChoicePolicy"
+    | "assistantCommentaryPhase"
+    | "reasoningEffortAllowedValues"
+    | "declareNonStrictTools"
   > {
+    // The ChatGPT backend is not verified for the field and keeps its request
+    // shape.
+    if (this.name === "openai" && !this.isChatGptBackend()) {
+      return { declareNonStrictTools: true };
+    }
     if (this.name !== "meta") return {};
     const effort = resolveReasoningEffort({ provider: this.name, model });
     return {
