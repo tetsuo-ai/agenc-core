@@ -608,20 +608,24 @@ function geminiModelParts(message: LLMMessage, model: string): GeminiPart[] {
 
   const storedCalls = stored.flatMap((part) => {
     const call = geminiFunctionCallRecord(part);
-    return call === undefined ? [] : [{ part, call }];
+    return call === undefined ? [] : [{ part, call, name: String(call.name ?? "").trim() }];
   });
   // storedCall index -> message call index
   const callForStored = new Map<number, number>();
   const signedCallParts = callParts.map((part, index) => {
     const toolCall = toolCalls[index]!;
-    let match = storedCalls.findIndex(({ call }, storedIndex) =>
-      !callForStored.has(storedIndex) && nonEmptyString(call.id) === toolCall.id && call.name === toolCall.name);
+    // Core trims the call name the model sent (tool-call-normalize.ts); the
+    // rebuilt part sends the declared name, since Google refuses a call name
+    // with stray whitespace (HTTP 400, live 2026-10-28).
+    const name = toolCall.name.trim();
+    let match = storedCalls.findIndex((stored, storedIndex) =>
+      !callForStored.has(storedIndex) && nonEmptyString(stored.call.id) === toolCall.id && stored.name === name);
     // Before Gemini 3 calls carried no id: a call then matches the stored
     // call at its own position when the name agrees.
     const positional = storedCalls[index];
     if (
       match < 0 && positional !== undefined && !callForStored.has(index) &&
-      nonEmptyString(positional.call.id) === undefined && positional.call.name === toolCall.name
+      nonEmptyString(positional.call.id) === undefined && positional.name === name
     ) match = index;
     if (match < 0) return part;
     callForStored.set(match, index);
@@ -632,9 +636,12 @@ function geminiModelParts(message: LLMMessage, model: string): GeminiPart[] {
     .map((part) => part.text).join("");
   if (storedText !== messageTextContent(message.content)) return [...textParts, ...signedCallParts];
   // Unchanged text keeps its own parts and signatures, and every call keeps
-  // the position its original part had.
+  // the position its original part had. A call with no original part joins
+  // the calls before it: Google reads a call after a text part as the start
+  // of a new run that needs its own signature (HTTP 400 otherwise).
   const parts: GeminiPart[] = [];
   const placed = new Set<number>();
+  let afterLastCall = -1;
   let storedCallIndex = 0;
   for (const part of stored) {
     if (geminiFunctionCallRecord(part) === undefined) {
@@ -646,10 +653,11 @@ function geminiModelParts(message: LLMMessage, model: string): GeminiPart[] {
     if (callIndex === undefined) continue;
     parts.push(signedCallParts[callIndex]!);
     placed.add(callIndex);
+    afterLastCall = parts.length;
   }
-  signedCallParts.forEach((part, index) => {
-    if (!placed.has(index)) parts.push(part);
-  });
+  const unplaced = signedCallParts.filter((_part, index) => !placed.has(index));
+  if (afterLastCall < 0) return [...parts, ...unplaced];
+  parts.splice(afterLastCall, 0, ...unplaced);
   return parts;
 }
 
@@ -658,12 +666,14 @@ function geminiModelParts(message: LLMMessage, model: string): GeminiPart[] {
  *
  * Google finds the current turn by walking back to the newest user content
  * with standard content (anything but functionResponse parts) and validates
- * the first functionCall part of every model step after it. Calls this
- * model produced carry their real signature (see {@link geminiModelParts}).
- * A step that has none was produced by another model (a mid-turn model or
- * provider fallback) or its signature was lost, and Google answers HTTP 400
- * for it. Such a step gets the documented placeholder instead. Earlier turns
- * are not validated and stay as they are.
+ * the first functionCall part of every model step after it. Live requests
+ * (2026-10-28) show the rule applies to every run of adjacent calls: a call
+ * that follows a text part needs its own signature. Calls this model produced
+ * carry their real signature (see {@link geminiModelParts}). A run that has
+ * none was produced by another model (a mid-turn model or provider fallback)
+ * or its signature was lost, and Google answers HTTP 400 for it. Such a run
+ * gets the documented placeholder instead. Earlier turns are not validated
+ * and stay as they are.
  */
 function signCurrentTurnFunctionCalls(contents: Record<string, unknown>[]): void {
   let start = 0;
@@ -679,11 +689,16 @@ function signCurrentTurnFunctionCalls(contents: Record<string, unknown>[]): void
     const content = contents[index]!;
     if (content.role !== "model" || !Array.isArray(content.parts)) continue;
     const parts = content.parts as GeminiPart[];
-    const first = parts.findIndex((part) => geminiFunctionCallRecord(part) !== undefined);
-    if (first < 0 || geminiThoughtSignature(parts[first]!) !== undefined) continue;
-    const { thought_signature: _unused, ...part } = parts[first]!;
-    content.parts = parts.map((entry, partIndex) =>
-      partIndex === first ? { ...part, thoughtSignature: GEMINI_SKIP_THOUGHT_SIGNATURE } : entry);
+    let changed = false;
+    const signed = parts.map((part, partIndex) => {
+      const startsRun = geminiFunctionCallRecord(part) !== undefined &&
+        (partIndex === 0 || geminiFunctionCallRecord(parts[partIndex - 1]!) === undefined);
+      if (!startsRun || geminiThoughtSignature(part) !== undefined) return part;
+      changed = true;
+      const { thought_signature: _unused, ...rest } = part;
+      return { ...rest, thoughtSignature: GEMINI_SKIP_THOUGHT_SIGNATURE };
+    });
+    if (changed) content.parts = signed;
   }
 }
 

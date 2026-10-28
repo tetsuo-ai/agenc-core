@@ -3181,6 +3181,98 @@ describe("GeminiProvider", () => {
     ]);
   });
 
+  test.each([false, true])(
+    "keeps a parallel call next to its signed sibling when the model's call name had stray whitespace (stream=%s)",
+    async (stream) => {
+      // Live on Gemini 4 Argon (2026-10-28): the stream named the second call
+      // " Write". Core trims it, Google refuses the untrimmed name, and a call
+      // placed after the trailing empty text part needed its own signature.
+      const parts = [
+        { functionCall: { name: "system.echo", args: { text: "edit" }, id: "call_1647406" }, thoughtSignature: "ZWRpdA==" },
+        { functionCall: { name: " system.echo", args: { text: "write" }, id: "call_1647495" } },
+        { text: "" },
+      ];
+      const fetchImpl = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(stream
+          ? sseResponse([
+            ...parts.map((part) => `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [part] } }] })}\n\n`),
+            `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [] }, finishReason: "STOP" }] })}\n\n`,
+          ])
+          : jsonResponse({ candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }] }))
+        .mockResolvedValue(jsonResponse({ candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }] }));
+      const provider = new GeminiProvider({
+        credentialPlan: apiKeyCredentialPlan(),
+        endpointPlan: developerEndpointPlan,
+        model: "gemini-4-argon",
+        fetchImpl,
+      });
+      const messages: LLMMessage[] = [{ role: "user", content: "edit and write" }];
+      const response = stream
+        ? await provider.chatStream(messages, () => {}, { tools: [echoTool] })
+        : await provider.chat(messages, { tools: [echoTool] });
+      // The session normalizes call names before it stores the turn.
+      const toolCalls = response.toolCalls.map((call) => ({ ...call, name: call.name.trim() }));
+      await provider.chat([
+        ...messages,
+        {
+          role: "assistant", content: response.content, toolCalls,
+          providerReasoningContent: response.providerReasoningContent,
+          providerReasoningProvenance: response.providerReasoningProvenance,
+        },
+        ...toolCalls.map((call): LLMMessage => ({ role: "tool", toolCallId: call.id, content: "ok" })),
+      ], { tools: [echoTool] });
+      const request = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+      expect(request.contents[1]).toEqual({
+        role: "model",
+        parts: [
+          { functionCall: { name: "system.echo", args: { text: "edit" }, id: "call_1647406" }, thoughtSignature: "ZWRpdA==" },
+          { functionCall: { id: "call_1647495", name: "system.echo", args: { text: "write" } } },
+          { text: "" },
+        ],
+      });
+    },
+  );
+
+  test("signs the first call of every run of calls in the current turn", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => jsonResponse({
+      candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
+    }));
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-3.8-flash",
+      fetchImpl,
+    });
+    const stored = [
+      { functionCall: { name: "system.echo", args: { text: "a" }, id: "call_1" }, thoughtSignature: "YQ==" },
+      { text: "Now the second one." },
+      { functionCall: { name: "system.echo", args: { text: "b" }, id: "call_2" } },
+    ];
+    await provider.chat([
+      { role: "user", content: "echo twice" },
+      {
+        role: "assistant", content: "Now the second one.",
+        toolCalls: [
+          { id: "call_1", name: "system.echo", arguments: '{"text":"a"}' },
+          { id: "call_2", name: "system.echo", arguments: '{"text":"b"}' },
+        ],
+        providerReasoningContent: JSON.stringify(stored),
+        providerReasoningProvenance: { provider: "gemini", model: "gemini-3.8-flash" },
+      },
+      { role: "tool", toolCallId: "call_1", content: "a" },
+      { role: "tool", toolCallId: "call_2", content: "b" },
+    ], { tools: [echoTool] });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.contents[1]).toEqual({
+      role: "model",
+      parts: [
+        stored[0],
+        stored[1],
+        { ...stored[2], thoughtSignature: "skip_thought_signature_validator" },
+      ],
+    });
+  });
+
   test("a retried request sends the same signatures, call ids and grouped results", async () => {
     let calls = 0;
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
