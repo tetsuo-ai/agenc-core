@@ -113,8 +113,16 @@ test("ps and open-file checks share one deadline", async () => {
 });
 
 test("an unkillable live probe cannot keep the calling process alive", { timeout: 10_000 }, async (t) => {
+  let pidFile;
+  // node:test runs t.after hooks in registration order. Register the kill
+  // before fixture(t), whose hook removes the home folder that holds probe.pid.
+  t.after(() => {
+    if (pidFile !== undefined && existsSync(pidFile)) {
+      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+    }
+  });
   const home = fixture(t);
-  const pidFile = join(home, "probe.pid");
+  pidFile = join(home, "probe.pid");
   const moduleUrl = new URL("../lib/runtime-maintenance.mjs", import.meta.url).href;
   const program = `
     import { execFile } from 'node:child_process';
@@ -132,11 +140,6 @@ test("an unkillable live probe cannot keep the calling process alive", { timeout
       process.exitCode = 1;
     } catch (error) { console.log(error.message); }
   `;
-  t.after(() => {
-    if (existsSync(pidFile)) {
-      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
-    }
-  });
   const output = await new Promise((resolve, reject) => execFile(process.execPath,
     ["--input-type=module", "-e", program], { timeout: 5000 },
     (error, stdout) => error ? reject(error) : resolve(stdout)));
