@@ -3576,7 +3576,7 @@ async function* runTurnKernelInner(
     if (runDeadline !== undefined) {
       const remainingMs = deadlineRemainingMs(runDeadline);
       if (!deadlineTurnReminderInjected) {
-        state.messages.push(deadlineTurnReminder(remainingMs));
+        state.messages.push(deadlineTurnReminder(remainingMs, runDeadline.reserveMs));
         deadlineTurnReminderInjected = true;
       }
       if (
