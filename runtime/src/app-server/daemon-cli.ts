@@ -109,6 +109,7 @@ import {
   type JsonObject,
   type JsonValue,
   type SessionStatus,
+  type SessionSummary,
 } from "./protocol/index.js";
 
 import { sessionEventDelivery } from "./approval-delivery.js";
@@ -199,6 +200,7 @@ import type { StartedMcpSseServer } from "../mcp/server/start.js";
 
 import {
   recoverDaemonStateOnStartup,
+  RECOVERABLE_AGENT_RUN_STATUSES,
   materializeRecoveredRunSnapshot,
   StartupResumeSourceBudget,
   type DaemonStartupRecoveryReport,
@@ -243,6 +245,7 @@ import {
   discoverStateDatabasePaths,
   LOGS_DATABASE_FILENAME,
   openStateDatabasePaths,
+  openStateDatabasePathReader,
   resolveStateDatabasePaths,
   STATE_DATABASE_FILENAME,
   type StateDatabasePaths,
@@ -320,6 +323,7 @@ export async function runAgenCDaemonForeground(
     readonly beforeDaemonAuthorityCleanup?: () => void | Promise<void>;
     readonly startupCancelCleanupTaskTimeoutMs?: number;
     readonly startupRestoreShutdownGraceMs?: number;
+    readonly startupRestoreMode?: "on-demand" | "background";
     readonly runner?: AgenCBackgroundAgentRunner;
     readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
     readonly nativePeerCredentialAddonPath?: string;
@@ -409,6 +413,7 @@ async function runAgenCDaemonForegroundLocked(
     readonly inspectLegacyDaemonProcess?: RunAgenCDaemonCliOptions["inspectLegacyDaemonProcess"];
     readonly findLegacyDaemonProcesses?: RunAgenCDaemonCliOptions["findLegacyDaemonProcesses"];
     readonly releaseLifecycleLock: () => Promise<void>;
+    readonly startupRestoreMode?: "on-demand" | "background";
   },
 ): Promise<number> {
   const startupStartedAt = Date.now();
@@ -662,15 +667,14 @@ async function runAgenCDaemonForegroundLocked(
   };
   let lifecycleLockReleased = false;
   let startupRecovery: DaemonStartupRecoveryReport;
+  const savedSessionListings = new Map<string, AgenCDaemonSavedSessionListing>();
   if (host.startupGuardReceiver?.wasRequested() === true) return 1;
   try {
-    startupRecovery = recoverAgenCDaemonStartupState(
-      authStartup.daemonHome,
-      process.cwd(),
-      activeConfig,
-      (message) => io.stderr.write(`agenc: ${message}\n`),
-      distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined,
-    );
+    startupRecovery = options.startupRestoreMode === "background"
+      ? recoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), activeConfig,
+          message => io.stderr.write(`agenc: ${message}\n`),
+          distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined)
+      : discoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), savedSessionListings);
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
     writeAgenCDaemonStartupDebug(
       host,
@@ -695,11 +699,19 @@ async function runAgenCDaemonForegroundLocked(
     const threadStore = new MultiProjectFileThreadStore({
       primaryCwd,
       agencHome: authStartup.daemonHome,
+      deferPrimary: options.startupRestoreMode !== "background",
     });
     cleanup.register("daemon-thread-store", async () => {
       threadStore.close();
     });
-    const sessionManager = new AgenCDaemonSessionManager({ threadStore });
+    // On demand, saved sessions stay listed until they are opened, as the
+    // eager restore listed them: under the daemon session id they had, with
+    // the waiting status, the run's start time and the thread's workspace.
+    let listUnopenedSavedSessions = (): readonly SessionSummary[] => [];
+    const sessionManager = new AgenCDaemonSessionManager({
+      threadStore,
+      unopenedSessions: () => listUnopenedSavedSessions(),
+    });
     // Forward declaration: set once the connection registry below exists. Lets
     // the multiplexer ask the transport to tear down a slow consumer's socket
     // when that client's pending delivery backlog trips the per-client cap.
@@ -742,29 +754,33 @@ async function runAgenCDaemonForegroundLocked(
             }
           : {}),
       });
-      const recovery = executionAdmissionKernel.initializeExistingState();
-      if (
-        recovery.requeued > 0 ||
-        recovery.heldUnknown > 0 ||
-        recovery.expired > 0 ||
-        recovery.detachedQueued > 0 ||
-        recovery.staleRunBindings > 0
-      ) {
-        io.stderr.write(
-          `agenc: admission recovery databases=${recovery.databases} ` +
-            `requeued=${recovery.requeued} held_unknown=${recovery.heldUnknown} ` +
-            `expired=${recovery.expired} detached=${recovery.detachedQueued} ` +
-            `stale_run_bindings=${recovery.staleRunBindings}\n`,
-        );
-      }
-      // A failed project is excluded from admission, not fatal: the daemon
-      // must keep serving every other project (a legacy or damaged journal
-      // in one old workspace used to brick startup globally).
-      for (const failure of recovery.failures) {
-        io.stderr.write(
-          `agenc: execution admission recovery excluded ${failure.projectDir} ` +
-            `(${failure.stateDbPath}): ${failure.message}\n`,
-        );
+      if (options.startupRestoreMode === "background") {
+        const recovery = executionAdmissionKernel.initializeExistingState();
+        if (
+          recovery.requeued > 0 ||
+          recovery.heldUnknown > 0 ||
+          recovery.expired > 0 ||
+          recovery.detachedQueued > 0 ||
+          recovery.staleRunBindings > 0
+        ) {
+          io.stderr.write(
+            `agenc: admission recovery databases=${recovery.databases} ` +
+              `requeued=${recovery.requeued} held_unknown=${recovery.heldUnknown} ` +
+              `expired=${recovery.expired} detached=${recovery.detachedQueued} ` +
+              `stale_run_bindings=${recovery.staleRunBindings}\n`,
+          );
+        }
+        // A failed project is excluded from admission, not fatal: the daemon
+        // must keep serving every other project (a legacy or damaged journal
+        // in one old workspace used to brick startup globally).
+        for (const failure of recovery.failures) {
+          io.stderr.write(
+            `agenc: execution admission recovery excluded ${failure.projectDir} ` +
+              `(${failure.stateDbPath}): ${failure.message}\n`,
+          );
+        }
+      } else {
+        executionAdmissionKernel.deferExistingState();
       }
     } catch (error) {
       io.stderr.write(
@@ -899,6 +915,7 @@ async function runAgenCDaemonForegroundLocked(
         agencHome: authStartup.daemonHome,
         defaultCwd: primaryCwd,
         snapshotRetention: activeConfig.agent?.retention,
+        deferInitialPolicy: options.startupRestoreMode !== "background",
         periodicIntervalMs: options.snapshotPeriodicIntervalMs,
         onError: (error) =>
           io.stderr.write(
@@ -920,9 +937,9 @@ async function runAgenCDaemonForegroundLocked(
     cleanup.register("daemon-snapshot-policy", async () => {
       snapshotPolicies.close();
     });
-    // The sessions open at the last shutdown are restored after the daemon
-    // starts serving. Each is registered here, before the socket listens, so
-    // no request can name one before the daemon knows it is still restoring.
+    // Register saved ids before listening. Their histories stay on disk until
+    // a request names them; publication still follows canonical recovery.
+    const recoveredProjects = new Map<string, DaemonStartupRecoveryReport>();
     const startupRestores: StartupSessionRestores<StartupSessionRestoreRunTarget> =
       new StartupSessionRestores<StartupSessionRestoreRunTarget>({
       targets: startupRecovery.recoveredRuns.map((run) => ({
@@ -933,13 +950,46 @@ async function runAgenCDaemonForegroundLocked(
         run,
       })),
       concurrency: STARTUP_RUNTIME_RESTORE_CONCURRENCY,
+      onDemand: options.startupRestoreMode !== "background",
       task: ({ run }, context): Promise<"published" | "unavailable"> => {
+        // Discovery is only an index. Canonical journal validation, tool
+        // reconciliation and migrations must finish before this session is
+        // hydrated or published, exactly as with eager startup recovery.
+        let report = options.startupRestoreMode === "background"
+          ? startupRecovery : recoveredProjects.get(run.projectDir);
+        if (report === undefined) {
+          report = recoverAgenCDaemonStartupState(
+            authStartup.daemonHome, primaryCwd, activeConfig,
+            message => io.stderr.write(`agenc: ${message}\n`),
+            distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined,
+            { paths: [{ projectDir: run.projectDir, stateDbPath: join(run.projectDir, STATE_DATABASE_FILENAME), logsDbPath: join(run.projectDir, LOGS_DATABASE_FILENAME) }],
+              runIds: startupRecovery.recoveredRuns.filter(candidate => candidate.projectDir === run.projectDir).map(candidate => candidate.id),
+              retainRuntimeResumeSources: false },
+          );
+          recoveredProjects.set(run.projectDir, report);
+          reportAgenCDaemonStartupRecovery(io, report);
+        }
+        if (options.startupRestoreMode !== "background") {
+          if (!report.recoveredRuns.some(candidate => candidate.id === run.id)) return Promise.resolve("unavailable");
+          // Retain descriptor authority only for the requested session. Keeping
+          // sources for unopened sessions would exhaust the startup fd budget.
+          report = recoverAgenCDaemonStartupState(
+            authStartup.daemonHome, primaryCwd, activeConfig,
+            message => io.stderr.write(`agenc: ${message}\n`),
+            distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined,
+            { paths: [{ projectDir: run.projectDir, stateDbPath: join(run.projectDir, STATE_DATABASE_FILENAME), logsDbPath: join(run.projectDir, LOGS_DATABASE_FILENAME) }], runIds: [run.id] },
+          );
+        }
+        const recovered = report.recoveredRuns.find(candidate => candidate.id === run.id);
+        // Canonical replay may prove that a stale running row is terminal or
+        // excluded. Never publish that discovery row as a runnable session.
+        if (recovered === undefined) return Promise.resolve("unavailable");
         let hydratedRun: RecoveredAgentRun;
         try {
-          hydratedRun = snapshotPolicies.hydrateStartupRun(startupRecovery, run);
+          hydratedRun = snapshotPolicies.hydrateStartupRun(report, recovered);
         } catch (error) {
           try {
-            run.resumeSource?.close();
+            recovered.resumeSource?.close();
           } catch (cleanupError) {
             throw new AggregateError(
               [error, cleanupError],
@@ -953,7 +1003,7 @@ async function runAgenCDaemonForegroundLocked(
           sessionManager,
           agentManager,
           runner,
-          startupRecovery,
+          report,
           hydratedRun,
           context,
           {
@@ -999,6 +1049,25 @@ async function runAgenCDaemonForegroundLocked(
         );
       },
     });
+    if (options.startupRestoreMode !== "background") {
+      listUnopenedSavedSessions = () => startupRestores.unsettledTargets().flatMap(({ run }) => {
+        if (run.currentSessionId === undefined) return [];
+        const listing = savedSessionListings.get(savedSessionListingKey(run.projectDir, run.id));
+        return [{
+          sessionId: run.currentSessionId,
+          agentId: run.id,
+          status: "waiting" as const,
+          createdAt: run.startedAt,
+          ...(listing?.cwd !== undefined ? { cwd: listing.cwd } : {}),
+          metadata: {
+            ...(listing?.model !== undefined ? { model: listing.model } : {}),
+            ...(listing?.modelProvider !== undefined ? { modelProvider: listing.modelProvider } : {}),
+            recovered: true,
+            recovery: { projectDir: run.projectDir, runStatus: run.status, loaded: false },
+          },
+        }];
+      });
+    }
     let routines: RoutineService | undefined;
     let remote: ReturnType<typeof createLazyRemoteService> | undefined;
     let ownerTelegram: ReturnType<typeof createLazyOwnerTelegramService> | undefined;
@@ -1189,7 +1258,11 @@ async function runAgenCDaemonForegroundLocked(
         ),
     });
     cleanup.register("daemon-workflow-controller", () => workflowWiring.close());
+    let workflowsResumed = false;
+    let workflowRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
     const resumeOpenWorkflows = (): void => {
+      if (workflowsResumed || shuttingDown) return;
+      workflowsResumed = true;
       void workflowWiring.resumeOpenWorkflows().catch((error) => {
         io.stderr.write(
           `agenc: workflow startup recovery failed: ${formatCleanupError(error)}\n`,
@@ -1197,7 +1270,8 @@ async function runAgenCDaemonForegroundLocked(
       });
     };
     // With no session to restore, nothing is left to order them after.
-    if (startupRestores.total === 0) resumeOpenWorkflows();
+    if (options.startupRestoreMode === "background" && startupRestores.total === 0) resumeOpenWorkflows();
+    cleanup.register("daemon-workflow-recovery-timer", () => clearTimeout(workflowRecoveryTimer));
     const workflowStartService = new DaemonWorkflowStartService({
       controller: workflowWiring.controller,
       primaryCwd,
@@ -1209,7 +1283,8 @@ async function runAgenCDaemonForegroundLocked(
     });
     const workflowControlService = new DaemonWorkflowControlService(workflowWiring.controller);
     const health = createLazyDaemonHealth({
-      sessionCounter: sessionManager,
+      sessionCounter: options.startupRestoreMode === "background" ? sessionManager
+        : { countSessions: () => sessionManager.countSessions({ includePersisted: false }) },
       stateCounter: new StateSqliteHealthStatsReader(
         discoverAgenCDaemonStateDatabasePaths(
           authStartup.daemonHome,
@@ -1842,11 +1917,13 @@ async function runAgenCDaemonForegroundLocked(
         await host.startupGuardReceiver?.notifyReady();
         io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
         scheduleDaemonCompileCacheFlush();
-        // The daemon serves from here on. The sessions open at its last
-        // shutdown are rebuilt in the background, four at a time; a request
-        // naming one waits for it (see StartupSessionRestores).
+        // The daemon serves from here on. Requests can now reopen saved
+        // sessions through the bounded restore gate.
         void startupRestores.settled.then((summary) => {
-          reportStartupSessionRestoreSummary(host, io, startupStartedAt, summary);
+          reportStartupSessionRestoreSummary(
+            host, io, startupStartedAt, summary,
+            options.startupRestoreMode !== "background",
+          );
           if (summary.total > 0 && summary.abandoned === 0 && !shuttingDown) {
             resumeOpenWorkflows();
           }
@@ -1863,6 +1940,12 @@ async function runAgenCDaemonForegroundLocked(
           );
         });
         startupRestores.start();
+        if (options.startupRestoreMode !== "background") {
+          // Workflows resume independently of unopened chats. Their session
+          // requests pass through the same on-demand restore gate.
+          workflowRecoveryTimer = setTimeout(resumeOpenWorkflows, 1_000);
+          workflowRecoveryTimer.unref?.();
+        }
       }
 
       const termination = await Promise.race([
@@ -2289,6 +2372,67 @@ function describeRolloutRetentionPrune(
   );
 }
 
+/** What `session.list` shows for a saved session before it is opened. */
+export interface AgenCDaemonSavedSessionListing {
+  readonly cwd?: string;
+  readonly model?: string;
+  readonly modelProvider?: string;
+}
+
+/** Key of {@link AgenCDaemonSavedSessionListing} entries: project and run id. */
+function savedSessionListingKey(projectDir: string, runId: string): string {
+  return `${projectDir}\0${runId}`;
+}
+
+/** @internal Exported for startup recovery boundary tests. */
+export function discoverAgenCDaemonStartupState(
+  daemonHome: string,
+  cwd: string,
+  listings?: Map<string, AgenCDaemonSavedSessionListing>,
+): DaemonStartupRecoveryReport {
+  const recoveredRuns: RecoveredAgentRun[] = [];
+  for (const paths of discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd)) {
+    // No migrations, retention, journal scans or snapshot payloads here.
+    // These rows only reserve ids in the restore gate; they have no execution
+    // authority until recoverAgenCDaemonStartupState validates their project.
+    const reader = openStateDatabasePathReader(paths, { deferLogs: true });
+    try {
+      // The thread row (keyed by the durable session id, which is the run id)
+      // carries the workspace and model a client lists the session under.
+      const rows = reader.prepareState<string[], {
+        id: string; objective: string; status: RecoveredAgentRun["status"];
+        started_at: string; last_active_at: string; current_session_id: string | null;
+        thread_cwd: string | null; thread_model: string | null; thread_model_provider: string | null;
+      }>(`SELECT runs.id, runs.objective, runs.status, runs.started_at, runs.last_active_at,
+                 runs.current_session_id,
+                 COALESCE(durable.cwd, live.cwd) AS thread_cwd,
+                 COALESCE(durable.model, live.model) AS thread_model,
+                 COALESCE(durable.model_provider, live.model_provider) AS thread_model_provider
+          FROM agent_runs AS runs
+          LEFT JOIN threads AS durable ON durable.thread_id = runs.id
+          LEFT JOIN threads AS live ON live.thread_id = runs.current_session_id
+          WHERE runs.status IN (${RECOVERABLE_AGENT_RUN_STATUSES.map(() => "?").join(",")})
+          ORDER BY runs.last_active_at ASC, runs.id ASC`).all(...RECOVERABLE_AGENT_RUN_STATUSES);
+      for (const row of rows) {
+        recoveredRuns.push({
+          projectDir: paths.projectDir, id: row.id, objective: row.objective,
+          status: row.status, startedAt: row.started_at, lastActiveAt: row.last_active_at,
+          ...(row.current_session_id !== null ? { currentSessionId: row.current_session_id } : {}),
+        });
+        listings?.set(savedSessionListingKey(paths.projectDir, row.id), {
+          ...(row.thread_cwd !== null ? { cwd: row.thread_cwd } : {}),
+          ...(row.thread_model !== null ? { model: row.thread_model } : {}),
+          ...(row.thread_model_provider !== null ? { modelProvider: row.thread_model_provider } : {}),
+        });
+      }
+    } finally {
+      reader.close();
+    }
+  }
+  return { recoveredAt: new Date().toISOString(), recoveredRuns,
+    recoveredToolCalls: [], warnings: [], recoveryExclusions: [] };
+}
+
 /** @internal Exported for startup recovery boundary tests. */
 export function recoverAgenCDaemonStartupState(
   daemonHome: string,
@@ -2296,9 +2440,10 @@ export function recoverAgenCDaemonStartupState(
   config: AgenCConfig,
   log: (message: string) => void = () => {},
   canonicalProjectionEpoch?: string,
+  options: { readonly paths?: readonly StateDatabasePaths[]; readonly runIds?: readonly string[]; readonly retainRuntimeResumeSources?: boolean } = {},
 ): DaemonStartupRecoveryReport {
   const recoveredAt = new Date().toISOString();
-  const paths = discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd);
+  const paths = options.paths ?? discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd);
   const recoveredRuns: RecoveredAgentRun[] = [];
   const recoveredToolCalls: RecoveredInFlightToolCall[] = [];
   const startupResumeSourceBudget = new StartupResumeSourceBudget();
@@ -2354,8 +2499,9 @@ export function recoverAgenCDaemonStartupState(
           );
         }
         const report = phase("journal and snapshot recovery", () => recoverDaemonStateOnStartup(driver, {
+          runIds: options.runIds,
           now: () => recoveredAt,
-          retainRuntimeResumeSources: true,
+          retainRuntimeResumeSources: options.retainRuntimeResumeSources !== false,
           deferSnapshots: true,
           startupResumeSourceBudget,
           ...(canonicalProjectionEpoch !== undefined ? { canonicalProjectionEpoch } : {}),
@@ -2569,6 +2715,7 @@ interface AgenCDaemonSnapshotPolicyRegistryOptions {
   readonly periodicIntervalMs?: number;
   readonly onError: (error: unknown) => void;
   readonly log?: (message: string) => void;
+  readonly deferInitialPolicy?: boolean;
 }
 
 interface AgenCDaemonSnapshotPolicyEntry {
@@ -2602,10 +2749,7 @@ export class AgenCDaemonSnapshotPolicyRegistry {
       cwd: this.#defaultCwd,
       agencHome: this.#agencHome,
     });
-    // Existing projects keep their eager recovery/retention policy. A new
-    // project acquires the same policy on its first routed durable write, or
-    // on a periodic tick if another process created it in the meantime.
-    if (daemonProjectDirectoryExists(defaultPaths.projectDir)) {
+    if (options.deferInitialPolicy !== true && daemonProjectDirectoryExists(defaultPaths.projectDir)) {
       this.#policyForPaths(defaultPaths);
     } else {
       this.#pendingInitialDefaultPaths = defaultPaths;
@@ -3240,6 +3384,7 @@ function reportStartupSessionRestoreSummary(
   io: AgenCDaemonCliIo,
   startupStartedAt: number,
   summary: StartupSessionRestoreSummary,
+  onDemand: boolean,
 ): void {
   if (summary.abandoned > 0) {
     writeAgenCDaemonStartupDebug(
@@ -3248,9 +3393,14 @@ function reportStartupSessionRestoreSummary(
       startupStartedAt,
       "startup session restore stopped",
     );
+    // On demand, a saved session nobody asked for is expected to stay on
+    // disk; only the background warmup promised to restore every one.
     io.stderr.write(
-      `agenc: daemon shutdown stopped restoring the sessions open at its last shutdown; ` +
-        `${summary.abandoned} of ${summary.total} were not restored and will be at the next start\n`,
+      onDemand
+        ? `agenc: daemon shutdown left ${summary.abandoned} of ${summary.total} saved session(s) ` +
+            `unopened; they stay on disk and reopen when requested\n`
+        : `agenc: daemon shutdown stopped restoring the sessions open at its last shutdown; ` +
+            `${summary.abandoned} of ${summary.total} were not restored and will be at the next start\n`,
     );
     return;
   }

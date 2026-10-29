@@ -164,6 +164,23 @@ function waitForAbort(signal: AbortSignal): Promise<unknown> {
 }
 
 describe("state-only admission storage", () => {
+  it("discovers idle projects without opening them and recovers before their first admission", async () => {
+    const first = kernel("lazy-original");
+    const client = bind(first, "lazy-run");
+    const lease = await acquire(client);
+    client.reconcile(lease.reservation.reservationId, { inputTokens: 3, outputTokens: 4, costUsd: 0 });
+    client.release?.();
+    first.close();
+    vi.mocked(openStateDatabasePaths).mockClear();
+    const restarted = kernel("lazy-restarted");
+    restarted.deferExistingState();
+    expect(openStateDatabasePaths).not.toHaveBeenCalled();
+    const resumed = bind(restarted, "lazy-run");
+    expect(openStateDatabasePaths).toHaveBeenCalledTimes(1);
+    expect(restarted.sumReconciledUsageByRunId("lazy-run").totalTokens).toBe(7);
+    resumed.release?.();
+  });
+
   it("keeps FULL state recovery/admission without opening independent logs", async () => {
     const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
     const value = kernel("state-only-admission");

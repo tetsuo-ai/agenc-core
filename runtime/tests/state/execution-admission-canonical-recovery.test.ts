@@ -108,6 +108,15 @@ function readEvents(sourcePath: string): Event[] {
 }
 
 describe("canonical execution-admission recovery", () => {
+  it("leaves unrelated journals cold but still refuses corrupt evidence for the requested run", () => {
+    admissions.enqueue(request("old-unbound"));
+    new StateRunDurabilityRepository(driver).ensureInitialEpoch({ runId: RUN_ID, openedAt: T0 });
+    expect(recoverExecutionAdmissionCanonicalJournals(driver, admissions, { runId: "new-session" }))
+      .toMatchObject({ runsScanned: 0, sourcesScanned: 0 });
+    expect(() => recoverExecutionAdmissionCanonicalJournals(driver, admissions, { runId: RUN_ID }))
+      .toThrow(/canonical lifecycle but no journal binding/);
+  });
+
   it("recovers journal bounds beyond the V8 call argument limit", () => {
     const eventCount = 160_000;
     const sourcePath = bindRollout(Array.from({ length: eventCount }, (_, index) => ({

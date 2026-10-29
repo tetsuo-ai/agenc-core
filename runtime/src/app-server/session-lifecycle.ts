@@ -78,6 +78,12 @@ export interface AgenCSessionLifecycleOptions {
   readonly defaultAgentId?: string;
   readonly threadStore?: ThreadStore;
   readonly onSessionTerminated?: (sessionId: string) => void | Promise<void>;
+  /**
+   * Saved sessions the daemon knows about but has not loaded yet. They are
+   * listed like resident sessions, so a client sees every saved session
+   * whether or not something has opened it since the daemon started.
+   */
+  readonly unopenedSessions?: () => readonly SessionSummary[];
 }
 
 export interface AgenCSessionRestoreRecord {
@@ -141,6 +147,7 @@ export class AgenCDaemonSessionManager {
   readonly #threadStore: ThreadStore | undefined;
   readonly #onSessionTerminated:
     ((sessionId: string) => void | Promise<void>) | undefined;
+  readonly #unopenedSessions: (() => readonly SessionSummary[]) | undefined;
   readonly #terminationTasks = new Map<string, Promise<void>>();
   readonly #attachmentClaims = new WeakMap<AgenCSessionAttachment, {
     readonly owners: Set<symbol>;
@@ -157,6 +164,7 @@ export class AgenCDaemonSessionManager {
       options.defaultAgentId ?? DEFAULT_AGENC_DAEMON_AGENT_ID;
     this.#threadStore = options.threadStore;
     this.#onSessionTerminated = options.onSessionTerminated;
+    this.#unopenedSessions = options.unopenedSessions;
   }
 
   async createSession(
@@ -250,31 +258,40 @@ export class AgenCDaemonSessionManager {
     // The thread store is synchronous and may touch SQLite or discover project
     // state. Keep that work out of the session mutex: snapshot only the small
     // in-memory projection and the ids needed for persisted de-duplication.
-    const snapshot = await this.#state.with((state) => ({
-      matchingSessions: [...state.sessions.values()]
-        .filter(
-          (session) => agentId === undefined || session.agentId === agentId,
-        )
-        .map(toSessionSummary)
-        // Most-recent-first. Map order is load order, and a daemon that
-        // restored hundreds of historical sessions at startup put every one
-        // of them ahead of anything created since — a client reading the
-        // first page saw only ancient sessions, so "resume yesterday's chat"
-        // listed nothing from today. Timestamps are ISO strings when
-        // present; anything else sorts last rather than stringifying to
-        // "[object Object]".
-        .sort((left, right) => {
-          const stampOf = (summary: {
-            readonly lastActiveAt?: unknown;
-            readonly createdAt?: unknown;
-          }): string => {
-            const stamp = summary.lastActiveAt ?? summary.createdAt;
-            return typeof stamp === "string" ? stamp : "";
-          };
-          return stampOf(right).localeCompare(stampOf(left));
-        }),
-      knownSessionIds: new Set(state.sessions.keys()),
-    }));
+    const snapshot = await this.#state.with((state) => {
+      const unopened = (this.#unopenedSessions?.() ?? []).filter(
+        (summary) => !state.sessions.has(summary.sessionId),
+      );
+      return {
+        matchingSessions: [...state.sessions.values()]
+          .map(toSessionSummary)
+          .concat(unopened)
+          .filter(
+            (session) => agentId === undefined || session.agentId === agentId,
+          )
+          // Most-recent-first. Map order is load order, and a daemon that
+          // restored hundreds of historical sessions at startup put every one
+          // of them ahead of anything created since — a client reading the
+          // first page saw only ancient sessions, so "resume yesterday's chat"
+          // listed nothing from today. Timestamps are ISO strings when
+          // present; anything else sorts last rather than stringifying to
+          // "[object Object]".
+          .sort((left, right) => {
+            const stampOf = (summary: {
+              readonly lastActiveAt?: unknown;
+              readonly createdAt?: unknown;
+            }): string => {
+              const stamp = summary.lastActiveAt ?? summary.createdAt;
+              return typeof stamp === "string" ? stamp : "";
+            };
+            return stampOf(right).localeCompare(stampOf(left));
+          }),
+        knownSessionIds: new Set([
+          ...state.sessions.keys(),
+          ...unopened.map((summary) => summary.sessionId),
+        ]),
+      };
+    });
 
     if (cursor.phase === "persisted") {
       return this.#listPersistedSessionPage({
@@ -353,7 +370,7 @@ export class AgenCDaemonSessionManager {
     });
   }
 
-  async countSessions(): Promise<AgenCSessionCounts> {
+  async countSessions(options: { readonly includePersisted?: boolean } = {}): Promise<AgenCSessionCounts> {
     const snapshot = await this.#state.with((state) => {
       let active = 0;
       let closed = 0;
@@ -372,6 +389,9 @@ export class AgenCDaemonSessionManager {
     });
     let active = snapshot.active;
     let closed = snapshot.closed;
+    // Health counts resident sessions. Opening every project's thread store
+    // here would migrate idle databases on the daemon status path.
+    if (options.includePersisted === false) return { active, closed, total: active + closed };
     const indexedPersistedCount = this.#threadStore?.countThreads?.({
       archived: false,
       excludeThreadIds: snapshot.knownSessionIds,

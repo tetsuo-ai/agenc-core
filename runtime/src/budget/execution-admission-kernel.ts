@@ -71,6 +71,7 @@ interface WorkspaceBinding {
   readonly driver: StateSqliteDriver;
   readonly repository: ExecutionAdmissionRepository;
   readonly aliases: Set<string>;
+  readonly canonicalRecoveredRuns: Set<string>;
   lastJournalSequence: number;
   clientRefs: number;
 }
@@ -206,6 +207,8 @@ export class ExecutionAdmissionKernel {
   readonly #scheduler = new AsyncLock<void>(undefined);
   readonly #byStatePath = new Map<string, WorkspaceBinding>();
   readonly #knownPaths = new Map<string, StateDatabasePaths>();
+  readonly #unrecoveredPaths = new Set<string>();
+  #lazyCanonicalRecovery = false;
   readonly #journalCursors = new Map<string, number>();
   readonly #byWorkspace = new Map<string, WorkspaceBinding>();
   /**
@@ -383,6 +386,19 @@ export class ExecutionAdmissionKernel {
     };
   }
 
+  /** Discover idle projects without opening or migrating their databases.
+   * Every route through #registerPaths still recovers a project before use.
+   */
+  deferExistingState(): void {
+    this.#assertOpen();
+    this.#lazyCanonicalRecovery = true;
+    for (const paths of discoverStateDatabasePaths(this.#agencHome)) {
+      if (this.#knownPaths.has(paths.stateDbPath)) continue;
+      this.#knownPaths.set(paths.stateDbPath, paths);
+      this.#unrecoveredPaths.add(paths.stateDbPath);
+    }
+  }
+
   bindClient(
     options: BindExecutionAdmissionClientOptions,
   ): ExecutionAdmissionClient {
@@ -399,6 +415,12 @@ export class ExecutionAdmissionKernel {
     const workspace = this.#registerPaths(paths, workspaceId);
     workspace.clientRefs += 1;
     try {
+      if (this.#lazyCanonicalRecovery) {
+        if (!workspace.canonicalRecoveredRuns.has(options.scope.runId)) {
+          this.#recoverCanonicalJournals(workspace, options.scope.runId);
+          workspace.canonicalRecoveredRuns.add(options.scope.runId);
+        }
+      }
       this.#bindRunWorkspace(options.scope.runId, workspace);
       const deadlineAt = workspace.repository.bindRunDeadline(
         options.scope.runId,
@@ -1263,6 +1285,7 @@ export class ExecutionAdmissionKernel {
         ownerPid: this.#ownerPid,
       }),
       aliases: new Set([workspaceAlias, paths.projectDir]),
+      canonicalRecoveredRuns: new Set(),
       lastJournalSequence: this.#journalCursors.get(paths.stateDbPath) ?? 0,
       clientRefs: 0,
     };
@@ -1282,15 +1305,16 @@ export class ExecutionAdmissionKernel {
           this.#staleRunBindingSkips += 1;
         }
       }
-      if (recover) {
+      if (recover || this.#unrecoveredPaths.has(paths.stateDbPath)) {
         // A newly discovered workspace is recovered before its first admission.
         binding.repository.recover({
           now: this.#timestamp(),
           activeOwnerIds: new Set([this.#ownerId]),
         });
-        this.#recoverCanonicalJournals(binding);
+        if (!this.#lazyCanonicalRecovery) this.#recoverCanonicalJournals(binding);
         this.#hydrateQueued(binding);
         this.#publishNewJournal(binding);
+        this.#unrecoveredPaths.delete(paths.stateDbPath);
       }
       this.#knownPaths.set(paths.stateDbPath, paths);
       return binding;
@@ -1300,13 +1324,12 @@ export class ExecutionAdmissionKernel {
     }
   }
 
-  #recoverCanonicalJournals(binding: WorkspaceBinding): void {
+  #recoverCanonicalJournals(binding: WorkspaceBinding, runId?: string): void {
     recoverExecutionAdmissionCanonicalJournals(
       binding.driver,
       binding.repository,
-      this.#canonicalProjectionEpoch === undefined
-        ? {}
-        : { canonicalProjectionEpoch: this.#canonicalProjectionEpoch },
+      { ...(this.#canonicalProjectionEpoch !== undefined ? { canonicalProjectionEpoch: this.#canonicalProjectionEpoch } : {}),
+        ...(runId !== undefined ? { runId } : {}) },
     );
   }
 

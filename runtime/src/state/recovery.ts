@@ -170,10 +170,16 @@ export function recoverDaemonStateOnStartup(
     readonly retainRuntimeResumeSources?: boolean;
     readonly startupResumeSourceBudget?: StartupResumeSourceBudget;
     readonly deferSnapshots?: boolean;
+    /** The saved generation only; a lazy recovery must not touch live runs. */
+    readonly runIds?: readonly string[];
     /** Test-only race seam after cwd fd open and before pathname reproof. */
     readonly afterStartupResumeCwdOpenForTestingOnly?: (cwd: string) => void;
   } = {},
 ): DaemonStartupRecoveryReport {
+  if (options.runIds?.length === 0) {
+    return { recoveredAt: options.now?.() ?? new Date().toISOString(), recoveredRuns: [],
+      recoveredToolCalls: [], warnings: [], recoveryExclusions: [] };
+  }
   const retainedResumeSources = new Map<string, StartupRunResumeSource>();
   let recoveryFailure: unknown;
   try {
@@ -202,6 +208,7 @@ export function recoverDaemonStateOnStartup(
     // after fsyncing `run_terminal`/`effect_result` cannot resurrect or replay
     // work merely because the legacy snapshot write did not happen.
     const recoverableProjection = recoverCanonicalRunJournalsOnStartup(driver, {
+      runIds: options.runIds,
       recoverableStatuses: RECOVERABLE_AGENT_RUN_STATUSES,
       strict: { startupBudget, ...(options.canonicalProjectionEpoch !== undefined ? { canonicalProjectionEpoch: options.canonicalProjectionEpoch } : {}) },
       ...(options.retainRuntimeResumeSources === true
@@ -244,6 +251,7 @@ export function recoverDaemonStateOnStartup(
     // If no canonical terminal is present, the row remains cancelled with
     // deliberately unavailable output; recovery never invents a result.
     const cancelledProjection = recoverCanonicalRunJournalsOnStartup(driver, {
+      runIds: options.runIds,
       recoverableStatuses: ["cancelled"],
       onlyMissingTerminalResults: true,
       requireJournalBinding: true,
@@ -253,6 +261,7 @@ export function recoverDaemonStateOnStartup(
     // review event. Catch up that durable audit evidence independently of run
     // status so a crash after journal fsync cannot strand the mutation gate.
     const reviewProjection = recoverPendingEffectReviewsOnStartup(driver, {
+      runIds: options.runIds,
       strict: { startupBudget },
     });
     const recoveryExclusions = uniqueRecoveryExclusions([
@@ -280,7 +289,10 @@ export function recoverDaemonStateOnStartup(
       // Session listener is still open, then writes the terminal tail, then
       // projects agent_runs/spawn edges. A crash between the first two phases
       // leaves an admission cancel-lock but must never restore runnable work.
-      repairAdmissionCancelledAgentRuns(driver);
+      // A scoped recovery runs while the daemon serves, so it repairs only
+      // the saved runs it was given: a live run inside that same window is
+      // still being cancelled by its own writer.
+      repairAdmissionCancelledAgentRuns(driver, options.runIds);
       // Crash-mid-cascade repair MUST precede the recoverable-run load: a
       // surviving descendant of a cancelled parent is finished off here so
       // the restore loop never resurrects it.
@@ -289,6 +301,7 @@ export function recoverDaemonStateOnStartup(
         driver,
         warnings,
         excludedSessionIds,
+        options.runIds !== undefined ? loadExcludedRecoverySessionIds(driver, new Set(options.runIds)) : undefined,
       );
       const recoveredRuns = loadRecoverableAgentRuns(
         driver,
@@ -297,6 +310,7 @@ export function recoverDaemonStateOnStartup(
         excludedRunIds,
         retainedResumeSources,
         options.deferSnapshots === true,
+        options.runIds,
       );
       return {
         recoveredAt,
@@ -381,7 +395,10 @@ function loadStartupRecoveryExclusions(
   });
 }
 
-function repairAdmissionCancelledAgentRuns(driver: StateSqliteDriver): void {
+function repairAdmissionCancelledAgentRuns(
+  driver: StateSqliteDriver,
+  runIds?: readonly string[],
+): void {
   const rows = driver
     .prepareState<
       unknown[],
@@ -396,10 +413,15 @@ function repairAdmissionCancelledAgentRuns(driver: StateSqliteDriver): void {
        JOIN execution_admission_cancellations AS cancellation
          ON cancellation.run_id = runs.id
        WHERE runs.status IN (${sqlPlaceholders(RECOVERABLE_AGENT_RUN_STATUSES.length)})
+         ${runIds !== undefined ? `AND runs.id IN (${sqlPlaceholders(runIds.length)})` : ""}
        ORDER BY cancellation.cancelled_at ASC, runs.id ASC
        LIMIT ?`,
     )
-    .all(...RECOVERABLE_AGENT_RUN_STATUSES, MAX_ADMISSION_CANCEL_REPAIRS + 1);
+    .all(
+      ...RECOVERABLE_AGENT_RUN_STATUSES,
+      ...(runIds ?? []),
+      MAX_ADMISSION_CANCEL_REPAIRS + 1,
+    );
   if (rows.length > MAX_ADMISSION_CANCEL_REPAIRS) {
     throw new Error(
       `daemon startup admission-cancellation repair exceeds ${MAX_ADMISSION_CANCEL_REPAIRS} runs`,
@@ -421,6 +443,7 @@ function loadRecoverableAgentRuns(
   excludedRunIds: ReadonlySet<string>,
   resumeSources: ReadonlyMap<string, StartupRunResumeSource>,
   deferSnapshots: boolean,
+  runIds?: readonly string[],
 ): RecoveredAgentRun[] {
   const runs = driver
     .prepareState<string[], AgentRunRow>(
@@ -437,9 +460,10 @@ function loadRecoverableAgentRuns(
        FROM agent_runs AS runs
        WHERE status IN (${sqlPlaceholders(RECOVERABLE_AGENT_RUN_STATUSES.length)})
          AND ${recoveryRunIsExecutableSql("runs.id")}
+         ${runIds !== undefined ? `AND runs.id IN (${sqlPlaceholders(runIds.length)})` : ""}
        ORDER BY last_active_at ASC, id ASC`,
     )
-    .all(...RECOVERABLE_AGENT_RUN_STATUSES);
+    .all(...RECOVERABLE_AGENT_RUN_STATUSES, ...(runIds ?? []));
   return runs
     .filter((row) => !excludedRunIds.has(row.id))
     .map((row) =>
@@ -577,6 +601,7 @@ function recoverStaleToolCalls(
   driver: StateSqliteDriver,
   warnings: DaemonStartupRecoveryWarning[],
   excludedSessionIds: ReadonlySet<string>,
+  includedSessionIds?: ReadonlySet<string>,
 ): RecoveredInFlightToolCall[] {
   const rows = driver
     .prepareState<string[], InFlightToolCallRow>(
@@ -599,7 +624,7 @@ function recoverStaleToolCalls(
     .all(...TERMINAL_TOOL_CALL_STATUSES);
 
   const executableRows = rows.filter(
-    (row) => !excludedSessionIds.has(row.session_id),
+    (row) => !excludedSessionIds.has(row.session_id) && (includedSessionIds === undefined || includedSessionIds.has(row.session_id)),
   );
   const freshlyRecovered = executableRows.map((row) =>
     toRecoveredToolCall(driver, row, warnings),
@@ -631,6 +656,7 @@ function recoverStaleToolCalls(
     freshKeys,
     warnings,
     excludedSessionIds,
+    includedSessionIds,
   );
   return [...freshlyRecovered, ...surfacedEarlier];
 }
@@ -640,6 +666,7 @@ function loadPreviouslyRecoveredToolCalls(
   excludeKeys: ReadonlySet<string>,
   warnings: DaemonStartupRecoveryWarning[],
   excludedSessionIds: ReadonlySet<string>,
+  includedSessionIds?: ReadonlySet<string>,
 ): RecoveredInFlightToolCall[] {
   const rows = driver
     .prepareState<string[], InFlightToolCallRow>(
@@ -665,6 +692,7 @@ function loadPreviouslyRecoveredToolCalls(
       (row) => !excludeKeys.has(toolCallKey(row.session_id, row.tool_call_id)),
     )
     .filter((row) => !excludedSessionIds.has(row.session_id))
+    .filter((row) => includedSessionIds === undefined || includedSessionIds.has(row.session_id))
     .map((row) => toRecoveredToolCall(driver, row, warnings));
 }
 

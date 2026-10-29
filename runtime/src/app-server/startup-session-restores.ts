@@ -1,8 +1,9 @@
 /**
- * Background restore of the sessions a daemon had open at its last shutdown.
+ * On-demand or background restore of saved daemon sessions.
  *
- * The daemon listens once its databases and admission state are recovered,
- * and rebuilds those sessions afterwards, a few at a time. Before the socket
+ * The daemon indexes saved ids before listening, and validates and rebuilds
+ * a session when a request names it. Optional background warmup uses the same
+ * bounded queue and publication rules. Before the socket
  * listens, every one of them is registered here by its run id (which is also
  * its agent id and its durable session id) and by the daemon session it was
  * attached to. A request that names one of those ids waits until that
@@ -71,6 +72,7 @@ export interface StartupSessionRestoreSummary {
 /** What the daemon dispatcher needs: wait for the restores a request names. */
 export interface AgenCDaemonStartupRestoreGate {
   readonly unsettled?: number;
+  pendingForRequest?(method: string, params: unknown): number;
   /**
    * A promise that settles once every pending restore the request names has
    * settled, or undefined when it names none. Rejects when the daemon shuts
@@ -143,6 +145,8 @@ export interface StartupSessionRestoresOptions<Target> {
   readonly targets: readonly Target[];
   /** How many restores run at the same time. */
   readonly concurrency: number;
+  /** Keep idle saved sessions on disk until a request names them. */
+  readonly onDemand?: boolean;
   readonly task: StartupSessionRestoreTask<Target>;
   /** Called once per target when it settles. Must not throw; errors are ignored. */
   readonly onSettled?: (settled: StartupSessionRestoreSettlement<Target>) => void;
@@ -158,6 +162,7 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
   readonly #requested: Entry<Target>[] = [];
   #nextInOrder = 0;
   readonly #concurrency: number;
+  readonly #onDemand: boolean;
   readonly #task: StartupSessionRestoreTask<Target>;
   readonly #onSettled:
     | ((settled: StartupSessionRestoreSettlement<Target>) => void)
@@ -176,6 +181,7 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
 
   constructor(options: StartupSessionRestoresOptions<Target>) {
     this.#concurrency = Math.max(1, Math.floor(options.concurrency));
+    this.#onDemand = options.onDemand === true;
     this.#task = options.task;
     this.#onSettled = options.onSettled;
     this.#now = options.now ?? Date.now;
@@ -228,6 +234,13 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
     return this.#unsettled;
   }
 
+  /** Targets whose restore has not settled, in registration order. */
+  unsettledTargets(): Target[] {
+    return this.#entries
+      .filter((entry) => entry.phase !== "settled")
+      .map((entry) => entry.target);
+  }
+
   /** Resolves once every restore has settled, abandoned ones included. */
   get settled(): Promise<StartupSessionRestoreSummary> {
     return this.#settled;
@@ -255,6 +268,10 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
     }
     const entries = this.#entriesNamedBy(params);
     return entries.size === 0 ? undefined : this.#waitFor(entries, signal);
+  }
+
+  pendingForRequest(method: string, params: unknown): number {
+    return METHODS_THAT_NEVER_WAIT.has(method) ? 0 : this.#entriesNamedBy(params).size;
   }
 
   /** Like {@link waitForRequest}, for callers that already hold the ids. */
@@ -367,6 +384,7 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
       const entry = this.#requested.shift()!;
       if (entry.phase === "queued") return entry;
     }
+    if (this.#onDemand) return undefined;
     while (this.#nextInOrder < this.#entries.length) {
       const entry = this.#entries[this.#nextInOrder]!;
       this.#nextInOrder += 1;

@@ -83,13 +83,19 @@ import {
   resolveAgenCDaemonSocketPath,
   resolveAgenCDaemonWebSocketListenOptions,
   runAgenCDaemonAuthorityCleanup,
-  runAgenCDaemonCli,
+  runAgenCDaemonCli as runDaemon,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
   validateAgenCDaemonWebSocketOrigin,
   writeAgenCDaemonPid,
   resolveAgenCDaemonSpawnStderrPath,
 } from "./daemon-cli.js";
+
+// The existing recovery contracts exercise the optional background warmup,
+// including crash recovery, replay and publication rollback. The default
+// on-demand path has its own cold-start contract below.
+const runAgenCDaemonCli: typeof runDaemon = (command, options = {}) =>
+  runDaemon(command, { startupRestoreMode: "background", ...options });
 import { AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV } from "./daemon-request-policy.js";
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -6297,6 +6303,267 @@ snapshot_max_bytes = 64
     }
   });
 
+  it("serves health and new work without hydrating saved sessions, then restores only the session requested", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    for (const id of ["cold-a", "cold-b", "cold-c"]) {
+      seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: id, sessionId: `session-${id}` });
+    }
+    const restoreAgent = vi.fn(async () => true);
+    const startAgent = vi.fn(async () => ({ agentId: "fresh", status: "running" as const, startedAt: new Date().toISOString() }));
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess, runner: { restoreAgent, startAgent },
+    });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true, restoringSessions: 3 });
+      await expect(client.request("health.stats", {})).resolves.toHaveProperty("state.agentRuns", 3);
+      expect(restoreAgent).not.toHaveBeenCalled();
+      expect(readSnapshotTimes(agencHome, process.cwd(), "session-cold-b")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+      await client.request("agent.create", { objective: "new work", cwd: process.cwd(), runtimeOptions: resolveAgentRuntimeOptions({}) });
+      expect(startAgent).toHaveBeenCalledOnce();
+      expect(restoreAgent).not.toHaveBeenCalled();
+      // A run created after readiness belongs to the current daemon. Delayed
+      // recovery must neither scan its journal nor poison its running tool.
+      seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "new-live", sessionId: "session-new-live", toolCallId: "tool-new-live" });
+      await client.request("session.attach", { sessionId: "session-cold-b", clientId: "lazy-proof" });
+      expect(readRecoveredToolStatus(agencHome, process.cwd(), "tool-new-live")).toBe("running");
+      expect(restoreAgent).toHaveBeenCalledOnce();
+      expect(restoreAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: "cold-b" }));
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true, restoringSessions: 2 });
+      expect(readSnapshotTimes(agencHome, process.cwd(), "session-cold-a")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("on demand, never restores runner authority for a saved run whose journal ends in a cancellation request", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const runId = "run-cancel-request-on-demand";
+    const sessionId = "session-cancel-request-on-demand";
+    const rolloutPath = seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId, sessionId });
+    writeFileSync(rolloutPath, `${JSON.stringify({
+      type: "event_msg",
+      payload: {
+        eventId: `run-cancel-request:${runId}:1`, id: `run-cancel-request:${runId}:1`, seq: 2,
+        msg: { type: "run_cancel_requested", payload: { runId, epoch: 1, reason: "operator", requestedAt: "2026-05-01T00:07:00.000Z" } },
+      },
+    })}\n`, { flag: "a" });
+    const restoreAgent = vi.fn(async () => true);
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess,
+      runner: { startAgent: async () => { throw new Error("not used"); }, restoreAgent },
+    });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      // The canonical journal is read when a request names the session, and
+      // it proves the run was cancelled: nothing is published or restored.
+      await client.request("agent.attach", { agentId: runId, clientId: "cancel-proof" }).catch(() => undefined);
+      expect(readAgentRunStatus(agencHome, process.cwd(), runId)).toBe("cancelled");
+      expect(restoreAgent).not.toHaveBeenCalled();
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true, restoringSessions: 0 });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("on demand, reconciles a saved session's stale tool calls before attach and reports them", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(), runId: "run-poison-on-demand", sessionId: "session-poison-on-demand",
+      toolCallId: "tool-poison-on-demand", toolName: "Write",
+      toolArgs: { file_path: "a.txt", content: "changed" }, recoveryCategory: "side-effecting",
+    });
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(), runId: "run-cancel-on-demand", sessionId: "session-cancel-on-demand",
+      toolCallId: "tool-cancel-on-demand", toolName: "AskUserQuestion",
+      toolArgs: { questions: [] }, recoveryCategory: "interactive",
+    });
+    const runner: AgenCBackgroundAgentRunner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: (async (options) => {
+        const conversationId = options.conversationId ?? "daemon-recovery";
+        const session = createRecoveredSession(
+          conversationId,
+          new PermissionModeRegistry(createEmptyToolPermissionContext()),
+          {
+            runtimeOptions: options.runtimeOptions,
+            rolloutStore: openRecoveredRolloutStore(agencHome, options),
+            enableDurableClose: true,
+            ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+          },
+        );
+        return session.createBootstrap();
+      }) as AgenCBootstrapFunction,
+      ensureAgentControl: (() => ({
+        control: {
+          sendInput: async () => {},
+          shutdown: async () => {},
+          liveThreadSpawnChildren: () => new Map(),
+          openThreadSpawnChildren: () => new Map(),
+        },
+        registry: {},
+      })) as AgenCEnsureAgentControlFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const running = runDaemon({ kind: "command", action: "run" }, { host, io, signalProcess, runner });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      // Nothing is classified before a request names the session.
+      expect(io.stderrText()).not.toContain("stale in-flight tool call(s)");
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      await expect(client.request("agent.attach", { agentId: "run-poison-on-demand", clientId: "poison" }))
+        .resolves.toMatchObject({
+          agentId: "run-poison-on-demand",
+          sessions: [{
+            sessionId: "session-poison-on-demand",
+            metadata: { recovery: { snapshot: { recoveredToolCalls: [{
+              toolCallId: "tool-poison-on-demand", statusAfter: "poisoned",
+              recoveryCategory: "side-effecting", recoveryAction: "poison",
+            }] } } },
+          }],
+        });
+      // Opening the project reconciles its whole saved generation once.
+      expect(io.stderrText()).toContain(
+        "daemon recovery processed 2 stale in-flight tool call(s): replay=0, poison=1, cancel=1",
+      );
+      await expect(client.request("agent.attach", { agentId: "run-cancel-on-demand", clientId: "cancel" }))
+        .resolves.toMatchObject({
+          agentId: "run-cancel-on-demand",
+          sessions: [{
+            sessionId: "session-cancel-on-demand",
+            metadata: { recovery: { snapshot: { recoveredToolCalls: [{
+              toolCallId: "tool-cancel-on-demand", statusAfter: "recovery_cancelled",
+              recoveryCategory: "interactive", recoveryAction: "cancel",
+            }] } } },
+          }],
+        });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("on demand, lists saved sessions nobody opened yet and opens one by either listed id", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const rolloutA = seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "listed-a", sessionId: "session-listed-a" });
+    seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "listed-b", sessionId: "session-listed-b" });
+    seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "listed-c", sessionId: "session-listed-c" });
+    // A session that ran a turn has a thread row; one that never did has none.
+    seedSavedThreadRow(agencHome, { cwd: process.cwd(), threadId: "listed-a", rolloutPath: rolloutA });
+    const restoreAgent = vi.fn(async () => true);
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess,
+      runner: { startAgent: async () => { throw new Error("not used"); }, restoreAgent },
+    });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      const listed = new Map((await client.request("session.list", {})).sessions.map((session) => [session.sessionId, session]));
+      // Each saved session keeps the row the eager restore gave it.
+      expect(listed.get("session-listed-a")).toMatchObject({
+        agentId: "listed-a", status: "waiting", createdAt: "2026-05-01T00:00:00.000Z", cwd: process.cwd(),
+        metadata: { model: "grok-4", modelProvider: "xai", recovered: true, recovery: { runStatus: "running", loaded: false } },
+      });
+      expect(listed.get("session-listed-b")).toMatchObject({ agentId: "listed-b", status: "waiting", createdAt: "2026-05-01T00:00:00.000Z" });
+      expect(listed.get("session-listed-c")).toMatchObject({ agentId: "listed-c", status: "waiting" });
+      // The durable thread row is listed as before, under the durable id.
+      expect(listed.get("listed-a")).toMatchObject({ status: "waiting", cwd: process.cwd() });
+      await expect(client.request("session.list", { agentId: "listed-b" })).resolves.toMatchObject({
+        sessions: [{ sessionId: "session-listed-b", agentId: "listed-b" }],
+      });
+      // Listing loads nothing.
+      expect(restoreAgent).not.toHaveBeenCalled();
+      expect(readSnapshotTimes(agencHome, process.cwd(), "session-listed-a")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+
+      // Opening by the listed daemon session id restores exactly that session.
+      await client.request("session.attach", { sessionId: "session-listed-b", clientId: "picker" });
+      expect(restoreAgent).toHaveBeenCalledOnce();
+      expect(restoreAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: "listed-b" }));
+      // Opening by the durable thread id, as a client holding the thread row does.
+      await client.request("session.attach", { sessionId: "listed-a", clientId: "sidebar" });
+      expect(restoreAgent).toHaveBeenCalledTimes(2);
+      expect(restoreAgent).toHaveBeenLastCalledWith(expect.objectContaining({ agentId: "listed-a" }));
+
+      const after = (await client.request("session.list", {})).sessions;
+      // An opened session is listed once, as the loaded session.
+      expect(after.filter((session) => session.sessionId === "session-listed-b")).toHaveLength(1);
+      expect(after.find((session) => session.sessionId === "session-listed-b")).toMatchObject({
+        metadata: { recovery: { runtimeRestore: "available" } },
+      });
+      expect(after.find((session) => session.sessionId === "session-listed-c")).toMatchObject({
+        status: "waiting", metadata: { recovery: { loaded: false } },
+      });
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ restoringSessions: 1 });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("on demand, reports unopened saved sessions at shutdown as kept on disk", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    for (const id of ["kept-a", "kept-b"]) {
+      seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: id, sessionId: `session-${id}` });
+    }
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess,
+      runner: { startAgent: async () => { throw new Error("not used"); }, restoreAgent: vi.fn(async () => true) },
+    });
+    await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+    // The pid file is published before readiness. A stop that lands in
+    // between ends startup before the restore summary is wired, so wait for
+    // the readiness line the summary is registered with.
+    await vi.waitFor(() => expect(io.stdoutText()).toContain("AgenC daemon running"), {
+      timeout: LOADED_DAEMON_MILESTONE_BUDGET_MS,
+    });
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    expect(io.stderrText()).toContain(
+      "agenc: daemon shutdown left 2 of 2 saved session(s) unopened; they stay on disk and reopen when requested",
+    );
+    expect(io.stderrText()).not.toContain("will be at the next start");
+    expect(readSnapshotTimes(agencHome, process.cwd(), "session-kept-a")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("foreground daemon advertises readiness once its state is recovered and restores sessions after", async () => {
     const agencHome = await tempAgencHome();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-daemon-other-cwd-"));
@@ -8863,6 +9130,35 @@ function seedRecoverableDaemonState(
     runId: params.runId,
     objective: "recover daemon state",
   });
+}
+
+function seedSavedThreadRow(
+  agencHome: string,
+  params: { readonly cwd: string; readonly threadId: string; readonly rolloutPath: string },
+): void {
+  const driver = openStateDatabases({ cwd: params.cwd, agencHome });
+  try {
+    driver
+      .prepareState(
+        `INSERT INTO threads (
+          thread_id, created_at, updated_at, cwd, originator, source_json,
+          model, model_provider, rollout_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.threadId,
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:05:00.000Z",
+        params.cwd,
+        "agenc-cli",
+        JSON.stringify("cli_main"),
+        "grok-4",
+        "xai",
+        params.rolloutPath,
+      );
+  } finally {
+    driver.close();
+  }
 }
 
 function seedTerminalDaemonRun(

@@ -390,6 +390,8 @@ export interface RunAgenCDaemonCliOptions {
    * finish, and then how long it waits once it aborted it.
    */
   readonly startupRestoreShutdownGraceMs?: number;
+  /** Embedders may opt into eagerly recovering and warming saved sessions. */
+  readonly startupRestoreMode?: "on-demand" | "background";
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
   readonly nativePeerCredentialAddonPath?: string;
@@ -1166,6 +1168,7 @@ export async function runAgenCDaemonAction(
         beforeDaemonAuthorityCleanup: options.beforeDaemonAuthorityCleanup,
         startupCancelCleanupTaskTimeoutMs: options.startupCancelCleanupTaskTimeoutMs,
         startupRestoreShutdownGraceMs: options.startupRestoreShutdownGraceMs,
+        startupRestoreMode: options.startupRestoreMode,
         runner: options.runner,
         nativePeerCredentialBinding: options.nativePeerCredentialBinding,
         nativePeerCredentialAddonPath: options.nativePeerCredentialAddonPath,

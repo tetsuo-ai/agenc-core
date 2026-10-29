@@ -141,10 +141,10 @@ do not delete the socket by hand.
 
 A direct `agenc daemon start` keeps waiting past the readiness budget
 (45 s by default) when the pid is still alive and the startup log is still
-advancing. A home with hundreds of sessions can take longer than that to
-open its state databases and recover its runs before the socket listens
-(observed: 60 s for 877 sessions). Sessions that were open at the last
-shutdown are restored after the socket listens; see
+advancing. Startup only reads the ids of saved sessions before the socket
+listens, but a slow disk or a damaged database can still delay it (a
+startup that recovered every run first took 60 s for 877 sessions). Saved
+sessions are restored when a request names them; see
 [startup and restored sessions](#startup-and-restored-sessions). Cancelling
 at the first deadline and spawning another daemon produced a loop in which
 none finished. The wait continues in readiness-budget steps while
@@ -1202,31 +1202,39 @@ current Ledger action is documented in
 
 ## Startup and restored sessions
 
-The daemon validates canonical journals, repairs cancellations, classifies
-stale tools, and recovers execution admission state before it listens.
-It then listens, publishes its identity record, and loads snapshot payloads
-inside each session's restore gate. It restores the sessions that were open
-at its last shutdown in the background,
-four at a time, yielding to socket I/O between batches. A client can connect
-as soon as the identity record appears. Startup never runs a full database
-VACUUM; existing incremental reclamation remains bounded.
+Before it listens, the daemon reads the ids of the runs that were open at
+its last shutdown from each project database, read-only, and registers each
+one in a restore gate. It runs no migration, journal scan or retention pass
+and opens no snapshot history at that point. It then listens and publishes
+its identity record. A client can connect as soon as the identity record
+appears. Startup never runs a full database VACUUM; existing incremental
+reclamation remains bounded.
 
-A request that names a session still restoring waits until that restore
-settles, then runs as it would have once startup had finished. The daemon
-knows each such session by its run id, which is also its agent id and its
-durable session id, and by its daemon session id, wherever the id appears in
-the params. A request that waits moves a restore that has not started to the
-front of the queue, so it waits for about one restore plus the ones already
-running. `agent.create` with the `resumeSessionId` of a session still
-restoring waits the same way and never rebuilds it a second time. When that
+A saved session is restored when a request names it. The first such request
+for a project applies retention to that project's database, validates
+canonical journals, repairs cancellations and classifies stale tools for its
+saved runs, then loads the requested session's snapshot, rebuilds its
+runtime and publishes it.
+Execution admission state is recovered for a project before its first
+admission. Recovery on demand only touches the runs saved at startup, never
+a run created after the daemon became ready. An embedder can pass
+`startupRestoreMode: "background"` to recover everything before listening
+and rebuild every saved session afterwards, four at a time.
+
+A request that names a saved session waits until its restore settles, then
+runs as it would have once startup had finished. The daemon knows each such
+session by its run id, which is also its agent id and its durable session
+id, and by its daemon session id, wherever the id appears in the params.
+`agent.create` with the `resumeSessionId` of a saved session waits the same
+way and never rebuilds it a second time. When that
 session comes back with a live runtime, the create fails with the error data
 code `CANONICAL_SESSION_ALREADY_ACTIVE`, and the client attaches to the
 restored agent instead. `agenc --continue` and `agenc --resume`, headless or
 in the TUI, do this, so they work right after a daemon restart.
 
 While waiting for readiness, the CLI shows `Starting AgenC...` after one
-second. A TUI or print request waiting for a specific restored session shows
-`Reopening 193 sessions...` with the current backlog. That wait has a
+second. A TUI or print request waiting for a saved session shows
+`Reopening 1 session...` with the number of restores it waits for. That wait has a
 120-second deadline and sends `request.cancel` on timeout. The subsequent
 agent turn keeps its normal execution and cancellation rules. New sessions
 do not wait for the backlog. Progress is written to stderr, preserving print
@@ -1241,16 +1249,22 @@ survive a crash before deferred hydration; hydration reapplies and flushes
 them before the session can replay tools or be published.
 
 These answer at once: `health.*`, `daemon.*`, `request.cancel`,
-`session.list`, `agent.list`, and every request that names no session still
-restoring. `session.list` reads the thread store on disk, so a session still
-restoring shows only its durable thread row. `agent.list` returns only
-published agents.
+`session.list`, `agent.list`, and every request that names no saved session
+still waiting for its restore. `session.list` lists a saved session that
+is not restored yet the way a restored one was listed: under the daemon
+session id it had, with the `waiting` status, the run's start time, and the
+workspace and model from its thread row, plus `metadata.recovery.loaded:
+false`. Its durable thread row from the thread store on disk is listed as
+before. Listing never loads a session. `agent.list` returns only published
+agents. Health session counts include only sessions loaded in the daemon.
 
-`health.ready` reports `restoringSessions`, the number of sessions still
-restoring. When they are all settled the daemon logs
-`daemon restored N session(s) open at its last shutdown` with how many came
-back with a live runtime, and, with `TUI_E2E_DEBUG=1`, the startup phase
-`startup session restore complete`.
+`health.ready` reports `restoringSessions`, the number of saved sessions not
+restored yet. It stays above zero until each one is requested. At shutdown
+the daemon logs how many saved sessions it left unopened; they stay on disk
+and reopen when requested. When every saved session has been restored, the
+daemon logs `daemon restored N session(s) open at its last shutdown` with
+how many came back with a live runtime, and, with `TUI_E2E_DEBUG=1`, the
+startup phase `startup session restore complete`.
 
 A restored session gets the session environment its client supplied at
 creation (`envOverrides`), not the daemon's values. The daemon records the non-secret

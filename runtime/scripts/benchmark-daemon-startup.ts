@@ -7,7 +7,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { seedDaemonStartupHome } from "./fixtures/daemon-startup-home.js";
 import { createRedProbeMarkdownLoadHook } from "../tests/helpers/red-probe-markdown-loader.mjs";
 
-registerHooks({ load: createRedProbeMarkdownLoadHook({
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === "bun:bundle") return { url: new URL("../src/build/feature.ts", import.meta.url).href, shortCircuit: true };
+  return nextResolve(specifier, context);
+}, load: createRedProbeMarkdownLoadHook({
   runtimeSourceRootUrl: new URL("../src/", import.meta.url).href,
   onAssetLoaded() {},
 }) });
@@ -15,6 +18,7 @@ registerHooks({ load: createRedProbeMarkdownLoadHook({
 // Set both homes before importing runtime modules. No user data or credentials.
 const root = mkdtempSync(join(tmpdir(), "agenc-ready-bench-"));
 const bytes = process.env.BENCH_BYTES;
+const readyBudgetMs = Number(process.env.BENCH_READY_BUDGET_MS ?? 1_000);
 process.env = {
   PATH: process.env.PATH,
   TMPDIR: process.env.TMPDIR,
@@ -87,12 +91,21 @@ const createStarted = performance.now();
 const created = await client.request("agent.create", { objective: "new session during restoration", cwd: fixture.workspaces[0], runtimeOptions: resolveAgentRuntimeOptions({}) });
 const createMs = performance.now() - createStarted;
 console.log(`create ${createMs}ms`);
-while ((await client.request("health.ready", {})).restoringSessions !== 0) await delay(10);
-const restoredMs = performance.now() - started;
-console.log(`restored ${restoredMs}ms`);
+// Idle sessions must stay cold even after a new session has been created.
+// This guard catches eager snapshot replay without relying on host timing.
+if (phases.snapshotHydrationMs !== undefined ||
+    (await client.request("health.ready", {})).restoringSessions !== fixture.sessions) {
+  throw new Error("daemon hydrated saved sessions before they were requested");
+}
+const coldRss = process.memoryUsage().rss;
+if (readyMs > readyBudgetMs) throw new Error(`daemon readiness ${readyMs}ms exceeds ${readyBudgetMs}ms`);
+const restoreStarted = performance.now();
+await client.request("session.attach", { sessionId: "startup-0-0", clientId: "benchmark-resume" });
+const restoreMs = performance.now() - restoreStarted;
+console.log(`one requested restore ${restoreMs}ms`);
 signalProcess.emit("SIGTERM");
 const exitCode = await running;
-const result = { root, fixture, readyMs, healthMs, createMs, restoredMs, health, createdAgent: created.agentId, phases, exitCode };
+const result = { root, fixture, readyMs, healthMs, createMs, restoreMs, coldRss, health, createdAgent: created.agentId, phases, exitCode };
 writeFileSync(join(root, "timing.json"), JSON.stringify(result, null, 2) + "\n");
 writeFileSync(join(root, "daemon.log"), log.join(""));
 console.log(JSON.stringify(result, null, 2));
