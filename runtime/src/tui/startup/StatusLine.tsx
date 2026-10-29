@@ -14,7 +14,6 @@ import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputToken
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { type ReadonlySettings, useSettings } from '../hooks/useSettings.js';
 import type { Message } from '../../types/message.js';
-import type { StatusLineCommandInput } from '../../types/statusLine.js';
 import { resolveAmbientHookExecutionDecision } from '../../hooks/execution-authority.js';
 import { calculateContextPercentages, getContextWindowForModelForContext } from '../../utils/context.js';
 import { getCwd } from '../../utils/cwd.js';
@@ -34,7 +33,7 @@ export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   if (feature('KAIROS') && getKairosActive()) return false;
   return settings?.statusLine !== undefined;
 }
-function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, providerContext: ProviderAuthReadContext, sessionUsage?: SessionUsageSnapshot | null): StatusLineCommandInput {
+function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, providerContext: ProviderAuthReadContext, sessionUsage?: SessionUsageSnapshot | null) {
   const agentType = getMainThreadAgentType();
   const worktreeSession = getCurrentWorktreeSession();
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
@@ -223,7 +222,7 @@ function StatusLineInner({
     const logResult = logNextResultRef.current;
     logNextResultRef.current = false;
     try {
-      let text: string;
+      let text: string | undefined;
       const executeDaemonStatusLine = daemonExecutorRef.current;
       if (executeDaemonStatusLine !== undefined) {
         const result = await executeDaemonStatusLineWhenReady(

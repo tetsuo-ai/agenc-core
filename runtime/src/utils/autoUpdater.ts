@@ -273,7 +273,7 @@ async function getInstallationPrefix(
     ? command
     : await findExecutableOnCapturedPath(command, options.environment, cwd)
   if (executable === null) return null
-  let prefixResult = null
+  let prefixResult: Awaited<ReturnType<typeof execFileNoThrowWithCwd>> | null = null
   if (isBun) {
     prefixResult = await execFileNoThrowWithCwd(executable, ['pm', 'bin', '-g'], {
       cwd,

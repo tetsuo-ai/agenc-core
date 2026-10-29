@@ -1,3 +1,5 @@
+/// <reference lib="es2024.promise" />
+
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 
 interface SubmissionEvents {

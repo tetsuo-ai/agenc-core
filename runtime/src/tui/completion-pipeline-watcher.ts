@@ -32,7 +32,7 @@ export function watchCompletionPipelineEventLog(
   options: CompletionPipelineWatcherOptions,
 ): () => void {
   const watchDirectory = options.watchDirectory ?? watch;
-  const scheduleTimeout = options.scheduleTimeout ?? setTimeout;
+  const scheduleTimeout: ScheduleTimeout = options.scheduleTimeout ?? setTimeout;
   const cancelTimeout = options.cancelTimeout ?? clearTimeout;
   const activePollIntervalMs =
     options.activePollIntervalMs ?? ACTIVE_POLL_INTERVAL_MS;
