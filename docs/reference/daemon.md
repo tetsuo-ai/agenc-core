@@ -195,9 +195,16 @@ agenc daemon start                 # detached
 agenc daemon start --foreground    # current process (systemd/launchd/docker/WinSW)
 agenc daemon reload                # in-place config reload
 agenc daemon restart
+agenc daemon restart --when-idle   # now if idle, otherwise once idle (--json)
 agenc daemon stop
 agenc daemon install-service       # write WinSW XML; does not install the service
 ```
+
+`agenc daemon restart --when-idle` is the step `agenc update` runs after it
+activates a new runtime. It restarts an idle daemon right away and leaves a
+busy one alone until it is idle, through one waiting process. The idle check,
+its bounds and the `--json` result are described in
+[Daemon restart after an update](../install.md#daemon-restart-after-an-update).
 
 `agenc daemon status` distinguishes three states. `running (pid N)` with uptime,
 memory and the project state databases on disk (count, total, largest): the daemon is bound and answering. `alive but not yet bound (pid N)`

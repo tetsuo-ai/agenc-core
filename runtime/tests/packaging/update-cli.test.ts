@@ -18,6 +18,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -64,9 +65,12 @@ import {
   validateAndParseGeneratedWrapper,
   verifyOfficialRuntimeArtifactProvenance,
   verifyStagedPrivateNodeIdentity,
+  restartDaemonThroughActivatedWrapper,
   type RuntimeManifest,
   type RuntimeManifestArtifact,
+  type UpdateDaemonRestartRequest,
 } from "../../src/bin/update-cli.js";
+import type { AgenCDaemonRestartOutcome } from "../../src/app-server/daemon-restart-outcome.js";
 import {
   resolveActivationLockRegistry,
   wrapperActivationLockPath,
@@ -720,6 +724,8 @@ describe("agenc update CLI", () => {
   let out: string[];
   let err: string[];
   let deps: Parameters<typeof runAgenCUpdateCli>[1];
+  let restartRequests: UpdateDaemonRestartRequest[];
+  let restartOutcome: AgenCDaemonRestartOutcome;
 
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "agenc-update-test-"));
@@ -730,10 +736,16 @@ describe("agenc update CLI", () => {
     chmodSync(binDir, 0o700);
     out = [];
     err = [];
+    restartRequests = [];
+    restartOutcome = { status: "not-running", toVersion: NEW_VERSION };
     deps = {
       env: { AGENC_HOME: agencHome, PATH: binDir, HOME: work },
       stdout: (l) => out.push(l),
       stderr: (l) => err.push(l),
+      restartDaemon: async (request) => {
+        restartRequests.push(request);
+        return restartOutcome;
+      },
       currentVersion: OLD_VERSION,
       platform: "linux",
       arch: "x64",
@@ -800,6 +812,12 @@ describe("agenc update CLI", () => {
     });
     expect(parseAgenCUpdateCliArgs(["update", "--bogus"])).toMatchObject({
       kind: "error",
+    });
+    expect(parseAgenCUpdateCliArgs(["update", "--no-restart"])).toEqual({
+      kind: "update",
+      check: false,
+      json: false,
+      noRestart: true,
     });
     expect(parseAgenCUpdateCliArgs(["update", "--help"])).toEqual({
       kind: "help",
@@ -2578,6 +2596,146 @@ describe("agenc update CLI", () => {
     expect(run.stdout).toContain("ok hello");
   });
 
+  describe("daemon restart after activation", () => {
+    async function updateTo(
+      flags: { readonly json?: boolean; readonly noRestart?: boolean } = {},
+    ): Promise<{ readonly code: number; readonly wrapper: string }> {
+      const artifact = makeSyntheticArtifact(work);
+      const manifestPath = writeManifest(work, artifact);
+      const oldBin = join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL);
+      const wrapper = writeInstallShWrapper(binDir, agencHome, oldBin);
+      const code = await runAgenCUpdateCli(
+        {
+          kind: "update",
+          check: false,
+          json: flags.json === true,
+          manifestUrl: `file://${manifestPath}`,
+          ...(flags.noRestart === true ? { noRestart: true } : {}),
+        },
+        deps,
+      );
+      return { code, wrapper };
+    }
+
+    const hint = "Restart the daemon to pick it up: agenc daemon restart";
+
+    test.each([
+      [{ status: "restarted", fromVersion: OLD_VERSION, toVersion: NEW_VERSION, pid: 4242 },
+        `Restarted the daemon on ${NEW_VERSION} (pid 4242).`, false],
+      [{ status: "deferred", reason: "1 client attached", toVersion: NEW_VERSION },
+        `The daemon is busy (1 client attached), so it will restart on ${NEW_VERSION} once it is idle.`, false],
+      [{ status: "not-running", toVersion: NEW_VERSION },
+        `No daemon is running. The next one starts on ${NEW_VERSION}.`, false],
+      [{ status: "skipped", code: "already-current", toVersion: NEW_VERSION },
+        `The daemon already runs ${NEW_VERSION}.`, false],
+      [{ status: "skipped", reason: "the daemon runs from outside this install (for example the Desktop app)" },
+        "Daemon restart skipped: the daemon runs from outside this install (for example the Desktop app).", true],
+      [{ status: "failed", reason: "the daemon could not be stopped" },
+        "Daemon restart failed: the daemon could not be stopped.", true],
+    ] as const)("prints one line for a %o restart, and the old hint only when it did not happen", async (
+      outcome, line, keepsHint,
+    ) => {
+      restartOutcome = outcome as AgenCDaemonRestartOutcome;
+      const { code, wrapper } = await updateTo();
+      expect(code).toBe(0);
+      expect(restartRequests).toEqual([{
+        wrapperPath: wrapper,
+        agencHome,
+        env: deps!.env,
+        targetVersion: NEW_VERSION,
+      }]);
+      const tail = out.slice(out.findIndex((entry) => entry.startsWith("  wrapper repointed")) + 1);
+      expect(tail).toEqual(keepsHint ? [line, hint] : [line]);
+    });
+
+    test("--no-restart keeps the old behavior: no restart, the old hint", async () => {
+      const { code } = await updateTo({ noRestart: true });
+      expect(code).toBe(0);
+      expect(restartRequests).toEqual([]);
+      expect(out.at(-1)).toBe(hint);
+      expect(out.filter((entry) => entry.startsWith("Daemon restart"))).toEqual([]);
+    });
+
+    test("--json reports what happened to the daemon", async () => {
+      restartOutcome = { status: "deferred", reason: "2 agents working", toVersion: NEW_VERSION, waitUntil: "2026-10-30T00:00:00.000Z" };
+      await updateTo({ json: true });
+      expect(out).toHaveLength(1);
+      expect(JSON.parse(out[0]!)).toMatchObject({ activated: true, daemonRestart: restartOutcome });
+      out.length = 0;
+      restartRequests.length = 0;
+      await updateTo({ json: true, noRestart: true });
+      expect(restartRequests).toEqual([]);
+      expect(JSON.parse(out[0]!).daemonRestart).toEqual({
+        status: "skipped", code: "opt-out", reason: "--no-restart", toVersion: NEW_VERSION,
+      });
+    });
+
+    test("a failed restart never fails the update", async () => {
+      deps = { ...deps, restartDaemon: async () => { throw new Error("spawn EACCES"); } };
+      const { code } = await updateTo();
+      expect(code).toBe(0);
+      expect(out.slice(-2)).toEqual(["Daemon restart failed: spawn EACCES.", hint]);
+    });
+  });
+
+  describe("restartDaemonThroughActivatedWrapper", () => {
+    function fakeWrapper(script: string): string {
+      const path = join(work, "fake-agenc");
+      writeFileSync(path, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+      return path;
+    }
+
+    test("runs `daemon restart --when-idle --json` in the home and reads its one JSON line", async () => {
+      const seen = join(work, "seen.txt");
+      const wrapperPath = fakeWrapper([
+        `printf '%s|%s|%s\\n' "$*" "$AGENC_HOME" "$PWD" > ${JSON.stringify(seen)}`,
+        "echo 'progress noise' >&2",
+        `echo '{"status":"restarted","fromVersion":"1.0.0","toVersion":"1.0.1","pid":77}'`,
+      ].join("\n"));
+      await expect(restartDaemonThroughActivatedWrapper({
+        wrapperPath, agencHome, env: { AGENC_HOME: "/elsewhere", PATH: "/usr/bin:/bin" }, targetVersion: "1.0.1",
+      })).resolves.toEqual({ status: "restarted", fromVersion: "1.0.0", toVersion: "1.0.1", pid: 77 });
+      expect(readFileSync(seen, "utf8")).toBe(
+        `daemon restart --when-idle --json|${agencHome}|${realpathSync(agencHome)}\n`,
+      );
+    });
+
+    test("treats a runtime without --when-idle as unable to restart, not as a failure", async () => {
+      const wrapperPath = fakeWrapper(
+        "echo 'agenc: unknown daemon restart option: --when-idle' >&2\nexit 1",
+      );
+      await expect(restartDaemonThroughActivatedWrapper({
+        wrapperPath, agencHome, env: {}, targetVersion: "1.0.1",
+      })).resolves.toEqual({
+        status: "skipped",
+        code: "unsupported",
+        reason: "AgenC 1.0.1 cannot restart the daemon by itself",
+        toVersion: "1.0.1",
+      });
+    });
+
+    test("reports a crash with its last words", async () => {
+      const wrapperPath = fakeWrapper("echo 'boom' >&2\nexit 9");
+      await expect(restartDaemonThroughActivatedWrapper({
+        wrapperPath, agencHome, env: {}, targetVersion: "1.0.1",
+      })).resolves.toEqual({
+        status: "failed",
+        reason: "the restart exited with code 9 (boom)",
+        toVersion: "1.0.1",
+      });
+    });
+
+    test("stops waiting at its deadline and says the restart continues", async () => {
+      const wrapperPath = fakeWrapper("sleep 5");
+      await expect(restartDaemonThroughActivatedWrapper({
+        wrapperPath, agencHome, env: {}, targetVersion: "1.0.1",
+      }, { timeoutMs: 100 })).resolves.toMatchObject({
+        status: "failed",
+        reason: "the restart did not finish within 20 minutes; it continues in the background",
+      });
+    });
+  });
+
   test("a ready cache requires the private Node file and Linux libatomic", async () => {
     const source = makeSyntheticArtifact(work);
     const manifest = JSON.parse(
@@ -3453,9 +3611,10 @@ describe("agenc update CLI", () => {
         expect(terminal.slice(0, -1).every((chunk) => !chunk.endsWith("\n"))).toBe(true);
         expect(tui[0]).toBe("Downloading and verifying the runtime.");
         expect(tui.some((line) => /^Downloading runtime 9\.9\.9: \d+% /.test(line))).toBe(true);
-        expect(tui.slice(-2)).toEqual([
+        expect(tui.slice(-3)).toEqual([
           "Verifying the runtime.",
           "Activating the verified runtime for the next launch.",
+          "Checking whether the daemon can restart on the new runtime.",
         ]);
         expect(out[0]).toContain("Updated agenc 9.9.8-test -> 9.9.9 (downloaded, sha256 verified).");
       } finally {

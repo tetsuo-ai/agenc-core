@@ -201,6 +201,9 @@ export const AGENC_DAEMON_CONTROL_PROTOCOL_VERSION = "1.0.0";
 
 export const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 
+/** `stop` left the daemon running because `beforeShutdownRequest` declined. */
+export const AGENC_DAEMON_STOP_DECLINED_EXIT = 3;
+
 /**
  * Env override (ms) for how long the daemon readiness waits block, plus the
  * default applied when unset/invalid. This single name covers BOTH the bare
@@ -310,6 +313,13 @@ export type AgenCDaemonCliAction =
 
 export type AgenCDaemonCliCommand =
   | { readonly kind: "command"; readonly action: AgenCDaemonCliAction }
+  | {
+      /** `restart --when-idle`: now when idle, otherwise once it is idle. */
+      readonly kind: "restart-when-idle";
+      readonly json: boolean;
+      /** Internal: run as the detached waiter that owns this pending restart. */
+      readonly waitToken?: string;
+    }
   | { readonly kind: "install-service" }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
@@ -426,6 +436,16 @@ export interface RunAgenCDaemonCliOptions {
     host: AgenCDaemonCliHost,
     expected: AgenCDaemonInstanceIdentity,
   ) => Promise<void> | void;
+  /**
+   * Internal: a last check that `stop` runs under the lifecycle lock, after
+   * the daemon's authenticated identity is proven and immediately before
+   * `daemon.shutdown` is sent. A returned reason leaves the daemon running and
+   * `stop` returns {@link AGENC_DAEMON_STOP_DECLINED_EXIT} without signalling
+   * anything. A daemon without an instance identity is always declined.
+   */
+  readonly beforeShutdownRequest?: (
+    identity: AgenCDaemonInstanceIdentity,
+  ) => Promise<string | undefined>;
   /** Isolated contract-test seam for instance-bound reload transport. */
   readonly requestDaemonReload?: (
     host: AgenCDaemonCliHost,
@@ -1008,6 +1028,8 @@ export function formatAgenCDaemonCliHelpText(): string {
     "  status                Show local AgenC daemon status",
     "  reload                Reload daemon configuration in place",
     "  restart               Stop and start the local AgenC daemon",
+    "  restart --when-idle   Restart now if the daemon is idle, otherwise once",
+    "                        it is idle (agenc update runs this; --json for scripts)",
     "  install-service       Write a WinSW XML definition for this install.",
     "                        Service install/start is a separate elevated step.",
     "",
@@ -1032,6 +1054,39 @@ function parseDaemonInstallServiceArgs(
     };
   }
   return { kind: "install-service" };
+}
+
+
+const DAEMON_RESTART_WAIT_TOKEN_PATTERN = /^[0-9a-f-]{36}$/;
+
+function parseDaemonRestartWhenIdleArgs(
+  extra: readonly string[],
+): AgenCDaemonCliCommand {
+  let json = false;
+  let waitToken: string | undefined;
+  for (let index = 0; index < extra.length; index += 1) {
+    const arg = extra[index];
+    if (arg === "--when-idle") continue;
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--wait") {
+      const value = extra[index + 1];
+      if (value === undefined || !DAEMON_RESTART_WAIT_TOKEN_PATTERN.test(value)) {
+        return { kind: "error", message: "daemon restart --wait needs a restart token" };
+      }
+      waitToken = value;
+      index += 1;
+      continue;
+    }
+    return { kind: "error", message: `unknown daemon restart option: ${arg}` };
+  }
+  return {
+    kind: "restart-when-idle",
+    json,
+    ...(waitToken === undefined ? {} : { waitToken }),
+  };
 }
 
 
@@ -1062,6 +1117,9 @@ export function parseAgenCDaemonCliArgs(
         kind: "error",
         message: `unknown daemon start option: ${extra[1]}`,
       };
+    }
+    if (action === "restart" && extra.includes("--when-idle")) {
+      return parseDaemonRestartWhenIdleArgs(extra);
     }
     if (extra.length > 0) {
       return {
@@ -1116,6 +1174,12 @@ export async function runAgenCDaemonCli(
       });
     case "command":
       return runAgenCDaemonAction(command.action, host, io, options);
+    case "restart-when-idle": {
+      const { runAgenCDaemonRestartWhenIdleCli } = await import(
+        "./daemon-restart-when-idle.js"
+      );
+      return runAgenCDaemonRestartWhenIdleCli(command, host, io, options);
+    }
     default: {
       const _exhaustive: never = command;
       throw new Error(`unexpected daemon CLI command: ${JSON.stringify(_exhaustive)}`);
@@ -1947,6 +2011,10 @@ export async function stopAgenCDaemon(
       }
       if (bound !== null) {
         const boundPid = bound.identity.pid;
+        if (options.beforeShutdownRequest !== undefined) {
+          const declined = await options.beforeShutdownRequest(bound.identity);
+          if (declined !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        }
         let shutdownError: unknown;
         try {
           const requestShutdown =
@@ -2078,6 +2146,10 @@ export async function stopAgenCDaemon(
       return 0;
     }
 
+    if (options.beforeShutdownRequest !== undefined) {
+      // A daemon without an instance identity cannot be checked first.
+      return AGENC_DAEMON_STOP_DECLINED_EXIT;
+    }
     if ((host.platform ?? process.platform) !== "linux") {
       io.stderr.write(
         `agenc: legacy daemon pid ${pid} has no instance identity; refusing an unsafe numeric signal on this platform. Stop it with the OS service/process manager after verifying its command and AgenC home, then retry\n`,
