@@ -242,11 +242,18 @@ function reminderMessage(text: string): LLMMessage {
 }
 
 /** Start-of-turn line: the remaining budget. */
-export function deadlineTurnReminder(remainingMs: number): LLMMessage {
+export function deadlineTurnReminder(remainingMs: number, reserveMs?: number): LLMMessage {
   return reminderMessage(
     `This run has a fixed time budget and ${formatRemainingDuration(remainingMs)} of it remain. ` +
-      "Every tool result reports time_remaining_sec. Keep a working, verified result on disk; " +
-      "improve on a copy so the deliverable is never left broken when time runs out.",
+      "Every tool result reports time_remaining_sec. " +
+      (reserveMs === undefined || reserveMs <= 0 ? "" :
+        `Reserve the last ${formatRemainingDuration(reserveMs)} for checking and saving. `) +
+      "Produce a minimal valid deliverable at the requested path early, then improve it. " +
+      "An empty placeholder or fabricated result is not a valid deliverable. " +
+      "Keep the best verified version at that path. Do experiments and long builds on a separate copy; " +
+      "validate a candidate before publishing it with an atomic rename from the same directory. " +
+      "Never delete or truncate the working deliverable before its replacement is ready. " +
+      "Use bounded steps that leave time to save; if blocked, save useful supported progress and report the gap honestly.",
   );
 }
 
@@ -255,7 +262,9 @@ export function deadlineReserveReminder(remainingMs: number): LLMMessage {
   return reminderMessage(
     `Time is nearly up: ${formatRemainingDuration(remainingMs)} remain before this run is stopped. ` +
       "Stop exploring and optimizing now. If the current state on disk is not your best verified " +
-      "result, restore that version. Run the final checks the task implies, then write the final " +
+      "result, restore that version at the requested path. Check that the deliverable exists there " +
+      "and meets the user's format and constraints; save supported progress now if completion is impossible. " +
+      "Run only checks that fit the remaining time, then write the final " +
       "message listing what is verified and what is not. Do not start new subagents or long " +
       "commands; anything still running at the deadline is interrupted.",
   );

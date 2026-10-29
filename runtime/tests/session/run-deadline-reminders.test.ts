@@ -35,6 +35,13 @@ describe("deadline reminders", () => {
     expect(message.runtimeOnly).toEqual({ excludeFromDurableHistory: true });
   });
 
+  test("the turn reminder names the reserve only when the run has one", () => {
+    expect(deadlineTurnReminder(600_000, 60_000).content)
+      .toContain("Reserve the last 60 s for checking and saving.");
+    expect(deadlineTurnReminder(600_000, 0).content).not.toContain("Reserve the last");
+    expect(deadlineTurnReminder(600_000).content).not.toContain("Reserve the last");
+  });
+
   test("the reserve reminder tells the model to stop exploring", () => {
     const message = deadlineReserveReminder(5 * 60_000);
     expect(message.content).toContain("<system-reminder>");

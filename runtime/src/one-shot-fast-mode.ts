@@ -10,7 +10,11 @@ export function oneShotFastModeSelected(
   config: { readonly bypassFastMode?: boolean },
 ): boolean {
   return options?.dangerouslyBypassApprovalsAndSandbox === true &&
-    options.nonInteractive === true && options.relaxedOneShot === true && config.bypassFastMode !== false;
+    options.nonInteractive === true && options.relaxedOneShot === true &&
+    // The canonical loop owns deadline reminders, tool-result timestamps,
+    // the final-check reserve and deadline cancellation. A time-bounded run
+    // must enter it before the first request or tool effect.
+    options.deadlineAt === undefined && config.bypassFastMode !== false;
 }
 export function bypassFastModeEnabled(session: Session, ctx: TurnContext): boolean {
   const scope = active.getStore();
