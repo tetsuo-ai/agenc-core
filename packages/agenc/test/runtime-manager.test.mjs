@@ -139,11 +139,19 @@ function rawTarWithMember(path, type = "0", link = "") {
 
 // Build a tiny synthetic runtime tarball with the real extraction layout so the
 // full ensure() path (download → verify → extract → marker) is exercised fast.
-function makeSyntheticArtifact(dir, version, binSource = "#!/usr/bin/env node\nconsole.log('ok')\n") {
+function makeSyntheticArtifact(dir, version, binSource = "#!/usr/bin/env node\nconsole.log('ok')\n", inventoryHelper) {
   const tree = join(dir, "tree");
   const binDir = join(tree, "node_modules", "@tetsuo-ai", "runtime", "bin");
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, "agenc"), binSource);
+  if (inventoryHelper !== undefined) {
+    // macOS pruning asks the current runtime's shipped helper which runtime
+    // paths running processes use; a release build places it here.
+    const helper = join(tree, "node_modules", "@tetsuo-ai", "runtime", "dist", "agenc-runtime-inventory");
+    mkdirSync(dirname(helper), { recursive: true });
+    writeFileSync(helper, readFileSync(inventoryHelper));
+    chmodSync(helper, 0o755);
+  }
   const platform = platformSlug().os;
   const privateNodeRoot = join(tree, "node_modules", ".agenc-node");
   const executable = platform === "win" ? "node.exe" : "bin/node";
@@ -2553,9 +2561,14 @@ test("macOS npm activations keep one Node path and prune only before the previou
   const work = mkdtempSync(join(tmpdir(), "agenc-npm-retention-"));
   try {
     const home = join(work, "home");
+    const inventoryHelper = join(work, "agenc-runtime-inventory");
+    const compiled = spawnSync(process.env.CC || "cc", ["-Wall", "-Wextra", "-Werror", "-o", inventoryHelper,
+      fileURLToPath(new URL("../../../runtime/native/agenc-runtime-inventory.c", import.meta.url)), "-lproc"],
+    { encoding: "utf8" });
+    assert.equal(compiled.status, 0, compiled.stderr);
     const launches = [];
     for (const version of ["0.19.13", "0.19.14", "0.19.15"]) {
-      const built = makeSyntheticArtifact(work, version);
+      const built = makeSyntheticArtifact(work, version, undefined, inventoryHelper);
       const manifest = syntheticManifest(version, built.artifact, built.sha256, built.bytes);
       launches.push(await ensureLocalRuntimeLaunch({
         env: { AGENC_HOME: home }, manifest, runtimeCompatibility: HOST_RUNTIME, log: () => {},

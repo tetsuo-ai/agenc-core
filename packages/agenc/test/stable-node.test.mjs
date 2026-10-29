@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
   rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { describeStableNode, installStableNode, stableNodePath } from "../lib/stable-node.mjs";
-import { beginRuntimeUpdate, endRuntimeUpdate, recordRuntimeActivation, pruneRuntimes } from "../lib/runtime-maintenance.mjs";
+import { beginRuntimeUpdate, endRuntimeUpdate, recordRuntimeActivation, pruneRuntimes, runtimeProcessInventory } from "../lib/runtime-maintenance.mjs";
 
 const mac = process.platform === "darwin";
 const runnableNode = Buffer.from(`#!/bin/sh\nexec '${process.execPath}' "$@"\n`);
@@ -70,7 +70,7 @@ test("rejects tampered source, symlink destination and forged journal hash", { s
   assert.throws(() => installStableNode(home, description), /identity/);
 });
 
-test("pruning keeps current, previous, running and unrecognized trees and reports bytes", { skip: !mac }, async (t) => {
+test("pruning keeps current, previous, running and unrecognized trees and reports bytes", async (t) => {
   const home = fixture(t);
   const old = runtime(home, "0.19.6"), busy = runtime(home, "0.19.7");
   runtime(home, "0.19.14"); runtime(home, "0.19.15");
@@ -87,7 +87,7 @@ test("pruning keeps current, previous, running and unrecognized trees and report
   assert.deepEqual(JSON.parse(readFileSync(join(home, "runtime/.activation-history.json"))), { current: "0.19.14", previous: "0.19.15" });
 });
 
-test("live update lease, interrupted activation, inventory failure and extraction residue defer pruning", { skip: !mac }, async (t) => {
+test("live update lease, interrupted activation, inventory failure and extraction residue defer pruning", async (t) => {
   const home = fixture(t), old = runtime(home, "0.19.6");
   recordRuntimeActivation(home, "0.19.15", "0.19.14");
   const lease = await beginRuntimeUpdate(home);
@@ -103,7 +103,7 @@ test("live update lease, interrupted activation, inventory failure and extractio
   assert.ok(existsSync(old.source));
 });
 
-test("a killed updater lease is reclaimed without deleting the two retained versions", { skip: !mac }, async (t) => {
+test("a killed updater lease is reclaimed without deleting the two retained versions", async (t) => {
   const home = fixture(t), old = runtime(home, "0.19.6");
   const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"]);
   const lease = await beginRuntimeUpdate(home, child.pid);
@@ -117,6 +117,10 @@ test("a killed updater lease is reclaimed without deleting the two retained vers
 
 test("a real old daemon remains usable after stable replacement and is retained by process inventory", { skip: !mac }, async (t) => {
   const home = fixture(t), old = runtime(home, "0.19.6", runnableNode);
+  const helperPath = join(home, "inventory");
+  execFileSync(process.env.CC || "cc", ["-Wall", "-Wextra", "-Werror", "-o", helperPath,
+    new URL("../../../runtime/native/agenc-runtime-inventory.c", import.meta.url).pathname, "-lproc"]);
+  const inventory = (root) => runtimeProcessInventory(root, { helperPath });
   const entry = join(old.tree, "daemon.cjs");
   writeFileSync(entry, "process.stdout.write('ready\\n'); setInterval(()=>{},1000);");
   const child = spawn(old.source, [entry], { stdio: ["ignore", "pipe", "pipe"] });
@@ -126,17 +130,17 @@ test("a real old daemon remains usable after stable replacement and is retained 
   const next = runtime(home, "0.19.15", runnableNode);
   installStableNode(home, describeStableNode(home, next.source));
   recordRuntimeActivation(home, "0.19.15", "0.19.14");
-  const result = await pruneRuntimes(home);
+  const result = await pruneRuntimes(home, { inventory });
   assert.equal(result.skipped, undefined);
   assert.equal(existsSync(old.source), true);
   assert.equal(child.exitCode, null);
   child.kill(); await new Promise((done) => child.once("exit", done));
-  const after = await pruneRuntimes(home);
+  const after = await pruneRuntimes(home, { inventory });
   assert.ok(after.removed.includes(old.tree), JSON.stringify(after));
 });
 
 for (const step of ["prune-recorded", "prune-quarantined", "prune-removed"]) {
-  test(`interrupted pruning at ${step} resumes safely`, { skip: !mac }, async (t) => {
+  test(`interrupted pruning at ${step} resumes safely`, async (t) => {
     const home = fixture(t), old = runtime(home, "0.19.6");
     recordRuntimeActivation(home, "0.19.15", "0.19.14");
     const result = await pruneRuntimes(home, { inventory: () => "", checkpoint: (at) => {
@@ -151,7 +155,7 @@ for (const step of ["prune-recorded", "prune-quarantined", "prune-removed"]) {
   });
 }
 
-test("pruning notices an old updater without a lease and a process starting between inventories", { skip: !mac }, async (t) => {
+test("pruning notices an old updater without a lease and a process starting between inventories", async (t) => {
   const home = fixture(t), old = runtime(home, "0.19.6");
   recordRuntimeActivation(home, "0.19.15", "0.19.14");
   assert.match((await pruneRuntimes(home, { inventory: () => `123456 ${old.tree}/node_modules/@tetsuo-ai/runtime/bin/agenc update` })).skipped, /older updater/);
@@ -160,7 +164,7 @@ test("pruning notices an old updater without a lease and a process starting betw
   assert.ok(existsSync(old.source));
 });
 
-test("a process racing quarantine gets its original runtime path restored", { skip: !mac }, async (t) => {
+test("a process racing quarantine gets its original runtime path restored", async (t) => {
   const home = fixture(t), old = runtime(home, "0.19.6");
   recordRuntimeActivation(home, "0.19.15", "0.19.14");
   let scans = 0;

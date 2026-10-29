@@ -299,6 +299,21 @@ function compileMacOsKeychainHelper(): void {
   chmodSync(macOsKeychainHelperDist, 0o755);
 }
 
+function compileMacOsRuntimeInventory(): void {
+  if (process.platform !== 'darwin') return;
+  const output = resolve(runtimeRoot, 'dist/agenc-runtime-inventory');
+  const result = spawnSync(process.env.CC?.trim() || 'cc', [
+    '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror',
+    '-D_FORTIFY_SOURCE=2', '-fstack-protector-strong',
+    '-o', output, resolve(runtimeRoot, 'native/agenc-runtime-inventory.c'),
+    '-lproc',
+  ], { cwd: runtimeRoot, encoding: 'utf8' });
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error(`macOS runtime inventory build failed: ${result.error?.message ?? result.stderr}`);
+  }
+  chmodSync(output, 0o755);
+}
+
 function compileWindowsProcessBroker(): void {
   if (process.platform !== 'win32') return;
   const compilers = windowsCSharpCompilerCandidates();
@@ -644,6 +659,7 @@ const agencRuntimeAssets = {
       compileLinuxLandlockRun();
       compileLinuxSecretServiceHelper();
       compileMacOsKeychainHelper();
+      compileMacOsRuntimeInventory();
       compileWindowsProcessBroker();
     });
   },

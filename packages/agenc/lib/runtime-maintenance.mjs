@@ -1,5 +1,5 @@
 // Cleanup is deliberately macOS-only. Keep Linux/Windows install semantics.
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   readdirSync, realpathSync, renameSync, rmSync, writeFileSync, existsSync } from "node:fs";
@@ -76,19 +76,90 @@ export function recordRuntimeActivation(home, current, previous) {
   return true;
 }
 
-// Include command lines (JS entrypoints) and open files, executable mappings,
-// native addons and cwd. A failed or truncated inventory disables all cleanup.
-export function runtimeProcessInventory(root) {
-  const ps = spawnSync("/bin/ps", ["-axww", "-o", "pid=,command="], {
-    encoding: "utf8", timeout: 15_000, maxBuffer: 16 * 1024 * 1024,
+function inventoryHelper(root) {
+  const { current } = JSON.parse(readFileSync(join(root, ".activation-history.json"), "utf8"));
+  if (!versionPattern.test(current)) throw new Error("invalid runtime activation history");
+  const version = join(root, current);
+  if (lstatSync(version).isSymbolicLink()) throw new Error("unsafe inventory helper parent");
+  for (const key of readdirSync(version)) {
+    if (!new RegExp(`^darwin-${process.arch}-native-node-abi-\\d+-sha256-[a-f0-9]{64}$`).test(key)) continue;
+    const tree = join(version, key);
+    if (lstatSync(tree).isSymbolicLink()) continue;
+    const marker = join(tree, ".agenc-runtime-ok");
+    if (!existsSync(marker) || lstatSync(marker).isSymbolicLink() ||
+        readFileSync(marker, "utf8").trim() !== key.slice(-64)) continue;
+    let helper = tree;
+    for (const part of ["node_modules", "@tetsuo-ai", "runtime", "dist", "agenc-runtime-inventory"]) {
+      helper = join(helper, part);
+      const stat = lstatSync(helper);
+      if (stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0) {
+        throw new Error("unsafe runtime inventory helper");
+      }
+    }
+    if (!lstatSync(helper).isFile()) throw new Error("invalid runtime inventory helper");
+    return helper;
+  }
+  throw new Error("runtime inventory helper unavailable");
+}
+
+// execFile's timeout still waits for exit/pipe closure. A process stuck in kernel
+// I/O may never deliver either, even after SIGKILL. Own the deadline and detach
+// every event-loop reference before returning an inconclusive inventory.
+function inventoryCommand(file, args, deadline, runCommand) {
+  return new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    const expire = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("runtime usage inventory deadline exceeded"));
+      for (const cleanup of [
+        () => child?.kill("SIGKILL"),
+        () => child?.stdin?.destroy(),
+        () => child?.stdout?.destroy(),
+        () => child?.stderr?.destroy(),
+        () => child?.unref(),
+      ]) { try { cleanup(); } catch { /* detaching must not wait for the child */ } }
+    };
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) { expire(); return; }
+    const timer = setTimeout(expire, Math.ceil(remaining));
+    try {
+      child = runCommand(file, args, {
+        encoding: "utf8", maxBuffer: 32 * 1024 * 1024,
+      }, (error, stdout, stderr) => {
+        if (settled) return;
+        if (performance.now() >= deadline) { expire(); return; }
+        settled = true;
+        clearTimeout(timer);
+        if (error || stderr !== "" || typeof stdout !== "string") {
+          reject(new Error("cannot establish running runtime usage", { cause: error }));
+        } else resolve(stdout);
+      });
+    } catch (error) {
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    }
   });
-  const files = spawnSync("/usr/sbin/lsof", ["-nP", "-Fpn", "+D", root], {
-    encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024 * 1024,
-  });
-  if (ps.error || ps.status !== 0 || files.error ||
-      (files.status !== 0 && files.status !== 1) ||
-      files.stderr !== "") throw new Error("cannot establish running runtime usage");
-  return ps.stdout + "\n" + files.stdout;
+}
+
+// Include command lines (JS entrypoints) plus per-PID open files, executable
+// mappings, native addons and cwd. The helper walks only this runtime root to
+// match inode aliases; it never enumerates mounts or stats unrelated paths.
+// A failed, incomplete or truncated inventory disables all cleanup.
+export async function runtimeProcessInventory(root, {
+  runCommand = execFile, timeoutMs = 30_000, helperPath,
+} = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
+    throw new Error("invalid runtime inventory deadline");
+  }
+  const deadline = performance.now() + timeoutMs;
+  const ps = await inventoryCommand("/bin/ps", ["-axww", "-o", "pid=,command="], deadline, runCommand);
+  const files = await inventoryCommand(helperPath ?? inventoryHelper(root), [root], deadline, runCommand);
+  const complete = "AGENC_RUNTIME_INVENTORY_OK\n";
+  if (!files.endsWith(complete)) throw new Error("incomplete runtime usage inventory");
+  return ps + "\n" + files.slice(0, -complete.length);
 }
 function treeBytes(path) {
   const stat = lstatSync(path);
@@ -131,7 +202,7 @@ export async function pruneRuntimes(home, { inventory = runtimeProcessInventory,
     if (!versionPattern.test(history.current) || !versionPattern.test(history.previous)) {
       return { ...result, skipped: "two successful activations not recorded" };
     }
-    const usage = inventory(root);
+    const usage = await inventory(root);
     // Older updater binaries predate leases. Their full command line still
     // identifies an update of this home. Exclude this completed updater itself.
     if (usage.split("\n").some((line) => {
@@ -149,7 +220,7 @@ export async function pruneRuntimes(home, { inventory = runtimeProcessInventory,
       }
     }
     const pruneJournal = join(root, ".prune-transaction.json");
-    const removeTree = (version, treeName, quarantineName, recovering = false) => {
+    const removeTree = async (version, treeName, quarantineName, recovering = false) => {
       if (!versionPattern.test(version) ||
           !/^(?:darwin|linux|win)-(?:arm64|x64)-(?:native|glibc)-node-abi-\d+-sha256-[a-f0-9]{64}$/.test(treeName) ||
           !/^\.prune-[a-f0-9-]{36}$/.test(quarantineName)) {
@@ -177,7 +248,7 @@ export async function pruneRuntimes(home, { inventory = runtimeProcessInventory,
       }
       const busy = (snapshot) => [versionDir, quarantine].some((path) =>
         snapshot.includes(path + "/") || snapshot.includes(path + "\n"));
-      if (busy(inventory(root))) {
+      if (busy(await inventory(root))) {
         if (recovering) restore();
         throw new Error("runtime became busy before pruning");
       }
@@ -199,7 +270,7 @@ export async function pruneRuntimes(home, { inventory = runtimeProcessInventory,
       // A process that entered before rename is visible by its old argv, open
       // descriptors, executable mapping or cwd. Restore its tree instead.
       let afterRename;
-      try { afterRename = inventory(root); }
+      try { afterRename = await inventory(root); }
       catch (error) { restore(); throw error; }
       if (busy(afterRename)) {
         restore();
@@ -216,7 +287,7 @@ export async function pruneRuntimes(home, { inventory = runtimeProcessInventory,
     if (existsSync(pruneJournal)) {
       if (!lstatSync(pruneJournal).isFile() || lstatSync(pruneJournal).isSymbolicLink()) throw new Error("unsafe prune journal");
       const pending = JSON.parse(readFileSync(pruneJournal, "utf8"));
-      removeTree(pending.version, pending.treeName, pending.quarantineName, true);
+      await removeTree(pending.version, pending.treeName, pending.quarantineName, true);
     }
     for (const name of readdirSync(root)) {
       if (!versionPattern.test(name) || name === history.current || name === history.previous) continue;
@@ -238,7 +309,7 @@ export async function pruneRuntimes(home, { inventory = runtimeProcessInventory,
             readFileSync(marker, "utf8").trim() !== child.slice(-64)) continue;
         // A durable per-tree journal makes interrupted recursive removal
         // retryable even if the marker was removed before the crash.
-        removeTree(name, child, `.prune-${randomUUID()}`);
+        await removeTree(name, child, `.prune-${randomUUID()}`);
       }
     }
     return result;
