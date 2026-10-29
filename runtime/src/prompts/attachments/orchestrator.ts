@@ -188,6 +188,9 @@ export interface GetAttachmentsOptions {
       }>;
     }>;
   };
+  /** Load the Skill schema through the registry's policy-filtered discovery
+   * path when installed skills exist. Returns whether it is now callable. */
+  readonly ensureSkillTool?: () => boolean;
   /**
    * The session's fixed tool policy, when it has one (`agent.create`
    * `toolPolicy`). Decides which bundled skills the skill listing may name.
