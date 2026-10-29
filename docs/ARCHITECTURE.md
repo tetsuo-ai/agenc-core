@@ -1,6 +1,6 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.19.23**). For the
+A current map of how `agenc` is put together (runtime **0.19.24**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
@@ -124,7 +124,7 @@ Everything past the launcher lives in the single runtime workspace
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities                                                                                                                                                                                         |
 | `browser/`                                                               | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool                                                                                                                                                                          |
 | `audio/`                                                                 | Local Whisper dictation and verified model install. Downloads fail after 60 s of silence, not a ten-minute wall clock: [whisper-local.md](whisper-local.md#download-idle-clock).                                                               |
-| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.19.23`), public barrel                                                                                                                                                                                         |
+| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.19.24`), public barrel                                                                                                                                                                                         |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
@@ -601,7 +601,7 @@ compression, and timestamp policy, validates the descriptor graph, compares
 every compressed blob, then starts the bound image under read-only-root,
 capability-free, no-network hardening and verifies native socket credentials.
 
-## Current status (0.19.23)
+## Current status (0.19.24)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with
