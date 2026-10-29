@@ -1,4 +1,5 @@
 import { LLMProviderError } from "../errors.js";
+import { publishedModelCatalogEntry } from "./published-model-catalog.js";
 
 export type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high";
 
@@ -10,6 +11,17 @@ interface GeminiThinkingModel {
   readonly curated: boolean;
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
+  /**
+   * The most one non-streaming generateContent call may generate, when it is
+   * lower than the streaming limit in maxOutputTokens.
+   */
+  readonly nonStreamingMaxOutputTokens?: number;
+  /**
+   * A deprecated id that Google now serves with this model. Requests still
+   * work, so the row stays resolvable for saved settings, but pickers hide
+   * it and it is priced as the model that answers.
+   */
+  readonly routedTo?: string;
 }
 
 const PRO_LEVELS = Object.freeze(["low", "medium", "high"] as const);
@@ -22,14 +34,28 @@ const BUDGET_LEVELS = Object.freeze([] as const);
 // while 3.6 Flash, 3.5 Flash, 3.5 Flash Lite and 3.1 Flash Lite take all
 // four. Every 3.x model here thinks by default (thoughtsTokenCount > 0 with
 // no thinkingConfig).
+//
+// Gemini 4 Argon (2026-10-28): the generateContent thinking guide lists low,
+// medium (default) and high, and a live MINIMAL request answers HTTP 400
+// "Thinking level MINIMAL is not supported for this model". A stream may
+// return 65,536 tokens; one non-streaming call returns at most 32,768, which
+// is also the outputTokenLimit GET /v1beta/models reports for it
+// (ai.google.dev/gemini-api/docs/generate-content/latest-model). The same
+// guide lists minimal as the default level of 3.5 and 3.1 Flash-Lite.
+//
+// Deprecated 2026-10-08 (changelog): requests for gemini-3.7-flash and
+// gemini-3.5-flash are routed to gemini-3.8-flash and gemini-3.6-flash. A
+// live request for each returned modelVersion "gemini-3.8-flash" and
+// "gemini-3.6-flash" on 2026-10-28.
 export const GEMINI_THINKING_MODELS: readonly GeminiThinkingModel[] = Object.freeze(([
+  { model: "gemini-4-argon", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, maxOutputTokens: 65_536, nonStreamingMaxOutputTokens: 32_768 },
   { model: "gemini-3.1-pro-preview", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "high", curated: true },
   { model: "gemini-3.8-flash", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true },
-  { model: "gemini-3.7-flash", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true },
+  { model: "gemini-3.7-flash", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, routedTo: "gemini-3.8-flash" },
   { model: "gemini-3.6-flash", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true },
-  { model: "gemini-3.5-flash", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true },
-  { model: "gemini-3.5-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true },
-  { model: "gemini-3.1-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true },
+  { model: "gemini-3.5-flash", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true, routedTo: "gemini-3.6-flash" },
+  { model: "gemini-3.5-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "minimal", curated: true },
+  { model: "gemini-3.1-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "minimal", curated: true },
   { model: "gemini-2.5-flash", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true },
   { model: "gemini-3-flash-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "high", curated: true },
   { model: "gemini-3-pro-preview", control: "thinkingLevel", levels: ORIGINAL_PRO_LEVELS, defaultLevel: "high", curated: false },
@@ -42,13 +68,32 @@ export const GEMINI_THINKING_MODELS: readonly GeminiThinkingModel[] = Object.fre
   { model: "gemini-robotics-er-2-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "high", curated: true, contextWindow: 131_072 },
 ] satisfies GeminiThinkingModel[]).map((entry) => Object.freeze(entry)));
 
-export function resolveGeminiThinkingModel(model: string): GeminiThinkingModel | undefined {
-  const normalized = model.trim().toLowerCase()
+function canonicalModelId(model: string): string {
+  return model.trim().toLowerCase()
     .replace(/^gemini:/u, "")
     .replace(/^publishers\/google\/models\//u, "")
     .replace(/^models\//u, "")
     .replace(/^google\//u, "");
+}
+
+export function resolveGeminiThinkingModel(model: string): GeminiThinkingModel | undefined {
+  const normalized = canonicalModelId(model);
   return GEMINI_THINKING_MODELS.find((entry) => entry.model === normalized);
+}
+
+/**
+ * The output ceiling for one generateContent call: the model's non-streaming
+ * cap when the call does not stream and the model has a lower one.
+ */
+export function geminiOutputTokenCeiling(
+  model: string,
+  requested: number,
+  streaming: boolean,
+): number {
+  const cap = streaming
+    ? undefined
+    : resolveGeminiThinkingModel(model)?.nonStreamingMaxOutputTokens;
+  return cap === undefined ? requested : Math.min(requested, cap);
 }
 
 export function resolveGeminiReasoningEffort(
@@ -57,6 +102,12 @@ export function resolveGeminiReasoningEffort(
 ): GeminiThinkingLevel | undefined {
   if (effort === undefined || effort === "none") return undefined;
   const metadata = resolveGeminiThinkingModel(model);
+  // A model Google lists but Core has not registered: its levels are unknown,
+  // so the request leaves thinkingConfig out and the model thinks at its own
+  // default instead of the turn failing (gemini-live-models.ts).
+  if (metadata === undefined && publishedModelCatalogEntry("gemini", canonicalModelId(model)) !== undefined) {
+    return undefined;
+  }
   const supported = metadata?.levels.find((level) => level === effort);
   if (metadata?.control === "thinkingLevel" && supported !== undefined) return supported;
   const detail = metadata?.control === "thinkingBudget"

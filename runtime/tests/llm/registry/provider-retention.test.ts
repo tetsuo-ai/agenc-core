@@ -65,6 +65,7 @@ describe("provider retention classification", () => {
       openai: ["store: false"],
       openrouter: ["provider.zdr: true"],
       meta: ["store: false"],
+      gemini: ["store: false"],
     });
   });
 

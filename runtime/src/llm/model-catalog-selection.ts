@@ -1,4 +1,5 @@
-import { publishedModelCatalogEntries } from "./registry/published-model-catalog.js";
+import { publishedModelCatalogEntries, publishedModelCatalogEntry } from "./registry/published-model-catalog.js";
+import { looksLikeGeminiChatModelId } from "./registry/gemini-live-models.js";
 import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
@@ -23,6 +24,19 @@ function editDistance(input: string, candidate: string): number {
     previous = row;
   }
   return previous[candidate.length]!;
+}
+
+/**
+ * A Gemini chat model Core does not register yet. Google's live model list
+ * decides: a model it lists is accepted. Until this process has read that
+ * list (selection runs before a session's first lookup), an id shaped like a
+ * Gemini chat model id is accepted and the session's lookup or Google's own
+ * answer to the first request settles it; anything else still gets the
+ * did-you-mean error.
+ */
+function acceptsLiveGeminiModel(model: string): boolean {
+  if (publishedModelCatalogEntry("gemini", model) !== undefined) return true;
+  return publishedModelCatalogEntries("gemini") === undefined && looksLikeGeminiChatModelId(model);
 }
 
 /** Validate resolved intent before an interactive switch or startup mutates state. */
@@ -50,6 +64,7 @@ export function assertModelCatalogSelection(
   if (models.includes(model) || listRegisteredModelCatalogEntries(provider).some(
     (entry) => entry.model === model,
   )) return;
+  if (provider === "gemini" && acceptsLiveGeminiModel(model)) return;
 
   let closest: string | undefined;
   let distance = Infinity;

@@ -178,6 +178,25 @@ test("a Gemini daily quota HTTP response stops after one wire attempt", async ()
   expect(fetchImpl).toHaveBeenCalledOnce();
 });
 
+test.each(["chat", "stream"] as const)("a Gemini HTTP 402 says the Prepay credits ran out and stops (%s)", async (operation) => {
+  // ai.google.dev/gemini-api/docs/generate-content/api-errors: 402
+  // RESOURCE_EXHAUSTED, the Prepay credit balance is depleted, do not retry.
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: {
+    code: 402, status: "RESOURCE_EXHAUSTED", message: "Your prepayment credits are depleted.",
+  } }, { status: 402 }));
+  const error = await invokeGeminiWithOptions(providerWithFetch(fetchImpl), operation, {
+    singleWireAttempt: true,
+  }).catch(caught => caught);
+  expect(error).toMatchObject({
+    name: "LLMFundsError",
+    statusCode: 402,
+    message: "gemini error: Gemini says the Prepay credit balance is used up. Add credits to the billing account or turn on auto-reload, then try again.",
+  });
+  // Nothing was generated, so a budget releases the call's hold.
+  expect(isLLMPreGenerationRejection(error, "gemini")).toBe(true);
+  expect(fetchImpl).toHaveBeenCalledOnce();
+});
+
 test("Gemini function responses omit tool images without serializing base64 as text", async () => {
   const fetchImpl = successfulGeminiFetch();
   const provider = providerWithFetch(fetchImpl);
@@ -730,7 +749,68 @@ describe("GeminiProvider", () => {
       },
     });
     expect("model" in requestBody).toBe(false);
-    expect("store" in requestBody).toBe(false);
+    // The native request's own logging switch: since 2026-10-26 new paid
+    // projects keep generateContent requests unless a request says false
+    // (ai.google.dev/gemini-api/docs/logs-datasets).
+    expect(requestBody.store).toBe(false);
+  });
+
+  test.each([
+    { label: "Developer API", endpointPlan: developerEndpointPlan, store: false },
+    { label: "custom GEMINI_BASE_URL", endpointPlan: customEndpointPlan, store: false },
+    { label: "Vertex", endpointPlan: vertexEndpointPlan, store: undefined },
+  ])("asks the $label not to log generate, stream and count requests", async ({ endpointPlan, store }) => {
+    const payload = { candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] };
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) =>
+      String(url).includes(":countTokens") ? jsonResponse({ totalTokens: 3 })
+        : String(url).includes(":streamGenerateContent")
+          ? sseResponse([`data: ${JSON.stringify(payload)}\n\n`])
+          : jsonResponse(payload));
+    const provider = new GeminiProvider({
+      credentialPlan: endpointPlan.kind === "vertex"
+        ? { kind: "access-token" as const, credential: "vertex-token", source: "GEMINI_ACCESS_TOKEN" as const }
+        : apiKeyCredentialPlan(),
+      endpointPlan,
+      model: "gemini-4-argon",
+      fetchImpl,
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    await provider.chat(messages);
+    await provider.chatStream(messages, () => {});
+    await provider.tokenCountCapability.countTokens(
+      createTokenAccountingRequest({ provider: "gemini", model: "gemini-4-argon", messages, options: {}, reservedOutputTokens: 0 }),
+      new AbortController().signal,
+    );
+    const bodies = fetchImpl.mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+    expect(bodies).toHaveLength(3);
+    expect(bodies[0]?.store).toBe(store);
+    expect(bodies[1]?.store).toBe(store);
+    const counted = (endpointPlan.kind === "vertex" ? bodies[2] : bodies[2]?.generateContentRequest) as Record<string, unknown>;
+    expect(counted.store).toBe(store);
+    if (store === undefined) {
+      for (const body of bodies) expect("store" in body).toBe(false);
+    }
+  });
+
+  test.each(["chat", "stream"] as const)("reports a Gemini 4 CONTINUATION stop as a length stop (%s)", async (operation) => {
+    const payload = {
+      candidates: [{ content: { role: "model", parts: [{ text: "partial" }] }, finishReason: "CONTINUATION" }],
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(operation === "stream"
+      ? sseResponse([`data: ${JSON.stringify(payload)}\n\n`])
+      : jsonResponse(payload));
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-4-argon",
+      fetchImpl,
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    const response = operation === "stream"
+      ? await provider.chatStream(messages, () => {})
+      : await provider.chat(messages);
+    expect(response.content).toBe("partial");
+    expect(response.finishReason).toBe("length");
   });
 
   test("defaults a malformed document MIME type without object stringification", async () => {

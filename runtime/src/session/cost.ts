@@ -94,6 +94,16 @@ export interface ModelCostEntry {
     readonly aboveInputTokens: number;
     readonly rates: Readonly<ModelCostEntry>;
   }>;
+  /**
+   * A price change the provider has announced: tokens billed at or after
+   * `effectiveFromMs` (epoch milliseconds) use `rates`, which may announce a
+   * later change of their own. `resolveModelCostEntry` returns the rates in
+   * effect, so every caller prices with the rates of the moment it asks for.
+   */
+  readonly priceChange?: Readonly<{
+    readonly effectiveFromMs: number;
+    readonly rates: Readonly<ModelCostEntry>;
+  }>;
   /** Free-form label for display. */
   readonly label?: string;
   /**
@@ -561,16 +571,43 @@ function geminiTier(
   });
 }
 
+/**
+ * A Gemini row the pricing page lists with an end date: `current` through the
+ * day before `laterFrom` (YYYY-MM-DD), `later` from that day on. The page
+ * gives no time zone, so the change applies from 00:00 UTC. That comes before
+ * midnight Pacific, the zone of the Gemini API's daily quotas, so an estimate
+ * around the change errs high, not low.
+ */
+function geminiDatedTier(
+  current: GeminiRateRow,
+  later: GeminiRateRow,
+  laterFrom: string,
+): Readonly<ModelCostEntry> {
+  const effectiveFromMs = Date.parse(`${laterFrom}T00:00:00Z`);
+  if (!Number.isFinite(effectiveFromMs)) {
+    throw new Error(`Invalid Gemini price change date: ${laterFrom}`);
+  }
+  return Object.freeze({
+    ...geminiRates(current),
+    priceChange: Object.freeze({ effectiveFromMs, rates: geminiRates(later) }),
+  });
+}
+
 // Gemini rows from the paid Standard table of
-// ai.google.dev/gemini-api/docs/pricing, read 2026-09-26. Implicit caching
+// ai.google.dev/gemini-api/docs/pricing, read 2026-10-28. Implicit caching
 // is on by default for Gemini 2.5 and newer, so a repeated prefix bills at the
-// cached rate. The 3.8, 3.7 and 3.6 Flash rates are introductory through
-// 2026-12-31; from 2027-01-01 they are $1.50 / $7.50 / $0.15, and this table
-// has no date tier, so those rows need that update then. Text and image input
-// rates only; audio input costs more on the Flash-Lite and 2.5 Flash rows.
+// cached rate. Text and image input rates only; audio input costs more on the
+// Flash-Lite and 2.5 Flash rows.
+// - Gemini 4 Argon: $2 / $10 / $0.10 through 2026-11-30, then $4 / $20 / $0.20.
+//   Implicit caching only; no free tier; no long-context tier.
+// - 3.8 and 3.6 Flash: $0.75 / $3.75 / $0.075 through 2026-12-31, then
+//   $1.50 / $7.50 / $0.15.
+// - 3.7 Flash and 3.5 Flash are deprecated and served by 3.8 Flash and
+//   3.6 Flash (changelog 2026-10-08), so they bill as those models. The page
+//   no longer lists a 3.5 Flash price.
+const COST_TIER_GEMINI_4_ARGON = geminiDatedTier([2, 10, 0.1], [4, 20, 0.2], "2026-12-01");
 const COST_TIER_GEMINI_3_1_PRO = geminiTier([2, 12, 0.2], [4, 18, 0.4]);
-const COST_TIER_GEMINI_3_FLASH = geminiTier([0.75, 3.75, 0.075]);
-const COST_TIER_GEMINI_3_5_FLASH = geminiTier([1.5, 9, 0.15]);
+const COST_TIER_GEMINI_3_FLASH = geminiDatedTier([0.75, 3.75, 0.075], [1.5, 7.5, 0.15], "2027-01-01");
 const COST_TIER_GEMINI_3_FLASH_LITE = geminiTier([0.3, 2.5, 0.03]);
 const COST_TIER_GEMINI_3_1_FLASH_LITE = geminiTier([0.25, 1.5, 0.025]);
 const COST_TIER_GEMINI_3_FLASH_PREVIEW = geminiTier([0.5, 3, 0.05]);
@@ -1257,18 +1294,18 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "kimi:kimi-k2.7-code-highspeed": COST_TIER_KIMI_K27_CODE_HIGHSPEED,
     "kimi:kimi-k2.6": COST_TIER_KIMI_K26,
     // Gemini rates and sources sit with the COST_TIER_GEMINI_* rows above.
+    ...geminiCostAliases("gemini-4-argon", COST_TIER_GEMINI_4_ARGON),
     ...geminiCostAliases("gemini-3.1-pro-preview", COST_TIER_GEMINI_3_1_PRO),
     ...geminiCostAliases("gemini-3.1-pro-preview-customtools", COST_TIER_GEMINI_3_1_PRO),
     // Gemma is free-only on the Gemini API pricing page (2026-09-29).
     ...geminiCostAliases("gemma-4-31b-it", geminiTier([0, 0, 0])),
     ...geminiCostAliases("gemma-4-26b-a4b-it", geminiTier([0, 0, 0])),
-    // Standard launch rates through 2026-12-31. The pricing page announces
-    // $2/$10/$0.20 from 2027-01-01; refresh before that date.
-    ...geminiCostAliases("gemini-robotics-er-2-preview", geminiTier([1, 5, 0.1])),
+    // Standard launch rates through 2026-12-31, then $2 / $10 / $0.20.
+    ...geminiCostAliases("gemini-robotics-er-2-preview", geminiDatedTier([1, 5, 0.1], [2, 10, 0.2], "2027-01-01")),
     ...geminiCostAliases("gemini-3.8-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.7-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.6-flash", COST_TIER_GEMINI_3_FLASH),
-    ...geminiCostAliases("gemini-3.5-flash", COST_TIER_GEMINI_3_5_FLASH),
+    ...geminiCostAliases("gemini-3.5-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.5-flash-lite", COST_TIER_GEMINI_3_FLASH_LITE),
     ...geminiCostAliases("gemini-3.1-flash-lite", COST_TIER_GEMINI_3_1_FLASH_LITE),
     ...geminiCostAliases("gemini-3-flash-preview", COST_TIER_GEMINI_3_FLASH_PREVIEW),
@@ -1415,6 +1452,11 @@ export interface ModelUsage {
    * `usage.cost`). When set it is the cost, and no rate card is consulted.
    */
   readonly providerCostUsd?: number;
+  /**
+   * When these tokens were billed (epoch milliseconds), for a model whose
+   * price changes on an announced date. Unset means now.
+   */
+  readonly pricedAtMs?: number;
 }
 
 export interface TokenUsageDelta {
@@ -1503,6 +1545,7 @@ export function conservativeModelCost(registry: Readonly<Record<string, ModelCos
     search = Math.max(search, entry.webSearchUsdPerRequest ?? 0);
     if (entry.fastMode) visit(entry.fastMode);
     if (entry.longContext) visit(entry.longContext.rates);
+    if (entry.priceChange) visit(entry.priceChange.rates);
   };
   visit(DEFAULT_UNKNOWN_MODEL_COST);
   Object.values(registry).forEach(visit);
@@ -1660,10 +1703,27 @@ export function selectCallRates(
   return { rates: tier, documented: tier.fastModeRequiresOwnRate !== true };
 }
 
+/** The rates an entry bills at `atMs`, after any announced price changes. */
+export function costEntryInEffect(
+  entry: Readonly<ModelCostEntry>,
+  atMs: number,
+): Readonly<ModelCostEntry> {
+  let current = entry;
+  while (current.priceChange !== undefined && atMs >= current.priceChange.effectiveFromMs) {
+    current = current.priceChange.rates;
+  }
+  return current;
+}
+
 export function resolveModelCostEntry(
-  usage: Pick<ModelUsage, "model" | "provider">,
+  usage: Pick<ModelUsage, "model" | "provider" | "pricedAtMs">,
   registry: Readonly<Record<string, ModelCostEntry>>,
-): { readonly key: string; readonly entry: ModelCostEntry } | null {
+): {
+  readonly key: string;
+  readonly entry: ModelCostEntry;
+  /** The registry row announces a price change, so the date matters. */
+  readonly dated?: true;
+} | null {
   // A price published with the provider's live model list (Venice) is the
   // price of record for that provider's model, whatever registry is passed.
   const provider = normalizeProviderMetadataIdentity(usage.provider);
@@ -1674,7 +1734,13 @@ export function resolveModelCostEntry(
   }
   for (const key of costLookupKeys(usage.model, usage.provider, registry)) {
     const entry = registry[key];
-    if (entry) return { key, entry };
+    if (!entry) continue;
+    if (entry.priceChange === undefined) return { key, entry };
+    return {
+      key,
+      entry: costEntryInEffect(entry, usage.pricedAtMs ?? Date.now()),
+      dated: true,
+    };
   }
   return null;
 }
@@ -2441,11 +2507,15 @@ export class CostSidecar implements Sidecar {
               ? { providerCostUsd: chargedUsd(msg.payload.providerCostUsd) }
               : {}),
           };
-          const standardEntry = resolveModelCostEntry(callDelta, this.registry)?.entry;
+          const resolvedEntry = resolveModelCostEntry(callDelta, this.registry);
+          const standardEntry = resolvedEntry?.entry;
           const callCost = computeUsdCostWithResolution(callDelta, this.registry);
           if (
             callDelta.providerCostUsd !== undefined || provider === "ollama-cloud" ||
             !callCost.known || (callDelta.cacheCreation1hInputTokens ?? 0) > 0 ||
+            // A dated price is fixed when the call bills, so a session that
+            // crosses the change keeps each call at the rate of its moment.
+            resolvedEntry?.dated === true ||
             (standardEntry !== undefined &&
               selectCallRates(standardEntry, callPricingOf(callDelta, standardEntry)).rates !== standardEntry)
           ) {

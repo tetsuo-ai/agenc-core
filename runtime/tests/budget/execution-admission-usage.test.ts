@@ -27,6 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   kernel.close();
   rmSync(home, { recursive: true, force: true });
   rmSync(workspace, { recursive: true, force: true });
@@ -169,6 +170,9 @@ describe("canonical allocation usage observers", () => {
   });
 
   it("does not exhaust a Goal on rejected Gemini calls, but retains uncertain spend and bills successful cached/thinking usage", async () => {
+    // Gemini 3.8 Flash's introductory rates hold through 2026-12-31; the
+    // amounts below are priced on a day inside that window.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-10-28T12:00:00Z"), shouldAdvanceTime: true });
     const parent = kernel.bindClient({ cwd: workspace,
       scope: { runId: "goal", sessionId: "goal", autonomous: false, maxCostUsd: 20 },
     });

@@ -1,7 +1,9 @@
 /**
  * Model rows a provider publishes with its live model list: Venice's and
  * abliteration.ai's `GET /models`, Ollama Cloud's `GET /api/tags` and
- * `POST /api/show`, and OpenRouter's public `GET /models`. Discovery records them here and the
+ * `POST /api/show`, OpenRouter's public `GET /models`, and the Gemini chat
+ * models Google lists that Core's bundled registry does not know yet
+ * (gemini-live-models.ts). Discovery records them here and the
  * registered-catalog resolver reads them before the bundled snapshot, so a
  * model's capability flags (tools, thinking, image input), effort levels and
  * limits come from the provider's current list, including for models the
@@ -22,6 +24,7 @@ export const PUBLISHED_CATALOG_PROVIDERS: ReadonlySet<string> = new Set([
   "ollama-cloud",
   "openrouter",
   "abliteration",
+  "gemini",
 ]);
 
 const published = new Map<string, Map<string, RegisteredModelCatalogEntry>>();
