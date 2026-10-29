@@ -90,6 +90,61 @@ export interface OpenAIResponsesRequestOptions {
   readonly assistantCommentaryPhase?: boolean;
   /** Reasoning effort values the destination accepts; others are omitted. */
   readonly reasoningEffortAllowedValues?: ReadonlySet<string>;
+  /**
+   * Send `strict: false` on each function tool whose parameters strict mode
+   * would change (see `isStrictCompatibleToolSchema`). OpenAI's platform
+   * Responses API converts a tool sent without `strict` to strict mode
+   * whenever it can, and strict mode requires every property.
+   */
+  readonly declareNonStrictTools?: boolean;
+}
+
+const NESTED_SCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
+const NESTED_SCHEMA_MAPS = ["$defs", "definitions"] as const;
+
+/**
+ * Whether strict function calling accepts `schema` unchanged: every object
+ * in it lists all of its properties as required and allows no others.
+ *
+ * A Responses tool sent without `strict` is converted to strict mode when the
+ * conversion can succeed, and the conversion makes every property required
+ * (live 2026-10-28 on gpt-6.1-terra, gpt-6.1-sol, gpt-6-luna and gpt-5.5: the
+ * response echoed every property as required with `strict: true`). An
+ * optional field then becomes one the model must fill on every call: each of
+ * those models answered a plain "list the files" with `timeoutMs: 10000` and
+ * `workdir: "."`, Light sessions carried an absolute workdir on every
+ * exec_command, and FileRead got a guessed 200-line window, where the tool's
+ * own defaults apply when the field is left out.
+ */
+export function isStrictCompatibleToolSchema(schema: unknown): boolean {
+  if (Array.isArray(schema)) return schema.every(isStrictCompatibleToolSchema);
+  if (schema === null || typeof schema !== "object") return true;
+  const record = schema as Record<string, unknown>;
+  const properties = record.properties;
+  const typeNames = Array.isArray(record.type) ? record.type : [record.type];
+  if (properties !== undefined || typeNames.includes("object")) {
+    if (properties !== undefined &&
+      (properties === null || typeof properties !== "object" || Array.isArray(properties))) {
+      return false;
+    }
+    if (record.additionalProperties !== false) return false;
+    const required = new Set(Array.isArray(record.required) ? record.required : []);
+    const fields = (properties ?? {}) as Record<string, unknown>;
+    if (Object.keys(fields).some((name) => !required.has(name))) return false;
+    if (!Object.values(fields).every(isStrictCompatibleToolSchema)) return false;
+  }
+  if (record.items !== undefined && !isStrictCompatibleToolSchema(record.items)) return false;
+  for (const key of NESTED_SCHEMA_LISTS) {
+    if (record[key] !== undefined && !isStrictCompatibleToolSchema(record[key])) return false;
+  }
+  for (const key of NESTED_SCHEMA_MAPS) {
+    const definitions = record[key];
+    if (definitions !== null && typeof definitions === "object" &&
+      !isStrictCompatibleToolSchema(Object.values(definitions as Record<string, unknown>))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -592,7 +647,10 @@ export function buildOpenAIResponsesRequest(
     body.instructions = instructions;
   }
   const omitTools = omitsToolsForChoice(input);
-  const tools = toOpenAIResponsesTools(omitTools ? [] : input.tools);
+  const tools = toOpenAIResponsesTools(omitTools ? [] : input.tools).map((tool) =>
+    input.declareNonStrictTools === true && !isStrictCompatibleToolSchema(tool.parameters)
+      ? { ...tool, strict: false }
+      : tool);
   if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined && !omitTools) {
     // Responses uses a flat named choice; Chat Completions nests function.name.
