@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.19.21**; embedding SDK
+Version in tree: **runtime / launcher 0.19.22**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. OpenRouter's default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -99,6 +99,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.19.22.md](releases/0.19.22.md) | AgenC 0.19.22: GPT-6.1 Terra, Gemini 4 Argon, non-strict OpenAI tools with optional fields and Gemini thought signatures through rebuilt turns |
 | [releases/0.19.21.md](releases/0.19.21.md) | AgenC 0.19.21: enforced PreToolUse hook denies, no environment values in macOS process listings, macOS start without listing every mount, the Skill tool loaded for installed skills in Light, Ollama Cloud rows marked from real answers, Windows workspace-relative paths for LSP and notebook tools, and new sandbox tests |
 | [releases/0.19.20.md](releases/0.19.20.md) | AgenC 0.19.20: finished responses kept after a dropped connection, distinct error retries and media kept during compaction |
 | [releases/0.19.19.md](releases/0.19.19.md) | AgenC 0.19.19: transport recovery, OOM preference, opt-in headless completion check, smaller standard requests, less idle time and Large V2 Light fixes |
@@ -155,7 +156,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.19.21) |
+| [`../README.md`](../README.md) | Product README (0.19.22) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
