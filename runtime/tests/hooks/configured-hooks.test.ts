@@ -1267,6 +1267,96 @@ describe("configured hooks runtime", () => {
     );
   });
 
+  test.each([
+    { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "policy" } },
+    { decision: "deny", reason: "policy" },
+    { decision: "block", reason: "policy" },
+    { decision: "deny", reason: "policy", hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { changed: true } } },
+    { decision: "block", reason: "policy", hookSpecificOutput: null },
+    { decision: { behavior: "deny", message: "policy" } },
+    { hookSpecificOutput: { permissionDecision: "deny" }, decision: "deny", reason: "policy" },
+    { hookSpecificOutput: { hookEventName: "PostToolUse", permissionDecision: "deny", permissionDecisionReason: "policy", suppressOutput: true } },
+  ])("PreToolUse retains explicit denies and warnings for invalid output: %j", async (output) => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({ PreToolUse: [{ hooks: [{ type: "command", command: jsonStdoutCommand({
+      ...output, action: "block", message: "policy",
+    }) }] }] });
+
+    expect(await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "exec_command" } as never,
+      args: { cmd: "cat canary" },
+    })).toEqual({ kind: "deny", reason: "policy" });
+    expect(runtime.latestDiagnostics()[0]?.error).toBeDefined();
+  });
+
+  test.each([1, 2])("PreToolUse retains a structured deny on exit %i", async (exitCode) => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(), env: process.env, agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({ PreToolUse: [{ hooks: [{ type: "command", command:
+      `${jsonStdoutCommand({ decision: "deny", reason: "policy" })}; exit ${exitCode}`,
+    }] }] });
+    expect(await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "Write" } as never,
+      args: {},
+    })).toEqual({ kind: "deny", reason: "policy" });
+  });
+
+  test.each([
+    { permissionDecision: "deny" },
+    { decision: "deny" },
+    { decision: "block", reason: " " },
+    { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: 42 } },
+  ])("PreToolUse denies with a fallback reason: %j", async (output) => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(), env: process.env, agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({ PreToolUse: [{ hooks: [{ type: "command", command: jsonStdoutCommand(output) }] }] });
+    expect(await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "Write" } as never,
+      args: {},
+    })).toEqual({ kind: "deny", reason: "Blocked by PreToolUse hook" });
+  });
+
+  test.each([
+    { stdout: "ordinary hook stdout", issue: false },
+    { stdout: "{malformed", issue: true },
+    { stdout: JSON.stringify({ action: "block", updatedInput: { changed: true } }), issue: true },
+    { stdout: JSON.stringify({ permissionDecision: "allow", extra: true, updatedInput: { changed: true } }), issue: true },
+  ])("PreToolUse keeps non-denying output diagnostic-only: %j", async ({ stdout, issue }) => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(), env: process.env, agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({ PreToolUse: [{ hooks: [{ type: "command", command:
+      `node -e ${JSON.stringify(`process.stdout.write(${JSON.stringify(stdout)})`)}`,
+    }] }] });
+    expect(await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "Write" } as never,
+      args: {},
+    })).toEqual({ kind: "continue" });
+    expect(Boolean(runtime.latestDiagnostics()[0]?.error)).toBe(issue);
+  });
+
   test("PreToolUse hookSpecific deny with reason blocks", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
@@ -1473,6 +1563,27 @@ describe("configured hooks runtime", () => {
       ).toEqual([]);
     },
   );
+
+  test.each([
+    ["Bash", "exec_command"], ["Bash", "system.bash"], ["Bash", "PowerShell"],
+    ["Read", "FileRead"], ["Read", "NotebookRead"],
+  ])("PreToolUse matcher %s selects %s", async (matcher, toolName) => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(), env: process.env, agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({ PreToolUse: [{ matcher, hooks: [{ type: "command", command: jsonStdoutCommand({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "alias policy" },
+    }) }] }] });
+    expect(await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: toolName } as never,
+      args: {},
+    })).toEqual({ kind: "deny", reason: "alias policy" });
+    expect(runtime.latestDiagnostics()).toHaveLength(1);
+  });
 
   test("PreToolUse matcher aliases select apply_patch hooks", async () => {
     const runtime = new ConfiguredHooksRuntime({

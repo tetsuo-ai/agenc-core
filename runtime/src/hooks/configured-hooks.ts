@@ -586,6 +586,13 @@ export class ConfiguredHooksRuntime {
         tool_input: hookToolInput(toolName, args),
         tool_use_id: invocation.callId,
       });
+      const parsed = this.readStructuredOutput(result);
+      if (parsed.preToolUseDenyReason !== undefined) {
+        return {
+          kind: "deny",
+          reason: redactSecrets(parsed.preToolUseDenyReason),
+        };
+      }
       if (result.status === "blocking") {
         const reason = this.exitCodeTwoStderr(
           result,
@@ -597,7 +604,6 @@ export class ConfiguredHooksRuntime {
           : { kind: "deny", reason };
       }
       if (result.status !== "success") return { kind: "continue" };
-      const parsed = this.readStructuredOutput(result);
       const specific = parsed.output?.updatedInput === undefined ? parsed.output : {
         ...parsed.output,
         updatedInput: toolInputFromHook(toolName, args, parsed.output.updatedInput),
@@ -614,12 +620,6 @@ export class ConfiguredHooksRuntime {
       if (unsupported !== null) {
         this.recordHookOutputIssue(result, unsupported);
         return { kind: "continue" };
-      }
-      if (specific?.permissionDecision === "deny") {
-        const reason = trimmedReason(specific.permissionDecisionReason);
-        if (reason !== undefined) {
-          return { kind: "deny", reason: redactSecrets(reason) };
-        }
       }
       return preToolUseContinueDecision(hook, specific);
     };
@@ -1068,7 +1068,7 @@ export class ConfiguredHooksRuntime {
     const parsed = readHookSpecificOutput(run.rawStdout, run.event);
     if (parsed.invalid) {
       this.recordHookOutputIssue(run, parsed.invalid);
-      return { explicit: parsed.explicit, invalid: parsed.invalid };
+      return { ...parsed, output: undefined };
     }
     return parsed;
   }
@@ -1373,12 +1373,6 @@ function unsupportedPreToolUseOutput(
   }
   if (output?.suppressOutput === true) {
     return "PreToolUse hook returned unsupported suppressOutput";
-  }
-  if (
-    output?.permissionDecision === "deny" &&
-    trimmedReason(output.permissionDecisionReason) === undefined
-  ) {
-    return "PreToolUse hook returned permissionDecision:deny without a non-empty permissionDecisionReason";
   }
   if (
     output?.permissionDecision === undefined &&

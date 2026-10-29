@@ -123,7 +123,7 @@ function metadataFor(event: HookEventName): {
         summary: "Before tool execution",
         matcher: "tool_name",
         description:
-          "Input is JSON of tool call arguments. Exit code 0 continues. Exit code 2 shows stderr to the model and blocks the tool call. Other exit codes show stderr to the user only and continue.",
+          "Input is JSON of tool call arguments. Explicit JSON deny decisions block even if other output fields are invalid. Otherwise exit code 0 continues, exit code 2 with a reason on stderr blocks, and other exit codes are diagnostic only.",
       };
     case "PostToolUse":
       return {

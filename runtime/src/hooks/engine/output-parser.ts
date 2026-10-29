@@ -33,6 +33,8 @@ export interface ParsedHookSpecificOutput {
   readonly explicit: boolean;
   readonly output?: HookSpecificOutput;
   readonly invalid?: string;
+  /** A PreToolUse deny survives validation errors; other output stays untrusted. */
+  readonly preToolUseDenyReason?: string;
 }
 
 export function readHookSpecificOutput(
@@ -55,6 +57,12 @@ export function readHookSpecificOutput(
         invalid: "hook output JSON must be an object",
       };
     }
+    const denyReason =
+      expectedEvent === "PreToolUse"
+        ? readPreToolUseDenyReason(parsed)
+        : undefined;
+    const denyOutput =
+      denyReason === undefined ? {} : { preToolUseDenyReason: denyReason };
     const rawSpecific =
       parsed.hookSpecificOutput === undefined
         ? parsed
@@ -65,6 +73,7 @@ export function readHookSpecificOutput(
       return {
         explicit: true,
         invalid: "hookSpecificOutput must be an object",
+        ...denyOutput,
       };
     }
     const { output, invalid } = normalizeHookSpecificOutput(rawSpecific);
@@ -82,6 +91,7 @@ export function readHookSpecificOutput(
     return {
       explicit: true,
       output,
+      ...denyOutput,
       ...(invalid.length > 0 ? { invalid: invalid.join("; ") } : {}),
     };
   } catch {
@@ -90,6 +100,35 @@ export function readHookSpecificOutput(
       invalid: "hook output JSON could not be parsed",
     };
   }
+}
+
+function readPreToolUseDenyReason(
+  root: Record<string, unknown>,
+): string | undefined {
+  const specific = isRecord(root.hookSpecificOutput)
+    ? root.hookSpecificOutput
+    : undefined;
+  // Inspect both locations before normalization: a nested allow cannot hide a
+  // root deny, and an invalid field cannot discard an explicit refusal.
+  for (const output of specific === undefined ? [root] : [specific, root]) {
+    let reason: unknown;
+    if (output.permissionDecision === "deny") {
+      reason = output.permissionDecisionReason;
+    } else if (output.decision === "deny" || output.decision === "block") {
+      reason = output.reason;
+    } else if (isRecord(output.decision) && output.decision.behavior === "deny") {
+      reason = output.decision.message;
+    } else {
+      continue;
+    }
+    for (const candidate of [reason, output.reason, root.reason]) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+    return "Blocked by PreToolUse hook";
+  }
+  return undefined;
 }
 
 function mergeRootEventOutputFields(
