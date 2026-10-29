@@ -23,7 +23,8 @@ export type StatusLineColor =
   | 'accentSoft'
   | 'accent'
   | 'success'
-  | 'inactive';
+  | 'inactive'
+  | 'subtle';
 
 export type StatusLineSpan = {
   readonly text: string;

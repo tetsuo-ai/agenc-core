@@ -34,7 +34,7 @@ export const AGENT_COLOR_TO_THEME_COLOR = {
 
 const agentColorMap = new Map<string, AgentColorName>()
 
-export function getAgentColor(agentType: string): string | undefined {
+export function getAgentColor(agentType: string): (typeof AGENT_COLOR_TO_THEME_COLOR)[AgentColorName] | undefined {
   // The default (general-purpose) agent has no distinct color. Canonicalize so
   // 'default'/'netrunner'/'general-purpose' all map here.
   if (canonicalAgentRoleName(agentType) === 'default') {
