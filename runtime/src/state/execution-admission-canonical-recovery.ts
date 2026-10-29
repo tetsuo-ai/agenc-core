@@ -80,6 +80,8 @@ export function recoverExecutionAdmissionCanonicalJournals(
     readonly maxRuns?: number;
     readonly maxEventsPerRun?: number;
     readonly maxSourcesPerRun?: number;
+    /** Converge only the run being opened by a lazy daemon. */
+    readonly runId?: string;
     /**
      * Identity of the running build. When set, every projection leaves a
      * canonical projection marker under this epoch, and a source whose bytes
@@ -104,7 +106,7 @@ export function recoverExecutionAdmissionCanonicalJournals(
     throw new TypeError("canonicalProjectionEpoch must be a non-empty string");
   }
   const unboundCanonicalRun = driver
-    .prepareState<[], AdmissionRunRow>(
+    .prepareState<string[], AdmissionRunRow>(
       `SELECT DISTINCT admission.run_id
        FROM execution_admission_journal AS admission
        JOIN run_lifecycle_epochs AS lifecycle
@@ -113,27 +115,29 @@ export function recoverExecutionAdmissionCanonicalJournals(
          SELECT 1 FROM run_journal_bindings AS binding
          WHERE binding.run_id = admission.run_id
        )
+       ${options.runId !== undefined ? "AND admission.run_id = ?" : ""}
        AND ${recoveryRunIsExecutableSql("admission.run_id")}
        ORDER BY admission.run_id ASC
        LIMIT 1`,
     )
-    .get();
+    .get(...(options.runId !== undefined ? [options.runId] : []));
   if (unboundCanonicalRun !== undefined) {
     throw new Error(
       `run ${unboundCanonicalRun.run_id} has committed admission evidence and a canonical lifecycle but no journal binding`,
     );
   }
   const runs = driver
-    .prepareState<[number], AdmissionRunRow>(
+    .prepareState<unknown[], AdmissionRunRow>(
       `SELECT DISTINCT admission.run_id
        FROM execution_admission_journal AS admission
        JOIN run_journal_bindings AS binding
          ON binding.run_id = admission.run_id
        WHERE ${recoveryRunIsExecutableSql("admission.run_id")}
+       ${options.runId !== undefined ? "AND admission.run_id = ?" : ""}
        ORDER BY admission.run_id ASC
        LIMIT ?`,
     )
-    .all(maxRuns + 1);
+    .all(...(options.runId !== undefined ? [options.runId] : []), maxRuns + 1);
   if (runs.length > maxRuns) {
     throw new Error(
       `canonical admission recovery exceeds the bounded run limit (${maxRuns})`,

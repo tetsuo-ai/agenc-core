@@ -323,10 +323,12 @@ export function recoverPendingEffectReviewsOnStartup(
   driver: StateSqliteDriver,
   options: {
     readonly maxRuns?: number;
+    readonly runIds?: readonly string[];
     readonly maxRolloutFilesPerRun?: number;
     readonly strict?: StrictRecoveryOptions;
   } = {},
 ): StartupRunJournalRecoveryResult {
+  if (options.runIds?.length === 0) return emptyRecoveryResult();
   const maxRuns = positiveBound(
     options.maxRuns ?? DEFAULT_MAX_STARTUP_RUNS,
     "maxRuns",
@@ -336,14 +338,15 @@ export function recoverPendingEffectReviewsOnStartup(
     "maxRolloutFilesPerRun",
   );
   const rows = driver
-    .prepareState<[number], PendingEffectReviewRunRow>(
+    .prepareState<unknown[], PendingEffectReviewRunRow>(
       `SELECT DISTINCT effect.run_id
        FROM run_effects AS effect
        WHERE effect.review_status = 'pending'
+       ${options.runIds !== undefined ? `AND effect.run_id IN (${sqlPlaceholders(options.runIds.length)})` : ""}
        ORDER BY effect.run_id ASC
        LIMIT ?`,
     )
-    .all(maxRuns + 1);
+    .all(...(options.runIds ?? []), maxRuns + 1);
   if (rows.length > maxRuns) {
     throw new Error(
       `daemon startup pending-effect review recovery exceeds the bounded run limit (${maxRuns})`,
@@ -438,6 +441,7 @@ export function recoverCanonicalRunJournalsOnStartup(
   driver: StateSqliteDriver,
   options: {
     readonly recoverableStatuses: readonly string[];
+    readonly runIds?: readonly string[];
     readonly maxRuns?: number;
     readonly maxRolloutFilesPerRun?: number;
     /** Restrict the bounded scan to rows whose current epoch has no result. */
@@ -453,7 +457,7 @@ export function recoverCanonicalRunJournalsOnStartup(
     readonly afterStartupResumeCwdOpenForTestingOnly?: (cwd: string) => void;
   },
 ): StartupRunJournalRecoveryResult {
-  if (options.recoverableStatuses.length === 0) {
+  if (options.recoverableStatuses.length === 0 || options.runIds?.length === 0) {
     return emptyRecoveryResult();
   }
   const maxRuns = positiveBound(
@@ -470,6 +474,7 @@ export function recoverCanonicalRunJournalsOnStartup(
        FROM agent_runs AS runs
        WHERE status IN (${sqlPlaceholders(options.recoverableStatuses.length)})
        AND ${recoveryRunIsExecutableSql("runs.id")}
+       ${options.runIds !== undefined ? `AND runs.id IN (${sqlPlaceholders(options.runIds.length)})` : ""}
        ${
          options.onlyMissingTerminalResults === true
            ? `AND NOT EXISTS (
@@ -493,7 +498,7 @@ export function recoverCanonicalRunJournalsOnStartup(
        ORDER BY last_active_at ASC, id ASC
        LIMIT ?`,
     )
-    .all(...options.recoverableStatuses, maxRuns + 1);
+    .all(...options.recoverableStatuses, ...(options.runIds ?? []), maxRuns + 1);
   if (runs.length > maxRuns) {
     throw new Error(
       `daemon startup run-journal recovery exceeds the bounded run limit (${maxRuns})`,

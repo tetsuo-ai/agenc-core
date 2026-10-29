@@ -10,6 +10,7 @@ export function seedDaemonStartupHome(root: string, options: {
   readonly snapshots?: number;
   readonly bytes?: number;
   readonly projects?: number;
+  readonly projectBytes?: readonly number[];
 } = {}) {
   const sessions = options.sessions ?? 193;
   const snapshots = options.snapshots ?? 678;
@@ -34,7 +35,7 @@ export function seedDaemonStartupHome(root: string, options: {
     try {
       const count = Math.floor(sessions / projects) + (project < sessions % projects ? 1 : 0);
       const rowCount = Math.floor(snapshots / projects) + (project < snapshots % projects ? 1 : 0);
-      const projectBytes = projects === 1 ? bytes : project === 0 ? bytes * (1.28 / 1.9) : bytes * (0.62 / 1.9) / (projects - 1);
+      const projectBytes = options.projectBytes?.[project] ?? (projects === 1 ? bytes : project === 0 ? bytes * (1.28 / 1.9) : bytes * (0.62 / 1.9) / (projects - 1));
       const conversation = JSON.stringify([{ role: "assistant", content: "x".repeat(Math.max(1, Math.floor(projectBytes / rowCount) - 40)) }]);
       driver.transaction(() => {
         for (let index = 0; index < count; index++) {

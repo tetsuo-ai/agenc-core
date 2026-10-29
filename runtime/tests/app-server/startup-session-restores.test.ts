@@ -20,6 +20,30 @@ interface Target {
   readonly sessionId?: string;
 }
 
+it("keeps hundreds of saved sessions cold until named, including after another restore finishes", async () => {
+  const task = vi.fn(async () => "published" as const);
+  const restores = new StartupSessionRestores({
+    targets: Array.from({ length: 230 }, (_, index) => ({ runId: `run-${index}`, sessionId: `session-${index}` })),
+    concurrency: 4,
+    onDemand: true,
+    task,
+  });
+  restores.start();
+  await delay(10);
+  expect(task).not.toHaveBeenCalled();
+  expect(restores.waitForRequest("health.ready", {})).toBeUndefined();
+  expect(restores.waitForRequest("agent.create", { objective: "new session" })).toBeUndefined();
+  expect(restores.pendingForRequest("session.attach", { sessionId: "session-229" })).toBe(1);
+  await restores.waitForRequest("session.attach", { sessionId: "session-229" });
+  await delay(10);
+  expect(task).toHaveBeenCalledExactlyOnceWith(
+    { runId: "run-229", sessionId: "session-229" }, expect.anything(),
+  );
+  expect(restores.unsettled).toBe(229);
+  await restores.shutdown({ graceMs: 0, abortGraceMs: 0 });
+  expect(await restores.settled).toMatchObject({ published: 1, abandoned: 229 });
+});
+
 it("yields to I/O between batches even when hundreds of restores finish immediately", async () => {
   let completed = 0;
   const restores = new StartupSessionRestores({

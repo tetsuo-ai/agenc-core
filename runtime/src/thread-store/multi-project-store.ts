@@ -44,6 +44,7 @@ export interface MultiProjectFileThreadStoreOpts {
   readonly primaryCwd: string;
   readonly agencHome: string;
   readonly defaultModelProviderId?: string;
+  readonly deferPrimary?: boolean;
 }
 
 export class MultiProjectFileThreadStore implements ThreadStore {
@@ -70,7 +71,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     // recovery. A missing project has nothing to recover: open its database
     // when the first write creates the project. Read-only discovery
     // does not need to manufacture an empty primary database.
-    if (this.#primaryExists()) this.#openForProjectDir(this.#primaryProjectDir);
+    if (opts.deferPrimary !== true && this.#primaryExists()) this.#openForProjectDir(this.#primaryProjectDir);
     // Pay the one-time project-directory discovery cost at daemon/store
     // construction. Steady-state session.list calls only stat the parent
     // directory and page the cached project order.

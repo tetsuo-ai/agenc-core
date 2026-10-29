@@ -1360,7 +1360,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
       };
       try {
-        await progress(this.#startupRestores?.unsettled ?? 1);
+        await progress(this.#startupRestores?.pendingForRequest?.(method, params) ?? this.#startupRestores?.unsettled ?? 1);
         await restoring;
       } finally {
         await progress(0);

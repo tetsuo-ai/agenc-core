@@ -83,13 +83,19 @@ import {
   resolveAgenCDaemonSocketPath,
   resolveAgenCDaemonWebSocketListenOptions,
   runAgenCDaemonAuthorityCleanup,
-  runAgenCDaemonCli,
+  runAgenCDaemonCli as runDaemon,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
   validateAgenCDaemonWebSocketOrigin,
   writeAgenCDaemonPid,
   resolveAgenCDaemonSpawnStderrPath,
 } from "./daemon-cli.js";
+
+// The existing recovery contracts exercise the optional background warmup,
+// including crash recovery, replay and publication rollback. The default
+// on-demand path has its own cold-start contract below.
+const runAgenCDaemonCli: typeof runDaemon = (command, options = {}) =>
+  runDaemon(command, { startupRestoreMode: "background", ...options });
 import { AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV } from "./daemon-request-policy.js";
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -6293,6 +6299,49 @@ snapshot_max_bytes = 64
         signalProcess.emit("SIGTERM");
         await running.catch(() => {});
       }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("serves health and new work without hydrating saved sessions, then restores only the session requested", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    for (const id of ["cold-a", "cold-b", "cold-c"]) {
+      seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: id, sessionId: `session-${id}` });
+    }
+    const restoreAgent = vi.fn(async () => true);
+    const startAgent = vi.fn(async () => ({ agentId: "fresh", status: "running" as const, startedAt: new Date().toISOString() }));
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess, runner: { restoreAgent, startAgent },
+    });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true, restoringSessions: 3 });
+      await expect(client.request("health.stats", {})).resolves.toHaveProperty("state.agentRuns", 3);
+      expect(restoreAgent).not.toHaveBeenCalled();
+      expect(readSnapshotTimes(agencHome, process.cwd(), "session-cold-b")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+      await client.request("agent.create", { objective: "new work", cwd: process.cwd(), runtimeOptions: resolveAgentRuntimeOptions({}) });
+      expect(startAgent).toHaveBeenCalledOnce();
+      expect(restoreAgent).not.toHaveBeenCalled();
+      // A run created after readiness belongs to the current daemon. Delayed
+      // recovery must neither scan its journal nor poison its running tool.
+      seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "new-live", sessionId: "session-new-live", toolCallId: "tool-new-live" });
+      await client.request("session.attach", { sessionId: "session-cold-b", clientId: "lazy-proof" });
+      expect(readRecoveredToolStatus(agencHome, process.cwd(), "tool-new-live")).toBe("running");
+      expect(restoreAgent).toHaveBeenCalledOnce();
+      expect(restoreAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: "cold-b" }));
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true, restoringSessions: 2 });
+      expect(readSnapshotTimes(agencHome, process.cwd(), "session-cold-a")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
       await rm(agencHome, { recursive: true, force: true });
     }
   });

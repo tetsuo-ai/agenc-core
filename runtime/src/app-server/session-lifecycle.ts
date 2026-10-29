@@ -353,7 +353,7 @@ export class AgenCDaemonSessionManager {
     });
   }
 
-  async countSessions(): Promise<AgenCSessionCounts> {
+  async countSessions(options: { readonly includePersisted?: boolean } = {}): Promise<AgenCSessionCounts> {
     const snapshot = await this.#state.with((state) => {
       let active = 0;
       let closed = 0;
@@ -372,6 +372,9 @@ export class AgenCDaemonSessionManager {
     });
     let active = snapshot.active;
     let closed = snapshot.closed;
+    // Health counts resident sessions. Opening every project's thread store
+    // here would migrate idle databases on the daemon status path.
+    if (options.includePersisted === false) return { active, closed, total: active + closed };
     const indexedPersistedCount = this.#threadStore?.countThreads?.({
       archived: false,
       excludeThreadIds: snapshot.knownSessionIds,
