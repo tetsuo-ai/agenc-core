@@ -29,6 +29,7 @@ const entry = [
   'src/sandbox/linux-launcher/main-impl.ts',
   'src/tui/main.tsx',
   'src/tui/pending-resume.ts',
+  'src/tui/update-relaunch-state.ts',
 ];
 
 const runtimeRoot =

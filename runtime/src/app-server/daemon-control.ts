@@ -328,6 +328,9 @@ export type AgenCDaemonCliCommand =
   | {
       /** `restart --when-idle`: now when idle, otherwise once it is idle. */
       readonly kind: "restart-when-idle";
+      /** A TUI updating itself; see AgenCDaemonRestartRequester. */
+      readonly requesterPid?: number;
+      readonly requesterAgentId?: string;
       readonly json: boolean;
       /** Internal: run as the detached waiter that owns this pending restart. */
       readonly waitToken?: string;
@@ -1084,9 +1087,30 @@ function parseDaemonRestartWhenIdleArgs(
 ): AgenCDaemonCliCommand {
   let json = false;
   let waitToken: string | undefined;
+  let requesterPid: number | undefined;
+  let requesterAgentId: string | undefined;
   for (let index = 0; index < extra.length; index += 1) {
     const arg = extra[index];
     if (arg === "--when-idle") continue;
+    if (arg === "--requester-pid") {
+      const value = extra[index + 1];
+      const pid = value !== undefined && /^[1-9][0-9]{0,9}$/.test(value) ? Number(value) : Number.NaN;
+      if (!Number.isSafeInteger(pid) || pid <= 1) {
+        return { kind: "error", message: "daemon restart --requester-pid needs a process id" };
+      }
+      requesterPid = pid;
+      index += 1;
+      continue;
+    }
+    if (arg === "--requester-agent") {
+      const value = extra[index + 1];
+      if (value === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value)) {
+        return { kind: "error", message: "daemon restart --requester-agent needs a conversation id" };
+      }
+      requesterAgentId = value;
+      index += 1;
+      continue;
+    }
     if (arg === "--json") {
       json = true;
       continue;
@@ -1102,10 +1126,15 @@ function parseDaemonRestartWhenIdleArgs(
     }
     return { kind: "error", message: `unknown daemon restart option: ${arg}` };
   }
+  if (requesterAgentId !== undefined && requesterPid === undefined) {
+    return { kind: "error", message: "daemon restart --requester-agent needs --requester-pid" };
+  }
   return {
     kind: "restart-when-idle",
     json,
     ...(waitToken === undefined ? {} : { waitToken }),
+    ...(requesterPid === undefined ? {} : { requesterPid }),
+    ...(requesterAgentId === undefined ? {} : { requesterAgentId }),
   };
 }
 

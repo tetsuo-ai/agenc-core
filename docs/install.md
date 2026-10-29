@@ -1481,13 +1481,44 @@ a later release prompts again. Not now asks again on the next launch.
 
 `/update` checks on request, shows the installed and latest versions and install
 method, and uses the same verified manifest installer as `agenc update`.
-Standalone installs activate a new, separate runtime tree. The current TUI and
-daemon keep their old tree; exit and launch AgenC again to use the update. The
-next launch authenticates and replaces a daemon whose build differs, then
-restores saved sessions. Old runtime trees remain available to running clients.
-For npm or unmanaged installs the menu prints `npm install -g @tetsuo-ai/agenc@latest` and the installer alternative. It does not run npm inside
-a live session, because the launcher pins its runtime through its bundled
-manifest and changing a global package may require permissions outside AgenC.
+Standalone installs activate a new, separate runtime tree. Old runtime trees
+remain available to running clients.
+
+### Update now, in the same conversation
+
+On macOS and Linux, Update now finishes in the same terminal:
+
+1. AgenC installs the update with a progress line. For a standalone install
+   that is the verified manifest installer. For Homebrew it runs
+   `brew upgrade tetsuo-ai/agenc/agenc`, and for npm
+   `npm install -g @tetsuo-ai/agenc@latest`, from the menu, shows their output,
+   then confirms the new version with `agenc --version` (a new npm launcher
+   fetches and verifies its runtime at that point). These run without
+   terminal input, so a password prompt fails instead of waiting. If they fail,
+   the menu shows the message and AgenC keeps running its version.
+2. The TUI closes, then moves the daemon with
+   `agenc daemon restart --when-idle` (see "Daemon restart after an update").
+   It names itself as the requester, so its own conversation does not hold the
+   restart up; other clients and running work still do.
+3. When the daemon is on the new version (or none is running), the TUI
+   replaces itself with the new version in place, same process and terminal,
+   and reopens the same conversation with `--resume`. The conversation keeps
+   its model, permission mode, extra directories and limits. Before the first
+   prompt there is no conversation yet, so a fresh TUI opens.
+
+If a turn, tool or local agent is running, the first choice reads
+Update after this turn: AgenC installs now and restarts when the work is done.
+
+If another AgenC window, `agenc -p` or other work keeps the daemon busy, this
+window reopens on its current version and says AgenC switches once that work
+is done. The daemon restarts when it is idle, and this window then moves to the
+new version at its next idle moment, in the same conversation.
+
+Every failure ends in a working TUI with the reason: if the daemon cannot move,
+or the new version cannot start, the current version reopens; if the new
+version cannot reopen the conversation, it starts fresh and points to
+`/resume`. On Windows the menu keeps the old message: exit and launch AgenC
+again to use the update.
 
 `DISABLE_AUTOUPDATER=1` or `autoUpdates = false` disables the startup check and
 prompt. `/update` still works on request. Print, exec, piped stdin, and CI runs

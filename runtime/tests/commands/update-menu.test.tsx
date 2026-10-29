@@ -31,7 +31,9 @@ vi.mock("../../src/bin/update-cli.js", () => ({
   checkAgenCUpdate: vi.fn(async () => ({ currentVersion: "0.19.0", latestVersion: "0.19.0", updateAvailable: false })),
   runAgenCUpdateCli: vi.fn(), sanitizeTerminalText: (value: unknown) => String(value),
 }));
-import { UpdateMenu, hasSkippedUpdate, NPM_UPDATE_COMMAND } from "../../src/commands/update-menu.js";
+import { UpdateMenu, hasSkippedUpdate, NPM_UPDATE_COMMAND, resumableConversationId } from "../../src/commands/update-menu.js";
+import { getPendingUpdateFollow, resetUpdateRelaunchStateForTestingOnly } from "../../src/tui/update-relaunch-state.js";
+import { VERSION } from "../../src/version.js";
 import { detectHomebrew } from "../../src/utils/nativeInstaller/homebrew.js";
 import { findActiveGeneratedWrapper } from "../../src/utils/doctorDiagnostic.js";
 import { runAgenCUpdateCli } from "../../src/bin/update-cli.js";
@@ -85,5 +87,102 @@ describe("update menu", () => {
     expect(hasSkippedUpdate("0.19.1-test")).toBe(true);
     expect(hasSkippedUpdate("0.19.2-test")).toBe(false);
     expect(NPM_UPDATE_COMMAND).toBe("npm install -g @tetsuo-ai/agenc@latest");
+  });
+});
+
+describe("update menu in place", () => {
+  const available = { currentVersion: "0.19.0", latestVersion: "0.19.1-test", updateAvailable: true } as any;
+  const relaunch = vi.fn();
+  const inPlace = (overrides: Record<string, unknown> = {}) => ({
+    relaunch, cwd: "/work", conversationId: "conv-abc123", platform: "darwin" as NodeJS.Platform, ...overrides,
+  });
+  const installed = async (_command: unknown, deps: any) => {
+    deps.stdout(JSON.stringify({ activated: true, latestVersion: "0.19.1-test" }));
+    return 0;
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    relaunch.mockReset();
+    resetUpdateRelaunchStateForTestingOnly();
+    vi.mocked(detectHomebrew).mockReturnValue(false);
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue(null);
+  });
+
+  test("install.sh installs without the daemon step, then comes back in the same conversation", async () => {
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue({ kind: "posix", path: "/home/u/.local/bin/agenc" } as any);
+    vi.mocked(runAgenCUpdateCli).mockImplementation(installed as any);
+    const before = await renderToString(<UpdateMenu checked={available} close={() => {}} inPlace={inPlace()} />);
+    expect(before).toContain("1updatenow");
+    expect(before).toContain("installs,thenrestartsagenconthenewversioninthisconversation.");
+    await renderToString(<UpdateMenu checked={available} close={() => {}} inPlace={inPlace()} />, 180, "1");
+    expect(runAgenCUpdateCli).toHaveBeenCalledWith(
+      expect.objectContaining({ wrapper: "/home/u/.local/bin/agenc", noRestart: true }), expect.anything());
+    expect(relaunch).toHaveBeenCalledWith({
+      fromVersion: VERSION, targetVersion: "0.19.1-test", command: "/home/u/.local/bin/agenc",
+      installType: "install.sh", conversationId: "conv-abc123", cwd: "/work",
+    });
+  });
+
+  test("while a turn runs it offers Update after this turn and follows once idle", async () => {
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue({ kind: "posix", path: "/home/u/.local/bin/agenc" } as any);
+    vi.mocked(runAgenCUpdateCli).mockImplementation(installed as any);
+    const node = <UpdateMenu checked={available} close={() => {}} inPlace={inPlace({ isBusy: () => true })} />;
+    expect(await renderToString(node)).toContain("1updateafterthisturn");
+    const text = await renderToString(node, 180, "1");
+    expect(text).toContain("oncethecurrentworkisdone");
+    expect(relaunch).not.toHaveBeenCalled();
+    expect(getPendingUpdateFollow()).toMatchObject({ when: "idle", request: { targetVersion: "0.19.1-test" } });
+  });
+
+  test("Homebrew runs brew from the menu, confirms the version and relaunches on the opt bin", async () => {
+    vi.mocked(detectHomebrew).mockReturnValue(true);
+    const lines: string[] = [];
+    const deps = {
+      runPackageManager: async (kind: string, onLine: (line: string) => void) => {
+        lines.push(kind); onLine("==> Upgrading tetsuo-ai/agenc/agenc");
+        return { ok: true, code: 0, tail: [] };
+      },
+      execTarget: async () => "/opt/homebrew/opt/agenc/bin/agenc",
+      installedVersion: async () => "0.19.1-test",
+    };
+    const node = <UpdateMenu checked={available} close={() => {}} inPlace={inPlace()} deps={deps} />;
+    expect(await renderToString(node)).toContain("1updatenow");
+    await renderToString(node, 180, "1");
+    expect(lines).toEqual(["Homebrew"]);
+    expect(runAgenCUpdateCli).not.toHaveBeenCalled();
+    expect(relaunch).toHaveBeenCalledWith(expect.objectContaining({
+      targetVersion: "0.19.1-test", command: "/opt/homebrew/opt/agenc/bin/agenc", installType: "Homebrew",
+    }));
+  });
+
+  test("a failed npm install keeps this version and shows npm's message", async () => {
+    const deps = {
+      startedByNpm: async () => true,
+      runPackageManager: async () => ({ ok: false, code: 243, tail: ["npm error code EACCES", "npm error permission denied"] }),
+    };
+    const text = await renderToString(<UpdateMenu checked={available} close={() => {}} inPlace={inPlace()} deps={deps} />, 180, "1");
+    expect(text).toContain("installtype:npm");
+    expect(text).toContain("npminstall-g@tetsuo-ai/agenc@latestdidnotfinish(exit243).agenckeepsrunning");
+    expect(text).toContain("npmerrorcodeeacces");
+    expect(relaunch).not.toHaveBeenCalled();
+  });
+
+  test("Windows keeps the restart message", async () => {
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue({ kind: "cmd", path: "C:\\agenc\\agenc.cmd" } as any);
+    vi.mocked(runAgenCUpdateCli).mockImplementation(installed as any);
+    const text = await renderToString(<UpdateMenu checked={available} close={() => {}} inPlace={inPlace({ platform: "win32" })} />, 180, "1");
+    expect(runAgenCUpdateCli).toHaveBeenCalledWith(expect.not.objectContaining({ noRestart: true }), expect.anything());
+    expect(text).toContain("exitagencandlaunchitagain");
+    expect(relaunch).not.toHaveBeenCalled();
+  });
+
+  test("before the first prompt it relaunches without a conversation", async () => {
+    vi.mocked(findActiveGeneratedWrapper).mockResolvedValue({ kind: "posix", path: "/home/u/.local/bin/agenc" } as any);
+    vi.mocked(runAgenCUpdateCli).mockImplementation(installed as any);
+    await renderToString(<UpdateMenu checked={available} close={() => {}} inPlace={inPlace({ conversationId: "agenc-tui-idle-77" })} />, 180, "1");
+    expect(relaunch).toHaveBeenCalledTimes(1);
+    expect(relaunch.mock.calls[0]![0]).not.toHaveProperty("conversationId");
+    expect(resumableConversationId("agenc-tui-idle-77")).toBeUndefined();
+    expect(resumableConversationId("conv-abc123")).toBe("conv-abc123");
   });
 });

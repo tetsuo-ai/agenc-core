@@ -3860,7 +3860,11 @@ function defaultRestartDaemon(request: UpdateDaemonRestartRequest): Promise<Agen
 /** Run the activated runtime's `daemon restart --when-idle --json`. */
 export function restartDaemonThroughActivatedWrapper(
   request: UpdateDaemonRestartRequest & { readonly wrapperPath: string },
-  options: { readonly timeoutMs?: number } = {},
+  options: {
+    readonly timeoutMs?: number;
+    /** More `restart --when-idle` options, for example a requesting TUI. */
+    readonly extraArgs?: readonly string[];
+  } = {},
 ): Promise<AgenCDaemonRestartOutcome> {
   const toVersion = request.targetVersion;
   return new Promise((resolve) => {
@@ -3882,7 +3886,7 @@ export function restartDaemonThroughActivatedWrapper(
       );
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(request.wrapperPath, ["daemon", "restart", "--when-idle", "--json"], {
+      child = spawn(request.wrapperPath, ["daemon", "restart", "--when-idle", "--json", ...(options.extraArgs ?? [])], {
         cwd: request.agencHome,
         env: {
           ...userRuntimeEnvironment(request.env as NodeJS.ProcessEnv),

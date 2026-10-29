@@ -124,6 +124,12 @@ import {
   clearPendingResumeSessionId,
   setPendingResumeSessionId,
 } from "../pending-resume.js";
+import {
+  consumePendingUpdateNotice,
+  setPendingUpdateRelaunch,
+  type UpdateRelaunchRequest,
+} from "../update-relaunch-state.js";
+import { useUpdateFollow } from "../hooks/useUpdateFollow.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
 import { useInputCapture } from "../keybindings/useKeybinding.js";
 import { clearSharedDoublePressState } from "../hooks/useDoublePress.js";
@@ -2320,6 +2326,27 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       exit();
     },
   );
+  const requestUpdateRelaunchRef = useRef<(request: UpdateRelaunchRequest) => void>(
+    (request) => {
+      clearPendingResumeSessionId();
+      setPendingUpdateRelaunch(request);
+      exit();
+    },
+  );
+  // After an update this TUI says once what happened (or why it stayed).
+  useEffect(() => {
+    const notice = consumePendingUpdateNotice();
+    if (notice === null) return;
+    addNotification({
+      key: "agenc-update",
+      text: notice.text,
+      ...(notice.kind === "error" ? { color: "error" as const } : {}),
+      priority: "high",
+      timeoutMs: 30_000,
+    });
+    // Mount only: the notice is consumed once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
   // 1s tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow owns that
   // tick and reads these refs directly.
@@ -3239,6 +3266,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         requestResumeSession: (sessionId: string) => {
           requestAppExitRef.current(sessionId);
         },
+        requestUpdateRelaunch: (request: UpdateRelaunchRequest) => {
+          requestUpdateRelaunchRef.current(request);
+        },
+        isSessionBusy: () => effectiveInputBusyRef.current,
         requestShowMessageSelector: () => {
           setSelectorNotice(null);
           setIsMessageSelectorVisible(true);
@@ -4395,12 +4426,24 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     elicitation.prompt === null &&
     toolJSX === null &&
     !onboarding.active;
+  const updateSafe = !effectiveInputBusy && input.length === 0 && Object.keys(pastedContents).length === 0 &&
+    toolJSX === null && permissionRequests.length === 0 && elicitation.prompt === null &&
+    !onboarding.active && !showCostDialog && !isMessageSelectorVisible;
   useStartupUpdate({
     configStore: getTuiConfigStore(props.session),
-    safe: !effectiveInputBusy && input.length === 0 && Object.keys(pastedContents).length === 0 &&
-      toolJSX === null && permissionRequests.length === 0 && elicitation.prompt === null &&
-      !onboarding.active && !showCostDialog && !isMessageSelectorVisible,
+    safe: updateSafe,
     setToolJSX,
+    inPlace: {
+      relaunch: (request: UpdateRelaunchRequest) => requestUpdateRelaunchRef.current(request),
+      isBusy: () => effectiveInputBusyRef.current,
+      conversationId: props.session.conversationId,
+      cwd: props.session.sessionConfiguration?.cwd ?? process.cwd(),
+    },
+  });
+  useUpdateFollow({
+    safe: updateSafe,
+    agencHome,
+    relaunch: (request: UpdateRelaunchRequest) => requestUpdateRelaunchRef.current(request),
   });
   const isLocalJSXCommandActive = toolJSX?.isLocalJSXCommand === true;
   const localCommandPopupRef = useRef(toolJSX);
@@ -4743,6 +4786,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [performAppExit, recordAppExitIntent],
   );
   requestAppExitRef.current = requestSafeAppExit;
+  const requestUpdateRelaunch = useCallback(
+    (request: UpdateRelaunchRequest) => {
+      // The same conversation reopens on the new version, so a worktree is
+      // kept and no exit dialog is shown.
+      saveComposerDraftBeforeExit();
+      recordAppExitIntent();
+      clearPendingResumeSessionId();
+      setPendingUpdateRelaunch(request);
+      exit();
+    },
+    [exit, recordAppExitIntent, saveComposerDraftBeforeExit],
+  );
+  requestUpdateRelaunchRef.current = requestUpdateRelaunch;
   const handleExit = useCallback(() => {
     requestSafeAppExit();
   }, [requestSafeAppExit]);

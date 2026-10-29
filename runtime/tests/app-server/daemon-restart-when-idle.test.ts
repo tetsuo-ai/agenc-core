@@ -24,6 +24,7 @@ import {
   agenCCommandLabel,
   agenCRuntimeTreeOf,
   findOtherAgenCRuntimeClients,
+  homebrewAgenCRuntimeRoots,
   listLinuxAgenCProcesses,
   parseAgenCProcessList,
   probeAgenCDaemonIdle,
@@ -34,6 +35,7 @@ import {
   runAgenCDaemonRestartWhenIdleCli,
   writeAgenCDaemonPendingRestart,
   type AgenCDaemonIdleVerdict,
+  type AgenCDaemonRestartRequester,
   type AgenCDaemonRestartState,
   type AgenCDaemonRestartWhenIdleDeps,
   type AgenCProcessEntry,
@@ -276,6 +278,66 @@ describe("daemon restart --when-idle arguments", () => {
       .toEqual({ kind: "error", message: "unknown daemon restart option: --now" });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart"]))
       .toEqual({ kind: "command", action: "restart" });
+  });
+
+  it("parses the requester a TUI passes when it updates itself", () => {
+    expect(parseAgenCDaemonCliArgs([
+      "daemon", "restart", "--when-idle", "--json", "--requester-pid", "4321", "--requester-agent", "conv-abc123",
+    ])).toEqual({ kind: "restart-when-idle", json: true, requesterPid: 4321, requesterAgentId: "conv-abc123" });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--requester-pid", "1"]))
+      .toEqual({ kind: "error", message: "daemon restart --requester-pid needs a process id" });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--requester-pid", "12x"]))
+      .toEqual({ kind: "error", message: "daemon restart --requester-pid needs a process id" });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--requester-pid", "9", "--requester-agent", "../x"]))
+      .toEqual({ kind: "error", message: "daemon restart --requester-agent needs a conversation id" });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--requester-agent", "conv-abc123"]))
+      .toEqual({ kind: "error", message: "daemon restart --requester-agent needs --requester-pid" });
+  });
+});
+
+describe("the requester's own conversation", () => {
+  it("does not hold the restart up by its attachment or its recent activity", () => {
+    const sessions = [
+      { sessionId: "s1", agentId: "conv-mine", status: "waiting", activeAttachmentIds: ["a1"], restorePending: false },
+    ];
+    expect(busyReasonFromSessions(sessions)).toEqual({ idle: false, reason: "1 client attached" });
+    expect(busyReasonFromSessions(sessions, "conv-mine")).toEqual({ idle: true });
+    expect(busyReasonFromSessions(
+      [...sessions, { sessionId: "s2", agentId: "conv-other", status: "waiting", activeAttachmentIds: ["a2"], restorePending: false }],
+      "conv-mine",
+    )).toEqual({ idle: false, reason: "1 client attached" });
+    const now = NOW;
+    const recent = new Date(now - 2_000).toISOString();
+    expect(busyReasonFromAgents([{ agentId: "conv-mine", status: "idle", lastActiveAt: recent }], now, 15_000).idle)
+      .toBe(false);
+    expect(busyReasonFromAgents([{ agentId: "conv-mine", status: "idle", lastActiveAt: recent }], now, 15_000, "conv-mine"))
+      .toEqual({ idle: true });
+    // Work still counts, in the requester's conversation too.
+    expect(busyReasonFromAgents([{ agentId: "conv-mine", status: "running" }], now, 15_000, "conv-mine"))
+      .toEqual({ idle: false, reason: "1 agent working" });
+    expect(busyReasonFromAgents(
+      [{ agentId: "conv-mine", status: "idle" }, { agentId: "conv-other", status: "idle", lastActiveAt: recent }],
+      now, 15_000, "conv-mine",
+    ).idle).toBe(false);
+  });
+
+  it("does not count the requester's process as an older client", () => {
+    const home = "/h/.agenc";
+    const old = `/h/.agenc/bin/agenc-node ${home}/runtime/9.9.8/tree/node_modules/@tetsuo-ai/runtime/bin/agenc`;
+    const entries: AgenCProcessEntry[] = [
+      { pid: 10, ppid: 1, uid: 501, command: old },
+      { pid: 11, ppid: 1, uid: 501, command: old },
+    ];
+    const scan = { entries, selfPid: 99, uid: 501, daemonPid: 50, homeRuntimeRoots: [`${home}/runtime/`] };
+    expect(findOtherAgenCRuntimeClients(scan)).toEqual([10, 11]);
+    expect(findOtherAgenCRuntimeClients({ ...scan, requesterPid: 10 })).toEqual([11]);
+  });
+
+  it("treats a Homebrew keg as this install", () => {
+    expect(homebrewAgenCRuntimeRoots("/opt/homebrew/Cellar/agenc/0.19.26/libexec/node_modules/@tetsuo-ai/runtime"))
+      .toEqual(["/opt/homebrew/Cellar/agenc/", "/opt/homebrew/opt/agenc/"]);
+    expect(homebrewAgenCRuntimeRoots("/h/.agenc/runtime/0.19.26/tree/node_modules/@tetsuo-ai/runtime")).toEqual([]);
+    expect(homebrewAgenCRuntimeRoots(null)).toEqual([]);
   });
 });
 
@@ -687,6 +749,50 @@ describe("restartAgenCDaemonWhenIdle", () => {
     expect(readAgenCDaemonPendingRestart(home)).not.toBeNull();
   });
 
+  it("passes a live requester to every check and keeps it in the pending record", async () => {
+    const seen: Array<AgenCDaemonRestartRequester | undefined> = [];
+    const { deps } = scenario({ verdicts: [{ idle: false, reason: "1 client attached" }] });
+    const requester = { pid: 4321, agentId: "conv-mine" };
+    const outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...deps,
+      requester,
+      probe: async (_host, _expected, live) => {
+        seen.push(live);
+        return { idle: false, reason: "1 client attached" };
+      },
+    });
+    expect(outcome.status).toBe("deferred");
+    expect(seen).toEqual([requester]);
+    expect(readAgenCDaemonPendingRestart(home)?.requester).toEqual(requester);
+    // A requester that has exited counts for nothing.
+    seen.length = 0;
+    await restartAgenCDaemonWhenIdle(testHost(home, { isPidRunning: (pid) => pid !== 4321 }), {}, {
+      ...deps,
+      requester,
+      probe: async (_host, _expected, live) => {
+        seen.push(live);
+        return { idle: false, reason: "1 client attached" };
+      },
+    });
+    expect(seen).toEqual([undefined]);
+  });
+
+  it("owns a daemon that runs from this Homebrew keg", async () => {
+    const { calls, deps } = scenario();
+    const keg = "/opt/homebrew/Cellar/agenc/9.9.8/libexec/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground";
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...deps,
+      daemonCommand: () => `/opt/homebrew/Cellar/agenc/9.9.8/libexec/node ${keg}`,
+      installRuntimeRoots: () => ["/opt/homebrew/Cellar/agenc/", "/opt/homebrew/opt/agenc/"],
+    })).resolves.toMatchObject({ status: "restarted" });
+    expect(calls).toEqual(["probe", "stop", "probe", "shutdown", "start"]);
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...deps,
+      daemonCommand: () => `/opt/homebrew/Cellar/agenc/9.9.8/libexec/node ${keg}`,
+      installRuntimeRoots: () => [],
+    })).resolves.toMatchObject({ status: "skipped" });
+  });
+
   it("restarts an idle daemon through stop and start and confirms the new build", async () => {
     const { calls, deps } = scenario();
     await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, deps)).resolves.toEqual({
@@ -889,6 +995,31 @@ describe("the deferred restart waiter", () => {
     };
     return { calls, deps };
   }
+
+  it("keeps excluding the TUI that asked, from its record, while that TUI runs", async () => {
+    const requester = { pid: 4321, agentId: "conv-mine" };
+    const record = readAgenCDaemonPendingRestart(home)!;
+    writeAgenCDaemonPendingRestart(home, { ...record, requester });
+    const seen: Array<AgenCDaemonRestartRequester | undefined> = [];
+    let requesterRunning = true;
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(
+      testHost(home, { isPidRunning: (pid) => pid !== 4321 || requesterRunning }),
+      token,
+      {},
+      {
+        ...deps,
+        probe: async (_host, _expected, live) => {
+          seen.push(live);
+          // The TUI quits after the first check.
+          requesterRunning = false;
+          return { idle: true };
+        },
+      },
+    )).resolves.toMatchObject({ status: "restarted" });
+    expect(seen[0]).toEqual(requester);
+    expect(seen.slice(1).every((live) => live === undefined)).toBe(true);
+  });
 
   it("restarts only after two idle checks in a row, then removes its record", async () => {
     const { calls, deps } = waiterDeps({

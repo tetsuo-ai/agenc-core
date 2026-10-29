@@ -58,7 +58,9 @@ import { formatAgenCMcpCliHelpText, parseAgenCMcpCliArgs } from "./mcp-cli-args.
 import { formatAgenCDoctorCliHelpText, parseAgenCDoctorCliArgs } from "./doctor-cli-args.js";
 import { formatAgenCOnboardCliHelpText, parseAgenCOnboardCliArgs, readOnboardDaemonStatus, runAgenCOnboardCli } from "./onboard-cli.js";
 import { buildSecurityAuditReport, formatAgenCSecurityCliHelpText, formatSecurityAuditSummaryLine, parseAgenCSecurityCliArgs, runAgenCSecurityCli } from "./security-cli.js";
-import { formatAgenCUpdateCliHelpText, parseAgenCUpdateCliArgs, runAgenCUpdateCli } from "./update-cli.js";
+import { formatAgenCUpdateCliHelpText, parseAgenCUpdateCliArgs, restartDaemonThroughActivatedWrapper, runAgenCUpdateCli } from "./update-cli.js";
+import { runUpdateRelaunch } from "./update-relaunch.js";
+import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
 import { formatAgenCGatewayCliHelpText, parseAgenCGatewayCliArgs, runAgenCGatewayCli } from "./gateway-cli.js";
 import { formatAgenCBudgetCliHelpText, parseAgenCBudgetCliArgs, runAgenCBudgetCli } from "./budget-cli.js";
 import { formatAgenCRunCliHelpText, parseAgenCRunCliArgs, runAgenCRunCli } from "./run-cli.js";
@@ -908,6 +910,9 @@ export async function exitOrResumeAfterTui(
   exitCode: number,
   startupCliFlags?: StartupCliFlags,
 ): Promise<number> {
+  const state = await loadUpdateRelaunchState();
+  const relaunch = state.consumePendingUpdateRelaunch();
+  if (relaunch !== null) return relaunchAfterUpdate(relaunch, state, startupCliFlags);
   const resumeId = await consumePendingResumeSessionId();
   if (resumeId === null) return exitCode;
   try {
@@ -925,6 +930,84 @@ export async function exitOrResumeAfterTui(
   }, startupCliFlags);
 }
 
+
+type UpdateRelaunchStateModule = typeof import("../tui/update-relaunch-state.js");
+
+/** Loaded like pending-resume: one copy shared with the TUI. */
+async function loadUpdateRelaunchState(): Promise<UpdateRelaunchStateModule> {
+  const specifier = "../tui/update-relaunch-state.js";
+  return (await import(specifier)) as UpdateRelaunchStateModule;
+}
+
+/**
+ * The update menu installed a new version and the TUI has exited: move the
+ * daemon, then replace this process with the new version in the same
+ * conversation, or reopen this version with the reason.
+ */
+async function relaunchAfterUpdate(
+  request: import("../tui/update-relaunch-state.js").UpdateRelaunchRequest,
+  state: UpdateRelaunchStateModule,
+  startupCliFlags?: StartupCliFlags,
+): Promise<number> {
+  const agencHome = resolveAgencHome(process.env);
+  const execve = (process as unknown as {
+    execve?: (file: string, args: readonly string[], env: NodeJS.ProcessEnv) => never;
+  }).execve;
+  return runUpdateRelaunch(request, {
+    pid: process.pid,
+    platform: process.platform,
+    env: userRuntimeEnvironment(process.env),
+    runDaemonStep: (current, extraArgs) => restartDaemonThroughActivatedWrapper({
+      wrapperPath: current.command,
+      agencHome,
+      env: process.env,
+      targetVersion: current.targetVersion,
+    }, { extraArgs }),
+    execve: (file, args, env) => {
+      if (execve === undefined) throw new Error("this Node cannot replace its process");
+      execve(file, args, env);
+    },
+    chdir: (cwd) => process.chdir(cwd),
+    reopen: async (current, notice, follow) => {
+      state.setPendingUpdateNotice(notice);
+      state.setPendingUpdateFollow(follow);
+      if (current.conversationId !== undefined) {
+        try {
+          return await daemonCliDeps().resumeTui({ resumeId: current.conversationId }, startupCliFlags, {
+            throwOnOpenFailure: true,
+          });
+        } catch (error) {
+          if (!(error instanceof ResumeTuiOpenError)) throw error;
+        }
+      }
+      return bootTUIEntry(current.conversationId === undefined ? {} : {
+        resumeFailureMessage: `${notice.text} Reopen the conversation with /resume.`,
+      }, startupCliFlags);
+    },
+    markerName: state.AGENC_UPDATE_RELAUNCH_ENV,
+    encodeMarker: state.encodeUpdateRelaunchMarker,
+    write: (line) => process.stderr.write(`${line}\n`),
+  });
+}
+
+/**
+ * A process the update relaunched reopens its conversation; if that fails it
+ * starts a fresh TUI with the reason instead of exiting to the shell.
+ */
+async function resumeTuiAfterUpdate(
+  args: ResumeTUIArgs,
+  startupCliFlags: StartupCliFlags,
+  version: string,
+): Promise<number> {
+  try {
+    return await resumeTUIEntry(args, startupCliFlags, { throwOnOpenFailure: true });
+  } catch (error) {
+    if (!(error instanceof ResumeTuiOpenError)) throw error;
+    return bootTUIEntry({
+      resumeFailureMessage: `Updated to AgenC ${version}, but the conversation could not be reopened (${error.message}). Reopen it with /resume.`,
+    }, startupCliFlags);
+  }
+}
 
 export async function resolveAttachTargetTrustRoot(
   client: Awaited<
@@ -4591,8 +4674,19 @@ function shouldLaunchTuiAfterLogin(): boolean {
 }
 
 
-function runDefaultAgenCCliRoute(argv: readonly string[]): Promise<number> {
-  return runDefaultCliRoute(argv, { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI });
+async function runDefaultAgenCCliRoute(argv: readonly string[]): Promise<number> {
+  // Taken before anything can spawn: the marker must not reach a daemon.
+  const relaunchedVersion = process.env.AGENC_UPDATE_RELAUNCH === undefined
+    ? null
+    : (await loadUpdateRelaunchState()).takeUpdateRelaunchMarker(process.env);
+  return runDefaultCliRoute(argv, {
+    bootTUIEntry,
+    resumeTUIEntry: relaunchedVersion === null
+      ? resumeTUIEntry
+      : (args, flags) => resumeTuiAfterUpdate(args, flags, relaunchedVersion),
+    continueTUIEntry,
+    oneShotCLI,
+  });
 }
 
 

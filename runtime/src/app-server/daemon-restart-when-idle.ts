@@ -167,8 +167,21 @@ function plural(count: number, one: string, many: string): string {
 
 /** The fields of an `agent.list` entry the check reads. */
 export interface AgenCDaemonProbeAgent {
+  readonly agentId?: string;
   readonly status: string;
   readonly lastActiveAt?: string;
+}
+
+/**
+ * The client that asked for the restart (a TUI updating itself). Its own
+ * conversation does not hold the restart up: neither its attachment nor its
+ * recent activity counts, and neither does its process. Work still does: a
+ * running turn, sub-agent, goal or tool keeps its daemon busy.
+ */
+export interface AgenCDaemonRestartRequester {
+  readonly pid: number;
+  /** The requester's conversation (the agent id it would resume). */
+  readonly agentId?: string;
 }
 
 /** Agents: any non-idle status is work; so is activity within the quiet window. */
@@ -176,11 +189,13 @@ export function busyReasonFromAgents(
   agents: readonly AgenCDaemonProbeAgent[],
   nowMs: number,
   quietMs: number,
+  requesterAgentId?: string,
 ): AgenCDaemonIdleVerdict {
   const working = agents.filter((agent) => agent.status !== "idle").length;
   if (working > 0) return busy(`${plural(working, "agent", "agents")} working`);
   let latest = Number.NEGATIVE_INFINITY;
   for (const agent of agents) {
+    if (requesterAgentId !== undefined && agent.agentId === requesterAgentId) continue;
     const at = agent.lastActiveAt === undefined ? Number.NaN : Date.parse(agent.lastActiveAt);
     if (Number.isFinite(at) && at > latest) latest = at;
   }
@@ -194,6 +209,7 @@ export function busyReasonFromAgents(
 /** The fields of a `session.list` entry the check reads. */
 export interface AgenCDaemonProbeSession {
   readonly sessionId: string;
+  readonly agentId?: string;
   readonly status: string;
   readonly activeAttachmentIds?: readonly string[];
   /** Restore still pending: naming it in a request would restore it. */
@@ -203,9 +219,13 @@ export interface AgenCDaemonProbeSession {
 /** Any attached client (TUI, `agenc -p`, Desktop, SDK) keeps the daemon busy. */
 export function busyReasonFromSessions(
   sessions: readonly AgenCDaemonProbeSession[],
+  requesterAgentId?: string,
 ): AgenCDaemonIdleVerdict {
   const attached = sessions.reduce(
-    (count, session) => count + (session.activeAttachmentIds?.length ?? 0),
+    (count, session) =>
+      requesterAgentId !== undefined && session.agentId === requesterAgentId
+        ? count
+        : count + (session.activeAttachmentIds?.length ?? 0),
     0,
   );
   return attached > 0
@@ -295,6 +315,8 @@ export interface AgenCRuntimeClientScan {
    * processes that run from it are not older clients.
    */
   readonly ownRuntimeTree?: string;
+  /** The TUI that asked for the restart; it follows on its own. */
+  readonly requesterPid?: number;
 }
 
 function ancestorsOf(pid: number, parents: ReadonlyMap<number, number>): Set<number> {
@@ -343,6 +365,7 @@ export function findOtherAgenCRuntimeClients(scan: AgenCRuntimeClientScan): numb
     .filter((entry) =>
       entry.uid === scan.uid &&
       entry.pid !== scan.selfPid &&
+      entry.pid !== scan.requesterPid &&
       entry.pid !== scan.daemonPid &&
       !ancestors.has(entry.pid) &&
       !daemonDescendants.has(entry.pid) &&
@@ -440,6 +463,21 @@ export function listAgenCProcesses(
   return result.status === 0 && typeof result.stdout === "string"
     ? parseAgenCProcessList(result.stdout)
     : null;
+}
+
+/**
+ * A Homebrew keg keeps its runtime in `<prefix>/Cellar/agenc/<version>/`, and
+ * its service runs `<prefix>/opt/agenc/`. When this runtime is such a keg,
+ * those are this install's runtime roots too, next to the home's.
+ */
+export function homebrewAgenCRuntimeRoots(packageRoot: string | null): string[] {
+  if (packageRoot === null) return [];
+  const match = /^(.*)\/Cellar\/agenc\/[^/]+\//.exec(`${packageRoot}/`);
+  return match === null ? [] : [`${match[1]}/Cellar/agenc/`, `${match[1]}/opt/agenc/`];
+}
+
+function defaultInstallRuntimeRoots(): string[] {
+  return homebrewAgenCRuntimeRoots(resolveRuntimePackageRootFromUrl(import.meta.url));
 }
 
 /** Spellings of `<home>/runtime/` that a process command line can carry. */
@@ -697,7 +735,9 @@ function toProbeAgent(value: JsonValue): AgenCDaemonProbeAgent & {
 } {
   const agent = objectOf(value) ?? {};
   const lastActiveAt = stringOf(agent.lastActiveAt);
+  const agentId = stringOf(agent.agentId);
   return {
+    ...(agentId === undefined ? {} : { agentId }),
     // An entry without a status cannot be shown to be idle.
     status: stringOf(agent.status) ?? "unknown",
     ...(lastActiveAt === undefined ? {} : { lastActiveAt }),
@@ -710,8 +750,10 @@ function toProbeAgent(value: JsonValue): AgenCDaemonProbeAgent & {
 function toProbeSession(value: JsonValue): AgenCDaemonProbeSession {
   const session = objectOf(value) ?? {};
   const recovery = objectOf(objectOf(session.metadata)?.recovery);
+  const agentId = stringOf(session.agentId);
   return {
     sessionId: stringOf(session.sessionId) ?? "",
+    ...(agentId === undefined ? {} : { agentId }),
     status: stringOf(session.status) ?? "unknown",
     activeAttachmentIds: arrayOf(session.activeAttachmentIds).filter(
       (id): id is string => typeof id === "string",
@@ -730,6 +772,10 @@ export interface AgenCDaemonProbeOptions {
   readonly uid?: number;
   /** This runtime's install tree; see {@link AgenCRuntimeClientScan}. */
   readonly ownRuntimeTree?: string;
+  /** A live requester; see {@link AgenCDaemonRestartRequester}. */
+  readonly requester?: AgenCDaemonRestartRequester;
+  /** Runtime roots of this install besides the home's (a Homebrew keg). */
+  readonly installRuntimeRoots?: readonly string[];
 }
 
 /**
@@ -764,6 +810,7 @@ async function probeAgenCDaemonIdleOrThrow(
   const nowMs = options.nowMs ?? Date.now;
   const quietMs = options.quietMs ?? AGENC_DAEMON_RESTART_QUIET_MS;
   const selfPid = options.selfPid ?? host.pid;
+  const requesterAgentId = options.requester?.agentId;
 
   // 1. Negotiate the newest protocol both sides speak.
   const first = await request(host, expected.instanceId, "1.0.0", []);
@@ -792,9 +839,9 @@ async function probeAgenCDaemonIdleOrThrow(
   let sessionCursor = stringOf(core.results[2]?.nextCursor);
   // Attachments first: an open TUI reads as a client, which is what a person
   // sees, even though its unused session also lists its agent as running.
-  let verdict = busyReasonFromSessions(sessions);
+  let verdict = busyReasonFromSessions(sessions, requesterAgentId);
   if (!verdict.idle) return verdict;
-  verdict = busyReasonFromAgents(agents, nowMs(), quietMs);
+  verdict = busyReasonFromAgents(agents, nowMs(), quietMs, requesterAgentId);
   if (!verdict.idle) return verdict;
   for (let page = 1; agentCursor !== undefined; page += 1) {
     if (page >= PROBE_MAX_PAGES) return busy("too many agents to check");
@@ -802,7 +849,7 @@ async function probeAgenCDaemonIdleOrThrow(
       { method: "agent.list", params: { limit: AGENT_LIST_PAGE_LIMIT, cursor: agentCursor } },
     ]);
     const pageAgents = arrayOf(next.results[0]?.agents).map(toProbeAgent);
-    verdict = busyReasonFromAgents(pageAgents, nowMs(), quietMs);
+    verdict = busyReasonFromAgents(pageAgents, nowMs(), quietMs, requesterAgentId);
     if (!verdict.idle) return verdict;
     agents.push(...pageAgents);
     agentCursor = stringOf(next.results[0]?.nextCursor);
@@ -820,7 +867,7 @@ async function probeAgenCDaemonIdleOrThrow(
       { method: "session.list", params: { limit: SESSION_LIST_PAGE_LIMIT, cursor: sessionCursor } },
     ]);
     const pageSessions = arrayOf(next.results[0]?.sessions).map(toProbeSession);
-    verdict = busyReasonFromSessions(pageSessions);
+    verdict = busyReasonFromSessions(pageSessions, requesterAgentId);
     if (!verdict.idle) return verdict;
     sessions.push(...pageSessions);
     sessionCursor = stringOf(next.results[0]?.nextCursor);
@@ -919,8 +966,9 @@ async function probeAgenCDaemonIdleOrThrow(
     selfPid,
     uid: options.uid ?? process.getuid?.() ?? -1,
     daemonPid: expected.pid,
-    homeRuntimeRoots: agenCHomeRuntimeRoots(daemonHome),
+    homeRuntimeRoots: [...agenCHomeRuntimeRoots(daemonHome), ...(options.installRuntimeRoots ?? [])],
     ...(options.ownRuntimeTree === undefined ? {} : { ownRuntimeTree: options.ownRuntimeTree }),
+    ...(options.requester === undefined ? {} : { requesterPid: options.requester.pid }),
   });
   if (others.length > 0) {
     const first = processes.find((entry) => entry.pid === others[0]);
@@ -1049,6 +1097,15 @@ export interface AgenCDaemonPendingRestart {
   /** The daemon instance this restart replaces; any other instance ends it. */
   readonly daemon: { readonly pid: number; readonly instanceId: string };
   readonly target: AgenCRuntimeBuild;
+  /** The TUI that asked; its own conversation never holds the restart up. */
+  readonly requester?: AgenCDaemonRestartRequester;
+}
+
+function requesterOf(value: unknown): AgenCDaemonRestartRequester | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { pid, agentId } = value as { pid?: unknown; agentId?: unknown };
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1) return undefined;
+  return typeof agentId === "string" && agentId.length > 0 ? { pid, agentId } : { pid };
 }
 
 export function resolveAgenCDaemonPendingRestartPath(daemonHome: string): string {
@@ -1075,7 +1132,9 @@ export function readAgenCDaemonPendingRestart(
     ) {
       return null;
     }
-    return value as AgenCDaemonPendingRestart;
+    const { requester, ...rest } = value as AgenCDaemonPendingRestart;
+    const sane = requesterOf(requester);
+    return { ...rest, ...(sane === undefined ? {} : { requester: sane }) };
   } catch {
     return null;
   }
@@ -1139,6 +1198,7 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   readonly probe?: (
     host: AgenCDaemonCliHost,
     expected: AgenCDaemonInstanceIdentity,
+    requester?: AgenCDaemonRestartRequester,
   ) => Promise<AgenCDaemonIdleVerdict>;
   /** The daemon process's command line, for the ownership check. */
   readonly daemonCommand?: (pid: number) => string | null;
@@ -1163,6 +1223,10 @@ export interface AgenCDaemonRestartWhenIdleDeps {
    * older runtime over a newer daemon.
    */
   readonly onlyOlderDaemon?: boolean;
+  /** The TUI that asked for the restart, while it runs. */
+  readonly requester?: AgenCDaemonRestartRequester;
+  /** Runtime roots of this install besides the home's (a Homebrew keg). */
+  readonly installRuntimeRoots?: () => readonly string[];
 }
 
 interface RestartContext {
@@ -1172,6 +1236,8 @@ interface RestartContext {
   readonly daemonHome: string;
   readonly build: AgenCRuntimeBuild;
   readonly now: () => Date;
+  /** Set from the deps, and by the waiter from its record. */
+  readonly requester: { current: AgenCDaemonRestartRequester | undefined };
 }
 
 function defaultOwnBuild(): AgenCRuntimeBuild | null {
@@ -1218,13 +1284,29 @@ function probeFor(ctx: RestartContext): (
 ) => Promise<AgenCDaemonIdleVerdict> {
   if (ctx.deps.probe !== undefined) {
     const probe = ctx.deps.probe;
-    return (expected) => probe(ctx.host, expected);
+    return (expected) => probe(ctx.host, expected, liveRequester(ctx));
   }
   const ownRuntimeTree = (ctx.deps.ownRuntimeTree ?? defaultOwnRuntimeTree)();
-  return (expected) =>
-    probeAgenCDaemonIdle(ctx.host, expected, {
+  const installRuntimeRoots = (ctx.deps.installRuntimeRoots ?? defaultInstallRuntimeRoots)();
+  return (expected) => {
+    const requester = liveRequester(ctx);
+    return probeAgenCDaemonIdle(ctx.host, expected, {
       ...(ownRuntimeTree === undefined ? {} : { ownRuntimeTree }),
+      ...(installRuntimeRoots.length === 0 ? {} : { installRuntimeRoots }),
+      ...(requester === undefined ? {} : { requester }),
     });
+  };
+}
+
+/** The requester counts only while its process runs. */
+function liveRequester(ctx: RestartContext): AgenCDaemonRestartRequester | undefined {
+  const requester = ctx.requester.current;
+  if (requester === undefined) return undefined;
+  try {
+    return ctx.host.isPidRunning(requester.pid) ? requester : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 type RestartAttempt =
@@ -1377,7 +1459,10 @@ async function preflight(ctx: RestartContext): Promise<Preflight> {
   // Only a daemon this install started: never one the Desktop app or a
   // development checkout runs from its own runtime, even in a shared home.
   const command = (ctx.deps.daemonCommand ?? readAgenCProcessCommand)(identity.pid);
-  const roots = agenCHomeRuntimeRoots(ctx.daemonHome);
+  const roots = [
+    ...agenCHomeRuntimeRoots(ctx.daemonHome),
+    ...(ctx.deps.installRuntimeRoots ?? defaultInstallRuntimeRoots)(),
+  ];
   if (command === null) {
     return { kind: "foreign", reason: "the daemon process could not be inspected", identity };
   }
@@ -1479,6 +1564,7 @@ function deferRestartLocked(
       notAfter,
       daemon: { pid: identity.pid, instanceId: identity.instanceId },
       target: ctx.build,
+      ...(ctx.requester.current === undefined ? {} : { requester: ctx.requester.current }),
     });
     startLog(
       ctx.daemonHome,
@@ -1534,6 +1620,7 @@ function restartContext(
     daemonHome: resolveAgenCDaemonHome(host.env, host.userHome),
     build,
     now: deps.now ?? (() => new Date()),
+    requester: { current: deps.requester },
   };
 }
 
@@ -1609,6 +1696,7 @@ export async function runAgenCDaemonRestartWaiter(
     if (record === null || record.token !== token) {
       return finish({ status: "skipped", reason: "a newer update replaced this restart", toVersion: ctx.build.runtimeVersion }, false);
     }
+    ctx.requester.current = record.requester;
     const nowMs = ctx.now().getTime();
     const notAfter = Date.parse(record.notAfter);
     if (!Number.isFinite(notAfter) || nowMs > notAfter || nowMs > hardDeadline) {
@@ -1689,8 +1777,18 @@ export async function runAgenCDaemonRestartWhenIdleCli(
     }
   }
   let outcome: AgenCDaemonRestartOutcome;
+  const requester: AgenCDaemonRestartRequester | undefined = command.requesterPid === undefined
+    ? undefined
+    : {
+        pid: command.requesterPid,
+        ...(command.requesterAgentId === undefined ? {} : { agentId: command.requesterAgentId }),
+      };
   try {
-    outcome = await restartAgenCDaemonWhenIdle(host, options, deps);
+    outcome = await restartAgenCDaemonWhenIdle(
+      host,
+      options,
+      requester === undefined ? deps : { ...deps, requester },
+    );
   } catch (error) {
     outcome = { status: "failed", reason: formatCleanupError(error) };
   }
