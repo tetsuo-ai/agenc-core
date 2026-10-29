@@ -289,7 +289,10 @@ export function recoverDaemonStateOnStartup(
       // Session listener is still open, then writes the terminal tail, then
       // projects agent_runs/spawn edges. A crash between the first two phases
       // leaves an admission cancel-lock but must never restore runnable work.
-      repairAdmissionCancelledAgentRuns(driver);
+      // A scoped recovery runs while the daemon serves, so it repairs only
+      // the saved runs it was given: a live run inside that same window is
+      // still being cancelled by its own writer.
+      repairAdmissionCancelledAgentRuns(driver, options.runIds);
       // Crash-mid-cascade repair MUST precede the recoverable-run load: a
       // surviving descendant of a cancelled parent is finished off here so
       // the restore loop never resurrects it.
@@ -392,7 +395,10 @@ function loadStartupRecoveryExclusions(
   });
 }
 
-function repairAdmissionCancelledAgentRuns(driver: StateSqliteDriver): void {
+function repairAdmissionCancelledAgentRuns(
+  driver: StateSqliteDriver,
+  runIds?: readonly string[],
+): void {
   const rows = driver
     .prepareState<
       unknown[],
@@ -407,10 +413,15 @@ function repairAdmissionCancelledAgentRuns(driver: StateSqliteDriver): void {
        JOIN execution_admission_cancellations AS cancellation
          ON cancellation.run_id = runs.id
        WHERE runs.status IN (${sqlPlaceholders(RECOVERABLE_AGENT_RUN_STATUSES.length)})
+         ${runIds !== undefined ? `AND runs.id IN (${sqlPlaceholders(runIds.length)})` : ""}
        ORDER BY cancellation.cancelled_at ASC, runs.id ASC
        LIMIT ?`,
     )
-    .all(...RECOVERABLE_AGENT_RUN_STATUSES, MAX_ADMISSION_CANCEL_REPAIRS + 1);
+    .all(
+      ...RECOVERABLE_AGENT_RUN_STATUSES,
+      ...(runIds ?? []),
+      MAX_ADMISSION_CANCEL_REPAIRS + 1,
+    );
   if (rows.length > MAX_ADMISSION_CANCEL_REPAIRS) {
     throw new Error(
       `daemon startup admission-cancellation repair exceeds ${MAX_ADMISSION_CANCEL_REPAIRS} runs`,

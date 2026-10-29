@@ -111,6 +111,30 @@ describe("recoverDaemonStateOnStartup", () => {
     expect(agentRunStatus("run-admission-cancel-crash")).toBe("cancelled");
   });
 
+  it("scoped recovery repairs only the saved runs it names, never a live run mid-cancellation", () => {
+    // An on-demand daemon recovers a saved run while it serves live ones. A
+    // live run inside its two-phase cancellation holds an admission cancel
+    // lock with a running row until its own writer projects the terminal.
+    for (const id of ["run-saved-cancel-crash", "run-live-cancelling"]) {
+      insertAgentRun({ id, objective: id, status: "running", currentSessionId: id });
+      driver
+        .prepareState(
+          `INSERT INTO execution_admission_cancellations (
+             run_id, reason, cancelled_at
+           ) VALUES (?, ?, ?)`,
+        )
+        .run(id, "operator", "2026-05-01T00:06:00.000Z");
+    }
+
+    const report = recoverDaemonStateOnStartup(driver, {
+      runIds: ["run-saved-cancel-crash"],
+    });
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(agentRunStatus("run-saved-cancel-crash")).toBe("cancelled");
+    expect(agentRunStatus("run-live-cancelling")).toBe("running");
+  });
+
   // Review P1-7: desktop run.status/run.replay on a live run hit the writer's
   // rollout lease, persisted a source_not_quiescent deferral, and that active
   // row excluded the run from recovery at the next daemon start ("pending

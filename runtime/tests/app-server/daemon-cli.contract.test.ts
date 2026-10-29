@@ -6346,6 +6346,153 @@ snapshot_max_bytes = 64
     }
   });
 
+  it("on demand, never restores runner authority for a saved run whose journal ends in a cancellation request", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const runId = "run-cancel-request-on-demand";
+    const sessionId = "session-cancel-request-on-demand";
+    const rolloutPath = seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId, sessionId });
+    writeFileSync(rolloutPath, `${JSON.stringify({
+      type: "event_msg",
+      payload: {
+        eventId: `run-cancel-request:${runId}:1`, id: `run-cancel-request:${runId}:1`, seq: 2,
+        msg: { type: "run_cancel_requested", payload: { runId, epoch: 1, reason: "operator", requestedAt: "2026-05-01T00:07:00.000Z" } },
+      },
+    })}\n`, { flag: "a" });
+    const restoreAgent = vi.fn(async () => true);
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess,
+      runner: { startAgent: async () => { throw new Error("not used"); }, restoreAgent },
+    });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      // The canonical journal is read when a request names the session, and
+      // it proves the run was cancelled: nothing is published or restored.
+      await client.request("agent.attach", { agentId: runId, clientId: "cancel-proof" }).catch(() => undefined);
+      expect(readAgentRunStatus(agencHome, process.cwd(), runId)).toBe("cancelled");
+      expect(restoreAgent).not.toHaveBeenCalled();
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true, restoringSessions: 0 });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("on demand, reconciles a saved session's stale tool calls before attach and reports them", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(), runId: "run-poison-on-demand", sessionId: "session-poison-on-demand",
+      toolCallId: "tool-poison-on-demand", toolName: "Write",
+      toolArgs: { file_path: "a.txt", content: "changed" }, recoveryCategory: "side-effecting",
+    });
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(), runId: "run-cancel-on-demand", sessionId: "session-cancel-on-demand",
+      toolCallId: "tool-cancel-on-demand", toolName: "AskUserQuestion",
+      toolArgs: { questions: [] }, recoveryCategory: "interactive",
+    });
+    const runner: AgenCBackgroundAgentRunner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: (async (options) => {
+        const conversationId = options.conversationId ?? "daemon-recovery";
+        const session = createRecoveredSession(
+          conversationId,
+          new PermissionModeRegistry(createEmptyToolPermissionContext()),
+          {
+            runtimeOptions: options.runtimeOptions,
+            rolloutStore: openRecoveredRolloutStore(agencHome, options),
+            enableDurableClose: true,
+            ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+          },
+        );
+        return session.createBootstrap();
+      }) as AgenCBootstrapFunction,
+      ensureAgentControl: (() => ({
+        control: {
+          sendInput: async () => {},
+          shutdown: async () => {},
+          liveThreadSpawnChildren: () => new Map(),
+          openThreadSpawnChildren: () => new Map(),
+        },
+        registry: {},
+      })) as AgenCEnsureAgentControlFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const running = runDaemon({ kind: "command", action: "run" }, { host, io, signalProcess, runner });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      // Nothing is classified before a request names the session.
+      expect(io.stderrText()).not.toContain("stale in-flight tool call(s)");
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      await expect(client.request("agent.attach", { agentId: "run-poison-on-demand", clientId: "poison" }))
+        .resolves.toMatchObject({
+          agentId: "run-poison-on-demand",
+          sessions: [{
+            sessionId: "session-poison-on-demand",
+            metadata: { recovery: { snapshot: { recoveredToolCalls: [{
+              toolCallId: "tool-poison-on-demand", statusAfter: "poisoned",
+              recoveryCategory: "side-effecting", recoveryAction: "poison",
+            }] } } },
+          }],
+        });
+      // Opening the project reconciles its whole saved generation once.
+      expect(io.stderrText()).toContain(
+        "daemon recovery processed 2 stale in-flight tool call(s): replay=0, poison=1, cancel=1",
+      );
+      await expect(client.request("agent.attach", { agentId: "run-cancel-on-demand", clientId: "cancel" }))
+        .resolves.toMatchObject({
+          agentId: "run-cancel-on-demand",
+          sessions: [{
+            sessionId: "session-cancel-on-demand",
+            metadata: { recovery: { snapshot: { recoveredToolCalls: [{
+              toolCallId: "tool-cancel-on-demand", statusAfter: "recovery_cancelled",
+              recoveryCategory: "interactive", recoveryAction: "cancel",
+            }] } } },
+          }],
+        });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("on demand, reports unopened saved sessions at shutdown as kept on disk", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    for (const id of ["kept-a", "kept-b"]) {
+      seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: id, sessionId: `session-${id}` });
+    }
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess,
+      runner: { startAgent: async () => { throw new Error("not used"); }, restoreAgent: vi.fn(async () => true) },
+    });
+    await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    expect(io.stderrText()).toContain(
+      "agenc: daemon shutdown left 2 of 2 saved session(s) unopened; they stay on disk and reopen when requested",
+    );
+    expect(io.stderrText()).not.toContain("will be at the next start");
+    expect(readSnapshotTimes(agencHome, process.cwd(), "session-kept-a")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("foreground daemon advertises readiness once its state is recovered and restores sessions after", async () => {
     const agencHome = await tempAgencHome();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-daemon-other-cwd-"));

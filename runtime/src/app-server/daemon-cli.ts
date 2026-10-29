@@ -1892,7 +1892,10 @@ async function runAgenCDaemonForegroundLocked(
         // The daemon serves from here on. Requests can now reopen saved
         // sessions through the bounded restore gate.
         void startupRestores.settled.then((summary) => {
-          reportStartupSessionRestoreSummary(host, io, startupStartedAt, summary);
+          reportStartupSessionRestoreSummary(
+            host, io, startupStartedAt, summary,
+            options.startupRestoreMode !== "background",
+          );
           if (summary.total > 0 && summary.abandoned === 0 && !shuttingDown) {
             resumeOpenWorkflows();
           }
@@ -3323,6 +3326,7 @@ function reportStartupSessionRestoreSummary(
   io: AgenCDaemonCliIo,
   startupStartedAt: number,
   summary: StartupSessionRestoreSummary,
+  onDemand: boolean,
 ): void {
   if (summary.abandoned > 0) {
     writeAgenCDaemonStartupDebug(
@@ -3331,9 +3335,14 @@ function reportStartupSessionRestoreSummary(
       startupStartedAt,
       "startup session restore stopped",
     );
+    // On demand, a saved session nobody asked for is expected to stay on
+    // disk; only the background warmup promised to restore every one.
     io.stderr.write(
-      `agenc: daemon shutdown stopped restoring the sessions open at its last shutdown; ` +
-        `${summary.abandoned} of ${summary.total} were not restored and will be at the next start\n`,
+      onDemand
+        ? `agenc: daemon shutdown left ${summary.abandoned} of ${summary.total} saved session(s) ` +
+            `unopened; they stay on disk and reopen when requested\n`
+        : `agenc: daemon shutdown stopped restoring the sessions open at its last shutdown; ` +
+            `${summary.abandoned} of ${summary.total} were not restored and will be at the next start\n`,
     );
     return;
   }
