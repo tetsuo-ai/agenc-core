@@ -312,7 +312,9 @@ it("authenticates an older daemon with control1.0 before session negotiation", a
 
 it("takes an older real Unix peer through canonical build-skew shutdown and replacement", async () => {
   const f = await fixture(); f.behavior.maxMinor = 28;
-  const currentBuild = { runtimeVersion: "new", commit: "new-commit", buildTime: "later" };
+  // Only a daemon build older than this client's is replaced.
+  Object.assign(f.identity, { runtimeVersion: "0.19.24", buildTime: "2026-10-01T00:00:00.000Z" }); f.record();
+  const currentBuild = { runtimeVersion: "0.19.25", commit: "new-commit", buildTime: "2026-10-20T00:00:00.000Z" };
   let running = true;
   const shutdowns: unknown[] = [];
   Object.assign(f.host, {
@@ -336,4 +338,28 @@ it("takes an older real Unix peer through canonical build-skew shutdown and repl
   await client.request("agent.create", { objective: "test" });
   expect(f.messages.at(-2)?.protocolVersion).toBe(AGENC_DAEMON_PROTOCOL_VERSION);
   expect(f.messages.at(-1)?.method).toBe("agent.create");
+});
+
+it("keeps a newer real Unix peer when this client is older, and uses it", async () => {
+  const f = await fixture();
+  Object.assign(f.identity, { instanceId: "newer-instance", runtimeVersion: "0.19.26", buildTime: "2026-10-28T00:00:00.000Z" }); f.record();
+  Object.assign(f.host, {
+    readCurrentRuntimeBuild: () => ({ runtimeVersion: "0.19.25", commit: "older-commit", buildTime: "2026-10-20T00:00:00.000Z" }),
+  });
+  const shutdowns: unknown[] = [];
+  const stderr: string[] = [];
+  const io = {
+    stdout: { write: () => true },
+    stderr: { write: (text: string | Uint8Array) => { stderr.push(String(text)); return true; } },
+  };
+  // The fixture host throws on any spawn or signal, so neither can happen here.
+  await expect(f.outer({ io, requestDaemonShutdown: async expected => { shutdowns.push({ ...expected }); } }))
+    .resolves.toMatchObject({ status: "already-running", pid: 5200 });
+  expect(shutdowns).toEqual([]);
+  expect(stderr.join("")).toContain("the daemon runs AgenC 0.19.26 and this agenc is 0.19.25, so the daemon keeps running.");
+  await f.scope.ensureDaemonReady(f.env)();
+  const client = await f.scope.createConnectedTuiClient({ env: f.env });
+  await expect(client.request("agent.create", { objective: "test" })).resolves.toMatchObject({ agentId: "agent" });
+  await client.close();
+  expect(shutdowns).toEqual([]);
 });

@@ -56,6 +56,12 @@ import {
   isAgenCWindowsNamedPipePath,
 } from "./transport/unix-socket.js";
 import { DAEMON_AGENT_HARD_STOP_TIMEOUT_MS, DAEMON_AGENT_STOP_TIMEOUT_MS } from "./operation-deadline.js";
+import {
+  compareAgenCRuntimeBuilds,
+  formatKeptNewerDaemonNotice,
+  sameAgenCRuntimeBuild,
+  type AgenCRuntimeBuild,
+} from "./daemon-build-order.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
@@ -108,6 +114,19 @@ const AGENC_DAEMON_UNBOUND_EXIT_WAIT_MS = 30_000;
  */
 const AGENC_DAEMON_AUTOSTART_MAX_RESTART_CYCLES = 3;
 const AGENC_DAEMON_AUTOSTART_RESTART_BACKOFF_MS = [250, 1_000, 4_000] as const;
+
+/** Daemon instances this process already said it keeps; one notice each. */
+const keptNewerDaemonNotices = new Set<string>();
+
+function reportKeptNewerDaemon(
+  io: AgenCDaemonCliIo,
+  daemon: AgenCDaemonInstanceIdentity,
+  client: AgenCRuntimeBuild,
+): void {
+  if (keptNewerDaemonNotices.has(daemon.instanceId)) return;
+  keptNewerDaemonNotices.add(daemon.instanceId);
+  io.stderr.write(`${formatKeptNewerDaemonNotice(daemon, client)}\n`);
+}
 
 export interface AgenCDaemonConnectionTarget {
   readonly pid: number;
@@ -631,12 +650,23 @@ async function ensureAgenCDaemonAutostartCycle(
       : runtimeRoot !== null
         ? readDistVersion(runtimeRoot)
         : null;
+    // Never stop a daemon newer than this client: an update restarted it
+    // while this older client kept running, and stopping it would start this
+    // client's older runtime in its place. A daemon whose order cannot be told
+    // keeps running too. An older daemon, or the same version and build time
+    // from another commit, is replaced as before.
+    const daemonOrder = currentVersion === null
+      ? undefined
+      : compareAgenCRuntimeBuilds(verifiedInstance.identity, currentVersion);
     if (
       currentVersion !== null &&
-      (verifiedInstance.identity.runtimeVersion !==
-        currentVersion.runtimeVersion ||
-        verifiedInstance.identity.commit !== currentVersion.commit ||
-        verifiedInstance.identity.buildTime !== currentVersion.buildTime)
+      !sameAgenCRuntimeBuild(verifiedInstance.identity, currentVersion) &&
+      (daemonOrder === 1 || daemonOrder === undefined)
+    ) {
+      reportKeptNewerDaemon(io, verifiedInstance.identity, currentVersion);
+    } else if (
+      currentVersion !== null &&
+      !sameAgenCRuntimeBuild(verifiedInstance.identity, currentVersion)
     ) {
       io.stderr.write(
         `agenc: starting daemon (daemon build identity differs from on-disk runtime)\n`,
