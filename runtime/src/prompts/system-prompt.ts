@@ -1268,6 +1268,7 @@ export async function assembleSystemPrompt(
           lightEditsWithApplyPatch(envInfoInputs.provider, envInfoInputs.model),
           lightStatesTaskLimits(envInfoInputs.provider, promptEnvironment, envInfoInputs.model),
           lightUsesGlmTuning(envInfoInputs.provider, envInfoInputs.model),
+          session.services?.runtimeOptions?.nonInteractive === true,
         ),
         lightBudgetSystem(),
         lightBudgetActions(),
