@@ -1,5 +1,5 @@
 // Exercise macOS-only activation on Linux without changing shipped code.
-// Native macOS runs keep real mount, ACL and OS-version probes. Linux fixtures
+// Native macOS runs keep real filesystem, ACL and OS-version probes. Linux fixtures
 // supply those three macOS command responses; file ownership, locking, fsync,
 // atomic replacement, process death and rollback still execute normally.
 export function installDarwinPlatformFixture(childProcess, syncBuiltinESMExports) {
@@ -8,9 +8,9 @@ export function installDarwinPlatformFixture(childProcess, syncBuiltinESMExports
   const execFile = childProcess.execFile;
   const execFileSync = childProcess.execFileSync;
   childProcess.execFile = function (file, args, ...rest) {
-    if (file === "/sbin/mount") {
+    if (file === "/bin/df") {
       return execFile.call(this, process.execPath,
-        ["-e", "process.stdout.write('/dev/fixture on / (apfs, local)\\n')"], ...rest);
+        ["-e", "process.stdout.write('Filesystem 512-blocks Used Available Capacity Mounted on\\n/dev/fixture 1000 100 900 10% /\\n')"], ...rest);
     }
     if (file === "/bin/ls" && args[0] === "-ldeq") {
       return execFile.call(this, file, ["-ldq", ...args.slice(1)], ...rest);
