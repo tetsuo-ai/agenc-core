@@ -99,7 +99,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
-| [releases/0.19.21.md](releases/0.19.21.md) | AgenC 0.19.21: Ollama Cloud rows marked from real answers, Windows workspace-relative paths for LSP and notebook tools, and new sandbox tests |
+| [releases/0.19.21.md](releases/0.19.21.md) | AgenC 0.19.21: enforced PreToolUse hook denies, no environment values in macOS process listings, macOS start without listing every mount, the Skill tool loaded for installed skills in Light, Ollama Cloud rows marked from real answers, Windows workspace-relative paths for LSP and notebook tools, and new sandbox tests |
 | [releases/0.19.20.md](releases/0.19.20.md) | AgenC 0.19.20: finished responses kept after a dropped connection, distinct error retries and media kept during compaction |
 | [releases/0.19.19.md](releases/0.19.19.md) | AgenC 0.19.19: transport recovery, OOM preference, opt-in headless completion check, smaller standard requests, less idle time and Large V2 Light fixes |
 | [releases/0.19.18.md](releases/0.19.18.md) | AgenC 0.19.18: Kimi cache accounting, manual web search, bounded completion checks and native Windows fixes |
