@@ -111,6 +111,8 @@ export type UnpricedUsageCall = {
 };
 
 export interface AdmissionUsageSummary extends AdmissionUsageTotals {
+  /** Display only: known cost adjusted by recorded per-call off-peak hours. Never budget authority. */
+  readonly billedEstimateUsd?: number;
   readonly runId: string;
   readonly sequence: number;
   readonly unpricedCalls?: readonly UnpricedUsageCall[];

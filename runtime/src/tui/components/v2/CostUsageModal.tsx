@@ -81,6 +81,11 @@ export function CostUsageModal({
           <ThemedText color="agenc">SESSION</ThemedText>
           <ThemedText color="text2">{totalCost}</ThemedText>
         </Box>
+        <ThemedText color="muted3">Accounting total: peak rates before off-peak discounts.</ThemedText>
+        {report.billedEstimateUsd !== undefined && !report.totalIsEstimated ? (
+          <Row label="billed estimate" value={`${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.billedEstimateUsd)}`}
+            detail="recorded per-call off-peak hours" />
+        ) : null}
         <Row label="tokens" value={tokenDetail} labelColor="inactive" />
         {report.hasUnknownCost ? (
           <Box flexDirection="column">
@@ -137,7 +142,8 @@ export function CostUsageModal({
         )}
       </Box>
       <ThemedText color="muted3">
-        Recorded usage when available; estimates are marked est.
+        Model/agent totals use accounting rates. Provider-reported charges stay as reported.
+        Billed estimates cover recorded schedules; holidays and other discounts may be missing.
       </ThemedText>
     </Popup>
   )

@@ -21,7 +21,6 @@ import { truncateMiddleToWidth } from '../../utils/truncate.js';
 import { modelDisplayString } from '../../utils/model/model.js';
 import { getTotalCost } from '../../cost/tracker.js';
 import { formatUsdCost } from '../../session/cost.js';
-import { isOffPeakAt, msUntilNextUtcHour, type OffPeakSchedule } from '../../session/off-peak-pricing.js';
 import { isNullRenderingAttachment } from '../message-visibility.js';
 import { PromptDialogOverlay, PromptSuggestionsList } from './PromptOverlaySurfaces.js';
 import { permissionModePlainLabel } from '../../permissions/mode-display.js';
@@ -29,7 +28,7 @@ import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { PlanModeBanner } from './v2/primitives.js';
-import { useStatusEffort, useStatusContextUsage, useStatusPromptCache, useStatusOffPeakSchedule, useStatusZdr, useStatusWebSearch } from '../context/statusEffortContext.js';
+import { useStatusEffort, useStatusContextUsage, useStatusPromptCache, useStatusZdr, useStatusWebSearch } from '../context/statusEffortContext.js';
 import ThemedText from './design-system/ThemedText.js';
 import { useTheme } from './design-system/ThemeProvider.js';
 import { LedgerStatus } from './LedgerStatus.js';
@@ -585,28 +584,8 @@ function useSessionSpendLabel(): string {
   // An estimated call was priced at the registry ceiling because its model
   // has no known price: that figure is not a cost, so say so instead.
   if (usage?.costEstimated === true) return PRICE_UNKNOWN_LABEL;
-  if (usage !== undefined) return `${usage.hasUnknownCost ? '≥' : ''}${formatUsdCost(usage.costUsd)}`;
+  if (usage !== undefined) return `${usage.hasUnknownCost ? '≥' : ''}${formatUsdCost(usage.billedEstimateUsd ?? usage.costUsd)}`;
   return spend;
-}
-
-/** Whether a call made now bills off-peak. Re-checks on each whole UTC hour,
- *  where every recorded window starts and ends. */
-function useOffPeakNow(schedule: OffPeakSchedule | null): boolean {
-  const [, setHourTick] = useState(0);
-  useEffect(() => {
-    if (schedule === null) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const arm = (): void => {
-      timer = setTimeout(() => {
-        setHourTick(tick => tick + 1);
-        arm();
-      }, msUntilNextUtcHour(Date.now()) + 1_000);
-      timer.unref?.();
-    };
-    arm();
-    return () => clearTimeout(timer);
-  }, [schedule]);
-  return schedule !== null && isOffPeakAt(schedule, Date.now());
 }
 
 function DesignPlanModeBanner(): React.ReactNode {
@@ -689,24 +668,16 @@ export type StatusLineUsageItem = {
   readonly spans: readonly StatusLineUsageSpan[];
 };
 
-const OFF_PEAK_NOTE = ' off-peak';
-const OFF_PEAK_SHORT_NOTE = ' op';
+const BILLED_ESTIMATE_NOTE = ' billed est.';
+const PEAK_ESTIMATE_NOTE = ' peak est.';
 const PRICE_UNKNOWN_SHORT_LABEL = 'no price';
 
-/**
- * The usage facts on the right of the status line, in order: context, the
- * share of input served from prompt cache, then spend. Their names and the
- * "off-peak" note use secondary ink and the figures use the value color, so
- * the numbers read at a glance. A context share of 80% or more shows as an
- * error. "off-peak" qualifies a dollar figure while a call made now bills at
- * the provider's off-peak rate; a spend that is not a figure ("price
- * unknown") keeps primary ink and gets no note.
- */
+/** Usage figures with an explicit cost basis, independent of the current clock. */
 export function statusLineUsageItems(
   contextPercent: number | null,
   cachePercent: number | null,
   spend: string | null,
-  offPeak: boolean,
+  billedEstimate: boolean,
   valueColor: 'accentSoft' | 'accent' = 'accentSoft',
 ): StatusLineUsageItem[] {
   const items: StatusLineUsageItem[] = [];
@@ -726,7 +697,7 @@ export function statusLineUsageItems(
     const figure = /^≥?\$/u.test(spend);
     items.push({ key: 'spend', spans: !figure
       ? [{ text: spend, color: 'text' }]
-      : [{ text: spend, color: valueColor }, ...(offPeak ? [{ text: OFF_PEAK_NOTE, color: 'text2' as const }] : [])] });
+      : [{ text: spend, color: valueColor }, { text: billedEstimate ? BILLED_ESTIMATE_NOTE : PEAK_ESTIMATE_NOTE, color: 'text2' }] });
   }
   return items;
 }
@@ -746,7 +717,7 @@ export function statusLineZdrFact(status: ZeroDataRetentionStatus | null): Statu
   return { key: 'zdr', forms: [[span]] };
 }
 
-/** The usage block with its short forms ("c 82%", "$0.041 op", "no price"), then the ZDR badge. */
+/** The usage block with short cache/unknown labels, then the ZDR badge. Cost basis is never abbreviated. */
 export function statusLineRightFacts(
   items: readonly StatusLineUsageItem[],
   zdr: ZeroDataRetentionStatus | null,
@@ -757,9 +728,7 @@ export function statusLineRightFacts(
       ? item.spans.map(span => (span.text === 'cache ' ? { ...span, text: 'c ' } : span))
       : item.key === 'spend'
         ? item.spans.map(span => (
-          span.text === OFF_PEAK_NOTE
-            ? { ...span, text: OFF_PEAK_SHORT_NOTE }
-            : span.text === PRICE_UNKNOWN_LABEL ? { ...span, text: PRICE_UNKNOWN_SHORT_LABEL } : span
+          span.text === PRICE_UNKNOWN_LABEL ? { ...span, text: PRICE_UNKNOWN_SHORT_LABEL } : span
         ))
         : null;
     const changed = short !== null && short.some((span, index) => span.text !== item.spans[index]?.text);
@@ -884,8 +853,7 @@ function StatusLineChrome({ columns, onRowsChange }: {
   const effort = useStatusEffort();
   const contextPercent = useStatusContextUsage();
   const cachePercent = useStatusPromptCache();
-  const offPeakSchedule = useStatusOffPeakSchedule();
-  const offPeak = useOffPeakNow(offPeakSchedule);
+  const billedEstimate = useSessionUsage()?.billedEstimateUsd !== undefined;
   const zdr = useStatusZdr();
   const webSearch = useStatusWebSearch();
   // Unset means the default (Light). A session sets it from its runtime options.
@@ -908,7 +876,7 @@ function StatusLineChrome({ columns, onRowsChange }: {
       shellCount,
       runningAgents,
     }),
-    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, offPeak, valueColor), zdr, webSearch),
+    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, billedEstimate, valueColor), zdr, webSearch),
   );
   useLayoutEffect(() => {
     onRowsChange?.(layout.rows);

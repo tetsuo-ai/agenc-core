@@ -87,7 +87,7 @@ describe("session usage projection", () => {
   });
 
   it("restores a snapshot even when no parent token_count events remain", () => {
-    const usage = summary();
+    const usage = { ...summary(), billedEstimateUsd: 0.75 };
     const transcript = adaptTranscriptEvents([usageEvent(usage)]);
     expect(transcript.sessionCostUsd).toBe(usage.costUsd);
     expect(transcript.sessionUsage).toEqual(usage);
@@ -122,6 +122,7 @@ describe("session usage projection", () => {
 
   it.each([
     { costUsd: Number.NaN }, { costUsd: -1 }, { heldCostUsd: Number.POSITIVE_INFINITY },
+    { billedEstimateUsd: Number.NaN }, { billedEstimateUsd: -1 }, { billedEstimateUsd: "0.5" },
     { sequence: -1 }, { totalTokens: 1.5 }, { hasUnknownCost: "false" },
     { models: [{}] }, { agents: [{ ...totals(1), runId: "" }] },
   ])("ignores malformed usage fields %j", (invalid) => {

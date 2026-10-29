@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { CostUsageModal } from "../../src/tui/components/v2/CostUsageModal.js";
+import { renderToString } from "../../src/utils/staticRender.js";
 
 import {
   buildCostReport,
@@ -12,6 +15,26 @@ import type {
 } from "../../src/commands/types.js";
 
 vi.mock("bun:bundle", () => ({ feature: () => false }));
+
+it("shows billed and peak accounting estimates in both /cost surfaces with the unknown prefix", async () => {
+  const ctx = contextWith({});
+  ctx.appState = {
+    getSessionUsage: () => ({ runId: "session-1", sequence: 3, costUsd: 1, billedEstimateUsd: 0.75,
+      inputTokens: 20, outputTokens: 10, totalTokens: 30, modelCalls: 2, heldCostUsd: 0.5,
+      hasUnknownCost: true, models: [], agents: [] }),
+  };
+  const report = buildCostReport(ctx);
+  expect(report).toMatchObject({ totalCostUsd: 1, billedEstimateUsd: 0.75, hasUnknownCost: true });
+  const text = formatCostReport(report);
+  expect(text).toContain("Session cost: ≥$1.00 (accounting; peak rates before off-peak discounts)");
+  expect(text).toContain("Billed estimate: ≥$0.750");
+  const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
+    { columns: 120, rows: 40 });
+  expect(modal).toContain("≥$1.00");
+  expect(modal).toContain("peak rates before off-peak discounts");
+  expect(modal).toContain("billed estimate");
+  expect(modal).toContain("≥$0.750");
+});
 
 /**
  * A fake CostSidecar exposing only the accessors `/cost` reads. The values

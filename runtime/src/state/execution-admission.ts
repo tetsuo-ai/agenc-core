@@ -34,7 +34,7 @@ import {
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
 import type { StateSqliteDriver, SqliteStatement } from "./sqlite-driver.js";
-import { AdmissionUsageProjection, captureMaterializedUsage, MAX_UNPRICED_USAGE_CALLS, unpricedUsageCall, type UsageReservation } from "./admission-usage-snapshot.js";
+import { AdmissionUsageProjection, captureMaterializedUsage, MAX_UNPRICED_USAGE_CALLS, offPeakSavingsNanos, unpricedUsageCall, type UsageReservation } from "./admission-usage-snapshot.js";
 
 export const NANO_USD_PER_USD = 1_000_000_000;
 const MAX_LIST_LIMIT = 1_000;
@@ -1872,6 +1872,28 @@ export class ExecutionAdmissionRepository {
         }
       }
       const unpricedCallCount = rows.reduce((sum, row) => sum + row.unknown_count, 0);
+      // Observation only: retain the settled peak-rate accounting totals above.
+      // Read dispatch times before aggregation so mixed-window sessions price
+      // each eligible call independently, including resumed and child calls.
+      const displayRows = this.#driver.prepareState<string[], Parameters<typeof offPeakSavingsNanos>[0]>(
+        `SELECT reservation.kind, reservation.provider, reservation.model, reservation.status,
+           reservation.actual_cost_nanos, reservation.resolution_reason, reservation.dispatched_at
+         FROM execution_admission_reservations AS reservation
+         JOIN execution_admission_reservation_allocations AS allocation
+           ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
+         WHERE reservation.kind = 'model_turn'
+           AND reservation.status IN ('reconciled', 'provider_overrun')
+           AND reservation.actual_cost_nanos > 0
+           ${directOnly ? "AND reservation.run_id = ?" : ""}`,
+      ).all(...(directOnly ? [allocationKey, runId] : [allocationKey]));
+      let savingsNanos = 0;
+      let hasMissingTime = false;
+      for (const row of displayRows) {
+        const savings = offPeakSavingsNanos(row);
+        hasMissingTime ||= savings === null;
+        savingsNanos += savings ?? 0;
+      }
+      const usageTotals = sumUsageRows(rows);
       const unpricedCalls = unpricedCallCount === 0 ? [] : this.#driver
         .prepareState<string[], UsageReservation>(
           `SELECT reservation.* FROM execution_admission_reservations AS reservation
@@ -1886,7 +1908,9 @@ export class ExecutionAdmissionRepository {
       return {
         runId,
         sequence,
-        ...sumUsageRows(rows),
+        ...usageTotals,
+        ...(!hasMissingTime && !usageTotals.costEstimated
+          ? { billedEstimateUsd: (rows.reduce((sum, row) => sum + row.cost_nanos, 0) - savingsNanos) / 1_000_000_000 } : {}),
         ...(unpricedCallCount > 0 ? { unpricedCalls, unpricedCallCount } : {}),
         models: [...modelRows.values()].map((group) => ({
           model: group[0]!.model ?? "unknown",

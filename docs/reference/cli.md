@@ -90,14 +90,28 @@ session markers on the left, and the context share, cache share, spend and a
 `ZDR` badge on the right. At a narrow width the line keeps its facts as long as
 it can. Facts first
 take short forms, one at a time: `high effort` becomes `high`, `asks first`
-becomes `asks`, `cache 82%` becomes `c 82%`, `$0.041 off-peak` becomes
-`$0.041 op`, `price unknown` becomes `no price`, and the folder becomes its
+becomes `asks`, `cache 82%` becomes `c 82%`,
+`price unknown` becomes `no price`, and the folder becomes its
 last name. Then the folder and the model are shortened in the middle. When one
 row still cannot hold everything, the usage figures and the badge move to a
 second row and the prompt area gives up that row. The badge is green when the
 provider and model keep no data, red when data may be kept, and a dim `ZDR?`
 when AgenC cannot tell; `/status` says why
 ([providers.md](providers.md#zero-data-retention)).
+
+Spend reads, for example, `$0.750 billed est.`. It sums each call's recorded
+cost, applying half price to calls dispatched during the recorded off-peak
+hours for the DeepSeek API and eligible QwenCloud DeepSeek models. The clock
+now and the currently selected model do not change earlier calls' estimates.
+The cost label stays explicit even on narrow terminals. `≥` means some calls
+have unknown cost and are excluded from the figure; `price unknown` means a
+fallback price was used. Older usage without the necessary call times and
+the sidecar fallback show `peak est.` instead. Unrecorded schedules (including
+Ollama Cloud) and Chinese public holidays are not discounted, so a billed
+estimate can still exceed the provider's charge. `/cost` shows the accounting
+total at peak rates alongside the billed estimate. Budgets, spend caps,
+stored accounting totals, custom status-line hook costs and print summaries
+continue to use the accounting total.
 
 ### Print-mode notes
 
