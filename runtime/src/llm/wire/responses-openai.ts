@@ -33,6 +33,7 @@ import {
   withEndpointMarkers,
   withSerializedMetrics,
 } from "./shared.js";
+import { planOpenAIContext } from "./responses-openai-context.js";
 import { toOpenAIResponsesTools } from "./tools.js";
 import { getResponseDetailSection, withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
@@ -48,6 +49,8 @@ import { resolveRegisteredModelCatalogEntry } from "../registry/model-catalog.js
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
+  /** Platform OpenAI only; other Responses providers keep their wire contract. */
+  readonly appendOnlyContext?: boolean;
   readonly messages: readonly LLMMessage[];
   readonly tools: readonly LLMTool[];
   readonly options?: LLMChatOptions;
@@ -497,6 +500,28 @@ const MODELS_KEEPING_SUMMARY_DEFAULT: ReadonlySet<string> = new Set([
   "gpt-6.1-terra",
 ]);
 
+/**
+ * Tool definitions exactly as sent. A tool whose schema strict mode would
+ * change carries `strict: false` when declared (see `declareNonStrictTools`).
+ * The context plan records and compares these same definitions, so tools
+ * sent later through `additional_tools` keep the declaration too.
+ */
+function responsesRequestTools(input: OpenAIResponsesRequestOptions) {
+  return toOpenAIResponsesTools(omitsToolsForChoice(input) ? [] : input.tools).map((tool) =>
+    input.declareNonStrictTools === true && !isStrictCompatibleToolSchema(tool.parameters)
+      ? { ...tool, strict: false }
+      : tool);
+}
+
+function openAIContextPlan(input: OpenAIResponsesRequestOptions, messages = prepareMessagesForWire(input.messages)) {
+  return planOpenAIContext({
+    enabled: input.appendOnlyContext === true && input.chatgptBackend !== true,
+    model: input.model, messages,
+    tools: responsesRequestTools(input),
+    reasoningEffort: acceptedReasoningEffort(input),
+  });
+}
+
 export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
@@ -541,8 +566,10 @@ export function buildOpenAIResponsesRequest(
     .join("\n\n");
   const replayProvider = reasoningReplayProvider(input);
   const responseInput: Array<Record<string, unknown>> = [];
+  const context = openAIContextPlan(input, messages);
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
+    responseInput.push(...(context.before.get(index) ?? []));
     if (message.role === "system" || message.role === "developer") continue;
 
     if (message.role === "assistant") {
@@ -601,6 +628,7 @@ export function buildOpenAIResponsesRequest(
     });
   }
 
+  responseInput.push(...(context.before.get(messages.length) ?? []));
   closeDanglingFunctionCalls(responseInput);
 
   if (responseInput.length === 0) {
@@ -647,10 +675,7 @@ export function buildOpenAIResponsesRequest(
     body.instructions = instructions;
   }
   const omitTools = omitsToolsForChoice(input);
-  const tools = toOpenAIResponsesTools(omitTools ? [] : input.tools).map((tool) =>
-    input.declareNonStrictTools === true && !isStrictCompatibleToolSchema(tool.parameters)
-      ? { ...tool, strict: false }
-      : tool);
+  const tools = context.tools;
   if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined && !omitTools) {
     // Responses uses a flat named choice; Chat Completions nests function.name.
@@ -692,7 +717,7 @@ export function buildOpenAIResponsesRequest(
   ) {
     body.include = ["reasoning.encrypted_content"];
   }
-  const reasoningEffort = acceptedReasoningEffort(input);
+  const reasoningEffort = context.reasoningEffort;
   if (reasoningEffort !== undefined) {
     body.reasoning = {
       ...(body.reasoning && typeof body.reasoning === "object"
@@ -846,11 +871,13 @@ export function parseOpenAIResponsesResponse(
   const generationCompleted =
     finishReason === "stop" || finishReason === "tool_calls";
 
+  const contextHistory = openAIContextPlan(request).event;
   return {
     content,
     toolCalls,
     ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
     ...extractOpenAIReasoningReplay(output, request),
+    ...(contextHistory !== undefined ? { providerContextHistory: contextHistory } : {}),
     usage: parseOpenAIResponsesUsage(response),
     model:
       typeof response.model === "string" ? response.model : model,

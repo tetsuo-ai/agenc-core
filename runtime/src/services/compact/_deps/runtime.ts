@@ -160,6 +160,7 @@ function toAccountingMessage(message: RuntimeMessage): LLMMessage {
     // survive this projection or the auto-compaction gate measures less than
     // admission will (#2520). `phase` is an open string here and a two-value
     // union on LLMMessage, so it is narrowed rather than cast.
+    ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
     ...(message.providerReasoningContent !== undefined
       ? { providerReasoningContent: message.providerReasoningContent }
       : {}),

@@ -209,6 +209,7 @@ export function cloneLlmContent(content: unknown): LLMMessage["content"] {
 export function cloneLlmMessageSnapshot(message: LLMMessage): LLMMessage {
   return {
     ...message,
+    ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
     content: cloneLlmContent(message.content),
     ...(message.toolCalls !== undefined
       ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }

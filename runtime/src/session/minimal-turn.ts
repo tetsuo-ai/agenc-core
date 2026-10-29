@@ -162,6 +162,7 @@ export async function* runMinimalTurn(
           .map(call => validateToolCall(call) ?? call);
       messages.push({ role: "assistant", content: response.content,
         ...(toolCalls.length ? { toolCalls } : {}),
+        ...(response.providerContextHistory !== undefined ? { providerContextHistory: response.providerContextHistory } : {}),
         ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
         ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
       });

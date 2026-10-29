@@ -1971,6 +1971,7 @@ export function normalizeHistoryMessages(
       toolCalls?: unknown;
       toolCallId?: unknown;
       toolName?: unknown;
+      providerContextHistory?: LLMMessage["providerContextHistory"];
       providerReasoningContent?: unknown;
       providerReasoningProvenance?: {
         provider?: unknown;
@@ -2031,6 +2032,7 @@ export function normalizeHistoryMessages(
         ? { toolName: candidate.toolName }
         : {}),
       ...providerReasoning,
+      ...(candidate.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(candidate.providerContextHistory) } : {}),
       // Preserve response-item identity, the file-history join key, and
       // durable integrity metadata across turn-start and checkpoint copies.
       // The invocation merge boundary is derived from authenticated channel
@@ -2208,6 +2210,7 @@ function toCompactRuntimeMessages(
         : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
+      ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
       ...(message.providerReasoningContent !== undefined
         ? { providerReasoningContent: message.providerReasoningContent }
         : {}),

@@ -1236,6 +1236,7 @@ function messageForDigest(message: RuntimeMessage): unknown {
       : undefined;
   return {
     role: roleOf(message),
+    ...(message.providerContextHistory !== undefined ? { provider_context_history: message.providerContextHistory } : {}),
     content: fromRuntimeMessageContent(
       message.content ?? message.message?.content ?? messageText(message),
     ),

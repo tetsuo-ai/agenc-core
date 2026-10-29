@@ -205,10 +205,16 @@ test.each([
 
 // The Luna lane: the production OpenAI API provider and the Responses request
 // bodies it sends, beside the provider-neutral requests above.
+interface ResponsesTool {
+  readonly name: string;
+  readonly description?: string;
+}
+
 interface ResponsesBody {
   readonly input: ReadonlyArray<{ readonly type: string; readonly output?: string;
+    readonly role?: string; readonly tools?: ReadonlyArray<ResponsesTool>;
     readonly content?: ReadonlyArray<{ readonly type: string; readonly text: string }> }>;
-  readonly tools: ReadonlyArray<{ readonly name: string; readonly description?: string }>;
+  readonly tools: ReadonlyArray<ResponsesTool>;
 }
 
 test("first Light Responses request parity on the OpenAI API: openai gpt-6-luna", async () => {
@@ -225,25 +231,41 @@ test("Light Responses request after exec yield adds only kill_process: openai gp
   const after = await captureRequests("openai", "gpt-6-luna", true, configStore, true, "responses");
   expect(after[0]).toBe(before[0]);
 
+  const first = JSON.parse(before[0]!) as ResponsesBody;
   const baseline = JSON.parse(before[1]!) as ResponsesBody;
   const current = JSON.parse(after[1]!) as ResponsesBody;
-  expect(baseline.tools.map(tool => tool.name)).toContain("write_stdin");
-  expect(baseline.tools.map(tool => tool.name)).not.toContain("kill_process");
-  const addedTools = current.tools.filter(tool => tool.name === "kill_process");
+  // Cache-preserving Responses requests retain the initial top-level tools.
+  // Both yield callbacks load write_stdin; only the current one adds kill_process.
+  expect(baseline.tools).toEqual(first.tools);
+  expect(current.tools).toEqual(first.tools);
+  expect(first.tools.map(tool => tool.name)).not.toContain("write_stdin");
+  expect(first.tools.map(tool => tool.name)).not.toContain("kill_process");
+  expect(first.input.filter(item => item.type === "additional_tools")).toEqual([]);
+  const baselineAddition = baseline.input.at(-1)!;
+  const currentAddition = current.input.at(-1)!;
+  expect(baselineAddition.type).toBe("additional_tools");
+  expect(currentAddition.type).toBe("additional_tools");
+  expect(baseline.input.filter(item => item.type === "additional_tools")).toEqual([baselineAddition]);
+  expect(current.input.filter(item => item.type === "additional_tools")).toEqual([currentAddition]);
+  expect(baselineAddition.role).toBe("developer");
+  expect(currentAddition.role).toBe("developer");
+  expect(baselineAddition.tools!.map(tool => tool.name)).toEqual(["write_stdin"]);
+  expect(currentAddition.tools!.map(tool => tool.name).sort()).toEqual(["kill_process", "write_stdin"]);
+  const addedTools = currentAddition.tools!.filter(tool => tool.name === "kill_process");
   expect(addedTools).toHaveLength(1);
   expect(current.input.some(item => item.type === "function_call_output" && item.output?.includes("session_id=71"))).toBe(true);
 
   // The discovery notice gains exactly the new tool's line.
-  const baselineNotice = baseline.input.at(-1)!;
+  const baselineNotice = baseline.input.at(-2)!;
   const noticeLines = baselineNotice.content![0]!.text.split("\n");
   const pollingLine = noticeLines.findIndex(line => line.startsWith("write_stdin: "));
   expect(pollingLine).toBeGreaterThan(0);
   noticeLines.splice(pollingLine, 0, `kill_process: ${addedTools[0]!.description}`);
-  expect(current.input.at(-1)).toEqual({ ...baselineNotice,
+  expect(current.input.at(-2)).toEqual({ ...baselineNotice,
     content: [{ ...baselineNotice.content![0]!, text: noticeLines.join("\n") }] });
 
   // Every other byte of the Responses body is unchanged.
-  const withoutKill = { ...current, input: [...current.input.slice(0, -1), baselineNotice],
-    tools: current.tools.filter(tool => tool.name !== "kill_process") };
+  const withoutKill = { ...current, input: [...current.input.slice(0, -2), baselineNotice,
+    { ...currentAddition, tools: currentAddition.tools!.filter(tool => tool.name !== "kill_process") }] };
   expect(JSON.stringify(withoutKill)).toBe(before[1]);
 });

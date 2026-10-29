@@ -7,6 +7,7 @@ export function canonicalCompactionProjectionMessages(
 ): readonly unknown[] {
   return messages.map((message) => ({
     role: message.role,
+    ...(message.providerContextHistory !== undefined ? { provider_context_history: message.providerContextHistory } : {}),
     content: fromRuntimeMessageContent(message.content),
     ...(message.toolCallId !== undefined
       ? { tool_call_id: message.toolCallId }

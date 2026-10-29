@@ -1724,11 +1724,12 @@ export class OpenAIProvider implements LLMProvider {
     | "assistantCommentaryPhase"
     | "reasoningEffortAllowedValues"
     | "declareNonStrictTools"
+    | "appendOnlyContext"
   > {
-    // The ChatGPT backend is not verified for the field and keeps its request
-    // shape.
+    // The ChatGPT backend is not verified for these fields and keeps its
+    // request shape.
     if (this.name === "openai" && !this.isChatGptBackend()) {
-      return { declareNonStrictTools: true };
+      return { declareNonStrictTools: true, appendOnlyContext: true };
     }
     if (this.name !== "meta") return {};
     const effort = resolveReasoningEffort({ provider: this.name, model });

@@ -2784,6 +2784,7 @@ async function* runTurnKernelInner(
                 ? [...(response.incompleteToolCalls ?? []), ...response.toolCalls].map(call => call.name)
                 : undefined;
               state.messages.push({ role: "assistant", content: response.content,
+                ...(response.providerContextHistory !== undefined ? { providerContextHistory: response.providerContextHistory } : {}),
                 ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
                 ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
               });
@@ -3712,6 +3713,7 @@ async function* runTurnKernelInner(
         state.reasoningOnlyRecoveryPending = undefined;
         state.messages.push({ role: "assistant", content: response.content,
           ...(assistant.toolCalls.length ? { toolCalls: [...assistant.toolCalls] } : {}),
+          ...(response.providerContextHistory !== undefined ? { providerContextHistory: response.providerContextHistory } : {}),
           ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
           ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
         });

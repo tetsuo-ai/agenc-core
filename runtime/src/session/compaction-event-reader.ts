@@ -1,3 +1,4 @@
+import { readProviderContextHistory } from "../llm/wire/responses-openai-context.js";
 import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
@@ -1396,7 +1397,7 @@ function readProjectionMessage(
     [
       "toolCalls", "toolCallId", "toolName", "id", "phase", "endTurn",
       "toolResultIntegrity", "toolResultIsError", "agentInvocation",
-      "compactionHistory", "providerReasoning",
+      "compactionHistory", "providerReasoning", "providerContextHistory",
     ],
     "replacement-history message",
   );
@@ -1425,6 +1426,12 @@ function readProjectionMessage(
   }
   if (record.endTurn !== undefined && typeof record.endTurn !== "boolean") {
     throw malformed("replacement-history endTurn must be boolean");
+  }
+  const providerContextHistory = record.providerContextHistory === undefined
+    ? undefined : readProviderContextHistory(record.providerContextHistory);
+  if (record.providerContextHistory !== undefined &&
+      (role !== "assistant" || providerContextHistory === undefined)) {
+    throw malformed("replacement-history provider context is invalid");
   }
   const providerReasoning = record.providerReasoning === undefined
     ? undefined
@@ -1458,6 +1465,7 @@ function readProjectionMessage(
     ...(phase !== undefined ? { phase } : {}),
     ...(record.endTurn !== undefined ? { endTurn: record.endTurn } : {}),
     ...(providerReasoning !== undefined ? { providerReasoning } : {}),
+    ...(providerContextHistory !== undefined ? { providerContextHistory } : {}),
     ...(record.toolResultIntegrity !== undefined
       ? { toolResultIntegrity: record.toolResultIntegrity as CompactionProjectionMessageV1["toolResultIntegrity"] }
       : {}),

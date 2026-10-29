@@ -99,6 +99,7 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
   assertLlmAgentInvocationMessage(message);
   return {
     role: message.role,
+    ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
     content: cloneContent(message.content),
     ...(message.runtimeOnly?.responseItemId !== undefined
       ? { id: message.runtimeOnly.responseItemId }
@@ -248,6 +249,7 @@ export function llmMessageToReplacementResponseItem(
 export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
   const message: LLMMessage = {
     role: item.role,
+    ...(item.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(item.providerContextHistory) } : {}),
     // A rollout written before binary carriers were protected can hold an
     // already-damaged payload. Replaying it fails the next provider call, so a
     // carrier that is no longer canonical is omitted on the way out. The
@@ -338,6 +340,7 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
 export function cloneLlmMessage(message: LLMMessage): LLMMessage {
   return {
     ...message,
+    ...(message.providerContextHistory !== undefined ? { providerContextHistory: structuredClone(message.providerContextHistory) } : {}),
     content: cloneContent(message.content),
     ...(message.toolCalls !== undefined
       ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
