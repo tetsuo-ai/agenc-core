@@ -2678,6 +2678,71 @@ describe("agenc update CLI", () => {
     });
   });
 
+  describe("daemon restart when agenc is already up to date", () => {
+    async function upToDate(
+      flags: { readonly json?: boolean; readonly check?: boolean; readonly noRestart?: boolean } = {},
+    ): Promise<number> {
+      const artifact = makeSyntheticArtifact(work);
+      const manifestPath = writeManifest(work, artifact);
+      return runAgenCUpdateCli(
+        {
+          kind: "update",
+          check: flags.check === true,
+          json: flags.json === true,
+          manifestUrl: `file://${manifestPath}`,
+          ...(flags.noRestart === true ? { noRestart: true } : {}),
+        },
+        { ...deps, currentVersion: NEW_VERSION },
+      );
+    }
+    const upToDateLine = `agenc ${NEW_VERSION} is up to date.`;
+
+    test("restarts a daemon an older updater left behind, from this process", async () => {
+      restartOutcome = { status: "restarted", fromVersion: OLD_VERSION, toVersion: NEW_VERSION, pid: 4343 };
+      expect(await upToDate()).toBe(0);
+      // No wrapper: this process already runs the current runtime.
+      expect(restartRequests).toEqual([{ agencHome, env: deps!.env, targetVersion: NEW_VERSION }]);
+      expect(out).toEqual([upToDateLine, `Restarted the daemon on ${NEW_VERSION} (pid 4343).`]);
+      expect(existsSync(join(agencHome, "runtime", NEW_VERSION))).toBe(false);
+    });
+
+    test.each([
+      [{ status: "deferred", reason: "1 client attached", toVersion: NEW_VERSION },
+        [`The daemon is busy (1 client attached), so it will restart on ${NEW_VERSION} once it is idle.`]],
+      [{ status: "failed", reason: "the daemon could not be stopped", toVersion: NEW_VERSION },
+        ["Daemon restart failed: the daemon could not be stopped.", "Restart the daemon to pick it up: agenc daemon restart"]],
+      [{ status: "skipped", code: "already-current", toVersion: NEW_VERSION }, []],
+      [{ status: "not-running", toVersion: NEW_VERSION }, []],
+      [{ status: "skipped", code: "newer-daemon", reason: "the daemon runs 9.9.10, which is not older than 9.9.9" }, []],
+      [{ status: "skipped", reason: "the daemon runs from outside this install (for example the Desktop app)" }, []],
+    ] as const)("says something only when the daemon was stale: %o", async (outcome, lines) => {
+      restartOutcome = outcome as AgenCDaemonRestartOutcome;
+      expect(await upToDate()).toBe(0);
+      expect(out).toEqual([upToDateLine, ...lines]);
+    });
+
+    test("--check never restarts, --no-restart opts out, --json reports the outcome", async () => {
+      await upToDate({ check: true, json: true });
+      expect(restartRequests).toEqual([]);
+      expect(JSON.parse(out[0]!)).toEqual({ currentVersion: NEW_VERSION, latestVersion: NEW_VERSION, updateAvailable: false });
+      out.length = 0;
+      await upToDate({ json: true, noRestart: true });
+      expect(restartRequests).toEqual([]);
+      expect(JSON.parse(out[0]!).daemonRestart).toEqual({
+        status: "skipped", code: "opt-out", reason: "--no-restart", toVersion: NEW_VERSION,
+      });
+      out.length = 0;
+      restartOutcome = { status: "restarted", fromVersion: OLD_VERSION, toVersion: NEW_VERSION, pid: 4343 };
+      await upToDate({ json: true });
+      expect(JSON.parse(out[0]!)).toEqual({
+        currentVersion: NEW_VERSION,
+        latestVersion: NEW_VERSION,
+        updateAvailable: false,
+        daemonRestart: restartOutcome,
+      });
+    });
+  });
+
   describe("restartDaemonThroughActivatedWrapper", () => {
     function fakeWrapper(script: string): string {
       const path = join(work, "fake-agenc");

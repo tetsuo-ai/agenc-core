@@ -220,7 +220,11 @@ Tests: `runtime/tests/packaging/update-cli.test.ts`.
 
 After the wrapper points at the new runtime, `agenc update` runs
 `agenc daemon restart --when-idle --json` through that wrapper, so the new
-runtime does the check and the restart. It prints one line:
+runtime does the check and the restart. When `agenc update` finds nothing
+newer, it runs the same step itself for a daemon still on an older version, for
+example one an older updater left running; a daemon on the same or a newer
+version is left alone, and only a restart, a deferred restart or a failure
+prints a line. After an update it prints one line:
 
 | Daemon | What happens |
 | --- | --- |

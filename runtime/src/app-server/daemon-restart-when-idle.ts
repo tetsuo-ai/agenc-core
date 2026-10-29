@@ -47,6 +47,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { order as semverOrder } from "../utils/semver.js";
 import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
 import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
 import {
@@ -877,6 +878,27 @@ function sameBuild(identity: AgenCRuntimeBuild, build: AgenCRuntimeBuild): boole
 }
 
 /**
+ * Order two builds: by version, then (same version, a rebuild) by build time.
+ * Undefined when that cannot be told, for example an unparsable version.
+ */
+export function compareAgenCRuntimeBuilds(
+  left: AgenCRuntimeBuild,
+  right: AgenCRuntimeBuild,
+): -1 | 0 | 1 | undefined {
+  let byVersion: -1 | 0 | 1;
+  try {
+    byVersion = semverOrder(left.runtimeVersion, right.runtimeVersion);
+  } catch {
+    return undefined;
+  }
+  if (byVersion !== 0) return byVersion;
+  const leftTime = Date.parse(left.buildTime);
+  const rightTime = Date.parse(right.buildTime);
+  if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return undefined;
+  return leftTime === rightTime ? 0 : leftTime < rightTime ? -1 : 1;
+}
+
+/**
  * The daemon's executable and command line, or null when they cannot be
  * read. On Linux the command line is the process title, so the executable
  * path carries the install tree.
@@ -1016,6 +1038,12 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   readonly pollMs?: number;
   readonly maxWaitMs?: number;
   readonly idleChecks?: number;
+  /**
+   * Restart only a daemon whose build is older than this runtime's. `agenc
+   * update` sets it when it finds itself up to date, so it never starts an
+   * older runtime over a newer daemon.
+   */
+  readonly onlyOlderDaemon?: boolean;
 }
 
 interface RestartContext {
@@ -1190,6 +1218,8 @@ type Preflight =
   /** A daemon is there but its identity cannot be proven (yet). */
   | { readonly kind: "unproven"; readonly reason: string }
   | { readonly kind: "current"; readonly identity: AgenCDaemonInstanceIdentity }
+  /** Not older than this runtime, with `onlyOlderDaemon`. */
+  | { readonly kind: "newer"; readonly identity: AgenCDaemonInstanceIdentity }
   /** Not started from this install's runtime, or not inspectable. */
   | { readonly kind: "foreign"; readonly reason: string; readonly identity: AgenCDaemonInstanceIdentity }
   | { readonly kind: "candidate"; readonly identity: AgenCDaemonInstanceIdentity };
@@ -1201,6 +1231,9 @@ async function preflight(ctx: RestartContext): Promise<Preflight> {
   if (state.kind !== "running") return state;
   const identity = state.identity;
   if (sameBuild(identity, ctx.build)) return { kind: "current", identity };
+  if (ctx.deps.onlyOlderDaemon === true && compareAgenCRuntimeBuilds(identity, ctx.build) !== -1) {
+    return { kind: "newer", identity };
+  }
   // Only a daemon this install started: never one the Desktop app or a
   // development checkout runs from its own runtime, even in a shared home.
   const command = (ctx.deps.daemonCommand ?? readAgenCProcessCommand)(identity.pid);
@@ -1234,6 +1267,15 @@ function preflightOutcome(
         status: "skipped",
         code: "already-current",
         reason: `the daemon already runs ${toVersion}`,
+        fromVersion: checked.identity.runtimeVersion,
+        toVersion,
+        pid: checked.identity.pid,
+      };
+    case "newer":
+      return {
+        status: "skipped",
+        code: "newer-daemon",
+        reason: `the daemon runs ${checked.identity.runtimeVersion}, which is not older than ${toVersion}`,
         fromVersion: checked.identity.runtimeVersion,
         toVersion,
         pid: checked.identity.pid,

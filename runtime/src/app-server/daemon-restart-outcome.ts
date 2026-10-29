@@ -15,6 +15,7 @@ export type AgenCDaemonRestartStatus =
 /** Stable reasons a caller may act on; the reason text is for people. */
 export type AgenCDaemonRestartCode =
   | "already-current"
+  | "newer-daemon"
   | "opt-out"
   | "not-activated"
   | "unsupported";
@@ -43,6 +44,7 @@ const STATUSES: ReadonlySet<string> = new Set([
 ]);
 const CODES: ReadonlySet<string> = new Set([
   "already-current",
+  "newer-daemon",
   "opt-out",
   "not-activated",
   "unsupported",
@@ -103,8 +105,23 @@ export function formatAgenCDaemonRestartOutcome(
   }
 }
 
-/** True when the old "restart it yourself" hint still applies. */
+/**
+ * True when the old "restart it yourself" hint still applies. Never for a
+ * newer daemon: restarting it would start an older runtime.
+ */
 export function agenCDaemonRestartNeedsHint(outcome: AgenCDaemonRestartOutcome): boolean {
   return outcome.status === "failed" ||
-    (outcome.status === "skipped" && outcome.code !== "already-current");
+    (outcome.status === "skipped" &&
+      outcome.code !== "already-current" &&
+      outcome.code !== "newer-daemon");
+}
+
+/**
+ * True when an "up to date" run has something to say about the daemon: it
+ * was stale and was restarted, will be, or could not be.
+ */
+export function agenCDaemonRestartIsNews(outcome: AgenCDaemonRestartOutcome): boolean {
+  return outcome.status === "restarted" ||
+    outcome.status === "deferred" ||
+    outcome.status === "failed";
 }

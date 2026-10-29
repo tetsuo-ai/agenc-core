@@ -20,6 +20,7 @@ import {
   busyReasonFromServices,
   busyReasonFromSessionDetail,
   busyReasonFromSessions,
+  compareAgenCRuntimeBuilds,
   agenCCommandLabel,
   agenCRuntimeTreeOf,
   findOtherAgenCRuntimeClients,
@@ -633,6 +634,34 @@ describe("restartAgenCDaemonWhenIdle", () => {
     const outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, deps);
     expect(outcome.status).toBe("failed");
     expect(outcome.reason).toContain(reason);
+  });
+
+  it("orders builds by version, then by build time, and admits when it cannot tell", () => {
+    expect(compareAgenCRuntimeBuilds(OLD_BUILD, NEW_BUILD)).toBe(-1);
+    expect(compareAgenCRuntimeBuilds(NEW_BUILD, OLD_BUILD)).toBe(1);
+    expect(compareAgenCRuntimeBuilds(NEW_BUILD, { ...NEW_BUILD })).toBe(0);
+    const rebuilt = { ...NEW_BUILD, commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" };
+    expect(compareAgenCRuntimeBuilds(NEW_BUILD, rebuilt)).toBe(-1);
+    expect(compareAgenCRuntimeBuilds({ ...NEW_BUILD, runtimeVersion: "dev" }, NEW_BUILD)).toBeUndefined();
+    expect(compareAgenCRuntimeBuilds({ ...NEW_BUILD, buildTime: "" }, { ...NEW_BUILD, commit: "x" })).toBeUndefined();
+  });
+
+  it.each([
+    ["a newer version", identityFor(4242, { runtimeVersion: "10.0.0", commit: "n", buildTime: "2026-10-29T00:00:00.000Z" })],
+    ["a later rebuild of the same version", identityFor(4242, { ...NEW_BUILD, commit: "n", buildTime: "2026-10-30T00:00:00.000Z" })],
+    ["a build it cannot order", identityFor(4242, { runtimeVersion: "dev", commit: "n", buildTime: "x" })],
+  ])("only-older mode leaves %s alone", async (_label, daemon) => {
+    const { calls, deps } = scenario({ state: { kind: "running", identity: daemon } });
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...deps, onlyOlderDaemon: true }))
+      .resolves.toMatchObject({ status: "skipped", code: "newer-daemon", pid: 4242 });
+    expect(calls).toEqual([]);
+  });
+
+  it("only-older mode restarts an older daemon as usual", async () => {
+    const { calls, deps } = scenario();
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...deps, onlyOlderDaemon: true }))
+      .resolves.toMatchObject({ status: "restarted", fromVersion: "9.9.8", toVersion: "9.9.9" });
+    expect(calls).toEqual(["probe", "stop", "probe", "shutdown", "start"]);
   });
 
   it("is not available off macOS and Linux", async () => {
