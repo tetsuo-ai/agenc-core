@@ -10,8 +10,8 @@ import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>
 import { useInput } from '../ink.js'
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js'
-import type { PromptInputMode } from '../../types/textInputTypes'
-import type { HistoryEntry } from '../../utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PromptInputMode } from '../../types/textInputTypes.js'
+import type { HistoryEntry } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../utils/log.js'
 
 export function useHistorySearch(

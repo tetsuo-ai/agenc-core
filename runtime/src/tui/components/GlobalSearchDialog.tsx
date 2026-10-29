@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import { resolve as resolvePath } from 'path';
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { useRegisterOverlay } from '../context/overlayContext';
-import { useTerminalSize } from '../hooks/useTerminalSize';
+import { useRegisterOverlay } from '../context/overlayContext.js';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { useOptionalSetAppState } from '../state/AppState.js';
 import {
   normalizeRipgrepMatchPath,
@@ -12,16 +12,16 @@ import {
 } from '../search/ripgrep-match.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Text } from '../ink.js';
-import { getCwd } from '../../utils/cwd';
-import { openFileInExternalEditor } from '../../utils/editor';
-import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
-import { highlightMatch } from '../../utils/highlightMatch';
-import { readFileInRange } from '../../utils/readFileInRange';
-import { ripGrepStream } from '../../utils/ripgrep';
-import { logError } from '../../utils/log';
+import { getCwd } from '../../utils/cwd.js';
+import { openFileInExternalEditor } from '../../utils/editor.js';
+import { truncatePathMiddle, truncateToWidth } from '../../utils/format.js';
+import { highlightMatch } from '../../utils/highlightMatch.js';
+import { readFileInRange } from '../../utils/readFileInRange.js';
+import { ripGrepStream } from '../../utils/ripgrep.js';
+import { logError } from '../../utils/log.js';
 
-import { FuzzyPicker } from './design-system/FuzzyPicker';
-import { LoadingState } from './design-system/LoadingState';
+import { FuzzyPicker } from './design-system/FuzzyPicker.js';
+import { LoadingState } from './design-system/LoadingState.js';
 type Props = {
   onDone: () => void;
   onInsert: (text: string) => void;
@@ -100,10 +100,10 @@ export function GlobalSearchDialog(t0) {
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState(null);
   const [query, setQuery] = useState("");
-  const [focused, setFocused] = useState(undefined);
-  const [preview, setPreview] = useState(null);
-  const abortRef = useRef(null);
-  const timeoutRef = useRef(null);
+  const [focused, setFocused] = useState<Match | undefined>(undefined);
+  const [preview, setPreview] = useState<{ file: string; line: number; content: string } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   let t2;
   let t3;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
@@ -268,7 +268,7 @@ export function GlobalSearchDialog(t0) {
   }
   let t14;
   if ($[25] !== preview || $[26] !== previewWidth || $[27] !== query) {
-    t14 = m_8 => preview?.file === m_8.file && preview.line === m_8.line ? <><Text dimColor={true}>{truncatePathMiddle(m_8.file, previewWidth)}:{m_8.line}</Text>{preview.content.split("\n").map((line_0, i) => <Text key={i}>{highlightMatch(truncateToWidth(line_0, previewWidth), query)}</Text>)}</> : <LoadingState message={"Loading..."} dimColor={true} />;
+    t14 = (m_8: Match) => preview?.file === m_8.file && preview.line === m_8.line ? <><Text dimColor={true}>{truncatePathMiddle(m_8.file, previewWidth)}:{m_8.line}</Text>{preview.content.split("\n").map((line_0, i) => <Text key={i}>{highlightMatch(truncateToWidth(line_0, previewWidth), query)}</Text>)}</> : <LoadingState message={"Loading..."} dimColor={true} />;
     $[25] = preview;
     $[26] = previewWidth;
     $[27] = query;
@@ -303,7 +303,7 @@ function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearch
     if (controller_1.signal.aborted) {
       return;
     }
-    const parsed = [];
+    const parsed: Match[] = [];
     for (const line of lines) {
       const m_1 = parseRipgrepJsonLine(line);
       if (!m_1) {

@@ -72,7 +72,7 @@ function ProactiveCountdown() {
       : NULL,
     NULL,
   );
-  const [remainingSeconds, setRemainingSeconds] = useState(null);
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
   let t0;
   let t1;
   if ($[0] !== nextTickAt) {

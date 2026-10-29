@@ -12,9 +12,9 @@ import {
 } from "../state/AppState.js";
 import type { ToolUseConfirm } from "../permission-types.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
-import { useNotifications } from "../context/notifications";
-import { useIsModalOverlayActive } from "../context/overlayContext";
-import { useCommandQueue } from "./useCommandQueue";
+import { useNotifications } from "../context/notifications.js";
+import { useIsModalOverlayActive } from "../context/overlayContext.js";
+import { useCommandQueue } from "./useCommandQueue.js";
 import { getShortcutDisplay } from "../keybindings/shortcutFormat.js";
 import {
   useInputCapture,
@@ -22,16 +22,16 @@ import {
 } from "../keybindings/useKeybinding.js";
 import { useInput } from "../ink.js";
 import type { Screen } from "../types/screen.js";
-import { exitTeammateView } from "../state/teammateViewHelpers";
+import { exitTeammateView } from "../state/teammateViewHelpers.js";
 import {
   killAllRunningAgentTasks,
   markAgentsNotified,
-} from "../../tasks/LocalAgentTask/LocalAgentTask";
+} from "../../tasks/LocalAgentTask/LocalAgentTask.js";
 import type {
   PromptInputMode,
   QueuedCommand,
   QueuedCommandOwner,
-} from "../../types/textInputTypes";
+} from "../../types/textInputTypes.js";
 import { isStoppableLocalAgentStatus } from "../components/spinner/agentActivity.js";
 import { registerUrgentCancelInputHandler } from "../urgentCancelInput.js";
 import { DOUBLE_PRESS_TIMEOUT_MS } from "./useDoublePress.js";

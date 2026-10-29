@@ -13,7 +13,7 @@ import {
   updateYankLength,
   yankPop,
 } from '../../utils/TextCursor.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { useTerminalSize } from './useTerminalSize'
+import { useTerminalSize } from './useTerminalSize.js'
 
 type UseSearchInputOptions = {
   isActive: boolean

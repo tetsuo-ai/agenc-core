@@ -12,7 +12,7 @@ import { truncate } from '../../../utils/format.js'; // upstream-import: keep ta
 import { Box, Text } from '../../ink.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { getTeammateFooterLayout } from './BackgroundTaskStatus.layout.js';
 
 type Props = {

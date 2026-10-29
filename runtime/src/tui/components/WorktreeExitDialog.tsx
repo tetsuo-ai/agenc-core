@@ -6,8 +6,8 @@ import { execFileNoThrow } from '../../utils/execFileNoThrow.js'; // upstream-im
 import { getPlansDirectory } from '../../utils/plans.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { setCwd } from '../../utils/Shell.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { cleanupWorktree, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../../utils/worktree.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Select } from './CustomSelect/select';
-import { Dialog } from './design-system/Dialog';
+import { Select } from './CustomSelect/select.js';
+import { Dialog } from './design-system/Dialog.js';
 import { Spinner } from './spinner/Spinner.js';
 
 // Lazy import breaks the cycle this file would otherwise close:

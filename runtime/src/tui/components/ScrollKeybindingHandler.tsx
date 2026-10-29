@@ -1,6 +1,6 @@
 import React, { type RefObject, useEffect, useRef } from 'react';
-import { useNotifications } from '../context/notifications';
-import { useCopyOnSelect, useSelectionBgColor } from '../hooks/useCopyOnSelect';
+import { useNotifications } from '../context/notifications.js';
+import { useCopyOnSelect, useSelectionBgColor } from '../hooks/useCopyOnSelect.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { useSelection } from '../ink/hooks/use-selection.js';
 import type { FocusMove, SelectionState } from '../ink/selection.js';

@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import * as React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useInterval } from 'usehooks-ts';
-import { useRegisterOverlay } from '../../context/overlayContext';
+import { useRegisterOverlay } from '../../context/overlayContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow dialog navigation
 import { Box, Text, useInput } from '../../ink.js';
@@ -24,8 +24,8 @@ import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam } from '../..
 import { listTasks, type Task, unassignTeammateTasks } from '../../../utils/tasks.js';
 import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../../../utils/teamDiscovery.js';
 import { sendShutdownRequestToMailbox } from '../../../utils/teammateMailbox.js';
-import { Dialog } from '../design-system/Dialog';
-import ThemedText from '../design-system/ThemedText';
+import { Dialog } from '../design-system/Dialog.js';
+import ThemedText from '../design-system/ThemedText.js';
 import {
   getTeamListFooterText,
   getTeammateDetailFooterText,
@@ -502,7 +502,7 @@ function TeammateDetailView(t0) {
     }
   });
   const workingPath = teammate.worktreePath || teammate.cwd;
-  const subtitleParts = [];
+  const subtitleParts: string[] = [];
   if (teammate.model) {
     subtitleParts.push(teammate.model);
   }
