@@ -1,7 +1,7 @@
 import * as React from 'react';
-import BashToolResultMessage from '../../tools/BashTool/BashToolResultMessage';
+import BashToolResultMessage from '../../tools/BashTool/BashToolResultMessage.js';
 import type { Out as BashOut } from '../../tools/BashTool/BashTool.js';
-import { extractTag } from '../../utils/messages';
+import { extractTag } from '../../utils/messages.js';
 import { unescapeXml } from '../../utils/xml.js';
 
 type Props = {

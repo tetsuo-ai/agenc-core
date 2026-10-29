@@ -2,11 +2,11 @@
 import React from 'react';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { Box } from '../ink.js';
-import { BashTool } from '../../tools/BashTool/BashTool';
-import type { ShellProgress } from '../../types/tools';
+import { BashTool } from '../../tools/BashTool/BashTool.js';
+import type { ShellProgress } from '../../types/tools.js';
 import { escapeXml } from '../../utils/xml.js';
 import { ShellInputMessage } from './v2/messagePrimitives.js';
-import { ShellProgressMessage } from './shell/ShellProgressMessage';
+import { ShellProgressMessage } from './shell/ShellProgressMessage.js';
 type Props = {
   input: string;
   progress: ShellProgress | null;
@@ -33,7 +33,7 @@ export function BashModeProgress({
       verbose,
       tools: [],
       terminalSize: undefined,
-    })
+    } as Parameters<typeof BashTool.renderToolUseProgressMessage>[1] & { fullscreen: boolean })
   );
 
   return (

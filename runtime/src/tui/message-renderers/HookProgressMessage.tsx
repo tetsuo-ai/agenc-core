@@ -3,7 +3,7 @@ import type { HookEvent } from '../../entrypoints/agentSdkTypes.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { Box, Text } from '../ink.js';
-import { MessageResponse } from '../components/MessageResponse';
+import { MessageResponse } from '../components/MessageResponse.js';
 type Props = {
   hookEvent: HookEvent;
   lookups: ReturnType<typeof buildMessageLookups>;

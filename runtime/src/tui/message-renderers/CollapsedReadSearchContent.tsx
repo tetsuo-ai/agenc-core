@@ -1,24 +1,24 @@
 import { feature } from 'bun:bundle';
 import { basename } from 'path';
 import React, { useRef } from 'react';
-import { useMinDisplayTime } from '../hooks/useMinDisplayTime';
+import { useMinDisplayTime } from '../hooks/useMinDisplayTime.js';
 import { Ansi, Box, Text, useTheme } from '../ink.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
-import { findToolByName, type Tools } from '../../tools/Tool';
-import { getReplPrimitiveTools } from '../../tools/REPLTool/primitiveTools';
-import type { CollapsedReadSearchGroup, NormalizedAssistantMessage } from '../../types/message';
+import { findToolByName, type Tools } from '../../tools/Tool.js';
+import { getReplPrimitiveTools } from '../../tools/REPLTool/primitiveTools.js';
+import type { CollapsedReadSearchGroup, NormalizedAssistantMessage } from '../../types/message.js';
 import { uniq } from '../../utils/array.js';
 import { getToolUseIdsFromCollapsedGroup } from '../../utils/collapseReadSearch.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatDuration, formatSecondsShort } from '../../utils/format.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import type { ThemeName } from '../../utils/theme.js';
-import { CtrlOToExpand } from '../components/CtrlOToExpand';
-import { useSelectedMessageBg } from '../components/messageActions';
-import { PrBadge } from '../components/PrBadge';
-import { ToolUseLoader } from '../components/ToolUseLoader';
+import { CtrlOToExpand } from '../components/CtrlOToExpand.js';
+import { useSelectedMessageBg } from '../components/messageActions.js';
+import { PrBadge } from '../components/PrBadge.js';
+import { ToolUseLoader } from '../components/ToolUseLoader.js';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
-import * as teamMemCollapsedModule from './teamMemCollapsed';
+import * as teamMemCollapsedModule from './teamMemCollapsed.js';
 
 const teamMemCollapsed = feature('TEAMMEM') ? teamMemCollapsedModule : null;
 

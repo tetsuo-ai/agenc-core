@@ -5,30 +5,30 @@ import { resolveAgenCTuiGlyphMode } from '../glyphs.js';
 import { Ansi, Box, Text } from '../ink.js';
 import type { Attachment } from '../../utils/attachments.js';
 import type { NullRenderingAttachmentType } from '../message-visibility.js';
-import { useAppState } from '../state/AppState.js';
+import { useAppState, type AppState } from '../state/AppState.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatFileSize } from '../../utils/format.js';
-import { MessageResponse } from '../components/MessageResponse';
+import { MessageResponse } from '../components/MessageResponse.js';
 import { basename, sep } from 'path';
-import { UserTextMessage } from './UserTextMessage';
-import { DiagnosticsDisplay } from '../components/DiagnosticsDisplay';
+import { UserTextMessage } from './UserTextMessage.js';
+import { DiagnosticsDisplay } from '../components/DiagnosticsDisplay.js';
 import { getContentText } from '../../utils/messages.js';
 import type { Theme } from '../../utils/theme.js';
 import { UserImageMessage } from '../components/v2/messagePrimitives.js';
 import { toInkColor } from '../../utils/ink.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { plural } from '../../utils/stringUtils.js';
-import { isEnvTruthy } from '../../utils/envUtils';
+import { isEnvTruthy } from '../../utils/envUtils.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
-import { tryRenderPlanApprovalMessage, formatTeammateMessageContent } from './PlanApprovalMessage';
+import { tryRenderPlanApprovalMessage, formatTeammateMessageContent } from './PlanApprovalMessage.js';
 import { BLACK_CIRCLE } from '../../constants/figures.js';
-import { TeammateMessageContent } from './UserTeammateMessage';
+import { TeammateMessageContent } from './UserTeammateMessage.js';
 import { isShutdownApproved, isTaskAssignment } from '../../utils/teammateMailbox.js';
-import { CtrlOToExpand } from '../components/CtrlOToExpand';
-import FullWidthRow from '../components/design-system/FullWidthRow';
-import { FilePathLink } from '../components/FilePathLink';
+import { CtrlOToExpand } from '../components/CtrlOToExpand.js';
+import FullWidthRow from '../components/design-system/FullWidthRow.js';
+import { FilePathLink } from '../components/FilePathLink.js';
 import { feature } from 'bun:bundle';
-import { useSelectedMessageBg } from '../components/messageActions';
+import { useSelectedMessageBg } from '../components/messageActions.js';
 type Props = {
   addMargin: boolean;
   attachment: Attachment;
@@ -417,13 +417,13 @@ function TeammateTaskStatus(t0) {
   const bg = useSelectedMessageBg();
   let t1;
   if ($[0] !== attachment.taskId) {
-    t1 = s => s.tasks[attachment.taskId];
+    t1 = (s: AppState) => s.tasks[attachment.taskId];
     $[0] = attachment.taskId;
     $[1] = t1;
   } else {
     t1 = $[1];
   }
-  const task = useAppState(t1);
+  const task = useAppState<AppState['tasks'][string] | undefined>(t1);
   if (task?.type !== "in_process_teammate") {
     let t2;
     if ($[2] !== attachment) {

@@ -1,3 +1,4 @@
+import type { AgenCToolResultBlockParam } from "../types/message.js";
 import type {
   ToolResultBlockParam,
   ToolUseBlockParam,
@@ -692,7 +693,7 @@ export type Tool<
    * that show "File not found" instead of the raw error).
    */
   renderToolUseErrorMessage?(
-    result: ToolResultBlockParam["content"],
+    result: AgenCToolResultBlockParam["content"],
     options: {
       progressMessagesForMessage: ProgressMessage[];
       tools: Tools;

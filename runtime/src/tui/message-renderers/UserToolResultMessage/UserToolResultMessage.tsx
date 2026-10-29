@@ -1,15 +1,15 @@
 import * as React from 'react';
 import { Text } from '../../ink.js';
-import type { Tools } from '../../../tools/Tool';
-import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message';
+import type { Tools } from '../../../tools/Tool.js';
+import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message.js';
 import type { AgenCToolResultBlockParam } from '../../../types/message.js';
 import { type buildMessageLookups, CANCEL_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE, REJECT_MESSAGE } from '../../../utils/messages.js';
 import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../../tool-result-denial.js';
 import { UserToolCanceledMessage } from '../../components/v2/messagePrimitives.js';
-import { UserToolErrorMessage } from './UserToolErrorMessage';
-import { UserToolRejectMessage } from './UserToolRejectMessage';
-import { UserToolSuccessMessage } from './UserToolSuccessMessage';
-import { getTextToolResultContent, useGetToolFromMessages } from './utils';
+import { UserToolErrorMessage } from './UserToolErrorMessage.js';
+import { UserToolRejectMessage } from './UserToolRejectMessage.js';
+import { UserToolSuccessMessage } from './UserToolSuccessMessage.js';
+import { getTextToolResultContent, useGetToolFromMessages } from './utils.js';
 type Props = {
   param: AgenCToolResultBlockParam;
   message: NormalizedUserMessage;

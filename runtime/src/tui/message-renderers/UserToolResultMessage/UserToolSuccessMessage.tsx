@@ -3,12 +3,12 @@ import * as React from 'react';
 import { TuiErrorBoundary } from '../../components/TuiErrorBoundary.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
-import { filterToolProgressMessages, type Tool, type Tools } from '../../../tools/Tool';
-import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message';
+import { filterToolProgressMessages, type Tool, type Tools } from '../../../tools/Tool.js';
+import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message.js';
 import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../utils/classifierApprovals.js';
 import { extractTag, type buildMessageLookups } from '../../../utils/messages.js';
-import { MessageResponse } from '../../components/MessageResponse';
-import { HookProgressMessage } from '../HookProgressMessage';
+import { MessageResponse } from '../../components/MessageResponse.js';
+import { HookProgressMessage } from '../HookProgressMessage.js';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 type Props = {
   message: NormalizedUserMessage;

@@ -1,6 +1,6 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs';
+import type { AgenCToolResultBlockParam } from '../../types/message.js';
 import { stripUnderlineAnsi } from './shell/OutputLine.js';
 import { extractTag } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { removeSandboxViolationTags } from '../../utils/sandbox/sandbox-ui-utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -11,7 +11,7 @@ import { MessageResponse } from './MessageResponse.js';
 import { summarizeToolError } from '../tool-error-text.js';
 const MAX_RENDERED_LINES = 10;
 type Props = {
-  result: ToolResultBlockParam['content'];
+  result: AgenCToolResultBlockParam['content'];
   verbose: boolean;
 };
 export function FallbackToolUseErrorMessage(t0: Props) {

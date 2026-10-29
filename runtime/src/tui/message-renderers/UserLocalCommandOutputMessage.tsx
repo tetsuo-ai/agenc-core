@@ -5,8 +5,8 @@ import { LOCAL_COMMAND_STDERR_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../../consta
 import { Box, Text } from '../ink.js';
 import { extractTag } from '../../utils/messages.js';
 import { Markdown } from '../components/markdown/Markdown.js';
-import FullWidthRow from '../components/design-system/FullWidthRow';
-import { MessageResponse } from '../components/MessageResponse';
+import FullWidthRow from '../components/design-system/FullWidthRow.js';
+import { MessageResponse } from '../components/MessageResponse.js';
 
 type Props = {
   content: string;

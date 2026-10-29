@@ -5,8 +5,8 @@ import { Box, Text } from '../ink.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { type IdleNotificationMessage, isIdleNotification, isPlanApprovalRequest, isPlanApprovalResponse, type PlanApprovalRequestMessage, type PlanApprovalResponseMessage } from '../../utils/teammateMailbox.js';
-import { getShutdownMessageSummary } from './ShutdownMessage';
-import { getTaskAssignmentSummary } from './TaskAssignmentMessage';
+import { getShutdownMessageSummary } from './ShutdownMessage.js';
+import { getTaskAssignmentSummary } from './TaskAssignmentMessage.js';
 type PlanApprovalRequestProps = {
   request: PlanApprovalRequestMessage;
 };

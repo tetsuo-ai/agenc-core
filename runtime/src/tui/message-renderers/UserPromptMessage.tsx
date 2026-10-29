@@ -1,16 +1,16 @@
 import { feature } from 'bun:bundle';
 import React, { useContext, useMemo } from 'react';
-import { getKairosActive, getUserMsgOptIn } from '../../bootstrap/state';
+import { getKairosActive, getUserMsgOptIn } from '../../bootstrap/state.js';
 import type { AgenCTextBlockParam } from '../../types/message.js';
 import { Box } from '../ink.js';
 import { useAppState } from '../state/AppState.js';
-import { isEnvTruthy } from '../../utils/envUtils';
+import { isEnvTruthy } from '../../utils/envUtils.js';
 import { formatBriefTimestamp } from '../../utils/formatBriefTimestamp.js';
 import { logError } from '../../utils/log.js';
 import { countCharInString } from '../../utils/stringUtils.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
-import { MessageActionsSelectedContext } from '../components/messageActions';
-import { HighlightedThinkingText } from './HighlightedThinkingText';
+import { MessageActionsSelectedContext } from '../components/messageActions.js';
+import { HighlightedThinkingText } from './HighlightedThinkingText.js';
 import { Msg } from '../components/v2/primitives.js';
 type Props = {
   addMargin: boolean;

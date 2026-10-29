@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import { useMemo } from 'react';
-import { findToolByName, type Tool, type Tools } from '../../../tools/Tool';
+import { findToolByName, type Tool, type Tools } from '../../../tools/Tool.js';
 import type { AgenCToolResultBlockParam } from '../../../types/message.js';
-import type { buildMessageLookups } from '../../../utils/messages';
+import type { buildMessageLookups } from '../../../utils/messages.js';
 
 export function getTextToolResultContent(
   content: AgenCToolResultBlockParam['content'],
