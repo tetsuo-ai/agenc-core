@@ -1,7 +1,9 @@
 import React from "react";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  getAgenCTuiAttachmentIds,
   getPendingUpdateFollow,
   setPendingUpdateFollow,
   type UpdateFollow,
@@ -52,9 +54,25 @@ export function useUpdateFollow({ safe, agencHome, relaunch }: {
   const relaunchRef = React.useRef(relaunch);
   relaunchRef.current = relaunch;
   React.useEffect(() => {
+    let syncing = false;
     const timer = setInterval(() => {
       const follow = getPendingUpdateFollow();
-      if (follow === null || !safeRef.current) return;
+      if (follow === null) return;
+      if (follow.when === "daemon" && !syncing) {
+        // Keep the pending restart's exemption on exactly this TUI's current
+        // attachments (they change when it reconnects).
+        syncing = true;
+        void import("../../app-server/daemon-restart-when-idle.js")
+          .then(({ updateAgenCDaemonRestartRequesterAttachments }) =>
+            updateAgenCDaemonRestartRequesterAttachments(
+              { env: process.env, userHome: homedir() },
+              process.pid,
+              getAgenCTuiAttachmentIds(),
+            ))
+          .catch(() => false)
+          .finally(() => { syncing = false; });
+      }
+      if (!safeRef.current) return;
       const ready = follow.when === "idle" || updateFollowReady(
         follow,
         readDaemonRuntimeVersion(agencHome),

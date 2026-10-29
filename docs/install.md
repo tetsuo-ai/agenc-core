@@ -1498,8 +1498,9 @@ On macOS and Linux, Update now finishes in the same terminal:
    the menu shows the message and AgenC keeps running its version.
 2. The TUI closes, then moves the daemon with
    `agenc daemon restart --when-idle` (see "Daemon restart after an update").
-   It names itself as the requester, so its own conversation does not hold the
-   restart up; other clients and running work still do.
+   It names itself as the requester. Its connection is already closed, so it
+   holds no attachment, and its own recent activity does not count; other
+   clients and running work still do.
 3. When the daemon is on the new version (or none is running), the TUI
    replaces itself with the new version in place, same process and terminal,
    and reopens the same conversation with `--resume`. The conversation keeps
@@ -1512,7 +1513,12 @@ Update after this turn: AgenC installs now and restarts when the work is done.
 If another AgenC window, `agenc -p` or other work keeps the daemon busy, this
 window reopens on its current version and says AgenC switches once that work
 is done. The daemon restarts when it is idle, and this window then moves to the
-new version at its next idle moment, in the same conversation.
+new version at its next idle moment, in the same conversation. While it waits,
+this window reports its own attachment ids into the pending restart, and only
+those ids, on its own conversation, are exempt. Another client following the same
+conversation (an SDK client, say) still keeps the daemon up. A daemon older
+than 0.19.25 cannot be told which attachment is whose, so it restarts only
+once no client of any kind is attached.
 
 Every failure ends in a working TUI with the reason: if the daemon cannot move,
 or the new version cannot start, the current version reopens; if the new

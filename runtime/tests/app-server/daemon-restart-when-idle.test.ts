@@ -25,6 +25,8 @@ import {
   agenCRuntimeTreeOf,
   findOtherAgenCRuntimeClients,
   homebrewAgenCRuntimeRoots,
+  requesterExemption,
+  updateAgenCDaemonRestartRequesterAttachments,
   listLinuxAgenCProcesses,
   parseAgenCProcessList,
   probeAgenCDaemonIdle,
@@ -296,16 +298,25 @@ describe("daemon restart --when-idle arguments", () => {
 });
 
 describe("the requester's own conversation", () => {
-  it("does not hold the restart up by its attachment or its recent activity", () => {
+  it("exempts only the requester's own attachment ids, never its whole conversation", () => {
+    const mine = { attachmentIds: ["tui"], agentId: "conv-mine" };
     const sessions = [
-      { sessionId: "s1", agentId: "conv-mine", status: "waiting", activeAttachmentIds: ["a1"], restorePending: false },
+      { sessionId: "s1", agentId: "conv-mine", status: "waiting", activeAttachmentIds: ["tui"], restorePending: false },
     ];
     expect(busyReasonFromSessions(sessions)).toEqual({ idle: false, reason: "1 client attached" });
-    expect(busyReasonFromSessions(sessions, "conv-mine")).toEqual({ idle: true });
+    expect(busyReasonFromSessions(sessions, mine)).toEqual({ idle: true });
+    // An SDK client following the same conversation still counts.
     expect(busyReasonFromSessions(
-      [...sessions, { sessionId: "s2", agentId: "conv-other", status: "waiting", activeAttachmentIds: ["a2"], restorePending: false }],
-      "conv-mine",
+      [{ ...sessions[0]!, activeAttachmentIds: ["tui", "sdk"] }],
+      mine,
     )).toEqual({ idle: false, reason: "1 client attached" });
+    // The ids count as the requester's only on its own conversation.
+    expect(busyReasonFromSessions(
+      [...sessions, { sessionId: "s2", agentId: "conv-other", status: "waiting", activeAttachmentIds: ["tui"], restorePending: false }],
+      mine,
+    )).toEqual({ idle: false, reason: "1 client attached" });
+    expect(requesterExemption({ pid: 4321, agentId: "conv-mine" })).toBeUndefined();
+    expect(requesterExemption({ pid: 4321, agentId: "conv-mine", attachmentIds: ["tui"] })).toEqual(mine);
     const now = NOW;
     const recent = new Date(now - 2_000).toISOString();
     expect(busyReasonFromAgents([{ agentId: "conv-mine", status: "idle", lastActiveAt: recent }], now, 15_000).idle)
@@ -519,6 +530,19 @@ describe("probeAgenCDaemonIdle against a daemon socket", () => {
     await expect(probe(state)).resolves.toEqual({ idle: false, reason });
   });
 
+  it("counts an SDK client that follows the requester's conversation", async () => {
+    const state = idleDaemonState();
+    (state.sessions[0] as Record<string, unknown>).activeAttachmentIds = ["tui", "sdk"];
+    daemon = new FakeDaemonSocket(identity, answerFrom(state));
+    await daemon.listen(resolveAgenCDaemonSocketPath({ AGENC_HOME: home }, home));
+    await expect(probeAgenCDaemonIdle({ env: { AGENC_HOME: home }, userHome: home, pid: 7000 }, identity, {
+      nowMs: () => NOW,
+      listProcesses: () => [],
+      uid: 501,
+      requester: { pid: 4321, agentId: "live", attachmentIds: ["tui"] },
+    })).resolves.toEqual({ idle: false, reason: "1 client attached" });
+  });
+
   it("counts only sub-agents that are working, from real snapshot shapes", async () => {
     // snapshotNativeWorkers keeps a reusable worker after its assignment,
     // parked as idle, and a finished one until its handle closes.
@@ -619,6 +643,25 @@ describe("the last step before daemon.shutdown", () => {
     await expect(requestAgenCDaemonShutdownWhenIdle(host(), identity)).resolves.toEqual({ declined: "1 agent working" });
     expect(fake.requests.map((request) => request.method)).toEqual(["initialize", "daemon.shutdownIfIdle"]);
     expect(fake.requests[1]!.params).toEqual({ instanceId: identity.instanceId });
+  });
+
+  it("passes the requester's attachment ids only to a daemon that decides itself", async () => {
+    const fake = await serve((method) => method === "daemon.shutdownIfIdle"
+      ? { shuttingDown: true, instanceId: identity.instanceId }
+      : new Error(`unexpected ${method}`), { "daemon.shutdownIfIdle": true });
+    await requestAgenCDaemonShutdownWhenIdle(host(), identity, { attachmentIds: ["tui"], agentId: "conv-mine" });
+    expect(fake.requests[1]!.params).toEqual({
+      instanceId: identity.instanceId, exemptAttachmentIds: ["tui"], requesterAgentId: "conv-mine",
+    });
+    await fake.close();
+    daemon = undefined;
+    const state = idleDaemonState();
+    (state.sessions[0] as Record<string, unknown>).agentId = "conv-mine";
+    (state.sessions[0] as Record<string, unknown>).activeAttachmentIds = ["tui"];
+    const older = await serve(answerFrom(state));
+    await expect(requestAgenCDaemonShutdownWhenIdle(host(), identity, { attachmentIds: ["tui"], agentId: "conv-mine" }))
+      .resolves.toEqual({ declined: "1 client attached" });
+    expect(older.requests.map((request) => request.method)).not.toContain("daemon.shutdown");
   });
 
   it("returns nothing when the daemon decided to stop", async () => {
@@ -995,6 +1038,32 @@ describe("the deferred restart waiter", () => {
     };
     return { calls, deps };
   }
+
+  it("hands the daemon exactly the requester's attachment ids, from its record", async () => {
+    const requester = { pid: 4321, agentId: "conv-mine", attachmentIds: ["tui"] };
+    const record = readAgenCDaemonPendingRestart(home)!;
+    writeAgenCDaemonPendingRestart(home, { ...record, requester });
+    const exempted: unknown[] = [];
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      requestShutdownWhenIdle: async (_host, _expected, exempt) => {
+        exempted.push(exempt);
+      },
+    })).resolves.toMatchObject({ status: "restarted" });
+    expect(exempted).toEqual([{ attachmentIds: ["tui"], agentId: "conv-mine" }]);
+  });
+
+  it("lets the requesting TUI update its attachment ids in its own record only", async () => {
+    const record = readAgenCDaemonPendingRestart(home)!;
+    writeAgenCDaemonPendingRestart(home, { ...record, requester: { pid: 4321, agentId: "conv-mine" } });
+    const host = { env: { AGENC_HOME: home }, userHome: home };
+    await expect(updateAgenCDaemonRestartRequesterAttachments(host, 9999, ["x"])).resolves.toBe(false);
+    await expect(updateAgenCDaemonRestartRequesterAttachments(host, 4321, ["tui"])).resolves.toBe(true);
+    expect(readAgenCDaemonPendingRestart(home)?.requester).toEqual({ pid: 4321, agentId: "conv-mine", attachmentIds: ["tui"] });
+    expect(readAgenCDaemonPendingRestart(home)?.token).toBe(token);
+    await expect(updateAgenCDaemonRestartRequesterAttachments(host, 4321, ["tui"])).resolves.toBe(false);
+  });
 
   it("keeps excluding the TUI that asked, from its record, while that TUI runs", async () => {
     const requester = { pid: 4321, agentId: "conv-mine" };

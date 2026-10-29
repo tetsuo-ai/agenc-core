@@ -95,7 +95,7 @@ import {
   type JsonValue,
 } from "./protocol/index.js";
 import { canConnectToUnixSocket } from "./transport/unix-socket.js";
-import { runningNativeWorkerCount } from "./daemon-idle-check.js";
+import { countedAttachments, runningNativeWorkerCount } from "./daemon-idle-check.js";
 import {
   formatAgenCDaemonRestartOutcome,
   type AgenCDaemonRestartOutcome,
@@ -182,6 +182,12 @@ export interface AgenCDaemonRestartRequester {
   readonly pid: number;
   /** The requester's conversation (the agent id it would resume). */
   readonly agentId?: string;
+  /**
+   * The requester's own attachments, as it reported them. Only these ids, and
+   * only on its own conversation, are exempt; any other client on the same
+   * conversation (an SDK client following it) still counts.
+   */
+  readonly attachmentIds?: readonly string[];
 }
 
 /** Agents: any non-idle status is work; so is activity within the quiet window. */
@@ -219,15 +225,9 @@ export interface AgenCDaemonProbeSession {
 /** Any attached client (TUI, `agenc -p`, Desktop, SDK) keeps the daemon busy. */
 export function busyReasonFromSessions(
   sessions: readonly AgenCDaemonProbeSession[],
-  requesterAgentId?: string,
+  exempt?: { readonly attachmentIds: readonly string[]; readonly agentId: string },
 ): AgenCDaemonIdleVerdict {
-  const attached = sessions.reduce(
-    (count, session) =>
-      requesterAgentId !== undefined && session.agentId === requesterAgentId
-        ? count
-        : count + (session.activeAttachmentIds?.length ?? 0),
-    0,
-  );
+  const attached = countedAttachments(sessions, exempt);
   return attached > 0
     ? busy(`${plural(attached, "client", "clients")} attached`)
     : IDLE;
@@ -551,6 +551,8 @@ class ShutdownDeclined extends Error {
 export async function requestAgenCDaemonShutdownWhenIdle(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   expected: AgenCDaemonInstanceIdentity,
+  /** The live requester's own attachments; only a daemon that decides itself honors them. */
+  exempt?: { readonly attachmentIds: readonly string[]; readonly agentId: string },
 ): Promise<AgenCDaemonShutdownDeclined | void> {
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   const authCookie = await readAgenCDaemonCookie(
@@ -587,7 +589,12 @@ export async function requestAgenCDaemonShutdownWhenIdle(
         const methods = objectOf(objectOf(result?.capabilities)?.["daemon.methods"]);
         if (methods?.["daemon.shutdownIfIdle"] === true) {
           mode = "conditional";
-          messages[1] = request(2, "daemon.shutdownIfIdle", { instanceId: expected.instanceId });
+          messages[1] = request(2, "daemon.shutdownIfIdle", {
+            instanceId: expected.instanceId,
+            ...(exempt === undefined
+              ? {}
+              : { exemptAttachmentIds: [...exempt.attachmentIds], requesterAgentId: exempt.agentId }),
+          });
         } else {
           mode = "strict";
           messages[1] = request(2, "session.list", { limit: SESSION_LIST_PAGE_LIMIT });
@@ -811,6 +818,7 @@ async function probeAgenCDaemonIdleOrThrow(
   const quietMs = options.quietMs ?? AGENC_DAEMON_RESTART_QUIET_MS;
   const selfPid = options.selfPid ?? host.pid;
   const requesterAgentId = options.requester?.agentId;
+  const exempt = requesterExemption(options.requester);
 
   // 1. Negotiate the newest protocol both sides speak.
   const first = await request(host, expected.instanceId, "1.0.0", []);
@@ -839,7 +847,7 @@ async function probeAgenCDaemonIdleOrThrow(
   let sessionCursor = stringOf(core.results[2]?.nextCursor);
   // Attachments first: an open TUI reads as a client, which is what a person
   // sees, even though its unused session also lists its agent as running.
-  let verdict = busyReasonFromSessions(sessions, requesterAgentId);
+  let verdict = busyReasonFromSessions(sessions, exempt);
   if (!verdict.idle) return verdict;
   verdict = busyReasonFromAgents(agents, nowMs(), quietMs, requesterAgentId);
   if (!verdict.idle) return verdict;
@@ -867,7 +875,7 @@ async function probeAgenCDaemonIdleOrThrow(
       { method: "session.list", params: { limit: SESSION_LIST_PAGE_LIMIT, cursor: sessionCursor } },
     ]);
     const pageSessions = arrayOf(next.results[0]?.sessions).map(toProbeSession);
-    verdict = busyReasonFromSessions(pageSessions, requesterAgentId);
+    verdict = busyReasonFromSessions(pageSessions, exempt);
     if (!verdict.idle) return verdict;
     sessions.push(...pageSessions);
     sessionCursor = stringOf(next.results[0]?.nextCursor);
@@ -1103,9 +1111,13 @@ export interface AgenCDaemonPendingRestart {
 
 function requesterOf(value: unknown): AgenCDaemonRestartRequester | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { pid, agentId } = value as { pid?: unknown; agentId?: unknown };
+  const { pid, agentId, attachmentIds } = value as { pid?: unknown; agentId?: unknown; attachmentIds?: unknown };
   if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1) return undefined;
-  return typeof agentId === "string" && agentId.length > 0 ? { pid, agentId } : { pid };
+  if (typeof agentId !== "string" || agentId.length === 0) return { pid };
+  const ids = Array.isArray(attachmentIds)
+    ? attachmentIds.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 200).slice(0, 16)
+    : [];
+  return ids.length === 0 ? { pid, agentId } : { pid, agentId, attachmentIds: ids };
 }
 
 export function resolveAgenCDaemonPendingRestartPath(daemonHome: string): string {
@@ -1150,6 +1162,34 @@ export function writeAgenCDaemonPendingRestart(
     `${path}.${process.pid}.${randomUUID()}.tmp`,
     `${JSON.stringify(record, null, 2)}\n`,
   );
+}
+
+/**
+ * The requesting TUI reports its current attachment ids into a pending record
+ * it asked for, under the lifecycle lock (record changes are serialized with
+ * a waiter's final decision). Returns whether the record changed.
+ */
+export async function updateAgenCDaemonRestartRequesterAttachments(
+  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+  requesterPid: number,
+  attachmentIds: readonly string[],
+): Promise<boolean> {
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  const unchanged = (record: AgenCDaemonPendingRestart | null): boolean =>
+    record?.requester?.pid !== requesterPid ||
+    record.requester.agentId === undefined ||
+    JSON.stringify(record.requester.attachmentIds ?? []) === JSON.stringify(attachmentIds);
+  if (unchanged(readAgenCDaemonPendingRestart(daemonHome))) return false;
+  return withAgenCDaemonLifecycleLock(host as AgenCDaemonCliHost, async () => {
+    const record = readAgenCDaemonPendingRestart(daemonHome);
+    if (record === null || unchanged(record)) return false;
+    const { attachmentIds: _previous, ...requester } = record.requester!;
+    writeAgenCDaemonPendingRestart(daemonHome, {
+      ...record,
+      requester: attachmentIds.length === 0 ? requester : { ...requester, attachmentIds: [...attachmentIds] },
+    });
+    return true;
+  });
 }
 
 /** Remove the record only while it still belongs to `token`. */
@@ -1207,6 +1247,7 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   readonly requestShutdownWhenIdle?: (
     host: AgenCDaemonCliHost,
     expected: AgenCDaemonInstanceIdentity,
+    exempt?: { readonly attachmentIds: readonly string[]; readonly agentId: string },
   ) => Promise<AgenCDaemonShutdownDeclined | void>;
   /** Serializes pending-record changes with the final shutdown decision. */
   readonly withLifecycleLock?: <T>(host: AgenCDaemonCliHost, operation: () => Promise<T>) => Promise<T>;
@@ -1298,6 +1339,15 @@ function probeFor(ctx: RestartContext): (
   };
 }
 
+/** The attachments a requester may have exempt: its own ids on its own conversation. */
+export function requesterExemption(
+  requester: AgenCDaemonRestartRequester | undefined,
+): { readonly attachmentIds: readonly string[]; readonly agentId: string } | undefined {
+  if (requester?.agentId === undefined || requester.attachmentIds === undefined) return undefined;
+  if (requester.attachmentIds.length === 0) return undefined;
+  return { attachmentIds: requester.attachmentIds, agentId: requester.agentId };
+}
+
 /** The requester counts only while its process runs. */
 function liveRequester(ctx: RestartContext): AgenCDaemonRestartRequester | undefined {
   const requester = ctx.requester.current;
@@ -1347,7 +1397,7 @@ async function restartIfStillIdle(
     // The daemon decides whether it is idle, holding new requests meanwhile;
     // an older daemon gets the strict last check on the same connection.
     requestDaemonShutdown: async (host, identity) => {
-      const result = await requestWhenIdle(host, identity);
+      const result = await requestWhenIdle(host, identity, requesterExemption(liveRequester(ctx)));
       if (result !== undefined) {
         declined = result.declined;
         permanent = result.permanent === true;

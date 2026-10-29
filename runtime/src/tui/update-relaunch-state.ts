@@ -84,6 +84,18 @@ export function getPendingUpdateFollow(): UpdateFollow | null {
   return pendingFollow;
 }
 
+let tuiAttachmentIds: readonly string[] = [];
+
+/** The TUI's daemon client reports its current attachment ids here. */
+export function setAgenCTuiAttachmentIds(ids: readonly string[]): void {
+  tuiAttachmentIds = [...ids];
+}
+
+/** This TUI's attachments, which a pending restart it asked for may exempt. */
+export function getAgenCTuiAttachmentIds(): readonly string[] {
+  return tuiAttachmentIds;
+}
+
 /** The value the relaunched process receives. */
 export function encodeUpdateRelaunchMarker(version: string): string {
   return JSON.stringify({ version });
@@ -115,4 +127,5 @@ export function resetUpdateRelaunchStateForTestingOnly(): void {
   pendingNotice = null;
   pendingFollow = null;
   relaunchedVersion = null;
+  tuiAttachmentIds = [];
 }
