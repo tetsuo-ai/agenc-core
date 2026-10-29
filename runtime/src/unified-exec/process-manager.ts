@@ -1538,14 +1538,22 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         }),
         ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
+      // The strict closes may have proven commands the pause was waiting on.
+      if (this.sandboxAuthorityCleanupFailure !== undefined) await this.recheckUnprovenCleanup(true);
       const failures: unknown[] = [];
       if (sandboxOutcome!.status === "rejected") failures.push(sandboxOutcome.reason);
-      for (const outcome of outcomes) {
+      // Children record their own causes when their close fails.
+      for (const outcome of outcomes.slice(0, children.length)) {
         if (outcome.status === "rejected") failures.push(outcome.reason);
       }
-      // Children record their own causes when their close fails.
-      const entryOutcomes = outcomes.slice(children.length);
-      const unprovenEntries = entries.filter((_entry, index) => entryOutcomes[index]?.status === "rejected");
+      const unprovenEntries: ProcessEntry[] = [];
+      for (const [index, outcome] of outcomes.slice(children.length).entries()) {
+        const entry = entries[index]!;
+        if (outcome.status === "rejected" && !this.entryCleanupProven(entry)) {
+          failures.push(outcome.reason);
+          unprovenEntries.push(entry);
+        }
+      }
       if (this.sandboxAuthorityCleanupFailure !== undefined) failures.push(this.sandboxAuthorityCleanupFailure);
       if (failures.length > 0) {
         const error = new AggregateError(failures, "unified exec owner cleanup is unproven at durable close");
@@ -1575,14 +1583,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       const [sandboxOutcome, ...outcomes] = await Promise.allSettled([
         this.closeSessionSandboxes(), ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
+      // The strict closes may have proven commands the pause was waiting on.
+      if (this.sandboxAuthorityCleanupFailure !== undefined) await this.recheckUnprovenCleanup(true);
       const failures: unknown[] = [];
       const unprovenEntries: ProcessEntry[] = [];
       if (sandboxOutcome!.status === "rejected") failures.push(sandboxOutcome.reason);
       for (const [index, outcome] of outcomes.entries()) {
-        if (outcome.status === "rejected") {
+        const entry = entries[index]!;
+        if (outcome.status === "rejected" && !this.entryCleanupProven(entry)) {
           failures.push(outcome.reason);
-          unprovenEntries.push(entries[index]!);
-        } else this.releaseProcessId(entries[index]!.processId);
+          unprovenEntries.push(entry);
+        } else this.releaseProcessId(entry.processId);
       }
       if (this.sandboxAuthorityCleanupFailure !== undefined) {
         failures.push(this.sandboxAuthorityCleanupFailure);
@@ -1700,11 +1711,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       return Promise.resolve();
     }
     if (this.cleanupRecheck !== undefined) return this.cleanupRecheck;
-    const now = Date.now();
-    if (!force && now - this.lastCleanupRecheckAt < CLEANUP_RECHECK_MIN_INTERVAL_MS) {
-      return Promise.resolve();
+    if (!force) {
+      // Only refused admissions count toward the limit; a forced check from a
+      // close or an operator does not delay the next command's check.
+      const now = Date.now();
+      if (now - this.lastCleanupRecheckAt < CLEANUP_RECHECK_MIN_INTERVAL_MS) return Promise.resolve();
+      this.lastCleanupRecheckAt = now;
     }
-    this.lastCleanupRecheckAt = now;
     const recheck = Promise.resolve().then(async () => {
       const entries = [...this.unprovenCleanupEntries];
       const subject = describeUnprovenCommands(entries);
@@ -1731,6 +1744,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     });
     this.cleanupRecheck = recheck;
     return recheck;
+  }
+
+  /**
+   * Settled with its tree proven gone, now: a strict close that failed for it
+   * earlier no longer counts once the re-check has proven it.
+   */
+  private entryCleanupProven(entry: ProcessEntry): boolean {
+    return entry.exitState !== null && entry.cleanupFailure === undefined &&
+      !this.unprovenCleanupEntries.has(entry);
   }
 
   /**

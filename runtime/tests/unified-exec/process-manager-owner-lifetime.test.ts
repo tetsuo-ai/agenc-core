@@ -193,7 +193,10 @@ describe("borrowed exec owner lifetimes", () => {
   it("reopens shared authority once the failed proof passes, but never the failed scope", async () => {
     const binding = manager.createOwnerLifetime("child").bind();
     await launch("child", binding);
-    vi.mocked(terminateProcessTreeAndReport).mockRejectedValueOnce(new Error("unproven child cleanup"));
+    // It fails in the settlement and again in the close's own re-check.
+    vi.mocked(terminateProcessTreeAndReport)
+      .mockRejectedValueOnce(new Error("unproven child cleanup"))
+      .mockRejectedValueOnce(new Error("unproven child cleanup"));
     await expect(binding.prepareForDurableClose()).rejects.toThrow(/cleanup/);
     // The same proof passes on the next admission: the tree is gone.
     await expect(launch("parent")).resolves.toHaveProperty("session_id");

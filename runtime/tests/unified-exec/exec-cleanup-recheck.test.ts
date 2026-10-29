@@ -62,6 +62,7 @@ const { bindExplicitDangerBoundary } = await import("../helpers/explicit-danger-
 let root: string;
 let releaseStandIn: (() => Promise<void>) | undefined;
 let killStandIn: (() => void) | undefined;
+let heldCleanup: (() => void) | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "exec-cleanup-recheck-"));
@@ -69,6 +70,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.mocked(supervised.processTreeCleanupRecheckable).mockRestore?.();
+  heldCleanup?.();
+  heldCleanup = undefined;
   killStandIn?.();
   releaseStandIn = undefined;
   killStandIn = undefined;
@@ -121,6 +124,70 @@ async function waitUntilRefused(manager: InstanceType<typeof UnifiedExecProcessM
   }
 }
 
+type Manager = InstanceType<typeof UnifiedExecProcessManager>;
+
+async function waitUntil(condition: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await delay(10);
+  }
+}
+
+/** Its settlement gives up 100 ms after SIGKILL, so a stuck member pauses it fast. */
+function pausingManager(): Manager {
+  return new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: root, processTreeKillWaitMs: 100 });
+}
+
+/** Run `sleep 30`, give its tree the stuck member, stop it, and wait for the pause. */
+async function pauseWithStuckCommand(manager: Manager): Promise<{ sessionId: number; refusal: Error }> {
+  const started = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
+  const sessionId = started.process_id!;
+  startStuckProcess(`exec_command process ${sessionId}`);
+  manager.terminateProcess(sessionId);
+  return { sessionId, refusal: await waitUntilRefused(manager) };
+}
+
+/**
+ * A running command that cannot exit yet: every signal sent to its process
+ * group is accepted and stays pending, as for a process blocked in the kernel.
+ * `release` lets one real SIGKILL in.
+ */
+async function startHeldCommand(manager: Manager) {
+  const realKill = process.kill.bind(process);
+  let group = 0;
+  let heldTerms = 0;
+  const spy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+    if (group > 1 && Math.abs(pid) === group && signal !== 0 && signal !== undefined) {
+      if (signal === "SIGTERM") heldTerms += 1;
+      return true;
+    }
+    return realKill(pid, signal);
+  }) as typeof process.kill);
+  const started = await manager.execCommand({ cmd: "echo $$; exec sleep 30", yield_time_ms: 500 });
+  const pgid = Number(started.stdout.trim());
+  heldCleanup = () => {
+    group = 0;
+    spy.mockRestore();
+    try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+  };
+  expect(pgid).toBeGreaterThan(1);
+  group = pgid;
+  return {
+    sessionId: started.process_id!,
+    heldTerms: () => heldTerms,
+    release: () => {
+      group = 0;
+      realKill(-pgid, "SIGKILL");
+    },
+  };
+}
+
+function settled(manager: Manager, sessionId: number): boolean {
+  const view = manager.listOwnedProcesses().find((candidate) => candidate.sessionId === sessionId);
+  return view !== undefined && view.status !== "running" && view.status !== "stopping";
+}
+
 describe("unified exec after a killed command whose process exits late", () => {
   it("waits out a process that exits seconds after SIGKILL instead of closing the shell", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: root });
@@ -145,18 +212,9 @@ describe("unified exec after a killed command whose process exits late", () => {
   }, 20_000);
 
   it("refuses commands while the process may still run and resumes once it has exited", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: root,
-      sessionTempRoot: root,
-      processTreeKillWaitMs: 100,
-    });
+    const manager = pausingManager();
     try {
-      const started = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
-      const sessionId = started.process_id!;
-      startStuckProcess(`exec_command process ${sessionId}`);
-      manager.terminateProcess(sessionId);
-
-      const refusal = await waitUntilRefused(manager);
+      const { sessionId, refusal } = await pauseWithStuckCommand(manager);
       expect(refusal).toMatchObject({ code: "exec_unavailable", recheckable: true });
       expect(refusal.message).toContain("Shell commands are paused in this session.");
       expect(refusal.message).toContain(`\`sleep 30\` (session ${sessionId})`);
@@ -202,18 +260,10 @@ describe("unified exec after a killed command whose process exits late", () => {
   }, 20_000);
 
   it("a subagent closing while the shell is paused does not make the pause permanent", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: root,
-      sessionTempRoot: root,
-      processTreeKillWaitMs: 100,
-    });
+    const manager = pausingManager();
     try {
       const child = manager.createOwnerLifetime("subagent").bind();
-      const started = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
-      const sessionId = started.process_id!;
-      startStuckProcess(`exec_command process ${sessionId}`);
-      manager.terminateProcess(sessionId);
-      await waitUntilRefused(manager);
+      await pauseWithStuckCommand(manager);
 
       // The subagent's close reports the shared failure; it records no new one.
       await expect(child.prepareForDurableClose()).rejects.toThrow(/cleanup is unproven/);
@@ -227,20 +277,11 @@ describe("unified exec after a killed command whose process exits late", () => {
   }, 20_000);
 
   it("keeps shell commands disabled when the failed proof can never pass again", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: root,
-      sessionTempRoot: root,
-      processTreeKillWaitMs: 100,
-    });
+    const manager = pausingManager();
     // As after a lost process-table snapshot: no later proof can be trusted.
     vi.mocked(supervised.processTreeCleanupRecheckable).mockReturnValue(false);
     try {
-      const started = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
-      const sessionId = started.process_id!;
-      startStuckProcess(`exec_command process ${sessionId}`);
-      manager.terminateProcess(sessionId);
-
-      const refusal = await waitUntilRefused(manager);
+      const { sessionId, refusal } = await pauseWithStuckCommand(manager);
       expect(refusal).toMatchObject({ code: "exec_unavailable", recheckable: false });
       expect(refusal.message).toContain("Shell commands are disabled for the rest of this session.");
       expect(refusal.message).toContain(`exec_command process ${sessionId} tree survived forced shutdown`);
@@ -256,33 +297,10 @@ describe("unified exec after a killed command whose process exits late", () => {
   }, 20_000);
 
   it("does not resume while another command the pause stopped is still exiting", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: root,
-      sessionTempRoot: root,
-      processTreeKillWaitMs: 100,
-    });
-    // A second command that cannot exit yet: every signal sent to its process
-    // group is accepted and stays pending, as for a process blocked in the
-    // kernel. Only the test's own release reaches it.
-    const realKill = process.kill.bind(process);
-    let pendingGroup = 0;
-    const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
-      if (pendingGroup > 1 && Math.abs(pid) === pendingGroup && signal !== 0 && signal !== undefined) return true;
-      return realKill(pid, signal);
-    }) as typeof process.kill);
-    let slowGroup = 0;
+    const manager = pausingManager();
     try {
-      const slow = await manager.execCommand({ cmd: "echo $$; exec sleep 30", yield_time_ms: 500 });
-      const slowSession = slow.process_id!;
-      slowGroup = Number(slow.stdout.trim());
-      expect(slowGroup).toBeGreaterThan(1);
-      pendingGroup = slowGroup;
-
-      const started = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
-      const sessionId = started.process_id!;
-      startStuckProcess(`exec_command process ${sessionId}`);
-      manager.terminateProcess(sessionId);
-      await waitUntilRefused(manager);
+      const held = await startHeldCommand(manager);
+      await pauseWithStuckCommand(manager);
 
       // The command whose proof failed has exited; the one the pause stopped
       // has not, so admission stays closed and names it.
@@ -290,27 +308,35 @@ describe("unified exec after a killed command whose process exits late", () => {
       await manager.recheckCleanupAdmission({ force: true });
       const stillPaused = await waitUntilRefused(manager);
       expect(stillPaused.message).toContain("Shell commands are paused in this session.");
-      expect(stillPaused.message).toContain(`(session ${slowSession})`);
+      expect(stillPaused.message).toContain(`(session ${held.sessionId})`);
 
       // It exits; once its own settlement proves it gone, commands run again.
-      pendingGroup = 0;
-      realKill(-slowGroup, "SIGKILL");
-      const deadline = Date.now() + 10_000;
-      for (;;) {
-        const view = manager.listOwnedProcesses().find((process) => process.sessionId === slowSession);
-        if (view !== undefined && view.status !== "running" && view.status !== "stopping") break;
-        if (Date.now() > deadline) throw new Error("the stopped command never settled");
-        await delay(25);
-      }
+      held.release();
+      await waitUntil(() => settled(manager, held.sessionId), "the stopped command to settle");
       await manager.recheckCleanupAdmission({ force: true });
       const resumed = await manager.execCommand({ cmd: "echo resumed", yield_time_ms: 5_000 });
       expect(resumed.stdout).toContain("resumed");
     } finally {
-      pendingGroup = 0;
-      kill.mockRestore();
-      if (slowGroup > 1) {
-        try { process.kill(-slowGroup, "SIGKILL"); } catch { /* already gone */ }
-      }
+      await manager.closeAll().catch(() => {});
+    }
+  }, 30_000);
+
+  it("session teardown seals once a command the pause stopped exits during it", async () => {
+    const manager = pausingManager();
+    try {
+      const held = await startHeldCommand(manager);
+      await pauseWithStuckCommand(manager);
+      await releaseStandIn!();
+
+      // Teardown starts while the stopped command is still exiting. Its
+      // re-check and then its strict close each signal it; it exits during
+      // the strict close, which proves it gone, so the session seals.
+      const before = held.heldTerms();
+      const close = manager.prepareForDurableClose();
+      await waitUntil(() => held.heldTerms() >= before + 2, "the close to reach its strict wait");
+      held.release();
+      await expect(close).resolves.toBeUndefined();
+    } finally {
       await manager.closeAll().catch(() => {});
     }
   }, 30_000);
