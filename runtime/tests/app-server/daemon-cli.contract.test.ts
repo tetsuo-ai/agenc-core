@@ -6548,6 +6548,12 @@ snapshot_max_bytes = 64
       runner: { startAgent: async () => { throw new Error("not used"); }, restoreAgent: vi.fn(async () => true) },
     });
     await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+    // The pid file is published before readiness. A stop that lands in
+    // between ends startup before the restore summary is wired, so wait for
+    // the readiness line the summary is registered with.
+    await vi.waitFor(() => expect(io.stdoutText()).toContain("AgenC daemon running"), {
+      timeout: LOADED_DAEMON_MILESTONE_BUDGET_MS,
+    });
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
     expect(io.stderrText()).toContain(
