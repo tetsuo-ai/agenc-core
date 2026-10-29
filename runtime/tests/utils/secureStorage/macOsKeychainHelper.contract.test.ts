@@ -213,8 +213,10 @@ describe("macOS Keychain native-helper contract", () => {
     expect(manifest.agencExecutableFiles).toContain(
       "dist/agenc-keychain-helper",
     );
-    expect(entrypointCheck).toContain(
-      'process.platform === "darwin" ? ["dist/agenc-keychain-helper"] : []',
+    // The macOS-only required entrypoints include the keychain helper; the
+    // runtime inventory helper ships beside it.
+    expect(entrypointCheck).toMatch(
+      /process\.platform === "darwin" \? \[[^\]]*"dist\/agenc-keychain-helper"[^\]]*\] : \[\]/u,
     );
   });
 
