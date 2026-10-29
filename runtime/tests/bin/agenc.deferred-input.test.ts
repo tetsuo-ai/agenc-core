@@ -890,10 +890,16 @@ describe("deferred daemon input ownership", () => {
       "already closed",
     );
     expect(client.request).toHaveBeenCalledOnce();
-    expect(client.request).toHaveBeenCalledWith("agent.stop", {
-      agentId: "agent-closing",
-      reason: "tui_startup_failed",
-    });
+    // The startup-failure stop uses the bounded cleanup: the live connection
+    // only, under the cleanup budget's signal.
+    expect(client.request).toHaveBeenCalledWith(
+      "agent.stop",
+      {
+        agentId: "agent-closing",
+        reason: "tui_startup_failed",
+      },
+      expect.objectContaining({ reconnect: false, signal: expect.any(AbortSignal) }),
+    );
     expect(client.close).toHaveBeenCalledOnce();
     expect(stopPromptAgent).not.toHaveBeenCalled();
   });

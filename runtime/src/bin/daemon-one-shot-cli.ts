@@ -4,7 +4,7 @@ import { readLocalByokCredential } from "../auth/native-credentials.js";
 import { resolveCliCwdForStartup } from "./cli-cwd.js";
 import { requireProjectTrustForTui } from "./project-trust-preflight.js";
 import { cliStartupErrorMessage } from "./cli-process-main.js";
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { APPROVAL_DENIED_ABORT_REASON, classifyTurnTerminal, type TurnTerminal } from "../contracts/turn-terminal.js";
@@ -28,6 +28,7 @@ import { createStartupSandboxBypassNoticeWriter, resolveStartupSandboxBypass, wr
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
+import { AGENC_DAEMON_PID_MAX_BYTES, resolveAgenCDaemonPidPath } from "../app-server/daemon-discovery.js";
 
 const DEFAULT_ONE_SHOT_DEPS: AgenCDaemonCliDeps = {
   createConnectedTuiClient: createConnectedAgenCJsonLineDaemonTuiClient,
@@ -307,34 +308,144 @@ type ConnectedDaemonTuiClient = Awaited<
   ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
 >;
 
+/** Terminal control RPCs share this budget, independent of the work's signal. */
+export const DAEMON_AGENT_CLEANUP_BUDGET_MS = 5_000;
+/** How often terminal cleanup re-checks whether the recorded daemon still runs. */
+export const DAEMON_CLEANUP_LIVENESS_POLL_MS = 25;
+
+function processMayStillRun(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
+  }
+  if (process.platform !== "linux") return true;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const state = stat.charAt(stat.lastIndexOf(")") + 2);
+    return state !== "Z" && state !== "X";
+  } catch (error) {
+    // Exited between the signal probe and the read; any other error stays conservative.
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+/**
+ * Liveness of the daemon recorded for this AgenC home when cleanup reaches the
+ * fallback client. The probe turns false only after that recorded process has
+ * exited: a graceful shutdown already stopped every agent, and no other process
+ * can host it. The pid is captured once, so a later pid-file removal by
+ * `daemon stop` does not hide the exit. Without a recorded pid, or on Windows,
+ * this returns null and cleanup keeps its previous bounded fallback.
+ */
+export function recordedDaemonLivenessProbe(
+  env: NodeJS.ProcessEnv,
+): (() => Promise<boolean>) | null {
+  if (process.platform === "win32") return null;
+  let raw: string;
+  try {
+    // Synchronous and bounded like readAgenCDaemonPid: a regular file, never a link.
+    const path = resolveAgenCDaemonPidPath(env);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.size > AGENC_DAEMON_PID_MAX_BYTES) return null;
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const canonical = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  if (!/^[1-9]\d*$/u.test(canonical)) return null;
+  const pid = Number(canonical);
+  if (!Number.isSafeInteger(pid) || pid <= 1) return null;
+  return async () => processMayStillRun(pid);
+}
+
+function pauseUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
 export async function stopDaemonAgentBestEffort(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly daemonClient?: ConnectedDaemonTuiClient | null;
   readonly env: NodeJS.ProcessEnv;
   readonly agentId: string;
   readonly reason: string;
-}): Promise<void> {
+  /** Daemon liveness probe for tests; defaults to the recorded daemon pid. */
+  readonly daemonMayHostAgent?: (env: NodeJS.ProcessEnv) => Promise<boolean>;
+}): Promise<boolean> {
   const stopParams: AgentStopParams = {
     agentId: params.agentId,
     reason: params.reason,
   };
-  if (params.daemonClient !== undefined && params.daemonClient !== null) {
-    try {
-      await params.daemonClient.request("agent.stop", stopParams);
-      return;
-    } catch {
-      /* fall through to one-shot stop client */
+  const controller = new AbortController();
+  const deadline = performance.now() + DAEMON_AGENT_CLEANUP_BUDGET_MS;
+  const timer = setTimeout(() => controller.abort("agent cleanup deadline"), DAEMON_AGENT_CLEANUP_BUDGET_MS);
+  try {
+    if (params.daemonClient !== undefined && params.daemonClient !== null) {
+      try {
+        // The terminal owner must not join a 30s reconnect or replay sessions.
+        // A separate fallback transport can recover stop within the same budget.
+        await params.daemonClient.request("agent.stop", stopParams, { signal: controller.signal, reconnect: false });
+        return true;
+      } catch {
+        /* fall through to one-shot stop client */
+      }
     }
+    const remaining = Math.floor(deadline - performance.now());
+    if (controller.signal.aborted || remaining <= 0) return false;
+    const injected = params.daemonMayHostAgent;
+    const probe = injected !== undefined
+      ? () => injected(params.env)
+      : recordedDaemonLivenessProbe(params.env);
+    if (probe === null) {
+      await params.deps.stopPromptAgent({ ...stopParams, reason: params.reason, env: params.env, signal: controller.signal, timeoutMs: remaining });
+      return true;
+    }
+    const mayHost = (): Promise<boolean> => probe().catch(() => true);
+    // The fallback client retries a missing endpoint until its budget ends. Once
+    // the recorded daemon has exited (for example an external `daemon stop`
+    // while the turn waits on a retry backoff), no agent remains to stop and
+    // the CLI must not outlive its daemon by the whole cleanup budget.
+    if (!(await mayHost())) return true;
+    if (controller.signal.aborted) return false;
+    const watch = new AbortController();
+    let daemonGone = false;
+    const watcher = (async () => {
+      while (!watch.signal.aborted) {
+        await pauseUnlessAborted(DAEMON_CLEANUP_LIVENESS_POLL_MS, watch.signal);
+        if (watch.signal.aborted) return;
+        if (!(await mayHost())) {
+          daemonGone = true;
+          controller.abort("daemon exited during agent cleanup");
+          return;
+        }
+      }
+    })();
+    try {
+      await params.deps.stopPromptAgent({ ...stopParams, reason: params.reason, env: params.env, signal: controller.signal, timeoutMs: remaining });
+      return true;
+    } catch {
+      return daemonGone;
+    } finally {
+      watch.abort();
+      await watcher;
+    }
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
-  await params.deps
-    .stopPromptAgent({
-      agentId: params.agentId,
-      reason: params.reason,
-      env: params.env,
-    })
-    .catch(() => {
-      /* best effort */
-    });
 }
 
 type DaemonOneShotFinalStatus = Pick<TurnTerminal, "durationMs" | "remainingDeadlineMs" | "transportFailure" | "usableFinalAnswer"> & {
@@ -1483,13 +1594,14 @@ async function runDaemonOneShotPrompt(params: {
     // after collecting the terminal snapshot so the daemon can release those
     // resources on both success and failure.
     if (startedAgentId !== null) {
-      await stopDaemonAgentBestEffort({
+      const confirmed = await stopDaemonAgentBestEffort({
         deps: params.deps,
         daemonClient,
         env: params.env,
         agentId: startedAgentId,
         reason: oneShotStopReason(cancelled, completed),
       });
+      if (!confirmed) (params.io?.stderr ?? process.stderr).write("Warning: agent cleanup was not confirmed within the shutdown budget.\n");
     }
     await daemonClient.close().catch(() => {
       /* best effort */
