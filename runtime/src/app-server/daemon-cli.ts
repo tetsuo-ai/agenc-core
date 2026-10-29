@@ -1508,6 +1508,52 @@ async function runAgenCDaemonForegroundLocked(
           shuttingDown = true;
           return rpcShutdown.accept(instanceId);
         },
+        // daemon.shutdownIfIdle: the dispatcher holds new requests while this
+        // reads in-memory state; saved sessions are never loaded.
+        busyReason: async (params) => {
+          const { daemonBusyReason, routineRunIsActive } = await import("./daemon-idle-check.js");
+          if (shuttingDown) return "the daemon is stopping";
+          if (startupRestores.unsettledTargets().length > 0 && options.startupRestoreMode === "background") {
+            return "the daemon is restoring sessions";
+          }
+          return daemonBusyReason({
+            listSessions: async (cursor) => sessionManager.listSessions({ limit: 100, ...(cursor === undefined ? {} : { cursor }) }),
+            listAgents: async (cursor) => agentManager.listAgents({ limit: 500, ...(cursor === undefined ? {} : { cursor }) }),
+            inFlightToolCalls: async () => {
+              const stats = (await health.stats()) as { readonly state?: { readonly inFlightToolCalls?: unknown } };
+              return typeof stats.state?.inFlightToolCalls === "number" ? stats.state.inFlightToolCalls : 0;
+            },
+            activeRoutineRuns: () => (routines === undefined ? 0 : routines.list().routines.filter(routineRunIsActive).length),
+            connectedRemoteDevices: () => remote?.status().connectedDevices ?? 0,
+            sessionDetail: async (sessionId) => {
+              const snapshot = await agentManager.snapshotSession({ sessionId });
+              const goal = await agentManager.updateSessionGoal({ sessionId, action: "get" });
+              const processes = await agentManager.listSessionProcesses({ sessionId });
+              return {
+                nativeWorkers: (snapshot as { readonly nativeWorkers?: unknown }).nativeWorkers,
+                ...(typeof (goal as { readonly goal?: { readonly status?: unknown } }).goal?.status === "string"
+                  ? { goalStatus: (goal as { readonly goal: { readonly status: string } }).goal.status }
+                  : {}),
+                processes: (processes as { readonly processes?: unknown }).processes,
+              };
+            },
+          }, params.exemptAttachmentIds !== undefined && params.requesterAgentId !== undefined
+            ? { attachmentIds: params.exemptAttachmentIds, agentId: params.requesterAgentId }
+            : undefined);
+        },
+        busyReasonNow: () => {
+          if (shuttingDown) return "the daemon is stopping";
+          const activeRuns = routines === undefined
+            ? 0
+            : routines.list().routines.filter((routine) => {
+                const status = (routine as { readonly lastRun?: { readonly status?: string } }).lastRun?.status;
+                return status === "starting" || status === "running" || status === "waiting_permission";
+              }).length;
+          if (activeRuns > 0) return `${activeRuns} routine run${activeRuns === 1 ? "" : "s"} active`;
+          const devices = remote?.status().connectedDevices ?? 0;
+          if (devices > 0) return `${devices} remote device${devices === 1 ? "" : "s"} connected`;
+          return undefined;
+        },
       },
       health,
       realtime,

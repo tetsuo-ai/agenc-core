@@ -28,6 +28,7 @@ import {
   parseAgenCProcessList,
   probeAgenCDaemonIdle,
   readAgenCDaemonPendingRestart,
+  requestAgenCDaemonShutdownWhenIdle,
   restartAgenCDaemonWhenIdle,
   runAgenCDaemonRestartWaiter,
   runAgenCDaemonRestartWhenIdleCli,
@@ -456,6 +457,33 @@ describe("probeAgenCDaemonIdle against a daemon socket", () => {
     await expect(probe(state)).resolves.toEqual({ idle: false, reason });
   });
 
+  it("counts only sub-agents that are working, from real snapshot shapes", async () => {
+    // snapshotNativeWorkers keeps a reusable worker after its assignment,
+    // parked as idle, and a finished one until its handle closes.
+    const worker = (agentId: string, status: string, extra: Record<string, unknown> = {}) => ({
+      agentId, agentPath: `root/${agentId}`, nickname: agentId, role: "default",
+      status, toolUseCount: 3, tokenCount: 1200, ...extra,
+    });
+    const state = idleDaemonState();
+    state.snapshot = {
+      ...state.snapshot,
+      nativeWorkers: [
+        worker("parked", "idle", { timing: { startedAt: "2026-10-29T11:00:00.000Z" } }),
+        worker("done", "completed", { terminal: { kind: "completed" } }),
+        worker("stopped", "shutdown"),
+        worker("failed", "errored", { error: "boom" }),
+      ],
+    };
+    await expect(probe(state)).resolves.toEqual({ idle: true });
+    await daemon!.close();
+    daemon = undefined;
+    state.snapshot = {
+      ...state.snapshot,
+      nativeWorkers: [worker("parked", "idle"), worker("busy", "running"), worker("starting", "pending_init")],
+    };
+    await expect(probe(state)).resolves.toEqual({ idle: false, reason: "2 sub-agents running" });
+  });
+
   it("calls a daemon that answers for another instance busy", async () => {
     await expect(probe(idleDaemonState(), { identity: identityFor(4343) }))
       .resolves.toEqual({ idle: false, reason: "the daemon was replaced during the check" });
@@ -499,6 +527,80 @@ describe("probeAgenCDaemonIdle against a daemon socket", () => {
   });
 });
 
+describe("the last step before daemon.shutdown", () => {
+  let home: string;
+  let daemon: FakeDaemonSocket | undefined;
+  const identity = identityFor(4242);
+  const host = () => ({ env: { AGENC_HOME: home }, userHome: home });
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rwi-final-"));
+    writeFileSync(resolveAgenCDaemonCookiePath({ AGENC_HOME: home }, home), "cookie\n");
+  });
+
+  afterEach(async () => {
+    await daemon?.close();
+    daemon = undefined;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  async function serve(answer: (method: string, params: Record<string, unknown>) => unknown, methods?: Record<string, boolean>) {
+    daemon = new FakeDaemonSocket(identity, answer, "1.34.0", methods);
+    await daemon.listen(resolveAgenCDaemonSocketPath({ AGENC_HOME: home }, home));
+    return daemon;
+  }
+
+  it("lets a daemon that can decide do it: one request, and a busy answer stops nothing", async () => {
+    const fake = await serve((method) => method === "daemon.shutdownIfIdle"
+      ? { shuttingDown: false, instanceId: identity.instanceId, reason: "1 agent working" }
+      : new Error(`unexpected ${method}`), { "daemon.shutdownIfIdle": true });
+    await expect(requestAgenCDaemonShutdownWhenIdle(host(), identity)).resolves.toEqual({ declined: "1 agent working" });
+    expect(fake.requests.map((request) => request.method)).toEqual(["initialize", "daemon.shutdownIfIdle"]);
+    expect(fake.requests[1]!.params).toEqual({ instanceId: identity.instanceId });
+  });
+
+  it("returns nothing when the daemon decided to stop", async () => {
+    await serve((method) => method === "daemon.shutdownIfIdle"
+      ? { shuttingDown: true, instanceId: identity.instanceId }
+      : new Error(`unexpected ${method}`), { "daemon.shutdownIfIdle": true });
+    await expect(requestAgenCDaemonShutdownWhenIdle(host(), identity)).resolves.toBeUndefined();
+  });
+
+  it("never sends daemon.shutdown to an older daemon while a turn starts during the check", async () => {
+    // The reviewer's ordering: agent status is read first, then more requests
+    // run, and a prompt arrives in between. The old last check read agents
+    // early and shut the daemon down under the new turn.
+    const state = idleDaemonState();
+    const fake = await serve((method, params) => {
+      if (method === "health.stats") (state.agents[0] as Record<string, unknown>).status = "running";
+      if (method === "daemon.shutdown") return { shuttingDown: true, instanceId: identity.instanceId };
+      return answerFrom(state)(method, params);
+    });
+    await expect(requestAgenCDaemonShutdownWhenIdle(host(), identity)).resolves.toEqual({ declined: "1 agent working" });
+    const methods = fake.requests.map((request) => request.method);
+    expect(methods).toEqual(["initialize", "session.list", "health.stats", "agent.list"]);
+    expect(methods).not.toContain("daemon.shutdown");
+  });
+
+  it("requires an older daemon to have no attachment of any kind", async () => {
+    const state = idleDaemonState();
+    (state.sessions[0] as Record<string, unknown>).activeAttachmentIds = ["requester"];
+    const fake = await serve(answerFrom(state));
+    await expect(requestAgenCDaemonShutdownWhenIdle(host(), identity)).resolves.toEqual({ declined: "1 client attached" });
+    expect(fake.requests.map((request) => request.method)).not.toContain("daemon.shutdown");
+  });
+
+  it("shuts an idle older daemon down on the same connection, right after the last read", async () => {
+    const state = idleDaemonState();
+    const fake = await serve((method, params) => method === "daemon.shutdown"
+      ? { shuttingDown: true, instanceId: identity.instanceId }
+      : answerFrom(state)(method, params));
+    await expect(requestAgenCDaemonShutdownWhenIdle(host(), identity)).resolves.toBeUndefined();
+    expect(fake.requests.map((request) => request.method))
+      .toEqual(["initialize", "session.list", "health.stats", "agent.list", "daemon.shutdown"]);
+  });
+});
+
 describe("restartAgenCDaemonWhenIdle", () => {
   let home: string;
   const daemonCommand = (): string =>
@@ -530,10 +632,21 @@ describe("restartAgenCDaemonWhenIdle", () => {
         calls.push("probe");
         return verdicts.shift() ?? { idle: true };
       },
+      // The daemon's own decision at the end, from the same queue.
+      requestShutdownWhenIdle: async () => {
+        calls.push("probe");
+        const verdict = verdicts.shift() ?? { idle: true };
+        return verdict.idle ? undefined : { declined: verdict.reason, ...(verdict.permanent ? { permanent: true } : {}) };
+      },
+      withLifecycleLock: async (_host, operation) => operation(),
       daemonCommand,
       stopDaemon: async (_host, _io, _timeout, stopOptions) => {
         calls.push("stop");
         if (await stopOptions?.beforeShutdownRequest?.(old) !== undefined) {
+          return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        }
+        const decided = await stopOptions?.requestDaemonShutdown?.(_host, old);
+        if (decided !== undefined && decided !== null && "declined" in decided) {
           return AGENC_DAEMON_STOP_DECLINED_EXIT;
         }
         calls.push("shutdown");
@@ -551,6 +664,28 @@ describe("restartAgenCDaemonWhenIdle", () => {
     };
     return { calls, deps, old };
   }
+
+  it("writes the pending record only while holding the lifecycle lock", async () => {
+    const { deps } = scenario({ verdicts: [{ idle: false, reason: "1 client attached" }] });
+    let releaseLock!: () => void;
+    const held = new Promise<void>((resolve) => { releaseLock = resolve; });
+    let lockedWrites = 0;
+    const pending = restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...deps,
+      // Another process (a waiter deciding its shutdown) holds the lock.
+      withLifecycleLock: async (_host, operation) => {
+        await held;
+        lockedWrites += 1;
+        return operation();
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    releaseLock();
+    await expect(pending).resolves.toMatchObject({ status: "deferred" });
+    expect(lockedWrites).toBe(1);
+    expect(readAgenCDaemonPendingRestart(home)).not.toBeNull();
+  });
 
   it("restarts an idle daemon through stop and start and confirms the new build", async () => {
     const { calls, deps } = scenario();
@@ -726,10 +861,21 @@ describe("the deferred restart waiter", () => {
         options.onProbe?.();
         return verdicts.shift() ?? { idle: true };
       },
+      requestShutdownWhenIdle: async () => {
+        calls.push("probe");
+        options.onProbe?.();
+        const verdict = verdicts.shift() ?? { idle: true };
+        return verdict.idle ? undefined : { declined: verdict.reason, ...(verdict.permanent ? { permanent: true } : {}) };
+      },
+      withLifecycleLock: async (_host, operation) => operation(),
       daemonCommand: () => `${home}/runtime/9.9.8/tree/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground`,
       stopDaemon: async (_host, _io, _timeout, stopOptions) => {
         calls.push("stop");
         if (await stopOptions?.beforeShutdownRequest?.(old) !== undefined) {
+          return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        }
+        const decided = await stopOptions?.requestDaemonShutdown?.(_host, old);
+        if (decided !== undefined && decided !== null && "declined" in decided) {
           return AGENC_DAEMON_STOP_DECLINED_EXIT;
         }
         calls.push("shutdown");
@@ -800,12 +946,49 @@ describe("the deferred restart waiter", () => {
     expect(readAgenCDaemonPendingRestart(home)?.token).toBe(newer);
   });
 
-  it("stands down when the daemon was already restarted or replaced", async () => {
-    const { calls, deps } = waiterDeps({ states: [{ kind: "running", identity: identityFor(4999) }] });
+  it("stands down when something else restarted the daemon on a build at least as new", async () => {
+    const newer = { runtimeVersion: "10.0.0", commit: "n", buildTime: "2026-10-30T00:00:00.000Z" };
+    const { calls, deps } = waiterDeps({ states: [{ kind: "running", identity: identityFor(4999, newer) }] });
     await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, deps))
       .resolves.toMatchObject({ status: "skipped", reason: "the daemon was restarted by something else" });
     expect(calls).toEqual([]);
     expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+  });
+
+  it("keeps going when an earlier waiter restarted the daemon on a build still older than its target", async () => {
+    // An earlier waiter finished its restart onto its own, older target just
+    // before this record was written: this restart must not be abandoned.
+    const replacement = identityFor(4999);
+    const { calls, deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      readState: async () => ({ kind: "running", identity: replacement }),
+      stopDaemon: async (_host, _io, _timeout, stopOptions) => {
+        calls.push("stop");
+        if (await stopOptions?.beforeShutdownRequest?.(replacement) !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        await stopOptions?.requestDaemonShutdown?.(_host, replacement);
+        calls.push("shutdown");
+        return 0;
+      },
+    })).resolves.toMatchObject({ status: "restarted", pid: 5000 });
+    expect(calls).toContain("shutdown");
+    expect(readFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "utf8"))
+      .toContain("replaced the one this restart waited for; waiting for it instead");
+  });
+
+  it("does not start its runtime when a newer update replaced the record while the daemon stopped", async () => {
+    const { calls, deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      requestShutdownWhenIdle: async () => {
+        calls.push("decided");
+        // The newer update took the lifecycle lock right after this decision.
+        const record = readAgenCDaemonPendingRestart(home)!;
+        writeAgenCDaemonPendingRestart(home, { ...record, token: "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab" });
+      },
+    })).resolves.toMatchObject({ status: "skipped" });
+    expect(calls).toContain("shutdown");
+    expect(calls).not.toContain("start");
   });
 
   it("stands down when the daemon already runs the new build", async () => {

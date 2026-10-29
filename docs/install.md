@@ -237,7 +237,7 @@ Idle means all of these, read over the daemon's control socket:
 
 - every agent in `agent.list` is idle (no turn is running) and none was active in the last 15 s;
 - no loaded session has an attached client (a TUI, `agenc -p`, the Desktop app or an SDK client);
-- no open session has a running sub-agent, an active goal or a running background process;
+- no open session has a running sub-agent (a parked, reusable one does not count), an active goal or a running background process;
 - no routine run is active, no remote device is connected and `health.stats` counts no tool call in flight;
 - no other AgenC process of this home runs an older runtime (an open TUI from before the update).
 
@@ -247,15 +247,32 @@ are skipped. Durable workflow runs started with `agenc run start` are not
 visible to the check; the daemon stops them at shutdown and resumes them when
 it starts again, as with any `agenc daemon restart`.
 
-The check runs once more under the daemon lifecycle lock immediately before
-`daemon.shutdown` is sent, and the restart is called off if anything changed.
+That check decides whether to restart now or wait. The final decision is
+made as late as possible, under the daemon lifecycle lock:
+
+- A daemon that has `daemon.shutdownIfIdle` (0.19.25 and later) decides
+  itself. While it checks the same signals from memory, every new request on
+  every connection waits, and a request already in flight counts as work. If it
+  is idle it starts the same shutdown as `daemon.shutdown` and refuses the
+  waiting requests; otherwise they continue and it keeps running. No turn,
+  attachment or tool call can start between its check and its decision.
+- An older daemon gets a strict rule instead. It must have been idle at the
+  check before, and then, on one connection: no attachment of any kind,
+  `health.stats` counts no tool call in flight, and every agent is idle,
+  read in that order with `daemon.shutdown` sent right after the last answer.
+  The window left is one round trip on the local socket. Anything else defers
+  the restart.
 A busy daemon gets one waiting process (`agenc daemon restart --when-idle
 --wait <token>`) and the record `<AGENC_HOME>/daemon-restart-pending.json`.
 It checks every 15 s, restarts after two idle checks in a row and gives up
 after 12 hours without stopping anything. A newer update replaces the record,
-so waiting processes never pile up. It also ends when the daemon stopped, was
-replaced (for example by a newer `agenc` whose build check restarted it) or
-already runs the new version. Outcomes go to `<AGENC_HOME>/daemon-restart.log`.
+so waiting processes never pile up: the record is replaced under the same
+lock as the final decision, a waiting process checks that the record is still
+its own right before that decision, and again before it starts its runtime. It
+also ends when the daemon stopped, or was replaced by a daemon at least as new
+as its own version (for example by a newer `agenc` whose build check
+restarted it). A replacement that is still older, such as an earlier waiting
+process that finished first, is restarted in turn. Outcomes go to `<AGENC_HOME>/daemon-restart.log`.
 Deleting the record cancels a pending restart.
 
 Only a daemon started from `<AGENC_HOME>/runtime/` is restarted. The Desktop

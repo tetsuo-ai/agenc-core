@@ -405,6 +405,7 @@ Never retry after admission may have arrived.
 | `remote.*` / `telegram.*`                                                                                   | See the [remote and Telegram method contracts](#remote-and-telegram-methods) below                     |
 | `daemon.reload`                                                                                             | Reload configuration. Open sessions take the new `[agents]` cross-provider settings. A session that could not read them again is listed in the result's `crossProviderSettings.failed`, with `timedOut: true` when it ran out of time. Other session settings apply to new sessions |
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
+| `daemon.shutdownIfIdle`                                                                                     | Exit only when no work runs; new requests wait while it checks (`agenc daemon restart --when-idle`)                |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
 `session.snapshot` may include `contextBreakdown`, a rough estimate for

@@ -60,7 +60,7 @@ describe("legacy phone bridge authority", () => {
     expect(f.refused().sort()).toEqual(denied.map((_, index) => `phone:deny-${index}`).sort());
   });
   it("classifies methods by family, not only by the exact names it lists", () => {
-    for (const method of ["commandExec.resize", "remote.status", "telegram.agents.list", "daemon.shutdown", "session.mcp.addServer"]) expect(legacyBridgeDeniesMethod(method), method).toBe(true);
+    for (const method of ["commandExec.resize", "remote.status", "telegram.agents.list", "daemon.shutdown", "daemon.shutdownIfIdle", "session.mcp.addServer"]) expect(legacyBridgeDeniesMethod(method), method).toBe(true);
     for (const method of ["initialize", "agent.create", "session.list", "session.attach", "message.send", "tool.approve", "session.cancelTurn", "session.mcp.status", "session.mcp.disableServer", "routine.list", "auth.whoami", "health.ping"]) expect(legacyBridgeDeniesMethod(method), method).toBe(false);
   });
 });

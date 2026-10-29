@@ -65,6 +65,8 @@ import {
   sendAgenCDaemonJsonLineRequests,
   startAgenCDaemon,
   stopAgenCDaemon,
+  withAgenCDaemonLifecycleLock,
+  type AgenCDaemonShutdownDeclined,
   type AgenCDaemonCliCommand,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
@@ -93,6 +95,7 @@ import {
   type JsonValue,
 } from "./protocol/index.js";
 import { canConnectToUnixSocket } from "./transport/unix-socket.js";
+import { runningNativeWorkerCount } from "./daemon-idle-check.js";
 import {
   formatAgenCDaemonRestartOutcome,
   type AgenCDaemonRestartOutcome,
@@ -490,6 +493,115 @@ function errorCodeOf(response: AgenCDaemonResponse): string | undefined {
  * connection must belong to the expected daemon instance before anything
  * else is sent.
  */
+/** The daemon refused, or the last check before `daemon.shutdown` found work. */
+class ShutdownDeclined extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "ShutdownDeclined";
+  }
+}
+
+/**
+ * Stop the daemon only if it is idle, deciding as late as possible.
+ *
+ * A daemon with `daemon.shutdownIfIdle` decides itself: it holds new
+ * requests while it checks, so nothing can start in between. An older daemon
+ * gets the strict rule on one connection: no attachment of any kind, no tool
+ * call in flight and every agent idle, read in that order, then
+ * `daemon.shutdown` at once. The window left there is one local round trip.
+ */
+export async function requestAgenCDaemonShutdownWhenIdle(
+  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+  expected: AgenCDaemonInstanceIdentity,
+): Promise<AgenCDaemonShutdownDeclined | void> {
+  const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+  const authCookie = await readAgenCDaemonCookie(
+    resolveAgenCDaemonCookiePath(host.env, host.userHome),
+  );
+  const request = (id: number, method: string, params: JsonObject = {}): JsonObject => ({
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method,
+    params,
+  });
+  // Grown after initialize; the first entry is replaced once the daemon's
+  // methods are known.
+  const messages: JsonObject[] = [
+    request(1, "initialize", {
+      protocolVersion: "1.0.0",
+      protocol: { version: "1.0.0" },
+      clientName: PROBE_CLIENT_NAME,
+      authCookie,
+      capabilities: {},
+    }),
+    request(2, "health.ping"),
+  ];
+  let mode: "conditional" | "strict" | undefined;
+  let responses: readonly AgenCDaemonResponse[];
+  try {
+    responses = await sendAgenCDaemonJsonLineRequests(socketPath, PROBE_BATCH_TIMEOUT_MS, messages, (response, index) => {
+      const result = (response as { readonly result?: JsonObject }).result;
+      if (index === 0) {
+        const identity = result?.daemonIdentity;
+        if (!isAgenCDaemonInstanceIdentity(identity) || identity.instanceId !== expected.instanceId) {
+          throw new ShutdownDeclined("the daemon was replaced");
+        }
+        const methods = objectOf(objectOf(result?.capabilities)?.["daemon.methods"]);
+        if (methods?.["daemon.shutdownIfIdle"] === true) {
+          mode = "conditional";
+          messages[1] = request(2, "daemon.shutdownIfIdle", { instanceId: expected.instanceId });
+        } else {
+          mode = "strict";
+          messages[1] = request(2, "session.list", { limit: SESSION_LIST_PAGE_LIMIT });
+          messages.push(
+            request(3, "health.stats"),
+            request(4, "agent.list", { limit: AGENT_LIST_PAGE_LIMIT }),
+            request(5, "daemon.shutdown", { instanceId: expected.instanceId }),
+          );
+        }
+        return;
+      }
+      if (mode !== "strict") return;
+      if (index === 1) {
+        // Any attachment, the requester's included: it must have closed.
+        const sessions = arrayOf(result?.sessions);
+        const attached = sessions.reduce<number>(
+          (count, session) => count + arrayOf(objectOf(session)?.activeAttachmentIds).length,
+          0,
+        );
+        if (attached > 0) throw new ShutdownDeclined(`${plural(attached, "client", "clients")} attached`);
+        if (stringOf(result?.nextCursor) !== undefined &&
+            !stringOf(result?.nextCursor)!.startsWith(SESSION_LIST_PERSISTED_CURSOR_PREFIX)) {
+          throw new ShutdownDeclined("too many sessions to check at once");
+        }
+      } else if (index === 2) {
+        const calls = objectOf(result?.state)?.inFlightToolCalls;
+        if (typeof calls === "number" && calls > 0) {
+          throw new ShutdownDeclined(`${plural(calls, "tool call", "tool calls")} in flight`);
+        }
+      } else if (index === 3) {
+        const working = arrayOf(result?.agents).filter(
+          (agent) => stringOf(objectOf(agent)?.status) !== "idle",
+        ).length;
+        if (working > 0) throw new ShutdownDeclined(`${plural(working, "agent", "agents")} working`);
+        if (stringOf(result?.nextCursor) !== undefined) throw new ShutdownDeclined("too many agents to check at once");
+      }
+    });
+  } catch (error) {
+    if (error instanceof ShutdownDeclined) return { declined: error.reason };
+    throw error;
+  }
+  const last = responses[responses.length - 1];
+  if (last === undefined || responses.length !== messages.length) {
+    return { declined: "the daemon closed the connection before deciding" };
+  }
+  if (isDaemonErrorResponse(last)) return { declined: last.error.message };
+  const result = objectOf((last as { readonly result?: JsonValue }).result);
+  if (result?.shuttingDown !== true || result.instanceId !== expected.instanceId) {
+    return { declined: stringOf(result?.reason) ?? "the daemon is busy" };
+  }
+}
+
 export async function requestAgenCDaemonProbeBatch(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   expectedInstanceId: string,
@@ -782,7 +894,7 @@ async function probeAgenCDaemonIdleOrThrow(
       : undefined;
     const goalStatus = stringOf(objectOf(goal?.goal)?.status);
     verdict = busyReasonFromSessionDetail({
-      nativeWorkers: arrayOf(snapshot?.nativeWorkers).length,
+      nativeWorkers: runningNativeWorkerCount(snapshot?.nativeWorkers),
       ...(goalStatus === undefined ? {} : { goalStatus }),
       runningProcesses: arrayOf(processesResult?.processes).filter(
         (entry) => stringOf(objectOf(entry)?.status) === "running",
@@ -1031,6 +1143,13 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   /** The daemon process's command line, for the ownership check. */
   readonly daemonCommand?: (pid: number) => string | null;
   readonly stopDaemon?: typeof stopAgenCDaemon;
+  /** The final step; see {@link requestAgenCDaemonShutdownWhenIdle}. */
+  readonly requestShutdownWhenIdle?: (
+    host: AgenCDaemonCliHost,
+    expected: AgenCDaemonInstanceIdentity,
+  ) => Promise<AgenCDaemonShutdownDeclined | void>;
+  /** Serializes pending-record changes with the final shutdown decision. */
+  readonly withLifecycleLock?: <T>(host: AgenCDaemonCliHost, operation: () => Promise<T>) => Promise<T>;
   readonly startDaemon?: typeof startAgenCDaemon;
   readonly requestIdentity?: (host: AgenCDaemonCliHost) => Promise<AgenCDaemonInstanceIdentity>;
   /** Start the detached waiter; returns its pid. */
@@ -1121,8 +1240,8 @@ async function restartIfStillIdle(
   expected: AgenCDaemonInstanceIdentity,
   lastCheck?: () => string | undefined,
 ): Promise<RestartAttempt> {
-  const probe = probeFor(ctx);
   const stop = ctx.deps.stopDaemon ?? stopAgenCDaemon;
+  const requestWhenIdle = ctx.deps.requestShutdownWhenIdle ?? requestAgenCDaemonShutdownWhenIdle;
   const start = ctx.deps.startDaemon ?? startAgenCDaemon;
   const requestIdentity = ctx.deps.requestIdentity ??
     ((host: AgenCDaemonCliHost) => requestAgenCDaemonInstanceIdentity(host));
@@ -1132,19 +1251,26 @@ async function restartIfStillIdle(
   const stopExit = await stop(ctx.host, output.io, RESTART_STOP_TIMEOUT_MS, {
     ...ctx.options,
     quietWhenStopped: true,
+    // Under the lifecycle lock, after the identity proof. Ownership is the
+    // last thing checked here; pending-record changes take the same lock, so
+    // none can land between this check and the daemon's decision.
     beforeShutdownRequest: async (identity) => {
       if (identity.instanceId !== expected.instanceId) {
         declined = "the daemon was replaced";
         return declined;
       }
       declined = lastCheck?.();
-      if (declined !== undefined) return declined;
-      const verdict = await probe(identity);
-      if (!verdict.idle) {
-        declined = verdict.reason;
-        permanent = verdict.permanent === true;
-      }
       return declined;
+    },
+    // The daemon decides whether it is idle, holding new requests meanwhile;
+    // an older daemon gets the strict last check on the same connection.
+    requestDaemonShutdown: async (host, identity) => {
+      const result = await requestWhenIdle(host, identity);
+      if (result !== undefined) {
+        declined = result.declined;
+        permanent = result.permanent === true;
+      }
+      return result;
     },
   });
   if (stopExit === AGENC_DAEMON_STOP_DECLINED_EXIT) {
@@ -1163,6 +1289,20 @@ async function restartIfStillIdle(
       outcome: {
         status: "failed",
         reason: `the daemon could not be stopped${detail.length > 0 ? ` (${detail})` : ""}`,
+        fromVersion,
+        toVersion,
+      },
+    };
+  }
+  // A newer update that arrived while this daemon stopped owns the start:
+  // starting this runtime would put an older build back.
+  const afterStop = lastCheck?.();
+  if (afterStop !== undefined) {
+    return {
+      kind: "done",
+      outcome: {
+        status: "skipped",
+        reason: `${afterStop}; the daemon stopped and its next start uses the newest runtime`,
         fromVersion,
         toVersion,
       },
@@ -1309,7 +1449,17 @@ function defaultSpawnWaiter(host: AgenCDaemonCliHost, token: string): number {
 }
 
 /** Arrange a restart for when the daemon is idle. */
-function deferRestart(
+async function deferRestart(
+  ctx: RestartContext,
+  identity: AgenCDaemonInstanceIdentity,
+  reason: string,
+): Promise<AgenCDaemonRestartOutcome> {
+  const withLock = ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock;
+  // Serialized with any waiter's final shutdown decision (see restartIfStillIdle).
+  return withLock(ctx.host, async () => deferRestartLocked(ctx, identity, reason));
+}
+
+function deferRestartLocked(
   ctx: RestartContext,
   identity: AgenCDaemonInstanceIdentity,
   reason: string,
@@ -1477,12 +1627,27 @@ export async function runAgenCDaemonRestartWaiter(
       // ours to restart.
       return finish(preflightOutcome(ctx, checked), true);
     } else if (checked.identity.instanceId !== record.daemon.instanceId) {
-      return finish({
-        status: "skipped",
-        reason: "the daemon was restarted by something else",
-        fromVersion: checked.identity.runtimeVersion,
-        toVersion: ctx.build.runtimeVersion,
-      }, true);
+      // Restarted by something else. Still older than this target (an
+      // earlier waiter finished first): keep going with the new instance.
+      if (compareAgenCRuntimeBuilds(checked.identity, ctx.build) !== -1) {
+        return finish({
+          status: "skipped",
+          reason: "the daemon was restarted by something else",
+          fromVersion: checked.identity.runtimeVersion,
+          toVersion: ctx.build.runtimeVersion,
+        }, true);
+      }
+      const adopted = await (ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock)(ctx.host, async () => {
+        if (readAgenCDaemonPendingRestart(ctx.daemonHome)?.token !== token) return false;
+        writeAgenCDaemonPendingRestart(ctx.daemonHome, {
+          ...record,
+          daemon: { pid: checked.identity.pid, instanceId: checked.identity.instanceId },
+        });
+        return true;
+      });
+      if (!adopted) continue;
+      logLine(ctx.daemonHome, `daemon pid ${checked.identity.pid} on ${checked.identity.runtimeVersion} replaced the one this restart waited for; waiting for it instead`, ctx.now());
+      idleChecks = 0;
     } else {
       const verdict = await probeFor(ctx)(checked.identity);
       if (!verdict.idle && verdict.permanent === true) {

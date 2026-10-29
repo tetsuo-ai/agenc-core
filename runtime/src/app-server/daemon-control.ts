@@ -201,6 +201,18 @@ export const AGENC_DAEMON_CONTROL_PROTOCOL_VERSION = "1.0.0";
 
 export const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 
+/** A shutdown the daemon (or the last check before it) refused. */
+export interface AgenCDaemonShutdownDeclined {
+  readonly declined: string;
+  /** The check can never pass for this daemon. */
+  readonly permanent?: boolean;
+}
+
+function isAgenCDaemonShutdownDeclined(value: unknown): value is AgenCDaemonShutdownDeclined {
+  return typeof value === "object" && value !== null &&
+    typeof (value as { readonly declined?: unknown }).declined === "string";
+}
+
 /** `stop` left the daemon running because `beforeShutdownRequest` declined. */
 export const AGENC_DAEMON_STOP_DECLINED_EXIT = 3;
 
@@ -432,10 +444,15 @@ export interface RunAgenCDaemonCliOptions {
   readonly requestDaemonInstanceIdentity?: (
     host: AgenCDaemonCliHost,
   ) => Promise<AgenCDaemonInstanceIdentity> | AgenCDaemonInstanceIdentity;
+  /**
+   * Sends the shutdown. Returning a {@link AgenCDaemonShutdownDeclined} (the
+   * daemon refused because work is running) leaves it running: `stop`
+   * returns {@link AGENC_DAEMON_STOP_DECLINED_EXIT} and signals nothing.
+   */
   readonly requestDaemonShutdown?: (
     host: AgenCDaemonCliHost,
     expected: AgenCDaemonInstanceIdentity,
-  ) => Promise<void> | void;
+  ) => Promise<void | AgenCDaemonShutdownDeclined> | void | AgenCDaemonShutdownDeclined;
   /**
    * Internal: a last check that `stop` runs under the lifecycle lock, after
    * the daemon's authenticated identity is proven and immediately before
@@ -526,7 +543,10 @@ export class AgenCDaemonRpcShutdownCoordinator {
     send: (response: AgenCDaemonResponse) => Promise<void>,
   ): Promise<void> {
     const acceptedShutdown =
-      message.method === "daemon.shutdown" &&
+      (message.method === "daemon.shutdown" ||
+        (message.method === "daemon.shutdownIfIdle" &&
+          !isDaemonErrorResponse(response) &&
+          (response as { readonly result?: { readonly shuttingDown?: unknown } }).result?.shuttingDown === true)) &&
       !isDaemonErrorResponse(response) &&
       this.#pendingAcknowledgements > 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2016,13 +2036,17 @@ export async function stopAgenCDaemon(
           if (declined !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
         }
         let shutdownError: unknown;
+        let declinedByDaemon = false;
         try {
           const requestShutdown =
             options.requestDaemonShutdown ?? requestAgenCDaemonShutdown;
-          await Promise.resolve(requestShutdown(host, bound.identity));
+          const result = await Promise.resolve(requestShutdown(host, bound.identity));
+          declinedByDaemon = isAgenCDaemonShutdownDeclined(result);
         } catch (error) {
           shutdownError = error;
         }
+        // The daemon kept running on purpose: nothing to wait for or signal.
+        if (declinedByDaemon) return AGENC_DAEMON_STOP_DECLINED_EXIT;
         await lifecycle.release();
         const exited = await waitForBoundPidExit(
           host,

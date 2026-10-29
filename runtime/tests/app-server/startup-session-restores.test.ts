@@ -408,6 +408,7 @@ describe("daemon dispatcher with sessions still restoring", () => {
       "health.stats",
       "daemon.reload",
       "daemon.shutdown",
+      "daemon.shutdownIfIdle",
       "session.list",
       "agent.list",
     ]);
