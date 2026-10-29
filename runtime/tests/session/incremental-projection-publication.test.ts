@@ -8,6 +8,10 @@ import { Session } from "../../src/session/session.js";
 import { openStateDatabases, type StateSqliteDriver } from "../../src/state/sqlite-driver.js";
 import { StateThreadRepository } from "../../src/state/threads.js";
 import { FileThreadStore } from "../../src/thread-store/store.js";
+import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
+import { getAttachmentTrackingState } from "../../src/session/attachment-state.js";
+import { restorePromptCacheState } from "../../src/session/prompt-cache-state.js";
+import { SessionProviderService } from "../../src/session/provider-service.js";
 
 let root: string;
 let rollout: RolloutStore;
@@ -73,6 +77,42 @@ function capture(event: Event) {
 }
 
 describe("incremental projection publication", () => {
+  it("commits resumable cache state before publishing a reentrant terminal event", () => {
+    const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-6-luna" });
+    provider.restoreFunctionCallItemIds([["call_one", "fc_issued"]]);
+    Object.assign(session, { services: {
+      providerService: new SessionProviderService({ initialProvider: provider }),
+    } });
+    getAttachmentTrackingState(session).listedSkillNames.add("kept-skill");
+    const observations: ReturnType<typeof capture>[] = [];
+    let restoredSkills: string[] = [];
+    let restoredIds: readonly (readonly [string, string])[] | undefined;
+    eventLog.subscribe((event) => {
+      observations.push(capture(event));
+      if (event.id === "outer") {
+        session.emitTurnAbortedOnce("turn-1", "interrupted");
+      } else {
+        const resumed = {};
+        const resumedProvider = new OpenAIProvider({ apiKey: "test", model: "gpt-6-luna" });
+        restorePromptCacheState(resumed, resumedProvider, rollout.readAll());
+        restoredSkills = [...getAttachmentTrackingState(resumed).listedSkillNames];
+        restoredIds = resumedProvider.exportFunctionCallItemIds();
+      }
+    });
+
+    session.emit(warning("outer"), { durable: true });
+
+    expect(observations.map((entry) => entry.id)).toEqual(["outer", "projection-sub-1"]);
+    expect(observations.map((entry) => entry.seq)).toEqual([1, 2]);
+    for (const entry of observations) {
+      expect(entry.projectedId).toBe(entry.expectedId);
+      expect(entry.projectedType).toBe(entry.expectedType);
+      expect(entry.receiptCoversFile).toBe(true);
+    }
+    expect(restoredSkills).toEqual(["kept-skill"]);
+    expect(restoredIds).toEqual([["call_one", "fc_issued"]]);
+  });
+
   it("commits before listeners, reentrant events and listener-triggered cancellation", () => {
     const observations: ReturnType<typeof capture>[] = [];
     const afterNested: ReturnType<typeof capture>[] = [];
