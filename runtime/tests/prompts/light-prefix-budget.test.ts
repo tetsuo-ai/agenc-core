@@ -6,6 +6,10 @@
  * 60-token auto-mode reminder that the permission text already covers);
  * OpenAI head 713 and tools 505 (were 942 and 630). Growing the prefix past
  * these budgets should be a deliberate decision with its own measurement.
+ * 2026-10-29: the missing-tool rule (LIGHT_MISSING_CHECK_TOOLS) replaced "Report
+ * unavailable checks instead of rebuilding their tools", after DeepSeek stopped
+ * TB2.1 tasks without installing what they needed: +53 characters in both
+ * heads (+13 o200k tokens), DeepSeek 3,942 to 3,995, OpenAI 3,510 to 3,563.
  */
 import { describe, expect, test } from "vitest";
 import type { Session } from "../../src/session/session.js";
@@ -46,7 +50,7 @@ async function lightPrefix(provider: "deepseek" | "openai") {
 describe("Light fixed prefix budget", () => {
   test.each([
     ["deepseek", 4_050, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
-    ["openai", 3_550, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
+    ["openai", 3_600, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
   ] as const)("%s: head and tool schemas stay within budget and byte-stable", async (provider, headBudget, toolsBudget, names) => {
     const first = await lightPrefix(provider);
     const second = await lightPrefix(provider);

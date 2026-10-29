@@ -21,9 +21,10 @@
  *   AgenC `"unattended"`        → background-agent allow/deny/pause policy
  *
  * Sandbox-mode text includes a `{{network_access}}` template placeholder that
- * resolves to either `enabled` or `restricted` from the current turn's
- * network policy. The constants themselves keep the placeholder literal so
- * tests can compare exact text.
+ * resolves from the current turn's sandbox and network policy
+ * (`promptNetworkAccess`): `restricted` only when an AgenC sandbox blocks the
+ * network. The constants themselves keep the placeholder literal so tests can
+ * compare exact text.
  *
  * @module
  */
@@ -271,6 +272,47 @@ export interface PermissionPromptExecutionAuthority {
   readonly networkSandboxPolicy: Pick<NetworkSandboxPolicy, "enabled">;
 }
 
+/** The network wording each rendering states: "Network access is <value>." */
+const PROMPT_NETWORK_ACCESS = {
+  enabled: "enabled",
+  restricted: "restricted",
+  external: "set by that sandbox",
+} as const;
+
+/**
+ * What the permission text says about the network. Only an AgenC sandbox
+ * enforces the network policy: read-only and workspace-write commands run under
+ * Seatbelt, bubblewrap or Landlock, which block the network unless the policy
+ * enables it (tools/runtimes/sandboxing.ts). danger-full-access runs commands
+ * with no sandbox, so they reach the network whatever the policy says. A
+ * session that drops its sandbox (--dangerously-bypass-approvals-and-sandbox,
+ * or --bypass-approvals on a host that has none) keeps the configured
+ * workspace-write network policy (session/configuration.ts), and this text
+ * used to call that network restricted. In the TB2.1 baseline, DeepSeek read
+ * "network restricted" in nearly every trial and some stopped without
+ * installing Python or PyTorch, although apt and pip worked. An external
+ * sandbox decides for itself: AgenC repeats an enabled network and otherwise
+ * leaves the answer to that sandbox.
+ */
+function promptNetworkAccess(
+  authority: PermissionPromptExecutionAuthority,
+): keyof typeof PROMPT_NETWORK_ACCESS {
+  if (authority.networkSandboxPolicy.enabled === true) return "enabled";
+  switch (authority.sandboxPolicy) {
+    case "danger_full_access":
+      return "enabled";
+    case "external_sandbox":
+      return "external";
+    case "read_only":
+    case "workspace_write":
+      return "restricted";
+  }
+}
+
+function promptNetworkText(authority: PermissionPromptExecutionAuthority): string {
+  return PROMPT_NETWORK_ACCESS[promptNetworkAccess(authority)];
+}
+
 function sandboxTemplateForPolicy(policy: SandboxPolicy): string {
   switch (policy) {
     case "danger_full_access":
@@ -293,7 +335,7 @@ function sandboxTemplateForPolicy(policy: SandboxPolicy): string {
  */
 function renderSandbox(
   template: string,
-  networkAccess: "enabled" | "restricted",
+  networkAccess: string,
 ): string {
   return template.replace(/\n+$/, "").replace(/\{\{network_access\}\}/g, networkAccess);
 }
@@ -355,7 +397,7 @@ export function getPermissionsSection(
 
   const sandboxText = renderSandbox(
     sandboxTemplateForPolicy(authority.sandboxPolicy),
-    authority.networkSandboxPolicy.enabled === true ? "enabled" : "restricted",
+    promptNetworkText(authority),
   );
   // Approval text constants keep their trailing `\n` from the upstream
   // file. Strip it so the outer joiner controls spacing.
@@ -488,7 +530,7 @@ function lightPrintPermissionsSection(
   const binding = MODE_BINDINGS[ctx.mode];
   if (binding === undefined) return null;
   const sandbox = authority.sandboxPolicy.replaceAll("_", "-");
-  const network = authority.networkSandboxPolicy.enabled === true ? "enabled" : "restricted";
+  const network = promptNetworkText(authority);
   return [
     `Permission mode: ${binding.label}. Sandbox ${sandbox}: ${LIGHT_PRINT_SANDBOX_TEXT[authority.sandboxPolicy]}; network ${network}.`,
     "No approver: approval requests are denied. Do not bypass restrictions.",
@@ -507,8 +549,8 @@ function lightPermissionsSection(
     ? LIGHT_APPROVAL_BYPASS_ESCALATION
     : LIGHT_APPROVAL_TEXT[ctx.mode];
   if (binding === undefined || approvalText === undefined) return null;
-  const network = authority.networkSandboxPolicy.enabled === true ? "enabled" : "restricted";
-  const note = unattendedPolicyForContext(ctx).noApprover === true
+  const network = promptNetworkText(authority);
+  const note =unattendedPolicyForContext(ctx).noApprover === true
     ? ROUTINE_NO_APPROVER_NOTE
     : binding.autonomyNote !== undefined
       ? autonomyNote
