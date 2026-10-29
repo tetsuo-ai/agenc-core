@@ -8,7 +8,7 @@ import { jsonStringify } from '../../slowOperations.js'
 import { writeToMailbox } from '../../teammateMailbox.js'
 import {
   buildInheritedCliFlags,
-  buildInheritedEnvVars,
+  buildTeammateSpawnCommand,
   getTeammateCommand,
 } from '../spawnUtils.js'
 import { assignTeammateColor } from '../teammateLayoutManager.js'
@@ -136,10 +136,9 @@ export class PaneBackendExecutor implements TeammateExecutor {
       const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
       const workingDir = config.cwd
 
-      // Build environment variables to forward to teammate
-      const envStr = buildInheritedEnvVars()
-
-      const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+      const spawnCommand = buildTeammateSpawnCommand(
+        workingDir, `${quote([binaryPath])} ${teammateArgs}${flagsStr}`,
+      )
 
       // Send the command to the new pane
       // Use swarm socket when running outside tmux (external swarm session)

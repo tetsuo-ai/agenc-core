@@ -244,7 +244,10 @@ const POSIX_OWNER_WATCHDOG_SCRIPT = String.raw`
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 
-process.title = 'agenc-process-owner-watchdog';
+// Never rewrite Darwin argv: process-list readers can scan into environ.
+if (process.platform === 'linux') {
+  process.title = 'agenc-process-owner-watchdog';
+}
 const encoded = process.env.AGENC_PROCESS_WATCHDOG_CONFIG;
 delete process.env.AGENC_PROCESS_WATCHDOG_CONFIG;
 if (!encoded) process.exit(125);

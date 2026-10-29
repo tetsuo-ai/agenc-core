@@ -231,6 +231,7 @@ test("spawnNodeScript uses the private Node and exact Linux library path", async
       PATH: "/operator/bin",
       LD_LIBRARY_PATH: "/operator/library",
       AGENC_HOME: "/agenc-home",
+      OPENAI_API_KEY: "px-fake-provider-credential",
     },
     nodeBin: "/runtime/.agenc-node/bin/node",
     nodeLibraryPath: "/runtime/.agenc-node/lib",
@@ -244,6 +245,8 @@ test("spawnNodeScript uses the private Node and exact Linux library path", async
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, "/runtime/.agenc-node/bin/node");
   assert.deepEqual(calls[0].args, ["/runtime/bin/agenc", "status"]);
+  assert.equal(calls[0].args.join("\0").includes("px-fake-provider-credential"), false);
+  assert.equal(calls[0].options.env.OPENAI_API_KEY, "px-fake-provider-credential");
   assert.equal(calls[0].options.cwd, "/project");
   assert.equal(calls[0].options.env.LD_LIBRARY_PATH, "/runtime/.agenc-node/lib");
   assert.equal(

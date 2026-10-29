@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveHomeContext } from '../../../src/config/home.ts'
 import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
 import { runWithCanonicalSettingsAuthority } from '../../../src/utils/settings/canonicalAuthority.ts'
-import { buildInheritedEnvVars } from '../../../src/utils/swarm/spawnUtils.ts'
+import { buildInheritedEnvVars, buildTeammateSpawnCommand } from '../../../src/utils/swarm/spawnUtils.ts'
 import {
   runWithAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from '../../../src/session/runtime-options.ts'
+import { quote } from '../../../src/utils/bash/shellQuote.ts'
 
 const ORIGINAL_ENV = { ...process.env }
 const TEST_BASE_ENVIRONMENT = Object.freeze({
@@ -267,22 +269,27 @@ test('buildInheritedEnvVars projects captured shell, temp, plugin, and hook auth
   expect(envVars).toContain('AGENC_ALLOW_UNTRUSTED_HOOKS\\=1')
 })
 
-test('buildInheritedEnvVars clears stale pane authority in a real child environment', () => {
+test('buildTeammateSpawnCommand clears stale pane authority through a private, single-use file', () => {
   const injectionRoot = mkdtempSync(
     join(tmpdir(), 'agenc-spawn-env-injection-'),
   )
   const injectionMarker = join(injectionRoot, 'injected')
   try {
-    const envVars = withAuthority(
+    const spawnCommand = withAuthority(
       {
         home: '/tmp/agenc-spawn-utils-home',
         provider: 'grok',
         environment: {
           XAI_API_KEY: 'captured-xai-key',
         },
+        runtimeOptions: Object.freeze({
+          simpleMode: false, stdinDataMode: false, remoteMode: false,
+          sessionTempRoot: injectionRoot, pluginStorageRoot: injectionRoot,
+          allowUntrustedHooks: false,
+        }),
       },
       () =>
-        buildInheritedEnvVars({
+        buildTeammateSpawnCommand(injectionRoot, '/usr/bin/env', {
           ...TEST_BASE_ENVIRONMENT,
           AGENC_MODEL: 'stale-pane-model',
           AGENC_SHELL: '/bin/stale-shell',
@@ -302,10 +309,17 @@ test('buildInheritedEnvVars clears stale pane authority in a real child environm
           MULTILINE: 'first\nsecond',
         }),
     )
-    expect(envVars.startsWith('-i -- ')).toBe(true)
+    expect(spawnCommand).not.toContain('captured-xai-key')
+    expect(spawnCommand.startsWith('env -i -- /bin/sh ')).toBe(true)
+    const [handoff] = readdirSync(injectionRoot)
+    const handoffDirectory = join(injectionRoot, handoff!)
+    const script = join(handoffDirectory, 'launch.sh')
+    expect(statSync(handoffDirectory).mode & 0o777).toBe(0o700)
+    expect(statSync(script).mode & 0o777).toBe(0o600)
+    expect(readFileSync(script, 'utf8')).toContain('captured-xai-key')
     const output = execFileSync(
       '/bin/sh',
-      ['-c', `env ${envVars} /usr/bin/env`],
+      ['-c', spawnCommand],
       {
         encoding: 'utf8',
         env: {
@@ -330,6 +344,8 @@ test('buildInheritedEnvVars clears stale pane authority in a real child environm
     expect(childEnvironment.AGENC_PROVIDER).toBe('grok')
     expect(childEnvironment.AGENC_REMOTE).toBe('0')
     expect(childEnvironment.AGENC_ALLOW_UNTRUSTED_HOOKS).toBe('0')
+    expect(childEnvironment.PWD).toBe(injectionRoot)
+    expect(existsSync(handoffDirectory)).toBe(false)
     expect(existsSync(injectionMarker)).toBe(false)
     for (const key of [
       'AGENC_MODEL',
@@ -341,7 +357,6 @@ test('buildInheritedEnvVars clears stale pane authority in a real child environm
       'AGENC_WORKSPACE',
       'AGENC_PROJECT_DIR',
       'AGENC_CWD',
-      'PWD',
       'OPENAI_API_KEY',
       'OPENAI_BASE_URL',
       'AGENC_CREDENTIAL_STALE',
@@ -352,5 +367,36 @@ test('buildInheritedEnvVars clears stale pane authority in a real child environm
     }
   } finally {
     rmSync(injectionRoot, { recursive: true, force: true })
+  }
+})
+
+test('a live pane child receives the provider key without putting it in argv', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agenc-pane-secret-'))
+  const probe = join(root, 'probe.cjs')
+  writeFileSync(probe, "process.stdout.write(process.env.XAI_API_KEY + '\\n'); setInterval(() => {}, 1000);")
+  const secret = 'px-fake-pane-provider-key'
+  const command = withAuthority({
+    home: root, provider: 'grok', environment: { XAI_API_KEY: secret },
+    runtimeOptions: Object.freeze({
+      simpleMode: false, stdinDataMode: false, remoteMode: false,
+      sessionTempRoot: root, pluginStorageRoot: root, allowUntrustedHooks: false,
+    }),
+  }, () => buildTeammateSpawnCommand(root, quote([process.execPath, probe]), TEST_BASE_ENVIRONMENT))
+  expect(command).not.toContain(secret)
+  const child = spawn('/bin/sh', ['-c', `exec ${command}`], { env: {}, stdio: ['ignore', 'pipe', 'pipe'] })
+  const exited = once(child, 'exit')
+  try {
+    const [data] = await once(child.stdout!, 'data')
+    expect(data.toString().trim()).toBe(secret)
+    const args = execFileSync('/bin/ps', ['-ww', '-p', String(child.pid), '-o', 'args='], { encoding: 'utf8' })
+    expect(args).not.toContain(secret)
+    if (process.platform === 'linux') {
+      expect(readFileSync(`/proc/${child.pid}/cmdline`, 'utf8')).not.toContain(secret)
+    }
+    expect(readdirSync(root)).toEqual(['probe.cjs'])
+  } finally {
+    child.kill()
+    await exited
+    rmSync(root, { recursive: true, force: true })
   }
 })
