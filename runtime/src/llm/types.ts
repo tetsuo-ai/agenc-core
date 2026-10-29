@@ -1085,6 +1085,10 @@ export interface LLMProviderSessionForkOptions {
  * Core LLM provider interface that all adapters implement
  */
 export interface LLMProvider {
+  /** Provider-issued Responses item identities; no sockets or continuation state. */
+  exportFunctionCallItemIds?(): readonly (readonly [string, string])[];
+  restoreFunctionCallItemIds?(entries: unknown): void;
+  readonly functionCallItemIdsScope?: string;
   readonly name: string;
   /**
    * Optional complete-request preflight counter. Providers expose this only

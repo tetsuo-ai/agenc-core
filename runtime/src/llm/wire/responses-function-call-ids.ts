@@ -11,6 +11,7 @@
  *
  * Message history keeps only the call id, so each adapter records the issued
  * id of every call it receives here and the request builder looks it up. A
+ * session rollout also carries this map across process restart. A
  * call this adapter has not seen, or no longer remembers, goes back without
  * an id.
  *
@@ -84,6 +85,19 @@ export class ResponsesFunctionCallItemIds {
   /** A lookup bound to one provider, in the shape the request builder takes. */
   lookupFor(provider: string): (callId: string) => string | undefined {
     return (callId) => this.get(provider, callId);
+  }
+
+  snapshotFor(provider: string): readonly (readonly [string, string])[] {
+    const prefix = ResponsesFunctionCallItemIds.key(provider, "");
+    return [...this.ids].filter(([key]) => key.startsWith(prefix)).map(([key, id]) => [key.slice(prefix.length), id] as const);
+  }
+
+  restoreFor(provider: string, entries: unknown): void {
+    if (!Array.isArray(entries)) return;
+    for (const entry of entries) {
+      if (!Array.isArray(entry) || entry.length !== 2) continue;
+      this.remember(provider, { type: "function_call", call_id: entry[0], id: entry[1] });
+    }
   }
 
   get size(): number {

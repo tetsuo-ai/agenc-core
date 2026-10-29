@@ -68,7 +68,7 @@ const TOOLS: ReadonlySet<string> = new Set([
 
 const GUIDANCE_HEADING = "# Session-specific guidance";
 
-async function assemble(): Promise<{
+async function assemble(projectInstructions = ""): Promise<{
   readonly staticPrefix: string;
   readonly dynamicSuffix: string;
   readonly text: string;
@@ -81,7 +81,7 @@ async function assemble(): Promise<{
     agentsEnabled: true,
     simpleMode: false,
     permissionContext: null,
-    projectInstructions: "",
+    projectInstructions,
     mcpServers: [],
   });
   const guidance = prompt.sections.find((section) =>
@@ -106,9 +106,13 @@ describe("session guidance rides the cached prefix", () => {
 
   test("no request re-sends guidance outside the cached prefix", async () => {
     const turn1 = await assemble();
-    // A turn boundary: same session, same tools, later wall clock.
+    // The tail carries no wall clock, so a later turn alone leaves it
+    // byte-identical and a resumed request can reuse the whole prefix.
     await new Promise((resolve) => setTimeout(resolve, 5));
-    const turn2 = await assemble();
+    expect((await assemble()).dynamicSuffix).toBe(turn1.dynamicSuffix);
+    // A turn boundary that does change the tail: same session, same tools,
+    // edited project instructions.
+    const turn2 = await assemble("Prefer small commits.");
     expect(turn2.dynamicSuffix).not.toBe(turn1.dynamicSuffix);
 
     const history: LLMMessage[] = [{ role: "user", content: "first" }];
@@ -130,7 +134,7 @@ describe("session guidance rides the cached prefix", () => {
     });
 
     // `instructions` is the cached prefix: guidance belongs there, and it
-    // stays byte-identical while the turn's timestamp moves.
+    // stays byte-identical while the turn's tail changes.
     expect(request1.instructions).toContain(turn1.guidance);
     expect(request2.instructions).toBe(request1.instructions);
 

@@ -64,6 +64,7 @@ export interface SessionMemoryExtractionState {
  * own missing key as an explicit clear; see sessionStateUpdateAddressesSlot.
  */
 export interface SessionStateUpdate {
+  readonly promptCache?: import("./prompt-cache-state.js").PromptCacheState | null;
   readonly agentTask?: SessionAgentTask;
   readonly memoryExtraction?: SessionMemoryExtractionState;
   readonly userStop?: {

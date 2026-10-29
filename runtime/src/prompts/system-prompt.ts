@@ -597,14 +597,23 @@ export interface EnvInfoInputs {
   readonly provider?: string;
   readonly cwd: string;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  /** UTC calendar date (YYYY-MM-DD); defaults to today. */
+  readonly currentDate?: string;
 }
 
-/** env_info_simple — cwd, model, git branch, time, OS. AgenC-original. */
+/**
+ * Today's UTC date for the session tail. Day granularity keeps the tail
+ * byte-identical through a day, so continued and resumed requests reuse the
+ * cached prefix; it changes once when the date does.
+ */
+export function promptCurrentDateLine(currentDate?: string): string {
+  return `Current date (UTC): ${currentDate ?? new Date().toISOString().slice(0, 10)}`;
+}
+
+/** env_info_simple — cwd, model, git branch, OS, date. AgenC-original. */
 export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   const { model, provider, cwd } = inputs;
   const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
-  // I-82: wall-clock OK here — display only, not a deadline.
-  const now = new Date().toISOString();
   // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
   // disambiguation note. Agent-tree identifiers such as `/root/task1` are
   // not files; absolute Linux paths under `/root` are filesystem paths.
@@ -615,7 +624,7 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,
     provider ? `Model: ${model} (provider: ${provider})` : `Model: ${model}`,
-    `Current time (UTC): ${now}`,
+    promptCurrentDateLine(inputs.currentDate),
   ];
   if (branch !== null) {
     items.push(`Git branch: ${branch}`);
@@ -1193,6 +1202,7 @@ export async function assembleSystemPrompt(
     ...(session.services?.sandboxExecutionBroker !== undefined
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }
       : {}),
+    ...(ctx.currentDate !== undefined ? { currentDate: ctx.currentDate } : {}),
   };
   // Managed routing is resolved later by the delegated concrete adapter.
   const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc"
@@ -1350,7 +1360,14 @@ export async function assembleSystemPrompt(
       () => lightPrint && memorySection !== null
         ? null
         : light ? `Workspace: ${cwd}` : buildEnvInfoSection(envInfoInputs),
-      "environment info includes wall-clock time and current branch",
+      "environment info includes the date and current branch",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "current_date",
+      // Standard states the date inside # Environment; Light has no such
+      // section, so it gets the same line on its own.
+      () => light ? promptCurrentDateLine(envInfoInputs.currentDate) : null,
+      "the date changes once a day",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "language",

@@ -4578,3 +4578,98 @@ describe("bootstrap private endpoint metadata reuse", () => {
     }
   });
 });
+
+
+describe("resumed prompt cache and costs", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("retains attachment positions, producer state and function item ids after shutdown", async () => {
+    const { OpenAIProvider } = await import("../llm/providers/openai/adapter.js");
+    const { getAttachmentTrackingState } = await import("../session/attachment-state.js");
+    const { recordRetainedAttachments, projectRetainedAttachments } = await import("../session/attachment-retention.js");
+    const providerModule = await import("../llm/provider.js");
+    const bodies: Record<string, unknown>[] = [];
+    vi.spyOn(providerModule, "createProvider").mockImplementation(() => new OpenAIProvider({
+      apiKey: "test", model: "gpt-6.1-terra", useResponsesApi: true,
+      fetchImpl: async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ id: "resp_test", model: "gpt-6.1-terra", output: [
+          { type: "function_call", id: "fc_issued", call_id: "call_one", name: "FileRead", arguments: "{}" },
+        ], usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } });
+      },
+    }));
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const home = await mkdtemp(join(tmpdir(), "resume-cache-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "resume-cache-ws-"));
+    const opts = { apiKey: "test", conversationId: "resume-cache", costSummaryOnExit: false, fetchImpl: offlineFetchFixture(),
+      env: { ...process.env, HOME: home, AGENC_HOME: home, AGENC_WORKSPACE: workspace,
+        AGENC_PROVIDER: "openai", AGENC_MODEL: "gpt-6.1-terra" } };
+    let boot: Awaited<ReturnType<typeof bootstrapLocalRuntimeSession>> | undefined;
+    try {
+      boot = await bootstrapLocalRuntimeSession({ ...opts, resumeConversation: false });
+      const history = [{ role: "user" as const, content: "Read the file" }];
+      const tracking = getAttachmentTrackingState(boot.session);
+      tracking.lastEmittedDate = "2026-10-28";
+      tracking.lastDeferredToolsSet = new Set(["FileRead"]);
+      tracking.lastAgentListingSet = new Map([["explore", "Explore"]]);
+      tracking.listedSkillNames.add("example");
+      tracking.instructionHead = { workspaceText: "frozen instructions", memoryText: "memory" };
+      recordRetainedAttachments(tracking.retainedAttachments, history, 0, "before", [{
+        role: "user", content: "<system-reminder>tools</system-reminder>",
+        runtimeOnly: { mergeBoundary: "user_context", permissionModeReminder: "auto" },
+      }]);
+      const response = await boot.session.provider.chat(history);
+      const messages = [...history, { role: "assistant" as const, content: "", toolCalls: response.toolCalls },
+        { role: "tool" as const, content: "contents", toolCallId: "call_one", toolName: "FileRead" }];
+      const { llmMessageToResponseItem } = await import("../session/message-history-conversion.js");
+      for (const message of history) boot.rolloutStore.appendRollout({ type: "response_item", payload: llmMessageToResponseItem(message) });
+      boot.session.emit({ id: "completed", msg: { type: "turn_complete", payload: { turnId: "completed" } } });
+      const before = projectRetainedAttachments(messages, tracking.retainedAttachments, "acceptEdits").messages;
+      await boot.shutdown(); boot = undefined;
+      boot = await bootstrapLocalRuntimeSession(opts);
+      const restored = getAttachmentTrackingState(boot.session);
+      expect(projectRetainedAttachments(messages, restored.retainedAttachments, "acceptEdits").messages).toEqual(before);
+      expect(restored.lastEmittedDate).toBe("2026-10-28");
+      expect(restored.lastDeferredToolsSet).toEqual(new Set(["FileRead"]));
+      expect(restored.lastAgentListingSet).toEqual(new Map([["explore", "Explore"]]));
+      expect(restored.listedSkillNames).toEqual(new Set(["example"]));
+      expect(restored.instructionHead).toEqual(tracking.instructionHead);
+      await boot.session.provider.chat(messages);
+      expect((bodies.at(-1)?.input as { type?: string; id?: string }[]).find(item => item.type === "function_call")?.id).toBe("fc_issued");
+    } finally {
+      await boot?.shutdown();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accumulates priced usage across three CLI bootstrap lifetimes", async () => {
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const home = await mkdtemp(join(tmpdir(), "resume-cost-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "resume-cost-ws-"));
+    const opts = { apiKey: "test", conversationId: "resume-cost", costSummaryOnExit: false,
+      env: { ...process.env, HOME: home, AGENC_HOME: home, AGENC_WORKSPACE: workspace } };
+    let boot: Awaited<ReturnType<typeof bootstrapLocalRuntimeSession>> | undefined;
+    try {
+      let previous = 0;
+      for (let turn = 1; turn <= 3; turn++) {
+        boot = await bootstrapLocalRuntimeSession({ ...opts, resumeConversation: turn > 1 });
+        const cost = boot.session.services.costSidecar!;
+        expect(cost.getTotalCostUsd()).toBeCloseTo(previous, 10);
+        boot.session.emit({ id: `usage-${turn}`, msg: { type: "token_count", payload: {
+          model: "gpt-6.1-terra", provider: "openai", promptTokens: 1000, completionTokens: 100,
+          totalTokens: 1100, cachedInputTokens: 200,
+        } } });
+        expect(cost.getSessionTotals().inputTokens).toBe(1000 * turn);
+        expect(cost.getTotalCostUsd()).toBeGreaterThan(previous);
+        previous = cost.getTotalCostUsd();
+        await boot.shutdown(); boot = undefined;
+      }
+    } finally {
+      await boot?.shutdown();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
