@@ -225,10 +225,18 @@ describe("status line off-peak mark", () => {
     expect(line).not.toContain("off-peak");
   });
 
+  test("shows for Ollama Cloud's DeepSeek models outside Ollama's peak hours", async () => {
+    const ollama = offPeakScheduleFor("ollama-cloud", "deepseek-v4.1-flash:1017");
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(SATURDAY_OFF_PEAK) });
+    expect(await footer({ offPeak: ollama })).toContain("ctx 9% · cache 91% · $0.0044 off-peak");
+    vi.setSystemTime(new Date("2026-10-22T13:00:00Z")); // A Thursday, inside Ollama's peak hours.
+    expect(await footer({ offPeak: ollama })).not.toContain("off-peak");
+  });
+
   test("is hidden for providers without recorded hours", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: new Date(SATURDAY_OFF_PEAK) });
     for (const schedule of [
-      offPeakScheduleFor("ollama-cloud", "deepseek-v4.1-flash:1017"),
+      offPeakScheduleFor("ollama-cloud", "glm-5.3"),
       offPeakScheduleFor("openrouter", "deepseek/deepseek-v4.1-flash"),
       offPeakScheduleFor("anthropic", "claude-opus-5-5"),
     ]) {

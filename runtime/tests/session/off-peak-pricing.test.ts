@@ -51,9 +51,28 @@ describe("off-peak hours", () => {
     expect(offPeakScheduleFor("qwen-token-plan", "deepseek-v4.1-flash")).toBeNull();
   });
 
+  test("Ollama Cloud bills its DeepSeek rows half outside 12:00-18:00 UTC on weekdays", () => {
+    const ollama = offPeakScheduleFor("ollama-cloud", "deepseek-v4.1-flash")!;
+    expect(ollama).not.toBeNull();
+    // 2026-10-22 is a Thursday.
+    expect(isOffPeakAt(ollama, at("2026-10-22T11:59:59Z"))).toBe(true);
+    expect(isOffPeakAt(ollama, at("2026-10-22T12:00:00Z"))).toBe(false);
+    expect(isOffPeakAt(ollama, at("2026-10-22T17:59:59Z"))).toBe(false);
+    expect(isOffPeakAt(ollama, at("2026-10-22T18:00:00Z"))).toBe(true);
+    expect(isOffPeakAt(ollama, at("2026-10-24T13:00:00Z"))).toBe(true); // Saturday
+    expect(isOffPeakAt(ollama, at("2026-10-25T15:00:00Z"))).toBe(true); // Sunday
+    // Every tag of the two DeepSeek families shares the hours.
+    for (const model of ["deepseek-v4.1-flash:1017", "deepseek-v4-pro:0813", "DeepSeek-V4-Pro"]) {
+      expect(offPeakScheduleFor("ollama-cloud", model), model).toBe(ollama);
+    }
+    // Models without an off-peak row on Ollama's price list get no mark.
+    for (const model of ["glm-5.3", "kimi-k2.7-code", "gpt-oss:120b", "deepseek-v4-flash:0731", undefined]) {
+      expect(offPeakScheduleFor("ollama-cloud", model), String(model)).toBeNull();
+    }
+  });
+
   test("is unknown for providers whose hours AgenC does not record", () => {
     for (const [provider, model] of [
-      ["ollama-cloud", "deepseek-v4.1-flash:1017"],
       ["openrouter", "deepseek/deepseek-v4.1-flash"],
       ["agenc", "deepseek-v4.1-flash"],
       ["venice", "deepseek-v4-flash"],

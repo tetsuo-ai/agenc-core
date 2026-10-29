@@ -33,6 +33,25 @@ const QWEN_DEEPSEEK_HOURS: OffPeakSchedule = Object.freeze({
   isPeakHour: (_weekday: number, hour: number) => hour < 14,
 });
 
+/**
+ * Ollama Cloud: peak 12:00-18:00 UTC, Monday to Friday; every other hour,
+ * and all weekend, bills the models with an off-peak row at half
+ * (https://ollama.com/pricing, read 2026-10-22). Checked against the
+ * account's hourly /api/usage the same day: DeepSeek V4.1 Flash billed at
+ * exactly half the peak rate from 08:00 to 10:59 UTC and at the full rate
+ * from 12:00 to 16:59 UTC.
+ */
+const OLLAMA_CLOUD_HOURS: OffPeakSchedule = Object.freeze({
+  isPeakHour: (weekday: number, hour: number) =>
+    weekday >= 1 && weekday <= 5 && hour >= 12 && hour < 18,
+});
+
+/** The Ollama Cloud models its price list gives an off-peak row, by name before any tag. */
+const OLLAMA_CLOUD_OFF_PEAK_MODELS: ReadonlySet<string> = new Set([
+  "deepseek-v4.1-flash",
+  "deepseek-v4-pro",
+]);
+
 /** The QwenCloud models the registry prices at busy-hour rates. */
 const QWEN_OFF_PEAK_MODELS: ReadonlySet<string> = new Set([
   "deepseek-v4-flash-0731",
@@ -40,11 +59,7 @@ const QWEN_OFF_PEAK_MODELS: ReadonlySet<string> = new Set([
   "deepseek-v4.1-flash",
 ]);
 
-/**
- * The off-peak hours of a provider and model, or null when AgenC records
- * none. Ollama Cloud also bills its DeepSeek models half off-peak, but its
- * hours are not recorded, so it gets no mark.
- */
+/** The off-peak hours of a provider and model, or null when AgenC records none. */
 export function offPeakScheduleFor(
   provider: string | undefined,
   model: string | undefined,
@@ -53,6 +68,9 @@ export function offPeakScheduleFor(
   if (id === "deepseek") return DEEPSEEK_API_HOURS;
   if (id === "qwen" && QWEN_OFF_PEAK_MODELS.has(model?.trim().toLowerCase() ?? "")) {
     return QWEN_DEEPSEEK_HOURS;
+  }
+  if (id === "ollama-cloud" && OLLAMA_CLOUD_OFF_PEAK_MODELS.has(model?.trim().toLowerCase().split(":")[0] ?? "")) {
+    return OLLAMA_CLOUD_HOURS;
   }
   return null;
 }
