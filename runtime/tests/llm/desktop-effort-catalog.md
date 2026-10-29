@@ -11,6 +11,9 @@ Core lands first, so the contract covers them before Desktop offers them;
 refresh from Desktop main once that change is merged.
 The `meta`/`muse-wonder-1.0` row (levels minimal through max, default high)
 likewise comes from the Desktop Muse Wonder change and lands with Core first.
+The `openai`/`gpt-6.1-terra` row (levels none through max, default medium) is
+the row Desktop's `scripts/generate-openai-reasoning-models.mjs` generates from
+this Core registry; it also lands with Core first.
 The source is `src/renderer/src/modelCatalog.ts`, including its shared catalog imports.
 
 To refresh, fetch that repository, bundle the source with esbuild for Node (ESM),

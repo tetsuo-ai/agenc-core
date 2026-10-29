@@ -3,6 +3,7 @@
   {"provider": "openai","model": "gpt-5.6-terra","levels": ["low","medium","high","xhigh","max"]},
   {"provider": "openai","model": "gpt-5.6-luna","levels": ["low","medium","high","xhigh","max"]},
   {"provider": "openai","model": "gpt-6-astra","levels": ["low","medium","high","xhigh","max"]},
+  {"provider": "openai","model": "gpt-6.1-terra","levels": ["none","low","medium","high","xhigh","max"],"defaultLevel": "medium"},
   {"provider": "openai","model": "gpt-6-sol","levels": ["none","low","medium","high","xhigh","max"]},
   {"provider": "openai","model": "gpt-6-luna","levels": ["none","low","medium","high","xhigh","max"]},
   {"provider": "openai","model": "gpt-5.5","levels": ["low","medium","high","xhigh"]},

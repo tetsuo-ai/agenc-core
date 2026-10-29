@@ -1,7 +1,8 @@
 // OpenAI's Chat Completions rules for its reasoning models (Using GPT-6 guide
 // and the GPT-5.4 parameter compatibility guide, read 2026-09-22): temperature
 // is accepted only when the effective reasoning effort is none, and function
-// tools with a reasoning effort are rejected on GPT-6 Sol and Luna ("Function
+// tools with a reasoning effort are rejected on GPT-6 Sol, GPT-6 Luna and
+// GPT-6.1 Terra (live 2026-10-28) ("Function
 // tools with reasoning_effort are not supported for gpt-6-sol in
 // /v1/chat/completions", seen live) and never accepted on GPT-6 Astra. The
 // OpenAI provider reaches Chat Completions through useResponsesApi: false.
@@ -55,6 +56,8 @@ async function chatCompletionsCall(model: string, options: LLMChatOptions) {
 
 describe("OpenAI Chat Completions temperature rule", () => {
   test.each([
+    ["gpt-6.1-terra", "low"],
+    ["gpt-6.1-terra", undefined],
     ["gpt-6.1-sol", "low"],
     ["gpt-6.1-sol", undefined],
     ["gpt-6-luna", "low"],
@@ -71,6 +74,7 @@ describe("OpenAI Chat Completions temperature rule", () => {
   });
 
   test.each([
+    ["gpt-6.1-terra", "none"],
     ["gpt-6-luna", "none"],
     ["gpt-5.4", undefined],
     ["gpt-4.1", undefined],
@@ -85,6 +89,8 @@ describe("OpenAI Chat Completions temperature rule", () => {
 
 describe("OpenAI function tools that Chat Completions rejects go through Responses", () => {
   test.each([
+    ["gpt-6.1-terra", "medium"],
+    ["gpt-6.1-terra", undefined],
     ["gpt-6.1-sol", "low"],
     ["gpt-6.1-sol", undefined],
     ["gpt-6.1-sol", "none"],
@@ -103,6 +109,9 @@ describe("OpenAI function tools that Chat Completions rejects go through Respons
   });
 
   test.each([
+    // Live 2026-10-28: Terra returned the tool call on Chat Completions at none.
+    ["gpt-6.1-terra", "none", [TOOL]],
+    ["gpt-6.1-terra", "medium", []],
     ["gpt-6.1-sol", "low", []],
     ["gpt-6-sol", "none", [TOOL]],
     ["gpt-6-sol", "low", []],
@@ -112,7 +121,7 @@ describe("OpenAI function tools that Chat Completions rejects go through Respons
     expect(call.url).toBe("https://api.openai.com/v1/chat/completions");
   });
 
-  test.each(["gpt-6-sol", "gpt-6.1-sol"])("routes a streamed %s tool call with effort to /responses", async (model) => {
+  test.each(["gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra"])("routes a streamed %s tool call with effort to /responses", async (model) => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) =>
       jsonResponse(String(input)));
     const provider = new OpenAIProvider({

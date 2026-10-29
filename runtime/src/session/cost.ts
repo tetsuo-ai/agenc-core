@@ -410,6 +410,15 @@ const COST_TIER_GPT_6_1_SOL = openAiTier({
   fast: [4, 20, 0.2, 5],
   longContext: { standard: [4, 15, 0.2, 5], fast: [8, 30, 0.4, 10] },
 });
+// Verified against /api/docs/models/gpt-6.1-terra and /api/docs/pricing on
+// 2026-10-28. Cache reads are 5% of input. Cache writes use the 30-minute
+// rate: the Responses wire sends no prompt_cache_options, so the default
+// 30m retention applies and the 12h write rate ($2.50) is never billed.
+const COST_TIER_GPT_6_1_TERRA = openAiTier({
+  standard: [1, 5, 0.05, 1.25],
+  fast: [2, 10, 0.1, 2.5],
+  longContext: { standard: [2, 7.5, 0.1, 2.5], fast: [4, 15, 0.2, 5] },
+});
 const COST_TIER_GPT_6_LUNA = openAiTier({
   standard: [0.1, 0.5, 0.01, 0.125],
   fast: [0.2, 1, 0.02, 0.25],
@@ -1057,6 +1066,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("gpt-6-astra", COST_TIER_GPT_6_ASTRA),
     ...openAiCostAliases("gpt-6-sol", COST_TIER_GPT_6_SOL),
     ...openAiCostAliases("gpt-6.1-sol", COST_TIER_GPT_6_1_SOL),
+    ...openAiCostAliases("gpt-6.1-terra", COST_TIER_GPT_6_1_TERRA),
     ...openAiCostAliases("gpt-6-luna", COST_TIER_GPT_6_LUNA),
     ...openAiCostAliases("gpt-5.6-sol", COST_TIER_GPT_5_6_SOL),
     ...openAiCostAliases("gpt-5.6-terra", COST_TIER_GPT_5_6_TERRA),
@@ -1691,6 +1701,7 @@ export function hasManagedRoutePrice(
  */
 const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
   "gpt-6.1-sol",
+  "gpt-6.1-terra",
   "gpt-6-astra",
   "gpt-6-sol",
   "gpt-6-luna",

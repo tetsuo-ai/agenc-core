@@ -37,6 +37,14 @@ describe("reasoning effort across a model switch", () => {
     // Sonnet 5.5 turns up-front reasoning off with none, outside its levels.
     ["anthropic", "claude-sonnet-5-5", "none", true],
     ["anthropic", "claude-opus-5-5", "none", false],
+    // GPT-6.1 Terra lists none through max: a switch to it keeps any of
+    // them, minimal goes (OpenAI rejects it for Terra), and Terra's none
+    // goes on a switch to GPT-6.1 Sol, which starts at low.
+    ["openai", "gpt-6.1-terra", "none", true],
+    ["openai", "gpt-6.1-terra", "max", true],
+    ["openai", "gpt-6.1-terra", "minimal", false],
+    ["openai", "gpt-6.1-sol", "none", false],
+    ["openai", "gpt-5", "max", false],
     // A model that takes no effort at all drops any level.
     ["grok", "grok-4", "high", false],
     ["anthropic", "claude-haiku-4-5", "low", false],

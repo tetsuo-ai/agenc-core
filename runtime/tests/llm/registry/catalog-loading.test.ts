@@ -55,7 +55,7 @@ describe('catalog data on first use', () => {
     state.mismatch = true
     expect(() => OPENROUTER_MODELS[0]).toThrow('does not match its model index')
     state.mismatch = false
-    expect(OPENROUTER_MODELS[0]?.model).toBe('minimax/minimax-m3.1-flash:free')
+    expect(OPENROUTER_MODELS[0]?.model).toBe('openai/gpt-6.1-terra-pro')
     expect(state.reads).toBe(2)
   })
 

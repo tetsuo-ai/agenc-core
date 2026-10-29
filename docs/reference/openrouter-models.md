@@ -12,7 +12,7 @@ works without one. Model requests, including free models, require the user's
 own OpenRouter key.
 
 Menus remain usable while the catalog refreshes. If the request fails or returns
-an invalid catalog, AgenC uses the bundled 298-model snapshot and shows a short
+an invalid catalog, AgenC uses the bundled 300-model snapshot and shows a short
 notice. Offline selection accepts a well-formed `vendor/model` ID with an
 unverified-model notice. When a live catalog is available, a new selection must
 appear in it. Saved explicit selections remain pinned.

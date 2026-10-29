@@ -5,10 +5,14 @@
  * GPT-6 Sol and Luna also document `none`, which the turn pipeline sends on
  * the wire for them (omitting the field would run their `medium` default).
  * Astra and GPT-6.1 Sol take no `none`. GPT-5.6 now documents it (2026-09-29).
+ * GPT-6.1 Terra documents and accepts `none` (2026-10-28).
  * Desktop generates its matching rows from this module, not a second enum.
  */
 const POSITIVE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 const EFFORTS_WITH_NONE = ["none", ...POSITIVE_EFFORTS] as const;
+
+/** Rows whose model page names `medium` as the default effort. */
+const DEFAULTS_TO_MEDIUM: ReadonlySet<string> = new Set(["gpt-6.1-sol", "gpt-6.1-terra"]);
 
 export const OPENAI_REASONING_MODELS = [
   { model: "gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: EFFORTS_WITH_NONE },
@@ -19,6 +23,10 @@ export const OPENAI_REASONING_MODELS = [
   // /api/docs/models/gpt-6.1-sol independently verifies the limits below
   // (2026-09-29); live Responses verifies low..max and rejects none/minimal.
   { model: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: POSITIVE_EFFORTS },
+  // /api/docs/models/gpt-6.1-terra verifies the limits below and none..max
+  // with a medium default (2026-10-28); live Responses accepts all six
+  // efforts, runs medium when the effort is omitted, and rejects minimal.
+  { model: "gpt-6.1-terra", label: "GPT-6.1 Terra", efforts: EFFORTS_WITH_NONE },
   // Appended after Astra for the same reason: the first row stays GPT-5.6 Sol.
   { model: "gpt-6-sol", label: "GPT-6 Sol", efforts: EFFORTS_WITH_NONE },
   { model: "gpt-6-luna", label: "GPT-6 Luna", efforts: EFFORTS_WITH_NONE },
@@ -28,7 +36,7 @@ export const OPENAI_REASONING_MODELS = [
   contextWindow: 1_050_000,
   maxOutputTokens: 128_000,
   efforts,
-  ...(model === "gpt-6.1-sol" ? { defaultEffort: "medium" as const } : {}),
+  ...(DEFAULTS_TO_MEDIUM.has(model) ? { defaultEffort: "medium" as const } : {}),
   vision: true,
   chatgpt: true,
 }));
@@ -120,11 +128,12 @@ export function openAiModelScopesPromptCacheByKey(model: string): boolean {
 }
 
 /**
- * Chat Completions rejects function tools on GPT-6 Sol and Luna unless
- * `reasoning_effort` is `none` (their default is medium), and never accepts
- * them on GPT-6 Astra (Using GPT-6 guide, 2026-09-22; live: "Function tools
- * with reasoning_effort are not supported for gpt-6-sol in
- * /v1/chat/completions"). The Responses API takes them at every effort.
+ * Chat Completions rejects function tools on GPT-6 Sol, GPT-6 Luna and
+ * GPT-6.1 Terra unless `reasoning_effort` is `none` (their default is
+ * medium), and never accepts them on GPT-6 Astra (Using GPT-6 guide,
+ * 2026-09-22; live: "Function tools with reasoning_effort are not supported
+ * for gpt-6-sol in /v1/chat/completions"). The Responses API takes them at
+ * every effort.
  */
 export function openAiChatCompletionsRejectsFunctionTools(
   model: string,
@@ -134,7 +143,11 @@ export function openAiChatCompletionsRejectsFunctionTools(
   // GPT-6.1 Sol never accepts function tools on Chat Completions, including
   // when the effort is omitted (official guide and live 400, 2026-09-29).
   if (normalized === "gpt-6-astra" || normalized === "gpt-6.1-sol") return true;
-  if (normalized === "gpt-6-sol" || normalized === "gpt-6-luna") {
+  // The guide says Terra's tool calls need Responses. The live API
+  // (2026-10-28) answers 400 when the effort is omitted or is not none
+  // ("use /v1/responses or set reasoning_effort to 'none'") and returns the
+  // tool call at none: the same contract as GPT-6 Sol and Luna.
+  if (normalized === "gpt-6-sol" || normalized === "gpt-6-luna" || normalized === "gpt-6.1-terra") {
     return reasoningEffort !== "none";
   }
   return false;

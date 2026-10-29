@@ -1,5 +1,7 @@
 /** Generated with openrouter-models.data.json; preserve provider order. */
 export const OPENROUTER_MODEL_IDS: readonly string[] = Object.freeze([
+  "openai/gpt-6.1-terra-pro",
+  "openai/gpt-6.1-terra",
   "minimax/minimax-m3.1-flash:free",
   "deepseek/deepseek-v4.1-flash-1017",
   "elorian/glimpse",
