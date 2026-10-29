@@ -50,11 +50,28 @@ test("keeps ordinary redaction for user messages, nested arguments and event pay
 test.each([
   [{ ...parts[0], text: "password = super-secret-password-123" }],
   [{ ...parts[0], functionCall: { name: "system.echo", args: { password: "super-secret-password-123" } } }],
-  [{ ...parts[0], thoughtSignature: "password = super-secret-password-123" }],
-])("never exempts plaintext secrets beside or inside signatures: %j", (part) => {
+])("keeps only the signature when a secret sits beside it: %j", (part) => {
   const durable = llmMessageToDurableResponseItem({
     role: "assistant", content: "",
     providerReasoningContent: JSON.stringify([part]),
+    providerReasoningProvenance: { provider: replay.provider, model: replay.model },
+  });
+  // The call keeps its id, name and signature; its text and arguments come
+  // back from the durable message, never from the replay.
+  expect(durable.providerReasoning).toEqual({
+    version: 2,
+    provider: replay.provider,
+    model: replay.model,
+    content: JSON.stringify([{ functionCall: { name: "system.echo", args: {} }, thoughtSignature: signature }]),
+  });
+  expect(serializeRolloutItem({ type: "response_item", payload: durable }))
+    .not.toContain("super-secret-password-123");
+});
+
+test("never exempts a secret inside the signature field", () => {
+  const durable = llmMessageToDurableResponseItem({
+    role: "assistant", content: "",
+    providerReasoningContent: JSON.stringify([{ ...parts[0], thoughtSignature: "password = super-secret-password-123" }]),
     providerReasoningProvenance: { provider: replay.provider, model: replay.model },
   });
   expect(durable.providerReasoning).toBeUndefined();

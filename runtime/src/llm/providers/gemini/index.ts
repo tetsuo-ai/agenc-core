@@ -480,10 +480,19 @@ function geminiPartsFromContent(
   return parts;
 }
 
+/**
+ * A functionCall part rebuilt from history. It carries the call's id, so the
+ * matching functionResponse can name it (Gemini 3 returns an id with every
+ * call and asks for the exact id back; ai.google.dev/gemini-api/docs/
+ * generate-content/function-calling, "Managing conversation history
+ * manually"). An id Core made for a model that sent none stays out of the
+ * request, as before.
+ */
 function geminiFunctionCallPart(toolCall: LLMToolCall): GeminiPart {
   const args = parseJsonObjectText(toolCall.arguments) ?? {};
   return {
     functionCall: {
+      ...(toolCall.id.length > 0 && !isGeneratedGeminiCallId(toolCall.id) ? { id: toolCall.id } : {}),
       name: toolCall.name,
       args,
     },
@@ -495,6 +504,33 @@ function geminiThoughtSignature(part: GeminiPart): string | undefined {
   return typeof signature === "string" && signature.length > 0
     ? signature
     : undefined;
+}
+
+function geminiFunctionCallRecord(part: GeminiPart): Record<string, unknown> | undefined {
+  return isRecord(part.functionCall) ? part.functionCall : undefined;
+}
+
+/**
+ * The value Google documents for a function call whose thought signature is
+ * not available: history that another model produced, or calls the client
+ * wrote itself. It tells the validator to skip that call
+ * (ai.google.dev/gemini-api/docs/generate-content/thought-signatures, FAQ:
+ * "context_engineering_is_the_way_to_go" or
+ * "skip_thought_signature_validator").
+ */
+export const GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
+
+/**
+ * Gemini 3 and newer refuse a request (HTTP 400 "Function call is missing a
+ * thought_signature") when the first functionCall part of any step in the
+ * current turn has no signature. Gemini 2.5 treats signatures as optional, and
+ * Gemma and the other families are not documented to validate them.
+ */
+export function geminiValidatesCallSignatures(model: string): boolean {
+  const match = /^gemini-(\d+)(?:[.-]|$)/u.exec(
+    canonicalGeminiModelName(model).trim().toLowerCase(),
+  );
+  return match !== null && Number(match[1]) >= 3;
 }
 
 function geminiReasoningReplay(
@@ -515,7 +551,8 @@ function geminiReasoningReplay(
   };
 }
 
-function geminiReplayParts(message: LLMMessage, model: string): GeminiPart[] | undefined {
+/** The parts this model returned for an assistant turn, when they were kept. */
+function geminiStoredReplayParts(message: LLMMessage, model: string): GeminiPart[] | undefined {
   if (
     message.role !== "assistant" || !message.providerReasoningContent ||
     message.providerReasoningProvenance?.provider !== "gemini" ||
@@ -525,21 +562,143 @@ function geminiReplayParts(message: LLMMessage, model: string): GeminiPart[] | u
   try {
     const parts: unknown = JSON.parse(message.providerReasoningContent);
     if (!Array.isArray(parts) || parts.length === 0 || !parts.every(isRecord)) return undefined;
-    const text = parts.filter((part) => part.thought !== true && typeof part.text === "string")
-      .map((part) => part.text).join("");
-    const calls = parts.filter((part) => isRecord(part.functionCall));
-    const toolCalls = message.toolCalls ?? [];
-    // History edits must not resurrect removed text or tool calls from replay state.
-    if (text !== messageTextContent(message.content) || calls.length !== toolCalls.length) return undefined;
-    if (!calls.every((part, index) => {
-      const call = part.functionCall as Record<string, unknown>;
-      const toolCall = toolCalls[index]!;
-      return call.name === toolCall.name &&
-        JSON.stringify(call.args ?? {}) === JSON.stringify(parseJsonObjectText(toolCall.arguments) ?? {});
-    })) return undefined;
     return parts;
   } catch {
     return undefined;
+  }
+}
+
+function geminiReplayMatchesMessage(parts: readonly GeminiPart[], message: LLMMessage): boolean {
+  const text = parts.filter((part) => part.thought !== true && typeof part.text === "string")
+    .map((part) => part.text).join("");
+  const calls = parts.flatMap((part): Record<string, unknown>[] => {
+    const call = geminiFunctionCallRecord(part);
+    return call === undefined ? [] : [call];
+  });
+  const toolCalls = message.toolCalls ?? [];
+  // History edits must not resurrect removed text or tool calls from replay state.
+  if (text !== messageTextContent(message.content) || calls.length !== toolCalls.length) return false;
+  return calls.every((call, index) => {
+    const toolCall = toolCalls[index]!;
+    return call.name === toolCall.name &&
+      JSON.stringify(call.args ?? {}) === JSON.stringify(parseJsonObjectText(toolCall.arguments) ?? {});
+  });
+}
+
+/**
+ * The model parts for an assistant turn.
+ *
+ * An unchanged turn of the same model goes back exactly as Google sent it.
+ * When the turn changed after the model answered (a durable record whose
+ * text or arguments were redacted, a call dropped by normalization, a cut
+ * answer), the parts are rebuilt from the turn and each function call keeps
+ * the signature of its own original part, found by call id. Signatures are
+ * never moved to another call, and text signatures are kept only with their
+ * unchanged text. Google validates the signature of a call, not its
+ * arguments: a live Gemini 4 Argon and 3.8 Flash request with a real
+ * signature on edited arguments answered 200 (2026-10-28).
+ */
+function geminiModelParts(message: LLMMessage, model: string): GeminiPart[] {
+  const toolCalls = message.toolCalls ?? [];
+  const stored = geminiStoredReplayParts(message, model);
+  if (stored !== undefined && geminiReplayMatchesMessage(stored, message)) return stored;
+  const textParts = [...geminiPartsFromContent(message.content)];
+  const callParts = toolCalls.map((call) => geminiFunctionCallPart(call));
+  if (stored === undefined) return [...textParts, ...callParts];
+
+  const storedCalls = stored.flatMap((part) => {
+    const call = geminiFunctionCallRecord(part);
+    return call === undefined ? [] : [{ part, call, name: String(call.name ?? "").trim() }];
+  });
+  // storedCall index -> message call index
+  const callForStored = new Map<number, number>();
+  const signedCallParts = callParts.map((part, index) => {
+    const toolCall = toolCalls[index]!;
+    // Core trims the call name the model sent (tool-call-normalize.ts); the
+    // rebuilt part sends the declared name, since Google refuses a call name
+    // with stray whitespace (HTTP 400, live 2026-10-28).
+    const name = toolCall.name.trim();
+    let match = storedCalls.findIndex((stored, storedIndex) =>
+      !callForStored.has(storedIndex) && nonEmptyString(stored.call.id) === toolCall.id && stored.name === name);
+    // Before Gemini 3 calls carried no id: a call then matches the stored
+    // call at its own position when the name agrees.
+    const positional = storedCalls[index];
+    if (
+      match < 0 && positional !== undefined && !callForStored.has(index) &&
+      nonEmptyString(positional.call.id) === undefined && positional.name === name
+    ) match = index;
+    if (match < 0) return part;
+    callForStored.set(match, index);
+    const signature = geminiThoughtSignature(storedCalls[match]!.part);
+    return signature === undefined ? part : { ...part, thoughtSignature: signature };
+  });
+  const storedText = stored.filter((part) => part.thought !== true && typeof part.text === "string")
+    .map((part) => part.text).join("");
+  if (storedText !== messageTextContent(message.content)) return [...textParts, ...signedCallParts];
+  // Unchanged text keeps its own parts and signatures, and every call keeps
+  // the position its original part had. A call with no original part joins
+  // the calls before it: Google reads a call after a text part as the start
+  // of a new run that needs its own signature (HTTP 400 otherwise).
+  const parts: GeminiPart[] = [];
+  const placed = new Set<number>();
+  let afterLastCall = -1;
+  let storedCallIndex = 0;
+  for (const part of stored) {
+    if (geminiFunctionCallRecord(part) === undefined) {
+      parts.push(part);
+      continue;
+    }
+    const callIndex = callForStored.get(storedCallIndex);
+    storedCallIndex += 1;
+    if (callIndex === undefined) continue;
+    parts.push(signedCallParts[callIndex]!);
+    placed.add(callIndex);
+    afterLastCall = parts.length;
+  }
+  const unplaced = signedCallParts.filter((_part, index) => !placed.has(index));
+  if (afterLastCall < 0) return [...parts, ...unplaced];
+  parts.splice(afterLastCall, 0, ...unplaced);
+  return parts;
+}
+
+/**
+ * Give every step of the current turn a signature on its first function call.
+ *
+ * Google finds the current turn by walking back to the newest user content
+ * with standard content (anything but functionResponse parts) and validates
+ * the first functionCall part of every model step after it. Live requests
+ * (2026-10-28) show the rule applies to every run of adjacent calls: a call
+ * that follows a text part needs its own signature. Calls this model produced
+ * carry their real signature (see {@link geminiModelParts}). A run that has
+ * none was produced by another model (a mid-turn model or provider fallback)
+ * or its signature was lost, and Google answers HTTP 400 for it. Such a run
+ * gets the documented placeholder instead. Earlier turns are not validated
+ * and stay as they are.
+ */
+function signCurrentTurnFunctionCalls(contents: Record<string, unknown>[]): void {
+  let start = 0;
+  for (let index = contents.length - 1; index >= 0; index -= 1) {
+    const content = contents[index]!;
+    const parts = Array.isArray(content.parts) ? (content.parts as GeminiPart[]) : [];
+    if (content.role === "user" && parts.some((part) => !isRecord(part.functionResponse))) {
+      start = index + 1;
+      break;
+    }
+  }
+  for (let index = start; index < contents.length; index += 1) {
+    const content = contents[index]!;
+    if (content.role !== "model" || !Array.isArray(content.parts)) continue;
+    const parts = content.parts as GeminiPart[];
+    let changed = false;
+    const signed = parts.map((part, partIndex) => {
+      const startsRun = geminiFunctionCallRecord(part) !== undefined &&
+        (partIndex === 0 || geminiFunctionCallRecord(parts[partIndex - 1]!) === undefined);
+      if (!startsRun || geminiThoughtSignature(part) !== undefined) return part;
+      changed = true;
+      const { thought_signature: _unused, ...rest } = part;
+      return { ...rest, thoughtSignature: GEMINI_SKIP_THOUGHT_SIGNATURE };
+    });
+    if (changed) content.parts = signed;
   }
 }
 
@@ -550,6 +709,17 @@ function buildGeminiContents(messages: readonly LLMMessage[], model: string): {
   const contents: Record<string, unknown>[] = [];
   const systemParts: GeminiPart[] = [];
   const toolCallNames = new Map<string, string>();
+  // Ids of the functionCall parts this request sends; a functionResponse
+  // names its call by the same id.
+  const sentCallIds = new Set<string>();
+  // Results of one model step travel in one user content, after every call
+  // of that step, as Google documents for parallel calls.
+  let responses: GeminiPart[] | undefined;
+  const flushResponses = () => {
+    if (responses === undefined) return;
+    contents.push({ role: "user", parts: responses });
+    responses = undefined;
+  };
 
   for (const message of messages) {
     if (message.role === "system" || message.role === "developer") {
@@ -567,28 +737,32 @@ function buildGeminiContents(messages: readonly LLMMessage[], model: string): {
           ? toolCallNames.get(message.toolCallId)
           : undefined) ??
         "tool";
-      contents.push({
-        role: "user",
-        parts: [
-          {
-            functionResponse: {
-              name,
-              response: functionResponsePayload(
-                functionResponseText(message.content),
-              ),
-            },
-          },
-        ],
+      const id = message.toolCallId !== undefined && sentCallIds.has(message.toolCallId)
+        ? message.toolCallId
+        : undefined;
+      (responses ??= []).push({
+        functionResponse: {
+          ...(id !== undefined ? { id } : {}),
+          name,
+          response: functionResponsePayload(
+            functionResponseText(message.content),
+          ),
+        },
       });
       continue;
     }
 
-    const replayParts = geminiReplayParts(message, model);
-    const parts = replayParts ?? [...geminiPartsFromContent(message.content)];
-    if (message.role === "assistant" && message.toolCalls) {
-      for (const toolCall of message.toolCalls) {
+    flushResponses();
+    const parts = message.role === "assistant"
+      ? geminiModelParts(message, model)
+      : [...geminiPartsFromContent(message.content)];
+    if (message.role === "assistant") {
+      for (const toolCall of message.toolCalls ?? []) {
         toolCallNames.set(toolCall.id, toolCall.name);
-        if (!replayParts) parts.push(geminiFunctionCallPart(toolCall));
+      }
+      for (const part of parts) {
+        const id = nonEmptyString(geminiFunctionCallRecord(part)?.id);
+        if (id !== undefined) sentCallIds.add(id);
       }
     }
     if (parts.length === 0) continue;
@@ -597,6 +771,8 @@ function buildGeminiContents(messages: readonly LLMMessage[], model: string): {
       parts,
     });
   }
+  flushResponses();
+  if (geminiValidatesCallSignatures(model)) signCurrentTurnFunctionCalls(contents);
 
   return {
     contents,
@@ -2877,8 +3053,15 @@ function validateGeminiToolCall(raw: unknown): LLMToolCall {
 // older models send none. A position-based id restarts at 0 in every
 // response, so the second tool round of a turn repeated the first round's id
 // and the session's tool-pair check rejected the turn.
+const GENERATED_GEMINI_CALL_ID_PREFIX = "gemini_call_";
+
 function geminiToolCallId(wireId: unknown): string {
-  return nonEmptyString(wireId) ?? `gemini_call_${randomUUID()}`;
+  return nonEmptyString(wireId) ?? `${GENERATED_GEMINI_CALL_ID_PREFIX}${randomUUID()}`;
+}
+
+/** True for an id Core made because the model sent none (see geminiToolCallId). */
+function isGeneratedGeminiCallId(id: string): boolean {
+  return /^gemini_call_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(id);
 }
 
 function toolCallFromGeminiFunctionCall(
