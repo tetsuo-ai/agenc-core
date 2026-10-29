@@ -14,6 +14,7 @@ import { resolveAgencHome } from "../config/env.js";
 import { AgenCDaemonResponseError, type AgenCJsonLineDaemonTuiClient } from "./agent-cli.js";
 import type { AgenCDaemonMethod, AgenCDaemonResponse, JsonObject, PrintInvokeParams, PrintInvokeResult } from "./protocol/index.js";
 import { isRecord } from "../utils/record.js";
+import { createCombinedAbortSignal } from "../utils/combinedAbortSignal.js";
 import { PrintOutput, PRINT_OUTPUT_MAX_BYTES, PRINT_OUTPUT_MAX_FRAMES } from "./print-output.js";
 
 export interface PrintInvocationHost {
@@ -99,7 +100,26 @@ export class PrintInvocation {
   #client(): AgenCJsonLineDaemonTuiClient {
     return {
       request: async <M extends AgenCDaemonMethod>(method: M, params: JsonObject = {}, options = {} as { signal?: AbortSignal }) => {
-        const response = await this.#host.request(method, params, options.signal);
+        const signal = options.signal;
+        let removeAbortListener = () => {};
+        let response: AgenCDaemonResponse;
+        try {
+          if (method === "agent.stop" && signal !== undefined) {
+            // In-process teardown need not observe cancellation. Bound only the
+            // stop wait; creates must still be joined to retain agent ownership.
+            signal.throwIfAborted();
+            const aborted = new Promise<never>((_resolve, reject) => {
+              const onAbort = () => reject(signal.reason);
+              signal.addEventListener("abort", onAbort, { once: true });
+              removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+            });
+            response = await Promise.race([aborted, this.#host.request(method, params, signal)]);
+          } else {
+            response = await this.#host.request(method, params, signal);
+          }
+        } finally {
+          removeAbortListener();
+        }
         if ("error" in response) throw new AgenCDaemonResponseError(response.error);
         return response.result as import("./protocol/index.js").AgenCDaemonResultByMethod[M];
       },
@@ -189,7 +209,14 @@ export class PrintInvocation {
             },
             createConnectedTuiClient: async () => client,
             // Stop remains available after the owning socket has closed.
-            stopPromptAgent: async ({ agentId, reason }) => { await client.request("agent.stop", { agentId, ...(reason === undefined ? {} : { reason }) }); },
+            stopPromptAgent: async ({ agentId, reason, signal, timeoutMs }) => {
+              const bounded = createCombinedAbortSignal(signal, { timeoutMs });
+              try {
+                await client.request("agent.stop", { agentId, ...(reason === undefined ? {} : { reason }) }, { signal: bounded.signal });
+              } finally {
+                bounded.cleanup();
+              }
+            },
           }, invocation);
         }
       }
