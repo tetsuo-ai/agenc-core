@@ -65,7 +65,7 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
-import { LIGHT_FINISH, LIGHT_LIMITED_FINISH, LIGHT_MISSING_CHECK_TOOLS } from "./light-budget-prompt.js";
+import { LIGHT_ACCEPTANCE_REVIEW, LIGHT_COMPUTE_FROM_DATA, LIGHT_FINISH, LIGHT_LIMITED_FINISH, LIGHT_MISSING_CHECK_TOOLS } from "./light-budget-prompt.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_GUIDANCE, AGENC_UNDO_PATHS } from "./product-help.js";
 import { LIGHT_LOADED_INSTRUCTIONS_NOTE } from "./live-instructions.js";
 import { LIGHT_TASK_LIMITS_ENV } from "../tools/light-profile.js";
@@ -1558,18 +1558,20 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("Complete requested files, exports and error cases");
-      expect(light.text).toContain("Run required and change-relevant checks once after final edits");
-      expect(light.text).toContain("Repeat for new edits, failures or unresolved concerns");
-      expect(light.text).toContain("diagnose the first failure and fix its cause before retrying");
-      expect(light.text).toContain("Briefly report results and stop");
-      expect(light.text).toContain(LIGHT_MISSING_CHECK_TOOLS);
+      expect(light.text).toContain("complete the files, exports and stated error cases");
+      expect(light.text).toContain("Run required checks after the last edit");
+      expect(light.text).toContain("rerun only checks affected by edits, failures or unresolved concerns");
+      expect(light.text).toContain("Diagnose the first failure and fix its cause before retrying");
+      expect(light.text).toContain("report the outcome and passing check in one or two sentences and stop");
+      expect(light.text).toContain(LIGHT_ACCEPTANCE_REVIEW);
+      // The acceptance review carries the unattended missing-tool rule; it is not stated twice.
+      expect(light.text).not.toContain(LIGHT_MISSING_CHECK_TOOLS);
       expect(light.text).not.toContain("Report unavailable checks instead of rebuilding their tools");
       expect(light.text).toContain("Do not weaken tests or requirements");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");
-      expect(light.text).not.toContain("Briefly report results and stop");
+      expect(light.text).not.toContain("report the outcome and passing check in one or two sentences and stop");
       expect(light.text).not.toContain("Run required and change-relevant checks once");
       expect(light.text).not.toContain("Repeat for new edits, failures or unresolved concerns");
     }
@@ -1692,11 +1694,12 @@ describe("Light's model-family tuning follows the model through gateways", () =>
     ["abliteration", "abliterated-model-large-flash"],
   ])("DeepSeek through %s retains the batch-editor head and task limits", async (provider, model) => {
     const prompt = await head(provider, model);
-    expect(prompt).toContain(LIGHT_LIMITED_FINISH);
-    expect(prompt).not.toContain(LIGHT_FINISH);
+    expect(prompt).toContain(LIGHT_ACCEPTANCE_REVIEW);
+    expect(prompt).toContain("Do only the requested work");
+    expect(prompt).not.toContain(LIGHT_COMPUTE_FROM_DATA);
     expect(prompt).toBe(await head("deepseek", "deepseek-v4-pro"));
     expect(prompt).not.toContain("Edit and create files with apply_patch");
-    expect(await head(provider, model, { [LIGHT_TASK_LIMITS_ENV]: "0" })).toContain(LIGHT_FINISH);
+    expect(await head(provider, model, { [LIGHT_TASK_LIMITS_ENV]: "0" })).toContain(LIGHT_COMPUTE_FROM_DATA);
   });
 
   test.each([
@@ -1714,7 +1717,7 @@ describe("Light's model-family tuning follows the model through gateways", () =>
     ["venice", "zai-org-glm-5-2"],
   ])("other models through %s keep the default Light head", async (provider, model) => {
     const prompt = await head(provider, model);
-    expect(prompt).toContain(LIGHT_FINISH);
+    expect(prompt).toContain(LIGHT_COMPUTE_FROM_DATA);
     expect(prompt).not.toContain("Edit and create files with apply_patch; put all hunks of one change in one patch.");
     expect(prompt).toBe(await head("anthropic", "claude-haiku-5-5"));
   });
