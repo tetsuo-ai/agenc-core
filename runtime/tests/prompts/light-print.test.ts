@@ -61,18 +61,21 @@ describe("Light print prefix", () => {
   });
 
   test.each(["plan", "default", "acceptEdits", "bypassPermissions"] as const)("%s preserves effective sandbox and network facts without offering approval", mode => {
+    // Facts per sandbox, and the network it leaves to commands with the policy's network off.
+    // danger-full-access runs commands with no sandbox, so their network is never restricted.
     const sandboxFacts = {
-      workspace_write: "read files; write only cwd and writable_roots",
-      read_only: "read files only",
-      danger_full_access: "no filesystem sandbox",
-      external_sandbox: "externally controlled; never widen or replace it",
+      workspace_write: ["read files; write only cwd and writable_roots", "restricted"],
+      read_only: ["read files only", "restricted"],
+      danger_full_access: ["no filesystem sandbox", "enabled"],
+      external_sandbox: ["externally controlled; never widen or replace it", "set by that sandbox"],
     } as const;
     for (const sandboxPolicy of Object.keys(sandboxFacts) as (keyof typeof sandboxFacts)[]) {
       for (const enabled of [false, true]) {
         const context = createEmptyToolPermissionContext({ mode });
         const rendered = getPermissionsSection(context, { sandboxPolicy, networkSandboxPolicy: { enabled } }, { light: true, lightPrint: true });
+        const [facts, networkOff] = sandboxFacts[sandboxPolicy];
         expect(rendered).toBe([
-          `Permission mode: ${mode}. Sandbox ${sandboxPolicy.replaceAll("_", "-")}: ${sandboxFacts[sandboxPolicy]}; network ${enabled ? "enabled" : "restricted"}.`,
+          `Permission mode: ${mode}. Sandbox ${sandboxPolicy.replaceAll("_", "-")}: ${facts}; network ${enabled ? "enabled" : networkOff}.`,
           "No approver: approval requests are denied. Do not bypass restrictions.",
           ...(mode === "bypassPermissions" ? [LIGHT_APPROVAL_NEVER] : []),
         ].join("\n"));

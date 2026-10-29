@@ -65,7 +65,7 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
-import { LIGHT_FINISH, LIGHT_LIMITED_FINISH } from "./light-budget-prompt.js";
+import { LIGHT_FINISH, LIGHT_LIMITED_FINISH, LIGHT_MISSING_CHECK_TOOLS } from "./light-budget-prompt.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_GUIDANCE, AGENC_UNDO_PATHS } from "./product-help.js";
 import { LIGHT_LOADED_INSTRUCTIONS_NOTE } from "./live-instructions.js";
 import { LIGHT_TASK_LIMITS_ENV } from "../tools/light-profile.js";
@@ -1536,7 +1536,8 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       expect(light.text).toContain("Repeat for new edits, failures or unresolved concerns");
       expect(light.text).toContain("diagnose the first failure and fix its cause before retrying");
       expect(light.text).toContain("Briefly report results and stop");
-      expect(light.text).toContain("Report unavailable checks instead of rebuilding their tools");
+      expect(light.text).toContain(LIGHT_MISSING_CHECK_TOOLS);
+      expect(light.text).not.toContain("Report unavailable checks instead of rebuilding their tools");
       expect(light.text).toContain("Do not weaken tests or requirements");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
@@ -1563,7 +1564,8 @@ describe("Light finish rules per provider", () => {
       "every requested file, export and stated error case",
       "no handling for cases that cannot happen",
       "do not re-verify what already passed",
-      "Report unavailable checks instead of rebuilding their tools",
+      "Install or build tools a check needs if allowed",
+      "report the check unavailable only after that fails or is denied",
       "report the outcome and the check that passed in one or two sentences",
       "Do not weaken tests or requirements, conceal failures or claim unverified work",
     ]) expect(deepseek, rule).toContain(rule);

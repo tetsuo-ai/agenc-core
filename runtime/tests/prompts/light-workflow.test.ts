@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { lightWorkflow } from "../../src/prompts/light-workflow.js";
+import { LIGHT_MISSING_CHECK_TOOLS } from "../../src/prompts/light-budget-prompt.js";
 
 test.each([false, true])("Light retains authority and truthful reporting with custom style=%s", custom => {
   const prompt = lightWorkflow(custom);
@@ -10,4 +11,6 @@ test.each([false, true])("Light retains authority and truthful reporting with cu
   expect(prompt).toContain("cat, sed -n or head of a file also count as reading it");
   expect(prompt).toContain("system.searchTools");
   expect(prompt.includes("Run the relevant tests once")).toBe(!custom);
+  expect(prompt.includes(LIGHT_MISSING_CHECK_TOOLS)).toBe(!custom);
+  expect(prompt).not.toContain("instead of rebuilding their tools");
 });

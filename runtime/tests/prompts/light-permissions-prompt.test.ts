@@ -32,6 +32,18 @@ const SANDBOXES: readonly [SandboxPolicy, string][] = [
   ["danger_full_access", "danger-full-access"],
   ["external_sandbox", "external-sandbox"],
 ];
+/**
+ * The network each sandbox leaves to commands, for a policy with the network
+ * off and on. Only read-only and workspace-write run commands under an AgenC
+ * sandbox; danger-full-access runs them with none, and an external sandbox
+ * decides for itself.
+ */
+const NETWORK_FOR_SANDBOX: Readonly<Record<SandboxPolicy, readonly [off: string, on: string]>> = {
+  workspace_write: ["restricted", "enabled"],
+  read_only: ["restricted", "enabled"],
+  danger_full_access: ["enabled", "enabled"],
+  external_sandbox: ["set by that sandbox", "enabled"],
+};
 
 function section(mode: PermissionMode, sandboxPolicy: SandboxPolicy, network: boolean, light: boolean): string | null {
   return getPermissionsSection(
@@ -47,10 +59,12 @@ describe("Light permission section", () => {
       for (const network of [false, true]) {
         const light = section(mode, sandboxPolicy, network, true)!;
         const canonical = section(mode, sandboxPolicy, network, false)!;
+        const access = NETWORK_FOR_SANDBOX[sandboxPolicy][network ? 1 : 0];
         expect(light.startsWith(`Permission mode: ${mode}. Sandbox ${sandboxName}: `)).toBe(true);
-        expect(light).toContain(`Network access is ${network ? "enabled" : "restricted"}.`);
+        expect(light).toContain(`Network access is ${access}.`);
         expect(light).toContain(`Approval policy ${approval}: `);
         expect(canonical).toContain(`\`sandbox_mode\` is \`${sandboxName}\``);
+        expect(canonical).toContain(`Network access is ${access}.`);
         expect(light.length).toBeLessThan(canonical.length);
       }
     }

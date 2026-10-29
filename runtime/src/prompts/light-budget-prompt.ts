@@ -20,6 +20,16 @@ export const LIGHT_KEEP_BEHAVIOR =
  */
 export const LIGHT_COMPUTE_FROM_DATA = "Compute numeric answers from data with a command, not mentally.";
 
+/**
+ * A check whose tool is missing. Both Light finish paragraphs said "Report unavailable checks instead of rebuilding
+ * their tools", which kept runs from rewriting a test harness but also read as "do not install anything": in the
+ * TB2.1 baseline DeepSeek found no Python or PyTorch, said it could not install them, and stopped without running a
+ * check, although apt and pip worked. A missing tool is installed or built when the session allows it; a check is
+ * reported unavailable only after that attempt fails or is denied.
+ */
+export const LIGHT_MISSING_CHECK_TOOLS =
+  "Install or build tools a check needs if allowed; report the check unavailable only after that fails or is denied.";
+
 /** Light's default finish rules: deliver, check, report. */
 export const LIGHT_FINISH = lightFinish(false);
 
@@ -27,7 +37,7 @@ function lightFinish(glmBatchedSteps: boolean): string {
   const failureHandling = glmBatchedSteps
     ? "fix all failures you can diagnose before retrying"
     : "diagnose the first failure and fix its cause before retrying";
-  return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. ${LIGHT_COMPUTE_FROM_DATA} Briefly report results and stop. Report unavailable checks instead of rebuilding their tools.`;
+  return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. ${LIGHT_COMPUTE_FROM_DATA} Briefly report results and stop. ${LIGHT_MISSING_CHECK_TOOLS}`;
 }
 
 /**
@@ -41,7 +51,7 @@ function lightLimitedFinish(glmBatchedSteps: boolean): string {
   const failureHandling = glmBatchedSteps
     ? "fixing all failures you can diagnose"
     : "fixing the first failure's cause";
-  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. ${LIGHT_KEEP_BEHAVIOR} Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and do not re-verify what already passed. Report unavailable checks instead of rebuilding their tools. When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
+  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. ${LIGHT_KEEP_BEHAVIOR} Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and do not re-verify what already passed. ${LIGHT_MISSING_CHECK_TOOLS} When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
 }
 
 export const LIGHT_GLM_BATCHED_STEPS =

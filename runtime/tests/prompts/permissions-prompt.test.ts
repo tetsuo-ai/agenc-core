@@ -227,6 +227,31 @@ describe("getPermissionsSection", () => {
     expect(out).not.toContain(APPROVAL_POLICY_BYPASS_ESCALATION.replace(/\n+$/, ""));
   });
 
+  // --dangerously-bypass-approvals-and-sandbox (and --bypass-approvals on a host
+  // with no sandbox) drops the sandbox but keeps the configured workspace-write
+  // network policy. Nothing blocks the network then; the text said "restricted"
+  // and DeepSeek stopped instead of installing what a task needed.
+  test("danger-full-access says the network is enabled whatever the configured policy says", () => {
+    for (const mode of ["bypassPermissions", "default", "acceptEdits", "plan"] as const) {
+      const out = getPermissionsSection(ctxForMode(mode), {
+        sandboxPolicy: "danger_full_access",
+        networkSandboxPolicy: { enabled: false },
+      })!;
+      expect(out).toContain("No filesystem sandboxing - all commands are permitted. Network access is enabled.");
+      expect(out).not.toContain("Network access is restricted");
+    }
+  });
+
+  test("an external sandbox decides the network itself unless the policy enables it", () => {
+    const out = (enabled: boolean) => getPermissionsSection(ctxForMode("default"), {
+      sandboxPolicy: "external_sandbox",
+      networkSandboxPolicy: { enabled },
+    })!;
+    expect(out(false)).toContain("AgenC does not widen or replace that sandbox. Network access is set by that sandbox.");
+    expect(out(false)).not.toContain("Network access is restricted");
+    expect(out(true)).toContain("Network access is enabled.");
+  });
+
 
   test("bypassPermissions mode → appends the autonomy note that waives tool prompts but not care", () => {
     const out = permissionsSection("bypassPermissions");
