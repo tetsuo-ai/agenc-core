@@ -1667,11 +1667,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   /**
-   * Check the cleanup of every unproven command again, now, and reopen
-   * admission once all of them are proven. See `recheckUnprovenCleanup`.
+   * Check the cleanup of every unproven command again and reopen admission
+   * once all of them are proven. See `recheckUnprovenCleanup`. Without
+   * `force` it shares the once-a-second limit of refused admissions, so a
+   * script calling a refused tool in a loop cannot turn into a `ps` loop.
    */
-  async recheckCleanupAdmission(): Promise<void> {
-    await this.recheckUnprovenCleanup(true);
+  async recheckCleanupAdmission(options: { readonly force?: boolean } = {}): Promise<void> {
+    await this.recheckUnprovenCleanup(options.force === true);
   }
 
   /** The note that commands resumed after a proven re-check, said once. */
@@ -1802,6 +1804,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       this.permanentCleanupFailure ??= error;
     }
     for (const entry of unprovenEntries) this.unprovenCleanupEntries.add(entry);
+    // Every command still running or stopping is stopped below and must be
+    // proven gone too, not only the one whose proof failed: if that one exited
+    // first, admission would otherwise reopen while another was still exiting.
+    for (const entry of this.processes.values()) {
+      if (entry.exitState === null) this.unprovenCleanupEntries.add(entry);
+    }
     this.sandboxAuthorityCleanupFailure ??= error;
     this.sandboxAuthorityQuiesced = true;
     this.sandboxAuthorityGeneration += 1;

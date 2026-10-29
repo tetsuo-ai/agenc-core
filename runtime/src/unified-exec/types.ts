@@ -323,7 +323,7 @@ export interface UnifiedExecProcessManagerLike {
    * unproven, check that cleanup again and resume commands once it is
    * proven. Callers whose own admission check is synchronous call it first.
    */
-  recheckCleanupAdmission?(): Promise<void>;
+  recheckCleanupAdmission?(options?: { readonly force?: boolean }): Promise<void>;
   /** Say once that commands resumed after such a check; undefined otherwise. */
   takeAdmissionResumedNotice?(): string | undefined;
   createOwnerLifetime?(

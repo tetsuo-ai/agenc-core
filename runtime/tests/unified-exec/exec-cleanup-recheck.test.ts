@@ -178,12 +178,12 @@ describe("unified exec after a killed command whose process exits late", () => {
         },
       });
       expect(JSON.parse(refused.content)).toMatchObject({ code: "exec_unavailable", retryable: false });
-      await manager.recheckCleanupAdmission();
+      await manager.recheckCleanupAdmission({ force: true });
       expect(() => manager.assertOwnerAdmission(undefined)).toThrow(/Shell commands are paused/);
       expect(manager.takeAdmissionResumedNotice()).toBeUndefined();
 
       await releaseStandIn!();
-      await manager.recheckCleanupAdmission();
+      await manager.recheckCleanupAdmission({ force: true });
       const resumed = await execTool.execute({ cmd: "echo resumed", yield_time_ms: 5_000 });
       expect(resumed.isError).toBeFalsy();
       expect(resumed.content).toContain("resumed");
@@ -218,7 +218,7 @@ describe("unified exec after a killed command whose process exits late", () => {
       // The subagent's close reports the shared failure; it records no new one.
       await expect(child.prepareForDurableClose()).rejects.toThrow(/cleanup is unproven/);
       await releaseStandIn!();
-      await manager.recheckCleanupAdmission();
+      await manager.recheckCleanupAdmission({ force: true });
       const resumed = await manager.execCommand({ cmd: "echo resumed", yield_time_ms: 5_000 });
       expect(resumed.stdout).toContain("resumed");
     } finally {
@@ -247,11 +247,71 @@ describe("unified exec after a killed command whose process exits late", () => {
       expect(refusal.message).toContain("Start a new session to run shell commands.");
 
       await releaseStandIn!();
-      await manager.recheckCleanupAdmission();
+      await manager.recheckCleanupAdmission({ force: true });
       await expect(manager.execCommand({ cmd: "echo refused" }))
         .rejects.toMatchObject({ code: "exec_unavailable", recheckable: false });
     } finally {
       await manager.closeAll().catch(() => {});
     }
   }, 20_000);
+
+  it("does not resume while another command the pause stopped is still exiting", async () => {
+    const manager = new UnifiedExecProcessManager({
+      cwd: root,
+      sessionTempRoot: root,
+      processTreeKillWaitMs: 100,
+    });
+    // A second command that cannot exit yet: every signal sent to its process
+    // group is accepted and stays pending, as for a process blocked in the
+    // kernel. Only the test's own release reaches it.
+    const realKill = process.kill.bind(process);
+    let pendingGroup = 0;
+    const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+      if (pendingGroup > 1 && Math.abs(pid) === pendingGroup && signal !== 0 && signal !== undefined) return true;
+      return realKill(pid, signal);
+    }) as typeof process.kill);
+    let slowGroup = 0;
+    try {
+      const slow = await manager.execCommand({ cmd: "echo $$; exec sleep 30", yield_time_ms: 500 });
+      const slowSession = slow.process_id!;
+      slowGroup = Number(slow.stdout.trim());
+      expect(slowGroup).toBeGreaterThan(1);
+      pendingGroup = slowGroup;
+
+      const started = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
+      const sessionId = started.process_id!;
+      startStuckProcess(`exec_command process ${sessionId}`);
+      manager.terminateProcess(sessionId);
+      await waitUntilRefused(manager);
+
+      // The command whose proof failed has exited; the one the pause stopped
+      // has not, so admission stays closed and names it.
+      await releaseStandIn!();
+      await manager.recheckCleanupAdmission({ force: true });
+      const stillPaused = await waitUntilRefused(manager);
+      expect(stillPaused.message).toContain("Shell commands are paused in this session.");
+      expect(stillPaused.message).toContain(`(session ${slowSession})`);
+
+      // It exits; once its own settlement proves it gone, commands run again.
+      pendingGroup = 0;
+      realKill(-slowGroup, "SIGKILL");
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const view = manager.listOwnedProcesses().find((process) => process.sessionId === slowSession);
+        if (view !== undefined && view.status !== "running" && view.status !== "stopping") break;
+        if (Date.now() > deadline) throw new Error("the stopped command never settled");
+        await delay(25);
+      }
+      await manager.recheckCleanupAdmission({ force: true });
+      const resumed = await manager.execCommand({ cmd: "echo resumed", yield_time_ms: 5_000 });
+      expect(resumed.stdout).toContain("resumed");
+    } finally {
+      pendingGroup = 0;
+      kill.mockRestore();
+      if (slowGroup > 1) {
+        try { process.kill(-slowGroup, "SIGKILL"); } catch { /* already gone */ }
+      }
+      await manager.closeAll().catch(() => {});
+    }
+  }, 30_000);
 });

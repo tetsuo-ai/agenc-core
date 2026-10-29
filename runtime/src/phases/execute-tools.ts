@@ -84,6 +84,7 @@ import {
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { recoverableFailureKind } from "../tools/result-metadata.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
+import { takeCodeModeNestedStop } from "../tools/code-mode/nested-stop.js";
 import { isEnvTruthy } from "../utils/envUtils.js";
 import { createToolUseSummaryMessage } from "../utils/messages.js";
 import {
@@ -942,6 +943,13 @@ export async function executeTools(
       preventContinuation = true;
       state.execUnavailableStop ??= { explanation: execStop };
     }
+  }
+  // The same refusal reached through a code-mode script: the script saw only
+  // an error it may have caught, so the turn host kept the stop for us.
+  const nestedExecStop = takeCodeModeNestedStop(session);
+  if (nestedExecStop !== undefined) {
+    preventContinuation = true;
+    state.execUnavailableStop ??= { explanation: nestedExecStop };
   }
   appendHookAdditionalContexts(state, session, additionalContexts);
   // Advisory loop-breaker: after the batch's results are on the record,

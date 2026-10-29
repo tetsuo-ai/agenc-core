@@ -1,5 +1,6 @@
 import type { Session } from "../../session/session.js";
 import type { ToolRegistry } from "../../tool-registry.js";
+import { clearCodeModeNestedStop, recordCodeModeNestedStop } from "./nested-stop.js";
 import {
   CODE_MODE_EXEC_TOOL_NAME,
   CODE_MODE_WAIT_TOOL_NAME,
@@ -61,6 +62,9 @@ async function invokeNestedCodeModeTool(
       },
     });
   }
+  // A refusal that ends the turn must reach the turn loop even if the script
+  // catches the error below; see nested-stop.ts.
+  recordCodeModeNestedStop(session, result.metadata);
   if (result.isError === true) {
     throw new Error(result.content);
   }
@@ -112,6 +116,7 @@ function emitMissingCodeModeServiceWarning(session: CodeModeWorkerSession): void
 export function startCodeModeTurnWorker(
   session: CodeModeWorkerSession,
 ): CodeModeTurnWorker {
+  clearCodeModeNestedStop(session);
   const codeModeService = session.services.codeModeService;
   if (codeModeService === undefined) {
     emitMissingCodeModeServiceWarning(session);

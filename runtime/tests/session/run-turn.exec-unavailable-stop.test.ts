@@ -10,7 +10,10 @@ import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import type { Event } from "../../src/session/session.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
+import { createCodeModeTools } from "../../src/tools/code-mode/tools.js";
+import type { CodeModeService, CodeModeTurnHost } from "../../src/tools/code-mode/types.js";
 import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
+import { createListProcessesTool } from "../../src/tools/system/list-processes.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 import { mkCtx, mkProvider, mkSession } from "../fixtures.js";
@@ -67,6 +70,28 @@ async function closedManager(cwd: string) {
       await manager.closeAll("test cleanup").catch(() => {});
     },
   };
+}
+
+/** A bypass-mode session whose tool calls run through the real turn loop. */
+function bypassSession(
+  provider: ReturnType<typeof mkProvider>,
+  registry: ToolRegistry,
+  services: Record<string, unknown> = {},
+) {
+  const runtimeOptions = resolveAgentRuntimeOptions({}, {
+    lightMode: true,
+    dangerouslyBypassApprovalsAndSandbox: true,
+  });
+  const made = mkSession({ provider, registry, services: { runtimeOptions, ...services } });
+  Object.assign(made.session.services, {
+    permissionModeRegistry: new PermissionModeRegistry({
+      ...made.session.permissionModeRegistry.current(),
+      mode: "bypassPermissions",
+      isBypassPermissionsModeAvailable: true,
+    }),
+  });
+  const ctx = mkCtx({ permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" } });
+  return { ...made, ctx };
 }
 
 function terminals(events: readonly Event[]) {
@@ -127,19 +152,7 @@ describe("exec_unavailable ends the turn", () => {
         toLLMTools: () => [],
         dispatch: shell.execute,
       } as unknown as ToolRegistry;
-      const runtimeOptions = resolveAgentRuntimeOptions({}, {
-        lightMode: true,
-        dangerouslyBypassApprovalsAndSandbox: true,
-      });
-      const { session, events, state } = mkSession({ provider, registry, services: { runtimeOptions } });
-      Object.assign(session.services, {
-        permissionModeRegistry: new PermissionModeRegistry({
-          ...session.permissionModeRegistry.current(),
-          mode: "bypassPermissions",
-          isBypassPermissionsModeAvailable: true,
-        }),
-      });
-      const ctx = mkCtx({ permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" } });
+      const { session, events, state, ctx } = bypassSession(provider, registry);
 
       const phases: PhaseEvent[] = [];
       for await (const phase of runTurn(session, ctx, "Build the site and check it with the shell.")) {
@@ -170,6 +183,102 @@ describe("exec_unavailable ends the turn", () => {
       const lastAssistant = [...state.history].reverse().find((message) => message.role === "assistant");
       expect(String(lastAssistant?.content)).toContain("Shell commands are disabled for the rest of this session.");
       expect(warnings(events, "no_progress_detected")).toEqual([]);
+    } finally {
+      await closed.dispose();
+    }
+  });
+
+  test("a refusal inside a code-mode script ends the turn even when the script catches it", async () => {
+    root = mkdtempSync(join(tmpdir(), "exec-unavailable-code-mode-"));
+    const closed = await closedManager(root);
+    try {
+      const listProcesses = createListProcessesTool({ unifiedExecManager: closed.manager });
+      let nestedCalls = 0;
+      const caught: string[] = [];
+      let host: CodeModeTurnHost | undefined;
+      // Runs the script `try { await tools.list_processes() } catch (error) { text("caught") }`.
+      const service: CodeModeService = {
+        enabled: () => true,
+        storedValues: async () => ({}),
+        replaceStoredValues: async () => {},
+        allocateCellId: () => "1",
+        async execute(request) {
+          try {
+            await host!.invokeTool({
+              cellId: request.cellId,
+              runtimeToolCallId: `nested-${nestedCalls}`,
+              toolName: "list_processes",
+              input: {},
+            }, new AbortController().signal);
+          } catch (error) {
+            caught.push(error instanceof Error ? error.message : String(error));
+          }
+          return {
+            type: "result",
+            cellId: request.cellId,
+            contentItems: [{ type: "input_text", text: "caught" }],
+            storedValues: {},
+            durationMs: 1,
+          };
+        },
+        wait: async (request) => ({ type: "terminated", cellId: request.cellId, contentItems: [], durationMs: 0 }),
+        startTurnWorker(next) {
+          host = next;
+          return { dispose: () => { if (host === next) host = undefined; } };
+        },
+      };
+      const [codeExec] = createCodeModeTools({ service, getEnabledTools: () => [listProcesses] });
+      let samples = 0;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        samples += 1;
+        const wantsTool = samples <= 20;
+        return {
+          content: wantsTool ? "Let me check the processes from a script." : "finished",
+          toolCalls: wantsTool
+            ? [{
+                id: `call-${samples}`,
+                name: "exec",
+                arguments: JSON.stringify({
+                  code: `try { await tools.list_processes() } catch (error) { text("caught ${samples}") }`,
+                }),
+              }]
+            : [],
+          usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+          model: "test-model",
+          finishReason: wantsTool ? "tool_calls" : "stop",
+        };
+      };
+      const registry = {
+        tools: [codeExec],
+        toLLMTools: () => [],
+        dispatch: async () => ({ content: "", isError: false }),
+        dispatchCodeModeNestedTool: async (call: { readonly input?: unknown }) => {
+          nestedCalls += 1;
+          return listProcesses.execute((call.input ?? {}) as Record<string, unknown>);
+        },
+      } as unknown as ToolRegistry;
+      const { session, events, ctx } = bypassSession(provider, registry, { codeModeService: service });
+
+      const phases: PhaseEvent[] = [];
+      for await (const phase of runTurn(session, ctx, "Check the processes with a script.")) {
+        phases.push(phase);
+      }
+
+      // The script caught the refusal and finished; the turn still ended.
+      expect(caught).toHaveLength(1);
+      expect(caught[0]).toContain('"code":"exec_unavailable"');
+      expect(samples).toBe(1);
+      expect(nestedCalls).toBe(1);
+      expect(phases.at(-1)).toMatchObject({ stopReason: "exec_unavailable" });
+      expect(terminals(events)).toEqual([
+        expect.objectContaining({ outcome: "errored", failureCode: "exec_unavailable" }),
+      ]);
+      const [warning, ...rest] = warnings(events, "exec_unavailable");
+      expect(rest).toEqual([]);
+      expect(warning?.msg.payload).toMatchObject({
+        message: expect.stringContaining("Shell commands are disabled for the rest of this session."),
+      });
     } finally {
       await closed.dispose();
     }
