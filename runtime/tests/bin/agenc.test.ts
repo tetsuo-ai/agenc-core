@@ -256,7 +256,7 @@ function installDaemonCliDepsForTest(
   readonly runtimeSessionId: string;
   readonly requests: Array<{ method: string; params: unknown }>;
   readonly client: {
-    request: ReturnType<typeof vi.fn>;
+    request: ReturnType<typeof vi.fn<(...args: any[]) => any>>;
     subscribeToSessionEvents: ReturnType<typeof vi.fn>;
     getConnectionState: ReturnType<typeof vi.fn>;
     subscribeToConnectionState: ReturnType<typeof vi.fn>;
@@ -267,7 +267,7 @@ function installDaemonCliDepsForTest(
   readonly stopPromptAgent: ReturnType<typeof vi.fn>;
   readonly createConnectedTuiClient: ReturnType<typeof vi.fn>;
   readonly findAgentBySessionId: ReturnType<typeof vi.fn>;
-  readonly createTuiContext: ReturnType<typeof vi.fn>;
+  readonly createTuiContext: ReturnType<typeof vi.fn<(...args: any[]) => any>>;
   readonly ensureDaemonReady: ReturnType<typeof vi.fn>;
 } {
   const agentId = options.agentId ?? "agent_test";
@@ -622,7 +622,7 @@ function installDaemonCliDepsForTest(
             ...sessionConfigurationFromAgenCConfig({
               config,
               workspaceRoot: params.cwd,
-              model: config.model,
+              model: config.model!,
             }),
             cwd: params.cwd,
             provider: { slug: "xai" },
@@ -1605,7 +1605,9 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
   it("invokes maybeReloadConfigBetweenTurns exactly once per call", async () => {
     const reloadConfigFn = vi.fn().mockResolvedValue({ reloaded: false });
     const assembleSystemPromptFn = vi.fn().mockResolvedValue({ text: "SYS" });
-    async function* fakeRunTurn(): AsyncGenerator<unknown, unknown> {
+    async function* fakeRunTurn(
+      ..._args: Parameters<NonNullable<Parameters<typeof runSingleTurn>[0]["runTurnFn"]>>
+    ): AsyncGenerator<unknown, unknown> {
       // empty — terminate immediately
       return { reason: "completed" };
     }
@@ -1646,7 +1648,7 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     expect(runTurnFn).toHaveBeenCalledTimes(1);
     // runTurn must receive the assembled system prompt through opts.
     const rtCall = runTurnFn.mock.calls[0]!;
-    expect(rtCall[3]!.systemPrompt.length).toBeGreaterThan(0);
+    expect(rtCall[3]!.systemPrompt!.length).toBeGreaterThan(0);
     expect(rtCall[3]!.userStopGenerationToRelease).toBe(7);
   });
 
@@ -5130,7 +5132,7 @@ describe("main() smoke", () => {
       cwd: tmpCwd,
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -5210,7 +5212,7 @@ describe("main() smoke", () => {
       ...(lightModeConfig !== undefined ? { lightModeConfig } : {}),
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -5334,7 +5336,7 @@ describe("main() smoke", () => {
       cwd: tmpCwd,
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -5438,7 +5440,7 @@ describe("main() smoke", () => {
       }],
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -5524,7 +5526,7 @@ describe("main() smoke", () => {
       },
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -5624,7 +5626,7 @@ describe("main() smoke", () => {
       },
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -5694,7 +5696,7 @@ describe("main() smoke", () => {
       cwd: tmpCwd,
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -5776,7 +5778,7 @@ describe("main() smoke", () => {
         cwd: tmpCwd,
       });
 
-      let resolveExit: (() => void) | null = null;
+      let resolveExit: (() => void) | undefined;
       const waitUntilExit = vi.fn(
         () =>
           new Promise<void>((resolve) => {
@@ -5857,7 +5859,7 @@ describe("main() smoke", () => {
       createConnectedTuiClientError: new Error("connect failed"),
     });
 
-    let resolveExit: (() => void) | null = null;
+    let resolveExit: (() => void) | undefined;
     const waitUntilExit = vi.fn(
       () =>
         new Promise<void>((resolve) => {

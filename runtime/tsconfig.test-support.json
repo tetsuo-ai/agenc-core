@@ -13,10 +13,15 @@
       "src/*": ["./src/*"]
     },
     "rootDir": ".",
+    "rootDirs": ["src", "tests"],
     "types": ["node", "vitest/globals"]
   },
   "include": [
     "src/types/**/*.d.ts",
+    "src/gateway/agenc-sdk-module.d.ts",
+    "tests/bin/agenc.test.ts",
+    "tests/bin/daemon-one-shot-cli.test.ts",
+    "tests/prompts/system-prompt.test.ts",
     "tests/tui/session-transcript.typed-contract.test.ts",
     "tests/app-server/workflow-permission-mode.typed-contract.test.ts",
     "tests/helpers/abort-harness.ts",
