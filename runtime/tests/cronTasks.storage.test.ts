@@ -332,6 +332,10 @@ describe("cron tools without durable storage", () => {
     const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
     const read = vi.spyOn(cronTasks, "readCronFile").mockRejectedValueOnce(new Error("schedule read failed"));
     const list = vi.spyOn(cronTasks, "listAllCronTasks").mockRejectedValueOnce(new Error("schedule read failed"));
+    // Read failures are reached only where durable creation is admitted.
+    // Off Linux the dispatch refusal returns first (cron-storage-windows).
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
     try {
       const create = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "durable work", durable: true });
       expect(create.isError).toBe(true);
@@ -344,6 +348,7 @@ describe("cron tools without durable storage", () => {
       expect(getSessionCronTasks()).toEqual([]);
       expect(await readdir(workspace)).toEqual([]);
     } finally {
+      Object.defineProperty(process, "platform", platform);
       read.mockRestore();
       list.mockRestore();
     }
