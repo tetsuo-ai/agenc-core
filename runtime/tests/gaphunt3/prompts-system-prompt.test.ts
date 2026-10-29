@@ -71,7 +71,7 @@ describe("gaphunt3 #5 — per-turn timestamp does not bust the cacheable static 
     clearSystemPromptSections();
   });
 
-  it("keeps the static head and the env tail byte-identical across turns at different times", async () => {
+  it("keeps the static head and the env tail byte-identical across turns on the same day", async () => {
     vi.useFakeTimers();
 
     vi.setSystemTime(new Date("2026-06-02T07:15:33.001Z"));
@@ -81,10 +81,12 @@ describe("gaphunt3 #5 — per-turn timestamp does not bust the cacheable static 
     vi.setSystemTime(new Date("2026-06-02T09:42:11.987Z"));
     const turn2 = await assembleSystemPrompt(baseOpts("/tmp/agenc-fake-cwd"));
 
-    // The env section no longer carries the wall clock, so a later turn (or
-    // a resumed session) repeats the tail too instead of rewriting it.
+    // The env section carries the date but no time of day, so a later turn
+    // (or a resumed session) the same day repeats the tail instead of
+    // rewriting it.
     expect(turn1.dynamicSuffix).toBe(turn2.dynamicSuffix);
     expect(turn1.dynamicSuffix).toContain("# Environment");
+    expect(turn1.dynamicSuffix).toContain("Current date (UTC): 2026-06-02");
     expect(turn1.dynamicSuffix).not.toContain("2026-06-02T07:15:33.001Z");
     expect(turn1.dynamicSuffix).not.toContain("Current time (UTC):");
 

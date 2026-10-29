@@ -899,6 +899,31 @@ describe("assembleSystemPrompt", () => {
     },
   );
 
+  test.each(["standard", "light"] as const)(
+    "the %s session tail states today's UTC date and stays byte-identical through the day",
+    async (profile) => {
+      const at = (currentDate: string) => assembleSystemPromptSnapshot({
+        profile,
+        session: fakeSession,
+        ctx: fakeCtx({ currentDate }),
+      });
+      const morning = await at("2026-08-28");
+      const evening = await at("2026-08-28");
+      const nextDay = await at("2026-08-29");
+      expect(morning.dynamicSuffix).toContain("Current date (UTC): 2026-08-28");
+      // No time of day anywhere, so a later turn or a resume the same day
+      // repeats the tail byte for byte.
+      expect(morning.text).not.toMatch(/\d{2}:\d{2}:\d{2}/u);
+      expect(evening.dynamicSuffix).toBe(morning.dynamicSuffix);
+      expect(evening.staticPrefix).toBe(morning.staticPrefix);
+      // A new day changes only the date line.
+      expect(nextDay.dynamicSuffix).toBe(
+        morning.dynamicSuffix.replace("Current date (UTC): 2026-08-28", "Current date (UTC): 2026-08-29"),
+      );
+      expect(nextDay.staticPrefix).toBe(morning.staticPrefix);
+    },
+  );
+
   test("selects compact and coordinator prompts as explicit snapshots", async () => {
     const compact = await assembleSystemPromptSnapshot({
       profile: "compact",
@@ -1477,13 +1502,15 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const standard = await assembleSystemPromptSnapshot({ ...options, session: { services: { runtimeOptions: { nonInteractive: true } } } as unknown as Session, profile: "standard" });
     expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length);
     // Light abbreviates Environment and the permission section and omits the
-    // generic token-budget tutorial. Print folds Workspace into memory; every
-    // other dynamic section stays exact.
+    // generic token-budget tutorial. Print folds Workspace into memory, and
+    // Light states the date on its own line where standard keeps it inside
+    // # Environment; every other dynamic section stays exact.
     const tailSections = (snapshot: typeof light) => snapshot.sections
       .slice(snapshot.sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) + 1)
       .map(section => section.replace(`Workspace: ${options.ctx.cwd}. `, ""))
       .filter(section => !section.startsWith("# Environment") &&
         !section.startsWith("Workspace:") &&
+        !section.startsWith("Current date (UTC): ") &&
         !section.startsWith("# Permission Mode: ") &&
         !section.startsWith("Permission mode: ") &&
         !section.startsWith("When the user specifies a token target"));
