@@ -583,6 +583,7 @@ function terminalToStopReason(
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
     case "effect_review_required":
+    case "exec_unavailable":
     case "deadline_reached":
       return reason;
     default:
@@ -2211,6 +2212,9 @@ export async function* runTurnKernel(
         effect_review_required:
           content ||
           "Turn stopped: a tool effect has an unknown outcome and needs operator review (/resolve). Side-effecting tools stay blocked until it is resolved.",
+        exec_unavailable:
+          content ||
+          "Turn stopped: shell commands are paused because AgenC could not confirm that an earlier command's processes exited.",
         deadline_reached: DEADLINE_REACHED_MESSAGE,
         compact_failed:
           "Turn stopped because compaction could not shrink the context.",
@@ -4292,7 +4296,9 @@ async function* runTurnKernelInner(
       // not mistake the halt for a completed turn.
       // The live-effect gate refusing a call nobody can review now is the
       // other bounded tool-phase stop (`effect_review_required`, #2501); it
-      // is reported the same way and never as a completed answer.
+      // is reported the same way and never as a completed answer. So is a
+      // shell tool refused while unified exec is paused after an unproven
+      // process cleanup (`exec_unavailable`).
       const boundedStop =
         state.transition !== undefined
           ? undefined
@@ -4302,13 +4308,19 @@ async function* runTurnKernelInner(
                 cause: "effect_review_required",
                 explanation: state.effectReviewStop.explanation,
               }
-            : state.noProgressStop !== undefined
+            : state.execUnavailableStop !== undefined
               ? {
-                  stopReason: "no_progress" as const,
-                  cause: "no_progress_detected",
-                  explanation: state.noProgressStop.explanation,
+                  stopReason: "exec_unavailable" as const,
+                  cause: "exec_unavailable",
+                  explanation: state.execUnavailableStop.explanation,
                 }
-              : undefined;
+              : state.noProgressStop !== undefined
+                ? {
+                    stopReason: "no_progress" as const,
+                    cause: "no_progress_detected",
+                    explanation: state.noProgressStop.explanation,
+                  }
+                : undefined;
       if (boundedStop !== undefined) {
         state.messages.push({
           role: "assistant",

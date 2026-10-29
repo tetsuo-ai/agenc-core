@@ -19,8 +19,12 @@ import { preflightSelfTermination, preflightShellWorkspaceWritePolicy } from "./
 import { recordSessionRead, resolveSessionId } from "./filesystem.js";
 import { isCompletePrintedOutput, rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
 import type { BashToolConfig } from "./types.js";
-import { UnifiedExecError } from "../../unified-exec/types.js";
+import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
+import {
+  execUnavailableToolResult,
+  withAdmissionResumedNotice,
+} from "./exec-unavailable.js";
 import { execCommandRunsConcurrently } from "../read-only-shell-concurrency.js";
 import type {
   ExecCommandToolOutput,
@@ -689,6 +693,9 @@ function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
 }
 
 function errorResult(error: unknown): ToolResult {
+  if (error instanceof UnifiedExecUnavailableError) {
+    return execUnavailableToolResult(error, "tool:system.exec-command:exec-unavailable");
+  }
   const message = error instanceof Error ? error.message : String(error);
   const ttyUnavailable = error instanceof UnifiedExecError &&
     error.code === "tty_unavailable_in_contained_operation";
@@ -1233,6 +1240,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
               ...(ownerId !== undefined ? { ownerId } : {}),
             });
+        // Commands were paused after an unproven cleanup and this call found
+        // that cleanup proven: say so once, with the output.
+        const admissionResumed = manager.takeAdmissionResumedNotice?.();
         // Only a non-login POSIX sh-family shell parses the command the way shellSteps does; a login
         // shell may also load profiles that redefine commands.
         const effectiveShell = asString(args.shell)?.trim() || manager.shellPath || "/bin/bash";
@@ -1350,8 +1360,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           : undefined;
         const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
         return {
-          content:
+          content: withAdmissionResumedNotice(
             notice === null ? content : `${content}\n\n${notice}`,
+            admissionResumed,
+            args as Record<string, unknown>,
+          ),
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output, notice),
           effectDisposition: processObservationDisposition(
@@ -1384,6 +1397,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ...(output.residual_processes_terminated === true
               ? { residualProcessesTerminated: true }
               : {}),
+            ...(admissionResumed !== undefined ? { execAdmissionResumed: admissionResumed } : {}),
           },
         };
       } catch (error) {

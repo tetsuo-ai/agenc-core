@@ -101,6 +101,12 @@ export interface UnifiedExecManagerOptions {
   /** Injectable only for deterministic sandbox-authority drain tests. */
   readonly sandboxAuthorityQuiesceTimeoutMs?: number;
   /**
+   * How long a stopped command's settlement waits, after SIGKILL, for the
+   * last members of its process tree to exit before cleanup counts as
+   * unproven. Injectable for tests; see UNIFIED_EXEC_KILL_SETTLE_MS.
+   */
+  readonly processTreeKillWaitMs?: number;
+  /**
    * Darwin: prepare each command's contained launch while the previous one
    * runs, so a command does not wait for its gate and watchdog to start. See
    * `prepareContainedProcessLaunch`.
@@ -312,6 +318,14 @@ export interface UnifiedExecProcessManagerLike {
   ): Promise<void>;
   /** Concrete managers freeze admission and verify cleanup before sealing. */
   prepareForDurableClose?(): Promise<void>;
+  /**
+   * When commands are refused because an earlier command's cleanup was
+   * unproven, check that cleanup again and resume commands once it is
+   * proven. Callers whose own admission check is synchronous call it first.
+   */
+  recheckCleanupAdmission?(): Promise<void>;
+  /** Say once that commands resumed after such a check; undefined otherwise. */
+  takeAdmissionResumedNotice?(): string | undefined;
   createOwnerLifetime?(
     ownerId: string,
     parentBinding?: UnifiedExecOwnerBinding,
@@ -330,7 +344,9 @@ export class UnifiedExecError extends Error {
     /** The write itself failed after bytes may have reached the process. */
     | "stdin_write_failed"
     | "process_limit"
-    | "owner_denied";
+    | "owner_denied"
+    /** Commands are refused until an earlier command's cleanup is proven. */
+    | "exec_unavailable";
 
   constructor(
     code: UnifiedExecError["code"],
@@ -339,5 +355,22 @@ export class UnifiedExecError extends Error {
     super(message);
     this.name = "UnifiedExecError";
     this.code = code;
+  }
+}
+
+/**
+ * The manager refuses every command because it could not prove that the
+ * processes of an earlier command exited. The message is written for the
+ * user and the model alike. `recheckable` is true when the manager checks
+ * that cleanup again before later commands and resumes once it is proven;
+ * false when only a new session runs commands again.
+ */
+export class UnifiedExecUnavailableError extends UnifiedExecError {
+  readonly recheckable: boolean;
+
+  constructor(message: string, recheckable: boolean) {
+    super("exec_unavailable", message);
+    this.name = "UnifiedExecUnavailableError";
+    this.recheckable = recheckable;
   }
 }

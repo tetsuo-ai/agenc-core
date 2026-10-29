@@ -46,6 +46,7 @@ import {
   type UnifiedExecStream,
   type WriteStdinRequest,
   UnifiedExecError,
+  UnifiedExecUnavailableError,
 } from "./types.js";
 import {
   assertProcessOwnerAccess,
@@ -64,7 +65,9 @@ import {
 } from "../workspace/tool-operation-lifetime.js";
 import {
   discardPreparedContainedProcessLaunch,
+  liveProcessTreeDescendants,
   prepareContainedProcessLaunch,
+  processTreeCleanupRecheckable,
   signalProcessTree,
   spawnContainedProcess,
   terminateProcessTreeAndReport,
@@ -97,7 +100,28 @@ const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_OUTPUT_BUFFER_CHARS = 1024 * 1024;
 const TASK_OUTPUT_TAIL_CHARS = 8192;
 const MAX_COMPLETED_BACKGROUND_PROCESSES = 64;
-const SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS = 5_000;
+/**
+ * How long a stopped command's settlement waits after SIGKILL for the last
+ * processes of its tree to exit. A process blocked in uninterruptible disk
+ * I/O accepts SIGKILL but dies only when that I/O returns. An external
+ * spinning disk that is waking up, or a slow APFS metadata read over USB,
+ * takes seconds. The old 1 s backstop closed the shell for the rest of the
+ * session in exactly that case (a `find /` killed while it read a USB hard
+ * disk). Ten seconds covers a spin-up. A process stuck for longer, such as one
+ * waiting on a macOS permission prompt, is checked again before the next
+ * command instead of holding the settlement open.
+ */
+const UNIFIED_EXEC_KILL_SETTLE_MS = 10_000;
+/**
+ * A strict close waits for a settlement that may take the kill wait plus its
+ * 500 ms TERM grace, so its own deadline sits above that.
+ */
+const MIN_SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS = 5_000;
+const SANDBOX_AUTHORITY_QUIESCE_MARGIN_MS = 2_000;
+/** A refused command checks unproven cleanup again at most this often. */
+const CLEANUP_RECHECK_MIN_INTERVAL_MS = 1_000;
+/** How much of a command its pause notice quotes. */
+const CLEANUP_COMMAND_PREVIEW_CHARS = 60;
 const PTY_ARGV0_EXECVE_SCRIPT =
   "const [program, argv0, ...args] = process.argv.slice(1);" +
   "const execve = process.execve;" +
@@ -339,6 +363,8 @@ interface ProcessEntry {
   endedAt?: number;
   stopPromise?: Promise<void>;
   cleanupFailure?: Error;
+  /** Members the failed cleanup proof last saw alive, for the pause notice. */
+  cleanupSurvivors?: readonly number[];
   hardTimeout?: NodeJS.Timeout;
   hardTimeoutExpired?: boolean;
   /**
@@ -560,6 +586,26 @@ function readFileHead(path: string, limitBytes: number): string {
   }
 }
 
+/** The first line of an error message, bounded, for a pause notice. */
+function firstLine(error: Error | undefined): string {
+  const line = (error?.message ?? "").split(/\r?\n/u, 1)[0]!.trim();
+  return line.length > 200 ? `${line.slice(0, 197)}...` : line;
+}
+
+/** "the command `ls` (session 6)", for the commands whose cleanup is unproven. */
+function describeUnprovenCommands(entries: readonly { readonly processId: number; readonly command: string }[]): string {
+  if (entries.length === 0) return "an earlier command";
+  const described = entries.slice(0, 2).map((entry) => {
+    const command = entry.command.replace(/\s+/gu, " ").trim();
+    const preview = command.length > CLEANUP_COMMAND_PREVIEW_CHARS
+      ? `${command.slice(0, CLEANUP_COMMAND_PREVIEW_CHARS - 3)}...`
+      : command;
+    return `the command \`${preview}\` (session ${entry.processId})`;
+  });
+  const more = entries.length > 2 ? ` and ${entries.length - 2} more` : "";
+  return `${described.join(" and ")}${more}`;
+}
+
 export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike {
   readonly maxTimeoutMs: number;
   private readonly cwd: string;
@@ -599,6 +645,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
+  private readonly processTreeKillWaitMs: number;
   private readonly prepareContainedLaunches: boolean;
   private readonly oneShotServers = new Map<string, OneShotProcessServer>();
   private oneShotServerFor(ownerId?: string): OneShotProcessServer {
@@ -679,7 +726,20 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly completedBackgroundProcesses = new Map<string, UnifiedExecBackgroundProcess>();
   private sandboxAuthorityGeneration = 0;
   private sandboxAuthorityQuiesced = false;
+  /** The first cleanup failure since admission last opened; set means closed. */
   private sandboxAuthorityCleanupFailure: Error | undefined;
+  /**
+   * Commands whose process-tree cleanup was not proven: their settlement
+   * proof failed, or a strict close stopped waiting for it. While any is left,
+   * admission stays closed. `recheckCleanupAdmission` runs the same proof again
+   * and removes each one it proves.
+   */
+  private readonly unprovenCleanupEntries = new Set<ProcessEntry>();
+  /** A failure no later proof can clear (a sandbox teardown, a lost snapshot). */
+  private permanentCleanupFailure: Error | undefined;
+  private cleanupRecheck: Promise<void> | undefined;
+  private lastCleanupRecheckAt = Number.NEGATIVE_INFINITY;
+  private admissionResumedNotice: string | undefined;
   private durableCloseTask: Promise<void> | undefined;
   private durableCloseStarted = false;
   private readonly ownerLifetimes = new Map<string, OwnerLifetimeState>();
@@ -703,9 +763,22 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.maxTimeoutMs = options.maxTimeoutMs ?? Number.POSITIVE_INFINITY;
     this.maxProcesses = options.maxProcesses ?? DEFAULT_MAX_PROCESSES;
     this.sandboxManager = options.sandboxManager ?? new SandboxManager();
+    this.processTreeKillWaitMs =
+      options.processTreeKillWaitMs ?? UNIFIED_EXEC_KILL_SETTLE_MS;
+    if (
+      !Number.isFinite(this.processTreeKillWaitMs) ||
+      this.processTreeKillWaitMs <= 0
+    ) {
+      throw new Error(
+        "unified exec process-tree kill wait must be finite and positive",
+      );
+    }
     this.sandboxAuthorityQuiesceTimeoutMs =
       options.sandboxAuthorityQuiesceTimeoutMs ??
-      SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS;
+      Math.max(
+        MIN_SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS,
+        this.processTreeKillWaitMs + SANDBOX_AUTHORITY_QUIESCE_MARGIN_MS,
+      );
     this.prepareContainedLaunches = options.prepareContainedLaunches === true;
     if (
       !Number.isFinite(this.sandboxAuthorityQuiesceTimeoutMs) ||
@@ -789,6 +862,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   async execCommand(
     request: ExecCommandRequest,
   ): Promise<ExecCommandToolOutput> {
+    // Only while paused: an open manager admits synchronously, before any await.
+    if (this.sandboxAuthorityCleanupFailure !== undefined) await this.recheckUnprovenCleanup(false);
     const sandboxAuthorityGeneration = this.assertSandboxAuthorityAdmission();
     this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (request.cmd.trim().length === 0) {
@@ -962,6 +1037,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   async startDetachedProcess(
     request: DetachedProcessRequest,
   ): Promise<ExecCommandToolOutput> {
+    // Only while paused: an open manager admits synchronously, before any await.
+    if (this.sandboxAuthorityCleanupFailure !== undefined) await this.recheckUnprovenCleanup(false);
     this.assertSandboxAuthorityAdmission();
     this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (request.cmd.trim().length === 0) {
@@ -1095,6 +1172,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput> {
+    // Only while paused: an open manager admits synchronously, before any await.
+    if (this.sandboxAuthorityCleanupFailure !== undefined) await this.recheckUnprovenCleanup(false);
     this.assertSandboxAuthorityAdmission();
     const entry = this.processes.get(request.session_id);
     const input = request.chars ?? "";
@@ -1444,8 +1523,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     lifetime.closing = true;
     const children = [...lifetime.children].map(child => this.closeOwnerLifetime(child));
     lifetime.closeTask = Promise.resolve().then(async () => {
+      // A command stopped earlier may have exited since its proof failed.
+      if (this.sandboxAuthorityCleanupFailure !== undefined) await this.recheckUnprovenCleanup(true);
       const entries = [...this.processes.values()].filter(entry => entry.ownerLifetime === lifetime);
-      const outcomes = await Promise.allSettled([
+      const [sandboxOutcome, ...outcomes] = await Promise.allSettled([
         Promise.resolve().then(async () => {
           await this.oneShotServers.get(lifetime.ownerId)?.close();
           this.oneShotServers.delete(lifetime.ownerId);
@@ -1457,11 +1538,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         }),
         ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
-      const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+      const failures: unknown[] = [];
+      if (sandboxOutcome!.status === "rejected") failures.push(sandboxOutcome.reason);
+      for (const outcome of outcomes) {
+        if (outcome.status === "rejected") failures.push(outcome.reason);
+      }
+      // Children record their own causes when their close fails.
+      const entryOutcomes = outcomes.slice(children.length);
+      const unprovenEntries = entries.filter((_entry, index) => entryOutcomes[index]?.status === "rejected");
       if (this.sandboxAuthorityCleanupFailure !== undefined) failures.push(this.sandboxAuthorityCleanupFailure);
       if (failures.length > 0) {
         const error = new AggregateError(failures, "unified exec owner cleanup is unproven at durable close");
-        this.poisonSandboxAuthority(error);
+        this.poisonSandboxAuthority(error, {
+          unprovenEntries,
+          permanent: sandboxOutcome!.status === "rejected",
+        });
         throw error;
       }
       // Keep settled yielded entries for status/output collection and pruning.
@@ -1478,15 +1569,20 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     if (this.durableCloseTask !== undefined) return this.durableCloseTask;
     this.durableCloseStarted = true;
     const task = Promise.resolve().then(async () => {
+      // A command stopped earlier may have exited since its proof failed.
+      if (this.sandboxAuthorityCleanupFailure !== undefined) await this.recheckUnprovenCleanup(true);
       const entries = [...this.processes.values()];
       const [sandboxOutcome, ...outcomes] = await Promise.allSettled([
         this.closeSessionSandboxes(), ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
       const failures: unknown[] = [];
+      const unprovenEntries: ProcessEntry[] = [];
       if (sandboxOutcome!.status === "rejected") failures.push(sandboxOutcome.reason);
       for (const [index, outcome] of outcomes.entries()) {
-        if (outcome.status === "rejected") failures.push(outcome.reason);
-        else this.releaseProcessId(entries[index]!.processId);
+        if (outcome.status === "rejected") {
+          failures.push(outcome.reason);
+          unprovenEntries.push(entries[index]!);
+        } else this.releaseProcessId(entries[index]!.processId);
       }
       if (this.sandboxAuthorityCleanupFailure !== undefined) {
         failures.push(this.sandboxAuthorityCleanupFailure);
@@ -1494,7 +1590,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (failures.length > 0) {
         const error = new AggregateError(failures,
           "unified exec cleanup is unproven at durable close");
-        this.poisonSandboxAuthority(error);
+        this.poisonSandboxAuthority(error, {
+          unprovenEntries,
+          permanent: sandboxOutcome!.status === "rejected",
+        });
         throw error;
       }
     });
@@ -1503,23 +1602,171 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   private assertSandboxAuthorityAdmission(expectedGeneration?: number): number {
+    if (this.durableCloseStarted) {
+      throw new UnifiedExecError(
+        "create_process",
+        "unified exec is closed for durable session finalization",
+      );
+    }
+    if (this.sandboxAuthorityCleanupFailure !== undefined) {
+      throw new UnifiedExecUnavailableError(
+        this.cleanupPauseMessage(),
+        this.permanentCleanupFailure === undefined,
+      );
+    }
     if (
-      this.durableCloseStarted ||
-      this.sandboxAuthorityCleanupFailure !== undefined ||
       this.sandboxAuthorityQuiesced ||
       (expectedGeneration !== undefined &&
         expectedGeneration !== this.sandboxAuthorityGeneration)
     ) {
       throw new UnifiedExecError(
         "create_process",
-        this.durableCloseStarted
-          ? "unified exec is closed for durable session finalization"
-          : this.sandboxAuthorityCleanupFailure === undefined
-          ? "unified exec is quiesced while sandbox runtime authority changes"
-          : "unified exec is permanently closed because process-tree cleanup could not be proven",
+        "unified exec is quiesced while sandbox runtime authority changes",
       );
     }
     return this.sandboxAuthorityGeneration;
+  }
+
+  /**
+   * Why every command is refused, in plain words for the user and the model:
+   * which command's cleanup is unproven, whether AgenC checks it again on its
+   * own, and what the user can do.
+   */
+  private cleanupPauseMessage(): string {
+    const failure = this.sandboxAuthorityCleanupFailure;
+    if (this.permanentCleanupFailure !== undefined || failure === undefined) {
+      const reason = firstLine(this.permanentCleanupFailure ?? failure);
+      return (
+        "Shell commands are disabled for the rest of this session. AgenC could not confirm " +
+        "that every process of an earlier command exited" +
+        (reason.length > 0 ? ` (${reason})` : "") +
+        ", and it cannot check that again. Start a new session to run shell commands."
+      );
+    }
+    const entries = [...this.unprovenCleanupEntries];
+    const survivors = [...new Set(entries.flatMap(entry => entry.cleanupSurvivors ?? []))];
+    const listed = survivors.slice(0, 8).join(", ");
+    return (
+      "Shell commands are paused in this session. AgenC could not confirm that every " +
+      `process of ${describeUnprovenCommands(entries)} exited` +
+      (survivors.length === 0
+        ? "."
+        : survivors.length === 1
+          ? `: process ${listed} was still running after AgenC stopped it.`
+          : `: processes ${listed} were still running after AgenC stopped it.`) +
+      " This happens when a process is stuck on a slow disk or a permission prompt." +
+      " No new shell command runs while one of them may still be running." +
+      " AgenC checks again before the next shell command and resumes on its own once they have exited," +
+      " so send a new message to continue." +
+      (survivors.length === 0
+        ? " If shell commands stay paused, start a new session."
+        : survivors.length === 1
+          ? ` If shell commands stay paused, end process ${listed} or start a new session.`
+          : ` If shell commands stay paused, end those processes or start a new session.`)
+    );
+  }
+
+  /**
+   * Check the cleanup of every unproven command again, now, and reopen
+   * admission once all of them are proven. See `recheckUnprovenCleanup`.
+   */
+  async recheckCleanupAdmission(): Promise<void> {
+    await this.recheckUnprovenCleanup(true);
+  }
+
+  /** The note that commands resumed after a proven re-check, said once. */
+  takeAdmissionResumedNotice(): string | undefined {
+    const notice = this.admissionResumedNotice;
+    this.admissionResumedNotice = undefined;
+    return notice;
+  }
+
+  /**
+   * Run the cleanup proof again for each command whose cleanup was unproven
+   * and reopen admission when every one of them is proven. It never reopens
+   * while any recorded process may still be alive, and a failure no proof can
+   * clear (or a proof that cannot run, such as a lost process-table snapshot)
+   * keeps admission closed. Concurrent callers share one check. Unforced
+   * checks run at most once per CLEANUP_RECHECK_MIN_INTERVAL_MS, so a model
+   * retrying a refused command cannot turn into a `ps` loop.
+   */
+  private recheckUnprovenCleanup(force: boolean): Promise<void> {
+    if (
+      this.sandboxAuthorityCleanupFailure === undefined ||
+      this.permanentCleanupFailure !== undefined
+    ) {
+      return Promise.resolve();
+    }
+    if (this.cleanupRecheck !== undefined) return this.cleanupRecheck;
+    const now = Date.now();
+    if (!force && now - this.lastCleanupRecheckAt < CLEANUP_RECHECK_MIN_INTERVAL_MS) {
+      return Promise.resolve();
+    }
+    this.lastCleanupRecheckAt = now;
+    const recheck = Promise.resolve().then(async () => {
+      const entries = [...this.unprovenCleanupEntries];
+      const subject = describeUnprovenCommands(entries);
+      for (const entry of entries) {
+        if (await this.reproveEntryCleanup(entry)) {
+          this.unprovenCleanupEntries.delete(entry);
+        }
+      }
+      if (
+        this.unprovenCleanupEntries.size === 0 &&
+        this.permanentCleanupFailure === undefined &&
+        this.sandboxAuthorityCleanupFailure !== undefined
+      ) {
+        this.sandboxAuthorityCleanupFailure = undefined;
+        // A lifecycle drain that began before the failure keeps its own hold.
+        this.sandboxAuthorityQuiesced = this.activeSandboxAuthorityQuiesce !== undefined;
+        this.sandboxAuthorityGeneration += 1;
+        this.admissionResumedNotice =
+          `Shell commands were paused because AgenC could not confirm that every process of ${subject} ` +
+          "had exited. They have exited now, so shell commands run again.";
+      }
+    }).finally(() => {
+      this.cleanupRecheck = undefined;
+    });
+    this.cleanupRecheck = recheck;
+    return recheck;
+  }
+
+  /**
+   * One command's cleanup, proven again with the proof that failed: the same
+   * process-tree boundary, signalled again (it was killed already) and
+   * checked once without a grace period. A strict close that stopped waiting
+   * counts once the command's own settlement has finished cleanly.
+   */
+  private async reproveEntryCleanup(entry: ProcessEntry): Promise<boolean> {
+    const failure = entry.cleanupFailure;
+    if (failure !== undefined) {
+      if (
+        entry.stored.kind !== "pipe" ||
+        !processTreeCleanupRecheckable(entry.stored.process)
+      ) {
+        return false;
+      }
+      try {
+        await terminateProcessTreeAndReport(entry.stored.process, {
+          label: `exec_command process ${entry.processId}`,
+          terminateGraceMs: 0,
+          killGraceMs: 0,
+        });
+      } catch {
+        return false;
+      }
+      if (entry.cleanupFailure === failure) {
+        entry.cleanupFailure = undefined;
+        entry.cleanupSurvivors = undefined;
+      }
+    }
+    if (entry.exitState === null) {
+      // Not settled yet: it was signalled when the strict close gave up and is
+      // signalled again here.
+      this.forceTerminate(entry);
+      return false;
+    }
+    return entry.cleanupFailure === undefined;
   }
 
   private assertActiveSandboxAuthorityQuiesce(
@@ -1534,7 +1781,27 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
   }
 
-  private poisonSandboxAuthority(error: Error): void {
+  /**
+   * Close admission after a cleanup failure. `unprovenEntries` are commands a
+   * later proof may clear; `permanent` marks a failure no proof can clear. A
+   * failure that only reports one already recorded adds nothing; one that
+   * names no cause while admission is open counts as permanent.
+   */
+  private poisonSandboxAuthority(
+    error: Error,
+    cause: {
+      readonly unprovenEntries?: readonly ProcessEntry[];
+      readonly permanent?: boolean;
+    } = { permanent: true },
+  ): void {
+    const unprovenEntries = cause.unprovenEntries ?? [];
+    if (
+      cause.permanent === true ||
+      (unprovenEntries.length === 0 && this.sandboxAuthorityCleanupFailure === undefined)
+    ) {
+      this.permanentCleanupFailure ??= error;
+    }
+    for (const entry of unprovenEntries) this.unprovenCleanupEntries.add(entry);
     this.sandboxAuthorityCleanupFailure ??= error;
     this.sandboxAuthorityQuiesced = true;
     this.sandboxAuthorityGeneration += 1;
@@ -1891,6 +2158,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       void waitForContainedProcessSettlement(child).then(() => {
         void terminateProcessTreeAndReport(child, {
           label: `exec_command process ${params.processId}`,
+          killGraceMs: this.processTreeKillWaitMs,
         }).then(
           (outcome) => {
             // Optional chaining: test doubles of the supervisor resolve void.
@@ -1928,7 +2196,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             stopAttachedProtectedCreateMonitor(child);
             probeHint?.invalidate();
             entry.cleanupFailure = cleanupFailure;
-            this.poisonSandboxAuthority(cleanupFailure);
+            entry.cleanupSurvivors = liveProcessTreeDescendants(child);
+            // The tree may still exit (a process blocked in disk I/O dies
+            // when the I/O returns); a later admission runs the proof again.
+            this.poisonSandboxAuthority(
+              cleanupFailure,
+              processTreeCleanupRecheckable(child)
+                ? { unprovenEntries: [entry] }
+                : { permanent: true },
+            );
             notifyData(
               "stderr",
               `AgenC could not verify descendant process cleanup: ${

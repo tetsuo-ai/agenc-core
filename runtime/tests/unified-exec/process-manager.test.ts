@@ -1232,9 +1232,14 @@ describe("UnifiedExecProcessManager", () => {
         }
       ).processes.size,
     ).toBe(1);
+    // A strict drain that gave up is not a failure a later proof can clear.
     await expect(
       manager.execCommand({ cmd: "printf should-not-run" }),
-    ).rejects.toThrow(/permanently closed/u);
+    ).rejects.toMatchObject({
+      code: "exec_unavailable",
+      recheckable: false,
+      message: expect.stringMatching(/disabled for the rest of this session/u),
+    });
     expect(() =>
       manager.resumeSandboxAuthorityAfterQuiesce(token),
     ).toThrow();

@@ -151,6 +151,15 @@ const DEFAULT_TERMINATE_GRACE_MS = 500;
 const DEFAULT_SETTLE_BACKSTOP_MS = 1_000;
 const PROCESS_TREE_POLL_INTERVAL_MS = 20;
 /**
+ * A tree wait polls every PROCESS_TREE_POLL_INTERVAL_MS for this long, then
+ * every PROCESS_TREE_SLOW_POLL_INTERVAL_MS. On Darwin every poll runs `ps`
+ * synchronously (about 20-40 ms), so a wait of several seconds at the fast
+ * rate would keep the event loop busy for most of it. Waits up to the default
+ * backstop never reach the slow rate.
+ */
+const PROCESS_TREE_FAST_POLL_WINDOW_MS = 1_000;
+const PROCESS_TREE_SLOW_POLL_INTERVAL_MS = 250;
+/**
  * How long a Linux-cgroup member still visible when the leader closes is given
  * to finish exiting before it counts as residue.
  *
@@ -3400,15 +3409,54 @@ export async function waitForProcessTreeExit(
       "process tree wait timeoutMs must be finite and non-negative",
     );
   }
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   while (isProcessTreeAlive(child)) {
-    const remaining = deadline - Date.now();
+    const now = Date.now();
+    const remaining = deadline - now;
     if (remaining <= 0) return false;
+    const interval = now - startedAt < PROCESS_TREE_FAST_POLL_WINDOW_MS
+      ? PROCESS_TREE_POLL_INTERVAL_MS
+      : PROCESS_TREE_SLOW_POLL_INTERVAL_MS;
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, Math.min(PROCESS_TREE_POLL_INTERVAL_MS, remaining));
+      setTimeout(resolve, Math.min(interval, remaining));
     });
   }
   return true;
+}
+
+/**
+ * Whether `terminateProcessTreeAndReport` may run again on this handle after
+ * it failed, to check later whether the tree is gone. Windows is excluded:
+ * without a Job Object its proof is `taskkill /T` on the leader's pid, which
+ * may belong to another process by then. A session-sandbox child is excluded
+ * because its proof belongs to the sandbox, which reports its own failures.
+ * So is a boundary whose proof can never pass again: a lost or overflowing
+ * process-table record, or a Linux broker that closed without its proof.
+ */
+export function processTreeCleanupRecheckable(
+  child: Pick<ChildProcess, "pid">,
+): boolean {
+  if (process.platform === "win32" || sessionProcessBoundaries.has(child)) return false;
+  const broker = linuxSubreaperBoundaries.get(child);
+  if (
+    broker !== undefined &&
+    (broker.protocolError !== undefined || (broker.closed && !(broker.ready && broker.verified)))
+  ) {
+    return false;
+  }
+  const boundary = ownedProcessBoundaries.get(child);
+  return boundary === undefined || (!boundary.overflowed && boundary.snapshotComplete);
+}
+
+/**
+ * Members other than the leader that the last process-table snapshot of this
+ * handle saw alive. Reads recorded state only; it runs no new snapshot.
+ */
+export function liveProcessTreeDescendants(
+  child: Pick<ChildProcess, "pid">,
+): number[] {
+  return liveOwnedBoundaryPids(child).filter((pid) => pid !== child.pid);
 }
 
 /** `kill(-pgid, 0)` counts zombies; they cannot execute and need no signal. */

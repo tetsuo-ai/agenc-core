@@ -1304,8 +1304,8 @@ is restored at the next start.
 
 A keep-alive (interactive / desktop) session must stay promptable after
 a capped turn. Bounded stops (`no_progress`, `effect_review_required`,
-`deadline_reached`, `max_turns`, `max_budget_usd`, `compact_failed`,
-and `empty_response`) emit canonical `turn_failed` with the stop reason
+`exec_unavailable`, `deadline_reached`, `max_turns`, `max_budget_usd`,
+`compact_failed`, and `empty_response`) emit canonical `turn_failed` with the stop reason
 as the code and leave the run available. Before an unattended (`agenc -p`)
 turn stops with `empty_response`, the runtime re-samples an empty model
 response up to three times with backoff (`empty_response_retry` warnings);

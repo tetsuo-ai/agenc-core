@@ -15,11 +15,13 @@
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
-import type {
-  OwnedProcessView,
-  UnifiedExecProcessManagerLike,
+import {
+  UnifiedExecUnavailableError,
+  type OwnedProcessView,
+  type UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { execUnavailableToolResult } from "./exec-unavailable.js";
 
 export interface ListProcessesToolConfig {
   readonly cwd?: string;
@@ -114,8 +116,14 @@ export function createListProcessesTool(config?: ListProcessesToolConfig): Tool 
       }
       const ownerId = processOwnerIdFromToolArgs(args);
       try {
+        // Admission below is synchronous; a pause after an unproven cleanup
+        // is checked again first.
+        await manager.recheckCleanupAdmission?.();
         manager.assertOwnerAdmission?.(ownerId, execOwnerBindingFromToolArgs(args));
       } catch (error) {
+        if (error instanceof UnifiedExecUnavailableError) {
+          return execUnavailableToolResult(error, "tool:system.list-processes:exec-unavailable");
+        }
         return { content: safeStringify({ error: error instanceof Error ? error.message : String(error) }), isError: true };
       }
       const views = manager.listOwnedProcesses({
