@@ -46,12 +46,12 @@ test("native inventory algorithm with a libproc fixture", { skip: process.platfo
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "AGENC_RUNTIME_INVENTORY_OK\n");
   }
-  for (const scenario of ["empty", "closed", "revoked", "other-user"]) {
+  for (const scenario of ["empty", "closed", "revoked", "other-user", "fd-denied-system", "zombie"]) {
     const result = run(scenario);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "AGENC_RUNTIME_INVENTORY_OK\n");
   }
-  for (const scenario of ["denied", "short", "truncated", "stalled-region", "empty-pids", "full-pids", "full-fds"]) {
+  for (const scenario of ["denied", "fd-denied", "short", "truncated", "stalled-region", "empty-pids", "full-pids", "full-fds"]) {
     const result = run(scenario);
     assert.equal(result.status, 1, `${scenario}: ${result.stderr}`);
     assert.ok(result.stderr.length > 0);

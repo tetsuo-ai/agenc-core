@@ -34,7 +34,11 @@ static void fail(const char *message) {
   exit(1);
 }
 
-static int gone(pid_t pid) {
+/* ESRCH from libproc means the process exited or is a zombie. A zombie has
+ * already released its memory and descriptors, and kill(pid, 0) still
+ * succeeds for it, so the libproc errno decides first. */
+static int gone(pid_t pid, int lookup_errno) {
+  if (lookup_errno == ESRCH) return 1;
   return kill(pid, 0) == -1 && errno == ESRCH;
 }
 
@@ -113,9 +117,10 @@ static void *list(pid_t pid, int *used, int processes) {
     int size = processes
       ? proc_listpids(PROC_ALL_PIDS, 0, buffer, capacity)
       : proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buffer, capacity);
-    if (size < 0 || (size == 0 && errno != 0)) {
+    int lookup_errno = errno;
+    if (size < 0 || (size == 0 && lookup_errno != 0)) {
       free(buffer);
-      if (!processes && gone(pid)) { *used = 0; return NULL; }
+      if (!processes && gone(pid, lookup_errno)) { *used = 0; return NULL; }
       fail("cannot enumerate processes or descriptors");
     }
     size_t slot = processes ? sizeof(pid_t) : sizeof(struct proc_fdinfo);
@@ -127,19 +132,40 @@ static void *list(pid_t pid, int *used, int processes) {
   return NULL;
 }
 
+/* The sealed system volume and the SIP-protected /usr directories. A runtime
+ * root can never live there, so a process executing from one of them never
+ * runs this runtime. /usr/local is writable and deliberately not listed. */
+static int protected_system_executable(pid_t pid) {
+  static const char *const roots[] = {
+    "/System/", "/usr/libexec/", "/usr/bin/", "/usr/sbin/", "/usr/lib/", "/bin/", "/sbin/",
+  };
+  char path[PROC_PIDPATHINFO_MAXSIZE];
+  memset(path, 0, sizeof(path));
+  int length = proc_pidpath(pid, path, sizeof(path));
+  if (length <= 0 || (size_t)length >= sizeof(path)) return 0;
+  for (size_t i = 0; i < sizeof(roots) / sizeof(*roots); i++) {
+    if (strncmp(path, roots[i], strlen(roots[i])) == 0) return 1;
+  }
+  return 0;
+}
+
 static void inspect_process(pid_t pid) {
   struct proc_vnodepathinfo cwd;
   memset(&cwd, 0, sizeof(cwd));
   int size = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &cwd, sizeof(cwd));
   if (size != (int)sizeof(cwd)) {
-    int denied = size <= 0 && (errno == EPERM || errno == EACCES);
-    if (gone(pid)) return;
+    int lookup_errno = size <= 0 ? errno : 0;
+    int denied = lookup_errno == EPERM || lookup_errno == EACCES;
+    if (gone(pid, lookup_errno)) return;
     /* Unprivileged lsof cannot inspect these processes either. Never ignore
-     * an inaccessible process owned by this user or one with unknown owner. */
+     * an inaccessible process owned by this user or one with unknown owner.
+     * macOS 27 refuses PROC_PIDTBSDINFO for another user's process, so the
+     * owner comes from the short BSD record, which it still returns. */
     if (denied) {
-      struct proc_bsdinfo owner;
-      int bytes = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &owner, sizeof(owner));
-      if (bytes == (int)sizeof(owner) && owner.pbi_uid != getuid()) return;
+      struct proc_bsdshortinfo owner;
+      memset(&owner, 0, sizeof(owner));
+      int bytes = proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &owner, sizeof(owner));
+      if (bytes == (int)sizeof(owner) && owner.pbsi_uid != getuid()) return;
     }
     fail("cannot inspect process directories");
   }
@@ -154,8 +180,14 @@ static void inspect_process(pid_t pid) {
     memset(&file, 0, sizeof(file));
     size = proc_pidfdinfo(pid, fds[i].proc_fd, PROC_PIDFDVNODEPATHINFO, &file, sizeof(file));
     if (size != (int)sizeof(file)) {
+      int lookup_errno = errno;
       /* A descriptor may close or be revoked between enumeration and lookup. */
-      if (size <= 0 && (errno == EBADF || errno == ENOENT || gone(pid))) continue;
+      if (size <= 0 && (lookup_errno == EBADF || lookup_errno == ENOENT || gone(pid, lookup_errno))) continue;
+      /* macOS 27 refuses descriptor details of some of its own daemons (dmd,
+       * lsd, nsurlsessiond) even to their user. Skip only those descriptors,
+       * and only for an executable on the protected system paths. The cwd and
+       * memory mappings of that process are still inspected. */
+      if (size <= 0 && lookup_errno == EPERM && protected_system_executable(pid)) continue;
       fail("cannot inspect open file");
     }
     if (file.pvip.vip_path[0] == '\0') fail("open file path unavailable");
@@ -172,7 +204,8 @@ static void inspect_process(pid_t pid) {
 #else
     size = proc_pidinfo(pid, PROC_PIDREGIONPATHINFO, address, &region, sizeof(region));
 #endif
-    if (size <= 0 && (errno == EINVAL || gone(pid))) return;
+    int lookup_errno = errno;
+    if (size <= 0 && (lookup_errno == EINVAL || gone(pid, lookup_errno))) return;
     if (size != (int)sizeof(region)) fail("cannot inspect mapped file");
     if (region.prp_vip.vip_path[0] == '\0' && region.prp_vip.vip_vi.vi_stat.vst_mode != 0) {
       fail("mapped file path unavailable");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
   rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -206,11 +206,17 @@ test("real macOS libproc probe retains an open file, cwd and executable outside 
   const child = spawn(process.execPath, ["-e",
     `require('node:fs').openSync(${JSON.stringify(alias)},'r'); console.log('ready'); setInterval(()=>{},1000)`],
   { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-  const executable = join(root, "sleep");
-  copyFileSync("/bin/sleep", executable);
-  const sleeper = spawn(executable, ["30"], { cwd: home });
+  // macOS kills a copied Apple platform binary such as /bin/sleep, so build a
+  // small program into the runtime root and wait until it reports running.
+  const executable = join(root, "sleeper");
+  execFileSync(process.env.CC || "cc", ["-x", "c", "-o", executable, "-"], {
+    input: "#include <stdio.h>\n#include <unistd.h>\nint main(void) { puts(\"ready\"); fflush(stdout); for (;;) pause(); }\n",
+  });
+  const sleeper = spawn(executable, [], { cwd: home, stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => { child.kill("SIGKILL"); sleeper.kill("SIGKILL"); });
-  await new Promise((resolve, reject) => { child.stdout.once("data", resolve); child.once("error", reject); });
+  await Promise.all([child, sleeper].map((started) => new Promise((resolve, reject) => {
+    started.stdout.once("data", resolve); started.once("error", reject);
+  })));
   const paths = await runtimeProcessInventory(root, { helperPath: helper, timeoutMs: 10_000,
     runCommand: (file, args, options, done) => {
       if (file === "/bin/ps") {

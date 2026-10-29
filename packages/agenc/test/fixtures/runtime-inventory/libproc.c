@@ -27,11 +27,12 @@ int proc_listpids(uint32_t type, uint32_t uid, void *buffer, int capacity) {
 }
 int proc_pidinfo(int pid, int flavor, uint64_t address, void *buffer, int capacity) {
   if (pid != getpid()) exit(99);
-  if (flavor == PROC_PIDTBSDINFO) {
-    ((struct proc_bsdinfo *)buffer)->pbi_uid = scenario("other-user") ? getuid() + 1 : getuid();
-    return sizeof(struct proc_bsdinfo);
+  if (flavor == PROC_PIDT_SHORTBSDINFO) {
+    ((struct proc_bsdshortinfo *)buffer)->pbsi_uid = scenario("other-user") ? getuid() + 1 : getuid();
+    return sizeof(struct proc_bsdshortinfo);
   }
   if (scenario("denied") || scenario("other-user")) { errno = EPERM; return 0; }
+  if (scenario("zombie")) { errno = ESRCH; return 0; }
   if (scenario("short")) return 1;
   if (flavor == PROC_PIDVNODEPATHINFO) {
     struct proc_vnodepathinfo *out = buffer;
@@ -40,7 +41,8 @@ int proc_pidinfo(int pid, int flavor, uint64_t address, void *buffer, int capaci
   }
   if (flavor == PROC_PIDLISTFDS) {
     if (scenario("full-fds")) return capacity;
-    if (scenario("fd") || scenario("truncated") || scenario("closed") || scenario("revoked")) {
+    if (scenario("fd") || scenario("truncated") || scenario("closed") || scenario("revoked") ||
+        scenario("fd-denied") || scenario("fd-denied-system")) {
       struct proc_fdinfo *out = buffer;
       out->proc_fd = 7; out->proc_fdtype = PROX_FDTYPE_VNODE;
       return sizeof(*out);
@@ -63,8 +65,14 @@ int proc_pidfdinfo(int pid, int fd, int flavor, void *buffer, int capacity) {
   (void)pid; (void)fd; (void)flavor; (void)capacity;
   if (scenario("closed")) { errno = EBADF; return 0; }
   if (scenario("revoked")) { errno = ENOENT; return 0; }
+  if (scenario("fd-denied") || scenario("fd-denied-system")) { errno = EPERM; return 0; }
   struct vnode_fdinfowithpath *out = buffer;
   vnode(&out->pvip, getenv("PROBE_PATH"));
   if (scenario("truncated")) memset(out->pvip.vip_path, 'a', sizeof(out->pvip.vip_path));
   return sizeof(*out);
+}
+int proc_pidpath(int pid, void *buffer, uint32_t capacity) {
+  if (pid != getpid()) exit(99);
+  const char *path = scenario("fd-denied-system") ? "/usr/libexec/fixture-daemon" : "/Users/fixture/bin/tool";
+  return snprintf(buffer, capacity, "%s", path);
 }
