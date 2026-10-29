@@ -43,6 +43,7 @@ export interface AgenCCompactProgressControls {
 export interface PermissionModeRegistryLike {
   current(): ToolPermissionContext;
   update?(next: ToolPermissionContext): Promise<void> | void;
+  subscribeToContextChange: import("../permissions/permission-mode.js").PermissionModeRegistry["subscribeToContextChange"];
   subscribeToModeChange?(
     cb: (
       next: ToolPermissionContext["mode"],
@@ -344,6 +345,7 @@ export interface AgenCTuiProps {
    * teardown.
    */
   readonly registerTuiTeardown?: (teardown: () => Promise<void>) => () => void;
+  readonly shouldPreserveEditorRecoveryOnTeardown?: () => boolean;
   readonly isInteractive?: boolean;
   readonly model?: string;
   readonly initialPrompt?: string;

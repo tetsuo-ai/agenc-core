@@ -1,3 +1,4 @@
+import type { AppState } from "./AppStateStore.js";
 import type { LocalAgentTaskState, TaskState, TaskStatus } from "../../tasks/types.js";
 import type { SessionNativeWorkerSnapshot } from "../../app-server/protocol/index.js";
 import type { NativeWorkerTiming } from "../../agents/status.js";
@@ -14,7 +15,7 @@ import {
 const PANEL_GRACE_MS = 1_800_000;
 
 export type SetAppStateWithTasks = (
-  updater: (prev: { readonly tasks?: Record<string, TaskState> }) => unknown,
+  updater: (prev: AppState) => AppState,
 ) => void;
 
 type EventLike = {

@@ -302,8 +302,6 @@ type ComposerSubmission = {
   readonly clientMessageId: string;
   readonly draftRestoreValue: string;
   readonly pastedContents: Record<number, any>;
-  readonly attachmentIds: readonly string[];
-  readonly acknowledge: () => void;
   value: string;
   options: SessionSubmitOptions;
   inputs: readonly LLMMessage[];
@@ -862,7 +860,7 @@ export function createElicitationQueue(): ElicitationQueue {
         };
       }
       const [pending] = queued.splice(queuedIndex, 1);
-      pending?.resolve(
+      (pending as McpUrlPending | undefined)?.resolve(
         response ?? {
           action: "accept",
         },
@@ -1245,8 +1243,8 @@ export function subscribeToMcpUrlCompletions(
 }
 export function useTuiElicitation(session) {
   const $ = _c(8);
-  const [pending, setPending] = useState(null);
-  const controllerRef = useRef(null);
+  const [pending, setPending] = useState<PendingElicitation | null>(null);
+  const controllerRef = useRef<ElicitationResolverController | null>(null);
   let t0;
   let t1;
   if ($[0] !== session) {
@@ -2287,7 +2285,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // (`/goal <objective>` on a cold TUI) lost its prompt. The id read here is
   // the mount's identity for the queue, fixed for the life of the session
   // object; `/status` reads the live id from the session itself.
-  const commandQueueOwner = useMemo<QueuedCommandOwner>(
+  const commandQueueOwner = useMemo<Extract<QueuedCommandOwner, { kind: "tui_mount" }>>(
     () => ({
       kind: "tui_mount",
       mountId: `tui-queue-${randomUUID()}`,
@@ -3233,7 +3231,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         getSessionUsage: () => transcript.sessionUsage ?? null,
         getAppState: () => appStateStore.getState(),
         setModel,
-        setAppState,
+        setAppState: setAppState as NonNullable<SlashCommandContext["appState"]>["setAppState"],
         setToolJSX,
         tools: availableTools,
         requestResumeSession: (sessionId: string) => {
@@ -3965,7 +3963,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 "whoami",
                 "subscription",
                 "usage",
-              ].includes(commandName),
+              ].includes(commandName as string),
             });
             return {
               forwardedToModel: false,

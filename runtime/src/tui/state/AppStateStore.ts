@@ -29,7 +29,7 @@ import {
 import type { EffortValue } from '../../utils/effort.js'
 import { reasoningEffortToEffortLevel } from '../../utils/effort.js'
 import type { FileHistoryState } from '../../utils/fileHistory.js'
-import type { REPLHookContext } from '../../utils/hooks/postSamplingHooks.js'
+import type { SpeculationState } from '../../services/PromptSuggestion/runtime.js'
 import type { SessionHooksState } from '../../utils/hooks/sessionHooks.js'
 import type { ModelSetting } from '../../utils/model/model.js'
 import type { DenialTrackingState } from '../../utils/permissions/denialTracking.js'
@@ -60,28 +60,7 @@ export type SpeculationResult = {
   timeSavedMs: number
 }
 
-export type SpeculationState =
-  | { status: 'idle' }
-  | {
-      status: 'active'
-      id: string
-      abort: () => void
-      startTime: number
-      messagesRef: { current: Message[] } // Mutable ref - avoids array spreading per message
-      writtenPathsRef: { current: Set<string> } // Mutable ref - relative paths written to overlay
-      boundary: CompletionBoundary | null
-      suggestionLength: number
-      toolUseCount: number
-      isPipelined: boolean
-      speculationEnabled?: boolean
-      cwd: string
-      contextRef: { current: REPLHookContext }
-      pipelinedSuggestion?: {
-        text: string
-        promptId: 'user_intent' | 'stated_intent'
-        generationRequestId: string | null
-      } | null
-    }
+export type { SpeculationState } from '../../services/PromptSuggestion/runtime.js'
 
 export const IDLE_SPECULATION_STATE: SpeculationState = { status: 'idle' }
 

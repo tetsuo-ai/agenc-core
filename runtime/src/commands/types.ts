@@ -16,6 +16,7 @@
  * @module
  */
 
+import type { SetToolJSXFn } from "../tools/Tool.js";
 import type { Session } from "../session/session.js";
 import type { ConfigStore } from "../config/store.js";
 import type { AdmissionUsageSummary } from "../budget/admission-types.js";
@@ -36,7 +37,7 @@ export interface SlashCommandAppStateBridge {
   /** Update the live TUI app state for commands that refresh runtime surfaces. */
   readonly setAppState?: (updater: (prev: unknown) => unknown) => void;
   /** Render or clear a TUI-local JSX command surface. */
-  readonly setToolJSX?: (jsx: unknown) => void;
+  readonly setToolJSX?: SetToolJSXFn;
   /** Base tool list available to TUI-local command surfaces. */
   readonly tools?: readonly unknown[];
   /**

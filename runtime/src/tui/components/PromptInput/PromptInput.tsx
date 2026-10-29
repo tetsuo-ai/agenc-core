@@ -97,7 +97,7 @@ import {
 import type { ToolPermissionContext } from "../../../tools/Tool.js";
 import { getRunningTeammatesSorted } from "../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js";
 import type { InProcessTeammateTaskState } from "../../../tasks/InProcessTeammateTask/types.js";
-import { type LocalAgentTaskState } from "../../../tasks/LocalAgentTask/LocalAgentTask.js";
+import { type LocalAgentTaskState } from "../../../tasks/types.js";
 import { isBackgroundTask } from "../../../tasks/types.js";
 import {
   AGENT_COLOR_TO_THEME_COLOR,
@@ -239,7 +239,7 @@ function getNativeCSIuTerminalDisplayName(): string | null {
 
 function isUltrareviewEnabled(): boolean {
   const config: Record<string, unknown> | null = null;
-  return config?.enabled === true;
+  return (config as Record<string, unknown> | null)?.enabled === true;
 }
 
 /**

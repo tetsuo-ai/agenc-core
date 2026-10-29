@@ -363,7 +363,17 @@ function buildBashProgressForwarder(
   };
 }
 
-function createCanonicalTool(options: CanonicalToolOptions): Tool {
+type CanonicalTool = Omit<Tool, "call"> & {
+  call(
+    input: Parameters<Tool["call"]>[0],
+    context: ToolUseContext,
+    canUseTool?: Parameters<Tool["call"]>[2],
+    parentMessage?: Parameters<Tool["call"]>[3],
+    onProgress?: Parameters<Tool["call"]>[4],
+  ): ReturnType<Tool["call"]>;
+};
+
+function createCanonicalTool(options: CanonicalToolOptions): CanonicalTool {
   // Phase 6 #41: every method below previously called
   // `options.createRuntimeTool(root)` on each invocation. For
   // hot-path methods (`prompt`, `isConcurrencySafe`, `isReadOnly`,
