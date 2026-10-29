@@ -109,6 +109,7 @@ import {
   type JsonObject,
   type JsonValue,
   type SessionStatus,
+  type SessionSummary,
 } from "./protocol/index.js";
 
 import { sessionEventDelivery } from "./approval-delivery.js";
@@ -666,13 +667,14 @@ async function runAgenCDaemonForegroundLocked(
   };
   let lifecycleLockReleased = false;
   let startupRecovery: DaemonStartupRecoveryReport;
+  const savedSessionListings = new Map<string, AgenCDaemonSavedSessionListing>();
   if (host.startupGuardReceiver?.wasRequested() === true) return 1;
   try {
     startupRecovery = options.startupRestoreMode === "background"
       ? recoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), activeConfig,
           message => io.stderr.write(`agenc: ${message}\n`),
           distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined)
-      : discoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd());
+      : discoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), savedSessionListings);
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
     writeAgenCDaemonStartupDebug(
       host,
@@ -702,7 +704,14 @@ async function runAgenCDaemonForegroundLocked(
     cleanup.register("daemon-thread-store", async () => {
       threadStore.close();
     });
-    const sessionManager = new AgenCDaemonSessionManager({ threadStore });
+    // On demand, saved sessions stay listed until they are opened, as the
+    // eager restore listed them: under the daemon session id they had, with
+    // the waiting status, the run's start time and the thread's workspace.
+    let listUnopenedSavedSessions = (): readonly SessionSummary[] => [];
+    const sessionManager = new AgenCDaemonSessionManager({
+      threadStore,
+      unopenedSessions: () => listUnopenedSavedSessions(),
+    });
     // Forward declaration: set once the connection registry below exists. Lets
     // the multiplexer ask the transport to tear down a slow consumer's socket
     // when that client's pending delivery backlog trips the per-client cap.
@@ -1040,6 +1049,25 @@ async function runAgenCDaemonForegroundLocked(
         );
       },
     });
+    if (options.startupRestoreMode !== "background") {
+      listUnopenedSavedSessions = () => startupRestores.unsettledTargets().flatMap(({ run }) => {
+        if (run.currentSessionId === undefined) return [];
+        const listing = savedSessionListings.get(savedSessionListingKey(run.projectDir, run.id));
+        return [{
+          sessionId: run.currentSessionId,
+          agentId: run.id,
+          status: "waiting" as const,
+          createdAt: run.startedAt,
+          ...(listing?.cwd !== undefined ? { cwd: listing.cwd } : {}),
+          metadata: {
+            ...(listing?.model !== undefined ? { model: listing.model } : {}),
+            ...(listing?.modelProvider !== undefined ? { modelProvider: listing.modelProvider } : {}),
+            recovered: true,
+            recovery: { projectDir: run.projectDir, runStatus: run.status, loaded: false },
+          },
+        }];
+      });
+    }
     let routines: RoutineService | undefined;
     let remote: ReturnType<typeof createLazyRemoteService> | undefined;
     let ownerTelegram: ReturnType<typeof createLazyOwnerTelegramService> | undefined;
@@ -2344,10 +2372,23 @@ function describeRolloutRetentionPrune(
   );
 }
 
+/** What `session.list` shows for a saved session before it is opened. */
+export interface AgenCDaemonSavedSessionListing {
+  readonly cwd?: string;
+  readonly model?: string;
+  readonly modelProvider?: string;
+}
+
+/** Key of {@link AgenCDaemonSavedSessionListing} entries: project and run id. */
+function savedSessionListingKey(projectDir: string, runId: string): string {
+  return `${projectDir}\0${runId}`;
+}
+
 /** @internal Exported for startup recovery boundary tests. */
 export function discoverAgenCDaemonStartupState(
   daemonHome: string,
   cwd: string,
+  listings?: Map<string, AgenCDaemonSavedSessionListing>,
 ): DaemonStartupRecoveryReport {
   const recoveredRuns: RecoveredAgentRun[] = [];
   for (const paths of discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd)) {
@@ -2356,17 +2397,34 @@ export function discoverAgenCDaemonStartupState(
     // authority until recoverAgenCDaemonStartupState validates their project.
     const reader = openStateDatabasePathReader(paths, { deferLogs: true });
     try {
+      // The thread row (keyed by the durable session id, which is the run id)
+      // carries the workspace and model a client lists the session under.
       const rows = reader.prepareState<string[], {
         id: string; objective: string; status: RecoveredAgentRun["status"];
         started_at: string; last_active_at: string; current_session_id: string | null;
-      }>(`SELECT id, objective, status, started_at, last_active_at, current_session_id
-          FROM agent_runs WHERE status IN (${RECOVERABLE_AGENT_RUN_STATUSES.map(() => "?").join(",")})
-          ORDER BY last_active_at ASC, id ASC`).all(...RECOVERABLE_AGENT_RUN_STATUSES);
-      for (const row of rows) recoveredRuns.push({
-        projectDir: paths.projectDir, id: row.id, objective: row.objective,
-        status: row.status, startedAt: row.started_at, lastActiveAt: row.last_active_at,
-        ...(row.current_session_id !== null ? { currentSessionId: row.current_session_id } : {}),
-      });
+        thread_cwd: string | null; thread_model: string | null; thread_model_provider: string | null;
+      }>(`SELECT runs.id, runs.objective, runs.status, runs.started_at, runs.last_active_at,
+                 runs.current_session_id,
+                 COALESCE(durable.cwd, live.cwd) AS thread_cwd,
+                 COALESCE(durable.model, live.model) AS thread_model,
+                 COALESCE(durable.model_provider, live.model_provider) AS thread_model_provider
+          FROM agent_runs AS runs
+          LEFT JOIN threads AS durable ON durable.thread_id = runs.id
+          LEFT JOIN threads AS live ON live.thread_id = runs.current_session_id
+          WHERE runs.status IN (${RECOVERABLE_AGENT_RUN_STATUSES.map(() => "?").join(",")})
+          ORDER BY runs.last_active_at ASC, runs.id ASC`).all(...RECOVERABLE_AGENT_RUN_STATUSES);
+      for (const row of rows) {
+        recoveredRuns.push({
+          projectDir: paths.projectDir, id: row.id, objective: row.objective,
+          status: row.status, startedAt: row.started_at, lastActiveAt: row.last_active_at,
+          ...(row.current_session_id !== null ? { currentSessionId: row.current_session_id } : {}),
+        });
+        listings?.set(savedSessionListingKey(paths.projectDir, row.id), {
+          ...(row.thread_cwd !== null ? { cwd: row.thread_cwd } : {}),
+          ...(row.thread_model !== null ? { model: row.thread_model } : {}),
+          ...(row.thread_model_provider !== null ? { modelProvider: row.thread_model_provider } : {}),
+        });
+      }
     } finally {
       reader.close();
     }

@@ -6470,6 +6470,71 @@ snapshot_max_bytes = 64
     }
   });
 
+  it("on demand, lists saved sessions nobody opened yet and opens one by either listed id", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const rolloutA = seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "listed-a", sessionId: "session-listed-a" });
+    seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "listed-b", sessionId: "session-listed-b" });
+    seedRecoverableDaemonState(agencHome, { cwd: process.cwd(), runId: "listed-c", sessionId: "session-listed-c" });
+    // A session that ran a turn has a thread row; one that never did has none.
+    seedSavedThreadRow(agencHome, { cwd: process.cwd(), threadId: "listed-a", rolloutPath: rolloutA });
+    const restoreAgent = vi.fn(async () => true);
+    const running = runDaemon({ kind: "command", action: "run" }, {
+      host, io, signalProcess,
+      runner: { startAgent: async () => { throw new Error("not used"); }, restoreAgent },
+    });
+    try {
+      await waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      });
+      const listed = new Map((await client.request("session.list", {})).sessions.map((session) => [session.sessionId, session]));
+      // Each saved session keeps the row the eager restore gave it.
+      expect(listed.get("session-listed-a")).toMatchObject({
+        agentId: "listed-a", status: "waiting", createdAt: "2026-05-01T00:00:00.000Z", cwd: process.cwd(),
+        metadata: { model: "grok-4", modelProvider: "xai", recovered: true, recovery: { runStatus: "running", loaded: false } },
+      });
+      expect(listed.get("session-listed-b")).toMatchObject({ agentId: "listed-b", status: "waiting", createdAt: "2026-05-01T00:00:00.000Z" });
+      expect(listed.get("session-listed-c")).toMatchObject({ agentId: "listed-c", status: "waiting" });
+      // The durable thread row is listed as before, under the durable id.
+      expect(listed.get("listed-a")).toMatchObject({ status: "waiting", cwd: process.cwd() });
+      await expect(client.request("session.list", { agentId: "listed-b" })).resolves.toMatchObject({
+        sessions: [{ sessionId: "session-listed-b", agentId: "listed-b" }],
+      });
+      // Listing loads nothing.
+      expect(restoreAgent).not.toHaveBeenCalled();
+      expect(readSnapshotTimes(agencHome, process.cwd(), "session-listed-a")).toEqual([SEEDED_RECOVERY_SNAPSHOT_AT]);
+
+      // Opening by the listed daemon session id restores exactly that session.
+      await client.request("session.attach", { sessionId: "session-listed-b", clientId: "picker" });
+      expect(restoreAgent).toHaveBeenCalledOnce();
+      expect(restoreAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: "listed-b" }));
+      // Opening by the durable thread id, as a client holding the thread row does.
+      await client.request("session.attach", { sessionId: "listed-a", clientId: "sidebar" });
+      expect(restoreAgent).toHaveBeenCalledTimes(2);
+      expect(restoreAgent).toHaveBeenLastCalledWith(expect.objectContaining({ agentId: "listed-a" }));
+
+      const after = (await client.request("session.list", {})).sessions;
+      // An opened session is listed once, as the loaded session.
+      expect(after.filter((session) => session.sessionId === "session-listed-b")).toHaveLength(1);
+      expect(after.find((session) => session.sessionId === "session-listed-b")).toMatchObject({
+        metadata: { recovery: { runtimeRestore: "available" } },
+      });
+      expect(after.find((session) => session.sessionId === "session-listed-c")).toMatchObject({
+        status: "waiting", metadata: { recovery: { loaded: false } },
+      });
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ restoringSessions: 1 });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("on demand, reports unopened saved sessions at shutdown as kept on disk", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -9059,6 +9124,35 @@ function seedRecoverableDaemonState(
     runId: params.runId,
     objective: "recover daemon state",
   });
+}
+
+function seedSavedThreadRow(
+  agencHome: string,
+  params: { readonly cwd: string; readonly threadId: string; readonly rolloutPath: string },
+): void {
+  const driver = openStateDatabases({ cwd: params.cwd, agencHome });
+  try {
+    driver
+      .prepareState(
+        `INSERT INTO threads (
+          thread_id, created_at, updated_at, cwd, originator, source_json,
+          model, model_provider, rollout_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.threadId,
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:05:00.000Z",
+        params.cwd,
+        "agenc-cli",
+        JSON.stringify("cli_main"),
+        "grok-4",
+        "xai",
+        params.rolloutPath,
+      );
+  } finally {
+    driver.close();
+  }
 }
 
 function seedTerminalDaemonRun(

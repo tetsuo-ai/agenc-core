@@ -1250,10 +1250,13 @@ them before the session can replay tools or be published.
 
 These answer at once: `health.*`, `daemon.*`, `request.cancel`,
 `session.list`, `agent.list`, and every request that names no saved session
-still waiting for its restore. `session.list` reads the thread store on
-disk, so a saved session that is not restored yet shows only its durable
-thread row. `agent.list` returns only published agents. Health session
-counts include only sessions loaded in the daemon.
+still waiting for its restore. `session.list` lists a saved session that
+is not restored yet the way a restored one was listed: under the daemon
+session id it had, with the `waiting` status, the run's start time, and the
+workspace and model from its thread row, plus `metadata.recovery.loaded:
+false`. Its durable thread row from the thread store on disk is listed as
+before. Listing never loads a session. `agent.list` returns only published
+agents. Health session counts include only sessions loaded in the daemon.
 
 `health.ready` reports `restoringSessions`, the number of saved sessions not
 restored yet. It stays above zero until each one is requested. At shutdown

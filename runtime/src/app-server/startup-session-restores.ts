@@ -234,6 +234,13 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
     return this.#unsettled;
   }
 
+  /** Targets whose restore has not settled, in registration order. */
+  unsettledTargets(): Target[] {
+    return this.#entries
+      .filter((entry) => entry.phase !== "settled")
+      .map((entry) => entry.target);
+  }
+
   /** Resolves once every restore has settled, abandoned ones included. */
   get settled(): Promise<StartupSessionRestoreSummary> {
     return this.#settled;
