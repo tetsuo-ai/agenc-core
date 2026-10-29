@@ -5890,6 +5890,8 @@ describe("main() smoke", () => {
         agentId: "agent_connect_failure",
         reason: "tui_startup_failed",
         env: process.env,
+        signal: expect.any(AbortSignal),
+        timeoutMs: expect.any(Number),
       });
     } finally {
       vi.doUnmock("../tui/main.js");
@@ -5927,6 +5929,8 @@ describe("main() smoke", () => {
         agentId: "agent_attach_failure",
         reason: "tui_startup_failed",
         env: process.env,
+        signal: expect.any(AbortSignal),
+        timeoutMs: expect.any(Number),
       });
     } finally {
       for (const key of Object.keys(process.env)) {
@@ -5967,6 +5971,8 @@ describe("main() smoke", () => {
         agentId: "agent_boot_failure",
         reason: "tui_startup_failed",
         env: process.env,
+        signal: expect.any(AbortSignal),
+        timeoutMs: expect.any(Number),
       });
     } finally {
       vi.doUnmock("../tui/main.js");

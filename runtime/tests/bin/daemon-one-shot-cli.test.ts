@@ -56,7 +56,7 @@ it("uses the authenticated client contract and preserves prompt, permission and 
     metadata: { source: "agenc.prompt", mode: "one-shot" },
   }), expect.objectContaining({ signal: expect.any(AbortSignal) })]);
   expect(writes.join("")).toBe("pong\n");
-  expect(request).toHaveBeenCalledWith("agent.stop", { agentId: "agent", reason: "one_shot_complete" });
+  expect(request).toHaveBeenCalledWith("agent.stop", { agentId: "agent", reason: "one_shot_complete" }, expect.objectContaining({ signal: expect.any(AbortSignal), reconnect: false }));
   expect(close).toHaveBeenCalledOnce(); expect(mocks.continuation).not.toHaveBeenCalled();
 });
 
@@ -79,7 +79,7 @@ it("keeps a transport failure distinct from completed one-shot cleanup and JSON 
     },
   });
   expect(await oneShotCLI("hello")).toBe(1);
-  expect(request).toHaveBeenCalledWith("agent.stop", { agentId: "agent", reason: "one_shot_failed" });
+  expect(request).toHaveBeenCalledWith("agent.stop", { agentId: "agent", reason: "one_shot_failed" }, expect.objectContaining({ signal: expect.any(AbortSignal), reconnect: false }));
   expect(JSON.parse(writes.join(""))).toMatchObject({ exitCode: 1, failureCode: "transport_error",
     durationMs: 125, remainingDeadlineMs: 500, usableFinalAnswer: false, transportFailure: { category: "http_5xx", status: 502 } });
 });
@@ -179,9 +179,24 @@ it("cancels only the caller that disconnected, while the other invocation comple
   await Promise.all([a.attached, b.attached]);
   a.abort.abort({ reason: "signal", signal: "SIGINT", exitCode: 130 });
   expect(await first).toBe(130);
-  expect(a.call).toHaveBeenCalledWith("agent.stop", { agentId: "cancel", reason: "one_shot_cancelled" });
+  expect(a.call).toHaveBeenCalledWith("agent.stop", { agentId: "cancel", reason: "one_shot_cancelled" }, expect.objectContaining({ signal: expect.any(AbortSignal), reconnect: false }));
+  const stopCall = a.call.mock.calls.find(call => call[0] === "agent.stop") as unknown as [string, unknown, { signal: AbortSignal }];
+  const cleanupSignal = stopCall[2].signal;
+  expect(cleanupSignal).not.toBe(a.abort.signal);
+  expect(cleanupSignal.aborted).toBe(false);
   expect(b.close).not.toHaveBeenCalled(); b.complete(); expect(await second).toBe(0);
   expect(b.output().stdout).toBe("answer-live\n"); expect(writes).toEqual([]);
+});
+
+it("preserves a terminal result and closes the client when cleanup cannot be confirmed", async () => {
+  process.argv = ["node", "agenc", "-p", "--light", "--output-format", "json", "hello"];
+  const original = request.getMockImplementation()!;
+  request.mockImplementation((...args) => args[0] === "agent.stop" ? Promise.reject(new Error("stop failed")) : original(...args));
+  const stopPromptAgent = vi.fn().mockRejectedValue(new Error("socket unavailable"));
+  expect(await oneShotCLI("hello", [], undefined, undefined, { stopPromptAgent })).toBe(0);
+  expect(JSON.parse(writes.join(""))).toMatchObject({ type: "result", exitCode: 0 });
+  expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("cleanup was not confirmed"));
+  expect(close).toHaveBeenCalledOnce();
 });
 
 it("routes preparation errors to the invocation and refuses continuation before any session", async () => {

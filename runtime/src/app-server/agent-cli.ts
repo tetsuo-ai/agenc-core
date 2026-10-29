@@ -9,6 +9,7 @@
  */
 
 import { createConnection } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   createStartupRestoreWait,
   STARTUP_RESTORE_PROGRESS_METHOD,
@@ -105,6 +106,8 @@ export interface AgenCJsonLineDaemonRequestClient {
 
 export interface AgenCDaemonRequestOptions {
   readonly signal?: AbortSignal;
+  /** Use only the current transport; do not start or join shared reconnection. */
+  readonly reconnect?: boolean;
 }
 
 /** A daemon response that proves the server returned a JSON-RPC error. */
@@ -664,7 +667,12 @@ async function createReconnectableDaemonTuiClient(options: {
       if (requestOptions.signal?.aborted === true) {
         throw new Error("Daemon request cancelled");
       }
-      const current = await ensureConnected();
+      const current = requestOptions.reconnect === false
+        ? innerClient
+        : await ensureConnected();
+      if (closedByClient || current === null || current.getConnectionState().status !== "connected") {
+        throw new Error("Daemon connection is disconnected");
+      }
       options.startupGuard?.beforeRequest(current, method);
       const result = await current.request(method, params, requestOptions);
       options.startupGuard?.afterRequest(current, method);
@@ -1153,6 +1161,14 @@ function connectPersistentDaemonClient(
           };
           const sendAbortCancel = (): void => {
             sendCancel(String(options.signal?.reason ?? "request.cancel"));
+            // Work streams keep waiting for their terminal event after cancel.
+            // Bounded control RPCs must release their waiter even if the peer
+            // cannot acknowledge cancellation (notably terminal agent.stop).
+            if (!UNBOUNDED_DAEMON_METHODS.has(method)) {
+              const waiter = pending.get(id);
+              pending.delete(id);
+              waiter?.reject(new Error("Daemon request cancelled"));
+            }
           };
           const pingTimeoutMs = method === "health.ping" ? readinessTimeoutMs?.() : undefined;
           const requestTimeoutMs = method === "initialize" && initializeDeadline !== undefined
@@ -1603,6 +1619,7 @@ async function requestDaemonInner<Method extends AgenCDaemonMethod>(
   signal?: AbortSignal,
 ): Promise<AgenCDaemonResultByMethod[Method]> {
   const resolvedAuthCookie = await authCookie;
+  if (signal?.aborted) throw new Error("Daemon request cancelled");
   if (UNBOUNDED_DAEMON_METHODS.has(method)) {
     const client = await connectPersistentDaemonClient(socketPath, timeoutMs);
     try {
@@ -1641,7 +1658,7 @@ async function requestDaemonInner<Method extends AgenCDaemonMethod>(
       method,
       params,
     },
-  ]);
+  ], signal);
   const [initializeResponse, response] = responses;
   if (initializeResponse === undefined) {
     throw new Error("daemon did not return an initialize response");
@@ -1682,20 +1699,27 @@ async function sendJsonLineRequestWithRetry(
   socketPath: string,
   timeoutMs: number,
   requests: readonly object[],
+  signal?: AbortSignal,
 ): Promise<readonly AgenCDaemonResponse[]> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = null;
   while (Date.now() <= deadline) {
+    if (signal?.aborted) throw new Error("Daemon request cancelled");
     try {
       return await sendJsonLineRequest(
         socketPath,
         Math.max(1, deadline - Date.now()),
         requests,
+        signal,
       );
     } catch (error) {
       lastError = error;
       if (!isRetryableDaemonConnectError(error) || !isSafeToRetry(error)) break;
-      await sleep(25);
+      try {
+        await delay(Math.min(25, Math.max(0, deadline - Date.now())), undefined, { signal });
+      } catch {
+        throw new Error("Daemon request cancelled");
+      }
     }
   }
   throw asError(lastError ?? `Timed out waiting for daemon at ${socketPath}`);
@@ -1705,7 +1729,9 @@ function sendJsonLineRequest(
   socketPath: string,
   timeoutMs: number,
   requests: readonly object[],
+  signal?: AbortSignal,
 ): Promise<readonly AgenCDaemonResponse[]> {
+  if (signal?.aborted) return Promise.reject(new Error("Daemon request cancelled"));
   let encodedRequests: readonly string[];
   try {
     encodedRequests = requests.map((request) =>
@@ -1733,6 +1759,7 @@ function sendJsonLineRequest(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
       socket.destroy();
       if (error !== null) {
         reject(markRetrySafety(error, nextRequestIndex === 0));
@@ -1741,17 +1768,21 @@ function sendJsonLineRequest(
       resolve(responseList!);
     };
     const writeNextRequest = () => {
+      if (settled) return;
       const encodedRequest = encodedRequests[nextRequestIndex];
       if (encodedRequest === undefined) return;
       nextRequestIndex += 1;
       socket.write(encodedRequest);
     };
+    const onAbort = () => finish(new Error("Daemon request cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     socket.setEncoding("utf8");
     socket.once("connect", () => {
       writeNextRequest();
     });
     socket.on("data", (chunk) => {
+      if (settled) return;
       buffer += chunk;
       while (true) {
         const newline = buffer.indexOf("\n");
@@ -1898,8 +1929,4 @@ function markRetrySafety(error: Error, retryableBeforeWrite: boolean): Error {
   (error as Error & { retryableBeforeWrite?: boolean }).retryableBeforeWrite =
     retryableBeforeWrite;
   return error;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

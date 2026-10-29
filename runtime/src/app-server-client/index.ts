@@ -14,6 +14,7 @@ import { cwd as processCwd } from "node:process";
 import {
   collectDaemonClientEnvOverrides,
   createAgenCJsonLineDaemonClient,
+  createAgenCJsonLineDaemonRequestClient,
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
   resolveAgenCAgentAttachCwd,
@@ -112,6 +113,8 @@ export interface StopAgenCDaemonPromptAgentOptions {
   readonly agentId: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly reason: string;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 export interface ResumeAgenCDaemonPromptAgentOptions {
@@ -257,11 +260,11 @@ export async function stopAgenCDaemonPromptAgent(
   options: StopAgenCDaemonPromptAgentOptions,
 ): Promise<void> {
   const env = options.env ?? process.env;
-  const client = createAgenCJsonLineDaemonClient({ env });
-  await client.stopAgent({
+  const client = createAgenCJsonLineDaemonRequestClient({ env, timeoutMs: options.timeoutMs });
+  await client.request("agent.stop", {
     agentId: options.agentId,
     reason: options.reason,
-  });
+  }, { signal: options.signal });
 }
 
 export async function listAgenCDaemonAgents(

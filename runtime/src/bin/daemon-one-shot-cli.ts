@@ -307,34 +307,43 @@ type ConnectedDaemonTuiClient = Awaited<
   ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
 >;
 
+/** Terminal control RPCs share this budget, independent of the work's signal. */
+export const DAEMON_AGENT_CLEANUP_BUDGET_MS = 5_000;
+
 export async function stopDaemonAgentBestEffort(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly daemonClient?: ConnectedDaemonTuiClient | null;
   readonly env: NodeJS.ProcessEnv;
   readonly agentId: string;
   readonly reason: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const stopParams: AgentStopParams = {
     agentId: params.agentId,
     reason: params.reason,
   };
-  if (params.daemonClient !== undefined && params.daemonClient !== null) {
-    try {
-      await params.daemonClient.request("agent.stop", stopParams);
-      return;
-    } catch {
-      /* fall through to one-shot stop client */
+  const controller = new AbortController();
+  const deadline = performance.now() + DAEMON_AGENT_CLEANUP_BUDGET_MS;
+  const timer = setTimeout(() => controller.abort("agent cleanup deadline"), DAEMON_AGENT_CLEANUP_BUDGET_MS);
+  try {
+    if (params.daemonClient !== undefined && params.daemonClient !== null) {
+      try {
+        // The terminal owner must not join a 30s reconnect or replay sessions.
+        // A separate fallback transport can recover stop within the same budget.
+        await params.daemonClient.request("agent.stop", stopParams, { signal: controller.signal, reconnect: false });
+        return true;
+      } catch {
+        /* fall through to one-shot stop client */
+      }
     }
+    const remaining = Math.floor(deadline - performance.now());
+    if (controller.signal.aborted || remaining <= 0) return false;
+    await params.deps.stopPromptAgent({ ...stopParams, reason: params.reason, env: params.env, signal: controller.signal, timeoutMs: remaining });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
-  await params.deps
-    .stopPromptAgent({
-      agentId: params.agentId,
-      reason: params.reason,
-      env: params.env,
-    })
-    .catch(() => {
-      /* best effort */
-    });
 }
 
 type DaemonOneShotFinalStatus = Pick<TurnTerminal, "durationMs" | "remainingDeadlineMs" | "transportFailure" | "usableFinalAnswer"> & {
@@ -1483,13 +1492,14 @@ async function runDaemonOneShotPrompt(params: {
     // after collecting the terminal snapshot so the daemon can release those
     // resources on both success and failure.
     if (startedAgentId !== null) {
-      await stopDaemonAgentBestEffort({
+      const confirmed = await stopDaemonAgentBestEffort({
         deps: params.deps,
         daemonClient,
         env: params.env,
         agentId: startedAgentId,
         reason: oneShotStopReason(cancelled, completed),
       });
+      if (!confirmed) (params.io?.stderr ?? process.stderr).write("Warning: agent cleanup was not confirmed within the shutdown budget.\n");
     }
     await daemonClient.close().catch(() => {
       /* best effort */

@@ -290,13 +290,14 @@ export async function runDaemonOneShotContinue(params: OneShotContinueResumeOpti
       // Only the agent this run revived is a one-shot resource; a live agent
       // belongs to the client that started it and keeps running.
       if (revivedAgentId !== null) {
-        await stopDaemonAgentBestEffort({
+        const confirmed = await stopDaemonAgentBestEffort({
           deps: params.deps,
           daemonClient,
           env: params.env,
           agentId: revivedAgentId,
           reason: oneShotStopReason(cancelled, completed),
         });
+        if (!confirmed) process.stderr.write("Warning: agent cleanup was not confirmed within the shutdown budget.\n");
       }
       await daemonClient.close().catch(() => {
         /* best effort */
