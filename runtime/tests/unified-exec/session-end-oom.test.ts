@@ -9,46 +9,25 @@ vi.mock("../../src/utils/resource-limits.js", async (importOriginal) => ({
   readOomKillCount: () => oomKills.count,
 }));
 
-import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
+import { managerPool, startBackgroundSession, waitForSessionExit } from "./helpers/background-sessions.js";
 import { formatSessionEndNotice } from "../../src/tools/system/exec-result-format.js";
 
-const managers: UnifiedExecProcessManager[] = [];
-function manager(): UnifiedExecProcessManager {
-  const instance = new UnifiedExecProcessManager();
-  managers.push(instance);
-  return instance;
-}
+const pool = managerPool();
+const manager = pool.create;
 
 afterEach(async () => {
   oomKills.count = 0;
-  await Promise.all(managers.splice(0).map((instance) => instance.closeAll("test_cleanup")));
+  await pool.closeAll();
 });
-
-async function backgroundSession(
-  processes: UnifiedExecProcessManager,
-  cmd: string,
-  ownerId: string,
-): Promise<number> {
-  const started = await processes.execCommand({ cmd, yield_time_ms: 250, ownerId });
-  expect(started.session_id).toEqual(expect.any(Number));
-  return started.session_id!;
-}
-
-async function waitForExit(processes: UnifiedExecProcessManager, ownerId: string, sessionId: number) {
-  await expect.poll(
-    () => processes.listOwnedProcesses({ ownerId }).find((view) => view.sessionId === sessionId)?.status,
-    { timeout: 10_000 },
-  ).not.toBe("running");
-}
 
 describe("session end notices: out of memory", () => {
   it("names the signal and flags an out-of-memory kill the cgroup counted", async () => {
     const processes = manager();
     oomKills.count = 4;
     // The shell kills itself with SIGKILL, as the kernel OOM killer would.
-    const sessionId = await backgroundSession(processes, "sleep 0.5; kill -9 $$", "owner-d");
+    const sessionId = await startBackgroundSession(processes, "sleep 0.5; kill -9 $$", "owner-d");
     oomKills.count = 5;
-    await waitForExit(processes, "owner-d", sessionId);
+    await waitForSessionExit(processes, "owner-d", sessionId);
     const [notice] = processes.takeSessionEndNotices({ ownerId: "owner-d" });
     expect(notice).toMatchObject({ sessionId, signal: "SIGKILL", outOfMemory: true });
     // "killed by SIGKILL" where the shell died by the signal (Darwin gate, Linux
@@ -61,8 +40,8 @@ describe("session end notices: out of memory", () => {
   it("does not flag a SIGKILL as out of memory when the cgroup counted no OOM kill", async () => {
     const processes = manager();
     oomKills.count = 2;
-    const sessionId = await backgroundSession(processes, "sleep 0.5; kill -9 $$", "owner-e");
-    await waitForExit(processes, "owner-e", sessionId);
+    const sessionId = await startBackgroundSession(processes, "sleep 0.5; kill -9 $$", "owner-e");
+    await waitForSessionExit(processes, "owner-e", sessionId);
     const [notice] = processes.takeSessionEndNotices({ ownerId: "owner-e" });
     expect(notice).toMatchObject({ sessionId, signal: "SIGKILL" });
     expect(notice!.outOfMemory).toBeUndefined();
