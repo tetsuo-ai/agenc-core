@@ -4,7 +4,7 @@ import type { HomeContext } from '../../config/home.js';
 import type { RuntimeStateRepository } from '../../config/runtime-state-repository.js';
 import type { ProviderAuthReadContext } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
-import { getRuntimeState } from '../../utils/config.js';
+import { useSettings } from '../hooks/useSettings.js';
 import { logError } from '../../utils/log.js';
 import { buildMemoryDiagnostics } from './memoryDiagnostics.js';
 import { Box } from '../ink.js';
@@ -124,7 +124,6 @@ export function StatusNotices(t0: Props) {
     agentDefinitions,
     homeContext,
     providerAuthContext,
-    stateRepository,
   } = t0;
   const [memoryDiagnostics, setMemoryDiagnostics] = React.useState(cachedMemoryDiagnostics);
   React.useEffect(() => {
@@ -136,9 +135,9 @@ export function StatusNotices(t0: Props) {
       setMemoryDiagnostics(cachedMemoryDiagnostics);
     });
   }, []);
-  const t2 = getRuntimeState(stateRepository);
+  const config = useSettings();
   const context = {
-    config: t2,
+    config,
     homeContext,
     providerAuthContext,
     agentDefinitions,

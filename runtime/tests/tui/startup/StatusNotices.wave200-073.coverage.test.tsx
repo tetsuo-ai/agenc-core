@@ -44,6 +44,8 @@ const mocks = vi.hoisted(() => ({
     "Large AGENC.md will impact startup",
   ]),
   subscriber: false,
+  supportedIde: false,
+  settings: { ideConnector: { autoInstallExtension: true } },
 }));
 
 vi.mock("../../utils/auth.js", () => ({
@@ -61,6 +63,8 @@ vi.mock("../../utils/auth.js", () => ({
   isAgenCAISubscriberForContext: () => mocks.subscriber,
 }));
 
+vi.mock("../hooks/useSettings.js", () => ({ useSettings: () => mocks.settings }));
+
 vi.mock("../../utils/config.js", () => ({
   getRuntimeState: () => ({ autoInstallIdeExtension: true }),
 }));
@@ -70,13 +74,13 @@ vi.mock("../../utils/format.js", () => ({
 }));
 
 vi.mock("../../utils/ide.js", () => ({
-  getTerminalIdeType: () => null,
-  isSupportedJetBrainsTerminal: () => false,
+  getTerminalIdeType: () => mocks.supportedIde ? "IntelliJ IDEA" : null,
+  isSupportedJetBrainsTerminal: () => mocks.supportedIde,
   toIDEDisplayName: (ideType: string | null) => ideType ?? "JetBrains IDE",
 }));
 
 vi.mock("../../utils/jetbrains.js", () => ({
-  isJetBrainsPluginInstalledCachedSync: () => true,
+  isJetBrainsPluginInstalledCachedSync: () => !mocks.supportedIde,
 }));
 
 vi.mock("./memoryDiagnostics.js", () => ({
@@ -95,6 +99,8 @@ describe("StatusNotices coverage", () => {
     mocks.authTokenSource = { source: "none", hasToken: false };
     mocks.buildMemoryDiagnostics.mockClear();
     mocks.subscriber = false;
+    mocks.supportedIde = false;
+    mocks.settings = { ideConnector: { autoInstallExtension: true } };
   });
 
   afterEach(() => vi.unstubAllEnvs());
@@ -152,6 +158,18 @@ describe("StatusNotices coverage", () => {
     expect(output).toContain("daemon autostart failed");
     expect(output).toContain("untrusted mutation");
     expect(output).toContain("agenc daemon start");
+  });
+
+  it("suppresses the IDE notice from canonical settings", async () => {
+    mocks.supportedIde = true;
+    mocks.settings.ideConnector.autoInstallExtension = false;
+    const { StatusNotices } = await import("./StatusNotices.js");
+    const output = await renderToString(<StatusNotices
+      homeContext={TEST_REMOTE_AUTH_SESSION_CONTEXT.home}
+      providerAuthContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
+      stateRepository={TEST_RUNTIME_STATE_REPOSITORY}
+    />, 120);
+    expect(output).not.toContain("JetBrains Marketplace");
   });
 
 

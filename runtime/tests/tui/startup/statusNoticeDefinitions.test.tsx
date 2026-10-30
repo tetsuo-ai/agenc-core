@@ -91,7 +91,7 @@ vi.mock("../../utils/jetbrains.js", () => ({
 
 function baseContext(): StatusNoticeContext {
   return {
-    config: { autoInstallIdeExtension: true } as StatusNoticeContext["config"],
+    config: { ideConnector: { autoInstallExtension: true } } as StatusNoticeContext["config"],
     homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
     providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     memoryDiagnostics: [],
@@ -124,6 +124,17 @@ describe("startup status notice definitions", () => {
     mocks.supportedIde = false;
     mocks.terminalIdeType = null;
     mocks.pluginInstalled = true;
+  });
+
+  it.each([false, true, undefined])("honors canonical IDE auto-install setting %s", async (autoInstallExtension) => {
+    mocks.supportedIde = true;
+    mocks.terminalIdeType = "IntelliJ IDEA";
+    mocks.pluginInstalled = false;
+    const { getActiveNotices } = await import("./statusNoticeDefinitions.js");
+    const context = baseContext();
+    context.config = { ideConnector: { autoInstallExtension } } as StatusNoticeContext["config"];
+    expect(getActiveNotices(context).some(notice => notice.id === "jetbrains-plugin-install"))
+      .toBe(autoInstallExtension !== false);
   });
 
   it("does not show an AgenC account model notice for subscribers", async () => {
