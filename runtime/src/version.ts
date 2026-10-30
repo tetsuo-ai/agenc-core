@@ -7,4 +7,4 @@
  * @module
  */
 
-export const VERSION = "0.19.24";
+export const VERSION = "0.19.25";

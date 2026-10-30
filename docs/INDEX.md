@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.19.24**; embedding SDK
+Version in tree: **runtime / launcher 0.19.25**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. OpenRouter's default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -99,6 +99,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.19.25.md](releases/0.19.25.md) | AgenC 0.19.25: daemon restart after update and in-place TUI update, no daemon downgrade, paused shell after unproven cleanup, off-peak cost readout, TUI typecheck with seven fixes and DeepSeek web fetch |
 | [releases/0.19.24.md](releases/0.19.24.md) | AgenC 0.19.24: bounded one-shot agent cleanup, deadline controls on every headless path, explicit acceptance checks in unattended Light and a test probe that no longer leaks |
 | [releases/0.19.23.md](releases/0.19.23.md) | AgenC 0.19.23: OpenAI prompt cache kept across tool loads, effort changes and resume, cumulative resume costs, on-demand daemon session restore, truthful network wording and bounded macOS runtime cleanup |
 | [releases/0.19.22.md](releases/0.19.22.md) | AgenC 0.19.22: GPT-6.1 Terra, Gemini 4 Argon, non-strict OpenAI tools with optional fields and Gemini thought signatures through rebuilt turns |
@@ -158,7 +159,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.19.24) |
+| [`../README.md`](../README.md) | Product README (0.19.25) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
