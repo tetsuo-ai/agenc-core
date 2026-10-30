@@ -23,7 +23,8 @@ import type {
   UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
-import { UnifiedExecError } from "../../unified-exec/types.js";
+import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
+import { execUnavailableToolResult } from "./exec-unavailable.js";
 
 export interface KillProcessToolConfig {
   readonly cwd?: string;
@@ -221,6 +222,9 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       const ownerId = processOwnerIdFromToolArgs(args);
       const ownerArg = ownerId !== undefined ? { ownerId } : {};
       try {
+        // Admission below is synchronous; a pause after an unproven cleanup
+        // is checked again first.
+        await manager.recheckCleanupAdmission?.();
         manager.assertOwnerAdmission?.(ownerId, execOwnerBindingFromToolArgs(args));
         let body: Record<string, unknown>;
         switch (selection.kind) {
@@ -294,6 +298,9 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
           }),
         };
       } catch (error) {
+        if (error instanceof UnifiedExecUnavailableError) {
+          return execUnavailableToolResult(error, "tool:system.kill-process:exec-unavailable");
+        }
         const message =
           error instanceof Error ? error.message : String(error);
         return {

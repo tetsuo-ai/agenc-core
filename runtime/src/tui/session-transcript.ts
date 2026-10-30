@@ -320,6 +320,8 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "output_reservation_squeezed",
   "context_fit_shortened",
   "effect_review_required",
+  "exec_unavailable",
+  "exec_resumed",
   "empty_response_retry",
   "deadline_reserve",
   "deadline_reached",

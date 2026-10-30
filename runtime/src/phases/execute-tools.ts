@@ -84,6 +84,7 @@ import {
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { recoverableFailureKind } from "../tools/result-metadata.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
+import { takeCodeModeNestedStop } from "../tools/code-mode/nested-stop.js";
 import { isEnvTruthy } from "../utils/envUtils.js";
 import { createToolUseSummaryMessage } from "../utils/messages.js";
 import {
@@ -789,10 +790,11 @@ function startToolUseSummaryGeneration(
     .catch(() => null);
 }
 
-function effectReviewStopExplanation(
+function stopExplanation(
   metadata: Record<string, unknown> | undefined,
+  key: "effectReviewStop" | "execUnavailableStop",
 ): string | undefined {
-  const stop = metadata?.effectReviewStop;
+  const stop = metadata?.[key];
   if (typeof stop !== "object" || stop === null) return undefined;
   const explanation = (stop as { readonly explanation?: unknown }).explanation;
   return typeof explanation === "string" && explanation.length > 0
@@ -926,13 +928,28 @@ export async function executeTools(
     if (result.preventContinuation === true) {
       preventContinuation = true;
     }
-    const reviewStop = effectReviewStopExplanation(completed.metadata);
+    const reviewStop = stopExplanation(completed.metadata, "effectReviewStop");
     if (reviewStop !== undefined) {
       // A refused side-effecting call whose earlier effect awaits review ends
       // the turn as a bounded stop (#2501), reported like the backstop's.
       preventContinuation = true;
       state.effectReviewStop ??= { explanation: reviewStop };
     }
+    const execStop = stopExplanation(completed.metadata, "execUnavailableStop");
+    if (execStop !== undefined) {
+      // Shell tools are paused after an unproven process cleanup. Every
+      // later shell call would be refused the same way, so the turn ends
+      // here with the reason instead of letting the model retry.
+      preventContinuation = true;
+      state.execUnavailableStop ??= { explanation: execStop };
+    }
+  }
+  // The same refusal reached through a code-mode script: the script saw only
+  // an error it may have caught, so the turn host kept the stop for us.
+  const nestedExecStop = takeCodeModeNestedStop(session);
+  if (nestedExecStop !== undefined) {
+    preventContinuation = true;
+    state.execUnavailableStop ??= { explanation: nestedExecStop };
   }
   appendHookAdditionalContexts(state, session, additionalContexts);
   // Advisory loop-breaker: after the batch's results are on the record,

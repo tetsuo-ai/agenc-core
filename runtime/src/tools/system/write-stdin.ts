@@ -3,8 +3,12 @@ import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
-import { UnifiedExecError } from "../../unified-exec/types.js";
+import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
+import {
+  execUnavailableToolResult,
+  withAdmissionResumedNotice,
+} from "./exec-unavailable.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import {
@@ -72,6 +76,9 @@ function preWriteFailure(error: unknown, message: string): Partial<ToolResult> {
 }
 
 function errorResult(error: unknown): ToolResult {
+  if (error instanceof UnifiedExecUnavailableError) {
+    return execUnavailableToolResult(error, "tool:system.write-stdin:exec-unavailable");
+  }
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: safeStringify({
@@ -274,7 +281,11 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         }
         const notice = denial?.notice ?? networkNotice;
         return {
-          content: notice === null ? execContent : `${execContent}\n\n${notice}`,
+          content: withAdmissionResumedNotice(
+            notice === null ? execContent : `${execContent}\n\n${notice}`,
+            manager.takeAdmissionResumedNotice?.(),
+            args as Record<string, unknown>,
+          ),
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output, notice),
           // Ordinary terminal receipts settle this call without claiming

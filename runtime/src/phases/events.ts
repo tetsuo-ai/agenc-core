@@ -54,6 +54,7 @@ export type PhaseEvent =
         | "empty_response"
         | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
         | "effect_review_required" // an unknown-outcome effect blocks side-effecting tools and nobody can review it now (#2501)
+        | "exec_unavailable" // shell tools are paused: an earlier command's process cleanup is unproven
         | "deadline_reached" // the run's --deadline passed; the running turn was stopped (#2503)
         | "compact_failed" // mid-turn / pre-sampling compact skip or throw
       readonly error?: Error;

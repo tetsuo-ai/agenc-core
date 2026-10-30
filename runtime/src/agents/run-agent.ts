@@ -4699,6 +4699,7 @@ export async function* runAgent(
         | "empty_response"
         | "no_progress"
         | "effect_review_required"
+        | "exec_unavailable"
         | "deadline_reached"
         | "compact_failed" = "completed";
       let terminalError: unknown;
@@ -4899,6 +4900,7 @@ export async function* runAgent(
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
         stopReason === "effect_review_required" ||
+        stopReason === "exec_unavailable" ||
         stopReason === "deadline_reached" ||
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
@@ -4906,7 +4908,10 @@ export async function* runAgent(
         stopReason === "max_turns" || stopReason === "task_budget" ? "step_limit" :
         stopReason === "no_progress" ? "no_progress" :
         stopReason === "max_budget_usd" ? "cost_cap_reached" :
-        stopReason === "effect_review_required" ? "effect_outcome_unknown" :
+        // Both gates hold side-effecting tools until an earlier effect (here,
+        // a command's process cleanup) is settled; neither is the model's doing.
+        stopReason === "effect_review_required" || stopReason === "exec_unavailable"
+          ? "effect_outcome_unknown" :
         stopReason === "compact_failed" ? "context_insufficient" :
         stopReason === "empty_response" ? "model_refused" :
         boundedStop ? "timeout" : undefined;
@@ -4934,6 +4939,10 @@ export async function* runAgent(
           message =
             assistantText ||
             "subagent stopped because a tool effect has an unknown outcome and needs operator review";
+        } else if (stopReason === "exec_unavailable") {
+          message =
+            assistantText ||
+            "subagent stopped because shell commands are paused: an earlier command's process cleanup is unproven";
         } else if (stopReason === "compact_failed") {
           message =
             (terminalError instanceof Error ? terminalError.message : undefined) ||

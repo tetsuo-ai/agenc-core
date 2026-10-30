@@ -175,14 +175,33 @@ describe("borrowed exec owner lifetimes", () => {
     expect(manager.listOwnedProcesses({ ownerId: "child" })[0]?.status).toBe("killed");
   });
 
-  it("keeps failed proof fatal to scoped close, replacement and all shared authority", async () => {
+  it("keeps failed proof fatal to scoped close, replacement and all shared authority while it fails", async () => {
     const binding = manager.createOwnerLifetime("child").bind();
     await launch("child", binding);
-    vi.mocked(terminateProcessTreeAndReport).mockRejectedValueOnce(new Error("unproven child cleanup"));
+    vi.mocked(terminateProcessTreeAndReport).mockRejectedValue(new Error("unproven child cleanup"));
+    try {
+      await expect(binding.prepareForDurableClose()).rejects.toThrow(/cleanup/);
+      expect(() => manager.createOwnerLifetime("child")).toThrow(/Shell commands are paused/);
+      // Every later admission runs the failed proof again; it still fails.
+      await expect(launch("parent")).rejects.toMatchObject({ code: "exec_unavailable" });
+      await expect(manager.prepareForDurableClose()).rejects.toThrow(/cleanup/);
+    } finally {
+      vi.mocked(terminateProcessTreeAndReport).mockResolvedValue({ residualProcessesTerminated: false });
+    }
+  });
+
+  it("reopens shared authority once the failed proof passes, but never the failed scope", async () => {
+    const binding = manager.createOwnerLifetime("child").bind();
+    await launch("child", binding);
+    // It fails in the settlement and again in the close's own re-check.
+    vi.mocked(terminateProcessTreeAndReport)
+      .mockRejectedValueOnce(new Error("unproven child cleanup"))
+      .mockRejectedValueOnce(new Error("unproven child cleanup"));
     await expect(binding.prepareForDurableClose()).rejects.toThrow(/cleanup/);
-    expect(() => manager.createOwnerLifetime("child")).toThrow(/cleanup/);
-    await expect(launch("parent")).rejects.toThrow(/cleanup/);
-    await expect(manager.prepareForDurableClose()).rejects.toThrow(/cleanup/);
+    // The same proof passes on the next admission: the tree is gone.
+    await expect(launch("parent")).resolves.toHaveProperty("session_id");
+    expect(manager.takeAdmissionResumedNotice()).toMatch(/run again/);
+    expect(() => manager.createOwnerLifetime("child")).toThrow(/cleanup is unproven/);
   });
 
   it("rejects stale Session teardown after an ancestor closed and replaced its child lifetime", async () => {

@@ -76,6 +76,10 @@ import {
 } from "../elicitation/ledger-wallet-cli.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
 import {
+  hasCodeModeNestedStop,
+  takeCodeModeNestedStop,
+} from "../tools/code-mode/nested-stop.js";
+import {
   APPROVAL_DENIED_ABORT_REASON,
   createTurnFailedEvent,
 } from "../contracts/turn-terminal.js";
@@ -572,6 +576,20 @@ function sealToolResultMessage(message: LLMMessage, runId: string): LLMMessage {
   };
 }
 
+/** A bounded stop's explanation becomes the turn's last words and a warning. */
+function recordBoundedStopExplanation(
+  state: TurnState,
+  session: Session,
+  cause: string,
+  explanation: string,
+): void {
+  state.messages.push({ role: "assistant", content: explanation });
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: { type: "warning", payload: { cause, message: explanation } },
+  });
+}
+
 function terminalToStopReason(
   reason: Terminal["reason"],
 ): Extract<PhaseEvent, { type: "turn_complete" }>["stopReason"] {
@@ -583,6 +601,7 @@ function terminalToStopReason(
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
     case "effect_review_required":
+    case "exec_unavailable":
     case "deadline_reached":
       return reason;
     default:
@@ -2211,6 +2230,9 @@ export async function* runTurnKernel(
         effect_review_required:
           content ||
           "Turn stopped: a tool effect has an unknown outcome and needs operator review (/resolve). Side-effecting tools stay blocked until it is resolved.",
+        exec_unavailable:
+          content ||
+          "Turn stopped: shell commands are paused because AgenC could not confirm that an earlier command's processes exited.",
         deadline_reached: DEADLINE_REACHED_MESSAGE,
         compact_failed:
           "Turn stopped because compaction could not shrink the context.",
@@ -3430,6 +3452,23 @@ async function* runTurnKernelInner(
       return cancelledAtLoopStart.terminal;
     }
 
+    // A shell refusal that a yielded code-mode script met after the last
+    // check (once a Stop hook's request was written, or during a recovery or
+    // a tool continuation) ends the turn here. The guards below would end it
+    // another way (the iteration limit, a budget, a step-limit summary) and
+    // the next turn would start without it. A user stop or an expired
+    // deadline above still comes first.
+    const reenteredExecStop = takeCodeModeNestedStop(session);
+    if (reenteredExecStop !== undefined) {
+      await drainInFlight(state, ctx, session);
+      recordBoundedStopExplanation(state, session, "exec_unavailable", reenteredExecStop);
+      lastContent = reenteredExecStop;
+      await syncSessionState();
+      emitTurnComplete(lastContent, "exec_unavailable");
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "exec_unavailable" };
+      return { reason: "exec_unavailable" };
+    }
+
     // Bound all verification samples, including tool continuations and recovery.
     // The old round counter advanced only on tool-free answers, so a single
     // gate prompt could launch an arbitrarily long investigation. An
@@ -4107,15 +4146,40 @@ async function* runTurnKernelInner(
         state.completionGateFinalAnswer = undefined;
       }
       state.completionGateFinalAnswerRequested = false;
+      // A shell refusal inside a code-mode script that yielded earlier can
+      // arrive while this answer was sampled or while a Stop hook runs, with
+      // no tool batch left to take it. The turn ends as that stop rather than
+      // as a completed answer (the next turn would otherwise start without
+      // it). commit looks for it once the hooks have answered, so a hook
+      // cannot send the turn back to work and its request stays out of the
+      // history.
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
+        boundedStop: () => hasCodeModeNestedStop(session),
       });
       await syncSessionState();
-      // commit may set a stop-hook transition (I-17). If so, re-enter.
+      // commit may set a stop-hook transition (I-17). If so, re-enter: the
+      // hook answered before any refusal. A refusal that came after it is
+      // taken at the top of the loop, before anything else can end the turn.
       if (state.transition !== undefined) {
         clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
+      }
+      const nestedExecStop = takeCodeModeNestedStop(session);
+      if (nestedExecStop !== undefined) {
+        recordBoundedStopExplanation(state, session, "exec_unavailable", nestedExecStop);
+        lastContent = nestedExecStop;
+        await syncSessionState();
+        launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
+        emitTurnComplete(lastContent, "exec_unavailable");
+        yield {
+          type: "turn_complete",
+          content: lastContent,
+          usage,
+          stopReason: "exec_unavailable",
+        };
+        return { reason: "exec_unavailable" };
       }
       const stopReason =
         assistantText.length === 0 ? "empty_response" : "completed";
@@ -4284,7 +4348,22 @@ async function* runTurnKernelInner(
       }
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
+        // A refused shell call ends the turn: a Stop hook asking for more
+        // work cannot send it back, since every shell call would be refused.
+        // commit reads this once the hooks have answered, so a refusal that a
+        // yielded code-mode script meets while they run counts too.
+        boundedStop: () =>
+          state.execUnavailableStop !== undefined || hasCodeModeNestedStop(session),
       });
+      // Such a refusal ends this turn here, unless a hook that answered
+      // before it sent the turn back to work; the top of the loop takes it
+      // then.
+      if (state.transition === undefined) {
+        const lateExecStop = takeCodeModeNestedStop(session);
+        if (lateExecStop !== undefined) state.execUnavailableStop ??= { explanation: lateExecStop };
+      }
+      // Nor does any other continuation outrank that stop.
+      if (state.execUnavailableStop !== undefined) state.transition = undefined;
       // A tool-phase guard that found the turn going nowhere (one call
       // failing the same way over and over) ends it as the behavioral
       // backstop would: the explanation goes into the transcript and the
@@ -4292,7 +4371,9 @@ async function* runTurnKernelInner(
       // not mistake the halt for a completed turn.
       // The live-effect gate refusing a call nobody can review now is the
       // other bounded tool-phase stop (`effect_review_required`, #2501); it
-      // is reported the same way and never as a completed answer.
+      // is reported the same way and never as a completed answer. So is a
+      // shell tool refused while unified exec is paused after an unproven
+      // process cleanup (`exec_unavailable`).
       const boundedStop =
         state.transition !== undefined
           ? undefined
@@ -4302,29 +4383,22 @@ async function* runTurnKernelInner(
                 cause: "effect_review_required",
                 explanation: state.effectReviewStop.explanation,
               }
-            : state.noProgressStop !== undefined
+            : state.execUnavailableStop !== undefined
               ? {
-                  stopReason: "no_progress" as const,
-                  cause: "no_progress_detected",
-                  explanation: state.noProgressStop.explanation,
+                  stopReason: "exec_unavailable" as const,
+                  cause: "exec_unavailable",
+                  explanation: state.execUnavailableStop.explanation,
                 }
-              : undefined;
+              : state.noProgressStop !== undefined
+                ? {
+                    stopReason: "no_progress" as const,
+                    cause: "no_progress_detected",
+                    explanation: state.noProgressStop.explanation,
+                  }
+                : undefined;
       if (boundedStop !== undefined) {
-        state.messages.push({
-          role: "assistant",
-          content: boundedStop.explanation,
-        });
+        recordBoundedStopExplanation(state, session, boundedStop.cause, boundedStop.explanation);
         lastContent = boundedStop.explanation;
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: boundedStop.cause,
-              message: boundedStop.explanation,
-            },
-          },
-        });
       }
       await syncSessionState();
       if (state.transition !== undefined) {

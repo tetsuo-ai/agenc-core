@@ -17,6 +17,7 @@ import type {
 import { validationErrorToolResult } from "../results.js";
 import {
   UnifiedExecError,
+  UnifiedExecUnavailableError,
   type UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
@@ -26,6 +27,10 @@ import {
   confirmedNoEffectDisposition,
   runtimeSandboxForExec,
 } from "./exec-command.js";
+import {
+  execUnavailableToolResult,
+  withAdmissionResumedNotice,
+} from "./exec-unavailable.js";
 
 const MONITOR_INITIAL_YIELD_MS = 30_000;
 
@@ -132,12 +137,15 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
         // inventing an unused filesystem path.
         const outputFile = `agenc://exec/${taskId}/output`;
 
-        const content =
+        const content = withAdmissionResumedNotice(
           `Monitor task started with ID: ${taskId}. ` +
           `Output is being streamed to: ${outputFile}. ` +
           `You will receive notifications as new output lines appear (~1s polling). ` +
           `When the command exits or you want to stop monitoring, the task ends automatically; ` +
-          `to interrupt sooner, abort the turn.`;
+          `to interrupt sooner, abort the turn.`,
+          config.unifiedExecManager.takeAdmissionResumedNotice?.(),
+          rawArgs,
+        );
 
         return {
           content,
@@ -157,6 +165,9 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
           },
         };
       } catch (err) {
+        if (err instanceof UnifiedExecUnavailableError) {
+          return execUnavailableToolResult(err, "tool:system.monitor:exec-unavailable");
+        }
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: `Monitor failed to start: ${message}`,

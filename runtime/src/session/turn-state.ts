@@ -105,6 +105,7 @@ export type TerminalReason =
   | "cancelled"
   | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
   | "effect_review_required" // live-effect gate refused a call nobody can unblock now (#2501)
+  | "exec_unavailable" // shell tools are paused: an earlier command's cleanup is unproven
   | "deadline_reached"; // the run's --deadline passed (#2503)
 
 export interface Terminal {
@@ -508,6 +509,13 @@ export interface TurnState {
    * ends with the bounded `effect_review_required` terminal.
    */
   effectReviewStop?: { readonly explanation: string };
+
+  /**
+   * Set alongside `preventContinuation` when a shell tool was refused because
+   * unified exec is paused after an unproven process cleanup. The turn ends
+   * with the bounded `exec_unavailable` terminal and the reason.
+   */
+  execUnavailableStop?: { readonly explanation: string };
 
   /** Cached token-budget decision captured mid-stream (I-22). Acted on
    *  in commit phase to decide continuation vs terminate. */
@@ -951,6 +959,7 @@ export function resetIterationFields(state: TurnState): void {
   state.preventContinuation = false;
   state.noProgressStop = undefined;
   state.effectReviewStop = undefined;
+  state.execUnavailableStop = undefined;
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
   state.lastResponseUsage = undefined;

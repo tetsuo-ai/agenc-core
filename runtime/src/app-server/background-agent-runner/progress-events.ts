@@ -81,6 +81,8 @@ export function phaseEventToProgressEvent(
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
         effect_review_required:
           "Turn stopped: a tool effect needs operator review. Review the call at the prompt, or use /resolve <call-id> <disposition>. Queued prompts continue after review.",
+        exec_unavailable:
+          "Turn stopped: shell commands are paused because an earlier command's processes could not be confirmed stopped. Send a new prompt to check again, or start a new session.",
         deadline_reached:
           "Run stopped at its deadline; the files on disk are what was saved before it.",
         compact_failed:
