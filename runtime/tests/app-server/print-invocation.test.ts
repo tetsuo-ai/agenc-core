@@ -8,7 +8,7 @@ import { buildSync } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrintInvocation, validatePrintInvokeParams } from "../../src/app-server/print-invocation.js";
 import { runDefaultCliRoute } from "../../src/bin/default-cli-route.js";
-import { oneShotCLI } from "../../src/bin/daemon-one-shot-cli.js";
+import { DAEMON_AGENT_CLEANUP_BUDGET_MS, oneShotCLI } from "../../src/bin/daemon-one-shot-cli.js";
 import { cliStartupErrorMessage } from "../../src/bin/cli-process-main.js";
 import { trustProject } from "../../src/permissions/trust/project-trust.js";
 import type { AgenCJsonLineDaemonTuiClient } from "../../src/app-server/agent-cli.js";
@@ -90,7 +90,10 @@ async function canonical(argv: string[], deny = false, replay = events(deny)) {
   finally { out.mockRestore(); err.mockRestore(); warn.mockRestore(); }
   return { stdout: normalizeResultDuration(stdout), stderr, exitCode, call };
 }
-function resident(request: PrintInvokeParams, { deny = false, admit = true, complete = true } = {}) {
+function resident(request: PrintInvokeParams, { deny = false, admit = true, complete = true, stop }: {
+  deny?: boolean; admit?: boolean; complete?: boolean;
+  stop?: (params: JsonObject, signal?: AbortSignal) => Promise<AgenCDaemonResponse>;
+} = {}) {
   let stdout = "", stderr = "";
   let challenge!: string;
   let challenged!: () => void;
@@ -108,7 +111,8 @@ function resident(request: PrintInvokeParams, { deny = false, admit = true, comp
         invocation.acknowledge(p.sequence as number);
       }
     },
-    request: async (method, p) => {
+    request: async (method, p, signal) => {
+      if (method === "agent.stop" && stop) return stop(p, signal);
       const response = await call(method, p);
       if (method === "agent.attach" && complete) {
         // Replay before subscribe, just as a fast canonical attached turn can.
@@ -119,6 +123,53 @@ function resident(request: PrintInvokeParams, { deny = false, admit = true, comp
   }, request);
   return { invocation, call, admission, challenge: () => challenge, output: () => ({ stdout: normalizeResultDuration(stdout), stderr }) };
 }
+
+describe("resident print cleanup budget", () => {
+  it.each(["text", "json", "stream-json"].flatMap(format =>
+    [false, true].flatMap(deny => [false, true].map(fallback => ({ format, deny, fallback }))),
+  ))("bounds an unsettled stop: $format, denied=$deny, fallback=$fallback", async ({ format, deny, fallback }) => {
+    const argv = ["-p", "--output-format", format, "hello"];
+    const expected = await canonical(argv, deny);
+    let started!: () => void;
+    const stopping = new Promise<void>(resolve => { started = resolve; });
+    let rejectStop!: (error: Error) => void;
+    const pendingStop = new Promise<AgenCDaemonResponse>((_resolve, reject) => { rejectStop = reject; });
+    const stop = vi.fn((_params: JsonObject, _signal?: AbortSignal) => {
+      started();
+      if (fallback && stop.mock.calls.length === 1) {
+        return new Promise<AgenCDaemonResponse>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("first stop failed")), 2_000);
+        });
+      }
+      // Model teardown that does not observe cancellation at all.
+      return pendingStop;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const f = resident(params(argv), { deny, stop });
+    let result: Awaited<ReturnType<PrintInvocation["run"]>> | undefined;
+    const run = f.invocation.run().then(value => { result = value; });
+    try {
+      await stopping;
+      await vi.advanceTimersByTimeAsync(DAEMON_AGENT_CLEANUP_BUDGET_MS - 1);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(result).toEqual({ kind: "exit", exitCode: expected.exitCode });
+      expect(f.output()).toEqual({
+        stdout: expected.stdout,
+        stderr: expected.stderr + "Warning: agent cleanup was not confirmed within the shutdown budget.\n",
+      });
+      expect(stop).toHaveBeenCalledTimes(fallback ? 2 : 1);
+      for (const [, signal] of stop.mock.calls) expect(signal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      // Also let the base implementation finish after the boundedness assertion
+      // fails, and verify a late teardown rejection is always observed.
+      rejectStop(new Error("late teardown failure"));
+      await run;
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("canonical/resident print byte and exit parity", () => {
   it("normalizes only top-level result duration while preserving every other byte", () => {
