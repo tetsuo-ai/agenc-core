@@ -340,4 +340,29 @@ describe("unified exec after a killed command whose process exits late", () => {
       await manager.closeAll().catch(() => {});
     }
   }, 30_000);
+
+  it("a parent closing after recovery does not disable the shell over its child's old failure", async () => {
+    const manager = pausingManager();
+    try {
+      const parent = manager.createOwnerLifetime("parent").bind();
+      const child = manager.createOwnerLifetime("child", parent).bind();
+      await pauseWithStuckCommand(manager);
+      // The child closes while cleanup is unproven; its close stays rejected.
+      await expect(child.prepareForDurableClose()).rejects.toThrow(/cleanup is unproven/);
+      await releaseStandIn!();
+      await manager.recheckCleanupAdmission({ force: true });
+      const running = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
+
+      // The parent's close reports that old failure and fails, but the shell
+      // that recovered stays open and its running command is left alone.
+      await expect(parent.prepareForDurableClose()).rejects.toThrow(/cleanup is unproven/);
+      expect(() => manager.assertOwnerAdmission(undefined)).not.toThrow();
+      expect(manager.listOwnedProcesses().find((view) => view.sessionId === running.process_id)?.status)
+        .toBe("running");
+      const after = await manager.execCommand({ cmd: "echo still-open", yield_time_ms: 5_000 });
+      expect(after.stdout).toContain("still-open");
+    } finally {
+      await manager.closeAll().catch(() => {});
+    }
+  }, 30_000);
 });

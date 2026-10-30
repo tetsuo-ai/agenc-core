@@ -75,6 +75,7 @@ import {
   LEDGER_WALLET_CLI_ROUTING_GUIDANCE,
 } from "../elicitation/ledger-wallet-cli.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
+import { takeCodeModeNestedStop } from "../tools/code-mode/nested-stop.js";
 import {
   APPROVAL_DENIED_ABORT_REASON,
   createTurnFailedEvent,
@@ -570,6 +571,20 @@ function sealToolResultMessage(message: LLMMessage, runId: string): LLMMessage {
       }),
     },
   };
+}
+
+/** A bounded stop's explanation becomes the turn's last words and a warning. */
+function recordBoundedStopExplanation(
+  state: TurnState,
+  session: Session,
+  cause: string,
+  explanation: string,
+): void {
+  state.messages.push({ role: "assistant", content: explanation });
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: { type: "warning", payload: { cause, message: explanation } },
+  });
 }
 
 function terminalToStopReason(
@@ -4121,6 +4136,25 @@ async function* runTurnKernelInner(
         state.transition = undefined;
         continue;
       }
+      // A shell refusal inside a code-mode script that yielded earlier can
+      // arrive while this answer was sampled, with no tool batch left to take
+      // it. The turn ends as that stop rather than as a completed answer; the
+      // next turn would otherwise start without it.
+      const nestedExecStop = takeCodeModeNestedStop(session);
+      if (nestedExecStop !== undefined) {
+        recordBoundedStopExplanation(state, session, "exec_unavailable", nestedExecStop);
+        lastContent = nestedExecStop;
+        await syncSessionState();
+        launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
+        emitTurnComplete(lastContent, "exec_unavailable");
+        yield {
+          type: "turn_complete",
+          content: lastContent,
+          usage,
+          stopReason: "exec_unavailable",
+        };
+        return { reason: "exec_unavailable" };
+      }
       const stopReason =
         assistantText.length === 0 ? "empty_response" : "completed";
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
@@ -4322,21 +4356,8 @@ async function* runTurnKernelInner(
                   }
                 : undefined;
       if (boundedStop !== undefined) {
-        state.messages.push({
-          role: "assistant",
-          content: boundedStop.explanation,
-        });
+        recordBoundedStopExplanation(state, session, boundedStop.cause, boundedStop.explanation);
         lastContent = boundedStop.explanation;
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: boundedStop.cause,
-              message: boundedStop.explanation,
-            },
-          },
-        });
       }
       await syncSessionState();
       if (state.transition !== undefined) {

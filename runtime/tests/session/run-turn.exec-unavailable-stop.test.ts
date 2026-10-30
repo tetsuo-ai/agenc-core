@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
 import type { LLMResponse } from "../../src/llm/types.js";
@@ -10,6 +11,7 @@ import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import type { Event } from "../../src/session/session.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
+import { QuickJsCodeModeService } from "../../src/tools/code-mode/service.js";
 import { createCodeModeTools } from "../../src/tools/code-mode/tools.js";
 import type { CodeModeService, CodeModeTurnHost } from "../../src/tools/code-mode/types.js";
 import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
@@ -283,4 +285,82 @@ describe("exec_unavailable ends the turn", () => {
       await closed.dispose();
     }
   });
+
+  test("a refusal that reaches a yielded code-mode script ends the turn when the next answer calls no tool", async () => {
+    root = mkdtempSync(join(tmpdir(), "exec-unavailable-yielded-"));
+    const closed = await closedManager(root);
+    const service = new QuickJsCodeModeService({ enabled: true });
+    try {
+      expect(service.enabled()).toBe(true);
+      const listProcesses = createListProcessesTool({ unifiedExecManager: closed.manager });
+      let nestedCalls = 0;
+      let markRefused!: () => void;
+      const refused = new Promise<void>((resolve) => { markRefused = resolve; });
+      const [codeExec] = createCodeModeTools({ service, getEnabledTools: () => [listProcesses] });
+      let samples = 0;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        samples += 1;
+        const usage = { promptTokens: 10, completionTokens: 1, totalTokens: 11 };
+        if (samples === 1) {
+          return {
+            content: "Starting a background check.",
+            toolCalls: [{
+              id: "call-1",
+              name: "exec",
+              arguments: JSON.stringify({
+                code: [
+                  '// @exec: {"yield_time_ms": 10}',
+                  "await new Promise((resolve) => setTimeout(resolve, 300));",
+                  'try { await tools.list_processes({}); } catch (error) { text("caught"); }',
+                ].join("\n"),
+              }),
+            }],
+            usage,
+            model: "test-model",
+            finishReason: "tool_calls",
+          };
+        }
+        // The exec call yielded; the script's call is refused while this answer
+        // is being written, and the answer calls no tool.
+        await Promise.race([refused, delay(10_000)]);
+        await delay(50);
+        return { content: "The check keeps running in the background.", toolCalls: [], usage, model: "test-model", finishReason: "stop" };
+      };
+      const registry = {
+        tools: [codeExec],
+        toLLMTools: () => [],
+        dispatch: async () => ({ content: "", isError: false }),
+        dispatchCodeModeNestedTool: async (call: { readonly input?: unknown }) => {
+          nestedCalls += 1;
+          const result = await listProcesses.execute((call.input ?? {}) as Record<string, unknown>);
+          markRefused();
+          return result;
+        },
+      } as unknown as ToolRegistry;
+      const { session, events, ctx } = bypassSession(provider, registry, { codeModeService: service });
+
+      const phases: PhaseEvent[] = [];
+      for await (const phase of runTurn(session, ctx, "Start the background check.")) {
+        phases.push(phase);
+      }
+
+      expect(nestedCalls).toBe(1);
+      expect(samples).toBe(2);
+      const results = events.flatMap((event) =>
+        event.msg.type === "tool_call_completed" ? [String(event.msg.payload.result)] : [],
+      );
+      // The exec call itself only yielded; the refusal came after it.
+      expect(results).toHaveLength(1);
+      expect(results[0]).toContain("status=yielded");
+      expect(phases.at(-1)).toMatchObject({ stopReason: "exec_unavailable" });
+      expect(terminals(events)).toEqual([
+        expect.objectContaining({ outcome: "errored", failureCode: "exec_unavailable" }),
+      ]);
+      expect(warnings(events, "exec_unavailable")).toHaveLength(1);
+    } finally {
+      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+      await closed.dispose();
+    }
+  }, 20_000);
 });

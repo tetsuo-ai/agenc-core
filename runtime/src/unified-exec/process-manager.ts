@@ -1557,10 +1557,16 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (this.sandboxAuthorityCleanupFailure !== undefined) failures.push(this.sandboxAuthorityCleanupFailure);
       if (failures.length > 0) {
         const error = new AggregateError(failures, "unified exec owner cleanup is unproven at durable close");
-        this.poisonSandboxAuthority(error, {
-          unprovenEntries,
-          permanent: sandboxOutcome!.status === "rejected",
-        });
+        // Only what this close found itself closes shared admission. A child's
+        // close (cached, possibly from before a recovery) and a pause already in
+        // place recorded their own causes; reporting them again must not close
+        // the shell, let alone disable a shell that has recovered since.
+        if (unprovenEntries.length > 0 || sandboxOutcome!.status === "rejected") {
+          this.poisonSandboxAuthority(error, {
+            unprovenEntries,
+            permanent: sandboxOutcome!.status === "rejected",
+          });
+        }
         throw error;
       }
       // Keep settled yielded entries for status/output collection and pruning.
@@ -1601,10 +1607,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (failures.length > 0) {
         const error = new AggregateError(failures,
           "unified exec cleanup is unproven at durable close");
-        this.poisonSandboxAuthority(error, {
-          unprovenEntries,
-          permanent: sandboxOutcome!.status === "rejected",
-        });
+        // As for an owner close: a pause already in place is not a new cause.
+        if (unprovenEntries.length > 0 || sandboxOutcome!.status === "rejected") {
+          this.poisonSandboxAuthority(error, {
+            unprovenEntries,
+            permanent: sandboxOutcome!.status === "rejected",
+          });
+        }
         throw error;
       }
     });
