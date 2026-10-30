@@ -4794,6 +4794,24 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("colors successful recovered submissions with the informational accent", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const subscribers = new Set<(event: unknown) => void>();
+    const session = {
+      ...createSession(),
+      subscribeToEvents: (cb: (event: unknown) => void) => {
+        subscribers.add(cb);
+        return () => { subscribers.delete(cb); };
+      },
+    };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      for (const cb of subscribers) cb({ type: "message_submission_recovered", payload: { clientMessageId: "recovered", code: 0 } });
+      await vi.waitFor(() => expect(providerProbe.currentAppState?.notifications).toMatchObject({
+        current: { color: "accent", text: expect.stringContaining("previous submission completed") },
+      }));
+    });
+  });
+
   test("accepts a free-text elicitation without options", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = createSession();

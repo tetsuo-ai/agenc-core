@@ -326,7 +326,7 @@ function submissionRecoveryNotification(event: unknown): {
     notification: {
       key: `submission-recovered:${payload.clientMessageId}`,
       text: `The previous submission ${outcome}. It was not run again.${detail}`,
-      color: payload.code === 0 ? "info" : "warning",
+      color: payload.code === 0 ? "accent" : "warning",
       priority: "immediate",
       timeoutMs: 10_000,
       wrap: true,
