@@ -116,6 +116,7 @@ import {
   Box,
   Text,
   useApp,
+  useInput,
   useTerminalFocus,
   useTerminalTitle,
   type Key,
@@ -1304,6 +1305,12 @@ export function useTuiElicitation(session) {
   }
   return t4;
 }
+/** Escape on a question: a deliberate skip, or Stop here at a budget checkpoint. */
+function elicitationSkipAnswer(pending: UserPending): string {
+  return pending.request.callId.startsWith("task-budget-checkpoint-")
+    ? "Stop here"
+    : "skip";
+}
 function ElicitationPickerOverlay({
   pending,
   submit,
@@ -1329,74 +1336,147 @@ function ElicitationPickerOverlay({
           submit(raw);
         }
       }}
-      onSkip={() => submit(pending.request.callId.startsWith("task-budget-checkpoint-") ? "Stop here" : "skip")}
+      onSkip={() => submit(elicitationSkipAnswer(pending))}
     />
   );
 }
 
-export function ElicitationOverlay(t0) {
-  const $ = _c(13);
-  const { prompt } = t0;
+/**
+ * How the text overlay answers the active request. The composer is hidden
+ * while a request is pending, so the overlay owns the answer input.
+ */
+export interface ElicitationAnswerControls {
+  /** Changes for each question or field, so typed text never carries over. */
+  readonly key: string;
+  /** A free-text question needs text. MCP requests also take an empty Enter. */
+  readonly requireText: boolean;
+  /** What Escape does, shown in the hint. */
+  readonly cancelLabel: "skip" | "cancel";
+  submit(value: string): void;
+  cancel(): void;
+}
+
+export function elicitationAnswerControls(
+  pending: PendingElicitation | null,
+  submit: (value: string) => boolean,
+): ElicitationAnswerControls | undefined {
+  if (pending === null) return undefined;
+  if (pending.kind === "user") {
+    // Escape matches the options picker above.
+    return {
+      key: `user:${pending.request.requestId}:${pending.index}`,
+      requireText: true,
+      cancelLabel: "skip",
+      submit: (value) => {
+        submit(value);
+      },
+      cancel: () => {
+        submit(elicitationSkipAnswer(pending));
+      },
+    };
+  }
+  const index = pending.kind === "mcp-form" ? pending.index : 0;
+  return {
+    key: `mcp:${pending.request.serverName}:${String(pending.request.requestId)}:${index}`,
+    requireText: false,
+    cancelLabel: "cancel",
+    submit: (value) => {
+      submit(value);
+    },
+    cancel: () => {
+      submit("cancel");
+    },
+  };
+}
+
+function ElicitationAnswerInput({
+  placeholder,
+  controls,
+}: {
+  readonly placeholder: string;
+  readonly controls: ElicitationAnswerControls;
+}): React.ReactElement {
+  const [text, setText] = useState("");
+  // Keys from one stdin read are handled before React renders again, so
+  // Enter must read the live text, not the text of the last render.
+  const textRef = useRef("");
+  const update = (next: string): void => {
+    textRef.current = next;
+    setText(next);
+  };
+  // Same keys as the free-text answer in AskUserQuestionOverlay. Only the
+  // keys handled here are claimed, so global shortcuts keep working.
+  useInput((input, key, event) => {
+    if (key.return) {
+      event.stopImmediatePropagation();
+      const value = textRef.current;
+      if (controls.requireText && value.trim().length === 0) return;
+      update("");
+      controls.submit(value);
+      return;
+    }
+    if (key.escape) {
+      event.stopImmediatePropagation();
+      controls.cancel();
+      return;
+    }
+    if (key.backspace || key.delete) {
+      event.stopImmediatePropagation();
+      update(Array.from(textRef.current).slice(0, -1).join(""));
+      return;
+    }
+    if (
+      input.length > 0 &&
+      !key.ctrl &&
+      !key.meta &&
+      !key.super &&
+      !key.tab
+    ) {
+      event.stopImmediatePropagation();
+      update(textRef.current + input);
+    }
+  });
+  return (
+    <Box flexDirection="column">
+      <Text>
+        {`› ${text}▏`}
+        {text.length === 0 ? <Text dimColor={true}>{placeholder}</Text> : null}
+      </Text>
+      <Text dimColor={true}>{`⏎ submit · esc ${controls.cancelLabel}`}</Text>
+    </Box>
+  );
+}
+
+export function ElicitationOverlay({
+  prompt,
+  answer,
+}: {
+  readonly prompt: ElicitationPromptState | null;
+  /** Mounts the answer input. Without it the overlay only shows the prompt. */
+  readonly answer?: ElicitationAnswerControls;
+}): React.ReactElement | null {
   if (prompt === null) {
     return null;
   }
-  let t1;
-  if ($[0] !== prompt.title) {
-    t1 = <Text bold={true}>{prompt.title}</Text>;
-    $[0] = prompt.title;
-    $[1] = t1;
-  } else {
-    t1 = $[1];
-  }
-  let t2;
-  if ($[2] !== prompt.message) {
-    t2 = <Text>{prompt.message}</Text>;
-    $[2] = prompt.message;
-    $[3] = t2;
-  } else {
-    t2 = $[3];
-  }
-  let t3;
-  if ($[4] !== prompt.detailLines) {
-    t3 = prompt.detailLines.map(_temp);
-    $[4] = prompt.detailLines;
-    $[5] = t3;
-  } else {
-    t3 = $[5];
-  }
-  let t4;
-  if ($[6] !== prompt.placeholder) {
-    t4 = <Text dimColor={true}>{prompt.placeholder}</Text>;
-    $[6] = prompt.placeholder;
-    $[7] = t4;
-  } else {
-    t4 = $[7];
-  }
-  let t5;
-  if ($[8] !== t1 || $[9] !== t2 || $[10] !== t3 || $[11] !== t4) {
-    t5 = (
-      <Box flexDirection="column" width="100%" paddingX={1}>
-        {t1}
-        {t2}
-        {t3}
-        {t4}
-      </Box>
-    );
-    $[8] = t1;
-    $[9] = t2;
-    $[10] = t3;
-    $[11] = t4;
-    $[12] = t5;
-  } else {
-    t5 = $[12];
-  }
-  return t5;
-}
-function _temp(line) {
   return (
-    <Text key={line} dimColor={true}>
-      {line}
-    </Text>
+    <Box flexDirection="column" width="100%" paddingX={1}>
+      <Text bold={true}>{prompt.title}</Text>
+      <Text>{prompt.message}</Text>
+      {prompt.detailLines.map((line) => (
+        <Text key={line} dimColor={true}>
+          {line}
+        </Text>
+      ))}
+      {answer === undefined ? (
+        <Text dimColor={true}>{prompt.placeholder}</Text>
+      ) : (
+        <ElicitationAnswerInput
+          key={answer.key}
+          placeholder={prompt.placeholder}
+          controls={answer}
+        />
+      )}
+    </Box>
   );
 }
 type AppProviderProps = {
@@ -5040,12 +5120,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           submit={elicitation.submit}
         />
       ) : (
-        <ElicitationOverlay prompt={elicitation.prompt} />
+        <ElicitationOverlay
+          prompt={elicitation.prompt}
+          answer={elicitationAnswerControls(
+            elicitation.pending,
+            elicitation.submit,
+          )}
+        />
       )
     ) : null;
 
   // Phase 5 #53: hide PromptInput while a permission overlay or
   // elicitation prompt is active so a single Enter doesn't fire both.
+  // Text answers go through the overlay's own input.
   const showPromptInput = shouldShowPromptInputState({
     isMessageSelectorVisible,
     permissionRequestCount: permissionRequests.length,

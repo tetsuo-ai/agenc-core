@@ -130,6 +130,14 @@ const providerProbe = {
     ) => Promise<void>
   >,
   promptProps: [] as Array<Record<string, unknown>>,
+  // Mounted useInput listeners in mount order, as Ink dispatches them.
+  inputListeners: [] as Array<
+    (
+      input: string,
+      key: Record<string, boolean>,
+      event: { stopImmediatePropagation(): void },
+    ) => void
+  >,
   defaultStateProviderEnvironments: [] as unknown[],
   processBashCommand:
     typeof vi.fn === "function"
@@ -253,7 +261,27 @@ vi.mock("../ink.js", async () => {
     Text: ({ children }: { children?: React.ReactNode }) =>
       React.createElement("ink-text", null, children),
     useApp: () => ({ exit: providerProbe.inkExit }),
-    useInput: () => {},
+    // Record each mounted listener so a test can type into the shell.
+    useInput: (
+      handler: (typeof providerProbe.inputListeners)[number],
+      options: { readonly isActive?: boolean } = {},
+    ) => {
+      const latest = React.useRef({ handler, options });
+      latest.current = { handler, options };
+      React.useEffect(() => {
+        const listener: (typeof providerProbe.inputListeners)[number] = (
+          ...args
+        ) => {
+          if (latest.current.options.isActive === false) return;
+          latest.current.handler(...args);
+        };
+        providerProbe.inputListeners.push(listener);
+        return () => {
+          const index = providerProbe.inputListeners.indexOf(listener);
+          if (index >= 0) providerProbe.inputListeners.splice(index, 1);
+        };
+      }, []);
+    },
     useTerminalFocus: () => true,
     useTerminalTitle: () => {},
     useAnimationFrame: () => [{ current: null }, 0],
@@ -821,6 +849,32 @@ function createTestStreams(): {
   stdin.unref = () => {};
 
   return { stdout, stdin, output: () => rendered };
+}
+
+const NO_KEY = Object.freeze({
+  upArrow: false, downArrow: false, leftArrow: false, rightArrow: false,
+  pageDown: false, pageUp: false, wheelUp: false, wheelDown: false,
+  home: false, end: false, return: false, escape: false, ctrl: false,
+  shift: false, fn: false, tab: false, backspace: false, delete: false,
+  meta: false, super: false,
+});
+
+/** Dispatch one key to the mounted useInput listeners, as Ink does. */
+async function pressKey(
+  input: string,
+  key: Partial<Record<keyof typeof NO_KEY, boolean>> = {},
+): Promise<void> {
+  let stopped = false;
+  const event = { stopImmediatePropagation: () => { stopped = true; } };
+  for (const listener of [...providerProbe.inputListeners]) {
+    listener(input, { ...NO_KEY, ...key }, event);
+    if (stopped) break;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+async function typeText(text: string): Promise<void> {
+  for (const char of text) await pressKey(char);
 }
 
 function resetShellSurfaceProbe(): void {
@@ -4822,19 +4876,39 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     });
   });
 
-  test("accepts a free-text elicitation without options", async () => {
+  test("answers a free-text elicitation by typing into the shell and pressing Enter", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = createSession();
     await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
+      let answer: unknown = "pending";
       const response = session.services.requestUserInputResolver!.request({
         turnId: "text-turn", requestId: "text-request", callId: "text-call",
         questions: [{ id: "details", header: "Details", question: "Describe the change" }],
       });
+      void response.then((value) => { answer = value; });
       await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Describethechange"));
-      await providerProbe.promptSubmits.at(-1)!("Use blue", {
-        clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn(),
-      });
-      await expect(response).resolves.toEqual({ answers: { details: { answers: ["Use blue"] } } });
+      // An empty Enter does not answer a free-text question.
+      await pressKey("\r", { return: true });
+      await typeText("Use blue");
+      expect(answer).toBe("pending");
+      await pressKey("\r", { return: true });
+      await vi.waitFor(() => expect(answer).toEqual({ answers: { details: { answers: ["Use blue"] } } }));
+    });
+  });
+
+  test("Escape skips a free-text elicitation like the options picker", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
+      let answer: unknown = "pending";
+      void session.services.requestUserInputResolver!.request({
+        turnId: "skip-turn", requestId: "skip-request", callId: "skip-call",
+        questions: [{ id: "details", header: "Details", question: "Describe the change" }],
+      }).then((value) => { answer = value; });
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Describethechange"));
+      await typeText("draft");
+      await pressKey("\u001b", { escape: true, meta: true });
+      await vi.waitFor(() => expect(answer).toEqual({ answers: { details: { answers: ["skip"] } } }));
     });
   });
 
