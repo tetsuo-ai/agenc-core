@@ -561,51 +561,66 @@ describe("exec_unavailable ends the turn", () => {
     }
   }, 20_000);
 
-  test("a refusal that lands after a blocking Stop hook answered leaves the hook's request to the model, and the turn ends at its next answer", async () => {
-    root = mkdtempSync(join(tmpdir(), "exec-unavailable-after-hook-"));
-    const closed = await closedManager(root);
-    const service = new QuickJsCodeModeService({ enabled: true });
-    try {
-      expect(service.enabled()).toBe(true);
-      const held = heldScript(closed.manager, service);
-      const hook = blockingOnceStopHook();
-      const requests: string[] = [];
-      const provider = mkProvider();
-      provider.chatStream = async (messages): Promise<LLMResponse> => {
-        requests.push(JSON.stringify(messages));
-        if (requests.length === 1) {
-          return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
-        }
-        return textResponse(requests.length === 2
-          ? "The check keeps running in the background."
-          : "The checks cannot run now.");
-      };
-      const made = bypassSession(provider, held.registry, { codeModeService: service, hooks: hook.hooks });
-      // The refusal lands once the hook's request has been written to the
-      // history: after the hook answered, before the turn looks for a stop.
-      const lock = made.session.state;
-      const write = lock.with.bind(lock) as (fn: (value: unknown) => unknown) => Promise<unknown>;
-      let refusedAfterWrite: boolean | undefined;
-      vi.spyOn(lock, "with").mockImplementation((async (fn: (value: unknown) => unknown) => {
-        const written = await write(fn);
-        if (refusedAfterWrite === undefined && JSON.stringify(made.state.history).includes(HOOK_REQUEST)) {
-          refusedAfterWrite = await held.deliverRefusal();
-        }
-        return written;
-      }) as never);
-      const phases = await runToEnd(made, "Start the background check.");
+  test.each([["the default iteration limit", undefined], ["maxTurns 2, so the limit falls on that re-entry", 2]] as const)(
+    "a refusal that lands after a blocking Stop hook answered ends the turn when it re-enters (%s)",
+    async (_label, maxTurns) => {
+      root = mkdtempSync(join(tmpdir(), "exec-unavailable-after-hook-"));
+      const closed = await closedManager(root);
+      const service = new QuickJsCodeModeService({ enabled: true });
+      try {
+        expect(service.enabled()).toBe(true);
+        const held = heldScript(closed.manager, service);
+        const hook = blockingOnceStopHook();
+        const requests: string[] = [];
+        const provider = mkProvider();
+        provider.chatStream = async (messages): Promise<LLMResponse> => {
+          requests.push(JSON.stringify(messages));
+          if (requests.length === 1) {
+            return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+          }
+          return textResponse(requests.length === 2
+            ? "The check keeps running in the background."
+            : "The checks cannot run now.");
+        };
+        const made = bypassSession(provider, held.registry, { codeModeService: service, hooks: hook.hooks });
+        // Two samples fit; the re-entry after the hook would be the third.
+        if (maxTurns !== undefined) Object.assign(made.ctx, { config: { ...(made.ctx.config as object), maxTurns } });
+        // The refusal lands once the hook's request has been written to the
+        // history: after the hook answered, before the turn re-enters.
+        const lock = made.session.state;
+        const write = lock.with.bind(lock) as (fn: (value: unknown) => unknown) => Promise<unknown>;
+        let refusedAfterWrite: boolean | undefined;
+        vi.spyOn(lock, "with").mockImplementation((async (fn: (value: unknown) => unknown) => {
+          const written = await write(fn);
+          if (refusedAfterWrite === undefined && JSON.stringify(made.state.history).includes(HOOK_REQUEST)) {
+            refusedAfterWrite = await held.deliverRefusal();
+          }
+          return written;
+        }) as never);
+        const phases = await runToEnd(made, "Start the background check.");
 
-      expect(refusedAfterWrite).toBe(true);
-      expect(held.nested).toEqual(["hold", "list_processes", "finished"]);
-      // The request stood, so the model got it; its next answer ended the
-      // turn with the reason.
-      expect(requests).toHaveLength(3);
-      expect(requests[2]).toContain(HOOK_REQUEST);
-      expect(hook.calls()).toBe(2);
-      expectExecUnavailableEnd(phases, made.events);
-    } finally {
-      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
-      await closed.dispose();
-    }
-  }, 20_000);
+        expect(refusedAfterWrite).toBe(true);
+        expect(held.nested).toEqual(["hold", "list_processes", "finished"]);
+        expect(hook.calls()).toBe(1);
+        // The turn ends with the reason as it re-enters, not with the
+        // iteration limit and not after another model call.
+        expectExecUnavailableEnd(phases, made.events);
+        expect(requests).toHaveLength(2);
+        expect(requests.some((request) => request.includes(HOOK_REQUEST))).toBe(false);
+        // The request was written before the refusal existed; the reason
+        // follows it as the turn's last words.
+        const history = made.state.history;
+        const requestAt = history.findIndex((message) =>
+          message.role === "user" && JSON.stringify(message.content).includes(HOOK_REQUEST));
+        expect(requestAt).toBeGreaterThan(-1);
+        expect(requestAt).toBeLessThan(history.length - 1);
+        expect(history.at(-1)?.role).toBe("assistant");
+        expect(String(history.at(-1)?.content)).toContain("Shell commands are disabled for the rest of this session.");
+      } finally {
+        await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+        await closed.dispose();
+      }
+    },
+    20_000,
+  );
 });

@@ -4,7 +4,9 @@
  * The script only sees a thrown error, which it may catch and retry, and the
  * enclosing `exec` or `wait` result does not carry the nested result's
  * metadata. So the turn host keeps the stop here, per session, and the turn
- * loop takes it after each tool batch and ends the turn with it.
+ * loop ends the turn with it: after each tool batch, where a turn would end,
+ * and at the top of each loop iteration (a script that yielded can meet its
+ * refusal at any later point of the turn).
  *
  * @module
  */

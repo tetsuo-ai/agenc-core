@@ -3452,6 +3452,23 @@ async function* runTurnKernelInner(
       return cancelledAtLoopStart.terminal;
     }
 
+    // A shell refusal that a yielded code-mode script met after the last
+    // check (once a Stop hook's request was written, or during a recovery or
+    // a tool continuation) ends the turn here. The guards below would end it
+    // another way (the iteration limit, a budget, a step-limit summary) and
+    // the next turn would start without it. A user stop or an expired
+    // deadline above still comes first.
+    const reenteredExecStop = takeCodeModeNestedStop(session);
+    if (reenteredExecStop !== undefined) {
+      await drainInFlight(state, ctx, session);
+      recordBoundedStopExplanation(state, session, "exec_unavailable", reenteredExecStop);
+      lastContent = reenteredExecStop;
+      await syncSessionState();
+      emitTurnComplete(lastContent, "exec_unavailable");
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "exec_unavailable" };
+      return { reason: "exec_unavailable" };
+    }
+
     // Bound all verification samples, including tool continuations and recovery.
     // The old round counter advanced only on tool-free answers, so a single
     // gate prompt could launch an arbitrarily long investigation. An
@@ -4142,9 +4159,8 @@ async function* runTurnKernelInner(
       });
       await syncSessionState();
       // commit may set a stop-hook transition (I-17). If so, re-enter: the
-      // hook answered before any refusal and its request is in the history,
-      // so the model gets it. A refusal that came later is the next
-      // iteration's to take.
+      // hook answered before any refusal. A refusal that came after it is
+      // taken at the top of the loop, before anything else can end the turn.
       if (state.transition !== undefined) {
         clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
@@ -4339,8 +4355,9 @@ async function* runTurnKernelInner(
         boundedStop: () =>
           state.execUnavailableStop !== undefined || hasCodeModeNestedStop(session),
       });
-      // Such a refusal ends this turn, unless a hook that answered before it
-      // sent the turn back to work; the next iteration takes it then.
+      // Such a refusal ends this turn here, unless a hook that answered
+      // before it sent the turn back to work; the top of the loop takes it
+      // then.
       if (state.transition === undefined) {
         const lateExecStop = takeCodeModeNestedStop(session);
         if (lateExecStop !== undefined) state.execUnavailableStop ??= { explanation: lateExecStop };
