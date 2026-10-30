@@ -3,7 +3,9 @@ import { describe, expect, test } from "vitest";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
+  summarizeWebFetchResult,
   summarizeWebSearchResult,
+  webFetchResultLine,
 } from "./tool-result-routing.js";
 
 describe("pickToolResultDispatch — TUI tool routing", () => {
@@ -254,5 +256,93 @@ describe("WebSearch results in the TUI", () => {
     expect(
       summarizeWebSearchResult(JSON.stringify({ source: "https://searx.local:8443/search", kind: "searxng", results: [] }))?.source,
     ).toBe("searx.local:8443");
+  });
+});
+
+describe("web_fetch results in the TUI", () => {
+  const deepseek = JSON.stringify({
+    source: "deepseek_fetch",
+    provider: "deepseek",
+    title: "Example Domain",
+    ok: true,
+    url: "https://example.com/",
+    preapproved: false,
+    rendered_as: "markdown",
+    truncated: false,
+    content: "# Example Domain\n\nThis domain is for use in documentation examples.\n",
+  });
+  const fallback = JSON.stringify({
+    deepseek_fetch_fallback: "HTTP 404: failed to fetch URL",
+    status: 200,
+    ok: true,
+    url: "https://news.ycombinator.com/rss",
+    final_url: "https://news.ycombinator.com/rss",
+    content_type: "application/rss+xml",
+    preapproved: false,
+    rendered_as: "passthrough",
+    truncated: false,
+    content: "<rss>\n<channel>\n<title>Hacker News</title>\n</channel>\n</rss>",
+  });
+  const local = JSON.stringify({
+    status: 200,
+    ok: true,
+    url: "https://example.com/",
+    final_url: "https://example.com/",
+    content_type: "text/html",
+    preapproved: false,
+    rendered_as: "markdown",
+    truncated: false,
+    content: "page",
+  });
+
+  test("routes a result DeepSeek's fetch answered or fell back from to the web fetch view", () => {
+    expect(pickToolResultDispatch("web_fetch", deepseek)).toBe("web-fetch-view");
+    expect(pickToolResultDispatch("web_fetch", fallback)).toBe("web-fetch-view");
+    // Without DeepSeek in the picture the row stays as it was.
+    expect(pickToolResultDispatch("web_fetch", local)).toBe("generic");
+    expect(pickToolResultDispatch("web_fetch", "not json")).toBe("generic");
+    expect(pickToolResultDispatch("WebSearch", deepseek)).toBe("generic");
+  });
+
+  test("says which fetch answered, how much came back, and why DeepSeek's fetch fell back", () => {
+    const fromDeepSeek = summarizeWebFetchResult(deepseek)!;
+    expect(fromDeepSeek).toEqual({
+      source: "DeepSeek fetch",
+      lines: 3,
+      extracted: false,
+      title: "Example Domain",
+      url: "https://example.com/",
+    });
+    expect(webFetchResultLine(fromDeepSeek)).toBe("3 lines via DeepSeek fetch");
+
+    expect(webFetchResultLine(summarizeWebFetchResult(fallback)!)).toBe(
+      "5 lines via local fetch (DeepSeek fetch: HTTP 404: failed to fetch URL)",
+    );
+    expect(webFetchResultLine(summarizeWebFetchResult(JSON.stringify({
+      source: "deepseek_fetch",
+      ok: true,
+      url: "https://example.com/",
+      prompt: "Which version?",
+      extracted: "Version 9.9.9.",
+      content_preview: "...",
+    }))!)).toBe("1 line extracted via DeepSeek fetch");
+    expect(webFetchResultLine(summarizeWebFetchResult(JSON.stringify({
+      deepseek_fetch_fallback: "HTTP 404: failed to fetch URL",
+      status: 204,
+      ok: true,
+      url: "https://httpbin.org/status/204",
+      content: "",
+    }))!)).toBe("no content via local fetch (DeepSeek fetch: HTTP 404: failed to fetch URL)");
+    expect(webFetchResultLine(summarizeWebFetchResult(JSON.stringify({
+      deepseek_fetch_fallback: "timed out after 30s",
+      status: 503,
+      ok: false,
+      url: "https://example.com/",
+      content: "busy",
+    }))!)).toBe("HTTP 503 via local fetch (DeepSeek fetch: timed out after 30s)");
+    expect(webFetchResultLine(summarizeWebFetchResult(JSON.stringify({
+      deepseek_fetch_fallback: "HTTP 402: Insufficient Balance",
+      error: "fetch failed: getaddrinfo ENOTFOUND",
+    }))!)).toBe("fetch failed: getaddrinfo ENOTFOUND (DeepSeek fetch: HTTP 402: Insufficient Balance)");
   });
 });

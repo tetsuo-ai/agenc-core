@@ -19,7 +19,9 @@ import { unescapeXml } from "../utils/xml.js";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
+  summarizeWebFetchResult,
   summarizeWebSearchResult,
+  webFetchResultLine,
 } from "./tool-result-routing.js";
 
 // These views render with raw ANSI color literals ("green"/"red") that aren't
@@ -304,6 +306,35 @@ export function WebSearchResultsView({
           <Text dimColor>{`  ${result.url}`}</Text>
         </Box>
       ))}
+    </Box>
+  );
+}
+
+/**
+ * web_fetch result once DeepSeek's fetch was involved: one line naming the
+ * fetch that answered and how much text came back ("42 lines via DeepSeek
+ * fetch"), plus the reason when DeepSeek's fetch fell back to the local one.
+ * Verbose (ctrl+o) adds the page title and URL, then the full result.
+ */
+export function WebFetchResultView({
+  content,
+  verbose = false,
+}: {
+  readonly content: string;
+  readonly verbose?: boolean;
+}): React.ReactElement {
+  const summary = summarizeWebFetchResult(content);
+  if (summary === undefined) {
+    return <ResultLine>{summarizeResultText(content)}</ResultLine>;
+  }
+  const line = webFetchResultLine(summary);
+  if (!verbose) return <ResultLine>{line}</ResultLine>;
+  return (
+    <Box flexDirection="column">
+      <Text>{line}</Text>
+      {summary.title !== undefined ? <Text>{summary.title}</Text> : null}
+      {summary.url !== undefined ? <Text dimColor>{`  ${summary.url}`}</Text> : null}
+      <Text>{content}</Text>
     </Box>
   );
 }
@@ -1032,6 +1063,10 @@ export function createTuiTool(name: string): any {
         case "web-search-view":
           return (
             <WebSearchResultsView content={joined} verbose={options?.verbose ?? false} />
+          );
+        case "web-fetch-view":
+          return (
+            <WebFetchResultView content={joined} verbose={options?.verbose ?? false} />
           );
         case "generic":
         default:

@@ -44,6 +44,8 @@ export const GREP_TOOL_NAME_FOR_DISPATCH = "Grep";
 export const GLOB_TOOL_NAME_FOR_DISPATCH = "Glob";
 /** `runtime/src/bin/model-facing-tools.ts`; its result is a JSON object. */
 export const WEB_SEARCH_TOOL_NAME_FOR_DISPATCH = "WebSearch";
+/** `runtime/src/bin/model-facing-tools.ts`; its result is a JSON object. */
+export const WEB_FETCH_TOOL_NAME_FOR_DISPATCH = "web_fetch";
 
 /** Where the TUI should send a tool result for rendering. */
 export type ToolResultDispatchTarget =
@@ -54,6 +56,7 @@ export type ToolResultDispatchTarget =
   | "grep-matches-view"
   | "glob-paths-view"
   | "web-search-view"
+  | "web-fetch-view"
   | "tool-error-view"
   | "suppress"
   | "generic";
@@ -255,6 +258,13 @@ export function pickToolResultDispatch(
   ) {
     return "web-search-view";
   }
+  // web_fetch: say which fetch answered when DeepSeek's fetch was involved.
+  if (
+    toolName === WEB_FETCH_TOOL_NAME_FOR_DISPATCH &&
+    summarizeWebFetchResult(joinedContent) !== undefined
+  ) {
+    return "web-fetch-view";
+  }
   // TodoWrite success: the boilerplate "Todos have been modified successfully…"
   // body is noise — the todo state is shown from the tool-use INPUT on the call
   // row. Suppress it the same way Edit/Write success bodies are. A failed
@@ -360,6 +370,91 @@ export function summarizeWebSearchResult(
       ? { deepseekFallback: parsed.deepseek_search_fallback }
       : {}),
   };
+}
+
+/**
+ * What a web_fetch result row shows once DeepSeek's fetch was involved: the
+ * fetch that answered, how much text the model got, and why DeepSeek's fetch
+ * was not used when the result fell back. Other web_fetch results keep the
+ * generic row.
+ */
+export interface WebFetchResultSummary {
+  /** "DeepSeek fetch" or "local fetch". */
+  readonly source: string;
+  /** Lines of page text the model got (the extraction when there is one). */
+  readonly lines: number;
+  readonly extracted: boolean;
+  /** The origin status when the local fetch got a failing one. */
+  readonly failedStatus?: number;
+  /** The local fetch's own error, when it failed too. */
+  readonly error?: string;
+  readonly title?: string;
+  readonly url?: string;
+  /** Why DeepSeek's fetch was not used, when the result fell back. */
+  readonly deepseekFallback?: string;
+}
+
+function countLines(value: string): number {
+  const trimmed = value.replace(/\s+$/u, "");
+  return trimmed.length === 0 ? 0 : trimmed.split("\n").length;
+}
+
+/** Parse the live web_fetch tool's JSON result; undefined unless DeepSeek was involved. */
+export function summarizeWebFetchResult(
+  content: string,
+): WebFetchResultSummary | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed)) return undefined;
+  const fromDeepSeek = parsed.source === "deepseek_fetch";
+  const deepseekFallback = typeof parsed.deepseek_fetch_fallback === "string"
+    ? parsed.deepseek_fetch_fallback
+    : undefined;
+  if (!fromDeepSeek && deepseekFallback === undefined) return undefined;
+  const extracted = typeof parsed.extracted === "string";
+  const text = extracted
+    ? (parsed.extracted as string)
+    : typeof parsed.content === "string"
+      ? parsed.content
+      : "";
+  const title = typeof parsed.title === "string" && parsed.title.trim().length > 0
+    ? parsed.title.trim()
+    : undefined;
+  const url = typeof parsed.final_url === "string"
+    ? parsed.final_url
+    : typeof parsed.url === "string"
+      ? parsed.url
+      : undefined;
+  return {
+    source: fromDeepSeek ? "DeepSeek fetch" : "local fetch",
+    lines: countLines(text),
+    extracted,
+    ...(parsed.ok === false && typeof parsed.status === "number"
+      ? { failedStatus: parsed.status }
+      : {}),
+    ...(typeof parsed.error === "string" ? { error: parsed.error } : {}),
+    ...(title !== undefined ? { title } : {}),
+    ...(url !== undefined ? { url } : {}),
+    ...(deepseekFallback !== undefined ? { deepseekFallback } : {}),
+  };
+}
+
+/** The one-line web_fetch row, e.g. "42 lines via DeepSeek fetch". */
+export function webFetchResultLine(summary: WebFetchResultSummary): string {
+  const what = summary.error !== undefined
+    ? summary.error
+    : summary.failedStatus !== undefined
+      ? `HTTP ${summary.failedStatus} via ${summary.source}`
+      : summary.lines === 0
+        ? `no content via ${summary.source}`
+        : `${summary.lines} ${summary.lines === 1 ? "line" : "lines"}${summary.extracted ? " extracted" : ""} via ${summary.source}`;
+  return summary.deepseekFallback === undefined
+    ? what
+    : `${what} (DeepSeek fetch: ${summary.deepseekFallback})`;
 }
 
 export function resultTextForTuiTool(value: unknown): string {
