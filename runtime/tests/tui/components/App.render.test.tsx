@@ -5797,17 +5797,21 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
-  test("persists first-run BYOK provider selection for restarts", async () => {
+  test.each(["local", "remote"])("persists first-run BYOK provider selection with a %s auth backend", async (backendKind) => {
+    const { LocalAuthBackend } = await import("../../auth/backends/local.js");
     const { AgenCTuiApp } = await import("./App.js");
     const savedKeys = new Map<string, string>();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-persist-"));
+    const fallbackSave = vi.spyOn(LocalAuthBackend.prototype, "saveByokKey").mockImplementation(async ({ provider, apiKey }) => {
+      savedKeys.set(provider, apiKey);
+    });
     const session = {
       ...createSession({
-        authBackend: {
+        authBackend: (backendKind === "remote" ? { kind: "remote" } : {
           saveByokKey: async ({ provider, apiKey }: { provider: string; apiKey: string }) => {
             savedKeys.set(provider, apiKey);
           },
-        } as never,
+        }) as never,
         configStore: createAppConfigStore(defaultConfig(), agencHome),
       }),
       setPendingProviderSwitch: vi.fn(),
@@ -5864,6 +5868,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
+      fallbackSave.mockRestore();
       fetchSpy.mockRestore();
       providerProbe.promptSubmits.length = 0;
       if (previousAgencHome === undefined) {
