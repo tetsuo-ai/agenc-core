@@ -2656,6 +2656,31 @@ describe("agenc update CLI", () => {
       expect(out.filter((entry) => entry.startsWith("Daemon restart"))).toEqual([]);
     });
 
+    test("a pinned downgrade asks the restart step to end a pending restart onto a newer build", async () => {
+      const artifact = makeSyntheticArtifact(work);
+      const manifestPath = writeManifest(work, artifact);
+      const currentVersion = "99.0.0";
+      const wrapper = writeInstallShWrapper(
+        binDir,
+        agencHome,
+        join(agencHome, "runtime", currentVersion, LINUX_ARTIFACT_KEY, BIN_REL),
+      );
+      expect(await runAgenCUpdateCli({
+        kind: "update",
+        check: false,
+        json: false,
+        pinVersion: NEW_VERSION,
+        manifestUrl: `file://${manifestPath}`,
+      }, { ...deps!, currentVersion })).toBe(0);
+      expect(restartRequests).toEqual([{
+        wrapperPath: wrapper,
+        agencHome,
+        env: deps!.env,
+        targetVersion: NEW_VERSION,
+        downgrade: true,
+      }]);
+    });
+
     test("--json reports what happened to the daemon", async () => {
       restartOutcome = { status: "deferred", reason: "2 agents working", toVersion: NEW_VERSION, waitUntil: "2026-10-30T00:00:00.000Z" };
       await updateTo({ json: true });
@@ -2766,6 +2791,18 @@ describe("agenc update CLI", () => {
       expect(readFileSync(seen, "utf8")).toBe(
         `daemon restart --when-idle --json|${agencHome}|${realpathSync(agencHome)}\n`,
       );
+    });
+
+    test("passes --downgrade for a pinned downgrade", async () => {
+      const seen = join(work, "seen.txt");
+      const wrapperPath = fakeWrapper([
+        `printf '%s\\n' "$*" > ${JSON.stringify(seen)}`,
+        `echo '{"status":"deferred","reason":"busy","toVersion":"1.0.0"}'`,
+      ].join("\n"));
+      await expect(restartDaemonThroughActivatedWrapper({
+        wrapperPath, agencHome, env: {}, targetVersion: "1.0.0", downgrade: true,
+      })).resolves.toMatchObject({ status: "deferred" });
+      expect(readFileSync(seen, "utf8")).toBe("daemon restart --when-idle --json --downgrade\n");
     });
 
     test("treats a runtime without --when-idle as unable to restart, not as a failure", async () => {

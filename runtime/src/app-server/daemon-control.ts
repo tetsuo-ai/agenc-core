@@ -336,6 +336,8 @@ export type AgenCDaemonCliCommand =
       readonly json: boolean;
       /** Internal: run as the detached waiter that owns this pending restart. */
       readonly waitToken?: string;
+      /** Internal: a pinned downgrade, which ends a pending restart onto a newer build. */
+      readonly downgrade?: boolean;
     }
   | { readonly kind: "install-service" }
   | { readonly kind: "help"; readonly text: string }
@@ -1088,12 +1090,17 @@ function parseDaemonRestartWhenIdleArgs(
   extra: readonly string[],
 ): AgenCDaemonCliCommand {
   let json = false;
+  let downgrade = false;
   let waitToken: string | undefined;
   let requesterPid: number | undefined;
   let requesterAgentId: string | undefined;
   for (let index = 0; index < extra.length; index += 1) {
     const arg = extra[index];
     if (arg === "--when-idle") continue;
+    if (arg === "--downgrade") {
+      downgrade = true;
+      continue;
+    }
     if (arg === "--requester-pid") {
       const value = extra[index + 1];
       const pid = value !== undefined && /^[1-9][0-9]{0,9}$/.test(value) ? Number(value) : Number.NaN;
@@ -1137,6 +1144,7 @@ function parseDaemonRestartWhenIdleArgs(
     ...(waitToken === undefined ? {} : { waitToken }),
     ...(requesterPid === undefined ? {} : { requesterPid }),
     ...(requesterAgentId === undefined ? {} : { requesterAgentId }),
+    ...(downgrade ? { downgrade: true } : {}),
   };
 }
 

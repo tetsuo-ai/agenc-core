@@ -1262,6 +1262,11 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   readonly onlyOlderDaemon?: boolean;
   /** The TUI that asked for the restart, while it runs. */
   readonly requester?: AgenCDaemonRestartRequester;
+  /**
+   * A pinned downgrade (`agenc update --pin` to an older version). It ends a
+   * pending restart onto a newer build instead of leaving that one in place.
+   */
+  readonly downgrade?: boolean;
   /** Runtime roots of this install besides the home's (a Homebrew keg). */
   readonly installRuntimeRoots?: () => readonly string[];
 }
@@ -1650,6 +1655,28 @@ function deferRestartLocked(
   const token = randomUUID();
   const fromVersion = identity.runtimeVersion;
   const toVersion = ctx.build.runtimeVersion;
+  const pending = readAgenCDaemonPendingRestart(ctx.daemonHome);
+  if (pending !== null && ctx.deps.downgrade !== true && pendingRestartIsNewer(pending, ctx.build, now)) {
+    // An update to a newer build already waits for this daemon (an older
+    // updater that was slower to get here). Its restart goes further, so it
+    // stays; this TUI, when it asked, is exempt from it like from its own.
+    const requester = ctx.requester.current;
+    if (requester !== undefined && !requesterIsLive(ctx, pending.requester)) {
+      writeAgenCDaemonPendingRestart(ctx.daemonHome, { ...pending, requester });
+    }
+    logLine(
+      ctx.daemonHome,
+      `kept: a restart onto ${pending.target.runtimeVersion} already waits for the daemon; ${toVersion} is older`,
+      now,
+    );
+    return {
+      status: "deferred",
+      reason,
+      fromVersion,
+      toVersion: pending.target.runtimeVersion,
+      waitUntil: pending.notAfter,
+    };
+  }
   try {
     // Replacing the record ends any earlier waiter at its next check.
     writeAgenCDaemonPendingRestart(ctx.daemonHome, {
@@ -1678,6 +1705,44 @@ function deferRestartLocked(
     };
   }
   return { status: "deferred", reason, fromVersion, toVersion, waitUntil: notAfter };
+}
+
+/** A pending restart, still in time, onto a build newer than `build`. */
+function pendingRestartIsNewer(
+  pending: AgenCDaemonPendingRestart,
+  build: AgenCRuntimeBuild,
+  now: Date,
+): boolean {
+  const notAfter = Date.parse(pending.notAfter);
+  return Number.isFinite(notAfter) && notAfter > now.getTime() &&
+    compareAgenCRuntimeBuilds(pending.target, build) === 1;
+}
+
+function requesterIsLive(ctx: RestartContext, requester: AgenCDaemonRestartRequester | undefined): boolean {
+  if (requester === undefined) return false;
+  try {
+    return ctx.host.isPidRunning(requester.pid);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A pinned downgrade ends a pending restart onto a newer build first, so
+ * that restart's waiting process cannot move the daemon back up later.
+ */
+async function cancelNewerPendingRestart(ctx: RestartContext): Promise<void> {
+  const withLock = ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock;
+  await withLock(ctx.host, async () => {
+    const pending = readAgenCDaemonPendingRestart(ctx.daemonHome);
+    if (pending === null || compareAgenCRuntimeBuilds(pending.target, ctx.build) !== 1) return;
+    removeAgenCDaemonPendingRestartLocked(ctx.daemonHome, pending.token);
+    logLine(
+      ctx.daemonHome,
+      `cancelled: the restart onto ${pending.target.runtimeVersion}, for a downgrade to ${ctx.build.runtimeVersion}`,
+      ctx.now(),
+    );
+  });
 }
 
 /** A daemon the check can never prove idle (too old, no identity). */
@@ -1739,6 +1804,7 @@ export async function restartAgenCDaemonWhenIdle(
   }
   const ctx = restartContext(host, options, deps);
   if (!("host" in ctx)) return ctx;
+  if (deps.downgrade === true) await cancelNewerPendingRestart(ctx);
   const checked = await preflight(ctx);
   if (checked.kind !== "candidate") return preflightOutcome(ctx, checked);
   const verdict = await probeFor(ctx)(checked.identity);
@@ -1882,11 +1948,11 @@ export async function runAgenCDaemonRestartWhenIdleCli(
         ...(command.requesterAgentId === undefined ? {} : { agentId: command.requesterAgentId }),
       };
   try {
-    outcome = await restartAgenCDaemonWhenIdle(
-      host,
-      options,
-      requester === undefined ? deps : { ...deps, requester },
-    );
+    outcome = await restartAgenCDaemonWhenIdle(host, options, {
+      ...deps,
+      ...(requester === undefined ? {} : { requester }),
+      ...(command.downgrade === true ? { downgrade: true } : {}),
+    });
   } catch (error) {
     outcome = { status: "failed", reason: formatCleanupError(error) };
   }

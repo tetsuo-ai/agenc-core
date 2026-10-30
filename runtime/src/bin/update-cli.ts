@@ -3830,6 +3830,11 @@ export interface UpdateDaemonRestartRequest {
   readonly agencHome: string;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly targetVersion: string;
+  /**
+   * A pinned downgrade: the restart ends a pending restart onto a newer
+   * build, which would otherwise move the daemon back up later.
+   */
+  readonly downgrade?: boolean;
 }
 
 /**
@@ -3887,7 +3892,11 @@ export function restartDaemonThroughActivatedWrapper(
       );
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(request.wrapperPath, ["daemon", "restart", "--when-idle", "--json", ...(options.extraArgs ?? [])], {
+      child = spawn(request.wrapperPath, [
+        "daemon", "restart", "--when-idle", "--json",
+        ...(request.downgrade === true ? ["--downgrade"] : []),
+        ...(options.extraArgs ?? []),
+      ], {
         cwd: request.agencHome,
         env: {
           ...userRuntimeEnvironment(request.env as NodeJS.ProcessEnv),
@@ -4364,6 +4373,7 @@ export async function runAgenCUpdateCli(
         agencHome,
         env,
         targetVersion: latestVersion,
+        ...(pinned && semverGt(currentVersion, latestVersion) ? { downgrade: true } : {}),
       });
     } catch (error) {
       return {

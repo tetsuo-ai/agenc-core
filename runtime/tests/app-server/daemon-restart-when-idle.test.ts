@@ -295,6 +295,11 @@ describe("daemon restart --when-idle arguments", () => {
     expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--requester-agent", "conv-abc123"]))
       .toEqual({ kind: "error", message: "daemon restart --requester-agent needs --requester-pid" });
   });
+
+  it("parses the downgrade intent a pinned update passes", () => {
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--json", "--downgrade"]))
+      .toEqual({ kind: "restart-when-idle", json: true, downgrade: true });
+  });
 });
 
 describe("the requester's own conversation", () => {
@@ -865,6 +870,66 @@ describe("restartAgenCDaemonWhenIdle", () => {
     await expect(pending).resolves.toMatchObject({ status: "deferred" });
     expect(lockedWrites).toBe(1);
     expect(readAgenCDaemonPendingRestart(home)).not.toBeNull();
+  });
+
+  describe("a pending restart onto a newer build", () => {
+    const NEWER_BUILD = { runtimeVersion: "9.9.10", commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" };
+    const newerToken = "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab";
+    const publishNewer = (daemon: AgenCDaemonInstanceIdentity): void => {
+      writeAgenCDaemonPendingRestart(home, {
+        schemaVersion: 1,
+        token: newerToken,
+        createdAt: new Date(NOW).toISOString(),
+        notAfter: new Date(NOW + 3_600_000).toISOString(),
+        daemon: { pid: daemon.pid, instanceId: daemon.instanceId },
+        target: NEWER_BUILD,
+      });
+    };
+
+    it("stays when an older update finds the daemon busy after it was published", async () => {
+      const { calls, deps, old } = scenario({ verdicts: [{ idle: false, reason: "1 client attached" }] });
+      const outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, {
+        ...deps,
+        // The newer update publishes while this older one is still in its first check.
+        probe: async (...args) => {
+          publishNewer(old);
+          return deps.probe!(...args);
+        },
+      });
+      expect(outcome).toEqual({
+        status: "deferred",
+        reason: "1 client attached",
+        fromVersion: "9.9.8",
+        toVersion: "9.9.10",
+        waitUntil: new Date(NOW + 3_600_000).toISOString(),
+      });
+      expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD });
+      expect(calls.filter((call) => call.startsWith("waiter:"))).toEqual([]);
+    });
+
+    it("takes on the requesting TUI of the older update, so its own attachments do not hold it up", async () => {
+      const { deps, old } = scenario({ verdicts: [{ idle: false, reason: "1 client attached" }] });
+      publishNewer(old);
+      const requester = { pid: 4321, agentId: "conv-mine" };
+      await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...deps, requester }))
+        .resolves.toMatchObject({ status: "deferred", toVersion: "9.9.10" });
+      expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD, requester });
+    });
+
+    it("ends for a pinned downgrade, which restarts now or waits with its own record", async () => {
+      const idle = scenario();
+      publishNewer(idle.old);
+      await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...idle.deps, downgrade: true }))
+        .resolves.toMatchObject({ status: "restarted", toVersion: "9.9.9" });
+      // Its waiting process leaves at its next check instead of moving the daemon back up.
+      expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+
+      const busy = scenario({ verdicts: [{ idle: false, reason: "1 client attached" }] });
+      publishNewer(busy.old);
+      await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...busy.deps, downgrade: true }))
+        .resolves.toMatchObject({ status: "deferred", toVersion: "9.9.9" });
+      expect(readAgenCDaemonPendingRestart(home)?.target).toEqual(NEW_BUILD);
+    });
   });
 
   it("passes a live requester to every check and keeps it in the pending record", async () => {

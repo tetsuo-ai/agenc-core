@@ -273,7 +273,11 @@ so waiting processes never pile up: the record is replaced and removed under
 the same lock as the final decision, and a waiting process checks that the
 record is still its own right before that decision. Before it starts its
 runtime it checks again under that lock, and holds the lock until the new
-daemon is spawned. It
+daemon is spawned. An update older than the build a pending restart targets
+leaves that record in place and reports the newer target, because that
+restart goes further. A pinned downgrade (`agenc update --pin` to an older
+version) ends such a record instead, so its waiting process cannot move the
+daemon back up later. A waiting process
 also ends when the daemon stopped, or was replaced by a daemon at least as new
 as its own version (for example by a newer `agenc` whose build check
 restarted it). A replacement that is still older, such as an earlier waiting
