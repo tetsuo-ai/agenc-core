@@ -16,8 +16,8 @@
  * @module
  */
 
-import type { SetToolJSXFn } from "../tools/Tool.js";
 import type { Session } from "../session/session.js";
+import type { SetToolJSXFn } from "../tools/Tool.js";
 import type { ConfigStore } from "../config/store.js";
 import type { AdmissionUsageSummary } from "../budget/admission-types.js";
 
