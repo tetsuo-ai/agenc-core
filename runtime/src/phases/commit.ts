@@ -140,6 +140,12 @@ function emitSavedMemoryNotice(
 
 interface CommitOptions {
   readonly querySource?: string;
+  /**
+   * The turn ends with a bounded stop that no further work can lift (shell
+   * tools are refused while unified exec is paused). Stop hooks still run,
+   * but a block neither injects its request nor re-enters the turn.
+   */
+  readonly boundedStop?: boolean;
 }
 
 function querySourceForCommit(
@@ -502,7 +508,11 @@ export async function commit(
       querySourceForCommit(session, options),
     );
     const result = await evaluateStopHooks(state, ctx, session, signal);
-    if (result.blocking) {
+    if (result.blocking && options.boundedStop === true) {
+      // The work the hook asks for cannot run while the stop holds; ending
+      // the turn with its reason takes precedence over the hook's request.
+      state.stopHookActive = false;
+    } else if (result.blocking) {
       if (state.stopHookBlockingCount >= MAX_STOP_HOOK_BLOCKS) {
         // I-17: stop-hook recursion cap tripped. Surface as an error
         // event + force-terminate with the blocking reason.

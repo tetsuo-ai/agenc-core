@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
 import type { LLMResponse } from "../../src/llm/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
+import type { StopHookHandler } from "../../src/phases/stop-hooks.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
@@ -109,82 +110,155 @@ function warnings(events: readonly Event[], cause: string) {
   );
 }
 
+const USAGE = { promptTokens: 10, completionTokens: 1, totalTokens: 11 };
+
+function toolCallResponse(id: string, name: string, args: Record<string, unknown>, content: string): LLMResponse {
+  return { content, toolCalls: [{ id, name, arguments: JSON.stringify(args) }], usage: USAGE, model: "test-model", finishReason: "tool_calls" };
+}
+
+function textResponse(content: string): LLMResponse {
+  return { content, toolCalls: [], usage: USAGE, model: "test-model", finishReason: "stop" };
+}
+
+/** The real exec_command over a paused manager, as the registry's only tool. */
+function execCommandRegistry(manager: UnifiedExecProcessManager, cwd: string, calls: string[]): ToolRegistry {
+  const execTool = bindExplicitDangerBoundary(createExecCommandTool({ unifiedExecManager: manager, cwd }));
+  const shell = {
+    name: "exec_command",
+    description: "Run a shell command",
+    inputSchema: { type: "object" },
+    recoveryCategory: "side-effecting",
+    execute: async (args: Record<string, unknown>) => {
+      calls.push(String(args.cmd));
+      return execTool.execute(args);
+    },
+  };
+  return { tools: [shell], toLLMTools: () => [], dispatch: shell.execute } as unknown as ToolRegistry;
+}
+
+/**
+ * A code-mode `exec` tool whose script, `try { await tools.list_processes() }
+ * catch (error) { text("caught") }`, is played synchronously: it calls the
+ * real list_processes tool over the paused manager and catches the refusal.
+ */
+function catchingCodeModeRegistry(manager: UnifiedExecProcessManager) {
+  const listProcesses = createListProcessesTool({ unifiedExecManager: manager });
+  const caught: string[] = [];
+  let nestedCalls = 0;
+  let host: CodeModeTurnHost | undefined;
+  const service: CodeModeService = {
+    enabled: () => true,
+    storedValues: async () => ({}),
+    replaceStoredValues: async () => {},
+    allocateCellId: () => "1",
+    async execute(request) {
+      try {
+        await host!.invokeTool({
+          cellId: request.cellId,
+          runtimeToolCallId: `nested-${nestedCalls}`,
+          toolName: "list_processes",
+          input: {},
+        }, new AbortController().signal);
+      } catch (error) {
+        caught.push(error instanceof Error ? error.message : String(error));
+      }
+      return {
+        type: "result",
+        cellId: request.cellId,
+        contentItems: [{ type: "input_text", text: "caught" }],
+        storedValues: {},
+        durationMs: 1,
+      };
+    },
+    wait: async (request) => ({ type: "terminated", cellId: request.cellId, contentItems: [], durationMs: 0 }),
+    startTurnWorker(next) {
+      host = next;
+      return { dispose: () => { if (host === next) host = undefined; } };
+    },
+  };
+  const [codeExec] = createCodeModeTools({ service, getEnabledTools: () => [listProcesses] });
+  const registry = {
+    tools: [codeExec],
+    toLLMTools: () => [],
+    dispatch: async () => ({ content: "", isError: false }),
+    dispatchCodeModeNestedTool: async (call: { readonly input?: unknown }) => {
+      nestedCalls += 1;
+      return listProcesses.execute((call.input ?? {}) as Record<string, unknown>);
+    },
+  } as unknown as ToolRegistry;
+  return { registry, service, caught, nestedCalls: () => nestedCalls };
+}
+
+/** A Stop hook that blocks once and asks for more work, as a check-running hook does. */
+function blockingOnceStopHook() {
+  let calls = 0;
+  const handler: StopHookHandler = {
+    name: "run-checks",
+    run: () => {
+      calls += 1;
+      return calls === 1
+        ? { shouldStop: false, shouldBlock: true, blockReason: "checks not run", continuationFragments: ["Run the checks first."] }
+        : { shouldStop: true, shouldBlock: false, continuationFragments: [] };
+    },
+  };
+  return { hooks: { executeStop: async () => ({}), stopHooks: [handler] }, calls: () => calls };
+}
+
+async function runToEnd(
+  made: ReturnType<typeof bypassSession>,
+  prompt: string,
+): Promise<PhaseEvent[]> {
+  const phases: PhaseEvent[] = [];
+  for await (const phase of runTurn(made.session, made.ctx, prompt)) phases.push(phase);
+  return phases;
+}
+
+function expectExecUnavailableEnd(phases: readonly PhaseEvent[], events: readonly Event[]): void {
+  expect(phases.at(-1)).toMatchObject({ stopReason: "exec_unavailable" });
+  expect(terminals(events)).toEqual([
+    expect.objectContaining({ outcome: "errored", failureCode: "exec_unavailable" }),
+  ]);
+  expect(warnings(events, "exec_unavailable")).toHaveLength(1);
+}
+
 describe("exec_unavailable ends the turn", () => {
   test("a model that keeps trying shell commands is stopped at the first refusal", async () => {
     root = mkdtempSync(join(tmpdir(), "exec-unavailable-turn-"));
     const closed = await closedManager(root);
     try {
-      const execTool = bindExplicitDangerBoundary(
-        createExecCommandTool({ unifiedExecManager: closed.manager, cwd: root }),
-      );
-      let samples = 0;
       const shellCalls: string[] = [];
+      let samples = 0;
       const provider = mkProvider();
       provider.chatStream = async (): Promise<LLMResponse> => {
         samples += 1;
-        const wantsTool = samples <= 20;
-        return {
-          content: wantsTool ? "Let me try another command." : "finished",
-          toolCalls: wantsTool
-            ? [{
-                id: `call-${samples}`,
-                name: "exec_command",
-                // Different every time, as the model did: the exact-repeat
-                // backstop never sees an identical call.
-                arguments: JSON.stringify({ cmd: `ls -la attempt-${samples}` }),
-              }]
-            : [],
-          usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
-          model: "test-model",
-          finishReason: wantsTool ? "tool_calls" : "stop",
-        };
+        // Different every time, as the model did: the exact-repeat backstop
+        // never sees an identical call.
+        return samples <= 20
+          ? toolCallResponse(`call-${samples}`, "exec_command", { cmd: `ls -la attempt-${samples}` }, "Let me try another command.")
+          : textResponse("finished");
       };
-      const shell = {
-        name: "exec_command",
-        description: "Run a shell command",
-        inputSchema: { type: "object" },
-        recoveryCategory: "side-effecting",
-        execute: async (args: Record<string, unknown>) => {
-          shellCalls.push(String(args.cmd));
-          return execTool.execute(args);
-        },
-      };
-      const registry = {
-        tools: [shell],
-        toLLMTools: () => [],
-        dispatch: shell.execute,
-      } as unknown as ToolRegistry;
-      const { session, events, state, ctx } = bypassSession(provider, registry);
-
-      const phases: PhaseEvent[] = [];
-      for await (const phase of runTurn(session, ctx, "Build the site and check it with the shell.")) {
-        phases.push(phase);
-      }
+      const made = bypassSession(provider, execCommandRegistry(closed.manager, root, shellCalls));
+      const phases = await runToEnd(made, "Build the site and check it with the shell.");
 
       // One sample and one refused call: no second chance to loop.
       expect(samples).toBe(1);
       expect(shellCalls).toEqual(["ls -la attempt-1"]);
-      const results = events.flatMap((event) =>
+      const results = made.events.flatMap((event) =>
         event.msg.type === "tool_call_completed" ? [String(event.msg.payload.result)] : [],
       );
       expect(results).toHaveLength(1);
       expect(results[0]).toContain('"code":"exec_unavailable"');
       expect(results[0]).toContain("Do not call exec_command");
-
-      expect(phases.at(-1)).toMatchObject({ stopReason: "exec_unavailable" });
-      expect(terminals(events)).toEqual([
-        expect.objectContaining({ outcome: "errored", failureCode: "exec_unavailable" }),
-      ]);
+      expectExecUnavailableEnd(phases, made.events);
       // The user sees why, and what to do, as the turn's last words.
-      const [warning, ...rest] = warnings(events, "exec_unavailable");
-      expect(rest).toEqual([]);
+      const [warning] = warnings(made.events, "exec_unavailable");
       expect(warning?.msg.payload).toMatchObject({
         message: expect.stringContaining("Shell commands are disabled for the rest of this session."),
       });
       expect(JSON.stringify(warning?.msg.payload)).toContain("Start a new session to run shell commands.");
-      const lastAssistant = [...state.history].reverse().find((message) => message.role === "assistant");
+      const lastAssistant = [...made.state.history].reverse().find((message) => message.role === "assistant");
       expect(String(lastAssistant?.content)).toContain("Shell commands are disabled for the rest of this session.");
-      expect(warnings(events, "no_progress_detected")).toEqual([]);
+      expect(warnings(made.events, "no_progress_detected")).toEqual([]);
     } finally {
       await closed.dispose();
     }
@@ -194,91 +268,27 @@ describe("exec_unavailable ends the turn", () => {
     root = mkdtempSync(join(tmpdir(), "exec-unavailable-code-mode-"));
     const closed = await closedManager(root);
     try {
-      const listProcesses = createListProcessesTool({ unifiedExecManager: closed.manager });
-      let nestedCalls = 0;
-      const caught: string[] = [];
-      let host: CodeModeTurnHost | undefined;
-      // Runs the script `try { await tools.list_processes() } catch (error) { text("caught") }`.
-      const service: CodeModeService = {
-        enabled: () => true,
-        storedValues: async () => ({}),
-        replaceStoredValues: async () => {},
-        allocateCellId: () => "1",
-        async execute(request) {
-          try {
-            await host!.invokeTool({
-              cellId: request.cellId,
-              runtimeToolCallId: `nested-${nestedCalls}`,
-              toolName: "list_processes",
-              input: {},
-            }, new AbortController().signal);
-          } catch (error) {
-            caught.push(error instanceof Error ? error.message : String(error));
-          }
-          return {
-            type: "result",
-            cellId: request.cellId,
-            contentItems: [{ type: "input_text", text: "caught" }],
-            storedValues: {},
-            durationMs: 1,
-          };
-        },
-        wait: async (request) => ({ type: "terminated", cellId: request.cellId, contentItems: [], durationMs: 0 }),
-        startTurnWorker(next) {
-          host = next;
-          return { dispose: () => { if (host === next) host = undefined; } };
-        },
-      };
-      const [codeExec] = createCodeModeTools({ service, getEnabledTools: () => [listProcesses] });
+      const codeMode = catchingCodeModeRegistry(closed.manager);
       let samples = 0;
       const provider = mkProvider();
       provider.chatStream = async (): Promise<LLMResponse> => {
         samples += 1;
-        const wantsTool = samples <= 20;
-        return {
-          content: wantsTool ? "Let me check the processes from a script." : "finished",
-          toolCalls: wantsTool
-            ? [{
-                id: `call-${samples}`,
-                name: "exec",
-                arguments: JSON.stringify({
-                  code: `try { await tools.list_processes() } catch (error) { text("caught ${samples}") }`,
-                }),
-              }]
-            : [],
-          usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
-          model: "test-model",
-          finishReason: wantsTool ? "tool_calls" : "stop",
-        };
+        return samples <= 20
+          ? toolCallResponse(`call-${samples}`, "exec", {
+              code: `try { await tools.list_processes() } catch (error) { text("caught ${samples}") }`,
+            }, "Let me check the processes from a script.")
+          : textResponse("finished");
       };
-      const registry = {
-        tools: [codeExec],
-        toLLMTools: () => [],
-        dispatch: async () => ({ content: "", isError: false }),
-        dispatchCodeModeNestedTool: async (call: { readonly input?: unknown }) => {
-          nestedCalls += 1;
-          return listProcesses.execute((call.input ?? {}) as Record<string, unknown>);
-        },
-      } as unknown as ToolRegistry;
-      const { session, events, ctx } = bypassSession(provider, registry, { codeModeService: service });
-
-      const phases: PhaseEvent[] = [];
-      for await (const phase of runTurn(session, ctx, "Check the processes with a script.")) {
-        phases.push(phase);
-      }
+      const made = bypassSession(provider, codeMode.registry, { codeModeService: codeMode.service });
+      const phases = await runToEnd(made, "Check the processes with a script.");
 
       // The script caught the refusal and finished; the turn still ended.
-      expect(caught).toHaveLength(1);
-      expect(caught[0]).toContain('"code":"exec_unavailable"');
+      expect(codeMode.caught).toHaveLength(1);
+      expect(codeMode.caught[0]).toContain('"code":"exec_unavailable"');
       expect(samples).toBe(1);
-      expect(nestedCalls).toBe(1);
-      expect(phases.at(-1)).toMatchObject({ stopReason: "exec_unavailable" });
-      expect(terminals(events)).toEqual([
-        expect.objectContaining({ outcome: "errored", failureCode: "exec_unavailable" }),
-      ]);
-      const [warning, ...rest] = warnings(events, "exec_unavailable");
-      expect(rest).toEqual([]);
-      expect(warning?.msg.payload).toMatchObject({
+      expect(codeMode.nestedCalls()).toBe(1);
+      expectExecUnavailableEnd(phases, made.events);
+      expect(warnings(made.events, "exec_unavailable")[0]?.msg.payload).toMatchObject({
         message: expect.stringContaining("Shell commands are disabled for the rest of this session."),
       });
     } finally {
@@ -286,81 +296,109 @@ describe("exec_unavailable ends the turn", () => {
     }
   });
 
-  test("a refusal that reaches a yielded code-mode script ends the turn when the next answer calls no tool", async () => {
-    root = mkdtempSync(join(tmpdir(), "exec-unavailable-yielded-"));
-    const closed = await closedManager(root);
-    const service = new QuickJsCodeModeService({ enabled: true });
-    try {
-      expect(service.enabled()).toBe(true);
-      const listProcesses = createListProcessesTool({ unifiedExecManager: closed.manager });
-      let nestedCalls = 0;
-      let markRefused!: () => void;
-      const refused = new Promise<void>((resolve) => { markRefused = resolve; });
-      const [codeExec] = createCodeModeTools({ service, getEnabledTools: () => [listProcesses] });
-      let samples = 0;
-      const provider = mkProvider();
-      provider.chatStream = async (): Promise<LLMResponse> => {
-        samples += 1;
-        const usage = { promptTokens: 10, completionTokens: 1, totalTokens: 11 };
-        if (samples === 1) {
-          return {
-            content: "Starting a background check.",
-            toolCalls: [{
-              id: "call-1",
-              name: "exec",
-              arguments: JSON.stringify({
-                code: [
-                  '// @exec: {"yield_time_ms": 10}',
-                  "await new Promise((resolve) => setTimeout(resolve, 300));",
-                  'try { await tools.list_processes({}); } catch (error) { text("caught"); }',
-                ].join("\n"),
-              }),
-            }],
-            usage,
-            model: "test-model",
-            finishReason: "tool_calls",
-          };
-        }
-        // The exec call yielded; the script's call is refused while this answer
-        // is being written, and the answer calls no tool.
-        await Promise.race([refused, delay(10_000)]);
-        await delay(50);
-        return { content: "The check keeps running in the background.", toolCalls: [], usage, model: "test-model", finishReason: "stop" };
-      };
-      const registry = {
-        tools: [codeExec],
-        toLLMTools: () => [],
-        dispatch: async () => ({ content: "", isError: false }),
-        dispatchCodeModeNestedTool: async (call: { readonly input?: unknown }) => {
-          nestedCalls += 1;
-          const result = await listProcesses.execute((call.input ?? {}) as Record<string, unknown>);
-          markRefused();
-          return result;
-        },
-      } as unknown as ToolRegistry;
-      const { session, events, ctx } = bypassSession(provider, registry, { codeModeService: service });
+  test.each(["exec_command", "a code-mode script"] as const)(
+    "a blocking Stop hook cannot send the turn back to work after %s is refused",
+    async (kind) => {
+      root = mkdtempSync(join(tmpdir(), "exec-unavailable-stop-hook-"));
+      const closed = await closedManager(root);
+      try {
+        const hook = blockingOnceStopHook();
+        const codeMode = kind === "exec_command" ? undefined : catchingCodeModeRegistry(closed.manager);
+        let samples = 0;
+        const provider = mkProvider();
+        provider.chatStream = async (): Promise<LLMResponse> => {
+          samples += 1;
+          if (samples > 1) return textResponse("Done.");
+          return codeMode === undefined
+            ? toolCallResponse("call-1", "exec_command", { cmd: "ls -la" }, "Checking the build.")
+            : toolCallResponse("call-1", "exec", {
+                code: 'try { await tools.list_processes() } catch (error) { text("caught") }',
+              }, "Checking from a script.");
+        };
+        const made = bypassSession(provider, codeMode?.registry ?? execCommandRegistry(closed.manager, root, []), {
+          hooks: hook.hooks,
+          ...(codeMode !== undefined ? { codeModeService: codeMode.service } : {}),
+        });
+        const phases = await runToEnd(made, "Build the site and run the checks.");
 
-      const phases: PhaseEvent[] = [];
-      for await (const phase of runTurn(session, ctx, "Start the background check.")) {
-        phases.push(phase);
+        // The hook ran once. Its request for more work neither re-entered the
+        // turn nor reached the history, and the turn ended with the reason.
+        expect(hook.calls()).toBe(1);
+        expect(samples).toBe(1);
+        expectExecUnavailableEnd(phases, made.events);
+        expect(JSON.stringify(made.state.history)).not.toContain("Run the checks first.");
+      } finally {
+        await closed.dispose();
       }
+    },
+  );
 
-      expect(nestedCalls).toBe(1);
-      expect(samples).toBe(2);
-      const results = events.flatMap((event) =>
-        event.msg.type === "tool_call_completed" ? [String(event.msg.payload.result)] : [],
-      );
-      // The exec call itself only yielded; the refusal came after it.
-      expect(results).toHaveLength(1);
-      expect(results[0]).toContain("status=yielded");
-      expect(phases.at(-1)).toMatchObject({ stopReason: "exec_unavailable" });
-      expect(terminals(events)).toEqual([
-        expect.objectContaining({ outcome: "errored", failureCode: "exec_unavailable" }),
-      ]);
-      expect(warnings(events, "exec_unavailable")).toHaveLength(1);
-    } finally {
-      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
-      await closed.dispose();
-    }
-  }, 20_000);
+  test.each([["without", false], ["with", true]] as const)(
+    "a refusal that reaches a yielded code-mode script ends the turn when the next answer calls no tool (%s a blocking Stop hook)",
+    async (_label, withHook) => {
+      root = mkdtempSync(join(tmpdir(), "exec-unavailable-yielded-"));
+      const closed = await closedManager(root);
+      const service = new QuickJsCodeModeService({ enabled: true });
+      try {
+        expect(service.enabled()).toBe(true);
+        const hook = blockingOnceStopHook();
+        const listProcesses = createListProcessesTool({ unifiedExecManager: closed.manager });
+        let nestedCalls = 0;
+        let markRefused!: () => void;
+        const refused = new Promise<void>((resolve) => { markRefused = resolve; });
+        const [codeExec] = createCodeModeTools({ service, getEnabledTools: () => [listProcesses] });
+        let samples = 0;
+        const provider = mkProvider();
+        provider.chatStream = async (): Promise<LLMResponse> => {
+          samples += 1;
+          if (samples === 1) {
+            return toolCallResponse("call-1", "exec", {
+              code: [
+                '// @exec: {"yield_time_ms": 10}',
+                "await new Promise((resolve) => setTimeout(resolve, 300));",
+                'try { await tools.list_processes({}); } catch (error) { text("caught"); }',
+              ].join("\n"),
+            }, "Starting a background check.");
+          }
+          // The exec call yielded; the script's call is refused while this
+          // answer is being written, and the answer calls no tool.
+          await Promise.race([refused, delay(10_000)]);
+          await delay(50);
+          return textResponse("The check keeps running in the background.");
+        };
+        const registry = {
+          tools: [codeExec],
+          toLLMTools: () => [],
+          dispatch: async () => ({ content: "", isError: false }),
+          dispatchCodeModeNestedTool: async (call: { readonly input?: unknown }) => {
+            nestedCalls += 1;
+            const result = await listProcesses.execute((call.input ?? {}) as Record<string, unknown>);
+            markRefused();
+            return result;
+          },
+        } as unknown as ToolRegistry;
+        const made = bypassSession(provider, registry, {
+          codeModeService: service,
+          ...(withHook ? { hooks: hook.hooks } : {}),
+        });
+        const phases = await runToEnd(made, "Start the background check.");
+
+        expect(nestedCalls).toBe(1);
+        expect(samples).toBe(2);
+        const results = made.events.flatMap((event) =>
+          event.msg.type === "tool_call_completed" ? [String(event.msg.payload.result)] : [],
+        );
+        // The exec call itself only yielded; the refusal came after it.
+        expect(results).toHaveLength(1);
+        expect(results[0]).toContain("status=yielded");
+        expectExecUnavailableEnd(phases, made.events);
+        expect(hook.calls()).toBe(withHook ? 1 : 0);
+        expect(JSON.stringify(made.state.history)).not.toContain("Run the checks first.");
+      } finally {
+        await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+        await closed.dispose();
+      }
+    },
+    20_000,
+  );
 });

@@ -4126,22 +4126,27 @@ async function* runTurnKernelInner(
         state.completionGateFinalAnswer = undefined;
       }
       state.completionGateFinalAnswerRequested = false;
+      // A shell refusal inside a code-mode script that yielded earlier can
+      // arrive while this answer was sampled, with no tool batch left to take
+      // it. The turn ends as that stop rather than as a completed answer (the
+      // next turn would otherwise start without it), and a Stop hook cannot
+      // send it back to work.
+      let nestedExecStop = takeCodeModeNestedStop(session);
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
+        ...(nestedExecStop !== undefined ? { boundedStop: true } : {}),
       });
       await syncSessionState();
+      // It may also have landed while commit awaited.
+      nestedExecStop ??= takeCodeModeNestedStop(session);
       // commit may set a stop-hook transition (I-17). If so, re-enter.
-      if (state.transition !== undefined) {
+      if (state.transition !== undefined && nestedExecStop === undefined) {
         clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }
-      // A shell refusal inside a code-mode script that yielded earlier can
-      // arrive while this answer was sampled, with no tool batch left to take
-      // it. The turn ends as that stop rather than as a completed answer; the
-      // next turn would otherwise start without it.
-      const nestedExecStop = takeCodeModeNestedStop(session);
       if (nestedExecStop !== undefined) {
+        state.transition = undefined;
         recordBoundedStopExplanation(state, session, "exec_unavailable", nestedExecStop);
         lastContent = nestedExecStop;
         await syncSessionState();
@@ -4322,7 +4327,12 @@ async function* runTurnKernelInner(
       }
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
+        // A refused shell call ends the turn: a Stop hook asking for more
+        // work cannot send it back, since every shell call would be refused.
+        ...(state.execUnavailableStop !== undefined ? { boundedStop: true } : {}),
       });
+      // Nor does any other continuation outrank that stop.
+      if (state.execUnavailableStop !== undefined) state.transition = undefined;
       // A tool-phase guard that found the turn going nowhere (one call
       // failing the same way over and over) ends it as the behavioral
       // backstop would: the explanation goes into the transcript and the
