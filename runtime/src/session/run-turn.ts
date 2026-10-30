@@ -75,7 +75,10 @@ import {
   LEDGER_WALLET_CLI_ROUTING_GUIDANCE,
 } from "../elicitation/ledger-wallet-cli.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
-import { takeCodeModeNestedStop } from "../tools/code-mode/nested-stop.js";
+import {
+  hasCodeModeNestedStop,
+  takeCodeModeNestedStop,
+} from "../tools/code-mode/nested-stop.js";
 import {
   APPROVAL_DENIED_ABORT_REASON,
   createTurnFailedEvent,
@@ -4127,26 +4130,28 @@ async function* runTurnKernelInner(
       }
       state.completionGateFinalAnswerRequested = false;
       // A shell refusal inside a code-mode script that yielded earlier can
-      // arrive while this answer was sampled, with no tool batch left to take
-      // it. The turn ends as that stop rather than as a completed answer (the
-      // next turn would otherwise start without it), and a Stop hook cannot
-      // send it back to work.
-      let nestedExecStop = takeCodeModeNestedStop(session);
+      // arrive while this answer was sampled or while a Stop hook runs, with
+      // no tool batch left to take it. The turn ends as that stop rather than
+      // as a completed answer (the next turn would otherwise start without
+      // it). commit looks for it once the hooks have answered, so a hook
+      // cannot send the turn back to work and its request stays out of the
+      // history.
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
-        ...(nestedExecStop !== undefined ? { boundedStop: true } : {}),
+        boundedStop: () => hasCodeModeNestedStop(session),
       });
       await syncSessionState();
-      // It may also have landed while commit awaited.
-      nestedExecStop ??= takeCodeModeNestedStop(session);
-      // commit may set a stop-hook transition (I-17). If so, re-enter.
-      if (state.transition !== undefined && nestedExecStop === undefined) {
+      // commit may set a stop-hook transition (I-17). If so, re-enter: the
+      // hook answered before any refusal and its request is in the history,
+      // so the model gets it. A refusal that came later is the next
+      // iteration's to take.
+      if (state.transition !== undefined) {
         clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }
+      const nestedExecStop = takeCodeModeNestedStop(session);
       if (nestedExecStop !== undefined) {
-        state.transition = undefined;
         recordBoundedStopExplanation(state, session, "exec_unavailable", nestedExecStop);
         lastContent = nestedExecStop;
         await syncSessionState();
@@ -4329,8 +4334,17 @@ async function* runTurnKernelInner(
         querySource: turnQuerySource,
         // A refused shell call ends the turn: a Stop hook asking for more
         // work cannot send it back, since every shell call would be refused.
-        ...(state.execUnavailableStop !== undefined ? { boundedStop: true } : {}),
+        // commit reads this once the hooks have answered, so a refusal that a
+        // yielded code-mode script meets while they run counts too.
+        boundedStop: () =>
+          state.execUnavailableStop !== undefined || hasCodeModeNestedStop(session),
       });
+      // Such a refusal ends this turn, unless a hook that answered before it
+      // sent the turn back to work; the next iteration takes it then.
+      if (state.transition === undefined) {
+        const lateExecStop = takeCodeModeNestedStop(session);
+        if (lateExecStop !== undefined) state.execUnavailableStop ??= { explanation: lateExecStop };
+      }
       // Nor does any other continuation outrank that stop.
       if (state.execUnavailableStop !== undefined) state.transition = undefined;
       // A tool-phase guard that found the turn going nowhere (one call

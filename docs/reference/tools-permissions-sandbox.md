@@ -303,7 +303,10 @@ after it, cleanup is unproven and the session's shell tools (`exec_command`,
 `write_stdin`, `Monitor`, `kill_process`, `list_processes`) are refused with
 `exec_unavailable`. The first refused call ends the turn with the bounded stop
 `exec_unavailable`; its message names the command, its session id and the
-pid still running, and says what to do. Before the next shell command AgenC
+pid still running, and says what to do. A call from a code-mode script ends
+the turn the same way, even when the script catches the error or runs on
+after `exec` yielded. A Stop hook that asks for more work does not override
+that stop. Before the next shell command AgenC
 runs the same cleanup proof again; once every recorded process is gone,
 commands run again and the transcript says so. It never resumes while a
 recorded process may still be alive. A failure no later proof can clear (a

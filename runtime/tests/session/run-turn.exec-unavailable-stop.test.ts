@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
 import type { LLMResponse } from "../../src/llm/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
-import type { StopHookHandler } from "../../src/phases/stop-hooks.js";
+import type { StopHookHandler, StopHookOutcome } from "../../src/phases/stop-hooks.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
@@ -17,6 +17,7 @@ import { createCodeModeTools } from "../../src/tools/code-mode/tools.js";
 import type { CodeModeService, CodeModeTurnHost } from "../../src/tools/code-mode/types.js";
 import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
 import { createListProcessesTool } from "../../src/tools/system/list-processes.js";
+import type { Tool } from "../../src/tools/types.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 import { mkCtx, mkProvider, mkSession } from "../fixtures.js";
@@ -189,19 +190,87 @@ function catchingCodeModeRegistry(manager: UnifiedExecProcessManager) {
   return { registry, service, caught, nestedCalls: () => nestedCalls };
 }
 
-/** A Stop hook that blocks once and asks for more work, as a check-running hook does. */
-function blockingOnceStopHook() {
+const HOOK_REQUEST = "Run the checks first.";
+
+/**
+ * A Stop hook that blocks once and asks for more work, as a check-running
+ * hook does. `whileRunning` runs inside that first run before the hook
+ * answers, so what it waits for happens while the hook is awaited.
+ */
+function blockingOnceStopHook(whileRunning?: () => Promise<void>) {
   let calls = 0;
+  const block: StopHookOutcome = {
+    shouldStop: false,
+    shouldBlock: true,
+    blockReason: "checks not run",
+    continuationFragments: [HOOK_REQUEST],
+  };
   const handler: StopHookHandler = {
     name: "run-checks",
     run: () => {
       calls += 1;
-      return calls === 1
-        ? { shouldStop: false, shouldBlock: true, blockReason: "checks not run", continuationFragments: ["Run the checks first."] }
-        : { shouldStop: true, shouldBlock: false, continuationFragments: [] };
+      if (calls > 1) return { shouldStop: true, shouldBlock: false, continuationFragments: [] };
+      return whileRunning === undefined ? block : whileRunning().then(() => block);
     },
   };
   return { hooks: { executeStop: async () => ({}), stopHooks: [handler] }, calls: () => calls };
+}
+
+/**
+ * A background check, run by the real QuickJS service: `exec` yields at once
+ * while the script waits in `hold`. `deliverRefusal()` lets it go on to the
+ * real list_processes over the paused manager and resolves true once the
+ * script has caught that refusal and called `finished`. The turn host records
+ * the stop before the script sees the error, so it is pending by then.
+ */
+const HELD_SCRIPT = [
+  '// @exec: {"yield_time_ms": 10}',
+  "await tools.hold({});",
+  'try { await tools.list_processes({}); } catch (error) { text("caught"); }',
+  "await tools.finished({});",
+].join("\n");
+
+function heldScript(
+  manager: UnifiedExecProcessManager,
+  service: QuickJsCodeModeService,
+  otherTools: readonly Tool[] = [],
+) {
+  const listProcesses = createListProcessesTool({ unifiedExecManager: manager });
+  const step = (name: string) => ({
+    name,
+    description: `Test step: ${name}.`,
+    inputSchema: { type: "object", properties: {} },
+    execute: async () => ({ content: "{}" }),
+  }) as unknown as Tool;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let markFinished!: () => void;
+  const finished = new Promise<void>((resolve) => { markFinished = resolve; });
+  const nested: string[] = [];
+  const [codeExec] = createCodeModeTools({
+    service,
+    getEnabledTools: () => [step("hold"), listProcesses, step("finished")],
+  });
+  const tools = [codeExec!, ...otherTools];
+  const registry = {
+    tools,
+    toLLMTools: () => [],
+    dispatch: async (call: { readonly name: string; readonly arguments: string }) =>
+      tools.find((tool) => tool.name === call.name)!.execute(JSON.parse(call.arguments) as Record<string, unknown>),
+    dispatchCodeModeNestedTool: async (call: { readonly name: string; readonly input?: unknown }) => {
+      nested.push(call.name);
+      if (call.name === "hold") await released;
+      if (call.name === "finished") markFinished();
+      return call.name === "list_processes"
+        ? listProcesses.execute((call.input ?? {}) as Record<string, unknown>)
+        : { content: "{}" };
+    },
+  } as unknown as ToolRegistry;
+  const deliverRefusal = async (): Promise<boolean> => {
+    release();
+    return Promise.race([finished.then(() => true), delay(10_000).then(() => false)]);
+  };
+  return { registry, nested, deliverRefusal };
 }
 
 async function runToEnd(
@@ -401,4 +470,142 @@ describe("exec_unavailable ends the turn", () => {
     },
     20_000,
   );
+
+  test("a refusal that lands while a blocking Stop hook is awaited ends the turn, and the hook's request stays out of the history", async () => {
+    root = mkdtempSync(join(tmpdir(), "exec-unavailable-during-hook-"));
+    const closed = await closedManager(root);
+    const service = new QuickJsCodeModeService({ enabled: true });
+    try {
+      expect(service.enabled()).toBe(true);
+      const held = heldScript(closed.manager, service);
+      let refusedWhileAwaited = false;
+      // The hook lets the held script meet its refusal and waits until the
+      // script has caught it. Only then does it ask for more work.
+      const hook = blockingOnceStopHook(async () => {
+        refusedWhileAwaited = await held.deliverRefusal();
+      });
+      const requests: string[] = [];
+      const provider = mkProvider();
+      provider.chatStream = async (messages): Promise<LLMResponse> => {
+        requests.push(JSON.stringify(messages));
+        // The exec call yields with its script held, so nothing is refused
+        // yet when this answer, which calls no tool, goes to commit.
+        return requests.length === 1
+          ? toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.")
+          : textResponse("The check keeps running in the background.");
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service, hooks: hook.hooks });
+      const phases = await runToEnd(made, "Start the background check.");
+
+      expect(refusedWhileAwaited).toBe(true);
+      expect(held.nested).toEqual(["hold", "list_processes", "finished"]);
+      expect(hook.calls()).toBe(1);
+      expect(requests).toHaveLength(2);
+      expectExecUnavailableEnd(phases, made.events);
+      // Dropped, not written down for later prompts or a resumed session.
+      expect(JSON.stringify(made.state.history)).not.toContain(HOOK_REQUEST);
+    } finally {
+      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+      await closed.dispose();
+    }
+  }, 20_000);
+
+  test("a refusal that lands while a Stop hook is awaited after another stop keeps the hook from sending the turn back to work", async () => {
+    root = mkdtempSync(join(tmpdir(), "exec-unavailable-hook-after-stop-"));
+    const closed = await closedManager(root);
+    const service = new QuickJsCodeModeService({ enabled: true });
+    try {
+      expect(service.enabled()).toBe(true);
+      // Stands in for the live-effect gate refusing a write whose earlier
+      // effect awaits review: a bounded stop of its own (#2501).
+      const reviewStop = {
+        name: "write_report",
+        description: "Write the report.",
+        inputSchema: { type: "object" },
+        recoveryCategory: "side-effecting",
+        execute: async () => ({
+          content: "Refused: an earlier write awaits review.",
+          isError: true,
+          metadata: { effectReviewStop: { explanation: "An earlier write awaits review, so this turn stops now." } },
+        }),
+      } as unknown as Tool;
+      const held = heldScript(closed.manager, service, [reviewStop]);
+      let refusedWhileAwaited = false;
+      const hook = blockingOnceStopHook(async () => {
+        refusedWhileAwaited = await held.deliverRefusal();
+      });
+      const requests: string[] = [];
+      const provider = mkProvider();
+      provider.chatStream = async (messages): Promise<LLMResponse> => {
+        requests.push(JSON.stringify(messages));
+        if (requests.length === 1) {
+          return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+        }
+        return requests.length === 2
+          ? toolCallResponse("call-2", "write_report", { text: "draft" }, "Writing the report.")
+          : textResponse("Done.");
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service, hooks: hook.hooks });
+      const phases = await runToEnd(made, "Start the background check and write the report.");
+
+      expect(refusedWhileAwaited).toBe(true);
+      expect(held.nested).toEqual(["hold", "list_processes", "finished"]);
+      // The hook ran once and its request went nowhere: no third answer.
+      expect(hook.calls()).toBe(1);
+      expect(requests).toHaveLength(2);
+      expect(phases.at(-1)).toMatchObject({ stopReason: "effect_review_required" });
+      expect(JSON.stringify(made.state.history)).not.toContain(HOOK_REQUEST);
+    } finally {
+      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+      await closed.dispose();
+    }
+  }, 20_000);
+
+  test("a refusal that lands after a blocking Stop hook answered leaves the hook's request to the model, and the turn ends at its next answer", async () => {
+    root = mkdtempSync(join(tmpdir(), "exec-unavailable-after-hook-"));
+    const closed = await closedManager(root);
+    const service = new QuickJsCodeModeService({ enabled: true });
+    try {
+      expect(service.enabled()).toBe(true);
+      const held = heldScript(closed.manager, service);
+      const hook = blockingOnceStopHook();
+      const requests: string[] = [];
+      const provider = mkProvider();
+      provider.chatStream = async (messages): Promise<LLMResponse> => {
+        requests.push(JSON.stringify(messages));
+        if (requests.length === 1) {
+          return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+        }
+        return textResponse(requests.length === 2
+          ? "The check keeps running in the background."
+          : "The checks cannot run now.");
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service, hooks: hook.hooks });
+      // The refusal lands once the hook's request has been written to the
+      // history: after the hook answered, before the turn looks for a stop.
+      const lock = made.session.state;
+      const write = lock.with.bind(lock) as (fn: (value: unknown) => unknown) => Promise<unknown>;
+      let refusedAfterWrite: boolean | undefined;
+      vi.spyOn(lock, "with").mockImplementation((async (fn: (value: unknown) => unknown) => {
+        const written = await write(fn);
+        if (refusedAfterWrite === undefined && JSON.stringify(made.state.history).includes(HOOK_REQUEST)) {
+          refusedAfterWrite = await held.deliverRefusal();
+        }
+        return written;
+      }) as never);
+      const phases = await runToEnd(made, "Start the background check.");
+
+      expect(refusedAfterWrite).toBe(true);
+      expect(held.nested).toEqual(["hold", "list_processes", "finished"]);
+      // The request stood, so the model got it; its next answer ended the
+      // turn with the reason.
+      expect(requests).toHaveLength(3);
+      expect(requests[2]).toContain(HOOK_REQUEST);
+      expect(hook.calls()).toBe(2);
+      expectExecUnavailableEnd(phases, made.events);
+    } finally {
+      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+      await closed.dispose();
+    }
+  }, 20_000);
 });

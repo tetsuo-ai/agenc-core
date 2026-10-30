@@ -143,9 +143,11 @@ interface CommitOptions {
   /**
    * The turn ends with a bounded stop that no further work can lift (shell
    * tools are refused while unified exec is paused). Stop hooks still run,
-   * but a block neither injects its request nor re-enters the turn.
+   * but a block neither injects its request nor re-enters the turn. It is
+   * read once the hooks have answered, so a stop that lands while a hook
+   * runs still holds and that hook's request never reaches the history.
    */
-  readonly boundedStop?: boolean;
+  readonly boundedStop?: () => boolean;
 }
 
 function querySourceForCommit(
@@ -508,7 +510,9 @@ export async function commit(
       querySourceForCommit(session, options),
     );
     const result = await evaluateStopHooks(state, ctx, session, signal);
-    if (result.blocking && options.boundedStop === true) {
+    // Read the bounded stop only now, with no await between this check and
+    // the request going into the history below.
+    if (result.blocking && options.boundedStop?.() === true) {
       // The work the hook asks for cannot run while the stop holds; ending
       // the turn with its reason takes precedence over the hook's request.
       state.stopHookActive = false;

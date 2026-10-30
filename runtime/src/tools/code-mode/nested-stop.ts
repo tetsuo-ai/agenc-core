@@ -23,6 +23,11 @@ export function recordCodeModeNestedStop(
   if (!pendingStops.has(session)) pendingStops.set(session, explanation);
 }
 
+/** Whether a stop is pending, without taking it. */
+export function hasCodeModeNestedStop(session: object): boolean {
+  return pendingStops.has(session);
+}
+
 /** The pending stop's explanation, once; undefined when there is none. */
 export function takeCodeModeNestedStop(session: object): string | undefined {
   const explanation = pendingStops.get(session);
