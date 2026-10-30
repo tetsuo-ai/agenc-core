@@ -277,7 +277,8 @@ daemon is spawned. An update older than the build a pending restart targets
 leaves that record in place and reports the newer target, because that
 restart goes further. A pinned downgrade (`agenc update --pin` to an older
 version) ends such a record instead, so its waiting process cannot move the
-daemon back up later. A waiting process
+daemon back up later. `agenc update` ends it itself before it hands the
+restart to the older runtime, which may not know how. A waiting process
 also ends when the daemon stopped, or was replaced by a daemon at least as new
 as its own version (for example by a newer `agenc` whose build check
 restarted it). A replacement that is still older, such as an earlier waiting
@@ -1526,7 +1527,9 @@ Update after this turn: AgenC installs now and restarts when the work is done.
 If another AgenC window, `agenc -p` or other work keeps the daemon busy, this
 window reopens on its current version and says AgenC switches once that work
 is done. The daemon restarts when it is idle, and this window then moves to the
-new version at its next idle moment, in the same conversation. While it waits,
+new version at its next idle moment, in the same conversation. When a restart
+onto an even newer build already waits (another update), this window says so
+and follows the daemon to that build. While it waits,
 this window reports its own attachment ids into the pending restart, and only
 those ids, on its own conversation, are exempt. Another client following the same
 conversation (an SDK client, say) still keeps the daemon up. A daemon older

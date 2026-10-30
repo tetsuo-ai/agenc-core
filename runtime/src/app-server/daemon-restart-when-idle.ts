@@ -1745,6 +1745,38 @@ async function cancelNewerPendingRestart(ctx: RestartContext): Promise<void> {
   });
 }
 
+/**
+ * For `agenc update --pin` to an older version, run by the updater itself
+ * before it hands the restart to that runtime, which may be too old to know
+ * `--downgrade`: end a pending restart onto a version above the target.
+ * Returns the version of the restart it ended.
+ */
+export async function cancelAgenCDaemonPendingRestartAbove(
+  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+  targetVersion: string,
+  now: () => Date = () => new Date(),
+): Promise<string | undefined> {
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  return withAgenCDaemonLifecycleLock(host, async () => {
+    const pending = readAgenCDaemonPendingRestart(daemonHome);
+    if (pending === null) return undefined;
+    let order: -1 | 0 | 1;
+    try {
+      order = semverOrder(pending.target.runtimeVersion, targetVersion);
+    } catch {
+      return undefined;
+    }
+    if (order !== 1) return undefined;
+    removeAgenCDaemonPendingRestartLocked(daemonHome, pending.token);
+    logLine(
+      daemonHome,
+      `cancelled: the restart onto ${pending.target.runtimeVersion}, for a downgrade to ${targetVersion}`,
+      now(),
+    );
+    return pending.target.runtimeVersion;
+  });
+}
+
 /** A daemon the check can never prove idle (too old, no identity). */
 function cannotCheckOutcome(
   ctx: RestartContext,

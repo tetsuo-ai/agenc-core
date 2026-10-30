@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   decideUpdateRelaunch,
@@ -18,6 +21,12 @@ import {
   type UpdateRelaunchRequest,
 } from "../../src/tui/update-relaunch-state.js";
 import type { AgenCDaemonRestartOutcome } from "../../src/app-server/daemon-restart-outcome.js";
+import type { AgenCDaemonCliHost } from "../../src/app-server/daemon-control.js";
+import {
+  restartAgenCDaemonWhenIdle,
+  writeAgenCDaemonPendingRestart,
+} from "../../src/app-server/daemon-restart-when-idle.js";
+import { updateFollowReady } from "../../src/tui/hooks/useUpdateFollow.js";
 
 const request: UpdateRelaunchRequest = {
   fromVersion: "0.19.25",
@@ -167,5 +176,60 @@ describe("the relaunch marker", () => {
     expect(takeUpdateRelaunchMarker(env)).toBeNull();
     expect(env[AGENC_UPDATE_RELAUNCH_ENV]).toBeUndefined();
     expect(takeUpdateRelaunchMarker({ [AGENC_UPDATE_RELAUNCH_ENV]: JSON.stringify({ version: "../x y" }) })).toBeNull();
+  });
+});
+
+describe("a restart onto a newer build that another update left waiting", () => {
+  it("makes this window follow the daemon to that build, not to its own", async () => {
+    const home = mkdtempSync(join(tmpdir(), "urn-"));
+    try {
+      const daemon = {
+        pid: 4242,
+        instanceId: "instance-4242",
+        processStart: "start-4242",
+        runtimeVersion: "0.19.25",
+        commit: "c25",
+        buildTime: "2026-10-01T00:00:00.000Z",
+      };
+      writeAgenCDaemonPendingRestart(home, {
+        schemaVersion: 1,
+        token: "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab",
+        createdAt: new Date().toISOString(),
+        notAfter: new Date(Date.now() + 3_600_000).toISOString(),
+        daemon: { pid: daemon.pid, instanceId: daemon.instanceId },
+        target: { runtimeVersion: "0.19.27", commit: "c27", buildTime: "2026-10-30T00:00:00.000Z" },
+      });
+      const host = {
+        env: { AGENC_HOME: home },
+        userHome: home,
+        platform: "darwin",
+        pid: 7000,
+        isPidRunning: () => true,
+      } as unknown as AgenCDaemonCliHost;
+      // The real step of the 0.19.26 runtime this window installed, with the daemon busy.
+      const outcome = await restartAgenCDaemonWhenIdle(host, {}, {
+        ownBuild: () => ({ runtimeVersion: "0.19.26", commit: "c26", buildTime: "2026-10-29T00:00:00.000Z" }),
+        readState: async () => ({ kind: "running", identity: daemon }),
+        daemonCommand: () => `${home}/runtime/0.19.25/tree/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground`,
+        probe: async () => ({ idle: false, reason: "1 client attached" }),
+        withLifecycleLock: async (_host, operation) => operation(),
+        spawnWaiter: () => {
+          throw new Error("the restart onto 0.19.27 already waits");
+        },
+        requester: { pid: 4321, agentId: "conv-abc123" },
+      });
+      const h = harness(outcome);
+      await runUpdateRelaunch(request, h.deps);
+      const follow = h.reopened[0]?.follow;
+      expect(follow?.request.targetVersion).toBe("0.19.27");
+      expect(h.reopened[0]?.notice.text).toBe(
+        "Installed AgenC 0.19.26. The daemon is busy (1 client attached), so AgenC switches to 0.19.27 once that work is done. This window keeps running 0.19.25 until then.",
+      );
+      // The window moves once the daemon runs 0.19.27, the build it really goes to.
+      expect(updateFollowReady(follow!, "0.19.27", false)).toBe(true);
+      expect(updateFollowReady(follow!, "0.19.25", true)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

@@ -72,6 +72,10 @@ import {
 } from "../../src/bin/update-cli.js";
 import type { AgenCDaemonRestartOutcome } from "../../src/app-server/daemon-restart-outcome.js";
 import {
+  readAgenCDaemonPendingRestart,
+  writeAgenCDaemonPendingRestart,
+} from "../../src/app-server/daemon-restart-when-idle.js";
+import {
   resolveActivationLockRegistry,
   wrapperActivationLockPath,
 } from "../../src/utils/activation-lock-identity.js";
@@ -2654,6 +2658,42 @@ describe("agenc update CLI", () => {
       expect(restartRequests).toEqual([]);
       expect(out.at(-1)).toBe(hint);
       expect(out.filter((entry) => entry.startsWith("Daemon restart"))).toEqual([]);
+    });
+
+    test("a pinned downgrade ends a pending restart onto a newer build itself, also when the older runtime cannot", async () => {
+      const artifact = makeSyntheticArtifact(work);
+      const manifestPath = writeManifest(work, artifact);
+      const currentVersion = "99.0.0";
+      writeInstallShWrapper(
+        binDir,
+        agencHome,
+        join(agencHome, "runtime", currentVersion, LINUX_ARTIFACT_KEY, BIN_REL),
+      );
+      writeAgenCDaemonPendingRestart(agencHome, {
+        schemaVersion: 1,
+        token: "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab",
+        createdAt: "2026-10-30T00:00:00.000Z",
+        notAfter: "2099-01-01T00:00:00.000Z",
+        daemon: { pid: 4242, instanceId: "instance-4242" },
+        target: { runtimeVersion: "98.0.0", commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" },
+      });
+      // The older runtime rejects the restart options, as one without --downgrade does.
+      restartOutcome = {
+        status: "skipped",
+        code: "unsupported",
+        reason: `AgenC ${NEW_VERSION} cannot restart the daemon by itself`,
+        toVersion: NEW_VERSION,
+      };
+      expect(await runAgenCUpdateCli({
+        kind: "update",
+        check: false,
+        json: false,
+        pinVersion: NEW_VERSION,
+        manifestUrl: `file://${manifestPath}`,
+      }, { ...deps!, currentVersion })).toBe(0);
+      expect(readAgenCDaemonPendingRestart(agencHome)).toBeNull();
+      expect(readFileSync(join(agencHome, "daemon-restart.log"), "utf8"))
+        .toContain(`cancelled: the restart onto 98.0.0, for a downgrade to ${NEW_VERSION}`);
     });
 
     test("a pinned downgrade asks the restart step to end a pending restart onto a newer build", async () => {

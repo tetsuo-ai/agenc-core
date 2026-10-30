@@ -3818,6 +3818,14 @@ export interface UpdateCliDeps {
   readonly restartDaemon?: (
     request: UpdateDaemonRestartRequest,
   ) => Promise<AgenCDaemonRestartOutcome>;
+  /**
+   * A pinned downgrade: end a pending restart onto a version above the
+   * target, here, before the older runtime (which may not know
+   * `--downgrade`) gets the restart step.
+   */
+  readonly cancelPendingRestartAbove?: (
+    request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
+  ) => Promise<void>;
 }
 
 export interface UpdateDaemonRestartRequest {
@@ -3855,6 +3863,16 @@ async function restartStaleDaemonHere(): Promise<AgenCDaemonRestartOutcome> {
     import("../app-server/daemon-control.js"),
   ]);
   return restartAgenCDaemonWhenIdle(createNodeDaemonCliHost(), {}, { onlyOlderDaemon: true });
+}
+
+async function defaultCancelPendingRestartAbove(
+  request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
+): Promise<void> {
+  const { cancelAgenCDaemonPendingRestartAbove } = await import("../app-server/daemon-restart-when-idle.js");
+  await cancelAgenCDaemonPendingRestartAbove(
+    { env: { ...request.env, AGENC_HOME: request.agencHome }, userHome: homedir() },
+    request.targetVersion,
+  );
 }
 
 function defaultRestartDaemon(request: UpdateDaemonRestartRequest): Promise<AgenCDaemonRestartOutcome> {
@@ -4351,9 +4369,23 @@ export async function runAgenCUpdateCli(
     }
   }
 
+  const downgrade = pinned && semverGt(currentVersion, latestVersion);
   const restartDaemon = async (): Promise<AgenCDaemonRestartOutcome> => {
     if (!activation.activated) {
       return { status: "skipped", code: "not-activated", reason: "the active runtime did not change" };
+    }
+    if (downgrade) {
+      // Here, not only in the older runtime: it may not know --downgrade,
+      // and a waiting restart onto a newer build would undo the downgrade.
+      try {
+        await (deps.cancelPendingRestartAbove ?? defaultCancelPendingRestartAbove)({
+          agencHome,
+          env,
+          targetVersion: latestVersion,
+        });
+      } catch {
+        // The older runtime's own --downgrade, when it has one, tries again.
+      }
     }
     if (command.noRestart === true) {
       return { status: "skipped", code: "opt-out", reason: "--no-restart", toVersion: latestVersion };
@@ -4373,7 +4405,7 @@ export async function runAgenCUpdateCli(
         agencHome,
         env,
         targetVersion: latestVersion,
-        ...(pinned && semverGt(currentVersion, latestVersion) ? { downgrade: true } : {}),
+        ...(downgrade ? { downgrade: true } : {}),
       });
     } catch (error) {
       return {

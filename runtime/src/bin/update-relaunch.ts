@@ -26,7 +26,13 @@ import type {
 
 export type UpdateRelaunchDecision =
   | { readonly kind: "exec" }
-  | { readonly kind: "stay"; readonly notice: UpdateNotice; readonly follow?: UpdateFollow["when"] };
+  | {
+      readonly kind: "stay";
+      readonly notice: UpdateNotice;
+      readonly follow?: UpdateFollow["when"];
+      /** The version the daemon moves to when that is not this update's. */
+      readonly followVersion?: string;
+    };
 
 /** What the daemon step's outcome means for this window. */
 export function decideUpdateRelaunch(
@@ -42,15 +48,20 @@ export function decideUpdateRelaunch(
     case "skipped":
       if (outcome.code === "already-current" || outcome.code === "newer-daemon") return { kind: "exec" };
       break;
-    case "deferred":
+    case "deferred": {
+      // A restart onto a newer build may already be waiting (another
+      // update); the daemon then moves to that one, and so does this window.
+      const next = outcome.toVersion ?? to;
       return {
         kind: "stay",
         follow: "daemon",
+        ...(next === to ? {} : { followVersion: next }),
         notice: {
           kind: "info",
-          text: `Installed AgenC ${to}. The daemon is busy (${outcome.reason ?? "other work"}), so AgenC switches to ${to} once that work is done. This window keeps running ${from} until then.`,
+          text: `Installed AgenC ${to}. The daemon is busy (${outcome.reason ?? "other work"}), so AgenC switches to ${next} once that work is done. This window keeps running ${from} until then.`,
         },
       };
+    }
     case "failed":
       break;
   }
@@ -139,10 +150,13 @@ export async function runUpdateRelaunch(
   }
   const decision = decideUpdateRelaunch(outcome, request);
   if (decision.kind === "stay") {
+    const followRequest = decision.followVersion === undefined
+      ? request
+      : { ...request, targetVersion: decision.followVersion };
     return deps.reopen(
       request,
       decision.notice,
-      decision.follow === undefined ? null : { request, when: decision.follow },
+      decision.follow === undefined ? null : { request: followRequest, when: decision.follow },
     );
   }
   const args = updateRelaunchArgs(request);
