@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
+import type { AdmissionUsageSummary } from "../../src/budget/admission-types.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { bindExecutionAdmissionJournal } from "../../src/session/execution-admission-journal.js";
 import type { Session } from "../../src/session/session.js";
@@ -58,6 +59,8 @@ describe("canonical session usage", () => {
     const kernel = createKernel();
     const parent = bind(kernel, "mixed");
     const child = parent.forSession({ runId: "child", sessionId: "child" });
+    const snapshots: AdmissionUsageSummary[] = [];
+    const unsubscribe = parent.subscribeUsageSnapshot!(snapshot => snapshots.push(snapshot.read()));
     for (const [client, stepId, timestamp] of [
       [parent, "peak", "2026-10-19T02:00:00Z"],
       [child, "off-peak", "2026-10-24T02:00:00Z"],
@@ -71,7 +74,8 @@ describe("canonical session usage", () => {
     const summary = parent.getUsageSummary!();
     expect(summary).toMatchObject({ costUsd: 1, billedEstimateUsd: 0.75, hasOffPeakDiscount: true, heldCostUsd: 0,
       models: [{ costUsd: 1 }], agents: [{ costUsd: 0.5 }] });
-    const unsubscribe = parent.subscribeUsageSnapshot!(snapshot => expect(snapshot.read()).toEqual(summary));
+    expect(snapshots.length).toBeGreaterThan(0);
+    expect(snapshots.at(-1)).toEqual(summary);
     unsubscribe();
     expect(child.getUsageSummary!()).toMatchObject({ costUsd: 0.5, billedEstimateUsd: 0.25, hasOffPeakDiscount: true });
     expect(parent.getTaskBudgetUsage!()).toEqual({ tokens: 30, calls: 2 });
