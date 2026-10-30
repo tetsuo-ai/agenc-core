@@ -153,6 +153,8 @@ export type AgenCDaemonIdleVerdict =
       readonly reason: string;
       /** The check can never pass for this daemon: waiting cannot help. */
       readonly permanent?: true;
+      /** Set when the daemon is too old to stop only when idle. */
+      readonly tooOld?: true;
     };
 
 const IDLE: AgenCDaemonIdleVerdict = { idle: true };
@@ -540,105 +542,73 @@ class ShutdownDeclined extends Error {
 }
 
 /**
- * Stop the daemon only if it is idle, deciding as late as possible.
+ * Stop the daemon only if it is idle, deciding as late as possible: the
+ * daemon itself checks with `daemon.shutdownIfIdle`, holding every new
+ * request meanwhile, so nothing can start between its check and its
+ * decision. A daemon without that method is never stopped here.
  *
- * A daemon with `daemon.shutdownIfIdle` decides itself: it holds new
- * requests while it checks, so nothing can start in between. An older daemon
- * gets the strict rule on one connection: no attachment of any kind, no tool
- * call in flight and every agent idle, read in that order, then
- * `daemon.shutdown` at once. The window left there is one local round trip.
+ * Anything short of an explicit decision (a reset, a timeout, a closed
+ * connection) is a refusal to retry later, never a failed shutdown: the stop
+ * path must not escalate to a signal for a daemon that never accepted.
  */
 export async function requestAgenCDaemonShutdownWhenIdle(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   expected: AgenCDaemonInstanceIdentity,
-  /** The live requester's own attachments; only a daemon that decides itself honors them. */
+  /** The live requester's own attachments, checked by the daemon. */
   exempt?: { readonly attachmentIds: readonly string[]; readonly agentId: string },
 ): Promise<AgenCDaemonShutdownDeclined | void> {
-  const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
-  const authCookie = await readAgenCDaemonCookie(
-    resolveAgenCDaemonCookiePath(host.env, host.userHome),
-  );
   const request = (id: number, method: string, params: JsonObject = {}): JsonObject => ({
     jsonrpc: JSON_RPC_VERSION,
     id,
     method,
     params,
   });
-  // Grown after initialize; the first entry is replaced once the daemon's
-  // methods are known.
-  const messages: JsonObject[] = [
-    request(1, "initialize", {
-      protocolVersion: "1.0.0",
-      protocol: { version: "1.0.0" },
-      clientName: PROBE_CLIENT_NAME,
-      authCookie,
-      capabilities: {},
-    }),
-    request(2, "health.ping"),
-  ];
-  let mode: "conditional" | "strict" | undefined;
   let responses: readonly AgenCDaemonResponse[];
+  let tooOld = false;
   try {
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const authCookie = await readAgenCDaemonCookie(
+      resolveAgenCDaemonCookiePath(host.env, host.userHome),
+    );
+    const messages: JsonObject[] = [
+      request(1, "initialize", {
+        protocolVersion: "1.0.0",
+        protocol: { version: "1.0.0" },
+        clientName: PROBE_CLIENT_NAME,
+        authCookie,
+        capabilities: {},
+      }),
+      request(2, "daemon.shutdownIfIdle", {
+        instanceId: expected.instanceId,
+        ...(exempt === undefined
+          ? {}
+          : { exemptAttachmentIds: [...exempt.attachmentIds], requesterAgentId: exempt.agentId }),
+      }),
+    ];
     responses = await sendAgenCDaemonJsonLineRequests(socketPath, PROBE_BATCH_TIMEOUT_MS, messages, (response, index) => {
+      if (index !== 0) return;
       const result = (response as { readonly result?: JsonObject }).result;
-      if (index === 0) {
-        const identity = result?.daemonIdentity;
-        if (!isAgenCDaemonInstanceIdentity(identity) || identity.instanceId !== expected.instanceId) {
-          throw new ShutdownDeclined("the daemon was replaced");
-        }
-        const methods = objectOf(objectOf(result?.capabilities)?.["daemon.methods"]);
-        if (methods?.["daemon.shutdownIfIdle"] === true) {
-          mode = "conditional";
-          messages[1] = request(2, "daemon.shutdownIfIdle", {
-            instanceId: expected.instanceId,
-            ...(exempt === undefined
-              ? {}
-              : { exemptAttachmentIds: [...exempt.attachmentIds], requesterAgentId: exempt.agentId }),
-          });
-        } else {
-          mode = "strict";
-          messages[1] = request(2, "session.list", { limit: SESSION_LIST_PAGE_LIMIT });
-          messages.push(
-            request(3, "health.stats"),
-            request(4, "agent.list", { limit: AGENT_LIST_PAGE_LIMIT }),
-            request(5, "daemon.shutdown", { instanceId: expected.instanceId }),
-          );
-        }
-        return;
+      const identity = result?.daemonIdentity;
+      if (!isAgenCDaemonInstanceIdentity(identity) || identity.instanceId !== expected.instanceId) {
+        throw new ShutdownDeclined("the daemon was replaced");
       }
-      if (mode !== "strict") return;
-      if (index === 1) {
-        // Any attachment, the requester's included: it must have closed.
-        const sessions = arrayOf(result?.sessions);
-        const attached = sessions.reduce<number>(
-          (count, session) => count + arrayOf(objectOf(session)?.activeAttachmentIds).length,
-          0,
+      const methods = objectOf(objectOf(result?.capabilities)?.["daemon.methods"]);
+      if (methods?.["daemon.shutdownIfIdle"] !== true) {
+        tooOld = true;
+        throw new ShutdownDeclined(
+          `the daemon runs AgenC ${expected.runtimeVersion}, which cannot stop only when idle (that starts with 0.19.25)`,
         );
-        if (attached > 0) throw new ShutdownDeclined(`${plural(attached, "client", "clients")} attached`);
-        if (stringOf(result?.nextCursor) !== undefined &&
-            !stringOf(result?.nextCursor)!.startsWith(SESSION_LIST_PERSISTED_CURSOR_PREFIX)) {
-          throw new ShutdownDeclined("too many sessions to check at once");
-        }
-      } else if (index === 2) {
-        const calls = objectOf(result?.state)?.inFlightToolCalls;
-        if (typeof calls === "number" && calls > 0) {
-          throw new ShutdownDeclined(`${plural(calls, "tool call", "tool calls")} in flight`);
-        }
-      } else if (index === 3) {
-        const working = arrayOf(result?.agents).filter(
-          (agent) => stringOf(objectOf(agent)?.status) !== "idle",
-        ).length;
-        if (working > 0) throw new ShutdownDeclined(`${plural(working, "agent", "agents")} working`);
-        if (stringOf(result?.nextCursor) !== undefined) throw new ShutdownDeclined("too many agents to check at once");
       }
     });
   } catch (error) {
-    if (error instanceof ShutdownDeclined) return { declined: error.reason };
-    throw error;
+    if (error instanceof ShutdownDeclined) {
+      return { declined: error.reason, ...(tooOld ? { permanent: true, tooOld: true } : {}) };
+    }
+    return { declined: `the daemon did not answer the restart check (${formatCleanupError(error)}); it is checked again later` };
   }
   const last = responses[responses.length - 1];
-  if (last === undefined || responses.length !== messages.length) {
-    return { declined: "the daemon closed the connection before deciding" };
+  if (last === undefined || responses.length !== 2) {
+    return { declined: "the daemon closed the connection before deciding; it is checked again later" };
   }
   if (isDaemonErrorResponse(last)) return { declined: last.error.message };
   const result = objectOf((last as { readonly result?: JsonValue }).result);
@@ -802,7 +772,7 @@ export async function probeAgenCDaemonIdle(
       return busy("the daemon was replaced during the check");
     }
     if (error instanceof AgenCDaemonProbeError && error.code === "PROTOCOL_TOO_OLD") {
-      return { idle: false, reason: error.message, permanent: true };
+      return { idle: false, reason: error.message, permanent: true, tooOld: true };
     }
     return busy(`the check could not finish: ${formatCleanupError(error)}`);
   }
@@ -841,6 +811,15 @@ async function probeAgenCDaemonIdleOrThrow(
     return busy("the daemon is starting or stopping");
   }
   const methods = objectOf(objectOf(core.initialize.capabilities)?.["daemon.methods"]) ?? {};
+  // Only a daemon that decides itself, holding new work while it checks, is
+  // ever restarted automatically. An older one keeps running for a manual
+  // restart: a client could start work between any outside check and stop.
+  if (methods["daemon.shutdownIfIdle"] !== true) {
+    throw new AgenCDaemonProbeError(
+      `the daemon runs AgenC ${expected.runtimeVersion}, which cannot stop only when idle (that starts with 0.19.25)`,
+      "PROTOCOL_TOO_OLD",
+    );
+  }
   const agents = arrayOf(core.results[1]?.agents).map(toProbeAgent);
   let agentCursor = stringOf(core.results[1]?.nextCursor);
   const sessions = arrayOf(core.results[2]?.sessions).map(toProbeSession);
@@ -1192,14 +1171,28 @@ export async function updateAgenCDaemonRestartRequesterAttachments(
   });
 }
 
-/** Remove the record only while it still belongs to `token`. */
-export function removeAgenCDaemonPendingRestart(daemonHome: string, token: string): void {
+/**
+ * Remove the record only while it still belongs to `token`. The caller holds
+ * the lifecycle lock, which every record change takes, so no newer record
+ * can be published between the check and the unlink.
+ */
+export function removeAgenCDaemonPendingRestartLocked(daemonHome: string, token: string): void {
   if (readAgenCDaemonPendingRestart(daemonHome)?.token !== token) return;
   try {
     rmSync(resolveAgenCDaemonPendingRestartPath(daemonHome), { force: true });
   } catch {
     // A record left behind is ended by the next waiter or update.
   }
+}
+
+/** {@link removeAgenCDaemonPendingRestartLocked}, taking the lifecycle lock. */
+export async function removeAgenCDaemonPendingRestart(
+  host: AgenCDaemonCliHost,
+  token: string,
+  withLock: <T>(host: AgenCDaemonCliHost, operation: () => Promise<T>) => Promise<T> = withAgenCDaemonLifecycleLock,
+): Promise<void> {
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  await withLock(host, async () => removeAgenCDaemonPendingRestartLocked(daemonHome, token));
 }
 
 function logLine(daemonHome: string, message: string, now: Date): void {
@@ -1360,7 +1353,7 @@ function liveRequester(ctx: RestartContext): AgenCDaemonRestartRequester | undef
 }
 
 type RestartAttempt =
-  | { readonly kind: "declined"; readonly reason: string; readonly permanent: boolean }
+  | { readonly kind: "declined"; readonly reason: string; readonly permanent: boolean; readonly tooOld?: boolean }
   | { readonly kind: "done"; readonly outcome: AgenCDaemonRestartOutcome };
 
 /**
@@ -1380,9 +1373,12 @@ async function restartIfStillIdle(
   const output = collectingIo();
   let declined: string | undefined;
   let permanent = false;
+  let tooOld = false;
   const stopExit = await stop(ctx.host, output.io, RESTART_STOP_TIMEOUT_MS, {
     ...ctx.options,
     quietWhenStopped: true,
+    // Signals only ever follow a shutdown the daemon explicitly accepted.
+    signalOnlyAfterAcceptedShutdown: true,
     // Under the lifecycle lock, after the identity proof. Ownership is the
     // last thing checked here; pending-record changes take the same lock, so
     // none can land between this check and the daemon's decision.
@@ -1401,6 +1397,7 @@ async function restartIfStillIdle(
       if (result !== undefined) {
         declined = result.declined;
         permanent = result.permanent === true;
+        tooOld = result.tooOld === true;
       }
       return result;
     },
@@ -1410,6 +1407,7 @@ async function restartIfStillIdle(
       kind: "declined",
       reason: declined ?? "the daemon has no verified identity",
       permanent: permanent || declined === undefined,
+      ...(tooOld ? { tooOld: true } : {}),
     };
   }
   const fromVersion = expected.runtimeVersion;
@@ -1624,7 +1622,7 @@ function deferRestartLocked(
     const waiterPid = (ctx.deps.spawnWaiter ?? defaultSpawnWaiter)(ctx.host, token);
     logLine(ctx.daemonHome, `waiting process pid ${waiterPid}`, ctx.now());
   } catch (error) {
-    removeAgenCDaemonPendingRestart(ctx.daemonHome, token);
+    removeAgenCDaemonPendingRestartLocked(ctx.daemonHome, token);
     return {
       status: "failed",
       reason: `the daemon is busy (${reason}) and a later restart could not be arranged: ${formatCleanupError(error)}`,
@@ -1640,10 +1638,11 @@ function cannotCheckOutcome(
   ctx: RestartContext,
   identity: AgenCDaemonInstanceIdentity,
   reason: string,
+  tooOld = false,
 ): AgenCDaemonRestartOutcome {
   return {
     status: "skipped",
-    code: "unsupported",
+    code: tooOld ? "daemon-too-old" : "unsupported",
     reason,
     fromVersion: identity.runtimeVersion,
     toVersion: ctx.build.runtimeVersion,
@@ -1698,13 +1697,13 @@ export async function restartAgenCDaemonWhenIdle(
   const verdict = await probeFor(ctx)(checked.identity);
   if (!verdict.idle) {
     return verdict.permanent === true
-      ? cannotCheckOutcome(ctx, checked.identity, verdict.reason)
+      ? cannotCheckOutcome(ctx, checked.identity, verdict.reason, verdict.tooOld === true)
       : deferRestart(ctx, checked.identity, verdict.reason);
   }
   const attempt = await restartIfStillIdle(ctx, checked.identity);
   if (attempt.kind === "declined") {
     return attempt.permanent
-      ? cannotCheckOutcome(ctx, checked.identity, attempt.reason)
+      ? cannotCheckOutcome(ctx, checked.identity, attempt.reason, attempt.tooOld === true)
       : deferRestart(ctx, checked.identity, attempt.reason);
   }
   return attempt.outcome;
@@ -1727,8 +1726,10 @@ export async function runAgenCDaemonRestartWaiter(
   const pollMs = deps.pollMs ?? AGENC_DAEMON_RESTART_POLL_MS;
   const idleChecksNeeded = deps.idleChecks ?? AGENC_DAEMON_RESTART_IDLE_CHECKS;
   const hardDeadline = ctx.now().getTime() + (deps.maxWaitMs ?? AGENC_DAEMON_RESTART_MAX_WAIT_MS);
-  const finish = (outcome: AgenCDaemonRestartOutcome, removeRecord: boolean): AgenCDaemonRestartOutcome => {
-    if (removeRecord) removeAgenCDaemonPendingRestart(ctx.daemonHome, token);
+  const finish = async (outcome: AgenCDaemonRestartOutcome, removeRecord: boolean): Promise<AgenCDaemonRestartOutcome> => {
+    if (removeRecord) {
+      await removeAgenCDaemonPendingRestart(ctx.host, token, ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock);
+    }
     logLine(
       ctx.daemonHome,
       `${outcome.status}: ${outcome.reason ?? formatAgenCDaemonRestartOutcome(outcome)}`,
@@ -1789,14 +1790,14 @@ export async function runAgenCDaemonRestartWaiter(
     } else {
       const verdict = await probeFor(ctx)(checked.identity);
       if (!verdict.idle && verdict.permanent === true) {
-        return finish(cannotCheckOutcome(ctx, checked.identity, verdict.reason), true);
+        return finish(cannotCheckOutcome(ctx, checked.identity, verdict.reason, verdict.tooOld === true), true);
       }
       idleChecks = verdict.idle ? idleChecks + 1 : 0;
       if (idleChecks >= idleChecksNeeded) {
         const attempt = await restartIfStillIdle(ctx, checked.identity, superseded);
         if (attempt.kind === "done") return finish(attempt.outcome, true);
         if (attempt.permanent) {
-          return finish(cannotCheckOutcome(ctx, checked.identity, attempt.reason), true);
+          return finish(cannotCheckOutcome(ctx, checked.identity, attempt.reason, attempt.tooOld === true), true);
         }
         idleChecks = 0;
       }
@@ -1821,7 +1822,7 @@ export async function runAgenCDaemonRestartWhenIdleCli(
       const outcome = await runAgenCDaemonRestartWaiter(host, command.waitToken, options, deps);
       return outcome.status === "failed" ? 1 : 0;
     } catch (error) {
-      removeAgenCDaemonPendingRestart(daemonHome, command.waitToken);
+      await removeAgenCDaemonPendingRestart(host, command.waitToken).catch(() => undefined);
       logLine(daemonHome, `failed: the waiting process stopped: ${formatCleanupError(error)}`, new Date());
       return 1;
     }

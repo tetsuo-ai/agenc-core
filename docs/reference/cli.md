@@ -371,7 +371,10 @@ after compatibility, byte-count, sha256, and archive-safety checks, then
 atomically repoint the `agenc` wrapper. Then a running daemon moves onto the
 new version: right away when it is idle, once it is idle when it is busy. When
 `agenc update` finds nothing newer, a daemon still on an older version moves the
-same way. `--no-restart` leaves it on its version until `agenc daemon restart`.
+same way. Only a daemon on 0.19.25 or newer can be moved this way, so the first
+automatic restart happens when updating from 0.19.25; an older daemon keeps
+running and the update prints the `agenc daemon restart` hint.
+`--no-restart` leaves it on its version until `agenc daemon restart`.
 `--json` reports the result in `daemonRestart`. Details:
 [Daemon restart after an update](../install.md#daemon-restart-after-an-update).
 

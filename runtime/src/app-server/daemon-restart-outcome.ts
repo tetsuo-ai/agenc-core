@@ -18,7 +18,9 @@ export type AgenCDaemonRestartCode =
   | "newer-daemon"
   | "opt-out"
   | "not-activated"
-  | "unsupported";
+  | "unsupported"
+  /** The daemon cannot stop only when idle (0.19.24 and older): restart it by hand. */
+  | "daemon-too-old";
 
 export interface AgenCDaemonRestartOutcome {
   readonly status: AgenCDaemonRestartStatus;
@@ -48,6 +50,7 @@ const CODES: ReadonlySet<string> = new Set([
   "opt-out",
   "not-activated",
   "unsupported",
+  "daemon-too-old",
 ]);
 
 /** Parse an outcome line printed by `restart --when-idle --json`. */
@@ -123,5 +126,7 @@ export function agenCDaemonRestartNeedsHint(outcome: AgenCDaemonRestartOutcome):
 export function agenCDaemonRestartIsNews(outcome: AgenCDaemonRestartOutcome): boolean {
   return outcome.status === "restarted" ||
     outcome.status === "deferred" ||
-    outcome.status === "failed";
+    outcome.status === "failed" ||
+    // A stale daemon that only a manual restart moves.
+    (outcome.status === "skipped" && outcome.code === "daemon-too-old");
 }

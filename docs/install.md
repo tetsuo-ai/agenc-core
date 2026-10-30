@@ -223,15 +223,24 @@ After the wrapper points at the new runtime, `agenc update` runs
 runtime does the check and the restart. When `agenc update` finds nothing
 newer, it runs the same step itself for a daemon still on an older version, for
 example one an older updater left running; a daemon on the same or a newer
-version is left alone, and only a restart, a deferred restart or a failure
-prints a line. After an update it prints one line:
+version is left alone, and only a restart, a deferred restart, a daemon too old
+to restart this way or a failure prints a line. After an update it prints one
+line:
 
 | Daemon | What happens |
 | --- | --- |
 | Idle | Stopped and started again on the new version right away: `Restarted the daemon on 0.19.26 (pid 4242).` |
 | Busy | Left alone. A background process restarts it once it is idle: `The daemon is busy (1 client attached), so it will restart on 0.19.26 once it is idle.` |
 | Not running | Nothing to do. The next start uses the new version. |
-| Not started by this install, too old to check, or on Windows | Skipped, with the reason and the old `agenc daemon restart` hint. |
+| On 0.19.24 or older | Left alone, with the reason and the old `agenc daemon restart` hint. |
+| Not started by this install, or on Windows | Skipped, with the reason and the old `agenc daemon restart` hint. |
+
+Only a daemon that can decide for itself whether it is idle
+(`daemon.shutdownIfIdle`, 0.19.25 and later) is ever restarted
+automatically. So the first automatic restart happens when updating from
+0.19.25: the update to 0.19.25 itself, and `agenc update` on 0.19.25 with a
+daemon still on 0.19.24, print the hint, and `agenc daemon restart` moves that
+daemon once.
 
 Idle means all of these, read over the daemon's control socket:
 
@@ -241,34 +250,29 @@ Idle means all of these, read over the daemon's control socket:
 - no routine run is active, no remote device is connected and `health.stats` counts no tool call in flight;
 - no other AgenC process of this home runs an older runtime (an open TUI from before the update).
 
-The check works against daemons from 0.19.0 on, because the daemon being
-replaced has none of this code. Daemons older than that cannot be checked and
-are skipped. Durable workflow runs started with `agenc run start` are not
-visible to the check; the daemon stops them at shutdown and resumes them when
+The check runs from outside the daemon, over its control socket, with requests
+every daemon from 0.19.0 on answers. Durable workflow runs started with
+`agenc run start` are not visible to the check; the daemon stops them at shutdown and resumes them when
 it starts again, as with any `agenc daemon restart`.
 
 That check decides whether to restart now or wait. The final decision is
-made as late as possible, under the daemon lifecycle lock:
-
-- A daemon that has `daemon.shutdownIfIdle` (0.19.25 and later) decides
-  itself. While it checks the same signals from memory, every new request on
-  every connection waits, and a request already in flight counts as work. If it
-  is idle it starts the same shutdown as `daemon.shutdown` and refuses the
-  waiting requests; otherwise they continue and it keeps running. No turn,
-  attachment or tool call can start between its check and its decision.
-- An older daemon gets a strict rule instead. It must have been idle at the
-  check before, and then, on one connection: no attachment of any kind,
-  `health.stats` counts no tool call in flight, and every agent is idle,
-  read in that order with `daemon.shutdown` sent right after the last answer.
-  The window left is one round trip on the local socket. Anything else defers
-  the restart.
+made by the daemon itself, under the daemon lifecycle lock, with
+`daemon.shutdownIfIdle`: while it checks the same signals from memory, every
+new request on every connection waits, and a request already in flight counts
+as work. If it is idle it starts the same shutdown as `daemon.shutdown` and
+refuses the waiting requests; otherwise they continue and it keeps running. No
+turn, attachment or tool call can start between its check and its decision.
+Anything short of that explicit decision, such as a dropped connection or a
+timeout, defers the restart; nothing is ever signalled unless the daemon
+accepted the shutdown.
 A busy daemon gets one waiting process (`agenc daemon restart --when-idle
 --wait <token>`) and the record `<AGENC_HOME>/daemon-restart-pending.json`.
 It checks every 15 s, restarts after two idle checks in a row and gives up
 after 12 hours without stopping anything. A newer update replaces the record,
-so waiting processes never pile up: the record is replaced under the same
-lock as the final decision, a waiting process checks that the record is still
-its own right before that decision, and again before it starts its runtime. It
+so waiting processes never pile up: the record is replaced and removed under
+the same lock as the final decision, a waiting process checks that the record
+is still its own right before that decision, and again before it starts its
+runtime. It
 also ends when the daemon stopped, or was replaced by a daemon at least as new
 as its own version (for example by a newer `agenc` whose build check
 restarted it). A replacement that is still older, such as an earlier waiting

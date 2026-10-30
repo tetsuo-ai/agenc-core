@@ -206,6 +206,8 @@ export interface AgenCDaemonShutdownDeclined {
   readonly declined: string;
   /** The check can never pass for this daemon. */
   readonly permanent?: boolean;
+  /** The daemon cannot stop only when idle: it needs a manual restart. */
+  readonly tooOld?: boolean;
 }
 
 function isAgenCDaemonShutdownDeclined(value: unknown): value is AgenCDaemonShutdownDeclined {
@@ -2015,6 +2017,13 @@ export async function stopAgenCDaemon(
   timeoutMs: number,
   options: RunAgenCDaemonCliOptions & {
     readonly quietWhenStopped?: boolean;
+    /**
+     * Never signal a daemon that did not explicitly accept the shutdown: a
+     * failed request leaves it running and `stop` returns
+     * {@link AGENC_DAEMON_STOP_DECLINED_EXIT}. Escalation stays possible
+     * after an accepted shutdown that does not finish in time.
+     */
+    readonly signalOnlyAfterAcceptedShutdown?: boolean;
   } = {},
 ): Promise<number> {
   return withAgenCDaemonLifecyclePhases(host, async (lifecycle) => {
@@ -2076,6 +2085,10 @@ export async function stopAgenCDaemon(
         }
         // The daemon kept running on purpose: nothing to wait for or signal.
         if (declinedByDaemon) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        // No explicit acceptance: no signal either, whatever the error was.
+        if (shutdownError !== undefined && options.signalOnlyAfterAcceptedShutdown === true) {
+          return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        }
         await lifecycle.release();
         const exited = await waitForBoundPidExit(
           host,

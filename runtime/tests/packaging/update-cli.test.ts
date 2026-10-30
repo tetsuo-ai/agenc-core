@@ -2715,6 +2715,9 @@ describe("agenc update CLI", () => {
       [{ status: "not-running", toVersion: NEW_VERSION }, []],
       [{ status: "skipped", code: "newer-daemon", reason: "the daemon runs 9.9.10, which is not older than 9.9.9" }, []],
       [{ status: "skipped", reason: "the daemon runs from outside this install (for example the Desktop app)" }, []],
+      // A stale daemon too old to stop only when idle: tell the person, with the hint.
+      [{ status: "skipped", code: "daemon-too-old", reason: "the daemon runs AgenC 0.19.24, which cannot stop only when idle (that starts with 0.19.25)", fromVersion: "0.19.24", toVersion: NEW_VERSION },
+        ["Daemon restart skipped: the daemon runs AgenC 0.19.24, which cannot stop only when idle (that starts with 0.19.25).", "Restart the daemon to pick it up: agenc daemon restart"]],
     ] as const)("says something only when the daemon was stale: %o", async (outcome, lines) => {
       restartOutcome = outcome as AgenCDaemonRestartOutcome;
       expect(await upToDate()).toBe(0);
