@@ -27,6 +27,18 @@ const stuckTree = vi.hoisted(() => ({
   alive: (): boolean => false,
 }));
 
+/**
+ * The command the manager spawned last, and the one whose signals are held.
+ * The manager signals a command's tree through `signalProcessTree` on every
+ * platform (a process group on macOS, the cgroup or subreaper boundary on
+ * Linux), so holding them there works the same everywhere.
+ */
+const heldSignals = vi.hoisted(() => ({
+  lastSpawned: undefined as object | undefined,
+  child: undefined as object | undefined,
+  terms: 0,
+}));
+
 vi.mock("../../src/utils/supervisedProcess.js", async (original) => {
   const actual = await original<typeof import("../../src/utils/supervisedProcess.js")>();
   return {
@@ -51,6 +63,21 @@ vi.mock("../../src/utils/supervisedProcess.js", async (original) => {
     // What the failed proof's last snapshot saw alive.
     liveProcessTreeDescendants: vi.fn(() => (stuckTree.alive() ? [stuckTree.pid] : [])),
     processTreeCleanupRecheckable: vi.fn(actual.processTreeCleanupRecheckable),
+    spawnContainedProcess: vi.fn((...args: Parameters<typeof actual.spawnContainedProcess>) => {
+      const child = actual.spawnContainedProcess(...args);
+      heldSignals.lastSpawned = child;
+      return child;
+    }),
+    signalProcessTree: vi.fn((
+      child: Parameters<typeof actual.signalProcessTree>[0],
+      signal: Parameters<typeof actual.signalProcessTree>[1],
+    ) => {
+      if (heldSignals.child !== undefined && child === heldSignals.child) {
+        if (signal === "SIGTERM") heldSignals.terms += 1;
+        return;
+      }
+      actual.signalProcessTree(child, signal);
+    }),
   };
 });
 
@@ -149,37 +176,30 @@ async function pauseWithStuckCommand(manager: Manager): Promise<{ sessionId: num
 }
 
 /**
- * A running command that cannot exit yet: every signal sent to its process
- * group is accepted and stays pending, as for a process blocked in the kernel.
+ * A running command that cannot exit yet: every signal the manager sends its
+ * tree is accepted and stays pending, as for a process blocked in the kernel.
  * `release` lets one real SIGKILL in.
  */
 async function startHeldCommand(manager: Manager) {
-  const realKill = process.kill.bind(process);
-  let group = 0;
-  let heldTerms = 0;
-  const spy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
-    if (group > 1 && Math.abs(pid) === group && signal !== 0 && signal !== undefined) {
-      if (signal === "SIGTERM") heldTerms += 1;
-      return true;
-    }
-    return realKill(pid, signal);
-  }) as typeof process.kill);
-  const started = await manager.execCommand({ cmd: "echo $$; exec sleep 30", yield_time_ms: 500 });
-  const pgid = Number(started.stdout.trim());
-  heldCleanup = () => {
-    group = 0;
-    spy.mockRestore();
-    try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+  const real = await vi.importActual<typeof import("../../src/utils/supervisedProcess.js")>(
+    "../../src/utils/supervisedProcess.js",
+  );
+  heldSignals.lastSpawned = undefined;
+  const started = await manager.execCommand({ cmd: "exec sleep 30", yield_time_ms: 250 });
+  const child = heldSignals.lastSpawned as Parameters<typeof real.signalProcessTree>[0] | undefined;
+  expect(child?.pid).toBeGreaterThan(1);
+  heldSignals.child = child;
+  heldSignals.terms = 0;
+  const release = () => {
+    if (heldSignals.child !== child) return;
+    heldSignals.child = undefined;
+    real.signalProcessTree(child!, "SIGKILL");
   };
-  expect(pgid).toBeGreaterThan(1);
-  group = pgid;
+  heldCleanup = release;
   return {
     sessionId: started.process_id!,
-    heldTerms: () => heldTerms,
-    release: () => {
-      group = 0;
-      realKill(-pgid, "SIGKILL");
-    },
+    heldTerms: () => heldSignals.terms,
+    release,
   };
 }
 
