@@ -35,6 +35,7 @@ import { ConfigStore } from "../../src/config/store.js";
 
 import type { TurnContext } from "../session/turn-context.js";
 import type { Session } from "../session/session.js";
+import type { AgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { clearSystemPromptSections } from "./sections.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { DESKTOP_RICH_RENDERER_CLIENT, getClientRenderingSection } from "./client-rendering.js";
@@ -1114,7 +1115,10 @@ describe("assembleSystemPrompt", () => {
 
   test("base instructions carry the completion contract only for non-interactive sessions", async () => {
     const registry = { tools: [{ name: "FileRead" }, { name: "exec_command" }] };
-    const assemble = (runtimeOptions: Record<string, unknown>, env?: NodeJS.ProcessEnv) =>
+    const assemble = (
+      runtimeOptions: Partial<AgentRuntimeOptions>,
+      env?: NodeJS.ProcessEnv,
+    ) =>
       assembleBaseInstructionsForModel({
         session: {
           services: {
