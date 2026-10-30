@@ -1,20 +1,26 @@
 import { PassThrough } from "node:stream";
 
-import React from "react";
-import { afterEach, describe, expect, test } from "vitest";
+import React, { useMemo } from "react";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
+import { ConfigStore } from "../../config/store.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
   RequestUserInputEvent,
   RequestUserInputResponse,
 } from "../../elicitation/types.js";
+import { useIsModalOverlayActive } from "../context/overlayContext.js";
+import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
 import type { DOMNode } from "../ink/dom.js";
 import instances from "../ink/instances.js";
 import { createRoot } from "../ink/root.js";
+import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
+import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
 import {
-  ElicitationOverlay,
-  elicitationAnswerControls,
+  ElicitationRequestOverlay,
+  installElicitationResolvers,
+  type PendingElicitation,
   useTuiElicitation,
 } from "./App.js";
 
@@ -71,15 +77,30 @@ function collectText(node: DOMNode): string {
   return node.childNodes.map(collectText).join("");
 }
 
+/** Records whether the promise has settled and with what. */
+function track<T>(promise: Promise<T>): { readonly settled: () => boolean; readonly value: () => T | undefined } {
+  let settled = false;
+  let value: T | undefined;
+  void promise.then((result) => {
+    settled = true;
+    value = result;
+  });
+  return { settled: () => settled, value: () => value };
+}
+
 /**
- * Mounts the same text overlay the shell mounts for a pending request, with
- * real Ink input on a fake TTY. `submits` records every elicitation.submit.
+ * Mounts the overlay the shell mounts for a pending request, inside the real
+ * app state, keybinding provider and turn cancel handler, with a turn running.
+ * Keys are real bytes on a fake TTY. `submits` records every answer sent to
+ * the elicitation controller.
  */
 async function mountOverlay(): Promise<{
   readonly session: TestSession;
   readonly submits: string[];
+  readonly onCancel: ReturnType<typeof vi.fn>;
   readonly text: () => string;
   readonly send: (sequence: string) => Promise<void>;
+  readonly waitForOwnership: () => Promise<void>;
 }> {
   const stdout = new PassThrough();
   stdout.resume();
@@ -92,28 +113,52 @@ async function mountOverlay(): Promise<{
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
   const root = await createRoot({
+    exitOnCtrlC: false,
     patchConsole: false,
     stdin: stdin as unknown as NodeJS.ReadStream,
     stdout: stdout as unknown as NodeJS.WriteStream,
   });
   const session: TestSession = { services: {}, subscribeToEvents: () => () => {} };
   const submits: string[] = [];
+  const onCancel = vi.fn();
+  const ownership = { modal: false };
+
+  function OwnershipProbe(): null {
+    ownership.modal = useIsModalOverlayActive();
+    return null;
+  }
 
   function Harness(): React.ReactElement | null {
     const elicitation = useTuiElicitation(session);
-    const submit = (value: string): boolean => {
-      submits.push(value);
-      return elicitation.submit(value);
-    };
-    return (
-      <ElicitationOverlay
-        prompt={elicitation.prompt}
-        answer={elicitationAnswerControls(elicitation.pending, submit)}
-      />
+    const recorded = useMemo(
+      () => ({
+        ...elicitation,
+        submitPending: (expected: PendingElicitation, value: string) => {
+          submits.push(value);
+          return elicitation.submitPending(expected, value);
+        },
+      }),
+      [elicitation],
     );
+    return <ElicitationRequestOverlay elicitation={recorded} />;
   }
 
-  root.render(<Harness />);
+  root.render(
+    <AppStateProvider initialState={getDefaultAppState()}>
+      <KeybindingSetup configStore={new ConfigStore({ env: {} })}>
+        <CancelRequestHandler
+          setToolUseConfirmQueue={() => {}}
+          onCancel={onCancel}
+          onAgentsKilled={() => {}}
+          isMessageSelectorVisible={false}
+          screen={"prompt" as never}
+          canCancelActiveTurn={true}
+        />
+        <OwnershipProbe />
+        <Harness />
+      </KeybindingSetup>
+    </AppStateProvider>,
+  );
   disposers.push(async () => {
     root.unmount();
     stdin.end();
@@ -133,11 +178,18 @@ async function mountOverlay(): Promise<{
   return {
     session,
     submits,
+    onCancel,
     text: () => collectText(rootNode()),
     send: async (sequence) => {
       stdin.write(sequence);
       // A lone ESC is held briefly in case it starts a key sequence.
       await sleep(sequence === "\u001b" ? 90 : 30);
+    },
+    // Gives the overlay time to take Escape from the turn cancel. It does not
+    // assert, so a missing handover fails on the answer, not here.
+    waitForOwnership: async () => {
+      const startedAt = Date.now();
+      while (!ownership.modal && Date.now() - startedAt < 500) await sleep(10);
     },
   };
 }
@@ -153,11 +205,28 @@ function freeTextQuestion(): RequestUserInputEvent {
   };
 }
 
-function mcpNameRequest(): McpElicitationRequestEvent {
+function optionsQuestion(): RequestUserInputEvent {
+  return {
+    turnId: "turn-1",
+    requestId: "options-request",
+    callId: "options-call",
+    questions: [{
+      id: "color",
+      header: "Color",
+      question: "Pick a color",
+      options: [
+        { label: "Teal", description: "Cool" },
+        { label: "Gold", description: "Warm" },
+      ],
+    }],
+  };
+}
+
+function mcpNameRequest(requestId = "name-request"): McpElicitationRequestEvent {
   return {
     turnId: "turn-1",
     serverName: "profile",
-    requestId: "name-request",
+    requestId,
     request: {
       mode: "form",
       message: "Who is asking",
@@ -172,7 +241,41 @@ function mcpNameRequest(): McpElicitationRequestEvent {
   };
 }
 
-describe("elicitation text overlay input", () => {
+function mcpUrlRequest(): McpElicitationRequestEvent {
+  return {
+    turnId: "turn-1",
+    serverName: "profile",
+    requestId: "url-request",
+    request: {
+      mode: "url",
+      message: "Open the sign-in page",
+      url: "https://127.0.0.1/sign-in",
+      elicitationId: "url-elicitation",
+    },
+  } as McpElicitationRequestEvent;
+}
+
+function mcpOptionalFieldsRequest(): McpElicitationRequestEvent {
+  return {
+    turnId: "turn-1",
+    serverName: "profile",
+    requestId: "optional-request",
+    request: {
+      mode: "form",
+      message: "Report details",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          first: { type: "string", description: "First optional field" },
+          second: { type: "string", description: "Second optional field" },
+          third: { type: "string", description: "Third optional field" },
+        },
+      },
+    },
+  };
+}
+
+describe("elicitation request overlay input", () => {
   test("typing and Enter send a free-text answer to elicitation.submit", async () => {
     const overlay = await mountOverlay();
     const response = overlay.session.services.requestUserInputResolver!.request(
@@ -207,23 +310,64 @@ describe("elicitation text overlay input", () => {
     expect(overlay.submits).toEqual(["Use blue"]);
   });
 
-  test("Escape answers skip, as the options picker does", async () => {
+  test("Escape during a running turn answers skip instead of cancelling the turn", async () => {
     const overlay = await mountOverlay();
     const response = overlay.session.services.requestUserInputResolver!.request(
       freeTextQuestion(),
     );
     await waitFor(() => expect(overlay.text()).toContain("esc skip"));
+    await overlay.waitForOwnership();
 
     await overlay.send("draft");
     await overlay.send("\u001b");
 
+    expect(overlay.onCancel).not.toHaveBeenCalled();
     await expect(response).resolves.toEqual({
       answers: { details: { answers: ["skip"] } },
     });
     expect(overlay.submits).toEqual(["skip"]);
   });
 
-  test("an MCP form string field takes typed text, and Escape cancels", async () => {
+  test("Escape on an options question during a running turn answers skip", async () => {
+    const overlay = await mountOverlay();
+    const response = overlay.session.services.requestUserInputResolver!.request(
+      optionsQuestion(),
+    );
+    await waitFor(() => expect(overlay.text()).toContain("Pick a color"));
+    await overlay.waitForOwnership();
+
+    await overlay.send("\u001b");
+
+    expect(overlay.onCancel).not.toHaveBeenCalled();
+    await expect(response).resolves.toEqual({
+      answers: { color: { answers: ["skip"] } },
+    });
+  });
+
+  test("Ctrl+C during a running turn answers like Escape", async () => {
+    const overlay = await mountOverlay();
+    const question = overlay.session.services.requestUserInputResolver!.request(
+      freeTextQuestion(),
+    );
+    await waitFor(() => expect(overlay.text()).toContain("Describe the change"));
+    await overlay.waitForOwnership();
+    await overlay.send("\u0003");
+    expect(overlay.onCancel).not.toHaveBeenCalled();
+    await expect(question).resolves.toEqual({
+      answers: { details: { answers: ["skip"] } },
+    });
+
+    const form = overlay.session.services.mcpElicitationResolver!.request(
+      mcpNameRequest(),
+    );
+    await waitFor(() => expect(overlay.text()).toContain("Who is asking (name)"));
+    await overlay.waitForOwnership();
+    await overlay.send("\u0003");
+    expect(overlay.onCancel).not.toHaveBeenCalled();
+    await expect(form).resolves.toEqual({ action: "cancel" });
+  });
+
+  test("an MCP form string field takes typed text, and Escape cancels during a turn", async () => {
     const overlay = await mountOverlay();
     const accepted = overlay.session.services.mcpElicitationResolver!.request(
       mcpNameRequest(),
@@ -235,13 +379,91 @@ describe("elicitation text overlay input", () => {
       content: { name: "Ada" },
     });
 
-    const cancelled = overlay.session.services.mcpElicitationResolver!.request({
-      ...mcpNameRequest(),
-      requestId: "name-request-2",
-    });
+    const cancelled = overlay.session.services.mcpElicitationResolver!.request(
+      mcpNameRequest("name-request-2"),
+    );
     await waitFor(() => expect(overlay.text()).toContain("esc cancel"));
+    await overlay.waitForOwnership();
     await overlay.send("\u001b");
+    expect(overlay.onCancel).not.toHaveBeenCalled();
     await expect(cancelled).resolves.toEqual({ action: "cancel" });
     expect(overlay.submits).toEqual(["Ada", "cancel"]);
+  });
+
+  test("two Enters in one read answer the shown form and leave a queued URL confirmation waiting", async () => {
+    const overlay = await mountOverlay();
+    const form = overlay.session.services.mcpElicitationResolver!.request(
+      mcpNameRequest(),
+    );
+    const url = track(
+      overlay.session.services.mcpElicitationResolver!.request(mcpUrlRequest()),
+    );
+    await waitFor(() => expect(overlay.text()).toContain("Who is asking (name)"));
+
+    await overlay.send("Ada\r\r");
+
+    await expect(form).resolves.toEqual({
+      action: "accept",
+      content: { name: "Ada" },
+    });
+    await waitFor(() => expect(overlay.text()).toContain("Open the sign-in page"));
+    await sleep(50);
+    expect(url.settled()).toBe(false);
+    expect(overlay.submits).toEqual(["Ada"]);
+
+    // The confirmation is answered only by an Enter pressed after it shows.
+    await overlay.send("\r");
+    await waitFor(() => expect(url.value()).toEqual({ action: "accept" }));
+    expect(overlay.submits).toEqual(["Ada", ""]);
+  });
+
+  test("repeated Enter in one read skips only the shown optional field", async () => {
+    const overlay = await mountOverlay();
+    const form = overlay.session.services.mcpElicitationResolver!.request(
+      mcpOptionalFieldsRequest(),
+    );
+    await waitFor(() => expect(overlay.text()).toContain("Report details (first)"));
+
+    await overlay.send("\r\r\r");
+
+    await waitFor(() => expect(overlay.text()).toContain("Report details (second)"));
+    await sleep(50);
+    expect(overlay.text()).toContain("Report details (second)");
+    expect(overlay.submits).toEqual([""]);
+
+    await overlay.send("kept\r");
+    await waitFor(() => expect(overlay.text()).toContain("Report details (third)"));
+    await overlay.send("\r");
+    await expect(form).resolves.toEqual({
+      action: "accept",
+      content: { second: "kept" },
+    });
+  });
+});
+
+describe("elicitation controller", () => {
+  test("submitPending answers only the request it was bound to", async () => {
+    const session: TestSession = { services: {}, subscribeToEvents: () => () => {} };
+    let pending: PendingElicitation | null = null;
+    const controller = installElicitationResolvers(session as never, (next) => {
+      pending = next;
+    });
+    try {
+      const first = session.services.mcpElicitationResolver!.request(mcpNameRequest());
+      const second = track(
+        session.services.mcpElicitationResolver!.request(mcpUrlRequest()),
+      );
+      const shown = pending as unknown as PendingElicitation;
+      expect(controller.submitPending(shown, "Ada")).toBe(true);
+      await expect(first).resolves.toEqual({ action: "accept", content: { name: "Ada" } });
+
+      // A late answer for the first request must not reach the second.
+      expect(controller.submitPending(shown, "")).toBe(false);
+      await sleep(10);
+      expect(second.settled()).toBe(false);
+      expect((pending as unknown as PendingElicitation).kind).toBe("mcp-url");
+    } finally {
+      controller.cleanup();
+    }
   });
 });

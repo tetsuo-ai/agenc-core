@@ -2203,7 +2203,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           containsElementNamed(layoutProps?.overlay, "AgenCPermissionOverlay"),
         ).toBe(true);
         expect(
-          containsElementNamed(layoutProps?.overlay, "ElicitationOverlay"),
+          containsElementNamed(layoutProps?.overlay, "ElicitationRequestOverlay"),
         ).toBe(false);
 
         permissionAbort.abort();
