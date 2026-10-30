@@ -3854,25 +3854,44 @@ const DAEMON_RESTART_HANDOFF_TIMEOUT_MS = 20 * 60 * 1_000;
 const DAEMON_RESTART_HANDOFF_OUTPUT_MAX_CHARS = 64 * 1_024;
 
 /**
- * This process runs the current runtime: restart a daemon still on an older
- * build here, under the same rules as after an update.
+ * The in-process daemon steps `agenc update` needs: restart a daemon still
+ * on an older build (up to date), and end a pending restart onto a newer
+ * version before a pinned downgrade. The CLI entry registers them; this
+ * module never imports the daemon code itself, so the SDK wire graph that
+ * reaches it (through the `/update` command) stays free of daemon producers.
+ * Kept on globalThis because the TUI bundle carries its own copy of this
+ * module.
  */
+export interface UpdateDaemonHooks {
+  readonly restartStaleDaemon: () => Promise<AgenCDaemonRestartOutcome>;
+  readonly cancelPendingRestartAbove: (
+    request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
+  ) => Promise<void>;
+}
+
+const UPDATE_DAEMON_HOOKS_KEY = Symbol.for("agenc.update.daemonHooks");
+
+export function registerUpdateDaemonHooks(hooks: UpdateDaemonHooks): void {
+  (globalThis as Record<symbol, unknown>)[UPDATE_DAEMON_HOOKS_KEY] = hooks;
+}
+
+function updateDaemonHooks(): UpdateDaemonHooks | undefined {
+  return (globalThis as Record<symbol, unknown>)[UPDATE_DAEMON_HOOKS_KEY] as UpdateDaemonHooks | undefined;
+}
+
+/** This process runs the current runtime: restart a daemon still on an older build here. */
 async function restartStaleDaemonHere(): Promise<AgenCDaemonRestartOutcome> {
-  const [{ restartAgenCDaemonWhenIdle }, { createNodeDaemonCliHost }] = await Promise.all([
-    import("../app-server/daemon-restart-when-idle.js"),
-    import("../app-server/daemon-control.js"),
-  ]);
-  return restartAgenCDaemonWhenIdle(createNodeDaemonCliHost(), {}, { onlyOlderDaemon: true });
+  const hooks = updateDaemonHooks();
+  if (hooks === undefined) {
+    return { status: "skipped", code: "unsupported", reason: "this process cannot restart the daemon itself" };
+  }
+  return hooks.restartStaleDaemon();
 }
 
 async function defaultCancelPendingRestartAbove(
   request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
 ): Promise<void> {
-  const { cancelAgenCDaemonPendingRestartAbove } = await import("../app-server/daemon-restart-when-idle.js");
-  await cancelAgenCDaemonPendingRestartAbove(
-    { env: { ...request.env, AGENC_HOME: request.agencHome }, userHome: homedir() },
-    request.targetVersion,
-  );
+  await updateDaemonHooks()?.cancelPendingRestartAbove(request);
 }
 
 function defaultRestartDaemon(request: UpdateDaemonRestartRequest): Promise<AgenCDaemonRestartOutcome> {

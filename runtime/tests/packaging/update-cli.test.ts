@@ -72,6 +72,7 @@ import {
 } from "../../src/bin/update-cli.js";
 import type { AgenCDaemonRestartOutcome } from "../../src/app-server/daemon-restart-outcome.js";
 import {
+  cancelAgenCDaemonPendingRestartAbove,
   readAgenCDaemonPendingRestart,
   writeAgenCDaemonPendingRestart,
 } from "../../src/app-server/daemon-restart-when-idle.js";
@@ -2690,7 +2691,15 @@ describe("agenc update CLI", () => {
         json: false,
         pinVersion: NEW_VERSION,
         manifestUrl: `file://${manifestPath}`,
-      }, { ...deps!, currentVersion })).toBe(0);
+      }, {
+        ...deps!,
+        currentVersion,
+        // The step the CLI entry registers (registerUpdateDaemonHooks).
+        cancelPendingRestartAbove: (request) => cancelAgenCDaemonPendingRestartAbove(
+          { env: { ...request.env, AGENC_HOME: request.agencHome }, userHome: agencHome },
+          request.targetVersion,
+        ).then(() => undefined),
+      })).toBe(0);
       expect(readAgenCDaemonPendingRestart(agencHome)).toBeNull();
       expect(readFileSync(join(agencHome, "daemon-restart.log"), "utf8"))
         .toContain(`cancelled: the restart onto 98.0.0, for a downgrade to ${NEW_VERSION}`);

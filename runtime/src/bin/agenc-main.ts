@@ -58,7 +58,7 @@ import { formatAgenCMcpCliHelpText, parseAgenCMcpCliArgs } from "./mcp-cli-args.
 import { formatAgenCDoctorCliHelpText, parseAgenCDoctorCliArgs } from "./doctor-cli-args.js";
 import { formatAgenCOnboardCliHelpText, parseAgenCOnboardCliArgs, readOnboardDaemonStatus, runAgenCOnboardCli } from "./onboard-cli.js";
 import { buildSecurityAuditReport, formatAgenCSecurityCliHelpText, formatSecurityAuditSummaryLine, parseAgenCSecurityCliArgs, runAgenCSecurityCli } from "./security-cli.js";
-import { formatAgenCUpdateCliHelpText, parseAgenCUpdateCliArgs, restartDaemonThroughActivatedWrapper, runAgenCUpdateCli } from "./update-cli.js";
+import { formatAgenCUpdateCliHelpText, parseAgenCUpdateCliArgs, registerUpdateDaemonHooks, restartDaemonThroughActivatedWrapper, runAgenCUpdateCli } from "./update-cli.js";
 import { runUpdateRelaunch } from "./update-relaunch.js";
 import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
 import { formatAgenCGatewayCliHelpText, parseAgenCGatewayCliArgs, runAgenCGatewayCli } from "./gateway-cli.js";
@@ -89,6 +89,24 @@ import { createWorkflowApprovalControls, type WorkflowApprovalControls } from ".
 import { queueTuiStartupNotice } from "../tui/startup-notices.js";
 import { UNUSED_TUI_PREWARM_STOP_REASON } from "../app-server/agent-stop-reasons.js";
 import { oneShotCLI as runDaemonOneShotCLI, type AgenCDaemonCliDeps, startupImageMessagesFromInputs, startupContentFromInputs, validateAgencHome, stopDaemonAgentBestEffort, type OneShotDeadlineBackstopGlobal, startupPermissionMode } from "./daemon-one-shot-cli.js";
+
+// `agenc update` (and the TUI's /update in this process) runs these daemon
+// steps here; update-cli itself never imports the daemon code.
+registerUpdateDaemonHooks({
+  restartStaleDaemon: async () => {
+    const { restartAgenCDaemonWhenIdle } = await import("../app-server/daemon-restart-when-idle.js");
+    const { createNodeDaemonCliHost } = await import("../app-server/daemon-control.js");
+    return restartAgenCDaemonWhenIdle(createNodeDaemonCliHost(), {}, { onlyOlderDaemon: true });
+  },
+  cancelPendingRestartAbove: async (request) => {
+    const { cancelAgenCDaemonPendingRestartAbove } = await import("../app-server/daemon-restart-when-idle.js");
+    const { homedir } = await import("node:os");
+    await cancelAgenCDaemonPendingRestartAbove(
+      { env: { ...request.env, AGENC_HOME: request.agencHome }, userHome: homedir() },
+      request.targetVersion,
+    );
+  },
+});
 export { parseStreamJsonPrompt, validateAgencHome, oneShotFinalMessageRemainder, type PrintModeGoal, parsePrintModeGoal } from "./daemon-one-shot-cli.js";
 
 export { resolveCliCwdForStartup } from "./cli-cwd.js";
