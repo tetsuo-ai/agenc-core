@@ -14,6 +14,7 @@
  * and killed the AgenC CLI and its process brokers in a Terminal-Bench run.
  */
 import type { Tool, ToolResult } from "../types.js";
+import { formatSessionEndNotice } from "./exec-result-format.js";
 import { validationErrorToolResult } from "../results.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { safeStringify } from "../types.js";
@@ -277,9 +278,13 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
         }
         const remaining = ownedLiveSessions(ownerId);
         const stopping = remaining === undefined ? [] : ownedStoppingSessions(ownerId);
+        // Background sessions that ended on their own since the last
+        // exec-family result; the ones stopped here get no notice.
+        const ended = manager.takeSessionEndNotices?.(ownerArg) ?? [];
         return {
           content: safeStringify({
             ...body,
+            ...(ended.length > 0 ? { ended_sessions: ended.map(formatSessionEndNotice) } : {}),
             ...(remaining !== undefined
               ? {
                   owned_live_sessions: remaining,

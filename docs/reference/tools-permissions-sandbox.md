@@ -191,7 +191,7 @@ Legacy `system.*` utilities (not the primary edit surface):
 | `PowerShell` | Registered only when `pwsh`/`powershell` is on `PATH` **and** a unified-exec manager is available; **deferred** |
 
 Background processes and services. `exec_command` stops every process a
-command leaves behind when the command returns (a trailing `&`, `nohup`,
+command leaves behind when the command returns (a background job, `nohup`,
 `setsid`, a daemon that forks) and says so in the result, on a line after the
 footer: `[note: this command left processes running ... detach: true]`. The
 first such note of a session also says that nothing is left to stop and how to
@@ -222,6 +222,45 @@ with `yield_time_ms`. It cannot be combined with `tty`, and
 `kill_process` does not know detached processes; stop one with `kill <pid>`.
 A detached service is not a managed session handle: it does not appear in
 `list_processes`, and `kill_process all: true` does not reach it.
+
+Long jobs. A background job that the cleanup above would stop a moment after
+it starts, written as `nohup cmd &`, `setsid cmd &`, `cmd & disown` or a
+trailing `cmd &` that the command neither waits for (`wait`) nor stops
+(`kill`), is refused before anything runs, and the refusal names
+`background: true`. Only POSIX shells are
+scanned; quoted text, substitutions, comments and here-document bodies are
+skipped, and a command the scan cannot parse runs as before.
+`background: true` starts the command as a tracked session: the call returns
+after about a second with its `session_id`, `write_stdin` polls it,
+`kill_process` stops it, and session end stops it. It works inside the
+sandbox and cannot be combined with `detach`. A conversation holds at most 8
+live background sessions; past that a `background: true` start is refused
+before it spawns. When a command reaches its `timeoutMs` it is not stopped:
+the call (or a `write_stdin` poll in progress) returns with its `session_id`
+and the note `[note: timeoutMs=N passed and the command is still running ...]`,
+and it stays a tracked session. Only an interrupt, a run deadline,
+`kill_process`, session end, or the 8-session limit stop it (at the limit the
+timeout stops it as before and the result says why). config.toml
+`exec_hard_timeout = true`, or `AGENC_EXEC_HARD_TIMEOUT=1` in the session
+environment, restores the hard timeout for exec_command (off by default; the
+schema then calls timeoutMs a hard timeout). Other callers of the manager
+(Monitor, PowerShell) keep the hard timeout. A background session that ends on
+its own while nothing shows it adds one line to the next `exec_command`,
+`write_stdin`, `kill_process` or `list_processes` result of its conversation:
+`[session N ended after 6m21s: exit 1 (...). write_stdin session_id=N returns
+its remaining output.]`, with the signal, and on Linux a likely out-of-memory
+kill when the cgroup `oom_kill` counter rose while it ran. When the turn ended,
+or the model kept to other tools, before any such result, the next turn of the
+conversation starts with the same lines as a runtime-only reminder; an idle
+session is never woken for it. A session the model or the user stopped gets no
+such line. A poll of a session
+that has printed nothing for a minute adds one line with its processes' state
+and CPU time, the CPU used since the previous check and the members that
+exited since then (Linux `/proc`, macOS `ps`; nothing on Windows). On Linux
+the environment note of the system prompt adds one line with the cgroup CPU
+quota and memory limit (cgroup v2 `cpu.max` and `memory.max` on the process's
+cgroup path, or the v1 controllers) when one is stricter than what `nproc` and
+`free` report; macOS and Windows get no line.
 
 Linux shell commands normally reuse a sandbox within their owning session.
 Each command has separate process state, cwd, environment, and output pipes;

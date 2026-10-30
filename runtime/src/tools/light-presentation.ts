@@ -9,6 +9,12 @@ import type { LLMTool } from "../llm/types.js";
 export const LIGHT_GLM_SERVER_CHECKS =
   "To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. Never use `wait` on a server: it keeps the command blocked until its timeout.";
 
+/** exec_command's timeoutMs as a Light session reads it while it continues as a session. */
+const LIGHT_SOFT_TIMEOUT_HINT = "Max wait, ms; then runs on as a session.";
+/** The same field's text when the session restored the hard timeout (tools/system/exec-timeout-mode.ts). */
+const LIGHT_HARD_TIMEOUT_HINT = "Hard timeout, ms.";
+const CANONICAL_HARD_TIMEOUT_HINT = "Hard timeout in ms: a command still running then is stopped.";
+
 // Presentation only; execution and discovery retain the canonical tool. The
 // shared Light wording keeps every field, alternative, default and validation
 // keyword on the wire (null removes only a redundant property description,
@@ -19,7 +25,7 @@ const descriptions: Readonly<Record<string, string>> = {
   FileRead: "Read text/images/PDFs/notebooks; authorizes edits. Prefer 1-based offset/limit line windows: default 2000 lines, cap 25000 tokens. Display-only numbers are sparse unless dense_line_numbers. PDFs >10 pages require pages (e.g. 1-5), max 20/read. Empty files warn; directories fail. Successful edits need no reread.",
   Edit: "FileRead first. Replace shortest unique exact old_string with new_string, preserving indentation, omitting unchanged context/display numbers. replace_all replaces every match (default false). Prefer existing files; create only as needed. Emojis only on request.",
   Write: "Create/replace complete files; existing files require FileRead first. Use Edit for partial changes. Documentation/emojis only on request.",
-  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. No trailing &: leftovers stop on return, yielded processes at session end. Lasting services need detach.",
+  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach.",
   write_stdin: "Continue exec_command's session_id. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
   Glob: "Find file paths by glob, newest modification first. Skip gitignored/build/vendor files unless includeIgnored=true.",
   Grep: "Search with packaged ripgrep, not shell grep/rg; escape literal braces. output_mode: files_with_matches (default paths), content (lines), count. Context/line numbers apply to content. multiline matches across lines with dot-all. Skip ignored/build/vendor files unless includeIgnored=true. Missing ripgrep: agenc doctor, reinstall same version; no fallback.",
@@ -32,7 +38,10 @@ const fieldHints: Readonly<Record<string, Readonly<Record<string, string | null>
   Edit: { file_path: path, old_string: null, new_string: null, replace_all: null },
   Write: { file_path: path, content: null },
   exec_command: {
-    cmd: null, workdir: "Default: workspace root.", timeoutMs: "Hard timeout, ms.",
+    cmd: null, workdir: "Default: workspace root.", timeoutMs: LIGHT_SOFT_TIMEOUT_HINT,
+    // The description says what it is for ("Long jobs: background=true"); the
+    // first background result says how the session is polled and reported.
+    background: null,
     yield_time_ms: "Wait ms; live processes return session_id. Default 30000 (tty 10000).",
     max_output_tokens: "Token cap; head/tail truncation.",
     login: "Login shell if supported.", shell: "Default: user's shell.",
@@ -125,9 +134,33 @@ const LIGHT_SESSION_FIELDS: Readonly<Record<string, Readonly<Record<string, unkn
  * yields one.
  */
 const LIGHT_SESSION_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. No trailing &: leftovers stop on return, yielded processes at session end. Lasting services need detach.",
+  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach.",
   write_stdin: "Continue exec_command's session_id; kill_process stops it. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
 };
+
+/**
+ * exec_command as a session that restored the hard timeout presents it:
+ * timeoutMs says the command is stopped, and the description no longer says
+ * a command keeps running after timeoutMs. Other tools are returned as is.
+ */
+export function withHardTimeoutWording(tool: LLMTool): LLMTool {
+  if (tool.function.name !== "exec_command") return tool;
+  const parameters = tool.function.parameters;
+  const properties = parameters.properties as Record<string, { readonly description?: string }> | undefined;
+  const timeout = properties?.timeoutMs;
+  if (properties === undefined || timeout === undefined) return tool;
+  return { ...tool, function: {
+    ...tool.function,
+    description: tool.function.description?.replace("after yield_time_ms or timeoutMs", "after yield_time_ms"),
+    parameters: { ...parameters, properties: {
+      ...properties,
+      timeoutMs: {
+        ...timeout,
+        description: timeout.description === LIGHT_SOFT_TIMEOUT_HINT ? LIGHT_HARD_TIMEOUT_HINT : CANONICAL_HARD_TIMEOUT_HINT,
+      },
+    } },
+  } };
+}
 
 /** Size keywords the model never needs to see; execution still validates them. */
 const LIGHT_SESSION_HIDDEN_KEYWORDS: ReadonlySet<string> = new Set(["minItems", "minLength"]);
@@ -196,8 +229,10 @@ function withOnlyFields(presented: LLMTool, fields: ReadonlySet<string>, pointer
  * the session sees the full schema. Execution accepts every field either way. yield_time_ms is
  * among the rest: shown, GPT models set it to 1000 for test runs, so a Go test still compiling
  * after 1 s yielded and cost a write_stdin call; omitted, Light's 30 s default applies.
+ * background is shown: it is the supported way to start a long job, and without it in the schema
+ * models reach for `nohup ... &`, which exec_command refuses (tools/system/background-job-refusal.ts).
  */
-const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeoutMs"]);
+const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeoutMs", "background"]);
 /**
  * The escalation fields are left out of the list: every mode whose text lets the model request
  * escalation names sandbox_permissions there (prompts/permissions-prompt.ts), and a sandbox notice

@@ -1018,6 +1018,12 @@ export interface AgenCConfig {
    * Grok. The session's AGENC_LEAN_SYSTEM_PROMPT overrides it.
    */
   readonly lean_system_prompt?: boolean;
+  /**
+   * Restore exec_command's hard timeout: a command that reaches its
+   * timeoutMs is stopped instead of continuing as a tracked session. Off by
+   * default. The session's AGENC_EXEC_HARD_TIMEOUT overrides it.
+   */
+  readonly exec_hard_timeout?: boolean;
   readonly stream_watchdog_timeout_ms?: number;
   /** Warn after this long without a model delta; zero disables the warning. */
   readonly stream_quiet_warning_ms?: number;
@@ -1175,6 +1181,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "defer_rare_tools",
   "web_search",
   "lean_system_prompt",
+  "exec_hard_timeout",
   "stream_watchdog_timeout_ms",
   "stream_quiet_warning_ms",
   "provider_outage_wait_ms",

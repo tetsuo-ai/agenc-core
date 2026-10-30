@@ -45,11 +45,18 @@ import {
 } from "../../sandbox/execution-broker.js";
 import { isSearchOrReadBashCommand } from "../../utils/bash/commands.js";
 import {
+  backgroundStartedNoteOncePerSession,
   formatUnifiedExecToolContent,
   residualNoteOncePerSession,
   serverCheckNoteOncePerSession,
   unifiedExecCodeModeResult,
+  withSessionEndNotices,
 } from "./exec-result-format.js";
+import {
+  findUnwaitedBackgroundJob,
+  isPosixShell,
+  unwaitedBackgroundJobMessage,
+} from "./background-job-refusal.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
@@ -100,6 +107,13 @@ export interface ExecCommandToolConfig extends BashToolConfig {
    * request, so the field is there to use (a lean schema hides it).
    */
   readonly onEscalationAdvised?: () => void;
+  /**
+   * The session restored the hard timeout (config.toml `exec_hard_timeout`
+   * or `AGENC_EXEC_HARD_TIMEOUT`, tools/system/exec-timeout-mode.ts): a
+   * command that reaches timeoutMs is stopped instead of continuing as a
+   * session.
+   */
+  readonly hardTimeout?: () => boolean;
 }
 
 /**
@@ -131,6 +145,32 @@ const PLAIN_INTERACTIVE_SHELL_RE =
  * with another model call. Explicit yields, tty and detached processes keep their own windows.
  */
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
+
+/**
+ * How long `background: true` waits before returning the session: long
+ * enough that a command which fails at once (not found, bad flag) reports its
+ * error, short enough that the call returns while the job starts.
+ */
+export const BACKGROUND_START_YIELD_TIME_MS = 1_000;
+
+/**
+ * Refuse a command whose `nohup`/`setsid`/`disown` or trailing `&` job would
+ * be stopped a moment after it starts (background-job-refusal.ts). Only for
+ * POSIX shells and only where exec_command contains the command: a detached
+ * service and an interactive PTY keep their own semantics.
+ */
+function unwaitedBackgroundJobFailure(
+  args: Readonly<Record<string, unknown>>,
+  defaultShell: string,
+): ToolPreflightFailure | null {
+  if (args.detach === true || args.tty === true) return null;
+  const cmd = asString(args.cmd);
+  if (cmd === undefined) return null;
+  const shell = asString(args.shell)?.trim() || defaultShell;
+  if (!isPosixShell(shell)) return null;
+  const job = findUnwaitedBackgroundJob(cmd);
+  return job === undefined ? null : { code: "background-job", message: unwaitedBackgroundJobMessage(job) };
+}
 
 const PATH_ARG = /^[A-Za-z0-9_./@+-]+$/u;
 
@@ -822,6 +862,15 @@ function validateExecCommandInput(
   if (args.detach === true && args.tty === true) {
     return { code: "invalid-input", message: "detach cannot be combined with tty; a detached service has no terminal" };
   }
+  if (args.background !== undefined && typeof args.background !== "boolean") {
+    return { code: "invalid-input", message: "background must be a boolean" };
+  }
+  if (args.background === true && args.detach === true) {
+    return {
+      code: "invalid-input",
+      message: "background cannot be combined with detach: background keeps the job as a session AgenC tracks and stops at session end; detach starts a service AgenC never stops. Pass one.",
+    };
+  }
   const workdir = asString(args.workdir);
   // The working directory may be the workspace, a directory the user added
   // with --add-dir, or anywhere when approvals are bypassed and no sandbox
@@ -964,10 +1013,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       env: config?.env,
       maxTimeoutMs: config?.maxTimeoutMs,
     });
+  const defaultShell = manager.shellPath ?? (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
   return observationCapableShell({
     name: "exec_command",
     description:
-      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, and kill_process stops it. A trailing '&' loses the output, and every process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
+      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms or timeoutMs returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, kill_process stops it, and a later result reports when it ends. Start a long job with background: true, not & or nohup (refused); every other process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -1003,7 +1053,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       return sandboxAutoAllow(input as Record<string, unknown>, context, config);
     },
     preflight(args) {
-      const failure = validateExecCommandInput(args, config);
+      const failure = validateExecCommandInput(args, config) ??
+        unwaitedBackgroundJobFailure(args, defaultShell);
       if (failure !== null) return failure;
       const cmd = asString(args.cmd)!;
       if (args.tty === true && isPlainInteractiveShellCommand(cmd)) return null;
@@ -1030,7 +1081,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         timeoutMs: {
           type: "number",
           description:
-            "Hard timeout in ms. To keep a long command alive use yield_time_ms instead.",
+            "Wait limit in ms. A command still running then is not stopped: it keeps running as a session (session_id).",
+        },
+        background: {
+          type: "boolean",
+          description:
+            "Start a long job as a tracked session: returns after about 1 s with its session_id; write_stdin polls it, kill_process stops it, its end is reported. Use instead of & or nohup; not with detach.",
         },
         yield_time_ms: {
           type: "number",
@@ -1074,12 +1130,14 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      const failure = validateExecCommandInput(args, config) ?? preflightSelfTermination(args);
+      const failure = validateExecCommandInput(args, config) ??
+        unwaitedBackgroundJobFailure(args, defaultShell) ?? preflightSelfTermination(args);
       if (failure !== null) {
         return {
           content: safeStringify({ error: failure.message }),
           isError: true,
           ...(failure.code === "mcp-routing" ? { metadata: buildRecoverableToolFailureMetadata("mcp_tool_not_shell_command") } : {}),
+          ...(failure.code === "background-job" ? { metadata: buildRecoverableToolFailureMetadata("input_validation") } : {}),
           effectDisposition: confirmedNoEffectDisposition(
             `tool:system.exec-command:${failure.code}`,
             failure.message,
@@ -1099,6 +1157,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;
+      const background = asBoolean(args.background) === true;
       // A read-only child launches in the cwd its trusted inspection resolved
       // against the child session, not the registry's workspace. Check, gate
       // and record that same directory.
@@ -1204,9 +1263,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           callId: asString(args.__callId),
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
-            : config?.lightMode === true && !detach && tty !== true
-              ? { yield_time_ms: LIGHT_DEFAULT_EXEC_YIELD_TIME_MS }
-              : {}),
+            : background
+              ? { yield_time_ms: BACKGROUND_START_YIELD_TIME_MS }
+              : config?.lightMode === true && !detach && tty !== true
+                ? { yield_time_ms: LIGHT_DEFAULT_EXEC_YIELD_TIME_MS }
+                : {}),
           ...(asNumber(args.max_output_tokens) !== undefined
             ? { max_output_tokens: asNumber(args.max_output_tokens) }
             : {}),
@@ -1226,7 +1287,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 : readOnlyShell !== undefined
                   ? { readOnlyShell, workdir: readOnlyShell.cwd }
                   : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
-              ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+              ...(timeoutMs !== undefined
+                ? { timeoutMs, onTimeout: config?.hardTimeout?.() === true ? "kill" as const : "background" as const }
+                : {}),
+              ...(background ? { startInBackground: true } : {}),
               ...(args.__onProgress !== undefined
                 ? { __onProgress: args.__onProgress }
                 : {}),
@@ -1345,15 +1409,30 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         // description already says it on every request. A check still running
         // gets the guidance without the claim that nothing needs a later kill:
         // its session needs kill_process or a poll.
-        const serverNote = notice === null && !serverChecksDescribed
+        // A background start is not a server check that waited a fixed time;
+        // its own note says how the session is polled and reported.
+        const serverNote = notice === null && !serverChecksDescribed && !background
           ? serverCheckNoteOncePerSession(noteSessionId, cmd, stillAlive)
           : undefined;
         const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
+        // A background start says once per conversation how its session is
+        // reported; other background sessions that ended since the last
+        // exec-family result are reported here, one line each.
+        const backgroundNote = background && stillAlive && output.session_id !== undefined
+          ? backgroundStartedNoteOncePerSession(noteSessionId, output.session_id)
+          : undefined;
+        const endNotices = manager.takeSessionEndNotices?.({ ...(ownerId !== undefined ? { ownerId } : {}) });
+        const noted = backgroundNote === undefined ? content : `${content}\n${backgroundNote}`;
         return {
-          content:
-            notice === null ? content : `${content}\n\n${notice}`,
+          content: withSessionEndNotices(
+            notice === null ? noted : `${noted}\n\n${notice}`,
+            endNotices,
+          ),
           isError: isError || undefined,
-          codeModeResult: unifiedExecCodeModeResult(output, notice),
+          codeModeResult: {
+            ...unifiedExecCodeModeResult(output, notice),
+            ...(endNotices !== undefined && endNotices.length > 0 ? { ended_sessions: endNotices } : {}),
+          },
           effectDisposition: processObservationDisposition(
             cmd,
             effectiveWorkdir ?? config?.cwd ?? process.cwd(),
@@ -1383,6 +1462,13 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ...(output.residual_processes_observed === true ? { residualProcessesObserved: true } : {}),
             ...(output.residual_processes_terminated === true
               ? { residualProcessesTerminated: true }
+              : {}),
+            ...(background ? { background: true } : {}),
+            ...(output.timeout_backgrounded_ms !== undefined
+              ? { timeoutBackgroundedMs: output.timeout_backgrounded_ms }
+              : {}),
+            ...(endNotices !== undefined && endNotices.length > 0
+              ? { endedSessions: endNotices.map((ended) => ended.sessionId) }
               : {}),
           },
         };

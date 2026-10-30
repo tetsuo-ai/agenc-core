@@ -35,6 +35,7 @@ import {
 } from './src/utils/model/provider-selection-context.js'
 import { enterCanonicalSettingsAuthority } from './src/utils/settings/canonicalAuthority.js'
 import { installNetworkTripwire } from './tests/helpers/network-tripwire.mjs'
+import { setResourceLimitsLineForTesting } from './src/utils/resource-limits.js'
 
 // Re-assert at every test-file boundary. The helper also self-installs when
 // preloaded into Node children via NODE_OPTIONS.
@@ -76,4 +77,8 @@ beforeEach(() => {
     model: 'grok-4.6',
     environment,
   })
+  // The environment note states cgroup CPU and memory limits of the host it
+  // runs on. Tests must not see the CI container's limits; the tests of that
+  // line set their own.
+  setResourceLimitsLineForTesting(null)
 })

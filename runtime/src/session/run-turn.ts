@@ -2,6 +2,7 @@ import { applyWebSearchInstruction, resolveWebSearchMode } from "../tools/web-se
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import { assistantMessageFromResponse, parseToolUseBlocks, admittedModelStepId } from "../phases/stream-model.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
+import { backgroundSessionEndReminder } from "./background-session-reminder.js";
 import { runMinimalTurn } from "./minimal-turn.js";
 import { oneShotFastModeActive, bypassFastModeEnabled, withOneShotFastMode } from "../one-shot-fast-mode.js";
 import { CompactionTransactionError, CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
@@ -3346,6 +3347,7 @@ async function* runTurnKernelInner(
   // Keep the deadline's existing start point after pre-request compaction.
   commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
   let deadlineTurnReminderInjected = false;
+  let backgroundEndReminderChecked = false;
 
   const stepReminders = new Set<number>();
   let emptyResponseRetryCount =
@@ -3567,6 +3569,15 @@ async function* runTurnKernelInner(
         state.messages.push(reminder);
         stepReminders.add(state.turnCount);
       }
+    }
+
+    // Background sessions that ended while no exec-family result followed
+    // (the last turn ended first, or the model kept to other tools): one line
+    // each at the start of the turn, runtime-only like the deadline reminder.
+    if (!backgroundEndReminderChecked) {
+      backgroundEndReminderChecked = true;
+      const backgroundEnds = backgroundSessionEndReminder(session);
+      if (backgroundEnds !== undefined) state.messages.push(backgroundEnds);
     }
 
     // Run deadline (#2503): tell the model its remaining budget once per

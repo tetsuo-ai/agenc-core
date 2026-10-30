@@ -70,6 +70,7 @@ import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_GUIDANCE, AGENC_UNDO_PATHS } from ".
 import { LIGHT_LOADED_INSTRUCTIONS_NOTE } from "./live-instructions.js";
 import { LIGHT_TASK_LIMITS_ENV } from "../tools/light-profile.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
+import { setResourceLimitsLineForTesting } from "../utils/resource-limits.js";
 
 // Minimal TurnContext + Session stubs — only the fields the assembler reads.
 function fakeCtx(overrides?: Partial<TurnContext>): TurnContext {
@@ -921,6 +922,25 @@ describe("assembleSystemPrompt", () => {
         morning.dynamicSuffix.replace("Current date (UTC): 2026-08-28", "Current date (UTC): 2026-08-29"),
       );
       expect(nextDay.staticPrefix).toBe(morning.staticPrefix);
+    },
+  );
+
+  test.each(["standard", "light"] as const)(
+    "the %s session tail states cgroup CPU and memory limits only when one applies",
+    async (profile) => {
+      const line = "Resource limits (cgroup): 1 CPU, 4 GiB memory; nproc shows 24 and free shows 32 GiB. " +
+        "Size thread counts, parallel jobs and builds to these limits.";
+      setResourceLimitsLineForTesting(line);
+      const limited = await assembleSystemPromptSnapshot({ profile, session: fakeSession, ctx: fakeCtx() });
+      setResourceLimitsLineForTesting(null);
+      const unlimited = await assembleSystemPromptSnapshot({ profile, session: fakeSession, ctx: fakeCtx() });
+      expect(limited.dynamicSuffix).toContain(line);
+      // One line in the volatile tail; the cached head is unchanged.
+      expect(limited.staticPrefix).toBe(unlimited.staticPrefix);
+      // Light: a section of its own; standard: a bullet of # Environment.
+      const separator = profile === "light" ? "\n\n" : "\n - ";
+      expect(limited.dynamicSuffix.replace(`${separator}${line}`, "")).toBe(unlimited.dynamicSuffix);
+      expect(unlimited.text).not.toContain("Resource limits");
     },
   );
 

@@ -28,7 +28,8 @@ import { prepareModelToolArgs, validateToolPreflight } from "./tools/execution.j
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
-import { lightPresentation, standardPresentation } from "./tools/light-presentation.js";
+import { lightPresentation, standardPresentation, withHardTimeoutWording } from "./tools/light-presentation.js";
+import { execHardTimeoutEnabled } from "./tools/system/exec-timeout-mode.js";
 import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
 import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
@@ -804,6 +805,7 @@ export function buildToolRegistry(
           ? { onSessionYielded: () => markDiscovered(PROCESS_SESSION_TOOLS) }
           : {}),
       onEscalationAdvised,
+      hardTimeout: () => execHardTimeout(),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
@@ -1155,6 +1157,22 @@ export function buildToolRegistry(
     const identity = sessionModelIdentity();
     return lightUsesGlmTuning(identity.provider, identity.model);
   }
+  /**
+   * Whether the session restored the hard timeout: config.toml
+   * `exec_hard_timeout` or the session's AGENC_EXEC_HARD_TIMEOUT
+   * (tools/system/exec-timeout-mode.ts). exec_command then stops a command at
+   * its timeoutMs, and its schema says so.
+   */
+  function execHardTimeout(): boolean {
+    const services = options.getSession?.()?.services;
+    let configured: boolean | undefined;
+    try {
+      configured = services?.configStore?.current().exec_hard_timeout;
+    } catch {
+      configured = undefined;
+    }
+    return execHardTimeoutEnabled(services?.providerEnvironment ?? {}, configured);
+  }
   // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
   // names even when the canonical tool is disabled or unavailable so an
   // extension cannot become the physical execution target by collision.
@@ -1501,7 +1519,7 @@ export function buildToolRegistry(
   }
 
   let presentationMemo: { router: ToolRouter; discovered: readonly string[];
-    provider: string | undefined; planMode: boolean; webSearch: boolean; tools: LLMTool[] } | undefined;
+    provider: string | undefined; planMode: boolean; webSearch: boolean; hardTimeout: boolean; tools: LLMTool[] } | undefined;
   function buildPresentedTools(router: ToolRouter): LLMTool[] {
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
@@ -1509,7 +1527,7 @@ export function buildToolRegistry(
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
       const leanSearch = !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
       const leanRead = searchVisible && !discoveredToolNames.has("FileRead");
-      const tools = visible.map((spec) => {
+      const presentBuiltin = (spec: ConfiguredToolSpec): LLMTool => {
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
@@ -1522,6 +1540,12 @@ export function buildToolRegistry(
         return standardDeferral
           ? standardPresentation(tool, { lightWording: STANDARD_COMPACT_PRESENTATION.has(spec.tool.name), leanExec, leanGrep, leanSearch })
           : tool;
+      };
+      // A session that restored the hard timeout reads that in exec_command's schema.
+      const hardTimeout = execHardTimeout();
+      const tools = visible.map((spec) => {
+        const tool = presentBuiltin(spec);
+        return hardTimeout && spec.tool.metadata?.source === "builtin" ? withHardTimeoutWording(tool) : tool;
       });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(router.getSpecs()
@@ -1549,12 +1573,14 @@ export function buildToolRegistry(
       // Plan mode adds AskUserQuestion and ExitPlanMode (visibleSpecs, isDeferredSpec).
       const planMode = planModeActive();
       const webSearch = options.webSearchEnabled?.() === true;
+      const hardTimeout = execHardTimeout();
       const memo = presentationMemo;
       if (memo?.router === router && memo.provider === provider && memo.planMode === planMode && memo.webSearch === webSearch &&
+          memo.hardTimeout === hardTimeout &&
           memo.discovered.length === discovered.length &&
           memo.discovered.every((name, i) => name === discovered[i])) return memo.tools;
       const tools = buildPresentedTools(router);
-      presentationMemo = { router, provider, planMode, webSearch, discovered, tools };
+      presentationMemo = { router, provider, planMode, webSearch, hardTimeout, discovered, tools };
       return tools;
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
