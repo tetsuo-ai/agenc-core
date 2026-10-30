@@ -1400,7 +1400,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         // description already says it on every request. A check still running
         // gets the guidance without the claim that nothing needs a later kill:
         // its session needs kill_process or a poll.
-        const serverNote = notice === null && !serverChecksDescribed
+        // A background start is not a server check that waited a fixed time;
+        // its own note says how the session is polled and reported.
+        const serverNote = notice === null && !serverChecksDescribed && !background
           ? serverCheckNoteOncePerSession(noteSessionId, cmd, stillAlive)
           : undefined;
         const content = serverNote === undefined ? execContent : `${execContent}\n${serverNote}`;
