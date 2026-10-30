@@ -451,7 +451,7 @@ describe("hermetic test discovery", () => {
       "node scripts/run-hermetic-test-boundary.mjs run",
     );
     expect(pkg.scripts?.typecheck).toBe(
-      "tsc --noEmit && npm run typecheck:test-support",
+      "tsc --noEmit && npm run typecheck:test-support && npm run typecheck:tui",
     );
     expect(pkg.scripts?.["typecheck:test-support"]).toBe(
       "tsc --noEmit --project tsconfig.test-support.json",
