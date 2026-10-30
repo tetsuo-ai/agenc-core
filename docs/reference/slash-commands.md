@@ -88,10 +88,11 @@ The session accounting total uses peak rates before off-peak discounts, or
 provider-reported charges when available. Model and agent breakdowns retain
 that accounting basis. A separate **billed estimate** applies the recorded
 DeepSeek API and eligible QwenCloud DeepSeek schedules to each call's dispatch
-time, at half price off-peak. It matches the status line's `billed est.` figure;
-no estimate is shown when eligible calls lack timestamps. Older status-line
-usage shows `peak est.`. Neither figure changes budget enforcement or stored
-accounting. Unrecorded schedules, holidays and other discounts may make the
+time, at half price off-peak. It matches the status line's figure, labeled
+`off-peak` only when a discount applies. No estimate is shown when eligible
+calls lack timestamps; the status line then shows `peak est.`. Neither figure
+changes budget enforcement or stored accounting. Unrecorded schedules,
+holidays and other discounts may make the
 actual charge lower.
 
 `≥` means unpriced calls are excluded from the known total. Their details

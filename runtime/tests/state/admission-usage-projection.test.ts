@@ -36,7 +36,8 @@ describe("AdmissionUsageProjection", () => {
     projection.update("deepseek", { ...peak, dispatched_at: "2026-10-24T02:00:00Z" });
     expect(projection.capture("parent", 2).signature).not.toBe(before.signature);
     expect(before.read().billedEstimateUsd).toBe(0.25);
-    expect(capture(projection).billedEstimateUsd).toBe(0.125);
+    expect(capture(projection)).toMatchObject({ billedEstimateUsd: 0.125, hasOffPeakDiscount: true });
+    expect(before.read().hasOffPeakDiscount).toBeUndefined();
     for (const [id, fields] of [
       ["qwen", { provider: "qwen", model: "deepseek-v4.1-flash" }],
       ["other-qwen", { provider: "qwen", model: "qwen3.8-max" }],
@@ -53,7 +54,7 @@ describe("AdmissionUsageProjection", () => {
   it.each([undefined, null, "invalid"])("withholds the billed estimate for an eligible call with time %s", (dispatched_at) => {
     const projection = new AdmissionUsageProjection();
     projection.update("old", row({ reservation_id: "old", provider: "deepseek", dispatched_at }));
-    expect(capture(projection).costUsd).toBe(0.25);
+    expect(capture(projection)).toMatchObject({ costUsd: 0.25, hasMissingDispatchTime: true });
     expect(capture(projection).billedEstimateUsd).toBeUndefined();
   });
 

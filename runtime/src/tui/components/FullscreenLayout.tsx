@@ -668,16 +668,16 @@ export type StatusLineUsageItem = {
   readonly spans: readonly StatusLineUsageSpan[];
 };
 
-const BILLED_ESTIMATE_NOTE = ' billed est.';
+const OFF_PEAK_NOTE = ' off-peak';
 const PEAK_ESTIMATE_NOTE = ' peak est.';
 const PRICE_UNKNOWN_SHORT_LABEL = 'no price';
 
-/** Usage figures with an explicit cost basis, independent of the current clock. */
+/** Qualify discounts and missing dispatch times, independent of the current clock. */
 export function statusLineUsageItems(
   contextPercent: number | null,
   cachePercent: number | null,
   spend: string | null,
-  billedEstimate: boolean,
+  costBasis: 'off-peak' | 'peak-estimate' | null,
   valueColor: 'accentSoft' | 'accent' = 'accentSoft',
 ): StatusLineUsageItem[] {
   const items: StatusLineUsageItem[] = [];
@@ -695,9 +695,10 @@ export function statusLineUsageItems(
   }
   if (spend !== null) {
     const figure = /^≥?\$/u.test(spend);
+    const note = costBasis === 'off-peak' ? OFF_PEAK_NOTE : costBasis === 'peak-estimate' ? PEAK_ESTIMATE_NOTE : null;
     items.push({ key: 'spend', spans: !figure
       ? [{ text: spend, color: 'text' }]
-      : [{ text: spend, color: valueColor }, { text: billedEstimate ? BILLED_ESTIMATE_NOTE : PEAK_ESTIMATE_NOTE, color: 'text2' }] });
+      : [{ text: spend, color: valueColor }, ...(note === null ? [] : [{ text: note, color: 'text2' as const }])] });
   }
   return items;
 }
@@ -717,7 +718,7 @@ export function statusLineZdrFact(status: ZeroDataRetentionStatus | null): Statu
   return { key: 'zdr', forms: [[span]] };
 }
 
-/** The usage block with short cache/unknown labels, then the ZDR badge. Cost basis is never abbreviated. */
+/** The usage block with short cache/off-peak/unknown labels, then the ZDR badge. */
 export function statusLineRightFacts(
   items: readonly StatusLineUsageItem[],
   zdr: ZeroDataRetentionStatus | null,
@@ -728,7 +729,8 @@ export function statusLineRightFacts(
       ? item.spans.map(span => (span.text === 'cache ' ? { ...span, text: 'c ' } : span))
       : item.key === 'spend'
         ? item.spans.map(span => (
-          span.text === PRICE_UNKNOWN_LABEL ? { ...span, text: PRICE_UNKNOWN_SHORT_LABEL } : span
+          span.text === OFF_PEAK_NOTE ? { ...span, text: ' op' }
+            : span.text === PRICE_UNKNOWN_LABEL ? { ...span, text: PRICE_UNKNOWN_SHORT_LABEL } : span
         ))
         : null;
     const changed = short !== null && short.some((span, index) => span.text !== item.spans[index]?.text);
@@ -853,7 +855,9 @@ function StatusLineChrome({ columns, onRowsChange }: {
   const effort = useStatusEffort();
   const contextPercent = useStatusContextUsage();
   const cachePercent = useStatusPromptCache();
-  const billedEstimate = useSessionUsage()?.billedEstimateUsd !== undefined;
+  const usage = useSessionUsage();
+  const costBasis = usage?.hasMissingDispatchTime ? 'peak-estimate'
+    : usage?.billedEstimateUsd !== undefined && usage.hasOffPeakDiscount ? 'off-peak' : null;
   const zdr = useStatusZdr();
   const webSearch = useStatusWebSearch();
   // Unset means the default (Light). A session sets it from its runtime options.
@@ -876,7 +880,7 @@ function StatusLineChrome({ columns, onRowsChange }: {
       shellCount,
       runningAgents,
     }),
-    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, billedEstimate, valueColor), zdr, webSearch),
+    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, costBasis, valueColor), zdr, webSearch),
   );
   useLayoutEffect(() => {
     onRowsChange?.(layout.rows);

@@ -99,15 +99,16 @@ provider and model keep no data, red when data may be kept, and a dim `ZDR?`
 when AgenC cannot tell; `/status` says why
 ([providers.md](providers.md#zero-data-retention)).
 
-Spend reads, for example, `$0.750 billed est.`. It sums each call's recorded
+Spend reads, for example, `$0.750 off-peak` when at least one discount applies.
+Otherwise it shows the figure without a suffix. It sums each call's recorded
 cost, applying half price to calls dispatched during the recorded off-peak
 hours for the DeepSeek API and eligible QwenCloud DeepSeek models. The clock
 now and the currently selected model do not change earlier calls' estimates.
-The cost label stays explicit even on narrow terminals. `≥` means some calls
+Narrow terminals may shorten `off-peak` to `op`. `≥` means some calls
 have unknown cost and are excluded from the figure; `price unknown` means a
-fallback price was used. Older usage without the necessary call times and
-the sidecar fallback show `peak est.` instead. Unrecorded schedules (including
-Ollama Cloud) and Chinese public holidays are not discounted, so a billed
+fallback price was used. Eligible priced calls without the necessary dispatch
+times show the accounting figure with `peak est.` instead. Unrecorded schedules
+(including Ollama Cloud) and Chinese public holidays are not discounted, so a billed
 estimate can still exceed the provider's charge. `/cost` shows the accounting
 total at peak rates alongside the billed estimate. Budgets, spend caps,
 stored accounting totals, custom status-line hook costs and print summaries

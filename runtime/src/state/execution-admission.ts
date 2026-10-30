@@ -1911,6 +1911,8 @@ export class ExecutionAdmissionRepository {
         ...usageTotals,
         ...(!hasMissingTime && !usageTotals.costEstimated
           ? { billedEstimateUsd: (rows.reduce((sum, row) => sum + row.cost_nanos, 0) - savingsNanos) / 1_000_000_000 } : {}),
+        ...(savingsNanos > 0 ? { hasOffPeakDiscount: true } : {}),
+        ...(hasMissingTime ? { hasMissingDispatchTime: true } : {}),
         ...(unpricedCallCount > 0 ? { unpricedCalls, unpricedCallCount } : {}),
         models: [...modelRows.values()].map((group) => ({
           model: group[0]!.model ?? "unknown",

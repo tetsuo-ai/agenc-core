@@ -69,15 +69,15 @@ describe("canonical session usage", () => {
       client.acknowledgeCompletion(lease.reservation.reservationId);
     }
     const summary = parent.getUsageSummary!();
-    expect(summary).toMatchObject({ costUsd: 1, billedEstimateUsd: 0.75, heldCostUsd: 0,
+    expect(summary).toMatchObject({ costUsd: 1, billedEstimateUsd: 0.75, hasOffPeakDiscount: true, heldCostUsd: 0,
       models: [{ costUsd: 1 }], agents: [{ costUsd: 0.5 }] });
     const unsubscribe = parent.subscribeUsageSnapshot!(snapshot => expect(snapshot.read()).toEqual(summary));
     unsubscribe();
-    expect(child.getUsageSummary!()).toMatchObject({ costUsd: 0.5, billedEstimateUsd: 0.25 });
+    expect(child.getUsageSummary!()).toMatchObject({ costUsd: 0.5, billedEstimateUsd: 0.25, hasOffPeakDiscount: true });
     expect(parent.getTaskBudgetUsage!()).toEqual({ tokens: 30, calls: 2 });
     kernel.close();
     kernels.splice(kernels.indexOf(kernel), 1);
-    expect(bind(createKernel(), "mixed").getUsageSummary!()).toMatchObject({ costUsd: 1, billedEstimateUsd: 0.75 });
+    expect(bind(createKernel(), "mixed").getUsageSummary!()).toMatchObject({ costUsd: 1, billedEstimateUsd: 0.75, hasOffPeakDiscount: true });
   });
 
   it("counts descendants once, excludes unrelated runs, and scopes child totals", async () => {

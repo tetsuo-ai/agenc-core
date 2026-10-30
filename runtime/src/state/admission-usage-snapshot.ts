@@ -90,6 +90,7 @@ export function captureMaterializedUsage(summary: AdmissionUsageSummary): Admiss
   return {
     runId: captured.runId, sequence: captured.sequence,
     signature: JSON.stringify([encode(captured), captured.billedEstimateUsd,
+      captured.hasOffPeakDiscount === true, captured.hasMissingDispatchTime === true,
       captured.models.map(m => [m.model, m.provider ?? null, encode(m)]),
       captured.agents.map(a => [a.runId, encode(a)]),
       captured.unpricedCalls ?? [], captured.unpricedCallCount ?? 0,
@@ -177,7 +178,7 @@ export class AdmissionUsageProjection {
     const unpricedCallCount = this.unpriced.size;
     const billedEstimateUsd = all[9] === 0 && all[7] === 0 ? (all[0] - all[8]) / 1_000_000_000 : undefined;
     const signature = JSON.stringify([
-      visible(all), billedEstimateUsd,
+      visible(all), billedEstimateUsd, all[8] > 0, all[9] > 0,
       [...models.values()].map(m => [m.model ?? "unknown", m.provider, visible(m.counts)]),
       [...agents].map(([id, counts]) => [id, visible(counts)]),
       unpricedCalls, unpricedCallCount,
@@ -187,6 +188,8 @@ export class AdmissionUsageProjection {
       read: () => ({
         runId, sequence, ...totals(all),
         ...(billedEstimateUsd !== undefined ? { billedEstimateUsd } : {}),
+        ...(all[8] > 0 ? { hasOffPeakDiscount: true } : {}),
+        ...(all[9] > 0 ? { hasMissingDispatchTime: true } : {}),
         ...(unpricedCallCount > 0 ? { unpricedCalls: unpricedCalls.map(call => ({ ...call })), unpricedCallCount } : {}),
         models: [...models.values()].map(m => ({ model: m.model ?? "unknown", ...(m.provider === null ? {} : { provider: m.provider }), ...totals(m.counts) })),
         agents: [...agents].map(([id, counts]) => ({ runId: id, ...totals(counts) })),

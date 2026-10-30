@@ -20,6 +20,8 @@ export function isAdmissionUsageSummary(value: unknown): value is AdmissionUsage
   return record !== null && isUsageTotals(record) &&
     (record.billedEstimateUsd === undefined ||
       (typeof record.billedEstimateUsd === "number" && Number.isFinite(record.billedEstimateUsd) && record.billedEstimateUsd >= 0)) &&
+    (record.hasOffPeakDiscount === undefined || typeof record.hasOffPeakDiscount === "boolean") &&
+    (record.hasMissingDispatchTime === undefined || typeof record.hasMissingDispatchTime === "boolean") &&
     (record.unpricedCallCount === undefined ||
       (typeof record.unpricedCallCount === "number" && Number.isSafeInteger(record.unpricedCallCount) && record.unpricedCallCount >= 0)) &&
     (record.unpricedCalls === undefined || (Array.isArray(record.unpricedCalls) && record.unpricedCalls.length <= 20 && record.unpricedCalls.every((entry: unknown) => {

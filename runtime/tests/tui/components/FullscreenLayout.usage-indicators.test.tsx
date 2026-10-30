@@ -181,7 +181,7 @@ describe("status line cache share", () => {
   test("narrow terminals shorten facts one step at a time and never drop the cache share", async () => {
     const model = modelDisplayString(MODEL);
     const left = ["~/project", model, "high effort", "asks first"].join(" · ");
-    const right = "ctx 9% · cache 91% · $0.0044 billed est.";
+    const right = "ctx 9% · cache 91% · $0.0044";
     // The row is padded by two columns on each side, with a two-column gap before the right block.
     const fits = 4 + stringWidth(left) + 2 + stringWidth(right);
 
@@ -207,11 +207,30 @@ describe("status line cache share", () => {
     const wrapped = (await footer({ columns: 50, effort: "high effort" })).split("\n");
     expect(wrapped).toHaveLength(2);
     expect(wrapped[0]).toMatch(/high( effort)? · asks/u);
-    expect(wrapped[1]).toMatch(/ctx 9% · c(ache)? 91% · \$0\.0044 billed est\.\s*$/u);
+    expect(wrapped[1]).toMatch(/ctx 9% · c(ache)? 91% · \$0\.0044\s*$/u);
   });
 });
 
 describe("per-call billed estimate", () => {
+  test.each([
+    ["DeepSeek off-peak", "deepseek", SATURDAY_OFF_PEAK, "$0.250 off-peak"],
+    ["OpenAI", "openai", undefined, "$0.500"],
+    ["DeepSeek peak", "deepseek", MONDAY_PEAK, "$0.500"],
+    ["missing dispatch time", "deepseek", undefined, "$0.500 peak est."],
+  ])("cost suffix regression: %s", async (_label, provider, dispatched_at, expected) => {
+    const projection = new AdmissionUsageProjection();
+    projection.update("call", {
+      reservation_id: "call", run_id: "session", kind: "model_turn",
+      provider, model: provider === "openai" ? "gpt-5" : "deepseek-flash", status: "reconciled",
+      dispatched_at, actual_cost_nanos: 500_000_000, reserved_cost_nanos: 500_000_000,
+      actual_input_tokens: 10, actual_output_tokens: 5, actual_tokens: 15, resolution_reason: null,
+    });
+    const usage = projection.capture("session", 1).read();
+    expect(usage.costUsd).toBe(0.5);
+    const line = await footer({ usage });
+    expect(line.slice(line.indexOf("$")).trim()).toBe(expected);
+  });
+
   test("mixes peak and off-peak calls, preserves unknown usage and ignores the current clock", async () => {
     const projection = new AdmissionUsageProjection();
     for (const [id, timestamp] of [["peak", MONDAY_PEAK], ["off-peak", SATURDAY_OFF_PEAK]]) {
@@ -236,8 +255,7 @@ describe("per-call billed estimate", () => {
     for (const now of [MONDAY_PEAK, SATURDAY_OFF_PEAK]) {
       vi.useFakeTimers({ toFake: ["Date"], now: new Date(now) });
       const line = await footer({ usage, offPeak: DEEPSEEK_HOURS });
-      expect(line).toContain("≥$0.750 billed est.");
-      expect(line).not.toContain("off-peak");
+      expect(line).toContain("≥$0.750 off-peak");
     }
   });
 });
@@ -246,7 +264,7 @@ describe("status line cost basis", () => {
   test("labels legacy totals as peak estimates regardless of the current window", async () => {
     for (const now of [MONDAY_PEAK, SATURDAY_OFF_PEAK]) {
       vi.useFakeTimers({ toFake: ["Date"], now: new Date(now) });
-      const line = await footer({ offPeak: DEEPSEEK_HOURS, usage: { costUsd: 1, hasUnknownCost: true } });
+      const line = await footer({ offPeak: DEEPSEEK_HOURS, usage: { costUsd: 1, hasUnknownCost: true, hasMissingDispatchTime: true } });
       expect(line).toContain("≥$1.00 peak est.");
       expect(line).not.toContain("off-peak");
     }
@@ -259,26 +277,26 @@ describe("status line cost basis", () => {
     expect(unknown).not.toContain("est.");
   });
 
-  test("keeps the full cost basis on a narrow terminal", async () => {
-    const line = await footer({ columns: 50 });
-    expect(line).toContain("$0.0044 billed est.");
+  test("keeps the off-peak label on a narrow terminal", async () => {
+    const line = await footer({ columns: 50, usage: { ...SPEND, hasOffPeakDiscount: true } });
+    expect(line).toContain("$0.0044 off-peak");
     expect(line.split("\n")).toHaveLength(2);
   });
 
   test("labels compose in the documented order", () => {
-    expect(statusLineUsageItems(9, 91, "$0.0044", true)).toEqual([
+    expect(statusLineUsageItems(9, 91, "$0.0044", "off-peak")).toEqual([
       { key: "ctx", spans: [{ text: "ctx ", color: "text2" }, { text: "9%", color: "accentSoft" }] },
       { key: "cache", spans: [{ text: "cache ", color: "text2" }, { text: "91%", color: "accentSoft" }] },
-      { key: "spend", spans: [{ text: "$0.0044", color: "accentSoft" }, { text: " billed est.", color: "text2" }] },
+      { key: "spend", spans: [{ text: "$0.0044", color: "accentSoft" }, { text: " off-peak", color: "text2" }] },
     ]);
-    expect(statusLineUsageItems(null, null, "≥$0.500", true, "accent")).toEqual([
-      { key: "spend", spans: [{ text: "≥$0.500", color: "accent" }, { text: " billed est.", color: "text2" }] },
+    expect(statusLineUsageItems(null, null, "≥$0.500", "off-peak", "accent")).toEqual([
+      { key: "spend", spans: [{ text: "≥$0.500", color: "accent" }, { text: " off-peak", color: "text2" }] },
     ]);
-    expect(statusLineUsageItems(85, null, "price unknown", true)).toEqual([
+    expect(statusLineUsageItems(85, null, "price unknown", "off-peak")).toEqual([
       { key: "ctx", spans: [{ text: "ctx ", color: "text2" }, { text: "85%", color: "error" }] },
       { key: "spend", spans: [{ text: "price unknown", color: "text" }] },
     ]);
-    expect(statusLineUsageItems(9, null, null, true)).toEqual([
+    expect(statusLineUsageItems(9, null, null, "off-peak")).toEqual([
       { key: "ctx", spans: [{ text: "ctx ", color: "text2" }, { text: "9%", color: "accentSoft" }] },
     ]);
   });
@@ -296,15 +314,15 @@ describe("status line usage colors", () => {
     const theme = getTheme(resolveThemeSetting(setting));
     // The dark ANSI theme's soft accent is a dark magenta; its bright accent reads on black.
     const value = setting === "dark-ansi" ? theme.accent : theme.accentSoft;
-    const { text, colorOf } = await coloredFooter(setting, { offPeak: DEEPSEEK_HOURS });
+    const { text, colorOf } = await coloredFooter(setting, { usage: { ...SPEND, hasOffPeakDiscount: true } });
     const right = text.indexOf("ctx 9%");
-    expect(text.slice(right)).toBe("ctx 9% · cache 91% · $0.0044 billed est.");
+    expect(text.slice(right)).toBe("ctx 9% · cache 91% · $0.0044 off-peak");
     expect(colorOf("ctx", right)).toBe(theme.text2);
     expect(colorOf("9%", right)).toBe(value);
     expect(colorOf("cache", right)).toBe(theme.text2);
     expect(colorOf("91%", right)).toBe(value);
     expect(colorOf("$0.0044", right)).toBe(value);
-    expect(colorOf("billed est.", right)).toBe(theme.text2);
+    expect(colorOf("off-peak", right)).toBe(theme.text2);
     const firstSeparator = text.indexOf("·", right);
     expect(colorOf("·", firstSeparator)).toBe(theme.text2);
     expect(colorOf("·", firstSeparator + 1)).toBe(theme.text2);
@@ -355,7 +373,7 @@ describe("status line ZDR badge", () => {
     expect(footerText).toMatch(/qwen3/u);
     for (const row of rows) expect(stringWidth(row), `${columns}: ${row}`).toBeLessThanOrEqual(columns);
     expect(status.at(-1)!.trimEnd().endsWith("ZDR"), output).toBe(true);
-    expect(status.length).toBe(columns >= 100 ? 1 : 2);
+    expect(status.length).toBe(columns >= 80 ? 1 : 2);
   });
 
   test.each(["olive", "dark", "light"] as const)("%s: green when nothing is kept, red when it may be, dim when unknown", async (setting) => {
@@ -375,7 +393,7 @@ describe("status line ZDR badge", () => {
   test("keeps the badge and the usage colors when the line wraps to two rows", async () => {
     const theme = getTheme(resolveThemeSetting("olive"));
     const { text, colorOf } = await coloredFooter("olive", { columns: 50, effort: "high effort", zdr: ZDR.zdr });
-    expect(text.trimStart()).toMatch(/^ctx 9% · c(ache)? 91% · \$0\.0044 billed est\. · ZDR\s*$/u);
+    expect(text.trimStart()).toMatch(/^ctx 9% · c(ache)? 91% · \$0\.0044 · ZDR\s*$/u);
     expect(colorOf("ZDR", text.lastIndexOf("ZDR"))).toBe(theme.success);
     expect(colorOf("91%", text.indexOf("91%"))).toBe(theme.accentSoft);
     expect(colorOf("ctx", text.indexOf("ctx"))).toBe(theme.text2);
