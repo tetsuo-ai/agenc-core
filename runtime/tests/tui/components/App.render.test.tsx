@@ -4794,6 +4794,22 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("accepts a free-text elicitation without options", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
+      const response = session.services.requestUserInputResolver!.request({
+        turnId: "text-turn", requestId: "text-request", callId: "text-call",
+        questions: [{ id: "details", header: "Details", question: "Describe the change" }],
+      });
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Describethechange"));
+      await providerProbe.promptSubmits.at(-1)!("Use blue", {
+        clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn(),
+      });
+      await expect(response).resolves.toEqual({ answers: { details: { answers: ["Use blue"] } } });
+    });
+  });
+
   test.each(["turn cancel", "card Escape"])("the first %s answers Stop here and dismisses the budget checkpoint", async (path) => {
     const { AgenCTuiApp } = await import("./App.js");
     const cancelActiveTurn = vi.fn(async () => undefined);

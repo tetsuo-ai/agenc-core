@@ -1315,7 +1315,7 @@ function ElicitationPickerOverlay({
   // The elicitation "user" request and AskUserQuestion share the exact same
   // question schema — route it through the interactive picker instead of the
   // plain text prompt so both decision surfaces feel identical.
-  const input = { questions: [question] } as const;
+  const input = { questions: [{ ...question, options: question.options ?? [] }] } as const;
   return (
     <AskUserQuestionOverlay
       key={`${pending.request.requestId}:${pending.index}`}
@@ -5027,7 +5027,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     ) : elicitation.prompt !== null ? (
       elicitation.pending?.kind === "user" &&
       (elicitation.pending.request.questions[elicitation.pending.index]?.options
-        .length ?? 0) >= 2 ? (
+        ?.length ?? 0) >= 2 ? (
         <ElicitationPickerOverlay
           pending={elicitation.pending}
           submit={elicitation.submit}
