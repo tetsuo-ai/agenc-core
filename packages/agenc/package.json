@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/agenc",
-  "version": "0.19.24",
+  "version": "0.19.25",
   "description": "Open source AI coding agent for your terminal. Works with any model provider, including local models.",
   "keywords": [
     "ai",
