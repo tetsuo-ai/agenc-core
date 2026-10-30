@@ -354,6 +354,7 @@ These have their own pages. Short map:
 | `AGENC_DISABLE_TERMINAL_TITLE` | Leaves the terminal title alone |
 | `AGENC_SCROLL_SPEED` | Scroll multiplier |
 | `AGENC_REVIEWER_ID` | Reviewer identity for `agenc state resolve-tool-call` |
+| `AGENC_UPDATE_RELAUNCH` | Internal. AgenC sets it on the TUI it relaunches after an in-place update (Update now), and the new process reads and removes it at startup, before it starts anything else. Do not set it |
 | `COLORFGBG` | Seeds the `auto` theme from terminal foreground/background indexes before the OSC 11 background query can respond |
 | `NO_COLOR` | A nonempty value disables TUI colors and text styling, including terminal-specific color-depth overrides |
 
@@ -511,7 +512,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_U*
 
-`AGENC_USE_CCR_V2`, `AGENC_USE_DATA_STDIN`.
+`AGENC_UPDATE_RELAUNCH`, `AGENC_USE_CCR_V2`, `AGENC_USE_DATA_STDIN`.
 
 ### AGENC_V*
 
