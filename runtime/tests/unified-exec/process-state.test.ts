@@ -81,11 +81,12 @@ describe("session membership", () => {
     second.set(710, sample(710, 1, 700, "python3 chain", "running", 400));
     second.set(711, sample(711, 1, 700, "python3 chain", "running", 400));
     const after = await checkSessionProcesses(700, before!.check, { platform: "linux", table: second });
-    expect(after!.cpuDeltaSeconds).toBeCloseTo(550);
+    // The chains' own 600 s, not the sum's 550: the exited parent took its 50 s along.
+    expect(after!.cpuDeltaSeconds).toBeCloseTo(600);
     expect(after!.exited).toEqual(["python3 pystan_analysis.py (pid 705)"]);
     expect(formatSessionProcessReport(after!, 312_000)).toBe(
       "[no output for 5m12s; 4 processes: python3 x2 running (800s cpu), bash sleeping, tail sleeping." +
-        " CPU since the last check: 550s. Exited since then: python3 pystan_analysis.py (pid 705).]",
+        " CPU since the last check: 600s. Exited since then: python3 pystan_analysis.py (pid 705).]",
     );
   });
 

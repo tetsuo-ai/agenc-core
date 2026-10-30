@@ -209,8 +209,8 @@ export function sessionMembers(table: ProcessTable, rootPid: number): ProcessSam
 /** The previous check of a session, kept on its entry for deltas. */
 export interface SessionProcessCheck {
   readonly cpuSeconds: number;
-  /** "pid:startToken" -> label of every member seen. */
-  readonly members: ReadonlyMap<string, string>;
+  /** "pid:startToken" -> label and CPU seconds of every member seen. */
+  readonly members: ReadonlyMap<string, { readonly label: string; readonly cpuSeconds: number }>;
 }
 
 export interface SessionProcessReport {
@@ -255,16 +255,22 @@ export async function checkSessionProcesses(
   const groups = [...grouped.values()]
     .sort((left, right) => right.cpuSeconds - left.cpuSeconds || right.count - left.count)
     .slice(0, MAX_GROUPS);
-  const seen = new Map<string, string>(members.map((member) => [`${member.pid}:${member.startToken}`, member.label]));
+  const seen = new Map<string, { readonly label: string; readonly cpuSeconds: number }>(members.map((member) =>
+    [`${member.pid}:${member.startToken}`, { label: member.label, cpuSeconds: member.cpuSeconds }]));
   const exited = previous === undefined ? [] : [...previous.members.entries()]
     .filter(([identity]) => !seen.has(identity))
-    .map(([identity, label]) => `${label} (pid ${identity.split(":")[0]})`)
+    .map(([identity, member]) => `${member.label} (pid ${identity.split(":")[0]})`)
     .slice(0, MAX_EXITED);
+  // CPU the members still alive used since the previous check; one that
+  // exited takes its CPU time with it, so a plain difference of sums would hide work.
+  const cpuDeltaSeconds = previous === undefined ? undefined : [...seen.entries()]
+    .reduce((sum, [identity, member]) =>
+      sum + Math.max(0, member.cpuSeconds - (previous.members.get(identity)?.cpuSeconds ?? 0)), 0);
   return {
     groups,
     memberCount: members.length,
     cpuSeconds,
-    ...(previous !== undefined ? { cpuDeltaSeconds: Math.max(0, cpuSeconds - previous.cpuSeconds) } : {}),
+    ...(cpuDeltaSeconds !== undefined ? { cpuDeltaSeconds } : {}),
     exited,
     check: { cpuSeconds, members: seen },
   };
