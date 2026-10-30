@@ -240,14 +240,20 @@ the call (or a `write_stdin` poll in progress) returns with its `session_id`
 and the note `[note: timeoutMs=N passed and the command is still running ...]`,
 and it stays a tracked session. Only an interrupt, a run deadline,
 `kill_process`, session end, or the 8-session limit stop it (at the limit the
-timeout stops it as before and the result says why). Other callers of the
-manager (Monitor, PowerShell) keep the hard timeout. A background session that
-ends on its own while nothing shows it adds one line to the next
-`exec_command`, `write_stdin`, `kill_process` or `list_processes` result of its
-conversation: `[session N ended after 6m21s: exit 1 (...). write_stdin
-session_id=N returns its remaining output.]`, with the signal, and on Linux a
-likely out-of-memory kill when the cgroup `oom_kill` counter rose while it ran.
-A session the model or the user stopped gets no such line. A poll of a session
+timeout stops it as before and the result says why). config.toml
+`exec_hard_timeout = true`, or `AGENC_EXEC_HARD_TIMEOUT=1` in the session
+environment, restores the hard timeout for exec_command (off by default; the
+schema then calls timeoutMs a hard timeout). Other callers of the manager
+(Monitor, PowerShell) keep the hard timeout. A background session that ends on
+its own while nothing shows it adds one line to the next `exec_command`,
+`write_stdin`, `kill_process` or `list_processes` result of its conversation:
+`[session N ended after 6m21s: exit 1 (...). write_stdin session_id=N returns
+its remaining output.]`, with the signal, and on Linux a likely out-of-memory
+kill when the cgroup `oom_kill` counter rose while it ran. When the turn ended,
+or the model kept to other tools, before any such result, the next turn of the
+conversation starts with the same lines as a runtime-only reminder; an idle
+session is never woken for it. A session the model or the user stopped gets no
+such line. A poll of a session
 that has printed nothing for a minute adds one line with its processes' state
 and CPU time, the CPU used since the previous check and the members that
 exited since then (Linux `/proc`, macOS `ps`; nothing on Windows). On Linux

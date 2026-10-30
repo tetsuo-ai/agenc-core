@@ -700,6 +700,7 @@ const ROOT_FIELD_VALIDATORS = {
   defer_rare_tools: fieldValidator("defer_rare_tools", optionalBoolean),
   web_search: enumValidator("web_search", ["auto", "on"]),
   lean_system_prompt: fieldValidator("lean_system_prompt", optionalBoolean),
+  exec_hard_timeout: fieldValidator("exec_hard_timeout", optionalBoolean),
   stream_watchdog_timeout_ms: fieldValidator("stream_watchdog_timeout_ms", optionalNonNegativeInteger),
   stream_quiet_warning_ms: fieldValidator("stream_quiet_warning_ms", optionalNonNegativeInteger),
   provider_outage_wait_ms: fieldValidator("provider_outage_wait_ms", optionalNonNegativeInteger),

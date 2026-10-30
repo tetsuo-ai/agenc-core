@@ -406,6 +406,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace; captured once at runtime ingress; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
 | `AGENC_DEFER_RARE_TOOLS` | On by default in standard sessions: built-in tools most sessions never call load through tool search instead of being sent with every request. They are the delegation tools (`select:spawn_agent` loads spawn_agent with wait_agent, send_message, assign_task, close_agent and list_agents), TodoWrite, Orient, web_fetch, WebSearch, report_agent_job_result (a CSV job loads it for its workers), ImagineImage, ImagineVideo, XSearch, LSP, NotebookRead, the three Ledger tools, VerifyPlanExecution and SendUserMessage; write_stdin, kill_process and list_processes load by themselves when exec_command leaves a session running. The tool search description names them so the model knows they exist, and a loaded tool joins the end of the tool list so the cached prompt prefix before it stays valid. `0` advertises every tool again. Light sessions keep their own initial tool set and defer only the rare tools, and only with `1`. A policy without system.searchTools advertises them all. Overrides config.toml `defer_rare_tools`. Captured with the session environment, so a client sets it per session |
+| `AGENC_EXEC_HARD_TIMEOUT` | `1` restores exec_command's hard timeout: a command that reaches its `timeoutMs` is stopped and the result says `timed_out=true`, as before 0.19.26, and the exec_command schema describes timeoutMs as a hard timeout. Unset or `0`: the command keeps running as a tracked session. Overrides config.toml `exec_hard_timeout`. Captured with the session environment, so a client sets it per session |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |
 | `AGENC_DISABLE_LANDLOCK_FALLBACK` | Do not use the Landlock helper when bubblewrap cannot run |
 | `AGENC_LINUX_SANDBOX_EXE` | Override the Linux sandbox helper path |
@@ -459,7 +460,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_E*
 
-`AGENC_EMIT_TOOL_USE_SUMMARIES`, `AGENC_ENABLE_EXTENDED_KEYS`, `AGENC_ENABLE_SESSION_MEMORY_COMPACT`, `AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT`, `AGENC_ENABLE_XAA`, `AGENC_ENTRYPOINT`, `AGENC_ENVIRONMENT_KIND`, `AGENC_EXPERIMENTAL_AGENT_TEAMS`.
+`AGENC_EMIT_TOOL_USE_SUMMARIES`, `AGENC_ENABLE_EXTENDED_KEYS`, `AGENC_ENABLE_SESSION_MEMORY_COMPACT`, `AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT`, `AGENC_ENABLE_XAA`, `AGENC_ENTRYPOINT`, `AGENC_ENVIRONMENT_KIND`, `AGENC_EXEC_HARD_TIMEOUT`, `AGENC_EXPERIMENTAL_AGENT_TEAMS`.
 
 ### AGENC_F*
 

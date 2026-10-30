@@ -107,6 +107,13 @@ export interface ExecCommandToolConfig extends BashToolConfig {
    * request, so the field is there to use (a lean schema hides it).
    */
   readonly onEscalationAdvised?: () => void;
+  /**
+   * The session restored the hard timeout (config.toml `exec_hard_timeout`
+   * or `AGENC_EXEC_HARD_TIMEOUT`, tools/system/exec-timeout-mode.ts): a
+   * command that reaches timeoutMs is stopped instead of continuing as a
+   * session.
+   */
+  readonly hardTimeout?: () => boolean;
 }
 
 /**
@@ -1280,7 +1287,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 : readOnlyShell !== undefined
                   ? { readOnlyShell, workdir: readOnlyShell.cwd }
                   : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
-              ...(timeoutMs !== undefined ? { timeoutMs, onTimeout: "background" as const } : {}),
+              ...(timeoutMs !== undefined
+                ? { timeoutMs, onTimeout: config?.hardTimeout?.() === true ? "kill" as const : "background" as const }
+                : {}),
               ...(background ? { startInBackground: true } : {}),
               ...(args.__onProgress !== undefined
                 ? { __onProgress: args.__onProgress }

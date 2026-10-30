@@ -9,6 +9,12 @@ import type { LLMTool } from "../llm/types.js";
 export const LIGHT_GLM_SERVER_CHECKS =
   "To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep or timeout (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. Never use `wait` on a server: it keeps the command blocked until its timeout.";
 
+/** exec_command's timeoutMs as a Light session reads it while it continues as a session. */
+const LIGHT_SOFT_TIMEOUT_HINT = "Max wait, ms; then runs on as a session.";
+/** The same field's text when the session restored the hard timeout (tools/system/exec-timeout-mode.ts). */
+const LIGHT_HARD_TIMEOUT_HINT = "Hard timeout, ms.";
+const CANONICAL_HARD_TIMEOUT_HINT = "Hard timeout in ms: a command still running then is stopped.";
+
 // Presentation only; execution and discovery retain the canonical tool. The
 // shared Light wording keeps every field, alternative, default and validation
 // keyword on the wire (null removes only a redundant property description,
@@ -32,7 +38,7 @@ const fieldHints: Readonly<Record<string, Readonly<Record<string, string | null>
   Edit: { file_path: path, old_string: null, new_string: null, replace_all: null },
   Write: { file_path: path, content: null },
   exec_command: {
-    cmd: null, workdir: "Default: workspace root.", timeoutMs: "Max wait, ms; then runs on as a session.",
+    cmd: null, workdir: "Default: workspace root.", timeoutMs: LIGHT_SOFT_TIMEOUT_HINT,
     // The description says what it is for ("Long jobs: background=true"); the
     // first background result says how the session is polled and reported.
     background: null,
@@ -131,6 +137,30 @@ const LIGHT_SESSION_DESCRIPTIONS: Readonly<Record<string, string>> = {
   exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach.",
   write_stdin: "Continue exec_command's session_id; kill_process stops it. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
 };
+
+/**
+ * exec_command as a session that restored the hard timeout presents it:
+ * timeoutMs says the command is stopped, and the description no longer says
+ * a command keeps running after timeoutMs. Other tools are returned as is.
+ */
+export function withHardTimeoutWording(tool: LLMTool): LLMTool {
+  if (tool.function.name !== "exec_command") return tool;
+  const parameters = tool.function.parameters;
+  const properties = parameters.properties as Record<string, { readonly description?: string }> | undefined;
+  const timeout = properties?.timeoutMs;
+  if (properties === undefined || timeout === undefined) return tool;
+  return { ...tool, function: {
+    ...tool.function,
+    description: tool.function.description?.replace("after yield_time_ms or timeoutMs", "after yield_time_ms"),
+    parameters: { ...parameters, properties: {
+      ...properties,
+      timeoutMs: {
+        ...timeout,
+        description: timeout.description === LIGHT_SOFT_TIMEOUT_HINT ? LIGHT_HARD_TIMEOUT_HINT : CANONICAL_HARD_TIMEOUT_HINT,
+      },
+    } },
+  } };
+}
 
 /** Size keywords the model never needs to see; execution still validates them. */
 const LIGHT_SESSION_HIDDEN_KEYWORDS: ReadonlySet<string> = new Set(["minItems", "minLength"]);
