@@ -2,7 +2,7 @@ import figures from 'figures';
 import * as React from 'react';
 import { useContext } from 'react';
 
-import { useQueuedMessage } from '../context/QueuedMessageContext';
+import { useQueuedMessage } from '../context/QueuedMessageContext.js';
 import { Box, Text } from '../ink.js';
 import { formatBriefTimestamp } from '../../utils/formatBriefTimestamp.js';
 import {
@@ -10,7 +10,7 @@ import {
   getRainbowColor,
   isUltrathinkEnabled,
 } from '../../utils/thinking.js';
-import { MessageActionsSelectedContext } from '../components/messageActions';
+import { MessageActionsSelectedContext } from '../components/messageActions.js';
 
 type Props = {
   text: string;

@@ -5,15 +5,15 @@ import React, { createContext, type ReactNode, type RefObject, useCallback, useE
 import { fileURLToPath } from 'url';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { useSessionUsage } from '../context/sessionUsageContext.js';
-import { ModalContext } from '../context/modalContext';
+import { ModalContext } from '../context/modalContext.js';
 import { PromptOverlayProvider } from '../context/promptOverlayContext.js';
-import { useTerminalSize } from '../hooks/useTerminalSize';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import instances from '../ink/instances.js';
 import { Box, Text } from '../ink.js';
 import { isBackgroundTask } from '../../tasks/types.js';
-import type { Message } from '../../types/message';
+import type { Message } from '../../types/message.js';
 import { openBrowser, openPath } from '../../utils/browser.js';
 import { logError } from '../../utils/log.js';
 import { plural } from '../../utils/stringUtils.js';
@@ -25,7 +25,7 @@ import { isNullRenderingAttachment } from '../message-visibility.js';
 import { PromptDialogOverlay, PromptSuggestionsList } from './PromptOverlaySurfaces.js';
 import { permissionModePlainLabel } from '../../permissions/mode-display.js';
 import type { PermissionMode } from '../../permissions/types.js';
-import type { StickyPrompt } from './VirtualMessageList';
+import type { StickyPrompt } from './VirtualMessageList.js';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { PlanModeBanner } from './v2/primitives.js';
 import { useStatusEffort, useStatusContextUsage, useStatusPromptCache, useStatusZdr, useStatusWebSearch } from '../context/statusEffortContext.js';
@@ -420,7 +420,7 @@ export function FullscreenLayout(t0) {
   const [statusRows, setStatusRows] = useState<1 | 2>(1);
   const layoutBudget = calculateFullscreenLayoutBudget(terminalRows, statusRows);
   const isFullscreen = useFullscreenMode();
-  const [stickyPrompt, setStickyPrompt] = useState(null);
+  const [stickyPrompt, setStickyPrompt] = useState<StickyPrompt | null>(null);
   let t4;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t4 = {

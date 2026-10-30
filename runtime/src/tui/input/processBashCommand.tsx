@@ -114,8 +114,8 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     }
     const shellOut = usePowerShell
       ? {
-          stdout: response.data.stdout,
-          stderr: response.data.stderr
+          stdout: (response.data as Awaited<ReturnType<typeof PowerShellTool.call>>["data"]).stdout,
+          stderr: (response.data as Awaited<ReturnType<typeof PowerShellTool.call>>["data"]).stderr
         }
       : canonicalShellOut(resultData);
     const stderr = shellOut.stderr;
@@ -124,8 +124,8 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     // if it truncates, metadata.truncated is set and the bounded content is
     // surfaced directly. Pass stderr:'' to keep it separate for the
     // <bash-stderr> UI tag.
-    const mapped = await processToolResultBlock(shellTool, usePowerShell ? {
-      ...response.data,
+    const mapped = await processToolResultBlock(shellTool as Parameters<typeof processToolResultBlock>[0], usePowerShell ? {
+      ...(response.data as Awaited<ReturnType<typeof PowerShellTool.call>>["data"]),
       stderr: ''
     } : resultData, randomUUID());
     // mapped.content may contain our own <persisted-output> wrapper (trusted

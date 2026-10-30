@@ -43,6 +43,7 @@ export interface AgenCCompactProgressControls {
 export interface PermissionModeRegistryLike {
   current(): ToolPermissionContext;
   update?(next: ToolPermissionContext): Promise<void> | void;
+  subscribeToContextChange: import("../permissions/permission-mode.js").PermissionModeRegistry["subscribeToContextChange"];
   subscribeToModeChange?(
     cb: (
       next: ToolPermissionContext["mode"],

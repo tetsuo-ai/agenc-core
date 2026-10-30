@@ -130,6 +130,14 @@ const providerProbe = {
     ) => Promise<void>
   >,
   promptProps: [] as Array<Record<string, unknown>>,
+  // Mounted useInput listeners in mount order, as Ink dispatches them.
+  inputListeners: [] as Array<
+    (
+      input: string,
+      key: Record<string, boolean>,
+      event: { stopImmediatePropagation(): void },
+    ) => void
+  >,
   defaultStateProviderEnvironments: [] as unknown[],
   processBashCommand:
     typeof vi.fn === "function"
@@ -253,7 +261,27 @@ vi.mock("../ink.js", async () => {
     Text: ({ children }: { children?: React.ReactNode }) =>
       React.createElement("ink-text", null, children),
     useApp: () => ({ exit: providerProbe.inkExit }),
-    useInput: () => {},
+    // Record each mounted listener so a test can type into the shell.
+    useInput: (
+      handler: (typeof providerProbe.inputListeners)[number],
+      options: { readonly isActive?: boolean } = {},
+    ) => {
+      const latest = React.useRef({ handler, options });
+      latest.current = { handler, options };
+      React.useEffect(() => {
+        const listener: (typeof providerProbe.inputListeners)[number] = (
+          ...args
+        ) => {
+          if (latest.current.options.isActive === false) return;
+          latest.current.handler(...args);
+        };
+        providerProbe.inputListeners.push(listener);
+        return () => {
+          const index = providerProbe.inputListeners.indexOf(listener);
+          if (index >= 0) providerProbe.inputListeners.splice(index, 1);
+        };
+      }, []);
+    },
     useTerminalFocus: () => true,
     useTerminalTitle: () => {},
     useAnimationFrame: () => [{ current: null }, 0],
@@ -821,6 +849,32 @@ function createTestStreams(): {
   stdin.unref = () => {};
 
   return { stdout, stdin, output: () => rendered };
+}
+
+const NO_KEY = Object.freeze({
+  upArrow: false, downArrow: false, leftArrow: false, rightArrow: false,
+  pageDown: false, pageUp: false, wheelUp: false, wheelDown: false,
+  home: false, end: false, return: false, escape: false, ctrl: false,
+  shift: false, fn: false, tab: false, backspace: false, delete: false,
+  meta: false, super: false,
+});
+
+/** Dispatch one key to the mounted useInput listeners, as Ink does. */
+async function pressKey(
+  input: string,
+  key: Partial<Record<keyof typeof NO_KEY, boolean>> = {},
+): Promise<void> {
+  let stopped = false;
+  const event = { stopImmediatePropagation: () => { stopped = true; } };
+  for (const listener of [...providerProbe.inputListeners]) {
+    listener(input, { ...NO_KEY, ...key }, event);
+    if (stopped) break;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+async function typeText(text: string): Promise<void> {
+  for (const char of text) await pressKey(char);
 }
 
 function resetShellSurfaceProbe(): void {
@@ -2149,7 +2203,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           containsElementNamed(layoutProps?.overlay, "AgenCPermissionOverlay"),
         ).toBe(true);
         expect(
-          containsElementNamed(layoutProps?.overlay, "ElicitationOverlay"),
+          containsElementNamed(layoutProps?.overlay, "ElicitationRequestOverlay"),
         ).toBe(false);
 
         permissionAbort.abort();
@@ -2695,8 +2749,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             expect(session.enqueueIdleInputBatchOwned).toHaveBeenCalledWith(
               [
                 expect.objectContaining({ content: expect.any(Array) }),
-                expect.stringContaining("<command-name>$reviewer</command-name>"),
-                { content: [{ type: "text", text: "expanded reviewer prompt" }] },
+                { role: "user", content: expect.stringContaining("<command-name>$reviewer</command-name>") },
+                { role: "user", content: "expanded reviewer prompt" },
               ],
               { workspaceView: "agent" },
             );
@@ -2830,7 +2884,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       async (_args: string, context: unknown) => {
         const messages =
           (context as { messages?: readonly unknown[] }).messages ?? [];
-        return [{ type: "text", text: `message-count:${messages.length}` }];
+        return [
+          { type: "text", text: `message-count:${messages.length}` },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+        ];
       },
     );
     mockTuiCommandList.push({
@@ -2896,6 +2953,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           ]),
         }),
       );
+      expect(session.enqueueIdleInput.mock.calls.map(call => call[0])).toEqual([
+        { role: "user", content: expect.stringContaining("<command-name>$reviewer</command-name>") },
+        { role: "user", content: [
+          { type: "text", text: "message-count:1" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+        ] },
+      ]);
       expect(session.submit).toHaveBeenCalledWith("", {
         source: "user",
         clientMessageId: expect.any(String),
@@ -4794,6 +4858,60 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("colors successful recovered submissions with the informational accent", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const subscribers = new Set<(event: unknown) => void>();
+    const session = {
+      ...createSession(),
+      subscribeToEvents: (cb: (event: unknown) => void) => {
+        subscribers.add(cb);
+        return () => { subscribers.delete(cb); };
+      },
+    };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      for (const cb of subscribers) cb({ type: "message_submission_recovered", payload: { clientMessageId: "recovered", code: 0 } });
+      await vi.waitFor(() => expect(providerProbe.currentAppState?.notifications).toMatchObject({
+        current: { color: "accent", text: expect.stringContaining("previous submission completed") },
+      }));
+    });
+  });
+
+  test("answers a free-text elicitation by typing into the shell and pressing Enter", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
+      let answer: unknown = "pending";
+      const response = session.services.requestUserInputResolver!.request({
+        turnId: "text-turn", requestId: "text-request", callId: "text-call",
+        questions: [{ id: "details", header: "Details", question: "Describe the change" }],
+      });
+      void response.then((value) => { answer = value; });
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Describethechange"));
+      // An empty Enter does not answer a free-text question.
+      await pressKey("\r", { return: true });
+      await typeText("Use blue");
+      expect(answer).toBe("pending");
+      await pressKey("\r", { return: true });
+      await vi.waitFor(() => expect(answer).toEqual({ answers: { details: { answers: ["Use blue"] } } }));
+    });
+  });
+
+  test("Escape skips a free-text elicitation like the options picker", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
+      let answer: unknown = "pending";
+      void session.services.requestUserInputResolver!.request({
+        turnId: "skip-turn", requestId: "skip-request", callId: "skip-call",
+        questions: [{ id: "details", header: "Details", question: "Describe the change" }],
+      }).then((value) => { answer = value; });
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("Describethechange"));
+      await typeText("draft");
+      await pressKey("\u001b", { escape: true, meta: true });
+      await vi.waitFor(() => expect(answer).toEqual({ answers: { details: { answers: ["skip"] } } }));
+    });
+  });
+
   test.each(["turn cancel", "card Escape"])("the first %s answers Stop here and dismisses the budget checkpoint", async (path) => {
     const { AgenCTuiApp } = await import("./App.js");
     const cancelActiveTurn = vi.fn(async () => undefined);
@@ -5763,17 +5881,21 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
-  test("persists first-run BYOK provider selection for restarts", async () => {
+  test.each(["local", "remote"])("persists first-run BYOK provider selection with a %s auth backend", async (backendKind) => {
+    const { LocalAuthBackend } = await import("../../auth/backends/local.js");
     const { AgenCTuiApp } = await import("./App.js");
     const savedKeys = new Map<string, string>();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-persist-"));
+    const fallbackSave = vi.spyOn(LocalAuthBackend.prototype, "saveByokKey").mockImplementation(async ({ provider, apiKey }) => {
+      savedKeys.set(provider, apiKey);
+    });
     const session = {
       ...createSession({
-        authBackend: {
+        authBackend: (backendKind === "remote" ? { kind: "remote" } : {
           saveByokKey: async ({ provider, apiKey }: { provider: string; apiKey: string }) => {
             savedKeys.set(provider, apiKey);
           },
-        } as never,
+        }) as never,
         configStore: createAppConfigStore(defaultConfig(), agencHome),
       }),
       setPendingProviderSwitch: vi.fn(),
@@ -5830,6 +5952,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
+      fallbackSave.mockRestore();
       fetchSpy.mockRestore();
       providerProbe.promptSubmits.length = 0;
       if (previousAgencHome === undefined) {

@@ -13,6 +13,7 @@ import React, {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -116,6 +117,7 @@ import {
   Box,
   Text,
   useApp,
+  useInput,
   useTerminalFocus,
   useTerminalTitle,
   type Key,
@@ -131,7 +133,8 @@ import {
 } from "../update-relaunch-state.js";
 import { useUpdateFollow } from "../hooks/useUpdateFollow.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
-import { useInputCapture } from "../keybindings/useKeybinding.js";
+import { useInputCapture, useKeybindings } from "../keybindings/useKeybinding.js";
+import { useRegisterOverlay } from "../context/overlayContext.js";
 import { clearSharedDoublePressState } from "../hooks/useDoublePress.js";
 import {
   calculateContextPercentages,
@@ -141,6 +144,7 @@ import {
   getCurrentUsage,
 } from "../../utils/tokens.js";
 import type { LLMMessage } from "../../llm/types.js";
+import { fromRuntimeMessageContent } from "../../llm/content-conversion.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -308,8 +312,6 @@ type ComposerSubmission = {
   readonly clientMessageId: string;
   readonly draftRestoreValue: string;
   readonly pastedContents: Record<number, any>;
-  readonly attachmentIds: readonly string[];
-  readonly acknowledge: () => void;
   value: string;
   options: SessionSubmitOptions;
   inputs: readonly LLMMessage[];
@@ -334,7 +336,7 @@ function submissionRecoveryNotification(event: unknown): {
     notification: {
       key: `submission-recovered:${payload.clientMessageId}`,
       text: `The previous submission ${outcome}. It was not run again.${detail}`,
-      color: payload.code === 0 ? "info" : "warning",
+      color: payload.code === 0 ? "accent" : "warning",
       priority: "immediate",
       timeoutMs: 10_000,
       wrap: true,
@@ -550,7 +552,10 @@ export interface ElicitationPromptState {
 }
 export interface TuiElicitationState {
   readonly prompt: ElicitationPromptState | null;
+  readonly pending: PendingElicitation | null;
   submit(value: string): boolean;
+  /** Settles `expected` only while it is still the active request. */
+  submitPending(expected: PendingElicitation, value: string): boolean;
 }
 interface AgenCTuiElicitationSession {
   readonly services: {
@@ -868,7 +873,7 @@ export function createElicitationQueue(): ElicitationQueue {
         };
       }
       const [pending] = queued.splice(queuedIndex, 1);
-      pending?.resolve(
+      (pending as McpUrlPending | undefined)?.resolve(
         response ?? {
           action: "accept",
         },
@@ -1068,6 +1073,12 @@ function resolveOnCleanup(pending: PendingElicitation): void {
 }
 export interface ElicitationResolverController {
   submit(value: string): boolean;
+  /**
+   * Settles `expected` only while it is still the active request. A key that
+   * was meant for a request that has since been answered is rejected, so it
+   * can never answer the next one before the user sees it.
+   */
+  submitPending(expected: PendingElicitation, value: string): boolean;
   completeMcpUrl(
     serverName: string,
     requestId: McpRequestId,
@@ -1207,6 +1218,12 @@ export function installElicitationResolvers(
       publish(queue.advance(settlePendingOnSubmit(active, value)));
       return true;
     },
+    submitPending(expected, value) {
+      const active = queue.current();
+      if (active === null || active !== expected) return false;
+      publish(queue.advance(settlePendingOnSubmit(active, value)));
+      return true;
+    },
     completeMcpUrl,
     cleanup() {
       unsubscribeCompletion?.();
@@ -1249,67 +1266,68 @@ export function subscribeToMcpUrlCompletions(
     }) ?? (() => {})
   );
 }
-export function useTuiElicitation(session) {
-  const $ = _c(8);
-  const [pending, setPending] = useState(null);
-  const controllerRef = useRef(null);
-  let t0;
-  let t1;
-  if ($[0] !== session) {
-    t0 = () => {
-      const controller = installElicitationResolvers(session, setPending);
-      const unsubscribeCompletions = subscribeToMcpUrlCompletions(
-        session,
-        controller,
-      );
-      controllerRef.current = controller;
-      return () => {
-        unsubscribeCompletions();
-        controller.cleanup();
-        if (controllerRef.current === controller) {
-          controllerRef.current = null;
-        }
-      };
+export function useTuiElicitation(session): TuiElicitationState {
+  const [pending, setPending] = useState<PendingElicitation | null>(null);
+  const controllerRef = useRef<ElicitationResolverController | null>(null);
+  useEffect(() => {
+    const controller = installElicitationResolvers(session, setPending);
+    const unsubscribeCompletions = subscribeToMcpUrlCompletions(
+      session,
+      controller,
+    );
+    controllerRef.current = controller;
+    return () => {
+      unsubscribeCompletions();
+      controller.cleanup();
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+      }
     };
-    t1 = [session];
-    $[0] = session;
-    $[1] = t0;
-    $[2] = t1;
-  } else {
-    t0 = $[1];
-    t1 = $[2];
-  }
-  useEffect(t0, t1);
-  let t2;
-  if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = (value) => controllerRef.current?.submit(value) ?? false;
-    $[3] = t2;
-  } else {
-    t2 = $[3];
-  }
-  const submit = t2;
-  let t3;
-  if ($[4] !== pending) {
-    t3 = pending === null ? null : pendingToPrompt(pending);
-    $[4] = pending;
-    $[5] = t3;
-  } else {
-    t3 = $[5];
-  }
-  const prompt = t3;
-  let t4;
-  if ($[6] !== prompt) {
-    t4 = {
-      prompt,
-      submit,
-      pending,
-    };
-    $[6] = prompt;
-    $[7] = t4;
-  } else {
-    t4 = $[7];
-  }
-  return t4;
+  }, [session]);
+  const submit = useCallback(
+    (value: string) => controllerRef.current?.submit(value) ?? false,
+    [],
+  );
+  const submitPending = useCallback(
+    (expected: PendingElicitation, value: string) =>
+      controllerRef.current?.submitPending(expected, value) ?? false,
+    [],
+  );
+  const prompt = useMemo(
+    () => (pending === null ? null : pendingToPrompt(pending)),
+    [pending],
+  );
+  return useMemo(
+    () => ({ prompt, pending, submit, submitPending }),
+    [prompt, pending, submit, submitPending],
+  );
+}
+/** Escape on a question: a deliberate skip, or Stop here at a budget checkpoint. */
+function elicitationSkipAnswer(pending: UserPending): string {
+  return pending.request.callId.startsWith("task-budget-checkpoint-")
+    ? "Stop here"
+    : "skip";
+}
+/**
+ * One answer per shown request. Ink handles every key of one stdin read
+ * before React renders again, so a second Enter in the same read would
+ * otherwise answer whatever request comes next before it is drawn. The latch
+ * clears when the next request or field renders.
+ */
+function useAnswerLatch(request: PendingElicitation): {
+  readonly isSettled: () => boolean;
+  readonly settle: () => void;
+} {
+  const settledRef = useRef(false);
+  useLayoutEffect(() => {
+    settledRef.current = false;
+  }, [request]);
+  return {
+    isSettled: () => settledRef.current,
+    settle: () => {
+      settledRef.current = true;
+    },
+  };
 }
 function ElicitationPickerOverlay({
   pending,
@@ -1318,12 +1336,18 @@ function ElicitationPickerOverlay({
   readonly pending: UserPending;
   readonly submit: (value: string) => boolean;
 }): React.ReactElement | null {
+  const latch = useAnswerLatch(pending);
+  const answer = (value: string): void => {
+    if (latch.isSettled()) return;
+    latch.settle();
+    submit(value);
+  };
   const question = pending.request.questions[pending.index];
   if (question === undefined) return null;
   // The elicitation "user" request and AskUserQuestion share the exact same
   // question schema — route it through the interactive picker instead of the
   // plain text prompt so both decision surfaces feel identical.
-  const input = { questions: [question] } as const;
+  const input = { questions: [{ ...question, options: question.options ?? [] }] } as const;
   return (
     <AskUserQuestionOverlay
       key={`${pending.request.requestId}:${pending.index}`}
@@ -1333,78 +1357,190 @@ function ElicitationPickerOverlay({
         const record = updatedInput as { answers?: Record<string, unknown> };
         const raw = record.answers?.[question.question];
         if (typeof raw === "string" && raw.trim().length > 0) {
-          submit(raw);
+          answer(raw);
         }
       }}
-      onSkip={() => submit(pending.request.callId.startsWith("task-budget-checkpoint-") ? "Stop here" : "skip")}
+      onSkip={() => answer(elicitationSkipAnswer(pending))}
     />
   );
 }
 
-export function ElicitationOverlay(t0) {
-  const $ = _c(13);
-  const { prompt } = t0;
+/**
+ * How the text overlay answers the active request. The composer is hidden
+ * while a request is pending, so the overlay owns the answer input.
+ */
+export interface ElicitationAnswerControls {
+  /** Changes for each question or field, so typed text never carries over. */
+  readonly key: string;
+  /** The request on screen. Answers are bound to it. */
+  readonly request: PendingElicitation;
+  /** A free-text question needs text. MCP requests also take an empty Enter. */
+  readonly requireText: boolean;
+  /** What Escape does, shown in the hint. */
+  readonly cancelLabel: "skip" | "cancel";
+  submit(value: string): void;
+  cancel(): void;
+}
+
+export function elicitationAnswerControls(
+  pending: PendingElicitation | null,
+  submitPending: (expected: PendingElicitation, value: string) => boolean,
+): ElicitationAnswerControls | undefined {
+  if (pending === null) return undefined;
+  // Bound to the request on screen: a call for an older request is rejected.
+  const submit = (value: string): void => {
+    submitPending(pending, value);
+  };
+  if (pending.kind === "user") {
+    // Escape matches the options picker above.
+    return {
+      key: `user:${pending.request.requestId}:${pending.index}`,
+      request: pending,
+      requireText: true,
+      cancelLabel: "skip",
+      submit,
+      cancel: () => submit(elicitationSkipAnswer(pending)),
+    };
+  }
+  const index = pending.kind === "mcp-form" ? pending.index : 0;
+  return {
+    key: `mcp:${pending.request.serverName}:${String(pending.request.requestId)}:${index}`,
+    request: pending,
+    requireText: false,
+    cancelLabel: "cancel",
+    submit,
+    cancel: () => submit("cancel"),
+  };
+}
+
+function ElicitationAnswerInput({
+  placeholder,
+  controls,
+}: {
+  readonly placeholder: string;
+  readonly controls: ElicitationAnswerControls;
+}): React.ReactElement {
+  const [text, setText] = useState("");
+  // Keys from one stdin read are handled before React renders again, so
+  // Enter must read the live text, not the text of the last render.
+  const textRef = useRef("");
+  const update = (next: string): void => {
+    textRef.current = next;
+    setText(next);
+  };
+  const latch = useAnswerLatch(controls.request);
+  // Same keys as the free-text answer in AskUserQuestionOverlay. Only the
+  // keys handled here are claimed, so global shortcuts keep working.
+  useInput((input, key, event) => {
+    const printable =
+      input.length > 0 && !key.ctrl && !key.meta && !key.super && !key.tab;
+    const handled =
+      key.return || key.escape || key.backspace || key.delete || printable;
+    if (!handled) return;
+    event.stopImmediatePropagation();
+    // Keys after an answer and before the next request renders are dropped.
+    if (latch.isSettled()) return;
+    if (key.return) {
+      const value = textRef.current;
+      if (controls.requireText && value.trim().length === 0) return;
+      latch.settle();
+      update("");
+      controls.submit(value);
+      return;
+    }
+    if (key.escape) {
+      latch.settle();
+      controls.cancel();
+      return;
+    }
+    if (key.backspace || key.delete) {
+      update(Array.from(textRef.current).slice(0, -1).join(""));
+      return;
+    }
+    update(textRef.current + input);
+  });
+  return (
+    <Box flexDirection="column">
+      <Text>
+        {`› ${text}▏`}
+        {text.length === 0 ? <Text dimColor={true}>{placeholder}</Text> : null}
+      </Text>
+      <Text dimColor={true}>{`⏎ submit · esc ${controls.cancelLabel}`}</Text>
+    </Box>
+  );
+}
+
+export function ElicitationOverlay({
+  prompt,
+  answer,
+}: {
+  readonly prompt: ElicitationPromptState | null;
+  /** Mounts the answer input. Without it the overlay only shows the prompt. */
+  readonly answer?: ElicitationAnswerControls;
+}): React.ReactElement | null {
   if (prompt === null) {
     return null;
   }
-  let t1;
-  if ($[0] !== prompt.title) {
-    t1 = <Text bold={true}>{prompt.title}</Text>;
-    $[0] = prompt.title;
-    $[1] = t1;
-  } else {
-    t1 = $[1];
-  }
-  let t2;
-  if ($[2] !== prompt.message) {
-    t2 = <Text>{prompt.message}</Text>;
-    $[2] = prompt.message;
-    $[3] = t2;
-  } else {
-    t2 = $[3];
-  }
-  let t3;
-  if ($[4] !== prompt.detailLines) {
-    t3 = prompt.detailLines.map(_temp);
-    $[4] = prompt.detailLines;
-    $[5] = t3;
-  } else {
-    t3 = $[5];
-  }
-  let t4;
-  if ($[6] !== prompt.placeholder) {
-    t4 = <Text dimColor={true}>{prompt.placeholder}</Text>;
-    $[6] = prompt.placeholder;
-    $[7] = t4;
-  } else {
-    t4 = $[7];
-  }
-  let t5;
-  if ($[8] !== t1 || $[9] !== t2 || $[10] !== t3 || $[11] !== t4) {
-    t5 = (
-      <Box flexDirection="column" width="100%" paddingX={1}>
-        {t1}
-        {t2}
-        {t3}
-        {t4}
-      </Box>
-    );
-    $[8] = t1;
-    $[9] = t2;
-    $[10] = t3;
-    $[11] = t4;
-    $[12] = t5;
-  } else {
-    t5 = $[12];
-  }
-  return t5;
-}
-function _temp(line) {
   return (
-    <Text key={line} dimColor={true}>
-      {line}
-    </Text>
+    <Box flexDirection="column" width="100%" paddingX={1}>
+      <Text bold={true}>{prompt.title}</Text>
+      <Text>{prompt.message}</Text>
+      {prompt.detailLines.map((line) => (
+        <Text key={line} dimColor={true}>
+          {line}
+        </Text>
+      ))}
+      {answer === undefined ? (
+        <Text dimColor={true}>{prompt.placeholder}</Text>
+      ) : (
+        <ElicitationAnswerInput
+          key={answer.key}
+          placeholder={prompt.placeholder}
+          controls={answer}
+        />
+      )}
+    </Box>
   );
+}
+
+/**
+ * The overlay the shell mounts for the active request: the options picker
+ * for a question with options, otherwise the text overlay with its input.
+ */
+export function ElicitationRequestOverlay({
+  elicitation,
+}: {
+  readonly elicitation: TuiElicitationState;
+}): React.ReactElement | null {
+  const { prompt, pending, submitPending } = elicitation;
+  const shown = prompt !== null && pending !== null;
+  const controls = elicitationAnswerControls(pending, submitPending);
+  // A shown request owns Escape and Ctrl+C, like an approval card. Without
+  // this, the shell's turn cancel takes Escape first while a turn runs, and
+  // the request stays on screen unanswered. Ctrl+C answers the same way as
+  // Escape: skip for a question, cancel for an MCP request.
+  useRegisterOverlay("elicitation", shown);
+  useKeybindings(
+    {
+      "app:interrupt": () => {
+        controls?.cancel();
+      },
+    },
+    { isActive: shown },
+  );
+  if (!shown || pending === null) return null;
+  if (
+    pending.kind === "user" &&
+    (pending.request.questions[pending.index]?.options?.length ?? 0) >= 2
+  ) {
+    return (
+      <ElicitationPickerOverlay
+        pending={pending}
+        submit={(value) => submitPending(pending, value)}
+      />
+    );
+  }
+  return <ElicitationOverlay prompt={prompt} answer={controls} />;
 }
 type AppProviderProps = {
   getFpsMetrics: () => FpsMetrics | undefined;
@@ -2293,7 +2429,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // (`/goal <objective>` on a cold TUI) lost its prompt. The id read here is
   // the mount's identity for the queue, fixed for the life of the session
   // object; `/status` reads the live id from the session itself.
-  const commandQueueOwner = useMemo<QueuedCommandOwner>(
+  const commandQueueOwner = useMemo<Extract<QueuedCommandOwner, { kind: "tui_mount" }>>(
     () => ({
       kind: "tui_mount",
       mountId: `tui-queue-${randomUUID()}`,
@@ -3260,7 +3396,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         getSessionUsage: () => transcript.sessionUsage ?? null,
         getAppState: () => appStateStore.getState(),
         setModel,
-        setAppState,
+        setAppState: setAppState as NonNullable<SlashCommandContext["appState"]>["setAppState"],
         setToolJSX,
         tools: availableTools,
         requestResumeSession: (sessionId: string) => {
@@ -3788,8 +3924,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             );
             submission.inputs = [
               ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
-              loaded.metadata,
-              { content: loaded.blocks },
+              { role: "user", content: loaded.metadata },
+              { role: "user", content: fromRuntimeMessageContent(loaded.blocks.map(block =>
+                block.type === "image" && block.source.type === "base64"
+                  ? { type: "image_url", image_url: {
+                      url: `data:${block.source.media_type};base64,${block.source.data}`,
+                    } }
+                  : block,
+              )) },
             ];
             submission.value = "";
             submission.options = {
@@ -3996,7 +4138,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 "whoami",
                 "subscription",
                 "usage",
-              ].includes(commandName),
+              ].includes(commandName as string),
             });
             return {
               forwardedToModel: false,
@@ -4357,7 +4499,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     // the daemon and leaving its pending question mounted.
     if (elicitation.pending?.kind === "user" &&
         elicitation.pending.request.callId.startsWith("task-budget-checkpoint-")) {
-      elicitation.submit("Stop here");
+      elicitation.submitPending(elicitation.pending, "Stop here");
       return;
     }
     // Fire the local signal first so cooperative command contexts see the
@@ -4400,7 +4542,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     setPendingSubmission(false);
     activeModelSubmissionTokensRef.current.clear();
     setActiveModelSubmissionCount(0);
-  }, [isLoading, isCompacting, turnAbortController, props.session, elicitation.pending, elicitation.submit]);
+  }, [isLoading, isCompacting, turnAbortController, props.session, elicitation.pending, elicitation.submitPending]);
   const handleAgentsKilled = useCallback(
     (agents: readonly KilledAgentSummary[]) => {
       const text = formatAgentsKilledNotification(agents);
@@ -5083,20 +5225,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         />
       </>
     ) : elicitation.prompt !== null ? (
-      elicitation.pending?.kind === "user" &&
-      (elicitation.pending.request.questions[elicitation.pending.index]?.options
-        .length ?? 0) >= 2 ? (
-        <ElicitationPickerOverlay
-          pending={elicitation.pending}
-          submit={elicitation.submit}
-        />
-      ) : (
-        <ElicitationOverlay prompt={elicitation.prompt} />
-      )
+      <ElicitationRequestOverlay elicitation={elicitation} />
     ) : null;
 
   // Phase 5 #53: hide PromptInput while a permission overlay or
   // elicitation prompt is active so a single Enter doesn't fire both.
+  // Text answers go through the overlay's own input.
   const showPromptInput = shouldShowPromptInputState({
     isMessageSelectorVisible,
     permissionRequestCount: permissionRequests.length,

@@ -1,3 +1,4 @@
+import type { AuthBackend } from "../auth/backend.js";
 import React, {
   useCallback,
   useContext,
@@ -213,7 +214,7 @@ export interface OnboardingAuthPrompt {
 
 export interface FirstRunOnboardingContext {
   readonly agencHome?: string;
-  readonly authBackend?: FirstRunByokAuthBackend;
+  readonly authBackend?: AuthBackend | FirstRunByokAuthBackend;
   readonly config: AgenCConfig;
   readonly cwd?: string;
   readonly env?: OnboardingEnv;
@@ -1226,7 +1227,8 @@ async function saveOnboardingByokKey(
   provider: BuiltInProviderSlug,
   apiKey: string,
 ): Promise<void> {
-  if (context.authBackend !== undefined) {
+  if (context.authBackend !== undefined && "saveByokKey" in context.authBackend &&
+      typeof context.authBackend.saveByokKey === "function") {
     await context.authBackend.saveByokKey({ provider, apiKey });
     return;
   }

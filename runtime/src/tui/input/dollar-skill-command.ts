@@ -12,7 +12,6 @@ import { parseToolRuleStringsFromCLI } from "../../permissions/settings.js";
 import { runWithCurrentRuntimeSession } from "../../session/current-session.js";
 import type { Session } from "../../session/session.js";
 import { isRepositoryControlledSkillSource } from "../../skills/repository-skill-boundary.js";
-import type { EffortValue } from "../../utils/effort.js";
 import { registerSkillHooks } from "../../utils/hooks/registerSkillHooks.js";
 import {
   isRestrictedToPluginOnly,
@@ -32,7 +31,7 @@ interface LoadedDollarSkillCommand {
   readonly skillContent: string;
   readonly allowedTools?: string[];
   readonly model?: string;
-  readonly effort?: EffortValue;
+  readonly effort?: Extract<Command, { type: "prompt" }>["effort"];
 }
 
 export function parseDollarSkillCommand(

@@ -71,7 +71,7 @@ export function usePromptOverlayDialog() {
  * Register suggestion data for the floating overlay. Clears on unmount.
  * No-op outside the provider (non-fullscreen renders inline instead).
  */
-export function useSetPromptOverlay(data: PromptOverlayData) {
+export function useSetPromptOverlay(data: PromptOverlayData | null) {
   const $ = _c(8);
   const set = useContext(SetContext);
   let t0;

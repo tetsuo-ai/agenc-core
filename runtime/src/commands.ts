@@ -1,5 +1,7 @@
 import { getCommandName, isCommandEnabled } from "./commands/lookup.js";
 export { getCommandName, isCommandEnabled, findCommand, hasCommand, getCommand } from "./commands/lookup.js";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages.mjs";
+import type { HooksSettings } from "./schemas/hooks.js";
 import type * as React from "react";
 import { resolve } from "node:path";
 
@@ -100,10 +102,12 @@ export type PromptCommand = {
   agent?: string;
   effort?: string;
   shell?: "bash" | "powershell";
-  getPromptForCommand?: (
+  skillRoot?: string;
+  hooks?: HooksSettings;
+  getPromptForCommand: (
     args: string,
     context: unknown,
-  ) => Promise<unknown[]>;
+  ) => Promise<ContentBlockParam[]>;
 };
 
 export type LocalCommand = {

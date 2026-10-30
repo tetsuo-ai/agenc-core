@@ -60,14 +60,14 @@ const harness = vi.hoisted(() => ({
     ]
   }),
   globalConfig: {
-    autoInstallIdeExtension: true,
+    ideConnector: { autoInstallExtension: true },
     source: 'swarm-197',
   },
   logError: vi.fn(),
 }))
 
-vi.mock('../../../src/utils/config.js', () => ({
-  getRuntimeState: () => harness.globalConfig,
+vi.mock('../../../src/tui/hooks/useSettings.js', () => ({
+  useSettings: () => harness.globalConfig,
 }))
 
 vi.mock('../../../src/tui/startup/memoryDiagnostics.js', () => ({

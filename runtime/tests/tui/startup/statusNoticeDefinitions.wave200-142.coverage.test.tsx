@@ -82,7 +82,7 @@ function baseContext(
 ): StatusNoticeContext {
   return {
     config: {
-      autoInstallIdeExtension: true,
+      ideConnector: { autoInstallExtension: true },
     } as StatusNoticeContext['config'],
     homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
     providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
@@ -243,7 +243,7 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
       getActiveNotices(
         baseContext({
           config: {
-            autoInstallIdeExtension: false,
+            ideConnector: { autoInstallExtension: false },
           } as StatusNoticeContext['config'],
         }),
       ).map(notice => notice.id),

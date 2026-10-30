@@ -77,7 +77,11 @@ export function resetUserCache(): void {
 export const getCoreUserData = memoize(
   (includeAccountMetadata?: boolean): CoreUserData => {
     const deviceId = getOrCreateUserID()
-    const config = getRuntimeState()
+    // Legacy helper has no production callers. Keep its read shape local;
+    // this retired field is not part of persisted GlobalRuntimeState.
+    const config: ReturnType<typeof getRuntimeState> & {
+      readonly agencCodeFirstTokenDate?: string
+    } = getRuntimeState()
 
     let subscriptionType: string | undefined
     let rateLimitTier: string | undefined

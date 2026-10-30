@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { filterToolProgressMessages, findToolByName, type Tools } from '../../tools/Tool';
+import { filterToolProgressMessages, findToolByName, type Tools } from '../../tools/Tool.js';
 import type { AgenCToolResultBlockParam, AgenCToolUseBlockParam, GroupedToolUseMessage } from '../../types/message.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 type Props = {

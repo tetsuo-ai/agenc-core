@@ -5,11 +5,11 @@ import { useState } from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
-import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
-import { Select } from './CustomSelect/select';
-import { Byline } from './design-system/Byline';
-import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
-import { Pane } from './design-system/Pane';
+import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
+import { Select } from './CustomSelect/select.js';
+import { Byline } from './design-system/Byline.js';
+import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
+import { Pane } from './design-system/Pane.js';
 export type Props = {
   currentValue: boolean;
   onSelect: (enabled: boolean) => void;
@@ -29,7 +29,7 @@ export function ThinkingToggle(t0) {
     onCancel();
     return true;
   });
-  const [confirmationPending, setConfirmationPending] = useState(null);
+  const [confirmationPending, setConfirmationPending] = useState<boolean | null>(null);
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = [{

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useTheme } from '../components/design-system/ThemeProvider'
+import { useTheme } from '../components/design-system/ThemeProvider.js'
 import type { useSelection } from '../ink/hooks/use-selection.js'
 import { useSettings } from './useSettings.js'
 import { getTheme } from '../../utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item

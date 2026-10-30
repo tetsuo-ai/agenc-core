@@ -15,7 +15,7 @@ import type {
 import {
   useIsModalOverlayActive,
   useRegisterOverlay,
-} from "../context/overlayContext";
+} from "../context/overlayContext.js";
 import { KeyboardEvent } from "../ink/events/keyboard-event.js";
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>
 import { useInput } from "../ink.js";
@@ -30,8 +30,8 @@ import type { AgentDefinition } from "src/tools/AgentTool/loadAgentsDir.js";
 import type {
   InlineGhostText,
   PromptInputMode,
-} from "../../types/textInputTypes";
-import { isAgentSwarmsEnabled } from "../../utils/agentSwarmsEnabled";
+} from "../../types/textInputTypes.js";
+import { isAgentSwarmsEnabled } from "../../utils/agentSwarmsEnabled.js";
 import {
   generateProgressiveArgumentHint,
   parseArguments,
@@ -70,8 +70,8 @@ import {
   findLongestCommonPrefix,
   onIndexBuildComplete,
   startBackgroundCacheRefresh,
-} from "./fileSuggestions";
-import { generateUnifiedSuggestions } from "./unifiedSuggestions";
+} from "./fileSuggestions.js";
+import { generateUnifiedSuggestions } from "./unifiedSuggestions.js";
 import {
   extractCompletionToken,
   extractSearchToken,
@@ -2034,7 +2034,7 @@ export function useTypeahead({
       // reopen the picker scoped to the substring before the cursor instead
       // of swallowing the keystroke silently. This makes mid-cursor Tab
       // behave like terminal readline completion.
-      if (mode !== "bash" && input.trim() !== "") {
+      if ((mode as PromptInputMode) !== "bash" && input.trim() !== "") {
         const atToken = extractCompletionToken(input, cursorOffset, true);
         if (atToken && atToken.token.startsWith("@")) {
           void handleTab();

@@ -2,23 +2,23 @@ import { c as _c } from "react-compiler-runtime";
 import * as path from 'path';
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { useRegisterOverlay } from '../context/overlayContext';
-import { generateFileSuggestions } from '../hooks/fileSuggestions';
-import { useTerminalSize } from '../hooks/useTerminalSize';
+import { useRegisterOverlay } from '../context/overlayContext.js';
+import { generateFileSuggestions } from '../hooks/fileSuggestions.js';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { useOptionalSetAppState } from '../state/AppState.js';
 import { Text } from '../ink.js';
-import { getCwd } from '../../utils/cwd';
-import { openFileInExternalEditor } from '../../utils/editor';
-import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
-import { highlightMatch } from '../../utils/highlightMatch';
-import { logError } from '../../utils/log';
-import { readFileInRange } from '../../utils/readFileInRange';
+import { getCwd } from '../../utils/cwd.js';
+import { openFileInExternalEditor } from '../../utils/editor.js';
+import { truncatePathMiddle, truncateToWidth } from '../../utils/format.js';
+import { highlightMatch } from '../../utils/highlightMatch.js';
+import { logError } from '../../utils/log.js';
+import { readFileInRange } from '../../utils/readFileInRange.js';
 import {
   type CanonicalSettingsAuthority,
   runWithCanonicalSettingsAuthority,
 } from '../../utils/settings/canonicalAuthority.js';
-import { FuzzyPicker, computeFuzzyPickerPreviewBudget, computeFuzzyPickerVisibleCount } from './design-system/FuzzyPicker';
-import { LoadingState } from './design-system/LoadingState';
+import { FuzzyPicker, computeFuzzyPickerPreviewBudget, computeFuzzyPickerVisibleCount } from './design-system/FuzzyPicker.js';
+import { LoadingState } from './design-system/LoadingState.js';
 type Props = {
   onDone: () => void;
   onInsert: (text: string) => void;
@@ -82,7 +82,7 @@ export function QuickOpenDialog(t0) {
   const [results, setResults] = useState(t1);
   const [query, setQuery] = useState("");
   const [focusedPath, setFocusedPath] = useState(undefined);
-  const [preview, setPreview] = useState(null);
+  const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
   const queryGenRef = useRef(0);
   let t2;
   let t3;
@@ -229,7 +229,7 @@ export function QuickOpenDialog(t0) {
   }
   let t13;
   if ($[21] !== preview || $[22] !== previewWidth || $[23] !== query) {
-    t13 = p_7 => preview?.path === p_7 ? <><Text dimColor={true}>{truncatePathMiddle(p_7, previewWidth)}</Text>{preview.content.split("\n").map((line, i_1) => <Text key={i_1}>{highlightMatch(truncateToWidth(line, previewWidth), query)}</Text>)}</> : <><Text dimColor={true}>{truncatePathMiddle(p_7, previewWidth)}{preview ? " - loading..." : ""}</Text><LoadingState message={"Loading preview..."} dimColor={true} /></>;
+    t13 = (p_7: string) => preview?.path === p_7 ? <><Text dimColor={true}>{truncatePathMiddle(p_7, previewWidth)}</Text>{preview.content.split("\n").map((line, i_1) => <Text key={i_1}>{highlightMatch(truncateToWidth(line, previewWidth), query)}</Text>)}</> : <><Text dimColor={true}>{truncatePathMiddle(p_7, previewWidth)}{preview ? " - loading..." : ""}</Text><LoadingState message={"Loading preview..."} dimColor={true} /></>;
     $[21] = preview;
     $[22] = previewWidth;
     $[23] = query;

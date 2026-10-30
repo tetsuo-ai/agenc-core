@@ -10,11 +10,11 @@ import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWit
 import { useSettings } from '../hooks/useSettings.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
-import type { Message, PartialCompactDirection, UserMessage } from '../../types/message';
+import type { Message, PartialCompactDirection, UserMessage } from '../../types/message.js';
 import { stripDisplayTags } from '../../utils/displayTags.js';
 import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../utils/messages.js';
 import { unescapeXml } from '../../utils/xml.js';
-import { type OptionWithDescription, Select } from './CustomSelect/select';
+import { type OptionWithDescription, Select } from './CustomSelect/select.js';
 import { Spinner } from './spinner/Spinner.js';
 import { rewindUserMessagesFilter } from './message-selector-filter.js';
 export { selectableUserMessagesFilter, selectableMessageOrdinal } from './message-selector-filter.js';
@@ -33,10 +33,10 @@ import * as path from 'path';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { FileEditOutput } from '../../tools/FileEditTool/types.js';
 import type { Output as FileWriteToolOutput } from '../../tools/FileWriteTool/FileWriteTool.js';
-import { COMMAND_MESSAGE_TAG } from '../../constants/xml';
-import { count } from '../../utils/array';
-import { formatRelativeTimeAgo, truncate } from '../../utils/format';
-import type { Theme } from '../../utils/theme';
+import { COMMAND_MESSAGE_TAG } from '../../constants/xml.js';
+import { count } from '../../utils/array.js';
+import { formatRelativeTimeAgo, truncate } from '../../utils/format.js';
+import type { Theme } from '../../utils/theme.js';
 import { Popup } from './v2/primitives.js';
 type RestoreOption = 'both' | 'conversation' | 'code' | 'summarize' | 'summarize_up_to' | 'nevermind';
 function isSummarizeOption(option: RestoreOption | null): option is 'summarize' | 'summarize_up_to' {
@@ -852,7 +852,7 @@ export function messagesAfterAreOnlySynthetic(messages: Message[], fromIndex: nu
 
     // Skip known non-meaningful message types
     if (isSyntheticMessage(msg)) continue;
-    if (isToolUseResultMessage(msg)) continue;
+    if ((isToolUseResultMessage as (message: Message) => boolean)(msg)) continue;
     if (msg.type === 'progress') continue;
     if (msg.type === 'system') continue;
     if (msg.type === 'attachment') continue;

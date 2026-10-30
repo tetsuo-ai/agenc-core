@@ -3,8 +3,8 @@ import { Box, Link, Text } from '../ink.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { getCanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js';
 import { recordSecurityAcknowledgement } from '../../permissions/trust/project-trust.js';
-import { Select } from './CustomSelect/select';
-import { Dialog } from './design-system/Dialog';
+import { Select } from './CustomSelect/select.js';
+import { Dialog } from './design-system/Dialog.js';
 
 // NOTE: This copy is legally reviewed — do not modify without Legal team approval.
 export const AUTO_MODE_DESCRIPTION = "Auto mode lets AgenC handle permission prompts automatically. AgenC checks each tool call for risky actions and prompt injection before executing. Actions AgenC identifies as safe are executed, while actions AgenC identifies as risky are blocked and AgenC may try a different approach. Ideal for long-running tasks. Sessions are slightly more expensive. AgenC can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to change mode.";

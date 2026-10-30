@@ -7,10 +7,10 @@ import { Ansi, Box, Text, type TextProps } from '../ink.js';
 import { toInkColor } from '../../utils/ink.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { isShutdownApproved } from '../../utils/teammateMailbox.js';
-import { MessageResponse } from '../components/MessageResponse';
-import { tryRenderPlanApprovalMessage } from './PlanApprovalMessage';
-import { tryRenderShutdownMessage } from './ShutdownMessage';
-import { tryRenderTaskAssignmentMessage } from './TaskAssignmentMessage';
+import { MessageResponse } from '../components/MessageResponse.js';
+import { tryRenderPlanApprovalMessage } from './PlanApprovalMessage.js';
+import { tryRenderShutdownMessage } from './ShutdownMessage.js';
+import { tryRenderTaskAssignmentMessage } from './TaskAssignmentMessage.js';
 type Props = {
   addMargin: boolean;
   param: AgenCTextBlockParam;

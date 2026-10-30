@@ -3,9 +3,9 @@ import * as React from 'react';
 import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useEffect } from 'react';
 import { useNotifications } from '../../context/notifications.js';
-import { getIsRemoteMode } from '../../../bootstrap/state';
+import { getIsRemoteMode } from '../../../bootstrap/state.js';
 import { Text } from '../../ink.js';
-import type { MCPServerConnection } from '../../../services/mcp/types';
+import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import type { McpSurfaceServer } from '../../../session/session.js';
 type Props = {
   mcpClients?: readonly MCPServerConnection[];

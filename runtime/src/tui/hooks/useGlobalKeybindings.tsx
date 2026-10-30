@@ -52,7 +52,7 @@ export function GlobalKeybindingHandlers({
         getAllInProcessTeammateTasks
       } =
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('../../tasks/InProcessTeammateTask/InProcessTeammateTask') as typeof import('../../tasks/InProcessTeammateTask/InProcessTeammateTask');
+      require('../../tasks/InProcessTeammateTask/InProcessTeammateTask') as typeof import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js');
       const hasTeammates = count(getAllInProcessTeammateTasks(prev.tasks), t => t.status === 'running') > 0;
       if (hasTeammates) {
         // Both exist: none → tasks → teammates → none
@@ -97,7 +97,7 @@ export function GlobalKeybindingHandlers({
       /* eslint-disable @typescript-eslint/no-require-imports */
       const {
         isBriefEnabled
-      } = require('../../tools/BriefTool/BriefTool') as typeof import('../../tools/BriefTool/BriefTool');
+      } = require('../../tools/BriefTool/BriefTool') as typeof import('../../tools/BriefTool/BriefTool.js');
       /* eslint-enable @typescript-eslint/no-require-imports */
       if (!isBriefEnabled() && isBriefOnly && screen !== 'transcript') {
         setAppState(prev_0 => {
@@ -144,7 +144,7 @@ export function GlobalKeybindingHandlers({
       /* eslint-disable @typescript-eslint/no-require-imports */
       const {
         isBriefEnabled: isBriefEnabled_0
-      } = require('../../tools/BriefTool/BriefTool') as typeof import('../../tools/BriefTool/BriefTool');
+      } = require('../../tools/BriefTool/BriefTool') as typeof import('../../tools/BriefTool/BriefTool.js');
       /* eslint-enable @typescript-eslint/no-require-imports */
       if (!isBriefEnabled_0() && !isBriefOnly) return;
       const next = !isBriefOnly;

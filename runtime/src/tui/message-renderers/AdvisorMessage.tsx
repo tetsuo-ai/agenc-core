@@ -1,9 +1,9 @@
 import figures from 'figures';
 import React from 'react';
 
-import { CtrlOToExpand } from '../components/CtrlOToExpand';
-import { MessageResponse } from '../components/MessageResponse';
-import { ToolUseLoader } from '../components/ToolUseLoader';
+import { CtrlOToExpand } from '../components/CtrlOToExpand.js';
+import { MessageResponse } from '../components/MessageResponse.js';
+import { ToolUseLoader } from '../components/ToolUseLoader.js';
 import { Box, Text } from '../ink.js';
 import type { AdvisorBlock } from '../../utils/advisor.js';
 import { renderModelName } from '../../utils/model/model.js';

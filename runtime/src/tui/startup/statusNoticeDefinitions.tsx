@@ -4,7 +4,7 @@ import type * as React from 'react';
 import type { HomeContext } from '../../config/home.js';
 import { formatNumber } from '../../utils/format.js';
 import { withoutTrailingPeriod } from '../../utils/stringUtils.js';
-import type { getRuntimeState } from '../../utils/config.js';
+import type { AgenCConfig } from '../../config/schema.js';
 import { getAnthropicApiKeyWithSourceForContext, getPrimaryApiKeyFromSecureStorage, getAuthTokenSourceForContext, selectedProviderUsesExternalAuth, type ProviderAuthReadContext } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
 import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from '../../utils/statusNoticeHelpers.js';
@@ -14,7 +14,7 @@ import { isJetBrainsPluginInstalledCachedSync } from '../../utils/jetbrains.js';
 // Types
 export type StatusNoticeType = 'warning' | 'error' | 'success' | 'info';
 export type StatusNoticeContext = {
-  config: ReturnType<typeof getRuntimeState>;
+  config: Pick<AgenCConfig, 'ideConnector'>;
   homeContext: HomeContext;
   providerAuthContext: ProviderAuthReadContext;
   agentDefinitions?: AgentDefinitionsResult;
@@ -179,7 +179,7 @@ const jetbrainsPluginNotice: StatusNoticeDefinition = {
       return false;
     }
     // Don't show if auto-install is disabled
-    const shouldAutoInstall = context.config.autoInstallIdeExtension ?? true;
+    const shouldAutoInstall = context.config.ideConnector?.autoInstallExtension ?? true;
     if (!shouldAutoInstall) {
       return false;
     }

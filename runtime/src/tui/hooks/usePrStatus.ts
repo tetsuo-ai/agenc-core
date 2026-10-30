@@ -1,7 +1,7 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useRef, useState } from 'react'
-import { getLastInteractionTime } from '../../bootstrap/state'
-import { fetchPrStatus, type PrReviewState } from '../../utils/ghPrStatus' // upstream-import: keep target is owned by another Z-PURGE item
+import { getLastInteractionTime } from '../../bootstrap/state.js'
+import { fetchPrStatus, type PrReviewState } from '../../utils/ghPrStatus.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const POLL_INTERVAL_MS = 60_000
 const SLOW_GH_THRESHOLD_MS = 4_000
@@ -59,7 +59,7 @@ export function usePrStatus(isLoading: boolean, enabled = true): PrStatusState {
       }
 
       const start = Date.now()
-      let result = null
+      let result: Awaited<ReturnType<typeof fetchPrStatus>> = null
       try {
         result = await fetchPrStatus()
       } catch {

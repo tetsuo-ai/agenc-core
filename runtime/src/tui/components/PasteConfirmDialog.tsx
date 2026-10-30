@@ -45,7 +45,7 @@ export function PasteConfirmDialog({ command, onDecide }: Props): React.ReactEle
       paddingX={1}
       marginTop={1}
     >
-      <Text color="yellow" bold>
+      <Text color="warning" bold>
         Suspected paste detected
       </Text>
       <Text>
@@ -58,7 +58,7 @@ export function PasteConfirmDialog({ command, onDecide }: Props): React.ReactEle
       </Box>
       <Box marginTop={1}>
         <Text>
-          Press <Text bold color="green">y</Text> to run,{' '}
+          Press <Text bold color="success">y</Text> to run,{' '}
           <Text bold color="error">n</Text> or <Text bold>Esc</Text> to abort.
         </Text>
       </Box>

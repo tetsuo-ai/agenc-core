@@ -5,9 +5,9 @@ import { z } from 'zod/v4'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
-} from '../../services/mcp/types'
-import { getConnectedIdeClient } from '../../utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../services/mcp/types.js'
+import { getConnectedIdeClient } from '../../utils/ide.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 export type IDEAtMentioned = {
   filePath: string
   lineStart?: number

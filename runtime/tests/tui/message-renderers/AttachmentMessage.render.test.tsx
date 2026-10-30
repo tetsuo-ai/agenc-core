@@ -151,6 +151,21 @@ describe("AttachmentMessage rendering", () => {
     appStateMock.tasks = {};
   });
 
+  test.each([
+    [{ numLines: 12, isPartial: false }, false, "12 lines"],
+    [{ numLines: 4, isPartial: true }, false, "4+ lines"],
+    [{ numLines: 4 }, true, "4+ lines"],
+    [{ numLines: 0 }, false, "0 lines"],
+    [{ mediaType: "application/x-ipynb+json", cellCount: 3, numLines: 20 }, false, "3 cells"],
+    [{ mediaType: "image/png", sizeBytes: 1024 }, false, "1KB"],
+  ])("renders canonical file-read metadata %j", async (metadata, truncated, summary) => {
+    const output = await renderAttachment({
+      type: "file", filename: "/repo/example", displayPath: "example", truncated,
+      content: { content: "file body", metadata },
+    });
+    expect(output).toContain(`Read example (${summary})`);
+  });
+
   test("renders common file, memory, skill, and command attachment summaries", async () => {
     const cases: Array<[unknown, string]> = [
       [

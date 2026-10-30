@@ -782,7 +782,7 @@ export async function acceptSpeculation(
   return { messages, boundary, timeSavedMs }
 }
 
-export function abortSpeculation(setAppState: SetAppState): void {
+export function abortSpeculation<T extends AppState>(setAppState: SetAppState<T>): void {
   setAppState(prev => {
     if (prev.speculation.status !== 'active') return prev
 

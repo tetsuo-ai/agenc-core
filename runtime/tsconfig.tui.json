@@ -16,5 +16,7 @@
       "src/*": ["./src/*"]
     }
   },
-  "include": ["src/tui/**/*"]
+  "include": ["src/tui/**/*", "src/**/*.d.ts"],
+  // Override the base config's TUI exclusions so this project checks the TUI.
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx"]
 }

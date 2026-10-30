@@ -11,15 +11,14 @@ import {
   CHUNK_MS,
   FileIndex,
   yieldToEventLoop,
-} from '../ink/native-ts/file-index/index'
+} from '../ink/native-ts/file-index/index.js'
 import { isRelativePathOutsideBase } from '../pathDisplay.js'
-import type { FileSuggestionCommandInput } from '../../types/fileSuggestion'
 import { getCwd } from '../../utils/cwd.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, isENOENT } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getFsImplementation } from '../../utils/fsOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { findGitRoot, gitExe } from '../../utils/git'
+import { findGitRoot, gitExe } from '../../utils/git.js'
 import {
   createBaseHookInput,
   executeFileSuggestionCommand,
@@ -31,7 +30,7 @@ import {
   getExecutionAuthoritySettings,
   getSettingsForSource,
 } from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { createSignal } from '../../utils/signal'
+import { createSignal } from '../../utils/signal.js'
 
 // Lazily constructed singleton
 let fileIndex: FileIndex | null = null
@@ -807,7 +806,7 @@ export async function generateFileSuggestions(
   // because the command returns pre-ranked results using its own search logic.
   if (getExecutionAuthoritySettings().fileSuggestion?.type === 'command') {
     try {
-      const input: FileSuggestionCommandInput = {
+      const input = {
         ...createBaseHookInput(),
         query: partialPath,
       }

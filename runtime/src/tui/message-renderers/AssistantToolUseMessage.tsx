@@ -6,17 +6,17 @@ import type { ThemeName } from '../../utils/theme.js';
 import type { Command } from '../../commands.js';
 import { Box, Text, useTheme } from '../ink.js';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
-import { findToolByName, type Tool, type ToolProgressData, type Tools } from '../../tools/Tool';
-import type { ProgressMessage } from '../../types/message';
+import { findToolByName, type Tool, type ToolProgressData, type Tools } from '../../tools/Tool.js';
+import type { ProgressMessage } from '../../types/message.js';
 import { useIsClassifierChecking } from '../../utils/classifierApprovalsHook.js';
 import { logError } from '../../utils/log.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import type { AgenCToolUseBlockParam } from '../../types/message.js';
-import { MessageResponse } from '../components/MessageResponse';
-import { useSelectedMessageBg } from '../components/messageActions';
-import { TuiErrorBoundary } from '../components/TuiErrorBoundary';
+import { MessageResponse } from '../components/MessageResponse.js';
+import { useSelectedMessageBg } from '../components/messageActions.js';
+import { TuiErrorBoundary } from '../components/TuiErrorBoundary.js';
 import { RunningLabel } from '../components/ToolStateGlyph.js';
-import { HookProgressMessage } from './HookProgressMessage';
+import { HookProgressMessage } from './HookProgressMessage.js';
 import { Tool as V2Tool, DiffInline, type ToolKind, type ToolState } from '../components/v2/primitives.js';
 import { extractTag } from '../../utils/messages.js';
 import { summarizeFileEditError } from '../../tools/FileEditTool/UI.js';
@@ -496,8 +496,8 @@ function selectPermissionMode(state: {
   return state.toolPermissionContext.mode;
 }
 function selectPendingWorkerRequest(state: {
-  pendingWorkerRequest?: { toolUseId: string };
-}): { toolUseId: string } | undefined {
+  pendingWorkerRequest?: { toolUseId: string } | null;
+}): { toolUseId: string } | null | undefined {
   return state.pendingWorkerRequest;
 }
 function renderToolUseMessage(tool: Tool, input: unknown, {
@@ -578,7 +578,7 @@ function ToolUseRecoveryMessage({
   toolName
 }: {
   addMargin: boolean;
-  backgroundColor: string | undefined;
+  backgroundColor: React.ComponentProps<typeof Box>['backgroundColor'];
   title: string;
   detail: string;
   toolName: string;
