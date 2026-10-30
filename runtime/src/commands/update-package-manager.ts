@@ -101,13 +101,32 @@ export function runCapturing(
   });
 }
 
+/**
+ * The environment for the update. `brew upgrade` normally deletes the old
+ * keg right away, and AgenC's formula keeps its whole runtime and private
+ * Node there. The TUI and the daemon can keep running that version for a
+ * while (an update after this turn, or another client still working), so the
+ * old keg stays until Homebrew's next cleanup.
+ *
+ * npm needs nothing: its global package is only the launcher, and runtimes
+ * live in version folders under the AgenC home, pruned only when no process
+ * uses them and never the current or previous version.
+ */
+export function packageManagerEnvironment(kind: PackageManagerKind, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return kind === "Homebrew" ? { ...env, HOMEBREW_NO_INSTALL_CLEANUP: "1" } : env;
+}
+
 /** Run `brew upgrade ...` or `npm install -g ...`. */
 export function runPackageManagerUpdate(
   kind: PackageManagerKind,
   options: { readonly onLine?: (line: string) => void; readonly spawn?: Spawn; readonly env?: NodeJS.ProcessEnv } = {},
 ): Promise<PackageManagerRun> {
   const { file, args } = packageManagerCommand(kind);
-  return runCapturing(file, args, { ...options, timeoutMs: 15 * 60 * 1_000 });
+  return runCapturing(file, args, {
+    ...options,
+    env: packageManagerEnvironment(kind, options.env ?? process.env),
+    timeoutMs: 15 * 60 * 1_000,
+  });
 }
 
 /** `<prefix>/opt/agenc/bin/agenc` for a runtime inside a Homebrew keg. */

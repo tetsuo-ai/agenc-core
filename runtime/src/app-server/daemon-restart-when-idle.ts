@@ -52,6 +52,7 @@ import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
 import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
 import {
   AGENC_DAEMON_STOP_DECLINED_EXIT,
+  acquireAgenCDaemonLifecycleLock,
   formatCleanupError,
   isDaemonErrorResponse,
   proveAgenCDaemonCliInstance,
@@ -1244,6 +1245,8 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   ) => Promise<AgenCDaemonShutdownDeclined | void>;
   /** Serializes pending-record changes with the final shutdown decision. */
   readonly withLifecycleLock?: <T>(host: AgenCDaemonCliHost, operation: () => Promise<T>) => Promise<T>;
+  /** The same lock for a waiter's start: held from its last check through the spawn. */
+  readonly acquireLifecycleLock?: (host: AgenCDaemonCliHost) => Promise<() => Promise<void>>;
   readonly startDaemon?: typeof startAgenCDaemon;
   readonly requestIdentity?: (host: AgenCDaemonCliHost) => Promise<AgenCDaemonInstanceIdentity>;
   /** Start the detached waiter; returns its pid. */
@@ -1357,6 +1360,50 @@ type RestartAttempt =
   | { readonly kind: "done"; readonly outcome: AgenCDaemonRestartOutcome };
 
 /**
+ * The start. For a waiter, its ownership check (`lastCheck`) runs first,
+ * under the lifecycle lock. A newer update writes its record under the same
+ * lock, so the record lands either before the check (this waiter stands
+ * down) or once the new daemon exists (the newer waiter then restarts that
+ * one). The start keeps the lock through the spawn and releases it before
+ * its readiness waits, since the new daemon takes it to publish itself.
+ */
+async function startUnlessSuperseded(
+  ctx: RestartContext,
+  io: AgenCDaemonCliIo,
+  start: typeof startAgenCDaemon,
+  lastCheck: (() => string | undefined) | undefined,
+): Promise<{ readonly superseded: string; readonly exit?: undefined } | { readonly superseded?: undefined; readonly exit: number }> {
+  if (lastCheck === undefined) return { exit: await start(ctx.host, io, ctx.options) };
+  const acquire = ctx.deps.acquireLifecycleLock ??
+    ((host: AgenCDaemonCliHost) => acquireAgenCDaemonLifecycleLock(host));
+  const release = await acquire(ctx.host);
+  let held = true;
+  const releaseOnce = async (): Promise<void> => {
+    if (!held) return;
+    held = false;
+    await release();
+  };
+  let result: { readonly superseded: string } | { readonly exit: number };
+  try {
+    const superseded = lastCheck();
+    result = superseded !== undefined
+      ? { superseded }
+      : {
+          exit: await start(ctx.host, io, {
+            ...ctx.options,
+            lifecycleLockHeld: true,
+            releaseLifecycleLockAfterStartMutation: releaseOnce,
+          }),
+        };
+  } catch (error) {
+    await releaseOnce().catch(() => undefined);
+    throw error;
+  }
+  await releaseOnce();
+  return result;
+}
+
+/**
  * The existing restart path, `stop` then `start`, with the idle check
  * repeated under the lifecycle lock right before `daemon.shutdown`.
  */
@@ -1424,21 +1471,21 @@ async function restartIfStillIdle(
       },
     };
   }
-  // A newer update that arrived while this daemon stopped owns the start:
+  // A newer update that arrived after this daemon stopped owns the start:
   // starting this runtime would put an older build back.
-  const afterStop = lastCheck?.();
-  if (afterStop !== undefined) {
+  const started = await startUnlessSuperseded(ctx, output.io, start, lastCheck);
+  if (started.superseded !== undefined) {
     return {
       kind: "done",
       outcome: {
         status: "skipped",
-        reason: `${afterStop}; the daemon stopped and its next start uses the newest runtime`,
+        reason: `${started.superseded}; the daemon stopped and its next start uses the newest runtime`,
         fromVersion,
         toVersion,
       },
     };
   }
-  const startExit = await start(ctx.host, output.io, ctx.options);
+  const startExit = started.exit;
   if (startExit !== 0) {
     const detail = output.tail();
     return {

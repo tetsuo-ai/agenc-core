@@ -270,9 +270,10 @@ A busy daemon gets one waiting process (`agenc daemon restart --when-idle
 It checks every 15 s, restarts after two idle checks in a row and gives up
 after 12 hours without stopping anything. A newer update replaces the record,
 so waiting processes never pile up: the record is replaced and removed under
-the same lock as the final decision, a waiting process checks that the record
-is still its own right before that decision, and again before it starts its
-runtime. It
+the same lock as the final decision, and a waiting process checks that the
+record is still its own right before that decision. Before it starts its
+runtime it checks again under that lock, and holds the lock until the new
+daemon is spawned. It
 also ends when the daemon stopped, or was replaced by a daemon at least as new
 as its own version (for example by a newer `agenc` whose build check
 restarted it). A replacement that is still older, such as an earlier waiting
@@ -1500,6 +1501,10 @@ On macOS and Linux, Update now finishes in the same terminal:
    fetches and verifies its runtime at that point). These run without
    terminal input, so a password prompt fails instead of waiting. If they fail,
    the menu shows the message and AgenC keeps running its version.
+   Homebrew runs with `HOMEBREW_NO_INSTALL_CLEANUP=1`: the old keg holds the
+   runtime the TUI and the daemon use until they switch, so it stays until the
+   next `brew cleanup`. npm replaces only the launcher; runtimes stay in
+   version folders under the AgenC home.
 2. The TUI closes, then moves the daemon with
    `agenc daemon restart --when-idle` (see "Daemon restart after an update").
    It names itself as the requester. Its connection is already closed, so it

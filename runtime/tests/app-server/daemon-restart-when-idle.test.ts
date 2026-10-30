@@ -1092,6 +1092,7 @@ describe("the deferred restart waiter", () => {
         return verdict.idle ? undefined : { declined: verdict.reason, ...(verdict.permanent ? { permanent: true } : {}) };
       },
       withLifecycleLock: async (_host, operation) => operation(),
+      acquireLifecycleLock: async () => async () => {},
       daemonCommand: () => `${home}/runtime/9.9.8/tree/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground`,
       stopDaemon: async (_host, _io, _timeout, stopOptions) => {
         calls.push("stop");
@@ -1287,6 +1288,75 @@ describe("the deferred restart waiter", () => {
     })).resolves.toMatchObject({ status: "skipped" });
     expect(calls).toContain("shutdown");
     expect(calls).not.toContain("start");
+  });
+
+  it("does not start its runtime when a newer update publishes its record while the start waits for the lifecycle lock", async () => {
+    const newer = "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab";
+    // The newer update holds the lifecycle lock first and publishes its record.
+    const newerUpdateTakesTheLockFirst = (): void => {
+      const record = readAgenCDaemonPendingRestart(home)!;
+      writeAgenCDaemonPendingRestart(home, { ...record, token: newer });
+    };
+    const { calls, deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      acquireLifecycleLock: async () => {
+        newerUpdateTakesTheLockFirst();
+        return async () => {};
+      },
+      // A start that takes the lock itself meets the newer update there instead.
+      startDaemon: async (_host, _io, startOptions) => {
+        if (startOptions?.lifecycleLockHeld !== true) newerUpdateTakesTheLockFirst();
+        calls.push("start");
+        return 0;
+      },
+    })).resolves.toMatchObject({
+      status: "skipped",
+      reason: "a newer update replaced this restart; the daemon stopped and its next start uses the newest runtime",
+    });
+    expect(calls).toContain("shutdown");
+    expect(calls).not.toContain("start");
+    expect(readAgenCDaemonPendingRestart(home)?.token).toBe(newer);
+  });
+
+  it("holds the lifecycle lock from its last check through the spawn, and releases it before the readiness waits", async () => {
+    const events: string[] = [];
+    let held = false;
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      acquireLifecycleLock: async () => {
+        events.push("lock");
+        held = true;
+        return async () => {
+          events.push("unlock");
+          held = false;
+        };
+      },
+      // The real start skips its own acquisition, spawns, then hands the lock back.
+      startDaemon: async (_host, _io, startOptions) => {
+        events.push(`spawn under the lock: ${held && startOptions?.lifecycleLockHeld === true}`);
+        await startOptions?.releaseLifecycleLockAfterStartMutation?.();
+        events.push(`readiness under the lock: ${held}`);
+        return 0;
+      },
+    })).resolves.toMatchObject({ status: "restarted" });
+    expect(events).toEqual(["lock", "spawn under the lock: true", "unlock", "readiness under the lock: false"]);
+  });
+
+  it("releases the lifecycle lock once when the start fails before handing it back", async () => {
+    let releases = 0;
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      acquireLifecycleLock: async () => async () => {
+        releases += 1;
+      },
+      startDaemon: async () => {
+        throw new Error("spawn failed");
+      },
+    })).rejects.toThrow("spawn failed");
+    expect(releases).toBe(1);
   });
 
   it("stands down when the daemon already runs the new build", async () => {

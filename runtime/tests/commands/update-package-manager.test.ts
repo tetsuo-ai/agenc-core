@@ -9,6 +9,7 @@ import {
   packageManagerCommand,
   readInstalledAgenCVersion,
   runCapturing,
+  runPackageManagerUpdate,
 } from "../../src/commands/update-package-manager.js";
 
 describe("package manager updates", () => {
@@ -38,6 +39,18 @@ describe("package manager updates", () => {
     // stdout and stderr are separate pipes, so only the set of lines is fixed.
     expect([...run.tail].sort()).toEqual(["no-input", "one", "two red"]);
     expect(seen).toEqual(run.tail);
+  });
+
+  it("keeps the old Homebrew keg the running TUI and daemon use; npm runs as is", async () => {
+    const probe = script("probe", 'echo "cleanup=${HOMEBREW_NO_INSTALL_CLEANUP:-unset} keep=${KEEP:-unset}"');
+    const viaProbe = ((file: string, args: readonly string[], options: object) =>
+      spawn(file === "brew" || file === "npm" ? probe : file, [...args], options)) as never;
+    const env = { PATH: process.env.PATH, KEEP: "yes" };
+    expect((await runPackageManagerUpdate("Homebrew", { spawn: viaProbe, env })).tail).toEqual(["cleanup=1 keep=yes"]);
+    // Even when the user turned the cleanup on, this one upgrade leaves the running keg.
+    expect((await runPackageManagerUpdate("Homebrew", { spawn: viaProbe, env: { ...env, HOMEBREW_NO_INSTALL_CLEANUP: "0" } })).tail)
+      .toEqual(["cleanup=1 keep=yes"]);
+    expect((await runPackageManagerUpdate("npm", { spawn: viaProbe, env })).tail).toEqual(["cleanup=unset keep=yes"]);
   });
 
   it("finds the Homebrew opt bin of a keg runtime", () => {
