@@ -691,6 +691,11 @@ export interface ProviderConfig {
    * llm/providers/deepseek/web-search.ts). Rejected on every other table.
    */
   readonly web_search?: boolean;
+  /**
+   * DeepSeek only: web_fetch through DeepSeek's Fetch API (unset is auto, see
+   * llm/providers/deepseek/web-fetch.ts). Rejected on every other table.
+   */
+  readonly web_fetch?: boolean;
   /** Grok-only native capabilities. Rejected on every other provider table. */
   readonly x_search?: boolean;
   readonly code_execution?: boolean;
@@ -1690,6 +1695,7 @@ const PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "capability_overrides",
   "fallback",
   "web_search",
+  "web_fetch",
   "x_search",
   "code_execution",
   "enable_image_search",
@@ -1707,7 +1713,10 @@ const REQUEST_LEVEL_ZERO_DATA_RETENTION_PROVIDERS: ReadonlySet<string> = new Set
   "openrouter",
 ]);
 
-/** The one provider besides Grok whose table takes `web_search`. */
+/**
+ * The one provider besides Grok whose table takes `web_search`, and the only
+ * one whose table takes `web_fetch`.
+ */
 const DEEPSEEK_WEB_SEARCH_PROVIDER = "deepseek";
 
 const GROK_CAPABILITY_BOOLEAN_KEYS = Object.freeze([
@@ -2118,6 +2127,20 @@ function validateSingleProviderConfig(
   );
   if (fallback !== undefined) out.fallback = fallback;
   Object.assign(out, validateGrokCapabilities(record, providerId));
+  const webFetch = optionalBoolean(
+    record.web_fetch,
+    fieldPath(providerId, "web_fetch"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (webFetch !== undefined) {
+    if (providerId !== DEEPSEEK_WEB_SEARCH_PROVIDER) {
+      throw new InvalidProviderConfigError(
+        fieldPath(providerId, "web_fetch"),
+        "web_fetch is allowed only under providers.deepseek, whose Fetch API can back web_fetch",
+      );
+    }
+    out.web_fetch = webFetch;
+  }
   const zeroDataRetention = optionalBoolean(
     record.zero_data_retention,
     fieldPath(providerId, "zero_data_retention"),

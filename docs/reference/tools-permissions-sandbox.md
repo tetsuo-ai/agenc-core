@@ -334,7 +334,7 @@ disabled for the rest of the session; start a new session then.
 | `LSP` | Language-server diagnostics / definition / references / symbols |
 | `WebSearch` | Web search (provider-native Grok path when available; in a DeepSeek session DeepSeek's Search API, see [deepseek-direct.md](../providers/deepseek-direct.md#web-search); else configured endpoint / DuckDuckGo) |
 | `XSearch` | Live X/Twitter search through an independent direct-xAI backend. Any tool-capable reasoning provider may invoke it when xAI credentials exist and `[providers.grok] x_search = true` |
-| `web_fetch` | Fetch URL → text/markdown |
+| `web_fetch` | Fetch URL → text/markdown (in a DeepSeek session that never asks and has no `web_fetch` rule in effect, DeepSeek's Fetch API fetches public pages after the same checks on the starting URL; DeepSeek follows redirects on its servers, see [deepseek-direct.md](../providers/deepseek-direct.md#web-fetch); else a direct fetch that checks each redirect) |
 
 There is **no** separate LIVE tool named `web_search`; that string is only a
 provider-native server-side tool id used internally by the Grok web-search

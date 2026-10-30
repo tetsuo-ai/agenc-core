@@ -72,6 +72,16 @@ import {
   runDeepSeekSearch,
 } from "../llm/providers/deepseek/web-search.js";
 import {
+  DEEPSEEK_FETCH_USD_PER_REQUEST,
+  DEEPSEEK_WEB_FETCH_ENV,
+  deepSeekFetchBudgetMs,
+  deepSeekFetchEndpoint,
+  deepSeekFetchSkipReason,
+  resolveDeepSeekWebFetchSetting,
+  runDeepSeekFetch,
+} from "../llm/providers/deepseek/web-fetch.js";
+import { deepSeekTimeoutReason } from "../llm/providers/deepseek/tool-api.js";
+import {
   resolveProviderBaseURLEnvironment,
 } from "../llm/registry/provider-ingress.js";
 import {
@@ -171,7 +181,13 @@ import {
   createImagineEditTool,
   hasImagineEditBackend,
 } from "../tools/system/imagine-edit.js";
-import { getRuleByContentsForTool } from "../permissions/rules.js";
+import {
+  getAskRuleForTool,
+  getContentRulesForTool,
+  getDenyRuleForTool,
+  getRuleByContentsForTool,
+  toolAlwaysAllowedRule,
+} from "../permissions/rules.js";
 import type {
   PermissionResult,
   PermissionRuleValue,
@@ -262,6 +278,12 @@ export interface ModelFacingToolOptions {
    * environment wins.
    */
   readonly deepseekWebSearch?: boolean;
+  /**
+   * `[providers.deepseek] web_fetch`. Unset means auto: a deepseek session on
+   * DeepSeek's own API host fetches pages through DeepSeek's Fetch API.
+   * `AGENC_DEEPSEEK_WEB_FETCH` in the session environment wins.
+   */
+  readonly deepseekWebFetch?: boolean;
   readonly webSearchEnabled?: () => boolean;
   /**
    * Session provider slug retained for embedding compatibility. Tool
@@ -1295,6 +1317,28 @@ function configuredWebSearchEndpoint(
   );
 }
 
+/**
+ * The session running this tool call. A sub-agent reuses its parent's tool
+ * objects, whose captured `getSession` returns the parent, so a provider
+ * choice read from there would use the parent's provider, key and permission
+ * mode. The runtime attaches the invoking session to every dispatched call
+ * (a child call carries the child's session); fall back to the captured one
+ * only when a call arrives without that context.
+ */
+function invokingSession(
+  opts: ModelFacingToolOptions,
+  args: Readonly<Record<string, unknown>> | undefined,
+): Session | null {
+  const attached = args === undefined
+    ? undefined
+    : readToolRuntimeContext(args as Record<string, unknown>)?.invocation?.session;
+  return attached ?? opts.getSession();
+}
+
+function sessionLLMProvider(session: Session | null): LLMProvider | undefined {
+  return (session?.services as { provider?: LLMProvider } | undefined)?.provider;
+}
+
 interface DeepSeekWebSearchBackend {
   readonly endpoint: string;
   readonly apiKey: string;
@@ -1308,13 +1352,14 @@ interface DeepSeekWebSearchBackend {
  */
 function resolveDeepSeekWebSearchBackend(
   opts: ModelFacingToolOptions,
+  session: Session | null,
 ): DeepSeekWebSearchBackend | undefined {
   const setting = resolveDeepSeekWebSearchSetting(
     opts.env?.[DEEPSEEK_WEB_SEARCH_ENV],
     opts.webSearchEnabled?.() === true ? true : opts.deepseekWebSearch,
   );
   if (setting === "off") return undefined;
-  const provider = currentSessionProvider(opts);
+  const provider = sessionLLMProvider(session);
   if (provider === undefined || readProviderIdentity(provider) !== "deepseek") {
     return undefined;
   }
@@ -1332,6 +1377,217 @@ function resolveDeepSeekWebSearchBackend(
   }
   const endpoint = deepSeekSearchEndpoint(baseURL);
   return endpoint === undefined ? undefined : { endpoint, apiKey };
+}
+
+interface DeepSeekWebFetchBackend {
+  readonly endpoint: string;
+  readonly apiKey: string;
+}
+
+/**
+ * DeepSeek's Fetch API for a deepseek session (llm/providers/deepseek/
+ * web-fetch.ts), with the session's own key and host like its search. Auto
+ * mode needs DeepSeek's own API host; `1` / `true` also uses a proxy base URL.
+ */
+function resolveDeepSeekWebFetchBackend(
+  opts: ModelFacingToolOptions,
+  session: Session | null,
+): DeepSeekWebFetchBackend | undefined {
+  const setting = resolveDeepSeekWebFetchSetting(
+    opts.env?.[DEEPSEEK_WEB_FETCH_ENV],
+    opts.deepseekWebFetch,
+  );
+  if (setting === "off") return undefined;
+  const provider = sessionLLMProvider(session);
+  if (provider === undefined || readProviderIdentity(provider) !== "deepseek") {
+    return undefined;
+  }
+  const factoryOptions = readProviderFactoryOptions(provider);
+  const apiKey = stringValue(factoryOptions.apiKey);
+  if (apiKey === undefined) return undefined;
+  const baseURL =
+    stringValue(factoryOptions.baseURL) ?? BUILT_IN_PROVIDER_BASE_URLS.deepseek;
+  if (setting === "auto" && !isOfficialDeepSeekApiHost(baseURL)) return undefined;
+  const endpoint = deepSeekFetchEndpoint(baseURL);
+  return endpoint === undefined ? undefined : { endpoint, apiKey };
+}
+
+/** The session's live permission context, or undefined when it cannot be read. */
+function sessionToolPermissionContext(
+  session: Session | null,
+): ToolPermissionContext | undefined {
+  const holder = session as unknown as {
+    readonly permissionModeRegistry?: { readonly current?: () => unknown };
+    readonly services?: {
+      readonly permissionModeRegistry?: { readonly current?: () => unknown };
+    };
+  } | null;
+  const registry =
+    holder?.permissionModeRegistry ?? holder?.services?.permissionModeRegistry;
+  if (registry === undefined || typeof registry.current !== "function") {
+    return undefined;
+  }
+  try {
+    const current = registry.current();
+    return typeof current === "object" && current !== null
+      ? (current as ToolPermissionContext)
+      : undefined;
+  } catch {
+    // The registry fences reads while a new context is published; an
+    // unreadable context is treated as one that asks.
+    return undefined;
+  }
+}
+
+/** Whether any permission rule names web_fetch: allow, ask or deny, by domain or for the whole tool. */
+function hasWebFetchPermissionRule(context: ToolPermissionContext): boolean {
+  return (
+    (["allow", "ask", "deny"] as const).some(
+      (behavior) => getContentRulesForTool(context, WEB_FETCH_TOOL_NAME, behavior).length > 0,
+    ) ||
+    toolAlwaysAllowedRule(context, WEB_FETCH_TOOL_NAME) !== null ||
+    getAskRuleForTool(context, WEB_FETCH_TOOL_NAME) !== null ||
+    getDenyRuleForTool(context, WEB_FETCH_TOOL_NAME) !== null
+  );
+}
+
+/**
+ * Whether this session lets web_fetch hand pages to DeepSeek at all.
+ * DeepSeek follows redirects on its own servers and does not report them, so
+ * only the starting URL can be checked: a redirect to another host, to a
+ * host a rule denies or asks about, or down to plain http is followed there,
+ * where the local fetcher refuses each of them. DeepSeek is therefore used
+ * only where no per-domain decision exists to bypass: the session never asks
+ * (`bypassPermissions`), so no domain needs an approval, and no web_fetch rule
+ * is in effect (the session's rules after settings loading; a rule loading
+ * discards governs neither fetcher). Every other session keeps the local
+ * fetcher, which checks each redirect.
+ */
+function deepSeekFetchPolicyAllows(session: Session | null): boolean {
+  const context = sessionToolPermissionContext(session);
+  if (context === undefined || context.mode !== "bypassPermissions") return false;
+  return !hasWebFetchPermissionRule(context);
+}
+
+type DeepSeekUrlCheck = "send" | "local" | "timed_out";
+
+/**
+ * Whether web_fetch may hand `url` to DeepSeek. The URL has already passed
+ * the permission check and normalizeUrl (https, no credentials, no private
+ * or loopback literal). DeepSeek then gets it only when the local fetcher
+ * would dial it too: a public DNS name (deepSeekFetchSkipReason) that
+ * resolves to no private, loopback or link-local address here. A URL on the
+ * built-in preapproved list stays local, because only the local fetcher can
+ * keep its redirects inside the preapproved scope. Anything refused here
+ * takes the local path, which applies its own rules and reports them.
+ * `budget` is the fetch's own timer, already running, so a stalled resolver
+ * uses up the fetch's time instead of holding the call.
+ */
+async function checkDeepSeekFetchUrl(
+  url: string,
+  budget: AbortSignal,
+  effectSignal: AbortSignal | undefined,
+): Promise<DeepSeekUrlCheck> {
+  if (deepSeekFetchSkipReason(url) !== undefined) return "local";
+  const parsed = new URL(url);
+  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return "local";
+  try {
+    await assertLiveWebFetchHostAllowed(
+      parsed.hostname,
+      effectSignal === undefined ? budget : AbortSignal.any([effectSignal, budget]),
+    );
+  } catch {
+    effectSignal?.throwIfAborted();
+    return budget.aborted ? "timed_out" : "local";
+  }
+  return "send";
+}
+
+type WebFetchBackend =
+  | { readonly kind: "ollama"; readonly apiKey: string }
+  | { readonly kind: "deepseek"; readonly endpoint: string; readonly apiKey: string }
+  | { readonly kind: "local" };
+
+/**
+ * The fetcher a web_fetch call uses, decided from the invoking session and
+ * the URL the same way for admission and for execution, so the reservation
+ * matches the call: Ollama Cloud's own fetch for a direct Ollama Cloud
+ * session; DeepSeek's fetch for a DeepSeek session when the permission gate
+ * allows it and the URL is one DeepSeek may get (the DNS check still runs at
+ * execution); otherwise the local fetcher, which is free.
+ */
+function webFetchBackend(
+  opts: ModelFacingToolOptions,
+  session: Session | null,
+  rawUrl: unknown,
+): WebFetchBackend {
+  const ollamaKey = ollamaWebFetchKey(sessionLLMProvider(session));
+  if (ollamaKey !== undefined) return { kind: "ollama", apiKey: ollamaKey };
+  const deepseek = resolveDeepSeekWebFetchBackend(opts, session);
+  if (deepseek === undefined || !deepSeekFetchPolicyAllows(session)) return { kind: "local" };
+  const url = stringValue(rawUrl);
+  if (url === undefined) return { kind: "local" };
+  let normalized: string;
+  try {
+    normalized = normalizeUrl(url);
+  } catch {
+    return { kind: "local" };
+  }
+  if (deepSeekFetchSkipReason(normalized) !== undefined) return { kind: "local" };
+  const parsed = new URL(normalized);
+  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return { kind: "local" };
+  return { kind: "deepseek", ...deepseek };
+}
+
+function webFetchBackendMaxCostUsd(backend: WebFetchBackend): number {
+  // At most one DeepSeek request is billed: only a 200 with content is, and
+  // a 200 is never retried.
+  return backend.kind === "ollama"
+    ? OLLAMA_WEB_FETCH_USD_PER_REQUEST
+    : backend.kind === "deepseek"
+      ? DEEPSEEK_FETCH_USD_PER_REQUEST
+      : 0;
+}
+
+/**
+ * Whether admission priced each web_fetch call for DeepSeek, by invoking
+ * session and call id. Execution uses DeepSeek only when admission reserved
+ * its fee for that call, so a call admitted as free is never billed, and the
+ * live permission gate still has the last word.
+ */
+const webFetchAdmissions = new WeakMap<object, Map<string, boolean>>();
+const WEB_FETCH_ADMISSIONS_PER_SESSION = 256;
+
+function noteWebFetchAdmission(
+  session: Session | null,
+  args: Readonly<Record<string, unknown>>,
+  priced: boolean,
+): void {
+  const callId = readToolRuntimeContext(args as Record<string, unknown>)?.callId;
+  if (session === null || callId === undefined) return;
+  let calls = webFetchAdmissions.get(session);
+  if (calls === undefined) {
+    calls = new Map();
+    webFetchAdmissions.set(session, calls);
+  }
+  calls.delete(callId);
+  calls.set(callId, priced);
+  if (calls.size > WEB_FETCH_ADMISSIONS_PER_SESSION) {
+    const oldest = calls.keys().next().value;
+    if (oldest !== undefined) calls.delete(oldest);
+  }
+}
+
+function takeWebFetchAdmission(
+  session: Session | null,
+  args: Readonly<Record<string, unknown>>,
+): boolean | undefined {
+  const callId = readToolRuntimeContext(args as Record<string, unknown>)?.callId;
+  if (session === null || callId === undefined) return undefined;
+  const calls = webFetchAdmissions.get(session);
+  const priced = calls?.get(callId);
+  calls?.delete(callId);
+  return priced;
 }
 
 /** An Ollama Cloud, OpenRouter or Venice session's own search route. */
@@ -1357,8 +1613,11 @@ const GATEWAY_SEARCH_BASE_URLS: Readonly<Record<GatewayWebSearchBackend["provide
  * own key (never the managed route's, never another provider's). An explicit
  * search endpoint or a named search provider keeps priority.
  */
-function resolveGatewayWebSearchBackend(opts: ModelFacingToolOptions): GatewayWebSearchBackend | undefined {
-  const provider = currentSessionProvider(opts);
+function resolveGatewayWebSearchBackend(
+  opts: ModelFacingToolOptions,
+  session: Session | null,
+): GatewayWebSearchBackend | undefined {
+  const provider = sessionLLMProvider(session);
   if (provider === undefined) return undefined;
   const identity = readProviderIdentity(provider);
   if (identity !== "ollama-cloud" && identity !== "openrouter" && identity !== "venice") return undefined;
@@ -1369,7 +1628,7 @@ function resolveGatewayWebSearchBackend(opts: ModelFacingToolOptions): GatewayWe
   if (factoryOptions.extra?.managedGateway === true || factoryOptions.extra?.managedCredential === true) return undefined;
   const apiKey = stringValue(factoryOptions.apiKey);
   if (apiKey === undefined) return undefined;
-  const live = (opts.getSession()?.services as { providerService?: { current?: () => { model?: unknown } } } | undefined)
+  const live = (session?.services as { providerService?: { current?: () => { model?: unknown } } } | undefined)
     ?.providerService?.current?.();
   const model = stringValue(live?.model) ?? stringValue(factoryOptions.model);
   if (model === undefined) return undefined;
@@ -1384,9 +1643,8 @@ function resolveGatewayWebSearchBackend(opts: ModelFacingToolOptions): GatewayWe
   return { provider: identity, apiKey, baseURL, model, rates, zeroDataRetention };
 }
 
-/** Native fetch only uses the current session's direct Ollama Cloud key. */
-function ollamaWebFetchKey(opts: ModelFacingToolOptions): string | undefined {
-  const provider = currentSessionProvider(opts);
+/** Native fetch only uses the invoking session's direct Ollama Cloud key. */
+function ollamaWebFetchKey(provider: LLMProvider | undefined): string | undefined {
   if (!provider || readProviderIdentity(provider) !== "ollama-cloud") return undefined;
   const config = readProviderFactoryOptions(provider);
   if (config.extra?.managedGateway === true || config.extra?.managedCredential === true) return undefined;
@@ -1450,13 +1708,13 @@ function webSearchResultLimit(args: Record<string, unknown>): number {
 function webSearchMaxCostUsd(opts: ModelFacingToolOptions, args: Record<string, unknown>): number | null {
   if (configuredWebSearchEndpoint(opts) !== undefined ||
       configuredSearchChain(requireModelFacingRequestEnvironment(opts), opts.toolsConfig).providers.length > 0) return null;
-  const gateway = resolveGatewayWebSearchBackend(opts);
+  const gateway = resolveGatewayWebSearchBackend(opts, invokingSession(opts, args));
   if (gateway !== undefined) {
     const filters = webSearchFilters(args);
     const filtered = filters.allowedDomains.length > 0 || filters.blockedDomains.length > 0;
     return gatewaySearchCeilingUsd(gateway, filtered ? 10 : webSearchResultLimit(args));
   }
-  return resolveDeepSeekWebSearchBackend(opts) !== undefined
+  return resolveDeepSeekWebSearchBackend(opts, invokingSession(opts, args)) !== undefined
     ? DEEPSEEK_SEARCH_USD_PER_REQUEST
     : 0;
 }
@@ -3767,7 +4025,115 @@ async function runWebFetchExtraction(
   }
 }
 
+/** A fetched page, before web_fetch's caps and prompt handling. */
+interface FetchedWebPage {
+  /** Fields that lead the result, e.g. the backend that fetched the page. */
+  readonly head?: Readonly<Record<string, unknown>>;
+  /** The origin's HTTP status; DeepSeek's fetch does not report it. */
+  readonly status?: number;
+  readonly ok: boolean;
+  /** The normalized request URL. */
+  readonly url: string;
+  /** Where same-host redirects ended; DeepSeek's fetch does not report it. */
+  readonly finalUrl?: string;
+  /** The origin's Content-Type; DeepSeek's fetch does not report it. */
+  readonly contentType?: string;
+  readonly preapproved: boolean;
+  readonly renderedAs: "markdown" | "text" | "passthrough";
+  /** The page text after HTML conversion. */
+  readonly body: string;
+  /** Set when the local byte cap cut the raw response. */
+  readonly bytesReadBeforeCap?: number;
+  /** Set when a head field (DeepSeek's page title) was cut to its cap. */
+  readonly headTruncated?: boolean;
+}
+
+/**
+ * What web_fetch returns for a fetched page, whichever backend fetched it:
+ * the character cap with its truncation marker, then the optional `prompt`
+ * extraction with the full text saved to disk.
+ */
+async function webFetchPagePayload(
+  opts: ModelFacingToolOptions,
+  page: FetchedWebPage,
+  input: {
+    readonly maxChars: number;
+    readonly prompt: string | undefined;
+    readonly signal: AbortSignal | undefined;
+  },
+): Promise<Record<string, unknown>> {
+  const { maxChars, prompt } = input;
+  const { body } = page;
+  let textBody = body;
+  if (body.length > maxChars) {
+    textBody = `${body.slice(0, maxChars)}\n\n[truncated ${body.length - maxChars} chars]`;
+  } else if (page.bytesReadBeforeCap !== undefined) {
+    textBody = `${body}\n\n[truncated response after ${page.bytesReadBeforeCap} bytes]`;
+  }
+  const described = {
+    ...(page.head ?? {}),
+    ...(page.status !== undefined ? { status: page.status } : {}),
+    ok: page.ok,
+    url: page.url,
+    ...(page.finalUrl !== undefined ? { final_url: page.finalUrl } : {}),
+    ...(page.contentType !== undefined ? { content_type: page.contentType } : {}),
+    preapproved: page.preapproved,
+    rendered_as: page.renderedAs,
+    truncated:
+      page.bytesReadBeforeCap !== undefined ||
+      body.length > maxChars ||
+      page.headTruncated === true,
+    prompt,
+  };
+  // Prompt-driven extraction: distill large pages instead of
+  // dumping the full markdown into context. Raw content is
+  // persisted to disk so the agent can still read it in full.
+  if (
+    page.ok &&
+    prompt !== undefined &&
+    prompt.trim().length > 0 &&
+    textBody.length >= WEB_FETCH_EXTRACTION_MIN_CHARS
+  ) {
+    const extracted = await runWebFetchExtraction(opts, {
+      url: page.finalUrl ?? page.url,
+      content: textBody,
+      prompt,
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+    });
+    if (extracted !== undefined) {
+      let fullContentPath: string | undefined;
+      try {
+        const { persistToolResult } =
+          await import("../utils/toolResultStorage.js");
+        const persisted = await persistToolResult(
+          textBody,
+          `webfetch-${randomUUID()}`,
+        );
+        if (!("error" in persisted)) {
+          fullContentPath = persisted.filepath;
+        }
+      } catch {
+        /* extraction still useful without the persisted copy */
+      }
+      return {
+        ...described,
+        extracted,
+        ...(fullContentPath !== undefined
+          ? { full_content_path: fullContentPath }
+          : {}),
+        content_preview: textBody.slice(
+          0,
+          WEB_FETCH_EXTRACTION_PREVIEW_CHARS,
+        ),
+      };
+    }
+  }
+  return { ...described, content: textBody };
+}
+
 function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
+  // One warning per registry: later failures still note it in the result.
+  let deepseekFetchWarned = false;
   return {
     name: WEB_FETCH_TOOL_NAME,
     description:
@@ -3778,13 +4144,17 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
     isReadOnly: true,
     concurrencyClass: { kind: "shared_read" },
     recoveryCategory: "idempotent",
-    // Direct HTTPS fetch is free; native Ollama fetch reserves its listed fee.
-    // Optional extraction is charged at the model boundary (runAdmittedModelFacingCall).
-    // Without an explicit zero bound the default unpriced estimate held every
-    // successful fetch as missing_tool_usage and marked the whole session's
-    // cost unknown.
-    admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0,
-      maxCostUsd: ollamaWebFetchKey(opts) ? OLLAMA_WEB_FETCH_USD_PER_REQUEST : 0 }),
+    // Direct HTTPS fetch is free; a provider fetch (Ollama Cloud, DeepSeek)
+    // reserves its listed fee. Optional extraction is charged at the model
+    // boundary (runAdmittedModelFacingCall). Without an explicit zero bound
+    // the default unpriced estimate held every successful fetch as
+    // missing_tool_usage and marked the whole session's cost unknown.
+    admissionEstimate: (args) => {
+      const session = invokingSession(opts, args);
+      const backend = webFetchBackend(opts, session, args.url);
+      noteWebFetchAdmission(session, args, backend.kind === "deepseek");
+      return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: webFetchBackendMaxCostUsd(backend) };
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -3820,12 +4190,85 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
         MIN_FETCH_BYTES,
         Math.min(MAX_FETCH_BYTES, maxChars * 4),
       );
+      const prompt = stringValue(args.prompt);
       let providerFetchFallback: string | undefined;
+      let deepseekFetchFallback: string | undefined;
       let providerFetchCost = 0;
       const resultWithCharge = (result: ToolResult): ToolResult => ({ ...result,
         admissionUsage: { inputTokens: 0, outputTokens: 0, costUsd: providerFetchCost } });
+      // Every result after a DeepSeek fetch that did not answer says why.
+      const finish = (payload: Record<string, unknown>, isError?: boolean): ToolResult =>
+        resultWithCharge(json(
+          deepseekFetchFallback === undefined
+            ? payload
+            : { deepseek_fetch_fallback: deepseekFetchFallback, ...payload },
+          isError,
+        ));
       try {
-        const apiKey = ollamaWebFetchKey(opts);
+        // DeepSeek's Fetch API for a deepseek session that never asks and has
+        // no web_fetch rules. A failure or an empty page falls through to the
+        // local fetcher, which says why.
+        const session = invokingSession(opts, args);
+        const admittedDeepSeek = takeWebFetchAdmission(session, args);
+        const backend = webFetchBackend(opts, session, normalized);
+        // A dispatched call needs admission's affirmative record (one evicted
+        // or never written means no fee was reserved); a call without runtime
+        // context (direct use) follows the live decision.
+        const dispatched = readToolRuntimeContext(args)?.callId !== undefined;
+        const deepseek = backend.kind === "deepseek" &&
+          (dispatched ? admittedDeepSeek === true : admittedDeepSeek !== false)
+          ? backend
+          : undefined;
+        if (deepseek !== undefined) {
+          // The fetch's own time budget starts before the URL checks, so a
+          // stalled resolver cannot hold the call past timeout_ms.
+          const budgetMs = deepSeekFetchBudgetMs(numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS);
+          const budgetStartedAt = Date.now();
+          const budget = AbortSignal.timeout(budgetMs);
+          const check = await checkDeepSeekFetchUrl(normalized, budget, effectSignal);
+          const outcome = check === "send"
+            ? await runDeepSeekFetch({
+                endpoint: deepseek.endpoint,
+                apiKey: deepseek.apiKey,
+                url: normalized,
+                timeoutMs: budgetMs,
+                budgetStartedAt,
+                ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
+                fetchOptions: getProxyFetchOptions({
+                  environment: requireModelFacingRequestEnvironment(opts),
+                }),
+              })
+            : check === "timed_out"
+              ? { kind: "failed" as const, reason: deepSeekTimeoutReason(budgetMs), billed: false as const, attempts: 0 }
+              : undefined;
+          if (outcome?.billed === true) providerFetchCost += DEEPSEEK_FETCH_USD_PER_REQUEST;
+          if (outcome?.kind === "content") {
+            return finish(await webFetchPagePayload(opts, {
+              head: {
+                source: "deepseek_fetch",
+                provider: "deepseek",
+                ...(outcome.title.length > 0 ? { title: outcome.title } : {}),
+              },
+              ok: true,
+              url: normalized,
+              preapproved: false,
+              renderedAs: "markdown",
+              body: outcome.content,
+              ...(outcome.titleTruncated ? { headTruncated: true } : {}),
+            }, { maxChars, prompt, signal: effectSignal }));
+          }
+          if (outcome !== undefined) {
+            deepseekFetchFallback = outcome.kind === "failed" ? outcome.reason : "no page content";
+            if (outcome.kind === "failed" && !deepseekFetchWarned) {
+              deepseekFetchWarned = true;
+              opts.emitWarning?.({
+                cause: "deepseek_web_fetch_failed",
+                message: `DeepSeek web fetch failed (${outcome.reason}); web_fetch used the local fetcher instead.`,
+              });
+            }
+          }
+        }
+        const apiKey = backend.kind === "ollama" ? backend.apiKey : undefined;
         if (apiKey !== undefined) {
           await assertLiveWebFetchHostAllowed(new URL(normalized).hostname, effectSignal);
           const page = await runOllamaWebFetch({ apiKey, url: normalized, signal: effectSignal,
@@ -3833,7 +4276,6 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
           providerFetchCost = page.costUsd;
           if (page.kind === "content") {
             const content = page.content.slice(0, maxChars);
-            const prompt = stringValue(args.prompt);
             const extracted = prompt && content.length >= WEB_FETCH_EXTRACTION_MIN_CHARS
               ? await runWebFetchExtraction(opts, { url: normalized, content, prompt, signal: effectSignal }) : undefined;
             // Ollama does not report the final URL or origin HTTP status. Do not
@@ -3898,84 +4340,23 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
           body = raw.text;
           renderedAs = "passthrough";
         }
-        let textBody = body;
-        if (body.length > maxChars) {
-          textBody = `${body.slice(0, maxChars)}\n\n[truncated ${body.length - maxChars} chars]`;
-        } else if (raw.truncated) {
-          textBody = `${body}\n\n[truncated response after ${raw.bytesRead} bytes]`;
-        }
-        // Prompt-driven extraction: distill large pages instead of
-        // dumping the full markdown into context. Raw content is
-        // persisted to disk so the agent can still read it in full.
-        const prompt = stringValue(args.prompt);
-        if (
-          response.ok &&
-          prompt !== undefined &&
-          prompt.trim().length > 0 &&
-          textBody.length >= WEB_FETCH_EXTRACTION_MIN_CHARS
-        ) {
-          const extracted = await runWebFetchExtraction(opts, {
-            url: finalUrl,
-            content: textBody,
-            prompt,
-            ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
-          });
-          if (extracted !== undefined) {
-            let fullContentPath: string | undefined;
-            try {
-              const { persistToolResult } =
-                await import("../utils/toolResultStorage.js");
-              const persisted = await persistToolResult(
-                textBody,
-                `webfetch-${randomUUID()}`,
-              );
-              if (!("error" in persisted)) {
-                fullContentPath = persisted.filepath;
-              }
-            } catch {
-              /* extraction still useful without the persisted copy */
-            }
-            return resultWithCharge(json({
-              ...(providerFetchFallback ? { provider_fetch_fallback: providerFetchFallback } : {}),
-              status: response.status,
-              ok: response.ok,
-              url: normalized,
-              final_url: finalUrl,
-              content_type: contentType,
-              preapproved,
-              rendered_as: renderedAs,
-              truncated: raw.truncated || body.length > maxChars,
-              prompt,
-              extracted,
-              ...(fullContentPath !== undefined
-                ? { full_content_path: fullContentPath }
-                : {}),
-              content_preview: textBody.slice(
-                0,
-                WEB_FETCH_EXTRACTION_PREVIEW_CHARS,
-              ),
-            }));
-          }
-        }
-        return resultWithCharge(json(
-          {
-            ...(providerFetchFallback ? { provider_fetch_fallback: providerFetchFallback } : {}),
-            status: response.status,
-            ok: response.ok,
-            url: normalized,
-            final_url: finalUrl,
-            content_type: contentType,
-            preapproved,
-            rendered_as: renderedAs,
-            truncated: raw.truncated || body.length > maxChars,
-            prompt,
-            content: textBody,
-          },
-          response.ok ? undefined : true,
-        ));
+        const payload = await webFetchPagePayload(opts, {
+          ...(providerFetchFallback ? { head: { provider_fetch_fallback: providerFetchFallback } } : {}),
+          status: response.status,
+          ok: response.ok,
+          url: normalized,
+          finalUrl,
+          contentType,
+          preapproved,
+          renderedAs,
+          body,
+          ...(raw.truncated ? { bytesReadBeforeCap: raw.bytesRead } : {}),
+        }, { maxChars, prompt, signal: effectSignal });
+        // An extraction implies an ok response; a failed status is an error.
+        return finish(payload, response.ok ? undefined : true);
       } catch (error) {
         effectSignal?.throwIfAborted();
-        return resultWithCharge(json({ error: `fetch failed: ${errorMessage(error)}` }, true));
+        return finish({ error: `fetch failed: ${errorMessage(error)}` }, true);
       }
     },
   };
@@ -4261,9 +4642,9 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         }
         // DeepSeek's Search API for a deepseek session. A failure or an empty
         // answer falls through to the chain below, which says why.
-        const deepseek = resolveDeepSeekWebSearchBackend(opts);
+        const deepseek = resolveDeepSeekWebSearchBackend(opts, invokingSession(opts, args));
         // A paid fallback is unpriced. An early DeepSeek success still has an exact receipt.
-        const gateway = resolveGatewayWebSearchBackend(opts);
+        const gateway = resolveGatewayWebSearchBackend(opts, invokingSession(opts, args));
         const reportsDeepSeekCharge = (deepseek !== undefined || gateway !== undefined) &&
           endpoint === undefined && chain.providers.length === 0;
         let deepseekBilled = false;

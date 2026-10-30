@@ -39,6 +39,11 @@ export interface BootstrapToolRegistryOptions {
    * `AGENC_DEEPSEEK_WEB_SEARCH` overrides it.
    */
   readonly configuredDeepSeekWebSearch?: boolean;
+  /**
+   * config.toml `[providers.deepseek] web_fetch`; the session's
+   * `AGENC_DEEPSEEK_WEB_FETCH` overrides it.
+   */
+  readonly configuredDeepSeekWebFetch?: boolean;
 }
 
 export function buildBootstrapToolRegistry(
@@ -73,6 +78,9 @@ export function buildBootstrapToolRegistry(
       : {}),
     ...(options.configuredDeepSeekWebSearch !== undefined
       ? { deepseekWebSearch: options.configuredDeepSeekWebSearch }
+      : {}),
+    ...(options.configuredDeepSeekWebFetch !== undefined
+      ? { deepseekWebFetch: options.configuredDeepSeekWebFetch }
       : {}),
     ...(options.toolRegistryOptions?.sessionProvider !== undefined
       ? { sessionProvider: options.toolRegistryOptions.sessionProvider }

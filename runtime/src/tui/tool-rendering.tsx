@@ -19,7 +19,10 @@ import { unescapeXml } from "../utils/xml.js";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
+  summarizeWebFetchResult,
   summarizeWebSearchResult,
+  WEB_FETCH_TOOL_NAME_FOR_DISPATCH,
+  webFetchResultLine,
 } from "./tool-result-routing.js";
 
 // These views render with raw ANSI color literals ("green"/"red") that aren't
@@ -304,6 +307,38 @@ export function WebSearchResultsView({
           <Text dimColor>{`  ${result.url}`}</Text>
         </Box>
       ))}
+    </Box>
+  );
+}
+
+/**
+ * web_fetch result once DeepSeek's fetch was involved: one line naming the
+ * fetch that answered and how much text came back ("42 lines via DeepSeek
+ * fetch"), plus the reason when DeepSeek's fetch fell back to the local one.
+ * Verbose (ctrl+o) adds the page title and URL, then the full result.
+ */
+export function WebFetchResultView({
+  content,
+  verbose = false,
+  failed = false,
+}: {
+  readonly content: string;
+  readonly verbose?: boolean;
+  /** The result is an error: the line takes the failed-step color. */
+  readonly failed?: boolean;
+}): React.ReactElement {
+  const summary = summarizeWebFetchResult(content);
+  if (summary === undefined) {
+    return <ResultLine failed={failed}>{summarizeResultText(content)}</ResultLine>;
+  }
+  const line = webFetchResultLine(summary);
+  if (!verbose) return <ResultLine failed={failed}>{line}</ResultLine>;
+  return (
+    <Box flexDirection="column">
+      <ResultLine failed={failed}>{line}</ResultLine>
+      {summary.title !== undefined ? <Text>{summary.title}</Text> : null}
+      {summary.url !== undefined ? <Text dimColor>{`  ${summary.url}`}</Text> : null}
+      <Text>{content}</Text>
     </Box>
   );
 }
@@ -1033,6 +1068,10 @@ export function createTuiTool(name: string): any {
           return (
             <WebSearchResultsView content={joined} verbose={options?.verbose ?? false} />
           );
+        case "web-fetch-view":
+          return (
+            <WebFetchResultView content={joined} verbose={options?.verbose ?? false} />
+          );
         case "generic":
         default:
           return options?.verbose === true ? (
@@ -1044,7 +1083,10 @@ export function createTuiTool(name: string): any {
           );
       }
     },
-    renderToolUseErrorMessage(error: unknown) {
+    renderToolUseErrorMessage(
+      error: unknown,
+      options?: { readonly verbose?: boolean },
+    ) {
       // Cross-cutting error path: format and dispatch to ToolErrorView.
       // Any tool whose result reaches this path renders with the same
       // red-bold-header style as the upstream FallbackToolUseErrorMessage.
@@ -1066,6 +1108,20 @@ export function createTuiTool(name: string): any {
             : Array.isArray(error)
               ? messageFromStructuredErrorBlocks(error)
               : readableToolError(error);
+      // A failed web_fetch that went through DeepSeek's fetch reads like its
+      // success row: which fetch failed, and why DeepSeek's fell back.
+      if (
+        presentationName === WEB_FETCH_TOOL_NAME_FOR_DISPATCH &&
+        summarizeWebFetchResult(message) !== undefined
+      ) {
+        return (
+          <WebFetchResultView
+            content={abbreviateHomePaths(message)}
+            verbose={options?.verbose ?? false}
+            failed
+          />
+        );
+      }
       const envelope = `<tool-error-name>${name}</tool-error-name>\n<tool-error>${message}</tool-error>`;
       return <ToolErrorView content={envelope} />;
     },

@@ -13,8 +13,20 @@
  * @module
  */
 
-import { isEnvDefinedFalsy, isEnvTruthy } from "../../../utils/envBoolean.js";
-import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
+import {
+  clip,
+  deepSeekHttpFailureReason,
+  deepSeekRequestFailureReason,
+  deepSeekTimeoutReason,
+  deepSeekToolEndpoint,
+  parseHttpUrl,
+  record,
+  resolveDeepSeekToolSetting,
+  text,
+  type DeepSeekToolSetting,
+} from "./tool-api.js";
+
+export { isOfficialDeepSeekApiHost } from "./tool-api.js";
 
 /** Session environment switch; it wins over `[providers.deepseek] web_search`. */
 export const DEEPSEEK_WEB_SEARCH_ENV = "AGENC_DEEPSEEK_WEB_SEARCH";
@@ -30,56 +42,29 @@ export const DEEPSEEK_SEARCH_SUMMARY_MAX_CHARS = 600;
 
 const DEEPSEEK_SEARCH_TIMEOUT_MS = 30_000;
 const DEEPSEEK_SEARCH_MAX_RESPONSE_CHARS = 2_000_000;
-/** DeepSeek's own API host, taken from the provider registry. */
-const OFFICIAL_DEEPSEEK_API = new URL(BUILT_IN_PROVIDER_BASE_URLS.deepseek);
-const OFFICIAL_DEEPSEEK_SEARCH_URL = `${OFFICIAL_DEEPSEEK_API.origin}/v1/tools/search`;
 const MIN_QUERY_CHARS_WITH_DOMAIN_OPERATORS = 24;
-const ERROR_MESSAGE_MAX_CHARS = 160;
 
 /**
  * `auto`: on for a deepseek session on DeepSeek's own API host when no
  * search endpoint is configured; `on`: on for every deepseek session;
  * `off`: never.
  */
-export type DeepSeekWebSearchSetting = "auto" | "on" | "off";
+export type DeepSeekWebSearchSetting = DeepSeekToolSetting;
 
 export function resolveDeepSeekWebSearchSetting(
   environmentValue: string | undefined,
   configured: boolean | undefined,
 ): DeepSeekWebSearchSetting {
-  if (isEnvTruthy(environmentValue)) return "on";
-  if (isEnvDefinedFalsy(environmentValue)) return "off";
-  if (configured === true) return "on";
-  if (configured === false) return "off";
-  return "auto";
-}
-
-function parseHttpUrl(raw: string): URL | undefined {
-  try {
-    const url = new URL(raw);
-    return url.protocol === "https:" || url.protocol === "http:" ? url : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export function isOfficialDeepSeekApiHost(baseURL: string): boolean {
-  const url = parseHttpUrl(baseURL);
-  return url?.protocol === "https:" && url.hostname.toLowerCase() === OFFICIAL_DEEPSEEK_API.hostname;
+  return resolveDeepSeekToolSetting(environmentValue, configured);
 }
 
 /**
- * The search URL for a DeepSeek chat base URL. The official host always uses
- * the documented endpoint; another host (a proxy the session already sends
- * its key to) keeps its path prefix, so `https://gw.example/deepseek/v1`
- * becomes `https://gw.example/deepseek/v1/tools/search`.
+ * The search URL for a DeepSeek chat base URL (see
+ * {@link deepSeekToolEndpoint}): `https://gw.example/deepseek/v1` becomes
+ * `https://gw.example/deepseek/v1/tools/search`.
  */
 export function deepSeekSearchEndpoint(baseURL: string): string | undefined {
-  const url = parseHttpUrl(baseURL);
-  if (url === undefined) return undefined;
-  if (isOfficialDeepSeekApiHost(baseURL)) return OFFICIAL_DEEPSEEK_SEARCH_URL;
-  const prefix = url.pathname.replace(/\/+$/u, "").replace(/\/v1$/u, "");
-  return `${url.origin}${prefix}/v1/tools/search`;
+  return deepSeekToolEndpoint(baseURL, "search");
 }
 
 function codePoints(text: string): string[] {
@@ -150,25 +135,6 @@ export type DeepSeekSearchOutcome =
   | { readonly kind: "empty"; readonly billed: false }
   | { readonly kind: "failed"; readonly reason: string; readonly billed: false };
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function text(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const collapsed = value.replace(/\s+/gu, " ").trim();
-  return collapsed.length > 0 ? collapsed : undefined;
-}
-
-function clip(value: string, max: number): string {
-  if (value.length <= max) return value;
-  const head = value.slice(0, max);
-  const lastSpace = head.lastIndexOf(" ");
-  return `${(lastSpace >= max / 2 ? head.slice(0, lastSpace) : head).trimEnd()}…`;
-}
-
 /** Summaries are page extracts in Markdown; heading marks only cost tokens. */
 function summaryText(value: unknown): string | undefined {
   const plain = typeof value === "string"
@@ -214,25 +180,6 @@ export function parseDeepSeekSearchResults(body: unknown): {
     });
   }
   return { hits, resultCount: results.length };
-}
-
-function redact(value: string, secret: string): string {
-  return secret.length > 0 ? value.split(secret).join("[redacted]") : value;
-}
-
-/** A short reason for the fallback note: status plus DeepSeek's own message. */
-function failureReason(status: number, body: string, apiKey: string): string {
-  let message: string | undefined;
-  try {
-    message = text(record(record(JSON.parse(body))?.error)?.message);
-  } catch {
-    message = undefined;
-  }
-  const cleaned = message
-    ?.replace(/\s*\(request_id:[^)]*\)\s*$/u, "")
-    .trim();
-  const detail = cleaned ? `: ${clip(redact(cleaned, apiKey), ERROR_MESSAGE_MAX_CHARS)}` : "";
-  return `HTTP ${status}${detail}`;
 }
 
 export interface DeepSeekSearchRequest {
@@ -293,13 +240,10 @@ export async function runDeepSeekSearch(
     body = await response.text();
   } catch (error) {
     request.signal?.throwIfAborted();
-    if (timeout.aborted) {
-      return failed(`timed out after ${timeoutMs >= 1_000 ? `${Math.round(timeoutMs / 1_000)}s` : `${timeoutMs}ms`}`);
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return failed(`request failed: ${clip(redact(message, request.apiKey), ERROR_MESSAGE_MAX_CHARS)}`);
+    if (timeout.aborted) return failed(deepSeekTimeoutReason(timeoutMs));
+    return failed(deepSeekRequestFailureReason(error, request.apiKey));
   }
-  if (status !== 200) return failed(failureReason(status, body, request.apiKey));
+  if (status !== 200) return failed(deepSeekHttpFailureReason(status, body, request.apiKey));
   if (body.length > DEEPSEEK_SEARCH_MAX_RESPONSE_CHARS) {
     return failed("response too large");
   }

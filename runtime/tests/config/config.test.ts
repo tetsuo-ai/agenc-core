@@ -1835,6 +1835,27 @@ describe("env: resolvers", () => {
     expect(defaultConfig().providers?.deepseek).toBeUndefined();
   });
 
+  test("providers.deepseek takes web_fetch, and no other provider table does", () => {
+    expect(
+      normalizeRawConfig({
+        providers: { deepseek: { web_fetch: false } },
+      }).providers?.deepseek,
+    ).toEqual({ web_fetch: false });
+    expect(
+      validateProviderConfig({ deepseek: { web_search: true, web_fetch: true, base_url: "https://api.deepseek.com/v1" } }),
+    ).toEqual({ deepseek: { web_search: true, web_fetch: true, base_url: "https://api.deepseek.com/v1" } });
+    expect(() =>
+      validateProviderConfig({ deepseek: { web_fetch: "auto" } }),
+    ).toThrow(InvalidProviderConfigError);
+    for (const provider of ["grok", "openai", "ollama-cloud"]) {
+      expect(() =>
+        validateProviderConfig({ [provider]: { web_fetch: true } }),
+      ).toThrow(/web_fetch is allowed only under providers.deepseek/u);
+    }
+    // Unset means auto; nothing is written by default.
+    expect(defaultConfig().providers?.deepseek).toBeUndefined();
+  });
+
   test("applyEnvOverrides diagnoses invalid loop, coordinator, and watchdog values", () => {
     const warnings: string[] = [];
     const out = applyEnvOverrides(

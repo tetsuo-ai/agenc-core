@@ -152,6 +152,20 @@ off. When unset, manual Web search On enables it; otherwise
 is on only for DeepSeek's own API host with no search endpoint configured. Each successful search costs $0.00075 ($0.75 per 1,000). See
 [Direct DeepSeek](../providers/deepseek-direct.md#web-search).
 
+`AGENC_DEEPSEEK_WEB_FETCH` (boolean-like) chooses whether the `web_fetch` tool
+of a `deepseek` session reads pages through DeepSeek's Fetch API. `1` turns it
+on for any DeepSeek base URL; `0` turns it off, so every page is fetched from
+your machine. Unset leaves `[providers.deepseek] web_fetch` in charge, and when
+that is unset too it is on only for DeepSeek's own API host. Either way it is
+used only in the "never asks" permission mode with no `web_fetch` rule in
+effect after settings loading, because DeepSeek follows redirects on its
+servers and only the starting URL can be checked. DeepSeek's servers fetch the
+page, so a local proxy or egress filter sees only the request to the DeepSeek
+host; set `0` when those controls must apply to page fetches. Only public DNS
+names that pass the local fetcher's own checks are sent. Each successful fetch
+costs $0.00075 ($0.75 per 1,000). See
+[Direct DeepSeek](../providers/deepseek-direct.md#web-fetch).
+
 `AGENC_OPENAI_REASONING_REPLAY` (boolean-like, on by default) controls whether
 the `openai` provider keeps encrypted reasoning from Responses reasoning calls
 and sends it back. Set it to `0`, `false`, `no` or `off` to disable retention
@@ -337,6 +351,7 @@ These have their own pages. Short map:
 | Heartbeat | `AGENC_HEARTBEAT`, `AGENC_HEARTBEAT_INTERVAL`, `AGENC_HEARTBEAT_ACTIVE_HOURS`, `AGENC_HEARTBEAT_TARGET`. `skip_when_busy` has no env (TOML only, default true) | [autonomy.md](autonomy.md) |
 | Transaction guard | `AGENC_TRANSACTION_GUARD`, `AGENC_TRANSACTION_GUARD_MODEL`, `AGENC_TRANSACTION_GUARD_OLLAMA_URL`, `AGENC_TRANSACTION_GUARD_FAIL_MODE`, `AGENC_TRANSACTION_GUARD_TIMEOUT_MS`, `AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES` | [slm-transaction-guard.md](../security/slm-transaction-guard.md) |
 | Web search | `WEB_SEARCH_PROVIDER`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, `YOU_API_KEY`, `JINA_API_KEY`, `BING_API_KEY`, `MOJEEK_API_KEY`, `LINKUP_API_KEY`, `AGENC_WEB_SEARCH_ENDPOINT`, `AGENC_WEB_SEARCH_KIND`, `AGENC_WEB_SEARCH_API_KEY`; DeepSeek sessions: `AGENC_DEEPSEEK_WEB_SEARCH` | [config.md](config.md), [deepseek-direct.md](../providers/deepseek-direct.md#web-search) |
+| Web fetch | DeepSeek sessions: `AGENC_DEEPSEEK_WEB_FETCH` | [config.md](config.md), [deepseek-direct.md](../providers/deepseek-direct.md#web-fetch) |
 | xAI incremental continuation | `AGENC_XAI_INCREMENTAL` (boolean-like; projects to `providers.grok.incremental_continuation`, on by default). Streaming Grok turns send `previous_response_id` plus the items added since the last completed response instead of the full history, and resend the trailing permission section only when it changes. Side calls on the session provider (memory selection, compaction, MCP sampling, summaries) are sent in full and leave that chain intact; `0` sends the full history every turn | [providers.md](providers.md) |
 | Provider trace | `AGENC_PROVIDER_TRACE` (truthy). Writes one JSON line per model request and per response or error, without message bodies (model, `prompt_cache_key`, `previous_response_id`, `reasoning`, `parallel_tool_calls`, `max_output_tokens`, response id, usage, stream event count, elapsed ms), to `<AGENC_HOME>/agent-logs/<conversation>/llm-<seq>.jsonl` | [providers.md](providers.md) |
 | Provider trace bodies | `AGENC_PROVIDER_TRACE_BODIES` (truthy, only with `AGENC_PROVIDER_TRACE`). Also writes each full request as `agent-logs/<conversationId>/llm-<seq>.request.json` (secrets redacted, mode 0600). The whole prompt lands on disk, so use it in an isolated home for cache-prefix diagnosis and delete the files afterwards. `node scripts/eval/prefix-diff.mjs <that directory>` reports where consecutive full requests first diverge and, following `previous_response_id` to the response ids in the `.jsonl` lines, which system and user items a continuation chain holds more than once. |

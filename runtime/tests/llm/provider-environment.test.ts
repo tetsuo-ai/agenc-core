@@ -52,10 +52,11 @@ describe("canonical provider environment leaf", () => {
     expect(Object.isFrozen(captured)).toBe(true);
   });
 
-  it("keeps the web search settings the session's WebSearch tool reads", () => {
+  it("keeps the web search and fetch settings the session's web tools read", () => {
     // Without these keys a daemon session never sees the user's setting.
     const settings = {
       AGENC_DEEPSEEK_WEB_SEARCH: "0",
+      AGENC_DEEPSEEK_WEB_FETCH: "0",
       AGENC_WEB_SEARCH: "on",
       AGENC_WEB_SEARCH_ENDPOINT: "https://search.example/api",
       AGENC_WEB_SEARCH_KIND: "brave",

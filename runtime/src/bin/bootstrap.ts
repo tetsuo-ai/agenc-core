@@ -1386,6 +1386,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     ...(startup.config.providers?.deepseek?.web_search !== undefined
       ? { configuredDeepSeekWebSearch: startup.config.providers.deepseek.web_search }
       : {}),
+    ...(startup.config.providers?.deepseek?.web_fetch !== undefined
+      ? { configuredDeepSeekWebFetch: startup.config.providers.deepseek.web_fetch }
+      : {}),
     mcpManager,
     getSession: () => sessionRef,
     roleCatalog,

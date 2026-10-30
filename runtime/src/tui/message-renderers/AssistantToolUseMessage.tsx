@@ -27,6 +27,11 @@ import { isFixedRerunSuccess } from './fixedRerunLink.js';
 import { AURA_LIFECYCLE_GLYPHS } from '../../utils/theme.js';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { summarizeToolError } from '../tool-error-text.js';
+import {
+  summarizeWebFetchResult,
+  WEB_FETCH_TOOL_NAME_FOR_DISPATCH,
+  webFetchResultLine,
+} from '../tool-result-routing.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -241,6 +246,7 @@ export function AssistantToolUseMessage({
       ? failedToolRowReason(
           toolKind,
           rawToolResultContent(lookups, param.id),
+          param.name,
         )
       : undefined;
   // Roll the retry count into the inline annotation, e.g.
@@ -481,9 +487,16 @@ function rawToolResultContent(
 function failedToolRowReason(
   kind: ToolKind,
   rawResult: string | null,
+  toolName?: string,
 ): string | undefined {
   if (rawResult === null) return undefined;
   rawResult = abbreviateHomePaths(rawResult);
+  // A failed web_fetch that went through DeepSeek's fetch says which fetch
+  // failed and why DeepSeek's fell back, as its success row does.
+  if (toolName === WEB_FETCH_TOOL_NAME_FOR_DISPATCH) {
+    const summary = summarizeWebFetchResult(rawResult);
+    if (summary !== undefined) return webFetchResultLine(summary);
+  }
   if (kind === 'edit') {
     return summarizeFileEditError(rawResult) ?? undefined;
   }
