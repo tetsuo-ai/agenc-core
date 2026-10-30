@@ -1020,6 +1020,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       entry.hardTimeout = setTimeout(() => {
         if (entry.exitState !== null) return;
         if (entry.timeLimit !== undefined) {
+          // A stop already asked for (kill_process, an abort) proceeds as is.
+          if (entry.stopRequested) return;
           const live = this.liveBackgroundSessionCount(entry.ownerId, entry);
           if (live < this.maxBackgroundSessions) {
             entry.timeLimit.markReached();
@@ -2276,7 +2278,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     if (entry.exitState !== null) entry.endReported = true;
     const running = entry.exitState === null && entry.hardTimeoutExpired !== true;
     const timeLimit = entry.timeLimit;
-    const reportTimeLimit = running && timeLimit?.reachedAt !== undefined && !timeLimit.reported;
+    const reportTimeLimit = running && !entry.stopRequested &&
+      timeLimit?.reachedAt !== undefined && !timeLimit.reported;
     if (reportTimeLimit) timeLimit!.reported = true;
     const processState = running && !entry.stopRequested && chunks.length === 0
       ? await this.quietProcessState(entry)
