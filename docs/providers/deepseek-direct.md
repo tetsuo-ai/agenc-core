@@ -138,3 +138,80 @@ Provider references checked on 2026-10-19:
 - https://api-docs.deepseek.com/api/search
 - https://api-docs.deepseek.com/guides/responses_api
 - https://api-docs.deepseek.com/quick_start/pricing/
+
+## Web fetch
+
+In a `deepseek` session the `web_fetch` tool reads pages through DeepSeek's
+Fetch API (`POST /v1/tools/fetch`) with the session's key. DeepSeek's servers
+load the page and return its title and its content as Markdown. Like Search,
+the API takes no model, so it serves `deepseek-flash` and `deepseek-v4-pro`
+alike.
+
+Because DeepSeek's servers fetch the page, the only request that leaves your
+machine goes to the session's DeepSeek host (`api.deepseek.com`). Local
+network controls such as an HTTP proxy, an egress filter or a firewall rule
+for the page's host see only that request, and the page's host sees
+DeepSeek's servers, not you. If those controls must apply to page fetches,
+turn the setting off (below).
+
+A fetch runs only when the model calls `web_fetch`, and the request carries
+the URL and nothing else from the conversation. Every check the local fetcher
+runs before it fetches still runs first: the `web_fetch` permission rules
+(deny, ask and allow by domain), the https upgrade, the refusal of URLs with
+a username or password, and the refusal of private, loopback and link-local
+addresses. A URL then goes to DeepSeek only when its host is a public DNS
+name: no IP address, no single-label name, no `localhost`, `.local`,
+`.internal`, `.lan`, `.home.arpa` or similar name, at most 8,192 characters,
+and a name that does not resolve to a private, loopback or link-local address
+on your machine. Anything else takes the local fetcher under its usual rules,
+which refuse it when they would have refused it before. URLs on AgenC's
+built-in list of preapproved documentation sites, which `web_fetch` reads
+without asking, also stay with the local fetcher: DeepSeek follows redirects
+on its own servers and does not report where they led, so only the local
+fetcher can keep their redirects inside the preapproved scope.
+
+The model sees the same result shape as for a local fetch: the page text is
+capped at `max_chars` with the same `[truncated N chars]` marker, a `prompt`
+runs against large pages the same way (the full text is saved to disk), and
+the result carries `source: "deepseek_fetch"`, the page `title`,
+`rendered_as: "markdown"` and `ok: true`. DeepSeek does not report the
+origin's HTTP status, final URL or content type, so those fields are absent
+rather than guessed.
+
+Each successful fetch costs $0.75 per 1,000 (DeepSeek bills an HTTP 200 that
+carries page content); failures, empty pages and timeouts are free. The charge
+is counted in the session cost as the `web_fetch` call's own price, and the
+page counts as ordinary input on the next model call.
+
+`[providers.deepseek] web_fetch` sets it in `config.toml`, and
+`AGENC_DEEPSEEK_WEB_FETCH` in the session environment wins over it:
+
+| Value | Behavior |
+| --- | --- |
+| unset (default) | On when the session uses DeepSeek's own API host (`https://api.deepseek.com`) |
+| `true` / `1` | On for any DeepSeek base URL (its `/v1/tools/fetch` path, keeping a proxy's path prefix) |
+| `false` / `0` | Off; `web_fetch` fetches every page from your machine |
+
+```toml
+[providers.deepseek]
+web_fetch = false
+```
+
+If a fetch fails (an HTTP error such as 402 for insufficient balance or 404
+when DeepSeek could not get usable content, a timeout or a network error) or
+returns an empty page, `web_fetch` continues with the local fetcher and the
+result carries `deepseek_fetch_fallback` with the reason. A 408, 429 or 5xx
+answer is retried once after a short wait (DeepSeek's `Retry-After`, at most
+two seconds) within the call's timeout (30 seconds unless the model sets
+`timeout_ms`) before it falls back; the local fetch then gets its own timeout.
+The TUI shows the outcome on the `web_fetch` row: `65 lines via DeepSeek
+fetch` from DeepSeek, or `1 line via local fetch (DeepSeek fetch: HTTP 404:
+failed to fetch URL)` after a fallback; ctrl+o adds the page title and URL.
+The first failure in a session is also recorded as a
+`deepseek_web_fetch_failed` warning event for the daemon log and SDK clients.
+Other providers' sessions are unchanged.
+
+Provider references checked on 2026-10-30:
+
+- https://api-docs.deepseek.com/guides/search
+- https://api-docs.deepseek.com/api/fetch

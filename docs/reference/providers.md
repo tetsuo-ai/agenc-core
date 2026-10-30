@@ -1234,9 +1234,17 @@ $0.75 per 1,000 successful searches; see
 [Direct DeepSeek](../providers/deepseek-direct.md#web-search) for the setting
 and the fallback.
 
+The `web_fetch` tool of the same session reads pages through DeepSeek's Fetch
+API, also with the session's key and at $0.75 per 1,000 successful fetches, so
+DeepSeek's servers load the page instead of your machine. Private, local and
+preapproved-documentation URLs stay with the local fetcher; see
+[Direct DeepSeek](../providers/deepseek-direct.md#web-fetch) for the setting,
+the URL rules and the fallback.
+
 Sources: https://api-docs.deepseek.com/quick_start/pricing/,
-https://api-docs.deepseek.com/news/news261017 and
-https://api-docs.deepseek.com/guides/search
+https://api-docs.deepseek.com/news/news261017,
+https://api-docs.deepseek.com/guides/search and
+https://api-docs.deepseek.com/api/fetch
 
 ## Ollama Cloud
 
