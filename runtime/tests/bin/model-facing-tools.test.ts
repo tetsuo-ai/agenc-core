@@ -31,6 +31,10 @@ import {
   createModelFacingTools,
   __setLiveWebFetchDnsAllLookupForTests,
 } from "./model-facing-tools.js";
+import {
+  attachToolRuntimeContext,
+  type ToolRuntimeAttemptContext,
+} from "../tools/runtimes/context.js";
 import { collectSkillsSnapshot } from "../commands/skills.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
@@ -6966,6 +6970,50 @@ describe("WebSearch through DeepSeek's Search API", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(OFFICIAL_SEARCH_URL);
   });
+
+  it("searches with the invoking sub-agent session's provider, not the registry's", async () => {
+    const dispatched = (session: Session, callId: string): Record<string, unknown> => {
+      const args: Record<string, unknown> = { query: "news" };
+      attachToolRuntimeContext(args, {
+        callId,
+        toolName: "WebSearch",
+        approvalPolicy: "on_request",
+        requestedSandboxMode: "workspace_write",
+        sandboxMode: "workspace_write",
+        approvalResolved: false,
+        rawArgs: JSON.stringify(args),
+        invocation: { session },
+      } as unknown as ToolRuntimeAttemptContext);
+      return args;
+    };
+    const openAi = () => withProvider(fakeSession(), {
+      name: "openai",
+      config: { apiKey: "sk-session-openai", baseURL: "https://api.openai.com/v1", model: "gpt-5.5" },
+      chat: vi.fn(),
+      chatStream: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as LLMProvider);
+
+    // An OpenAI child of a DeepSeek parent: no DeepSeek search, no parent key.
+    const parentTool = webSearch({ session: deepseekSession() });
+    const childArgs = dispatched(openAi(), "child-search-1");
+    expect(parentTool.admissionEstimate?.(childArgs)?.maxCostUsd).toBe(0);
+    const keyless = routedFetch([["https://html.duckduckgo.com/html/", ddgHtml]]);
+    const childResult = await withFetch(keyless, () => parentTool.execute(childArgs));
+    expect(keyless.mock.calls.map((call) => String(call[0])).some((url) => url.includes("/tools/search"))).toBe(false);
+    expect(JSON.parse(childResult.content).source).toBe("duckduckgo_html");
+
+    // A DeepSeek child of an OpenAI parent searches with its own key.
+    const openAiParentTool = webSearch({ session: openAi() });
+    const deepseekChildArgs = dispatched(deepseekSession({ apiKey: "sk-child-deepseek" }), "child-search-2");
+    expect(openAiParentTool.admissionEstimate?.(deepseekChildArgs)?.maxCostUsd).toBe(0.00075);
+    const viaDeepSeek = routedFetch([[OFFICIAL_SEARCH_URL, json200(searchBody)]]);
+    const deepseekResult = await withFetch(viaDeepSeek, () => openAiParentTool.execute(deepseekChildArgs));
+    const [url, init] = viaDeepSeek.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(OFFICIAL_SEARCH_URL);
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer sk-child-deepseek");
+    expect(JSON.parse(deepseekResult.content).source).toBe("deepseek_search");
+  });
 });
 
 describe("web_fetch through DeepSeek's Fetch API", () => {
@@ -7491,6 +7539,152 @@ describe("web_fetch through DeepSeek's Fetch API", () => {
     expect(parsed.title).toMatch(/…$/u);
     expect(parsed.truncated).toBe(true);
     expect(parsed.content).toBe("# Short\n\nA short page.");
+  });
+
+  /** Args as the runtime dispatches them: carrying the invoking session and call id. */
+  function dispatchedArgs(
+    args: Record<string, unknown>,
+    session: Session,
+    callId = "call-web-fetch",
+  ): Record<string, unknown> {
+    const dispatched = { ...args };
+    attachToolRuntimeContext(dispatched, {
+      callId,
+      toolName: "web_fetch",
+      approvalPolicy: "on_request",
+      requestedSandboxMode: "workspace_write",
+      sandboxMode: "workspace_write",
+      approvalResolved: false,
+      rawArgs: JSON.stringify(args),
+      invocation: { session },
+    } as unknown as ToolRuntimeAttemptContext);
+    return dispatched;
+  }
+
+  function openAiSession(): Session {
+    const session = withProvider(fakeSession(), {
+      name: "openai",
+      config: { apiKey: "sk-session-openai", baseURL: "https://api.openai.com/v1", model: "gpt-5.5" },
+      chat: vi.fn(),
+      chatStream: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as LLMProvider);
+    (session as unknown as { permissionModeRegistry: unknown }).permissionModeRegistry = {
+      current: () => NEVER_ASKS,
+    };
+    return session;
+  }
+
+  it("reserves DeepSeek's fee only for a call that will use DeepSeek", () => {
+    const estimate = (session: Session, url: string) =>
+      webFetch({ session }).admissionEstimate?.({ url })?.maxCostUsd;
+    expect(estimate(deepseekSession(), "https://example.com/")).toBe(0.00075);
+    expect(estimate(deepseekSession(), "http://example.com/page")).toBe(0.00075);
+    // Forced local: free, so nothing is reserved.
+    expect(estimate(deepseekSession({}, vi.fn(), createEmptyToolPermissionContext()), "https://example.com/")).toBe(0);
+    expect(estimate(deepseekSession({}, vi.fn(), createEmptyToolPermissionContext({
+      mode: "bypassPermissions",
+      alwaysAllowRules: { localSettings: ["web_fetch(domain:example.com)"] },
+    })), "https://example.com/")).toBe(0);
+    expect(estimate(deepseekSession(), "https://docs.python.org/3/")).toBe(0);
+    expect(estimate(deepseekSession(), "https://printer.local/")).toBe(0);
+    expect(estimate(deepseekSession(), "https://127.0.0.1/")).toBe(0);
+    expect(estimate(deepseekSession(), "not a url")).toBe(0);
+  });
+
+  it("admits a local-only fetch on a budget below DeepSeek's fee", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-web-fetch-admission-"));
+    const kernel = new ExecutionAdmissionKernel({ agencHome: join(root, "home"), ownerId: "web-fetch-admission", ownerPid: process.pid });
+    try {
+      const admitOn = (permissions: ToolPermissionContext) => {
+        const session = deepseekSession({}, vi.fn(), permissions);
+        // $0.0005 left: less than one DeepSeek fetch ($0.00075).
+        const admission = kernel.bindClient({
+          cwd: root,
+          scope: { runId: `${session.conversationId}-${permissions.mode}`, sessionId: session.conversationId, autonomous: false },
+          budget: { runMaxCostUsd: 0.0005 },
+        });
+        const eventLog = new EventLog();
+        Object.assign(session, {
+          eventLog,
+          emit: (event: Event) => eventLog.emit(event),
+          rolloutStore: { assertToolAdmissionAllowed: vi.fn(), listThreadSpawnDescendants: () => [] },
+        });
+        Object.assign(session.services, { executionAdmission: admission, admissionRequired: true });
+        const tool = webFetch({ session });
+        return (callId: string) => {
+          const args = dispatchedArgs({ url: "https://example.com/" }, session, callId);
+          return runAdmittedToolCall({
+            session, turnId: "turn-1", callId, tool, args,
+            invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return tool.execute(args); },
+          });
+        };
+      };
+      const fetchMock = routedFetch([["https://example.com/", localPage()]]);
+      // Default mode keeps the local fetcher: nothing to reserve, so it runs.
+      const local = await withFetch(fetchMock, () => admitOn(createEmptyToolPermissionContext())("local-1"));
+      expect(local.isError).not.toBe(true);
+      expect(JSON.parse(local.content)).toMatchObject({ status: 200, content: "plain local page" });
+      expect(deepSeekCalls(fetchMock)).toEqual([]);
+      // A call that would use DeepSeek needs its fee and is refused here.
+      await expect(withFetch(fetchMock, () => admitOn(NEVER_ASKS)("deepseek-1")))
+        .rejects.toMatchObject({ reason: "budget_exceeded" });
+      expect(deepSeekCalls(fetchMock)).toEqual([]);
+    } finally {
+      kernel.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never bills a call that admission priced as local, even if the gate opens before it runs", async () => {
+    let permissions: ToolPermissionContext = createEmptyToolPermissionContext();
+    const session = deepseekSession();
+    (session as unknown as { permissionModeRegistry: unknown }).permissionModeRegistry = {
+      current: () => permissions,
+    };
+    const tool = webFetch({ session });
+    const args = dispatchedArgs({ url: "https://example.com/" }, session, "call-switch");
+    expect(tool.admissionEstimate?.(args)?.maxCostUsd).toBe(0);
+    // The user switches to "never asks" while the call waits.
+    permissions = NEVER_ASKS;
+    const fetchMock = routedFetch([
+      [OFFICIAL_FETCH_URL, json200(PAGE)],
+      ["https://example.com/", localPage()],
+    ]);
+    const result = await withFetch(fetchMock, () => tool.execute(args));
+    expect(deepSeekCalls(fetchMock)).toEqual([]);
+    expect(JSON.parse(result.content).content).toBe("plain local page");
+    expect(result.admissionUsage?.costUsd).toBe(0);
+  });
+
+  it("chooses the backend from the invoking sub-agent session, not the registry's", async () => {
+    // An OpenAI child of a "never asks" DeepSeek parent: the parent's tool
+    // object, the child's call. No DeepSeek, and never the parent's key.
+    const parent = deepseekSession();
+    const child = openAiSession();
+    const parentTool = webFetch({ session: parent });
+    const childArgs = dispatchedArgs({ url: "https://example.com/" }, child, "child-call-1");
+    expect(parentTool.admissionEstimate?.(childArgs)?.maxCostUsd).toBe(0);
+    const localOnly = routedFetch([["https://example.com/", localPage()]]);
+    const childResult = await withFetch(localOnly, () => parentTool.execute(childArgs));
+    expect(deepSeekCalls(localOnly)).toEqual([]);
+    expect(JSON.parse(childResult.content).source).toBeUndefined();
+    // The same parent call still uses DeepSeek.
+    const parentArgs = dispatchedArgs({ url: "https://example.com/" }, parent, "parent-call-1");
+    expect(parentTool.admissionEstimate?.(parentArgs)?.maxCostUsd).toBe(0.00075);
+
+    // A "never asks" DeepSeek child under an OpenAI parent fetches through
+    // DeepSeek with its own key.
+    const openAiParentTool = webFetch({ session: openAiSession() });
+    const deepseekChild = deepseekSession({ apiKey: "sk-child-deepseek" });
+    const deepseekChildArgs = dispatchedArgs({ url: "https://example.com/" }, deepseekChild, "child-call-2");
+    expect(openAiParentTool.admissionEstimate?.(deepseekChildArgs)?.maxCostUsd).toBe(0.00075);
+    const viaDeepSeek = routedFetch([[OFFICIAL_FETCH_URL, json200(PAGE)]]);
+    const deepseekResult = await withFetch(viaDeepSeek, () => openAiParentTool.execute(deepseekChildArgs));
+    expect(fetchedUrls(viaDeepSeek)).toEqual([OFFICIAL_FETCH_URL]);
+    const [, init] = viaDeepSeek.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer sk-child-deepseek");
+    expect(JSON.parse(deepseekResult.content).source).toBe("deepseek_fetch");
   });
 
   it("cancels the DeepSeek request on the admitted abort instead of falling back", async () => {
