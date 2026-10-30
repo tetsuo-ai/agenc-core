@@ -1521,8 +1521,8 @@ new version at its next idle moment, in the same conversation. While it waits,
 this window reports its own attachment ids into the pending restart, and only
 those ids, on its own conversation, are exempt. Another client following the same
 conversation (an SDK client, say) still keeps the daemon up. A daemon older
-than 0.19.25 cannot be told which attachment is whose, so it restarts only
-once no client of any kind is attached.
+than 0.19.25 is never restarted automatically: this window keeps running its
+version, installs the update, and says to quit AgenC and start it again.
 
 Every failure ends in a working TUI with the reason: if the daemon cannot move,
 or the new version cannot start, the current version reopens; if the new
