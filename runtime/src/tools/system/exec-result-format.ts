@@ -18,7 +18,7 @@ import { formatDuration } from "../../unified-exec/process-state.js";
  * leaves no residue; {@link SERVER_CHECK_NOTE} carries the same guidance then.
  */
 export const RESIDUAL_PROCESSES_NOTE =
-  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To keep a process running in this session, run it in the foreground (a server too: nginx -g 'daemon off;', sshd -D) as its own exec_command with background: true; it stops at session end. To start a service that must keep running after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted).]";
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To start a service that must keep running after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). To keep a process running in this session, run it in the foreground (a server too: nginx -g 'daemon off;', sshd -D) as its own exec_command with background: true; it stops at session end.]";
 
 /**
  * {@link RESIDUAL_PROCESSES_NOTE} without its server guidance, for a session
@@ -26,7 +26,7 @@ export const RESIDUAL_PROCESSES_NOTE =
  * request (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
  */
 export const RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE =
-  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To keep a process running in this session, run it in the foreground (a server too: nginx -g 'daemon off;', sshd -D) as its own exec_command with background: true; it stops at session end. To start a service that must keep running after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted).]";
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To start a service that must keep running after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). To keep a process running in this session, run it in the foreground (a server too: nginx -g 'daemon off;', sshd -D) as its own exec_command with background: true; it stops at session end.]";
 
 /**
  * The command's timeoutMs passed while it was running: AgenC kept it running
