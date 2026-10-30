@@ -38,7 +38,7 @@ export function timeoutBackgroundedNote(timeoutMs: number, sessionId: number): s
 
 /** The timeout passed at the background-session limit, so the command was stopped. */
 export function timeoutStoppedAtSessionLimitNote(limit: number): string {
-  return `[note: timeoutMs passed while ${limit} background sessions of this conversation were running, the limit, so AgenC stopped this command. kill_process on a finished job frees a slot.]`;
+  return `[note: timeoutMs passed while ${limit} background sessions of this conversation were running, the limit, so AgenC stopped this command. Stop a session you no longer need with kill_process to free a slot.]`;
 }
 
 /** Shown on the first background start of a conversation; later starts carry only the footer. */

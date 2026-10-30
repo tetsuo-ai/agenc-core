@@ -51,8 +51,8 @@ export interface UnwaitedBackgroundJob {
  */
 export function maskShellStructure(cmd: string): string | undefined {
   const out = cmd.split("");
-  const mask = (from: number, to: number): void => {
-    for (let index = from; index < to; index += 1) out[index] = "x";
+  const mask = (from: number, to: number, fill = "x"): void => {
+    for (let index = from; index < to; index += 1) out[index] = fill;
   };
   const pendingHeredocs: { readonly delimiter: string; readonly stripTabs: boolean }[] = [];
   let index = 0;
@@ -160,9 +160,10 @@ export function maskShellStructure(cmd: string): string | undefined {
       continue;
     }
     if (ch === "#" && atWordStart(index)) {
+      // A comment is no command: blank it, so `job & # note` still ends the list.
       const end = cmd.indexOf("\n", index);
       const stop = end < 0 ? cmd.length : end;
-      mask(index, stop);
+      mask(index, stop, " ");
       index = stop;
       continue;
     }
@@ -277,15 +278,15 @@ export function findUnwaitedBackgroundJob(cmd: string): UnwaitedBackgroundJob | 
   return undefined;
 }
 
-const JOB_PREVIEW_CHARS = 60;
+const JOB_PREVIEW_CHARS = 48;
 
 /** The refusal shown to the model; nothing has started when it is returned. */
 export function unwaitedBackgroundJobMessage(job: UnwaitedBackgroundJob): string {
   const text = job.job.replace(/\s+/gu, " ");
   const preview = text.length > JOB_PREVIEW_CHARS ? `${text.slice(0, JOB_PREVIEW_CHARS - 3)}...` : text;
   const form = job.kind === "trailing" ? "a trailing &" : job.kind === "disown" ? "& disown" : `${job.kind} ... &`;
-  return `This command has not started: its background job \`${preview}\` (${form}) would be stopped when the command returns, ` +
-    "because exec_command stops every process a command leaves behind. Run that job as its own exec_command with " +
-    "background: true, without & or nohup: it keeps running as a session that write_stdin polls and kill_process stops, " +
-    "and a later result reports when it ends. A service that must outlive this session needs detach: true where allowed.";
+  return `This command has not started: its job \`${preview}\` (${form}) would be stopped when the command returns. ` +
+    "Run that job as its own exec_command with background: true, without & or nohup: it keeps running as a session " +
+    "(write_stdin polls it, kill_process stops it, a later result reports its end). " +
+    "A service that must outlive this session needs detach: true where allowed.";
 }
