@@ -154,6 +154,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "health.stats",
   "daemon.reload",
   "daemon.shutdown",
+  "daemon.shutdownIfIdle",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -205,6 +206,7 @@ export type InitializeParams = Wire.InitializeParams;
 export type RequestCancelParams = Wire.RequestCancelParams;
 
 export type DaemonShutdownParams = Wire.DaemonShutdownParams;
+export type DaemonShutdownIfIdleParams = Wire.DaemonShutdownIfIdleParams;
 
 export type PermissionMode =
   "default" | "plan" | "acceptEdits" | "bypassPermissions";
@@ -619,6 +621,7 @@ export type HealthStatsResult = Wire.HealthStatsResult;
 export type DaemonReloadResult = Wire.DaemonReloadResult;
 
 export type DaemonShutdownResult = Wire.DaemonShutdownResult;
+export type DaemonShutdownIfIdleResult = Wire.DaemonShutdownIfIdleResult;
 
 export type AuthWhoamiResult = Wire.AuthWhoamiResult;
 

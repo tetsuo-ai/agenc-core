@@ -229,6 +229,7 @@ export const AGENC_DAEMON_METHODS = [
   "health.stats",
   "daemon.reload",
   "daemon.shutdown",
+  "daemon.shutdownIfIdle",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -1102,6 +1103,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description: "Request shutdown of one authenticated daemon instance.",
   },
+  "daemon.shutdownIfIdle": {
+    method: "daemon.shutdownIfIdle",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Shut one authenticated daemon instance down only when no work is running; new requests wait while it checks.",
+  },
   "auth.login": {
     method: "auth.login",
     direction: "client-to-server",
@@ -1685,6 +1694,17 @@ export interface RequestCancelParams extends JsonObject {
 
 export interface DaemonShutdownParams extends JsonObject {
   readonly instanceId: string;
+}
+
+export interface DaemonShutdownIfIdleParams extends JsonObject {
+  readonly instanceId: string;
+  /**
+   * Attachments of the client that asked for the restart and follows it (a
+   * TUI updating itself). Each must belong to `requesterAgentId`'s
+   * conversation; every other attachment counts as a client.
+   */
+  readonly exemptAttachmentIds?: readonly string[];
+  readonly requesterAgentId?: string;
 }
 
 export interface AgentListParams extends JsonObject {
@@ -2974,6 +2994,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithoutParams<"health.stats">
   | AgenCDaemonRequestWithoutParams<"daemon.reload">
   | AgenCDaemonRequestWithParams<"daemon.shutdown", DaemonShutdownParams>
+  | AgenCDaemonRequestWithParams<"daemon.shutdownIfIdle", DaemonShutdownIfIdleParams>
   | AgenCDaemonRequestWithoutParams<"auth.login">
   | AgenCDaemonRequestWithoutParams<"auth.whoami">
   | AgenCDaemonRequestWithoutParams<"auth.logout">;
@@ -4461,6 +4482,14 @@ export interface DaemonShutdownResult extends JsonObject {
   readonly instanceId: string;
 }
 
+export interface DaemonShutdownIfIdleResult extends JsonObject {
+  /** False when work was running; the daemon keeps running. */
+  readonly shuttingDown: boolean;
+  readonly instanceId: string;
+  /** Why the daemon is busy, when it stays up. */
+  readonly reason?: string;
+}
+
 export interface AuthIdentity extends JsonObject {
   readonly accountId?: string;
   readonly email?: string;
@@ -4598,6 +4627,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "health.stats": HealthStatsResult;
   readonly "daemon.reload": DaemonReloadResult;
   readonly "daemon.shutdown": DaemonShutdownResult;
+  readonly "daemon.shutdownIfIdle": DaemonShutdownIfIdleResult;
   readonly "auth.login": AuthLoginResult;
   readonly "auth.whoami": AuthWhoamiResult;
   readonly "auth.logout": AuthLogoutResult;

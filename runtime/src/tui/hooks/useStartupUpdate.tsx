@@ -6,11 +6,15 @@ import type { ToolJSXArgs } from "../tool-jsx-state.js";
 
 // A process can remount its TUI (for example /resume). Check once per launch.
 let launchCheck: Promise<import("../../commands/update-menu.js").UpdateCheck | null> | undefined;
-export function useStartupUpdate({ safe, setToolJSX, configStore }: {
+export function useStartupUpdate({ safe, setToolJSX, configStore, inPlace }: {
   safe: boolean;
   configStore: ConfigStore;
   setToolJSX: (value: ToolJSXArgs | null) => void;
+  /** Lets "Update now" come back on the new version in this conversation. */
+  inPlace?: import("../../commands/update-menu.js").UpdateMenuRelaunch;
 }) {
+  const inPlaceRef = React.useRef(inPlace);
+  inPlaceRef.current = inPlace;
   const safeRef = React.useRef(safe);
   safeRef.current = safe;
   // Track typing through Ink's own input dispatch. A second raw
@@ -33,7 +37,7 @@ export function useStartupUpdate({ safe, setToolJSX, configStore }: {
         .catch(() => null);
       void launchCheck.then(async checked => {
         if (!active || !checked?.updateAvailable) return;
-        const { UpdateMenu, hasSkippedUpdate } = await import("../../commands/update-menu.js");
+        const { UpdateMenu, hasSkippedUpdate, resumableConversationId } = await import("../../commands/update-menu.js");
         if (!active || hasSkippedUpdate(checked.latestVersion, configStore.stateRepository)) return;
         const showWhenIdle = () => {
           if (!active || isAutoUpdaterDisabled(configStore.current())) return;
@@ -42,8 +46,14 @@ export function useStartupUpdate({ safe, setToolJSX, configStore }: {
           }
           // Consume the launch result before the popup can remount this hook.
           launchCheck = Promise.resolve(null);
+          const current = inPlaceRef.current;
+          // Read the conversation when the popup opens, not at mount.
+          const inPlaceNow = current === undefined ? undefined : {
+            ...current,
+            conversationId: resumableConversationId(current.conversationId),
+          };
           setToolJSX({ isLocalJSXCommand: true, shouldHidePromptInput: true,
-            jsx: <UpdateMenu checked={checked} startup stateRepository={configStore.stateRepository} close={() => setToolJSX({ jsx: null, shouldHidePromptInput: false, clearLocalJSX: true })} /> });
+            jsx: <UpdateMenu checked={checked} startup stateRepository={configStore.stateRepository} {...(inPlaceNow === undefined ? {} : { inPlace: inPlaceNow })} close={() => setToolJSX({ jsx: null, shouldHidePromptInput: false, clearLocalJSX: true })} /> });
         };
         showWhenIdle();
       }).catch(() => {});

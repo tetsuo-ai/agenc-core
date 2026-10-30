@@ -203,9 +203,16 @@ agenc daemon start                 # detached
 agenc daemon start --foreground    # current process (systemd/launchd/docker/WinSW)
 agenc daemon reload                # in-place config reload
 agenc daemon restart
+agenc daemon restart --when-idle   # now if idle, otherwise once idle (--json)
 agenc daemon stop
 agenc daemon install-service       # write WinSW XML; does not install the service
 ```
+
+`agenc daemon restart --when-idle` is the step `agenc update` runs after it
+activates a new runtime. It restarts an idle daemon right away and leaves a
+busy one alone until it is idle, through one waiting process. The idle check,
+its bounds and the `--json` result are described in
+[Daemon restart after an update](../install.md#daemon-restart-after-an-update).
 
 `agenc daemon status` distinguishes three states. `running (pid N)` with uptime,
 memory and the project state databases on disk (count, total, largest): the daemon is bound and answering. `alive but not yet bound (pid N)`
@@ -406,6 +413,7 @@ Never retry after admission may have arrived.
 | `remote.*` / `telegram.*`                                                                                   | See the [remote and Telegram method contracts](#remote-and-telegram-methods) below                     |
 | `daemon.reload`                                                                                             | Reload configuration. Open sessions take the new `[agents]` cross-provider settings. A session that could not read them again is listed in the result's `crossProviderSettings.failed`, with `timedOut: true` when it ran out of time. Other session settings apply to new sessions |
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
+| `daemon.shutdownIfIdle`                                                                                     | Exit only when no work runs; new requests wait while it checks (`agenc daemon restart --when-idle`)                |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
 `session.snapshot` may include `contextBreakdown`, a rough estimate for

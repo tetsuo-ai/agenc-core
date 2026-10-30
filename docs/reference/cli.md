@@ -363,12 +363,20 @@ agenc update --pin <x.y.z>
 | `--repo <owner/name>` | Release repository override |
 | `--manifest-url <url>` | Manifest override (`file://` allowed for testing) |
 | `--wrapper <path>` | Explicit wrapper script to repoint |
+| `--no-restart` | Leave a running daemon on its current version |
 
 Installer-style installs extract the new runtime under
 `<AGENC_HOME>/runtime/<version>/<platform>-<arch>-<libc-or-native>-node-abi-<abi>-sha256-<digest>/`
 after compatibility, byte-count, sha256, and archive-safety checks, then
-atomically repoint the `agenc` wrapper. A running daemon keeps the old version
-until `agenc daemon restart`.
+atomically repoint the `agenc` wrapper. Then a running daemon moves onto the
+new version: right away when it is idle, once it is idle when it is busy. When
+`agenc update` finds nothing newer, a daemon still on an older version moves the
+same way. Only a daemon on 0.19.25 or newer can be moved this way, so the first
+automatic restart happens when updating from 0.19.25; an older daemon keeps
+running and the update prints the `agenc daemon restart` hint.
+`--no-restart` leaves it on its version until `agenc daemon restart`.
+`--json` reports the result in `daemonRestart`. Details:
+[Daemon restart after an update](../install.md#daemon-restart-after-an-update).
 
 npm-launcher installs update with:
 

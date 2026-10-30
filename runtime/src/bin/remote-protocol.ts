@@ -7,6 +7,7 @@
  */
 const LEGACY_BRIDGE_DENIED_METHODS: ReadonlySet<string> = new Set([
   "daemon.shutdown",
+  "daemon.shutdownIfIdle",
   "daemon.reload",
   "auth.login",
   "auth.logout",

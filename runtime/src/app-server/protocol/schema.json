@@ -111,6 +111,7 @@
     "health.stats",
     "daemon.reload",
     "daemon.shutdown",
+    "daemon.shutdownIfIdle",
     "auth.login",
     "auth.whoami",
     "auth.logout"
@@ -4777,6 +4778,30 @@
         "instanceId"
       ]
     },
+    "DaemonShutdownIfIdleParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exemptAttachmentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requesterAgentId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "instanceId"
+      ]
+    },
     "AuthLoginParams": {
       "type": "object",
       "additionalProperties": false,
@@ -5087,6 +5112,9 @@
         },
         {
           "$ref": "#/definitions/DaemonShutdownRequest"
+        },
+        {
+          "$ref": "#/definitions/DaemonShutdownIfIdleRequest"
         },
         {
           "$ref": "#/definitions/AuthLoginRequest"
@@ -6951,6 +6979,30 @@
         },
         "params": {
           "$ref": "#/definitions/DaemonShutdownParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "DaemonShutdownIfIdleRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "daemon.shutdownIfIdle"
+        },
+        "params": {
+          "$ref": "#/definitions/DaemonShutdownIfIdleParams"
         }
       },
       "required": [

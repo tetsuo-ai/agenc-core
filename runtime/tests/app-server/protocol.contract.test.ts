@@ -155,6 +155,7 @@ const expectedMethods = [
   "health.stats",
   "daemon.reload",
   "daemon.shutdown",
+  "daemon.shutdownIfIdle",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -1272,6 +1273,12 @@ describe("AgenC daemon protocol surface", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "daemon-shutdown",
         method: "daemon.shutdown",
+        params: { instanceId: "daemon-instance-1" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "daemon-shutdown-if-idle",
+        method: "daemon.shutdownIfIdle",
         params: { instanceId: "daemon-instance-1" },
       },
       {

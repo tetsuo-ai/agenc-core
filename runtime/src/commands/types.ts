@@ -16,6 +16,7 @@
  * @module
  */
 
+import type { UpdateRelaunchRequest } from "../tui/update-relaunch-state.js";
 import type { Session } from "../session/session.js";
 import type { ConfigStore } from "../config/store.js";
 import type { AdmissionUsageSummary } from "../budget/admission-types.js";
@@ -55,6 +56,13 @@ export interface SlashCommandAppStateBridge {
    * conversation to a prior prompt. Absent in headless contexts.
    */
   readonly requestShowMessageSelector?: () => void;
+  /**
+   * Exit and come back on a newly installed AgenC in this conversation (the
+   * update menu). Absent where the TUI cannot relaunch itself.
+   */
+  readonly requestUpdateRelaunch?: (request: UpdateRelaunchRequest) => void;
+  /** Whether a turn, tool, shell or local agent is running right now. */
+  readonly isSessionBusy?: () => boolean;
 }
 
 /**

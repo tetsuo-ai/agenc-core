@@ -201,6 +201,23 @@ export const AGENC_DAEMON_CONTROL_PROTOCOL_VERSION = "1.0.0";
 
 export const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 
+/** A shutdown the daemon (or the last check before it) refused. */
+export interface AgenCDaemonShutdownDeclined {
+  readonly declined: string;
+  /** The check can never pass for this daemon. */
+  readonly permanent?: boolean;
+  /** The daemon cannot stop only when idle: it needs a manual restart. */
+  readonly tooOld?: boolean;
+}
+
+function isAgenCDaemonShutdownDeclined(value: unknown): value is AgenCDaemonShutdownDeclined {
+  return typeof value === "object" && value !== null &&
+    typeof (value as { readonly declined?: unknown }).declined === "string";
+}
+
+/** `stop` left the daemon running because `beforeShutdownRequest` declined. */
+export const AGENC_DAEMON_STOP_DECLINED_EXIT = 3;
+
 /**
  * Env override (ms) for how long the daemon readiness waits block, plus the
  * default applied when unset/invalid. This single name covers BOTH the bare
@@ -310,6 +327,18 @@ export type AgenCDaemonCliAction =
 
 export type AgenCDaemonCliCommand =
   | { readonly kind: "command"; readonly action: AgenCDaemonCliAction }
+  | {
+      /** `restart --when-idle`: now when idle, otherwise once it is idle. */
+      readonly kind: "restart-when-idle";
+      /** A TUI updating itself; see AgenCDaemonRestartRequester. */
+      readonly requesterPid?: number;
+      readonly requesterAgentId?: string;
+      readonly json: boolean;
+      /** Internal: run as the detached waiter that owns this pending restart. */
+      readonly waitToken?: string;
+      /** Internal: a pinned downgrade, which ends a pending restart onto a newer build. */
+      readonly downgrade?: boolean;
+    }
   | { readonly kind: "install-service" }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
@@ -422,10 +451,25 @@ export interface RunAgenCDaemonCliOptions {
   readonly requestDaemonInstanceIdentity?: (
     host: AgenCDaemonCliHost,
   ) => Promise<AgenCDaemonInstanceIdentity> | AgenCDaemonInstanceIdentity;
+  /**
+   * Sends the shutdown. Returning a {@link AgenCDaemonShutdownDeclined} (the
+   * daemon refused because work is running) leaves it running: `stop`
+   * returns {@link AGENC_DAEMON_STOP_DECLINED_EXIT} and signals nothing.
+   */
   readonly requestDaemonShutdown?: (
     host: AgenCDaemonCliHost,
     expected: AgenCDaemonInstanceIdentity,
-  ) => Promise<void> | void;
+  ) => Promise<void | AgenCDaemonShutdownDeclined> | void | AgenCDaemonShutdownDeclined;
+  /**
+   * Internal: a last check that `stop` runs under the lifecycle lock, after
+   * the daemon's authenticated identity is proven and immediately before
+   * `daemon.shutdown` is sent. A returned reason leaves the daemon running and
+   * `stop` returns {@link AGENC_DAEMON_STOP_DECLINED_EXIT} without signalling
+   * anything. A daemon without an instance identity is always declined.
+   */
+  readonly beforeShutdownRequest?: (
+    identity: AgenCDaemonInstanceIdentity,
+  ) => Promise<string | undefined>;
   /** Isolated contract-test seam for instance-bound reload transport. */
   readonly requestDaemonReload?: (
     host: AgenCDaemonCliHost,
@@ -506,7 +550,10 @@ export class AgenCDaemonRpcShutdownCoordinator {
     send: (response: AgenCDaemonResponse) => Promise<void>,
   ): Promise<void> {
     const acceptedShutdown =
-      message.method === "daemon.shutdown" &&
+      (message.method === "daemon.shutdown" ||
+        (message.method === "daemon.shutdownIfIdle" &&
+          !isDaemonErrorResponse(response) &&
+          (response as { readonly result?: { readonly shuttingDown?: unknown } }).result?.shuttingDown === true)) &&
       !isDaemonErrorResponse(response) &&
       this.#pendingAcknowledgements > 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1008,6 +1055,8 @@ export function formatAgenCDaemonCliHelpText(): string {
     "  status                Show local AgenC daemon status",
     "  reload                Reload daemon configuration in place",
     "  restart               Stop and start the local AgenC daemon",
+    "  restart --when-idle   Restart now if the daemon is idle, otherwise once",
+    "                        it is idle (agenc update runs this; --json for scripts)",
     "  install-service       Write a WinSW XML definition for this install.",
     "                        Service install/start is a separate elevated step.",
     "",
@@ -1032,6 +1081,71 @@ function parseDaemonInstallServiceArgs(
     };
   }
   return { kind: "install-service" };
+}
+
+
+const DAEMON_RESTART_WAIT_TOKEN_PATTERN = /^[0-9a-f-]{36}$/;
+
+function parseDaemonRestartWhenIdleArgs(
+  extra: readonly string[],
+): AgenCDaemonCliCommand {
+  let json = false;
+  let downgrade = false;
+  let waitToken: string | undefined;
+  let requesterPid: number | undefined;
+  let requesterAgentId: string | undefined;
+  for (let index = 0; index < extra.length; index += 1) {
+    const arg = extra[index];
+    if (arg === "--when-idle") continue;
+    if (arg === "--downgrade") {
+      downgrade = true;
+      continue;
+    }
+    if (arg === "--requester-pid") {
+      const value = extra[index + 1];
+      const pid = value !== undefined && /^[1-9][0-9]{0,9}$/.test(value) ? Number(value) : Number.NaN;
+      if (!Number.isSafeInteger(pid) || pid <= 1) {
+        return { kind: "error", message: "daemon restart --requester-pid needs a process id" };
+      }
+      requesterPid = pid;
+      index += 1;
+      continue;
+    }
+    if (arg === "--requester-agent") {
+      const value = extra[index + 1];
+      if (value === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value)) {
+        return { kind: "error", message: "daemon restart --requester-agent needs a conversation id" };
+      }
+      requesterAgentId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--wait") {
+      const value = extra[index + 1];
+      if (value === undefined || !DAEMON_RESTART_WAIT_TOKEN_PATTERN.test(value)) {
+        return { kind: "error", message: "daemon restart --wait needs a restart token" };
+      }
+      waitToken = value;
+      index += 1;
+      continue;
+    }
+    return { kind: "error", message: `unknown daemon restart option: ${arg}` };
+  }
+  if (requesterAgentId !== undefined && requesterPid === undefined) {
+    return { kind: "error", message: "daemon restart --requester-agent needs --requester-pid" };
+  }
+  return {
+    kind: "restart-when-idle",
+    json,
+    ...(waitToken === undefined ? {} : { waitToken }),
+    ...(requesterPid === undefined ? {} : { requesterPid }),
+    ...(requesterAgentId === undefined ? {} : { requesterAgentId }),
+    ...(downgrade ? { downgrade: true } : {}),
+  };
 }
 
 
@@ -1062,6 +1176,9 @@ export function parseAgenCDaemonCliArgs(
         kind: "error",
         message: `unknown daemon start option: ${extra[1]}`,
       };
+    }
+    if (action === "restart" && extra.includes("--when-idle")) {
+      return parseDaemonRestartWhenIdleArgs(extra);
     }
     if (extra.length > 0) {
       return {
@@ -1116,6 +1233,12 @@ export async function runAgenCDaemonCli(
       });
     case "command":
       return runAgenCDaemonAction(command.action, host, io, options);
+    case "restart-when-idle": {
+      const { runAgenCDaemonRestartWhenIdleCli } = await import(
+        "./daemon-restart-when-idle.js"
+      );
+      return runAgenCDaemonRestartWhenIdleCli(command, host, io, options);
+    }
     default: {
       const _exhaustive: never = command;
       throw new Error(`unexpected daemon CLI command: ${JSON.stringify(_exhaustive)}`);
@@ -1902,6 +2025,13 @@ export async function stopAgenCDaemon(
   timeoutMs: number,
   options: RunAgenCDaemonCliOptions & {
     readonly quietWhenStopped?: boolean;
+    /**
+     * Never signal a daemon that did not explicitly accept the shutdown: a
+     * failed request leaves it running and `stop` returns
+     * {@link AGENC_DAEMON_STOP_DECLINED_EXIT}. Escalation stays possible
+     * after an accepted shutdown that does not finish in time.
+     */
+    readonly signalOnlyAfterAcceptedShutdown?: boolean;
   } = {},
 ): Promise<number> {
   return withAgenCDaemonLifecyclePhases(host, async (lifecycle) => {
@@ -1947,13 +2077,25 @@ export async function stopAgenCDaemon(
       }
       if (bound !== null) {
         const boundPid = bound.identity.pid;
+        if (options.beforeShutdownRequest !== undefined) {
+          const declined = await options.beforeShutdownRequest(bound.identity);
+          if (declined !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        }
         let shutdownError: unknown;
+        let declinedByDaemon = false;
         try {
           const requestShutdown =
             options.requestDaemonShutdown ?? requestAgenCDaemonShutdown;
-          await Promise.resolve(requestShutdown(host, bound.identity));
+          const result = await Promise.resolve(requestShutdown(host, bound.identity));
+          declinedByDaemon = isAgenCDaemonShutdownDeclined(result);
         } catch (error) {
           shutdownError = error;
+        }
+        // The daemon kept running on purpose: nothing to wait for or signal.
+        if (declinedByDaemon) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        // No explicit acceptance: no signal either, whatever the error was.
+        if (shutdownError !== undefined && options.signalOnlyAfterAcceptedShutdown === true) {
+          return AGENC_DAEMON_STOP_DECLINED_EXIT;
         }
         await lifecycle.release();
         const exited = await waitForBoundPidExit(
@@ -2078,6 +2220,10 @@ export async function stopAgenCDaemon(
       return 0;
     }
 
+    if (options.beforeShutdownRequest !== undefined) {
+      // A daemon without an instance identity cannot be checked first.
+      return AGENC_DAEMON_STOP_DECLINED_EXIT;
+    }
     if ((host.platform ?? process.platform) !== "linux") {
       io.stderr.write(
         `agenc: legacy daemon pid ${pid} has no instance identity; refusing an unsafe numeric signal on this platform. Stop it with the OS service/process manager after verifying its command and AgenC home, then retry\n`,

@@ -8,6 +8,7 @@
  * `agenc agent logs <id>` prints the local persisted transcript.
  */
 
+import { setAgenCTuiAttachmentIds } from "../tui/update-relaunch-state.js";
 import { createConnection } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -463,6 +464,21 @@ async function createReconnectableDaemonTuiClient(options: {
   // session this client attached to, keyed by sessionId, so the reconnect path
   // can re-register the route on the new connection.
   const sessionAttachReplay = new Map<string, JsonObject>();
+  // This client's daemon attachment per session. A TUI updating itself
+  // reports them so a deferred restart exempts exactly these and no other
+  // client on the same conversation.
+  const attachmentIdsBySession = new Map<string, string>();
+  const publishAttachmentIds = (): void => {
+    setAgenCTuiAttachmentIds([...new Set(attachmentIdsBySession.values())]);
+  };
+  const rememberAttachmentId = (sessionIds: readonly string[], result: unknown): void => {
+    const attachmentId = isJsonObject(result as JsonValue | undefined)
+      ? (result as JsonObject).attachmentId
+      : undefined;
+    if (typeof attachmentId !== "string" || attachmentId.length === 0) return;
+    for (const sessionId of sessionIds) attachmentIdsBySession.set(sessionId, attachmentId);
+    publishAttachmentIds();
+  };
   const notificationListeners = new Set<(event: JsonObject) => void>();
   const connectionStateListeners = new Set<
     (state: AgenCDaemonTuiConnectionState) => void
@@ -567,6 +583,7 @@ async function createReconnectableDaemonTuiClient(options: {
     for (const sessionId of sessionIds) {
       sessionAttachReplay.set(sessionId, { sessionId, clientId });
     }
+    rememberAttachmentId(sessionIds, result);
   };
   // gaphunt3 #2: re-issue `session.attach` for every previously-attached
   // session on the fresh socket so the daemon multiplexer re-registers this
@@ -577,7 +594,10 @@ async function createReconnectableDaemonTuiClient(options: {
   ): Promise<void> => {
     for (const attachParams of sessionAttachReplay.values()) {
       try {
-        await nextClient.request("session.attach", attachParams);
+        const result = await nextClient.request("session.attach", attachParams);
+        if (typeof attachParams.sessionId === "string") {
+          rememberAttachmentId([attachParams.sessionId], result);
+        }
       } catch {
         // A re-attach may legitimately fail (e.g. the session was terminated
         // while we were disconnected, or the daemon still considers the
@@ -690,6 +710,7 @@ async function createReconnectableDaemonTuiClient(options: {
         // gaphunt3 #2: stop replaying attaches for a session the client has
         // intentionally left, so reconnect does not silently re-attach it.
         sessionAttachReplay.delete(params.sessionId);
+        if (attachmentIdsBySession.delete(params.sessionId)) publishAttachmentIds();
       }
       return result;
     },
@@ -734,6 +755,8 @@ async function createReconnectableDaemonTuiClient(options: {
     close: async () => {
       if (closedByClient) return;
       closedByClient = true;
+      attachmentIdsBySession.clear();
+      publishAttachmentIds();
       const current = innerClient;
       detachInnerClient();
       innerClient = null;

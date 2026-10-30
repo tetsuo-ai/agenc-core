@@ -110,6 +110,7 @@ const METHODS_THAT_NEVER_WAIT: ReadonlySet<string> = new Set([
   "health.stats",
   "daemon.reload",
   "daemon.shutdown",
+  "daemon.shutdownIfIdle",
   "session.list",
   "agent.list",
 ]);

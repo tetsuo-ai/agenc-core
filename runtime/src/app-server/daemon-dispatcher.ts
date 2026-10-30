@@ -168,6 +168,7 @@ import {
   type DaemonReloadResult,
   type DaemonInstanceIdentity,
   type DaemonShutdownParams,
+  type DaemonShutdownIfIdleParams,
   type ElicitationRespondParams,
   type FuzzyFileSearchParams,
   type InitializeParams,
@@ -460,6 +461,11 @@ function buildServerCapabilities(
       hasMethod(inputs.daemonControl, "shutdown") &&
       inputs.initializeAuthenticator !== undefined &&
       inputs.daemonIdentity !== undefined,
+    "daemon.shutdownIfIdle":
+      hasMethod(inputs.daemonControl, "shutdown") &&
+      hasMethod(inputs.daemonControl, "busyReason") &&
+      inputs.initializeAuthenticator !== undefined &&
+      inputs.daemonIdentity !== undefined,
     "auth.login": inputs.authHandlers !== undefined,
     "auth.whoami": inputs.authHandlers !== undefined,
     "auth.logout": inputs.authHandlers !== undefined,
@@ -650,6 +656,13 @@ export interface AgenCDaemonDispatcherOptions {
     ):
       | { readonly shuttingDown: true; readonly instanceId: string }
       | Promise<{ readonly shuttingDown: true; readonly instanceId: string }>;
+    /**
+     * `daemon.shutdownIfIdle`: why the daemon is busy, or undefined. Runs
+     * while the dispatcher holds every new request.
+     */
+    busyReason?(params: DaemonShutdownIfIdleParams): Promise<string | undefined>;
+    /** A last synchronous look (routine runs, remote devices) just before the commit. */
+    busyReasonNow?(): string | undefined;
   };
   readonly health?: AgenCDaemonHealthHandlers;
   readonly realtime?: AgenCRealtimeRpcHandlers;
@@ -787,17 +800,12 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #commandExec: AgenCCommandExec;
   readonly #allowUnadmittedCommandExecStart: boolean;
   readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
-  readonly #daemonControl:
-    | {
-        reloadConfig(): DaemonReloadResult | Promise<DaemonReloadResult>;
-        shutdown?(instanceId: string):
-          | { readonly shuttingDown: true; readonly instanceId: string }
-          | Promise<{
-              readonly shuttingDown: true;
-              readonly instanceId: string;
-            }>;
-      }
-    | undefined;
+  readonly #daemonControl: AgenCDaemonDispatcherOptions["daemonControl"] | undefined;
+  /** Set while `daemon.shutdownIfIdle` checks; new requests wait on it. */
+  #requestHold: Promise<void> | undefined;
+  /** Set once `daemon.shutdownIfIdle` decided to stop; new requests are refused. */
+  #refusingRequests = false;
+  #requestsInFlight = 0;
   readonly #health: AgenCDaemonHealthHandlers;
   readonly #realtime: AgenCRealtimeRpcHandlers;
   readonly #whisper: WhisperService | undefined;
@@ -2043,6 +2051,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         return this.#reloadDaemonConfig(id);
       case "daemon.shutdown":
         return this.#shutdownDaemon(id, validateDaemonShutdownParams(params));
+      case "daemon.shutdownIfIdle":
+        return this.#shutdownDaemonIfIdle(id, validateDaemonShutdownIfIdleParams(params));
       case "project.trustStatus":
       case "project.trust":
         return this.#dispatchProjectTrust(id, method, connection, params);
@@ -2098,6 +2108,83 @@ export class AgenCDaemonJsonRpcDispatcher {
       id,
       await this.#daemonControl.shutdown(params.instanceId),
     );
+  }
+
+  /**
+   * Request admission for {@link AgenCDaemonJsonRpcConnection.dispatch}: wait
+   * while an idle check runs, then refuse once the daemon decided to stop.
+   * The check itself is never held.
+   * @internal
+   */
+  async admitRequest(method: unknown): Promise<boolean> {
+    if (method !== "daemon.shutdownIfIdle") {
+      while (this.#requestHold !== undefined) await this.#requestHold;
+    }
+    if (this.#refusingRequests) return false;
+    this.#requestsInFlight += 1;
+    return true;
+  }
+
+  /** @internal */
+  finishRequest(): void {
+    this.#requestsInFlight -= 1;
+  }
+
+  /**
+   * Stop only when idle. New requests on every connection wait while the
+   * daemon checks, so nothing can start between the check and the decision;
+   * once it decides to stop they are refused, as after `daemon.shutdown`.
+   */
+  async #shutdownDaemonIfIdle(
+    id: RequestId,
+    params: DaemonShutdownIfIdleParams,
+  ): Promise<AgenCDaemonResponse> {
+    const control = this.#daemonControl;
+    if (
+      control === undefined ||
+      control.shutdown === undefined ||
+      control.busyReason === undefined ||
+      this.#daemonIdentity === undefined
+    ) {
+      return methodNotImplementedResponse(id, "daemon.shutdownIfIdle");
+    }
+    if (this.#initializeAuthenticator === undefined) {
+      return errorResponse(
+        id,
+        -32000,
+        "daemon shutdown requires authenticated daemon transport",
+        { code: "DAEMON_SHUTDOWN_AUTHENTICATION_REQUIRED" },
+      );
+    }
+    if (params.instanceId !== this.#daemonIdentity.instanceId) {
+      return errorResponse(id, -32000, "daemon instance identity changed", {
+        code: "DAEMON_INSTANCE_IDENTITY_MISMATCH",
+      });
+    }
+    // One check at a time.
+    while (this.#requestHold !== undefined) await this.#requestHold;
+    let release!: () => void;
+    this.#requestHold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stay = (reason: string): AgenCDaemonResponse =>
+      successResponse(id, { shuttingDown: false, instanceId: params.instanceId, reason });
+    try {
+      // This request is in flight itself; anything else is a client at work.
+      if (this.#requestsInFlight > 1) return stay("a client request is in progress");
+      const reason = await control.busyReason(params);
+      if (reason !== undefined) return stay(reason);
+      // Held requests cannot have started; work begun without a request
+      // (a routine timer, a remote device) is read once more, synchronously.
+      if (this.#requestsInFlight > 1) return stay("a client request is in progress");
+      const late = control.busyReasonNow?.();
+      if (late !== undefined) return stay(late);
+      this.#refusingRequests = true;
+      return successResponse(id, await control.shutdown(params.instanceId));
+    } finally {
+      this.#requestHold = undefined;
+      release();
+    }
   }
 
   /**
@@ -2903,8 +2990,18 @@ export class AgenCDaemonJsonRpcConnection {
     if (this.printUsed && !["print.invoke", "print.admit", "print.ack", "print.cancel", "health.ping"].includes(String(message.method))) {
       return errorResponse(requestIdFromMessage(message), -32600, "print connection is reserved for its invocation");
     }
-    const admission = this.#limiter.tryStart(message);
+    if (!(await this.#dispatcher.admitRequest(message.method))) {
+      return errorResponse(requestIdFromMessage(message), -32000, "AgenC daemon is shutting down");
+    }
+    let admission: ReturnType<AgenCDaemonConnectionLimiter["tryStart"]>;
+    try {
+      admission = this.#limiter.tryStart(message);
+    } catch (error) {
+      this.#dispatcher.finishRequest();
+      throw error;
+    }
     if (!admission.admitted) {
+      this.#dispatcher.finishRequest();
       return admission.response!;
     }
     try {
@@ -2922,6 +3019,7 @@ export class AgenCDaemonJsonRpcConnection {
       return response;
     } finally {
       admission.release();
+      this.#dispatcher.finishRequest();
     }
   }
 
@@ -3038,6 +3136,21 @@ function validateDaemonShutdownParams(
   });
   validateRequiredString(validated, "daemon.shutdown", "instanceId");
   return validated as DaemonShutdownParams;
+}
+
+function validateDaemonShutdownIfIdleParams(
+  params: JsonObject,
+): DaemonShutdownIfIdleParams {
+  const validated = validateObjectShape(params, {
+    methodName: "daemon.shutdownIfIdle",
+    stringFields: ["instanceId", "requesterAgentId"],
+    stringArrayFields: ["exemptAttachmentIds"],
+  });
+  validateRequiredString(validated, "daemon.shutdownIfIdle", "instanceId");
+  if (validated.exemptAttachmentIds !== undefined && validated.requesterAgentId === undefined) {
+    throw invalidParams("daemon.shutdownIfIdle exemptAttachmentIds needs requesterAgentId");
+  }
+  return validated as DaemonShutdownIfIdleParams;
 }
 
 function negotiateInitializeProtocol(
