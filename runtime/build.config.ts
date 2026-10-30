@@ -738,7 +738,7 @@ const agencBareSrcAlias = {
 // Bundled instead of loaded from node_modules at run time. lodash-es is one
 // module per function (275 files on a cold one-shot across the CLI and the
 // daemon), and Node pays a fixed cost for every module file it loads.
-const noExternal = ['jsonc-parser', 'lodash-es', 'semver', 'supports-hyperlinks'];
+const noExternal = ['jsonc-parser', 'lodash-es', 'semver'];
 
 function isBundledBareImport(source: string): boolean {
   return noExternal.some(
@@ -791,34 +791,12 @@ const agencOptionalExternal = {
           const native = uniqueNativeSourceFile(resolve(dirname(importer), args.path));
           return resolved === native ? null : { path: resolved };
         }
-        return isKnownMissingOptionalModule(args.path)
-          ? { path: args.path, external: true }
-          : null;
+        return null;
       }
       if (args.path.startsWith('src/')) {
         return null;
       }
       return { path: args.path, external: true };
-    });
-  },
-};
-
-function isKnownMissingOptionalModule(source: string): boolean {
-  return source === '@mendable/firecrawl-js';
-}
-
-const agencKnownMissingOptionalExternal = {
-  name: 'agenc-known-missing-optional-external',
-  setup(build: {
-    onResolve: (
-      options: { filter: RegExp },
-      callback: (args: { path: string; importer: string }) => { path: string; external?: boolean } | null,
-    ) => void;
-  }) {
-    build.onResolve({ filter: /^(?:@mendable\/firecrawl-js|[^./]|\.{1,2}\/)/ }, (args) => {
-      return isKnownMissingOptionalModule(args.path)
-        ? { path: args.path, external: true }
-        : null;
     });
   },
 };
@@ -830,7 +808,6 @@ export const __agencBuildConfigTest = {
   featureFlagLiteral,
   inlineCopiedTreeFeatureCalls,
   isBundledBareImport,
-  isKnownMissingOptionalModule,
   publicPackageName,
   relocatedTuiSourceRoots,
   relocatedUpstreamRoots,
@@ -842,16 +819,6 @@ export const __agencBuildConfigTest = {
 } as const;
 
 const external = [
-  '@anthropic-ai/mcpb',
-  '@tetsuo-ai/desktop-tool-contracts',
-  '@tetsuo-ai/plugin-kit',
-  '@ant/computer-use-input',
-  '@ant/computer-use-mcp',
-  '@ant/computer-use-mcp/sentinelApps',
-  '@ant/computer-use-mcp/types',
-  '@ant/computer-use-swift',
-  '@ant/claude-for-chrome-mcp', // branding-scan: allow real external package name
-  'asciichart',
   'audio-capture-napi',
   'cross-spawn',
   'execa',
@@ -861,27 +828,15 @@ const external = [
   'openai',
   'ollama',
   'better-sqlite3',
-  'ioredis',
   'ws',
-  'grammy',
-  'discord.js',
-  '@whiskeysockets/baileys',
-  'matrix-js-sdk',
-  'cheerio',
-  'playwright',
-  'edge-tts',
   '@modelcontextprotocol/sdk',
   'node-pty',
-  '@anthropic-ai/bedrock-sdk',
   '@aws-sdk/client-bedrock-runtime',
-  '@smithy/core',
   '@smithy/node-http-handler',
   'axios',
   'fflate',
   'google-auth-library',
   'sharp',
-  'yaml',
-  '@mendable/firecrawl-js',
   // Keep the TUI renderer stack on one runtime React singleton. The moved-source
   // resolver externalizes some TUI React imports; bundling the reconciler or
   // hook helpers alongside them creates split dispatchers and invalid hook calls.
@@ -908,7 +863,6 @@ export default defineConfig({
     agencFeatureFlagInline,
     agencBareSrcAlias,
     agencOptionalExternal,
-    agencKnownMissingOptionalExternal,
     agencRuntimeAssets,
   ],
   esbuildOptions(options) {
