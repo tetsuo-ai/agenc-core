@@ -2695,8 +2695,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             expect(session.enqueueIdleInputBatchOwned).toHaveBeenCalledWith(
               [
                 expect.objectContaining({ content: expect.any(Array) }),
-                expect.stringContaining("<command-name>$reviewer</command-name>"),
-                { content: [{ type: "text", text: "expanded reviewer prompt" }] },
+                { role: "user", content: expect.stringContaining("<command-name>$reviewer</command-name>") },
+                { role: "user", content: "expanded reviewer prompt" },
               ],
               { workspaceView: "agent" },
             );
@@ -2830,7 +2830,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       async (_args: string, context: unknown) => {
         const messages =
           (context as { messages?: readonly unknown[] }).messages ?? [];
-        return [{ type: "text", text: `message-count:${messages.length}` }];
+        return [
+          { type: "text", text: `message-count:${messages.length}` },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+        ];
       },
     );
     mockTuiCommandList.push({
@@ -2896,6 +2899,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           ]),
         }),
       );
+      expect(session.enqueueIdleInput.mock.calls.map(call => call[0])).toEqual([
+        { role: "user", content: expect.stringContaining("<command-name>$reviewer</command-name>") },
+        { role: "user", content: [
+          { type: "text", text: "message-count:1" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+        ] },
+      ]);
       expect(session.submit).toHaveBeenCalledWith("", {
         source: "user",
         clientMessageId: expect.any(String),

@@ -135,6 +135,7 @@ import {
   getCurrentUsage,
 } from "../../utils/tokens.js";
 import type { LLMMessage } from "../../llm/types.js";
+import { fromRuntimeMessageContent } from "../../llm/content-conversion.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -3755,8 +3756,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             );
             submission.inputs = [
               ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
-              loaded.metadata,
-              { content: loaded.blocks },
+              { role: "user", content: loaded.metadata },
+              { role: "user", content: fromRuntimeMessageContent(loaded.blocks.map(block =>
+                block.type === "image" && block.source.type === "base64"
+                  ? { type: "image_url", image_url: {
+                      url: `data:${block.source.media_type};base64,${block.source.data}`,
+                    } }
+                  : block,
+              )) },
             ];
             submission.value = "";
             submission.options = {
