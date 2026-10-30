@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
-import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
+import type { ExecCommandToolOutput, SessionEndNotice } from "../../unified-exec/types.js";
+import { formatDuration } from "../../unified-exec/process-state.js";
 
 /**
  * Shown after the footer when processes outlived the command and cleanup
@@ -17,7 +18,7 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
  * leaves no residue; {@link SERVER_CHECK_NOTE} carries the same guidance then.
  */
 export const RESIDUAL_PROCESSES_NOTE =
-  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To check a server, start it in the background, wait for its port or log line in a bounded loop instead of a fixed sleep (for example up to 50 tries of `curl -sf <url>` with `sleep 0.1`), then make the requests and `kill $!` in the same command. To keep a process running in this session, run it in the foreground (a server too: nginx -g 'daemon off;', sshd -D) as its own exec_command with background: true; it stops at session end. To start a service that must keep running after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted).]";
 
 /**
  * {@link RESIDUAL_PROCESSES_NOTE} without its server guidance, for a session
@@ -25,7 +26,58 @@ export const RESIDUAL_PROCESSES_NOTE =
  * request (tools/light-presentation.ts LIGHT_GLM_SERVER_CHECKS).
  */
 export const RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE =
-  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To start a service that must keep running after the command returns and after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted). Otherwise keep the process in the foreground with yield_time_ms; managed sessions stop at session end.]";
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. Nothing is left to stop or look for. To keep a process running in this session, run it in the foreground (a server too: nginx -g 'daemon off;', sshd -D) as its own exec_command with background: true; it stops at session end. To start a service that must keep running after this session ends, use detach: true only outside the sandbox (an approved require_escalated launch, if permitted).]";
+
+/**
+ * The command's timeoutMs passed while it was running: AgenC kept it running
+ * as a session instead of stopping it (the DSH-style background job).
+ */
+export function timeoutBackgroundedNote(timeoutMs: number, sessionId: number): string {
+  return `[note: timeoutMs=${timeoutMs} passed and the command is still running; AgenC kept it running as session ${sessionId} instead of stopping it. write_stdin polls it, kill_process stops it.]`;
+}
+
+/** The timeout passed at the background-session limit, so the command was stopped. */
+export function timeoutStoppedAtSessionLimitNote(limit: number): string {
+  return `[note: timeoutMs passed while ${limit} background sessions of this conversation were running, the limit, so AgenC stopped this command. kill_process on a finished job frees a slot.]`;
+}
+
+/** Shown on the first background start of a conversation; later starts carry only the footer. */
+export function backgroundStartedNote(sessionId: number): string {
+  return `[note: session ${sessionId} runs in the background. A later exec result says when it ends; write_stdin polls its output, kill_process stops it.]`;
+}
+
+const END_NOTICE_COMMAND_CHARS = 40;
+
+/** One line for a background session that ended while nothing was showing it. */
+export function formatSessionEndNotice(notice: SessionEndNotice): string {
+  const command = notice.command.replace(/\s+/gu, " ").trim();
+  const preview = command.length > END_NOTICE_COMMAND_CHARS
+    ? `${command.slice(0, END_NOTICE_COMMAND_CHARS - 3)}...`
+    : command;
+  const status = notice.exitCode !== null
+    ? `exit ${notice.exitCode}${notice.signal !== undefined ? ` (${notice.signal})` : ""}`
+    : notice.signal !== undefined ? `killed by ${notice.signal}` : "ended without an exit status";
+  const oom = notice.outOfMemory === true ? ", likely out of memory (the cgroup OOM killer fired while it ran)" : "";
+  return `[session ${notice.sessionId} ended after ${formatDuration(notice.durationMs)}: ${status}${oom} (\`${preview}\`). write_stdin session_id=${notice.sessionId} returns its remaining output.]`;
+}
+
+/** `content` followed by one line per end notice. */
+export function withSessionEndNotices(content: string, notices: readonly SessionEndNotice[] | undefined): string {
+  if (notices === undefined || notices.length === 0) return content;
+  return `${content}\n${notices.map(formatSessionEndNotice).join("\n")}`;
+}
+
+/** Conversations that already got {@link backgroundStartedNote}; bounded like the other notes. */
+const sessionsWithBackgroundNote = new Set<string>();
+
+/** {@link backgroundStartedNote} once per conversation; undefined after the first or without one. */
+export function backgroundStartedNoteOncePerSession(
+  sessionId: string | undefined,
+  execSessionId: number,
+): string | undefined {
+  if (sessionId === undefined) return backgroundStartedNote(execSessionId);
+  return firstFor(sessionsWithBackgroundNote, sessionId) ? backgroundStartedNote(execSessionId) : undefined;
+}
 
 /** The same fact on a later command of a session that already got {@link RESIDUAL_PROCESSES_NOTE}. */
 export const RESIDUAL_PROCESSES_REPEAT_NOTE =
@@ -228,6 +280,15 @@ export function formatUnifiedExecToolContent(
   // model sees the two sections distinctly.
   sections.push("");
   sections.push(`[exec ${footerLines.join(" ")}]`);
+  // Notes about a running session come before the residue note, which
+  // residualNoteOncePerSession and compactExecExitFooter expect last.
+  if (output.timeout_backgrounded_ms !== undefined && sessionId !== undefined) {
+    sections.push(timeoutBackgroundedNote(output.timeout_backgrounded_ms, sessionId));
+  }
+  if (output.timeout_stopped_at_session_limit !== undefined) {
+    sections.push(timeoutStoppedAtSessionLimitNote(output.timeout_stopped_at_session_limit));
+  }
+  if (output.process_state !== undefined) sections.push(output.process_state);
   if (output.residual_processes_terminated === true || output.residual_processes_observed === true) {
     sections.push(RESIDUAL_PROCESSES_NOTE);
   }
@@ -278,6 +339,11 @@ export function unifiedExecCodeModeResult(
   }
 
   if (output.residual_processes_observed === true) result.residual_processes_observed = true;
+  if (output.timeout_backgrounded_ms !== undefined) result.timeout_backgrounded_ms = output.timeout_backgrounded_ms;
+  if (output.timeout_stopped_at_session_limit !== undefined) {
+    result.timeout_stopped_at_session_limit = output.timeout_stopped_at_session_limit;
+  }
+  if (output.process_state !== undefined) result.process_state = output.process_state;
 
   return result;
 }
