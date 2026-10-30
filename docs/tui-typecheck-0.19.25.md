@@ -1,8 +1,10 @@
 # TUI typecheck investigation for 0.19.25
 
-**Completed triage:** 305 → 19 diagnostics; 286 original type-only errors fixed,
-19 diagnostics retained for nine runtime bugs. See [Real bugs](#real-bugs) and
-[Completed triage](#completed-triage-2026-10-30) for the ledger and validation.
+**Completed resolution:** 305 → 19 → **0 diagnostics**. Seven reachable runtime
+bugs are fixed; R7 and R9 were reclassified as unreachable and received only
+type changes. All three TypeScript projects pass; the final focused batch passes
+235 tests in nine files. See [Real bugs](#real-bugs) for commits and validation.
+The completed-triage sections below retain the earlier investigation history.
 
 This initial investigation records commit `2d8d9e731`; the completed triage below supersedes its unresolved-error status.
 
@@ -315,21 +317,171 @@ not inflate the original 305 count.
 
 ## Real bugs
 
-All nine issues remain unchanged. Locations below refer to the final source;
-the ledger above preserves their original locations. Triggers are derived from
-producer/consumer code inspection, not live daemon or provider experiments.
+Resolved in order R2, R1, R3, R4, R5, R6, R7, R8, R9. Locations and initial
+impact descriptions below are from the completed triage, before these fixes.
+Seven triggers now have failing-before/passing-after offline tests. R7 and R9
+are unreachable in this checkout; the corrections below supersede their initial
+runtime classification. Each issue has its own local commit.
 
-| ID | File:line | User impact and trigger | Smallest fix |
-| --- | --- | --- | --- |
-| R1 | `src/tui/components/App.tsx:329` | A successful recovered-submission notification requests `info`, which is absent from Theme. Trigger a `message_submission_recovered` event with a successful result: its intended informational color is lost. | Use an existing informational theme key such as `text` or `accent`, matching the intended visual treatment. |
-| R2 | `src/tui/components/App.tsx:1322` | A user-input question may omit `options`, but AskUserQuestionOverlay immediately reads `question.options.length`. A free-text-only request crashes the picker instead of accepting an answer. | Normalize omitted options to an empty array before passing the question to the picker; retain the free-text choice. |
-| R3 | `src/tui/components/App.tsx:2859` and `:4837` | First-run BYOK onboarding receives a general AuthBackend. RemoteAuthBackend lacks `saveByokKey`; selecting BYOK with such a backend reaches a missing-method call in onboarding. LocalAuthBackend does implement it. | Supply an actual BYOK-capable backend/adapter, or narrow capability and route unsupported backends to the existing key-save path. Do not cast AuthBackend to the BYOK interface. |
-| R4 | `src/tui/components/App.tsx:3757`, `:3758`, `:3759` | Submit `$skill`: the queued input array contains raw XML metadata as a string and `{content: blocks}` without a role. Neither is an LLMMessage; message admission/provider serialization receives malformed input, so skill context is rejected or lost. | Wrap both entries as role-tagged user messages, converting SDK blocks to the canonical LLM content shape where necessary. |
-| R5 | `src/tui/components/PasteConfirmDialog.tsx:48` and `:61` | Open shell-paste confirmation. Named `yellow` and `green` are neither Theme keys nor accepted raw colors in resolveThemedColor; the warning/confirmation emphasis is uncolored. | Use `warning` and `success`. |
-| R6 | `src/tui/message-renderers/AttachmentMessage.tsx:121`, `:124`, `:127`, `:134` (three diagnostics at 134) | A fresh `@file` attachment is produced using CanonicalFileReadTool data (`content`/`metadata`), while the renderer assumes the legacy `{type, file}` payload. Rendering a normal canonical text-file attachment reaches `content.file.originalSize` with no `file` and throws. Cached already-read attachments still use the legacy shape. | Normalize canonical read results at the attachment boundary or add a renderer branch for canonical metadata, retaining legacy support for cached/persisted attachments. |
-| R7 | `src/tui/message-renderers/AttachmentMessage.tsx:337` | `bagel_console` is in Attachment but has neither a switch case nor a null-rendering classification. If a persisted/imported attachment with that discriminator is replayed, it renders nothing while still counting toward the visible-message budget. No current producer was found, so this is a latent replay/contract defect. | Deliberately retire/filter this discriminator or add its intended console-summary renderer; do not merely weaken the exhaustiveness assertion. |
-| R8 | `src/tui/startup/statusNoticeDefinitions.tsx:182` | With JetBrains and `ideConnector.autoInstallExtension: false`, the notice still reads retired runtime-state field `autoInstallIdeExtension`, falls back to true, and can show the unwanted install notice. | Read the canonical configuration's `ideConnector.autoInstallExtension` through the notice context. |
-| R9 | `src/utils/user.ts:88` and `:90` | Request account metadata after migration with a subscription: `agencCodeFirstTokenDate` has been retired from GlobalRuntimeState, so the old lookup cannot populate `firstTokenTime`. Consumers lose that account-age metadata. | Obtain the timestamp from a supported account/auth authority if available, or deliberately retire the metadata field and this dead lookup. Do not reintroduce the retired state key. |
+| ID | File:line | User impact and trigger | Smallest fix | Resolution |
+| --- | --- | --- | --- | --- |
+| R1 | `src/tui/components/App.tsx:329` | A successful recovered-submission notification requests `info`, which is absent from Theme. Trigger a `message_submission_recovered` event with a successful result: its intended informational color is lost. | Use an existing informational theme key such as `text` or `accent`, matching the intended visual treatment. | Fixed: `4147ed838` |
+| R2 | `src/tui/components/App.tsx:1322` | A user-input question may omit `options`, but AskUserQuestionOverlay immediately reads `question.options.length`. A free-text-only request crashes the picker instead of accepting an answer. | Normalize omitted options to an empty array before passing the question to the picker; retain the free-text choice. | Fixed: `601a9e255` |
+| R3 | `src/tui/components/App.tsx:2859` and `:4837` | First-run BYOK onboarding receives a general AuthBackend. RemoteAuthBackend lacks `saveByokKey`; selecting BYOK with such a backend reaches a missing-method call in onboarding. LocalAuthBackend does implement it. | Supply an actual BYOK-capable backend/adapter, or narrow capability and route unsupported backends to the existing key-save path. Do not cast AuthBackend to the BYOK interface. | Fixed: `675bcc3b4` |
+| R4 | `src/tui/components/App.tsx:3757`, `:3758`, `:3759` | Submit `$skill`: the queued input array contains raw XML metadata as a string and `{content: blocks}` without a role. Neither is an LLMMessage; message admission/provider serialization receives malformed input, so skill context is rejected or lost. | Wrap both entries as role-tagged user messages, converting SDK blocks to the canonical LLM content shape where necessary. | Fixed: `340318885` |
+| R5 | `src/tui/components/PasteConfirmDialog.tsx:48` and `:61` | Open shell-paste confirmation. Named `yellow` and `green` are neither Theme keys nor accepted raw colors in resolveThemedColor; the warning/confirmation emphasis is uncolored. | Use `warning` and `success`. | Fixed: `dc3bb8a6d` |
+| R6 | `src/tui/message-renderers/AttachmentMessage.tsx:121`, `:124`, `:127`, `:134` (three diagnostics at 134) | A fresh `@file` attachment is produced using CanonicalFileReadTool data (`content`/`metadata`), while the renderer assumes the legacy `{type, file}` payload. Rendering a normal canonical text-file attachment reaches `content.file.originalSize` with no `file` and throws. Cached already-read attachments still use the legacy shape. | Normalize canonical read results at the attachment boundary or add a renderer branch for canonical metadata, retaining legacy support for cached/persisted attachments. | Fixed: `beeae7a45` |
+| R7 | `src/tui/message-renderers/AttachmentMessage.tsx:337` | `bagel_console` is in Attachment but has neither a switch case nor a null-rendering classification. If a persisted/imported attachment with that discriminator is replayed, it renders nothing while still counting toward the visible-message budget. No current producer was found, so this is a latent replay/contract defect. | Deliberately retire/filter this discriminator or add its intended console-summary renderer; do not merely weaken the exhaustiveness assertion. | Types fixed only; unreachable: `44bf43903` |
+| R8 | `src/tui/startup/statusNoticeDefinitions.tsx:182` | With JetBrains and `ideConnector.autoInstallExtension: false`, the notice still reads retired runtime-state field `autoInstallIdeExtension`, falls back to true, and can show the unwanted install notice. | Read the canonical configuration's `ideConnector.autoInstallExtension` through the notice context. | Fixed: `c8e656653` |
+| R9 | `src/utils/user.ts:88` and `:90` | Request account metadata after migration with a subscription: `agencCodeFirstTokenDate` has been retired from GlobalRuntimeState, so the old lookup cannot populate `firstTokenTime`. Consumers lose that account-age metadata. | Obtain the timestamp from a supported account/auth authority if available, or deliberately retire the metadata field and this dead lookup. Do not reintroduce the retired state key. | Types fixed only; unreachable: `6799ee51e` |
+
+### Runtime fix details and reachability corrections (2026-10-30)
+
+- `runtime/src/tui/components/App.tsx` (R2, R1, R4): optional-chain the
+  options length in the routing check, normalize picker options, use `accent`
+  for successful recovery notifications, and queue role-tagged user messages.
+  Skill blocks use the existing content converter, with SDK base64 images
+  adapted to canonical image URLs first. Text and image admission are covered.
+- `runtime/src/onboarding/Onboarding.tsx` (R3): accept the actual auth backend
+  union and check for a callable `saveByokKey`. Backends without it use the
+  existing session-home/environment local save path. Tests mock storage and
+  provider responses; no owner credentials or provider endpoints are accessed.
+- `runtime/src/tui/components/PasteConfirmDialog.tsx` (R5): use `warning` and
+  `success`; the rendered text's colors resolve through the active theme.
+- `runtime/src/tui/message-renderers/AttachmentMessage.tsx` (R6): read canonical
+  metadata for line, cell, and byte counts, including partial/empty reads, while
+  retaining legacy cached/persisted summaries. Unknown summaries omit the count.
+- `runtime/src/utils/attachments.ts` (R7): remove only the unused `bagel_console`
+  union member. Repository-wide searches found no producer, fixture, or current
+  persistence path for this discriminator. The initial replay scenario was
+  hypothetical. Per the job's unreachable-code rule, no renderer/filter behavior
+  was added. TypeScript transpilation before/after emitted identical JavaScript.
+- `runtime/src/tui/startup/StatusNotices.tsx` and
+  `runtime/src/tui/startup/statusNoticeDefinitions.tsx` (R8): read the reactive
+  canonical settings through `useSettings`, and check
+  `ideConnector.autoInstallExtension` in the notice context. Tests cover false,
+  true, omitted, and the rendered notice path; related fixtures use current keys.
+- `runtime/src/utils/user.ts` (R9): repository-wide searches found no production
+  consumer of `getCoreUserData` or `firstTokenTime`. The original account-age
+  impact claim is therefore withdrawn. Only a local optional legacy read type
+  was added. The canonical `GlobalRuntimeState`, retired-field manifest, storage,
+  and runtime behavior are unchanged. Transpilation with comments removed was
+  identical before/after. This does not restore or promise first-token metadata.
+
+### Runtime regression commands and results
+
+All test commands below ran from `runtime/`, after:
+
+```sh
+export PATH=/Users/tetsuoarena/claude-agenc/node/n/versions/node/26.12.1/bin:$PATH
+mkdir -p /private/tmp/tt/vt
+cd runtime
+```
+
+These exact commands were run before and after each corresponding behavior fix:
+
+```sh
+# R1: 1 failure before (info), 1 pass after (accent).
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/components/App.render.test.tsx -t 'colors successful recovered' --maxWorkers=2
+
+# R3: remote backend fails before, local passes; both pass after.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/components/App.render.test.tsx -t 'persists first-run BYOK provider selection' --maxWorkers=2
+
+# R4: 1 failure before (raw metadata, missing role, SDK image); 1 pass after.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/components/App.render.test.tsx -t 'passes current transcript messages to dollar' --maxWorkers=2
+
+# R5: 1 failure / 3 passes before; all 4 pass after.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/components/PasteConfirmDialog.test.tsx --maxWorkers=2
+
+# R6: all 6 canonical cases crash before, 5 existing cases pass; all 11 pass after.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/message-renderers/AttachmentMessage.render.test.tsx --maxWorkers=2
+
+# R9: no behavior change; all 4 existing tests pass both before and after.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/utils/user.test.ts --maxWorkers=2
+```
+
+R2 was first: the actual crash occurs in App's picker-selection check before
+AskUserQuestionOverlay mounts. The test then verifies the rendered free-text
+prompt and the resolver's submitted answer. Its frame assertion was adjusted
+for the test renderer's whitespace; the two budget-picker cases remain green.
+
+```sh
+# Before: 1 failure, Cannot read properties of undefined (reading 'length').
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/components/App.render.test.tsx -t 'accepts a free-text' --maxWorkers=2
+# After: all 3 selected tests pass, including answer delivery and budget dismissal.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/components/App.render.test.tsx -t 'accepts a free-text|the first .* answers Stop here' --maxWorkers=2
+```
+
+R7 had no honest user-triggered failing test. The compiler reproduced TS1360
+for `bagel_console` after R6; at that checkpoint four diagnostics remained
+(R7, R8, and two for R9). After the type-only R7 edit, existing visibility and
+attachment tests passed (14 tests in two files):
+
+```sh
+node ../node_modules/typescript/bin/tsc --noEmit -p tsconfig.tui.json
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/message-visibility.test.ts tests/tui/message-renderers/AttachmentMessage.render.test.tsx --maxWorkers=2
+```
+
+R8's before run reproduced both the direct predicate and rendered-notice
+failure. It also exposed a test-order issue: the new render initialized the
+module's memory-diagnostics cache before an older test checked its first load.
+Moving the new case after that existing case resolved the harness interaction.
+The after batch passed all 22 tests in four files:
+
+```sh
+# Before: 2 regression failures, 1 test-order failure, 12 passes.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/startup/StatusNotices.wave200-073.coverage.test.tsx --maxWorkers=2
+# After: 22 passes.
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/startup/StatusNotices.wave200-073.coverage.test.tsx tests/tui/startup/statusNoticeDefinitions.wave200-142.coverage.test.tsx tests/tui/coverage-swarm/swarm-197-startup-StatusNotices.test.tsx --maxWorkers=2
+```
+
+Final focused command: **9 files, 235 tests passed, no skips, exit 0**.
+The first combined run exposed 12 old transaction assertions expecting malformed
+skill payloads and one neighboring BYOK test accidentally edited during
+parameterization. Those test corrections were folded into R4 and R3 respectively,
+then this exact batch was rerun successfully:
+
+```sh
+TMPDIR=/private/tmp/tt/vt node scripts/run-hermetic-vitest.mjs run \
+  tests/tui/components/App.render.test.tsx \
+  tests/tui/components/PasteConfirmDialog.test.tsx \
+  tests/tui/message-renderers/AttachmentMessage.render.test.tsx \
+  tests/tui/message-visibility.test.ts \
+  tests/tui/startup/statusNoticeDefinitions.test.tsx \
+  tests/tui/startup/StatusNotices.wave200-073.coverage.test.tsx \
+  tests/tui/startup/statusNoticeDefinitions.wave200-142.coverage.test.tsx \
+  tests/tui/coverage-swarm/swarm-197-startup-StatusNotices.test.tsx \
+  tests/utils/user.test.ts \
+  --maxWorkers=2
+```
+
+### Final compiler validation
+
+The prescribed wrapper was attempted with network disabled and its cache confined
+to this worktree:
+
+```sh
+export npm_config_offline=true
+export npm_config_cache="$PWD/.typecheck-npm-cache" # set at worktree root
+cd runtime
+npx tsc --noEmit -p tsconfig.json && npx tsc --noEmit -p tsconfig.test-support.json
+```
+
+It exited 1 before running TypeScript: `EBADDEVENGINES`, installed npm 11.20.0
+versus required 11.17.0. No dependency was installed or modified. The temporary
+npm cache was removed. Using the installed compiler directly, all three commands
+passed with **zero diagnostics, exit 0**:
+
+```sh
+node ../node_modules/typescript/bin/tsc --noEmit -p tsconfig.tui.json
+node ../node_modules/typescript/bin/tsc --noEmit -p tsconfig.json
+node ../node_modules/typescript/bin/tsc --noEmit -p tsconfig.test-support.json
+```
+
+There are no TypeScript failures to classify against `origin/main`. No compiler
+configuration, include/exclude list, gate, or dependency changed. `git diff
+--check` passed. No daemon/CLI invocation, live credential access, push, or pull
+request was performed. The unrelated observations below remain unchanged.
 
 ### Other observations left unchanged
 
