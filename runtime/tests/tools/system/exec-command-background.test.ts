@@ -91,9 +91,12 @@ describe("background: true", () => {
     expect(started.content).toContain(`[note: session ${sessionId} runs in the background.`);
     expect(started.metadata).toMatchObject({ background: true, sessionId });
 
-    const second = await exec.execute({ cmd: "sleep 30", background: true, __agencSessionId: session });
+    // `job & sleep N` looks like a server check that waited a fixed time; a
+    // background start gets no server-check note.
+    const second = await exec.execute({ cmd: "sleep 70 & sleep 30; wait", background: true, __agencSessionId: session });
     expect((second.codeModeResult as { session_id?: number }).session_id).toEqual(expect.any(Number));
     expect(second.content).not.toContain("runs in the background");
+    expect(second.content).not.toContain("To check a server");
   });
 
   test("a later result reports the end of a background session once", async () => {
