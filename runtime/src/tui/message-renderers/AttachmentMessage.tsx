@@ -4,6 +4,7 @@ import React, { useMemo } from 'react';
 import { resolveAgenCTuiGlyphMode } from '../glyphs.js';
 import { Ansi, Box, Text } from '../ink.js';
 import type { Attachment } from '../../utils/attachments.js';
+import { isRecord } from '../../utils/record.js';
 import type { NullRenderingAttachmentType } from '../message-visibility.js';
 import { useAppState, type AppState } from '../state/AppState.js';
 import { getDisplayPath } from '../../utils/file.js';
@@ -117,23 +118,28 @@ export function AttachmentMessage({
           Listed directory <Text bold>{attachment.displayPath + sep}</Text>
         </Line>;
     case 'file':
-    case 'already_read_file':
-      if (attachment.content.type === 'notebook') {
-        return <Line>
-            Read <Text bold>{attachment.displayPath}</Text> (
-            {attachment.content.file.cells.length} cells)
-          </Line>;
-      }
-      if (attachment.content.type === 'file_unchanged') {
-        return <Line>
-            Read <Text bold>{attachment.displayPath}</Text> (unchanged)
-          </Line>;
+    case 'already_read_file': {
+      const content = isRecord(attachment.content) ? attachment.content : {};
+      const metadata = isRecord(content.metadata) ? content.metadata : {};
+      const file = isRecord(content.file) ? content.file : {};
+      const cells = Array.isArray(file.cells) ? file.cells.length : metadata.cellCount;
+      const numLines = file.numLines ?? metadata.numLines;
+      const sizeBytes = file.originalSize ?? metadata.sizeBytes;
+      let summary: string | undefined;
+      if (content.type === 'file_unchanged') {
+        summary = 'unchanged';
+      } else if (typeof cells === 'number') {
+        summary = `${cells} cells`;
+      } else if (typeof numLines === 'number') {
+        summary = `${numLines}${attachment.truncated || metadata.isPartial === true ? '+' : ''} lines`;
+      } else if (typeof sizeBytes === 'number') {
+        summary = formatFileSize(sizeBytes);
       }
       return <Line>
-          Read <Text bold>{attachment.displayPath}</Text> (
-          {attachment.content.type === 'text' ? `${attachment.content.file.numLines}${attachment.truncated ? '+' : ''} lines` : formatFileSize(attachment.content.file.originalSize)}
-          )
+          Read <Text bold>{attachment.displayPath}</Text>
+          {summary === undefined ? null : ` (${summary})`}
         </Line>;
+    }
     case 'compact_file_reference':
       return <Line>
           Referenced file <Text bold>{attachment.displayPath}</Text>
