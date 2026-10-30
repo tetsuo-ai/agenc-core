@@ -345,7 +345,6 @@ export interface AgenCTuiProps {
    * teardown.
    */
   readonly registerTuiTeardown?: (teardown: () => Promise<void>) => () => void;
-  readonly shouldPreserveEditorRecoveryOnTeardown?: () => boolean;
   readonly isInteractive?: boolean;
   readonly model?: string;
   readonly initialPrompt?: string;

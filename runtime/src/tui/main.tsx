@@ -234,7 +234,6 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
       <AgenCTuiApp
         session={options.session}
         registerTuiTeardown={(teardown) => teardownBarrier.register(teardown)}
-        shouldPreserveEditorRecoveryOnTeardown={() => firedStdinLoss}
         isInteractive={stdin.isTTY === true}
         model={options.model}
         initialPrompt={options.initialPrompt}
