@@ -6971,6 +6971,42 @@ describe("WebSearch through DeepSeek's Search API", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(OFFICIAL_SEARCH_URL);
   });
 
+  it("never mixes a DeepSeek child's search with its Ollama Cloud parent's paid search", async () => {
+    const ollamaParent = withProvider(fakeSession(), {
+      name: "ollama-cloud",
+      config: { apiKey: "parent-ollama-key", model: "gemma4:31b" },
+      chat: vi.fn(),
+      chatStream: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as LLMProvider);
+    const tool = webSearch({ session: ollamaParent });
+    const child = deepseekSession({ apiKey: "sk-child-deepseek" });
+    const args: Record<string, unknown> = { query: "release notes", allowed_domains: ["github.com"] };
+    attachToolRuntimeContext(args, {
+      callId: "child-search-gateway",
+      toolName: "WebSearch",
+      approvalPolicy: "on_request",
+      requestedSandboxMode: "workspace_write",
+      sandboxMode: "workspace_write",
+      approvalResolved: false,
+      rawArgs: JSON.stringify(args),
+      invocation: { session: child },
+    } as unknown as ToolRuntimeAttemptContext);
+    // Only the child's DeepSeek search is priced, never the parent's gateway.
+    expect(tool.admissionEstimate?.(args)?.maxCostUsd).toBe(0.00075);
+    // DeepSeek answers (billed) but nothing matches the domain filter.
+    const fetchMock = routedFetch([
+      [OFFICIAL_SEARCH_URL, json200(searchBody)],
+      ["https://html.duckduckgo.com/html/", ddgHtml],
+      ["https://api.duckduckgo.com/", json200({})],
+    ]);
+    const result = await withFetch(fetchMock, () => tool.execute(args));
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.startsWith("https://ollama.com/"))).toBe(false);
+    expect(JSON.parse(result.content).deepseek_search_fallback).toBe("no results matched the domain filters");
+    expect(result.admissionUsage?.costUsd).toBe(0.00075);
+  });
+
   it("searches with the invoking sub-agent session's provider, not the registry's", async () => {
     const dispatched = (session: Session, callId: string): Record<string, unknown> => {
       const args: Record<string, unknown> = { query: "news" };
@@ -7655,6 +7691,37 @@ describe("web_fetch through DeepSeek's Fetch API", () => {
     expect(deepSeekCalls(fetchMock)).toEqual([]);
     expect(JSON.parse(result.content).content).toBe("plain local page");
     expect(result.admissionUsage?.costUsd).toBe(0);
+  });
+
+  it("keeps a dispatched call local when its admission record was evicted or never written", async () => {
+    let permissions: ToolPermissionContext = createEmptyToolPermissionContext();
+    const session = deepseekSession();
+    (session as unknown as { permissionModeRegistry: unknown }).permissionModeRegistry = {
+      current: () => permissions,
+    };
+    const tool = webFetch({ session });
+    const first = dispatchedArgs({ url: "https://example.com/" }, session, "call-evicted");
+    expect(tool.admissionEstimate?.(first)?.maxCostUsd).toBe(0);
+    // More than 256 later admissions push the first record out.
+    for (let index = 0; index < 300; index += 1) {
+      tool.admissionEstimate?.(dispatchedArgs({ url: "https://example.com/" }, session, `call-later-${index}`));
+    }
+    permissions = NEVER_ASKS;
+    const never = dispatchedArgs({ url: "https://example.com/" }, session, "call-never-admitted");
+    for (const args of [first, never]) {
+      const fetchMock = routedFetch([
+        [OFFICIAL_FETCH_URL, json200(PAGE)],
+        ["https://example.com/", localPage()],
+      ]);
+      const result = await withFetch(fetchMock, () => tool.execute(args));
+      expect(deepSeekCalls(fetchMock)).toEqual([]);
+      expect(result.admissionUsage?.costUsd).toBe(0);
+    }
+    // An affirmative record still lets the call use DeepSeek.
+    const admitted = dispatchedArgs({ url: "https://example.com/" }, session, "call-admitted");
+    expect(tool.admissionEstimate?.(admitted)?.maxCostUsd).toBe(0.00075);
+    const viaDeepSeek = routedFetch([[OFFICIAL_FETCH_URL, json200(PAGE)]]);
+    expect(JSON.parse((await withFetch(viaDeepSeek, () => tool.execute(admitted))).content).source).toBe("deepseek_fetch");
   });
 
   it("chooses the backend from the invoking sub-agent session, not the registry's", async () => {

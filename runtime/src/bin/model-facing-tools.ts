@@ -1613,8 +1613,11 @@ const GATEWAY_SEARCH_BASE_URLS: Readonly<Record<GatewayWebSearchBackend["provide
  * own key (never the managed route's, never another provider's). An explicit
  * search endpoint or a named search provider keeps priority.
  */
-function resolveGatewayWebSearchBackend(opts: ModelFacingToolOptions): GatewayWebSearchBackend | undefined {
-  const provider = currentSessionProvider(opts);
+function resolveGatewayWebSearchBackend(
+  opts: ModelFacingToolOptions,
+  session: Session | null,
+): GatewayWebSearchBackend | undefined {
+  const provider = sessionLLMProvider(session);
   if (provider === undefined) return undefined;
   const identity = readProviderIdentity(provider);
   if (identity !== "ollama-cloud" && identity !== "openrouter" && identity !== "venice") return undefined;
@@ -1625,7 +1628,7 @@ function resolveGatewayWebSearchBackend(opts: ModelFacingToolOptions): GatewayWe
   if (factoryOptions.extra?.managedGateway === true || factoryOptions.extra?.managedCredential === true) return undefined;
   const apiKey = stringValue(factoryOptions.apiKey);
   if (apiKey === undefined) return undefined;
-  const live = (opts.getSession()?.services as { providerService?: { current?: () => { model?: unknown } } } | undefined)
+  const live = (session?.services as { providerService?: { current?: () => { model?: unknown } } } | undefined)
     ?.providerService?.current?.();
   const model = stringValue(live?.model) ?? stringValue(factoryOptions.model);
   if (model === undefined) return undefined;
@@ -1705,7 +1708,7 @@ function webSearchResultLimit(args: Record<string, unknown>): number {
 function webSearchMaxCostUsd(opts: ModelFacingToolOptions, args: Record<string, unknown>): number | null {
   if (configuredWebSearchEndpoint(opts) !== undefined ||
       configuredSearchChain(requireModelFacingRequestEnvironment(opts), opts.toolsConfig).providers.length > 0) return null;
-  const gateway = resolveGatewayWebSearchBackend(opts);
+  const gateway = resolveGatewayWebSearchBackend(opts, invokingSession(opts, args));
   if (gateway !== undefined) {
     const filters = webSearchFilters(args);
     const filtered = filters.allowedDomains.length > 0 || filters.blockedDomains.length > 0;
@@ -4208,7 +4211,12 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
         const session = invokingSession(opts, args);
         const admittedDeepSeek = takeWebFetchAdmission(session, args);
         const backend = webFetchBackend(opts, session, normalized);
-        const deepseek = backend.kind === "deepseek" && admittedDeepSeek !== false
+        // A dispatched call needs admission's affirmative record (one evicted
+        // or never written means no fee was reserved); a call without runtime
+        // context (direct use) follows the live decision.
+        const dispatched = readToolRuntimeContext(args)?.callId !== undefined;
+        const deepseek = backend.kind === "deepseek" &&
+          (dispatched ? admittedDeepSeek === true : admittedDeepSeek !== false)
           ? backend
           : undefined;
         if (deepseek !== undefined) {
@@ -4636,7 +4644,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         // answer falls through to the chain below, which says why.
         const deepseek = resolveDeepSeekWebSearchBackend(opts, invokingSession(opts, args));
         // A paid fallback is unpriced. An early DeepSeek success still has an exact receipt.
-        const gateway = resolveGatewayWebSearchBackend(opts);
+        const gateway = resolveGatewayWebSearchBackend(opts, invokingSession(opts, args));
         const reportsDeepSeekCharge = (deepseek !== undefined || gateway !== undefined) &&
           endpoint === undefined && chain.providers.length === 0;
         let deepseekBilled = false;
