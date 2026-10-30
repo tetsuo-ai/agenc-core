@@ -741,6 +741,83 @@ autostart = true
     }
   });
 
+  it.each([
+    ["a newer version", { runtimeVersion: "0.18.0", commit: "newer", buildTime: "2026-08-20T00:00:00.000Z" }],
+    ["a newer build of the same version", {
+      runtimeVersion: TEST_CURRENT_RUNTIME_BUILD.runtimeVersion,
+      commit: "rebuilt",
+      buildTime: "2026-08-20T00:00:00.000Z",
+    }],
+    ["a build whose order cannot be told", { runtimeVersion: "dev", commit: "dev", buildTime: "unknown" }],
+  ])("an older client keeps %s running and uses it", async (label, build) => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    // A distinct daemon per case: the notice is printed once per instance.
+    const daemonPid = 5410 + label.length;
+    host.runningPids.add(daemonPid);
+    await writeAgenCDaemonPid(pidPath, daemonPid);
+    host.recordDaemon(daemonPid, build);
+    const shutdowns: number[] = [];
+    host.requestDaemonShutdown = (expected) => {
+      shutdowns.push(expected.pid);
+      host.runningPids.delete(expected.pid);
+    };
+    const stderr: string[] = [];
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({
+          host,
+          io: {
+            stdout: { write: () => true },
+            stderr: { write: (text: string | Uint8Array) => { stderr.push(String(text)); return true; } },
+          },
+          findOrphanDaemonPids: () => [],
+          findSupersededDaemonPids: () => [],
+          isReady: ({ pid }) => host.runningPids.has(pid),
+        }),
+      ).resolves.toMatchObject({ pid: daemonPid, status: "already-running" });
+      // Never stopped, and no older runtime started in its place.
+      expect(shutdowns).toEqual([]);
+      expect(host.spawnedPids).toEqual([]);
+      expect(host.runningPids.has(daemonPid)).toBe(true);
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(daemonPid);
+      expect(stderr.join("")).toContain("so the daemon keeps running. Quit and start agenc again to use the same version.");
+      expect(stderr.join("")).not.toContain("daemon build identity differs");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("still replaces a daemon older than the client", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const oldPid = 5420;
+    host.runningPids.add(oldPid);
+    await writeAgenCDaemonPid(pidPath, oldPid);
+    host.recordDaemon(oldPid, { runtimeVersion: "0.16.9", commit: "older", buildTime: "2026-08-01T00:00:00.000Z" });
+    const shutdowns: number[] = [];
+    host.requestDaemonShutdown = (expected) => {
+      shutdowns.push(expected.pid);
+      host.runningPids.delete(expected.pid);
+    };
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({
+          host,
+          findOrphanDaemonPids: () => [],
+          findSupersededDaemonPids: () => [],
+          isReady: ({ pid }) => host.runningPids.has(pid),
+        }),
+      ).resolves.toMatchObject({ pid: 5201, status: "started" });
+      expect(shutdowns).toEqual([oldPid]);
+      expect(host.spawnedPids).toEqual([5201]);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("pins tracked build-skew identity before terminating and replacing it", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

@@ -72,8 +72,16 @@ Autostart is **on by default**. Disable with:
 AGENC_DAEMON_AUTOSTART=0
 ```
 
+Autostart replaces a running daemon whose build is older than the client's:
+a lower version, or the same version built earlier. A daemon newer than the
+client, or one whose order cannot be told, keeps running and the client uses
+it. That happens when an `agenc` started before an update meets the daemon the
+update restarted; it prints once that agenc should be started again to use the
+same version, and never starts its own older runtime in place of the newer
+daemon.
+
 If autostart has to replace a running daemon (legacy process with no instance
-identity, or a build-identity skew), it re-enters the start cycle at most
+identity, or an older build), it re-enters the start cycle at most
 **3** times (`AGENC_DAEMON_AUTOSTART_MAX_RESTART_CYCLES` in
 `runtime/src/app-server/daemon-autostart.ts`). The first restart is immediate.
 Further restarts wait 250 ms, then 1 s, then 4 s. After the cap it throws

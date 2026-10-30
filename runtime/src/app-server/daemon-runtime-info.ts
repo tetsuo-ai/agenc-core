@@ -5,11 +5,13 @@
  * (`runtimeVersion`, `commit`, `buildTime` from `dist/VERSION`) into
  * `~/.agenc/daemon-runtime.json`, next to `daemon.pid`. On CLI startup,
  * `ensureAgenCDaemonAutostart` compares the complete recorded build tuple
- * against the current `dist/VERSION` tuple. If any field
- * differs — i.e. the runtime was rebuilt while the daemon was running — the
- * CLI requests authenticated instance-bound self-shutdown and lets autostart
- * spawn a fresh one. A numeric signal is only a Linux fallback after the
- * same-home process and stable start token are rebound immediately beforehand.
+ * against the current `dist/VERSION` tuple. If they differ and the daemon is
+ * the older build (the runtime was rebuilt or updated while the daemon was
+ * running), the CLI requests authenticated instance-bound self-shutdown and
+ * lets autostart spawn a fresh one. A daemon newer than the CLI keeps running
+ * (see `daemon-build-order.ts`). A numeric signal is only a Linux fallback
+ * after the same-home process and stable start token are rebound immediately
+ * beforehand.
  *
  * This exists because the ESM bundler emits content-hashed chunk
  * filenames (`run-turn-AVRTIPZE.js`). A `npm run build` deletes the
