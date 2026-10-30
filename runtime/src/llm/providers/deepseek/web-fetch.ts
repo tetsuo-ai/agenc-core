@@ -94,7 +94,7 @@ export function resolveDeepSeekWebFetchSetting(
 
 /**
  * The fetch URL for a DeepSeek chat base URL, next to the search URL:
- * `https://api.deepseek.com/v1/tools/fetch` on DeepSeek's host, and
+ * `/v1/tools/fetch` on DeepSeek's own host, and
  * `https://gw.example/deepseek/v1/tools/fetch` behind a proxy at
  * `https://gw.example/deepseek/v1`.
  */
