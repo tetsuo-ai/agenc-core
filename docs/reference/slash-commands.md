@@ -30,7 +30,7 @@ Order matches `buildDefaultRegistry`.
 | `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
 | `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
 | `/openai-logout` | `chatgpt-logout` | Sign out of the OpenAI / ChatGPT OAuth session |
-| `/cost` | `stats` | Show session cost, token usage, and per-agent spend |
+| `/cost` | `stats` | Show the billed estimate, peak-rate accounting total, token usage, and per-agent spend |
 | `/model` | | Switch the model (picker or pass a name). Type in the picker to search its models by ID or name; Esc clears the search. The session keeps its reasoning effort if the new model accepts it; otherwise the new model runs at its default and the switch says so |
 | `/provider` | | Switch the LLM provider for subsequent turns. Reasoning effort carries over as with `/model` |
 | `/effort` | | Show or set reasoning effort for the current model (the exact model catalog levels, including `minimal` where supported; `default` clears the session's effort, so every model it switches to runs at its own default) |
@@ -81,6 +81,23 @@ Sources: `runtime/src/commands/*.ts(x)` modules imported by
 [security/mobile-ledger-transfer.md](../security/mobile-ledger-transfer.md).
 
 ---
+
+### `/cost` and `/stats`
+
+The session accounting total uses peak rates before off-peak discounts, or
+provider-reported charges when available. Model and agent breakdowns retain
+that accounting basis. A separate **billed estimate** applies the recorded
+DeepSeek API and eligible QwenCloud DeepSeek schedules to each call's dispatch
+time, at half price off-peak. It matches the status line's figure, labeled
+`off-peak` only when a discount applies. No estimate is shown when eligible
+calls lack timestamps; the status line then shows `peak est.`. Neither figure
+changes budget enforcement or stored accounting. Unrecorded schedules,
+holidays and other discounts may make the
+actual charge lower.
+
+`≥` means unpriced calls are excluded from the known total. Their details
+appear below the totals when available. Fallback pricing is marked `est.`;
+the status line shows `price unknown` instead of that fallback figure.
 
 ## Bridge command policy
 

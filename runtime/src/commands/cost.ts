@@ -8,8 +8,9 @@
  * answered "how much has this session cost?".
  *
  * Honesty contract:
- *   - Session $ and per-model $ are REAL (sourced from the CostSidecar, which
- *     tallies provider-reported token usage against the cost registry).
+ *   - Accounting totals use recorded usage and published peak rates (or a
+ *     provider-reported charge). A separate billed estimate applies recorded
+ *     off-peak schedules per call; neither figure is a provider invoice.
  *   - Per-agent $ is an ESTIMATE derived from the agent's total token count +
  *     model (the TUI surfaces only a total, not an input/output split). Every
  *     estimated figure is suffixed "est."; a dash is shown when a real number
@@ -61,8 +62,9 @@ export interface CostAgentRow {
 }
 
 export interface CostReport {
-  /** Real session total cost (USD), when the cost sidecar is available. */
+  /** Accounting total, before recorded off-peak adjustments. */
   readonly totalCostUsd?: number;
+  readonly billedEstimateUsd?: number;
   /**
    * True when the total includes estimated pricing. Surfaced as "est."
    * so we never present an estimate as a measured number.
@@ -208,6 +210,7 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
   if (isAdmissionUsageSummary(usage)) {
     return {
       totalCostUsd: usage.costUsd,
+      ...(usage.billedEstimateUsd !== undefined ? { billedEstimateUsd: usage.billedEstimateUsd } : {}),
       ...(usage.costEstimated ? { totalIsEstimated: true } : {}),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
@@ -286,8 +289,11 @@ export function formatCostReport(report: CostReport): string {
     const unknown = report.hasUnknownCost ? "≥" : "";
     const est = report.totalIsEstimated ? " est." : "";
     lines.push(
-      `Session cost: ${unknown}${formatUsdCost(report.totalCostUsd)}${est}`,
+      `Session cost: ${unknown}${formatUsdCost(report.totalCostUsd)}${est} (accounting; peak rates before off-peak discounts)`,
     );
+    if (report.billedEstimateUsd !== undefined && !report.totalIsEstimated) {
+      lines.push(`Billed estimate: ${unknown}${formatUsdCost(report.billedEstimateUsd)} (recorded per-call off-peak hours)`);
+    }
   } else {
     lines.push("Session cost: unknown (cost tracking unavailable)");
   }
@@ -337,6 +343,8 @@ export function formatCostReport(report: CostReport): string {
       lines.push("  Call details unavailable for this older session.");
     }
   }
+  lines.push("Model and agent totals use accounting rates; provider-reported charges are kept as reported.");
+  lines.push("Billed estimates apply recorded schedules only; other discounts and holidays may be missing.");
   lines.push("Agent costs use recorded usage when available; estimates are marked est.");
   return lines.join("\n");
 }

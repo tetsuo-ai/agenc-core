@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
+import type { AdmissionUsageSummary } from "../../src/budget/admission-types.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { bindExecutionAdmissionJournal } from "../../src/session/execution-admission-journal.js";
 import type { Session } from "../../src/session/session.js";
@@ -54,6 +55,35 @@ async function spend(client: ExecutionAdmissionClient, stepId: string, costUsd: 
 }
 
 describe("canonical session usage", () => {
+  it("derives billed display estimates from persisted dispatch times without changing accounting", async () => {
+    const kernel = createKernel();
+    const parent = bind(kernel, "mixed");
+    const child = parent.forSession({ runId: "child", sessionId: "child" });
+    const snapshots: AdmissionUsageSummary[] = [];
+    const unsubscribe = parent.subscribeUsageSnapshot!(snapshot => snapshots.push(snapshot.read()));
+    for (const [client, stepId, timestamp] of [
+      [parent, "peak", "2026-10-19T02:00:00Z"],
+      [child, "off-peak", "2026-10-24T02:00:00Z"],
+    ] as const) {
+      const lease = await client.acquire({ stepId, kind: "model_turn", model: "deepseek-flash", provider: "deepseek",
+        maxInputTokens: 20, maxOutputTokens: 20, maxCostUsd: 0.5 });
+      client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire", timestamp });
+      client.reconcile(lease.reservation.reservationId, { inputTokens: 10, outputTokens: 5, costUsd: 0.5 });
+      client.acknowledgeCompletion(lease.reservation.reservationId);
+    }
+    const summary = parent.getUsageSummary!();
+    expect(summary).toMatchObject({ costUsd: 1, billedEstimateUsd: 0.75, hasOffPeakDiscount: true, heldCostUsd: 0,
+      models: [{ costUsd: 1 }], agents: [{ costUsd: 0.5 }] });
+    expect(snapshots.length).toBeGreaterThan(0);
+    expect(snapshots.at(-1)).toEqual(summary);
+    unsubscribe();
+    expect(child.getUsageSummary!()).toMatchObject({ costUsd: 0.5, billedEstimateUsd: 0.25, hasOffPeakDiscount: true });
+    expect(parent.getTaskBudgetUsage!()).toEqual({ tokens: 30, calls: 2 });
+    kernel.close();
+    kernels.splice(kernels.indexOf(kernel), 1);
+    expect(bind(createKernel(), "mixed").getUsageSummary!()).toMatchObject({ costUsd: 1, billedEstimateUsd: 0.75, hasOffPeakDiscount: true });
+  });
+
   it("counts descendants once, excludes unrelated runs, and scopes child totals", async () => {
     const kernel = createKernel();
     const parent = bind(kernel, "parent");

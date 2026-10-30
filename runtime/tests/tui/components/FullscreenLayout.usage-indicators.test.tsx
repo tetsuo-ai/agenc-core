@@ -1,6 +1,6 @@
+import { AdmissionUsageProjection } from "../../../src/state/admission-usage-snapshot.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
 import React from "react";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -18,7 +18,6 @@ import {
 import type { ZeroDataRetentionStatus } from "../../llm/zero-data-retention.js";
 import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
 import { Text } from "../ink.js";
-import { createRoot } from "../ink/root.js";
 import { stringWidth } from "../ink/stringWidth.js";
 import { renderToAnsiString, renderToString } from "../../utils/staticRender.js";
 import { getTheme } from "../../utils/theme.js";
@@ -30,7 +29,7 @@ import { promptCacheSharePercent } from "../../session/prompt-cache-share.js";
 import { createSessionTranscriptStateForTesting } from "../session-transcript.js";
 
 const MODEL = "qwen3-coder-480b-a35b-instruct";
-const SPEND: SessionUsageSnapshot = { costUsd: 0.0044, hasUnknownCost: false };
+const SPEND: SessionUsageSnapshot = { costUsd: 0.0044, billedEstimateUsd: 0.0044, hasUnknownCost: false };
 const DEEPSEEK_HOURS = offPeakScheduleFor("deepseek", "deepseek-flash");
 const SATURDAY_OFF_PEAK = "2026-10-24T02:00:00Z";
 const MONDAY_PEAK = "2026-10-19T02:00:00Z";
@@ -212,117 +211,92 @@ describe("status line cache share", () => {
   });
 });
 
-describe("status line off-peak mark", () => {
-  test("follows the cost inside the provider's off-peak hours", async () => {
-    vi.useFakeTimers({ toFake: ["Date"], now: new Date(SATURDAY_OFF_PEAK) });
-    expect(await footer({ offPeak: DEEPSEEK_HOURS })).toContain("ctx 9% · cache 91% · $0.0044 off-peak");
+describe("per-call billed estimate", () => {
+  test.each([
+    ["DeepSeek off-peak", "deepseek", SATURDAY_OFF_PEAK, "$0.250 off-peak"],
+    ["OpenAI", "openai", undefined, "$0.500"],
+    ["DeepSeek peak", "deepseek", MONDAY_PEAK, "$0.500"],
+    ["missing dispatch time", "deepseek", undefined, "$0.500 peak est."],
+  ])("cost suffix regression: %s", async (_label, provider, dispatched_at, expected) => {
+    const projection = new AdmissionUsageProjection();
+    projection.update("call", {
+      reservation_id: "call", run_id: "session", kind: "model_turn",
+      provider, model: provider === "openai" ? "gpt-5" : "deepseek-flash", status: "reconciled",
+      dispatched_at, actual_cost_nanos: 500_000_000, reserved_cost_nanos: 500_000_000,
+      actual_input_tokens: 10, actual_output_tokens: 5, actual_tokens: 15, resolution_reason: null,
+    });
+    const usage = projection.capture("session", 1).read();
+    expect(usage.costUsd).toBe(0.5);
+    const line = await footer({ usage });
+    expect(line.slice(line.indexOf("$")).trim()).toBe(expected);
   });
 
-  test("is hidden at a peak hour", async () => {
-    vi.useFakeTimers({ toFake: ["Date"], now: new Date(MONDAY_PEAK) });
-    const line = await footer({ offPeak: DEEPSEEK_HOURS });
-    expect(line).toContain("ctx 9% · cache 91% · $0.0044");
-    expect(line).not.toContain("off-peak");
+  test("mixes peak and off-peak calls, preserves unknown usage and ignores the current clock", async () => {
+    const projection = new AdmissionUsageProjection();
+    for (const [id, timestamp] of [["peak", MONDAY_PEAK], ["off-peak", SATURDAY_OFF_PEAK]]) {
+      projection.update(id!, {
+        reservation_id: id!, run_id: "session", kind: "model_turn",
+        provider: "deepseek", model: "deepseek-flash", status: "reconciled",
+        dispatched_at: timestamp, actual_cost_nanos: 500_000_000,
+        reserved_cost_nanos: 500_000_000, actual_input_tokens: 10,
+        actual_output_tokens: 5, actual_tokens: 15, resolution_reason: null,
+      });
+    }
+    projection.update("unknown", {
+      reservation_id: "unknown", run_id: "session", kind: "model_turn",
+      provider: "deepseek", model: "deepseek-flash", status: "held_unknown",
+      actual_cost_nanos: null, reserved_cost_nanos: 500_000_000,
+      actual_input_tokens: null, actual_output_tokens: null, actual_tokens: null,
+      resolution_reason: "missing_provider_usage",
+    });
+    const usage = projection.capture("session", 3).read();
+    expect(usage.costUsd).toBe(1);
+    expect(usage.billedEstimateUsd).toBe(0.75);
+    for (const now of [MONDAY_PEAK, SATURDAY_OFF_PEAK]) {
+      vi.useFakeTimers({ toFake: ["Date"], now: new Date(now) });
+      const line = await footer({ usage, offPeak: DEEPSEEK_HOURS });
+      expect(line).toContain("≥$0.750 off-peak");
+    }
   });
+});
 
-  test("is hidden for providers without recorded hours", async () => {
-    vi.useFakeTimers({ toFake: ["Date"], now: new Date(SATURDAY_OFF_PEAK) });
-    for (const schedule of [
-      offPeakScheduleFor("ollama-cloud", "deepseek-v4.1-flash:1017"),
-      offPeakScheduleFor("openrouter", "deepseek/deepseek-v4.1-flash"),
-      offPeakScheduleFor("anthropic", "claude-opus-5-5"),
-    ]) {
-      expect(schedule).toBeNull();
-      expect(await footer({ offPeak: schedule })).not.toContain("off-peak");
+describe("status line cost basis", () => {
+  test("labels legacy totals as peak estimates regardless of the current window", async () => {
+    for (const now of [MONDAY_PEAK, SATURDAY_OFF_PEAK]) {
+      vi.useFakeTimers({ toFake: ["Date"], now: new Date(now) });
+      const line = await footer({ offPeak: DEEPSEEK_HOURS, usage: { costUsd: 1, hasUnknownCost: true, hasMissingDispatchTime: true } });
+      expect(line).toContain("≥$1.00 peak est.");
+      expect(line).not.toContain("off-peak");
     }
   });
 
   test("never qualifies a missing or unknown price", async () => {
-    vi.useFakeTimers({ toFake: ["Date"], now: new Date(SATURDAY_OFF_PEAK) });
-    expect(await footer({ offPeak: DEEPSEEK_HOURS, usage: null })).not.toContain("off-peak");
-    const unknown = await footer({
-      offPeak: DEEPSEEK_HOURS,
-      usage: { costUsd: 0.045, hasUnknownCost: false, costEstimated: true },
-    });
+    expect(await footer({ usage: null })).not.toContain("est.");
+    const unknown = await footer({ usage: { costUsd: 0.045, hasUnknownCost: false, costEstimated: true } });
     expect(unknown).toContain("price unknown");
-    expect(unknown).not.toContain("off-peak");
+    expect(unknown).not.toContain("est.");
   });
 
-  test("updates when an hour boundary passes while nothing else renders", async () => {
-    // One second before peak hours start on a Monday.
-    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-19T00:59:59.900Z") });
-    const stdout = new PassThrough();
-    Object.assign(stdout, { columns: 140, rows: 24 });
-    const stdin = Object.assign(new PassThrough(), {
-      isTTY: true, ref() {}, unref() {}, setRawMode() {},
-    });
-    let output = "";
-    stdout.on("data", chunk => { output += chunk.toString(); });
-    const latestFrame = () => {
-      const end = output.lastIndexOf("\x1b[?2026l");
-      const start = output.lastIndexOf("\x1b[?2026h", end);
-      return stripAnsi(output.slice(start, end));
-    };
-    const root = await createRoot({
-      patchConsole: false,
-      stdout: stdout as unknown as NodeJS.WriteStream,
-      stdin: stdin as unknown as NodeJS.ReadStream,
-    });
-    try {
-      root.render(
-        <AppStateProvider initialState={{ ...getDefaultAppState(), mainLoopModel: MODEL }}>
-          <SessionUsageContext value={SPEND}>
-            <StatusOffPeakContext value={DEEPSEEK_HOURS}>
-              <FullscreenModeProvider enabled>
-                <FullscreenLayout scrollable={<Text>ready</Text>} bottom={<Text>prompt</Text>} />
-              </FullscreenModeProvider>
-            </StatusOffPeakContext>
-          </SessionUsageContext>
-        </AppStateProvider>,
-      );
-      await vi.waitFor(() => expect(latestFrame()).toContain("$0.0044 off-peak"));
-      // The clock passes 01:00 UTC; the footer re-checks just after the hour.
-      vi.setSystemTime(new Date("2026-10-19T01:00:01Z"));
-      await vi.waitFor(() => {
-        expect(latestFrame()).toContain("$0.0044");
-        expect(latestFrame()).not.toContain("off-peak");
-      }, { timeout: 3_000 });
-    } finally {
-      root.unmount();
-      stdin.end();
-      stdout.end();
-    }
-  });
-
-  test("shortens to op on a narrow terminal before the model name is cut", async () => {
-    vi.useFakeTimers({ toFake: ["Date"], now: new Date(SATURDAY_OFF_PEAK) });
-    const model = modelDisplayString(MODEL);
-    const left = ["~/project", model, "asks first"].join(" · ");
-    const fits = 4 + stringWidth(left) + 2 + stringWidth("ctx 9% · $0.0044 off-peak");
-    const full = await footer({ columns: fits, cachePercent: null, offPeak: DEEPSEEK_HOURS });
-    expect(full).toContain(left);
-    expect(full).toContain("ctx 9% · $0.0044 off-peak");
-    // The mode shortens first, then the note, while the model keeps its name.
-    const narrower = await footer({ columns: fits - " first".length - 1, cachePercent: null, offPeak: DEEPSEEK_HOURS });
-    expect(narrower).toContain(["~/project", model, "asks"].join(" · "));
-    expect(narrower).toContain("ctx 9% · $0.0044 op");
-    expect(narrower.split("\n")).toHaveLength(1);
+  test("keeps the off-peak label on a narrow terminal", async () => {
+    const line = await footer({ columns: 50, usage: { ...SPEND, hasOffPeakDiscount: true } });
+    expect(line).toContain("$0.0044 off-peak");
+    expect(line.split("\n")).toHaveLength(2);
   });
 
   test("labels compose in the documented order", () => {
-    expect(statusLineUsageItems(9, 91, "$0.0044", true)).toEqual([
+    expect(statusLineUsageItems(9, 91, "$0.0044", "off-peak")).toEqual([
       { key: "ctx", spans: [{ text: "ctx ", color: "text2" }, { text: "9%", color: "accentSoft" }] },
       { key: "cache", spans: [{ text: "cache ", color: "text2" }, { text: "91%", color: "accentSoft" }] },
       { key: "spend", spans: [{ text: "$0.0044", color: "accentSoft" }, { text: " off-peak", color: "text2" }] },
     ]);
-    expect(statusLineUsageItems(null, null, "≥$0.500", true, "accent")).toEqual([
+    expect(statusLineUsageItems(null, null, "≥$0.500", "off-peak", "accent")).toEqual([
       { key: "spend", spans: [{ text: "≥$0.500", color: "accent" }, { text: " off-peak", color: "text2" }] },
     ]);
-    expect(statusLineUsageItems(85, null, "price unknown", true)).toEqual([
+    expect(statusLineUsageItems(85, null, "price unknown", "off-peak")).toEqual([
       { key: "ctx", spans: [{ text: "ctx ", color: "text2" }, { text: "85%", color: "error" }] },
       { key: "spend", spans: [{ text: "price unknown", color: "text" }] },
     ]);
-    expect(statusLineUsageItems(9, null, null, true)).toEqual([
+    expect(statusLineUsageItems(9, null, null, "off-peak")).toEqual([
       { key: "ctx", spans: [{ text: "ctx ", color: "text2" }, { text: "9%", color: "accentSoft" }] },
     ]);
   });
@@ -340,7 +314,7 @@ describe("status line usage colors", () => {
     const theme = getTheme(resolveThemeSetting(setting));
     // The dark ANSI theme's soft accent is a dark magenta; its bright accent reads on black.
     const value = setting === "dark-ansi" ? theme.accent : theme.accentSoft;
-    const { text, colorOf } = await coloredFooter(setting, { offPeak: DEEPSEEK_HOURS });
+    const { text, colorOf } = await coloredFooter(setting, { usage: { ...SPEND, hasOffPeakDiscount: true } });
     const right = text.indexOf("ctx 9%");
     expect(text.slice(right)).toBe("ctx 9% · cache 91% · $0.0044 off-peak");
     expect(colorOf("ctx", right)).toBe(theme.text2);

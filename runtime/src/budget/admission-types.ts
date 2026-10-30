@@ -111,6 +111,12 @@ export type UnpricedUsageCall = {
 };
 
 export interface AdmissionUsageSummary extends AdmissionUsageTotals {
+  /** Display only: known cost adjusted by recorded per-call off-peak hours. Never budget authority. */
+  readonly billedEstimateUsd?: number;
+  /** Display only: at least one settled call has a recorded off-peak discount. */
+  readonly hasOffPeakDiscount?: boolean;
+  /** Display only: an eligible priced call has no usable dispatch time. */
+  readonly hasMissingDispatchTime?: boolean;
   readonly runId: string;
   readonly sequence: number;
   readonly unpricedCalls?: readonly UnpricedUsageCall[];

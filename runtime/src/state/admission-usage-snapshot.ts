@@ -1,4 +1,5 @@
 import type { AdmissionUsageSnapshot, AdmissionUsageSummary, AdmissionUsageTotals, UnpricedUsageCall } from "../budget/admission-types.js";
+import { isOffPeakAt, offPeakScheduleFor } from "../session/off-peak-pricing.js";
 
 /** Only immutable reservation fields used by the usage observer. */
 export interface UsageReservation {
@@ -15,6 +16,20 @@ export interface UsageReservation {
   readonly actual_cost_nanos: number | null;
   readonly reserved_cost_nanos: number;
   readonly resolution_reason: string | null;
+  readonly dispatched_at?: string | null;
+}
+
+/** Display adjustment only. Null means an eligible call has no usable time. */
+export function offPeakSavingsNanos(row: Pick<UsageReservation,
+  "kind" | "provider" | "model" | "status" | "actual_cost_nanos" | "resolution_reason" | "dispatched_at"
+>): number | null {
+  if (row.kind !== "model_turn" || !["reconciled", "provider_overrun"].includes(row.status) ||
+      !row.actual_cost_nanos || row.resolution_reason === "estimated_model_price") return 0;
+  const schedule = offPeakScheduleFor(row.provider ?? undefined, row.model ?? undefined);
+  if (schedule === null) return 0;
+  const at = Date.parse(row.dispatched_at ?? "");
+  if (!Number.isFinite(at)) return null;
+  return isOffPeakAt(schedule, at) ? row.actual_cost_nanos / 2 : 0;
 }
 
 export const MAX_UNPRICED_USAGE_CALLS = 20;
@@ -31,15 +46,16 @@ export function unpricedUsageCall(row: UsageReservation): UnpricedUsageCall | un
   };
 }
 
-type Counts = [number, number, number, number, number, number, number, number];
+type Counts = [number, number, number, number, number, number, number, number, number, number];
 interface Group {
   readonly identity: readonly [string, string, string | null, string | null];
   readonly counts: Counts;
   count: number;
 }
-const zero = (): Counts => [0, 0, 0, 0, 0, 0, 0, 0];
+const zero = (): Counts => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 function contribution(row: UsageReservation): Counts {
+  const savings = offPeakSavingsNanos(row);
   const reported = ["reconciled", "provider_overrun", "held_unknown"].includes(row.status);
   const priced = ["reconciled", "provider_overrun"].includes(row.status);
   const held = ["reserved", "dispatched", "held_unknown"].includes(row.status) ||
@@ -53,6 +69,8 @@ function contribution(row: UsageReservation): Counts {
     row.kind === "model_turn" && reported && row.actual_tokens !== null ? 1 : 0,
     row.status === "held_unknown" || (priced && row.actual_cost_nanos === null) ? 1 : 0,
     row.resolution_reason === "estimated_model_price" ? 1 : 0,
+    savings ?? 0,
+    savings === null ? 1 : 0,
   ];
 }
 
@@ -71,7 +89,8 @@ export function captureMaterializedUsage(summary: AdmissionUsageSummary): Admiss
     value.totalTokens, value.modelCalls, value.hasUnknownCost, value.costEstimated === true];
   return {
     runId: captured.runId, sequence: captured.sequence,
-    signature: JSON.stringify([encode(captured),
+    signature: JSON.stringify([encode(captured), captured.billedEstimateUsd,
+      captured.hasOffPeakDiscount === true, captured.hasMissingDispatchTime === true,
       captured.models.map(m => [m.model, m.provider ?? null, encode(m)]),
       captured.agents.map(a => [a.runId, encode(a)]),
       captured.unpricedCalls ?? [], captured.unpricedCallCount ?? 0,
@@ -157,8 +176,9 @@ export class AdmissionUsageProjection {
       .sort((a, b) => Buffer.compare(Buffer.from(a.reservationId), Buffer.from(b.reservationId)))
       .slice(0, MAX_UNPRICED_USAGE_CALLS);
     const unpricedCallCount = this.unpriced.size;
+    const billedEstimateUsd = all[9] === 0 && all[7] === 0 ? (all[0] - all[8]) / 1_000_000_000 : undefined;
     const signature = JSON.stringify([
-      visible(all),
+      visible(all), billedEstimateUsd, all[8] > 0, all[9] > 0,
       [...models.values()].map(m => [m.model ?? "unknown", m.provider, visible(m.counts)]),
       [...agents].map(([id, counts]) => [id, visible(counts)]),
       unpricedCalls, unpricedCallCount,
@@ -167,6 +187,9 @@ export class AdmissionUsageProjection {
       runId, sequence, signature,
       read: () => ({
         runId, sequence, ...totals(all),
+        ...(billedEstimateUsd !== undefined ? { billedEstimateUsd } : {}),
+        ...(all[8] > 0 ? { hasOffPeakDiscount: true } : {}),
+        ...(all[9] > 0 ? { hasMissingDispatchTime: true } : {}),
         ...(unpricedCallCount > 0 ? { unpricedCalls: unpricedCalls.map(call => ({ ...call })), unpricedCallCount } : {}),
         models: [...models.values()].map(m => ({ model: m.model ?? "unknown", ...(m.provider === null ? {} : { provider: m.provider }), ...totals(m.counts) })),
         agents: [...agents].map(([id, counts]) => ({ runId: id, ...totals(counts) })),

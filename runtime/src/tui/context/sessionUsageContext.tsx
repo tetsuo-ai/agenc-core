@@ -1,7 +1,7 @@
 import { createContext, useContext } from "react";
-import type { AdmissionUsageTotals } from "../../budget/admission-types.js";
+import type { AdmissionUsageSummary } from "../../budget/admission-types.js";
 
-export type SessionUsageSnapshot = Pick<AdmissionUsageTotals, "costUsd" | "hasUnknownCost" | "costEstimated">;
+export type SessionUsageSnapshot = Pick<AdmissionUsageSummary, "costUsd" | "hasUnknownCost" | "costEstimated" | "billedEstimateUsd" | "hasOffPeakDiscount" | "hasMissingDispatchTime">;
 
 export const SessionUsageContext = createContext<SessionUsageSnapshot | null | undefined>(undefined);
 

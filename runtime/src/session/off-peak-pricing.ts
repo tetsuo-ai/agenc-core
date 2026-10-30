@@ -1,7 +1,7 @@
 /**
- * The hours a provider bills at its off-peak rate, for the status line's
- * "off-peak" mark. Only routes whose hours AgenC records are here. Cost
- * estimates stay at the peak rates (see session/cost.ts).
+ * The hours a provider bills at its off-peak rate, for per-call display
+ * estimates. Only routes whose hours AgenC records are here. Accounting
+ * stays at the peak rates (see session/cost.ts).
  *
  * @module
  */
@@ -18,7 +18,7 @@ export interface OffPeakSchedule {
  * every other hour bills half (docs/reference/providers.md;
  * https://api-docs.deepseek.com/quick_start/pricing/, read 2026-10-21).
  * DeepSeek also bills Chinese public holidays off-peak. Those dates are not
- * recorded, so the mark can be missing on them but never shows at a peak hour.
+ * recorded, so display estimates can overstate charges on those days.
  */
 const DEEPSEEK_API_HOURS: OffPeakSchedule = Object.freeze({
   isPeakHour: (weekday: number, hour: number) =>
@@ -43,7 +43,7 @@ const QWEN_OFF_PEAK_MODELS: ReadonlySet<string> = new Set([
 /**
  * The off-peak hours of a provider and model, or null when AgenC records
  * none. Ollama Cloud also bills its DeepSeek models half off-peak, but its
- * hours are not recorded, so it gets no mark.
+ * hours are not recorded, so its display estimate keeps the accounting rate.
  */
 export function offPeakScheduleFor(
   provider: string | undefined,

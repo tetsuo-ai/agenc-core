@@ -33,7 +33,7 @@ function facts(params: {
   return {
     left: statusLineLeftFacts({ segments, mode: "default", swarm: null, shellCount: 0, runningAgents: 0 }),
     right: statusLineRightFacts(
-      statusLineUsageItems(2, 82, segments.spend, params.offPeak ?? false),
+      statusLineUsageItems(2, 82, segments.spend, params.offPeak ? "off-peak" : null),
       params.zdr === undefined ? RETAINED : params.zdr,
     ),
   };
@@ -142,7 +142,7 @@ describe("status line layout", () => {
 
   it("stays on one row when there is nothing to move", () => {
     const set = facts({ model: "grok-4.6", effort: null, spend: "", zdr: null });
-    const usage = statusLineRightFacts(statusLineUsageItems(null, null, null, false), null);
+    const usage = statusLineRightFacts(statusLineUsageItems(null, null, null, null), null);
     expect(layoutStatusLine(40, set.left, usage)).toMatchObject({ rows: 1, right: [] });
   });
 });

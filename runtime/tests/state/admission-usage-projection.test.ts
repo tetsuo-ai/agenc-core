@@ -28,6 +28,36 @@ function capture(projection: AdmissionUsageProjection, runId = "parent", sequenc
 }
 
 describe("AdmissionUsageProjection", () => {
+  it("adjusts only eligible timed model calls and invalidates snapshots when call time changes", () => {
+    const projection = new AdmissionUsageProjection();
+    const peak = row({ reservation_id: "deepseek", provider: "deepseek", dispatched_at: "2026-10-19T02:00:00Z" });
+    projection.update("deepseek", peak);
+    const before = projection.capture("parent", 1);
+    projection.update("deepseek", { ...peak, dispatched_at: "2026-10-24T02:00:00Z" });
+    expect(projection.capture("parent", 2).signature).not.toBe(before.signature);
+    expect(before.read().billedEstimateUsd).toBe(0.25);
+    expect(capture(projection)).toMatchObject({ billedEstimateUsd: 0.125, hasOffPeakDiscount: true });
+    expect(before.read().hasOffPeakDiscount).toBeUndefined();
+    for (const [id, fields] of [
+      ["qwen", { provider: "qwen", model: "deepseek-v4.1-flash" }],
+      ["other-qwen", { provider: "qwen", model: "qwen3.8-max" }],
+      ["reported", { provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" }],
+      ["tool", { kind: "tool_exec", provider: "deepseek" }],
+    ] as const) {
+      projection.update(id, row({ reservation_id: id, dispatched_at: "2026-10-19T14:00:00Z", ...fields }));
+    }
+    expect(capture(projection)).toMatchObject({ costUsd: 1.25, billedEstimateUsd: 1 });
+    projection.update("fallback", row({ reservation_id: "fallback", provider: "deepseek", resolution_reason: "estimated_model_price" }));
+    expect(capture(projection).billedEstimateUsd).toBeUndefined();
+  });
+
+  it.each([undefined, null, "invalid"])("withholds the billed estimate for an eligible call with time %s", (dispatched_at) => {
+    const projection = new AdmissionUsageProjection();
+    projection.update("old", row({ reservation_id: "old", provider: "deepseek", dispatched_at }));
+    expect(capture(projection)).toMatchObject({ costUsd: 0.25, hasMissingDispatchTime: true });
+    expect(capture(projection).billedEstimateUsd).toBeUndefined();
+  });
+
   it("names unresolved calls, snapshots their reasons, and removes resolved diagnostics", () => {
     const projection = new AdmissionUsageProjection();
     const unresolved = row({ reservation_id: "missing", step_id: "turn-2", status: "held_unknown", actual_cost_nanos: null,
