@@ -1010,7 +1010,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   return observationCapableShell({
     name: "exec_command",
     description:
-      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms or timeoutMs returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, kill_process stops it, and a later result reports when it ends. Start a long job with background: true, not with & or nohup: those jobs are refused, and every other process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
+      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms or timeoutMs returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, kill_process stops it, and a later result reports when it ends. Start a long job with background: true, not & or nohup (refused); every other process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -1079,7 +1079,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         background: {
           type: "boolean",
           description:
-            "Start the command and return within about a second with its session_id. It keeps running as a tracked session: write_stdin polls it, kill_process stops it, a later result reports when it ends, and it stops at session end. Use it instead of & or nohup. Not with detach.",
+            "Start a long job as a tracked session: returns after about 1 s with its session_id; write_stdin polls it, kill_process stops it, its end is reported. Use instead of & or nohup; not with detach.",
         },
         yield_time_ms: {
           type: "number",
