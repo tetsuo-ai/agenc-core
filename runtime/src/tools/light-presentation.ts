@@ -19,7 +19,7 @@ const descriptions: Readonly<Record<string, string>> = {
   FileRead: "Read text/images/PDFs/notebooks; authorizes edits. Prefer 1-based offset/limit line windows: default 2000 lines, cap 25000 tokens. Display-only numbers are sparse unless dense_line_numbers. PDFs >10 pages require pages (e.g. 1-5), max 20/read. Empty files warn; directories fail. Successful edits need no reread.",
   Edit: "FileRead first. Replace shortest unique exact old_string with new_string, preserving indentation, omitting unchanged context/display numbers. replace_all replaces every match (default false). Prefer existing files; create only as needed. Emojis only on request.",
   Write: "Create/replace complete files; existing files require FileRead first. Use Edit for partial changes. Documentation/emojis only on request.",
-  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. Long jobs: background=true, not & or nohup; other leftovers stop on return, sessions at session end. Lasting services need detach.",
+  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach.",
   write_stdin: "Continue exec_command's session_id. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
   Glob: "Find file paths by glob, newest modification first. Skip gitignored/build/vendor files unless includeIgnored=true.",
   Grep: "Search with packaged ripgrep, not shell grep/rg; escape literal braces. output_mode: files_with_matches (default paths), content (lines), count. Context/line numbers apply to content. multiline matches across lines with dot-all. Skip ignored/build/vendor files unless includeIgnored=true. Missing ripgrep: agenc doctor, reinstall same version; no fallback.",
@@ -32,8 +32,10 @@ const fieldHints: Readonly<Record<string, Readonly<Record<string, string | null>
   Edit: { file_path: path, old_string: null, new_string: null, replace_all: null },
   Write: { file_path: path, content: null },
   exec_command: {
-    cmd: null, workdir: "Default: workspace root.", timeoutMs: "Wait limit, ms; still running then, it continues as a session.",
-    background: "Return at once; runs on as a session (write_stdin polls, kill_process stops, end reported). Not with detach.",
+    cmd: null, workdir: "Default: workspace root.", timeoutMs: "Max wait, ms; then runs on as a session.",
+    // The description says what it is for ("Long jobs: background=true"); the
+    // first background result says how the session is polled and reported.
+    background: null,
     yield_time_ms: "Wait ms; live processes return session_id. Default 30000 (tty 10000).",
     max_output_tokens: "Token cap; head/tail truncation.",
     login: "Login shell if supported.", shell: "Default: user's shell.",
@@ -126,7 +128,7 @@ const LIGHT_SESSION_FIELDS: Readonly<Record<string, Readonly<Record<string, unkn
  * yields one.
  */
 const LIGHT_SESSION_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, not & or nohup; other leftovers stop on return, sessions at session end. Lasting services need detach.",
+  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach.",
   write_stdin: "Continue exec_command's session_id; kill_process stops it. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
 };
 

@@ -153,6 +153,7 @@ describe("Light schema", () => {
     const properties = lean.function.parameters.properties as Record<string, { description?: string }>;
     expect(Object.keys(properties).sort()).toEqual(["background", "cmd", "timeoutMs", "workdir"]);
     expect(properties.timeoutMs!.description).not.toContain("Hard timeout");
-    expect(lean.function.description).toContain("background=true, not & or nohup");
+    expect(lean.function.description).toContain("Long jobs: background=true, never & or nohup");
+    expect(properties.background).toEqual({ type: "boolean" });
   });
 });

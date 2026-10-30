@@ -13,6 +13,7 @@
  * docs/reference/tools-permissions-sandbox.md, "Recovering background work".
  */
 import type { Tool, ToolResult } from "../types.js";
+import { formatSessionEndNotice } from "./exec-result-format.js";
 import { safeStringify } from "../types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type {
@@ -20,7 +21,6 @@ import type {
   UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
-import { formatSessionEndNotice } from "./exec-result-format.js";
 
 export interface ListProcessesToolConfig {
   readonly cwd?: string;

@@ -103,7 +103,7 @@ test("compact descriptions retain retrieval, mutation and process lifecycle cons
   expect(description("Edit")).toContain("FileRead first");
   expect(description("Edit")).toContain("replace_all replaces every match (default false)");
   expect(description("Write")).toContain("existing files require FileRead first");
-  expect(description("exec_command")).toContain("Long jobs: background=true, not & or nohup; other leftovers stop on return, sessions at session end");
+  expect(description("exec_command")).toContain("Long jobs: background=true, never & or nohup; leftovers stop on return");
   expect(description("write_stdin")).toContain("input requires initial tty=true");
   // What a yielded session offers is said where it appears: write_stdin loads on a yield.
   expect(description("write_stdin")).toContain("kill_process stops it");
@@ -348,7 +348,7 @@ test("the registry reports compact presentation for standard deferral only", () 
 test("initial Light shell summaries carry no server guidance", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
   const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
-  expect(shell.function.description).toBe("Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, not & or nohup; other leftovers stop on return, sessions at session end. Lasting services need detach. Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.");
+  expect(shell.function.description).toBe("Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach. Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.");
   registry.discoverToolNames?.(["write_stdin", "exec_command"]);
   const tools = registry.toLLMTools();
   expect(tools.find(t => t.function.name === "write_stdin")!.function.description).toBe("Continue exec_command's session_id; kill_process stops it. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.");

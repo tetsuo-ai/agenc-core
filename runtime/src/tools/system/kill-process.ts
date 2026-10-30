@@ -14,6 +14,7 @@
  * and killed the AgenC CLI and its process brokers in a Terminal-Bench run.
  */
 import type { Tool, ToolResult } from "../types.js";
+import { formatSessionEndNotice } from "./exec-result-format.js";
 import { validationErrorToolResult } from "../results.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { safeStringify } from "../types.js";
@@ -24,7 +25,6 @@ import type {
 } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
-import { formatSessionEndNotice } from "./exec-result-format.js";
 
 export interface KillProcessToolConfig {
   readonly cwd?: string;
