@@ -106,6 +106,17 @@ export interface UnifiedExecManagerOptions {
    * `prepareContainedProcessLaunch`.
    */
   readonly prepareContainedLaunches?: boolean;
+  /**
+   * Live background sessions one owner may hold (default 8). At the limit a
+   * `startInBackground` request is refused before it spawns, and a command
+   * whose `onTimeout: "background"` limit passes is stopped as before.
+   */
+  readonly maxBackgroundSessions?: number;
+  /**
+   * How long a running session must have printed nothing before a poll
+   * reports its processes' state (default 60 s). Injectable for tests.
+   */
+  readonly quietProcessStateAfterMs?: number;
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
@@ -126,6 +137,22 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly yield_time_ms?: number;
   readonly max_output_tokens?: number;
   readonly timeoutMs?: number;
+  /**
+   * What happens when `timeoutMs` passes while the command still runs.
+   * "kill" (the default) stops it. "background" leaves it running as a
+   * tracked session: a call or poll waiting on it returns with its
+   * session_id and a note, and the session stays under write_stdin,
+   * kill_process, the end notice and session-end cleanup like any yielded
+   * session. An abort, a kill_process, session end and the background-session
+   * limit still stop it.
+   */
+  readonly onTimeout?: "kill" | "background";
+  /**
+   * The caller wants the command as a background session from the start
+   * (exec_command `background: true`). Refused before spawning when the
+   * owner already holds `maxBackgroundSessions` live background sessions.
+   */
+  readonly startInBackground?: boolean;
   readonly observer?: UnifiedExecObserver;
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   /** Conversation/agent owner id for multi-agent process isolation (TOOL-01). */
@@ -263,6 +290,39 @@ export interface ExecCommandToolOutput {
   /** Cleanup is proven, but the dispatched command has no terminal report.
    * Neither state authorizes an automatic retry or a no-effect claim. */
   readonly command_outcome?: "aborted" | "unavailable";
+  /**
+   * The command's `onTimeout: "background"` limit (ms) passed while it ran,
+   * and AgenC kept it running as `session_id`. Set on the one result that
+   * first observes it.
+   */
+  readonly timeout_backgrounded_ms?: number;
+  /**
+   * The timeout passed while the owner already held this many live
+   * background sessions, so AgenC stopped the command as a hard timeout.
+   */
+  readonly timeout_stopped_at_session_limit?: number;
+  /** One line on what a session that printed nothing for a while is doing. */
+  readonly process_state?: string;
+}
+
+/**
+ * A background session that ended while no result was showing it: the
+ * notice the next exec-family result of its owner carries. Never queued for
+ * a session the model, the user or session end stopped.
+ */
+export interface SessionEndNotice {
+  readonly sessionId: number;
+  readonly command: string;
+  readonly exitCode: number | null;
+  /** The signal that ended it, from the exit itself or a 128+N shell status. */
+  readonly signal?: string;
+  /** It died by SIGKILL while the cgroup OOM killer fired (Linux). */
+  readonly outOfMemory?: boolean;
+  readonly durationMs: number;
+}
+
+export interface TakeSessionEndNoticesRequest {
+  readonly ownerId?: string;
 }
 
 export interface UnifiedExecProcessManagerLike {
@@ -301,6 +361,11 @@ export interface UnifiedExecProcessManagerLike {
   terminateOwnedProcesses?(
     request: TerminateOwnedProcessesRequest,
   ): TerminateOwnedProcessesOutcome;
+  /**
+   * Drain the end notices of the requester's background sessions that ended
+   * since the last call and whose exit no result has shown yet.
+   */
+  takeSessionEndNotices?(request: TakeSessionEndNoticesRequest): SessionEndNotice[];
   listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
   stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;

@@ -86,6 +86,7 @@ import {
 import { getClientRenderingSection } from "./client-rendering.js";
 import { isLightPrintRun } from "./light-print.js";
 import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
+import { resourceLimitsLine } from "../utils/resource-limits.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -631,6 +632,9 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   } else {
     items.push(`Git branch: <not a git repository>`);
   }
+  // Only when a cgroup limit is stricter than what nproc and free report.
+  const limits = resourceLimitsLine();
+  if (limits !== null) items.push(limits);
   return joinSection("# Environment", items);
 }
 
@@ -1369,6 +1373,13 @@ export async function assembleSystemPrompt(
       // section, so it gets the same line on its own.
       () => light ? promptCurrentDateLine(envInfoInputs.currentDate) : null,
       "the date changes once a day",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "resource_limits",
+      // Standard states cgroup CPU and memory limits inside # Environment;
+      // Light gets the same line on its own, only when a limit applies.
+      () => light ? resourceLimitsLine() : null,
+      "read once per process; absent unless a cgroup limit is stricter than the host",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "language",

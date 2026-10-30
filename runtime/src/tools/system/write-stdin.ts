@@ -10,6 +10,7 @@ import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../../
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
+  withSessionEndNotices,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
@@ -273,10 +274,19 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           notifyExecEscalationDiscovery(args, config?.onEscalationAdvised);
         }
         const notice = denial?.notice ?? networkNotice;
+        // Other background sessions of this conversation that ended since the
+        // last exec-family result; this session's own exit is in the output.
+        const endNotices = manager.takeSessionEndNotices?.({ ...(ownerId !== undefined ? { ownerId } : {}) });
         return {
-          content: notice === null ? execContent : `${execContent}\n\n${notice}`,
+          content: withSessionEndNotices(
+            notice === null ? execContent : `${execContent}\n\n${notice}`,
+            endNotices,
+          ),
           isError: isError || undefined,
-          codeModeResult: unifiedExecCodeModeResult(output, notice),
+          codeModeResult: {
+            ...unifiedExecCodeModeResult(output, notice),
+            ...(endNotices !== undefined && endNotices.length > 0 ? { ended_sessions: endNotices } : {}),
+          },
           // Ordinary terminal receipts settle this call without claiming
           // command success. Missing authenticated outcomes remain unknown
           // even when descendant cleanup has independently completed.

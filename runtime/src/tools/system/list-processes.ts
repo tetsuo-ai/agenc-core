@@ -20,6 +20,7 @@ import type {
   UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { formatSessionEndNotice } from "./exec-result-format.js";
 
 export interface ListProcessesToolConfig {
   readonly cwd?: string;
@@ -125,10 +126,14 @@ export function createListProcessesTool(config?: ListProcessesToolConfig): Tool 
         status === "live"
           ? views.filter(isLiveOwnedProcess)
           : views;
+      const ended = manager.takeSessionEndNotices?.({
+        ...(ownerId !== undefined ? { ownerId } : {}),
+      }) ?? [];
       return {
         content: safeStringify({
           sessions: selected.map(formatOwnedProcessView),
           live_count: views.filter(isLiveOwnedProcess).length,
+          ...(ended.length > 0 ? { ended_sessions: ended.map(formatSessionEndNotice) } : {}),
           note: LIST_PROCESSES_SCOPE_NOTE,
         }),
       };

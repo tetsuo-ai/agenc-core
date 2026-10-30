@@ -24,6 +24,7 @@ import type {
 } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
+import { formatSessionEndNotice } from "./exec-result-format.js";
 
 export interface KillProcessToolConfig {
   readonly cwd?: string;
@@ -277,9 +278,13 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
         }
         const remaining = ownedLiveSessions(ownerId);
         const stopping = remaining === undefined ? [] : ownedStoppingSessions(ownerId);
+        // Background sessions that ended on their own since the last
+        // exec-family result; the ones stopped here get no notice.
+        const ended = manager.takeSessionEndNotices?.(ownerArg) ?? [];
         return {
           content: safeStringify({
             ...body,
+            ...(ended.length > 0 ? { ended_sessions: ended.map(formatSessionEndNotice) } : {}),
             ...(remaining !== undefined
               ? {
                   owned_live_sessions: remaining,
