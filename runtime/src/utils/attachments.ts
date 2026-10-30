@@ -659,12 +659,6 @@ export type Attachment =
       name: string
       species: string
     }
-  | {
-      type: 'bagel_console'
-      errorCount: number
-      warningCount: number
-      sample: string
-    }
 
 export type TeammateMailboxAttachment = {
   type: 'teammate_mailbox'
