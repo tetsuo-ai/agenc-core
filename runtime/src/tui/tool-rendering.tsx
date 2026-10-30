@@ -21,6 +21,7 @@ import {
   resultTextForTuiTool,
   summarizeWebFetchResult,
   summarizeWebSearchResult,
+  WEB_FETCH_TOOL_NAME_FOR_DISPATCH,
   webFetchResultLine,
 } from "./tool-result-routing.js";
 
@@ -319,19 +320,22 @@ export function WebSearchResultsView({
 export function WebFetchResultView({
   content,
   verbose = false,
+  failed = false,
 }: {
   readonly content: string;
   readonly verbose?: boolean;
+  /** The result is an error: the line takes the failed-step color. */
+  readonly failed?: boolean;
 }): React.ReactElement {
   const summary = summarizeWebFetchResult(content);
   if (summary === undefined) {
-    return <ResultLine>{summarizeResultText(content)}</ResultLine>;
+    return <ResultLine failed={failed}>{summarizeResultText(content)}</ResultLine>;
   }
   const line = webFetchResultLine(summary);
-  if (!verbose) return <ResultLine>{line}</ResultLine>;
+  if (!verbose) return <ResultLine failed={failed}>{line}</ResultLine>;
   return (
     <Box flexDirection="column">
-      <Text>{line}</Text>
+      <ResultLine failed={failed}>{line}</ResultLine>
       {summary.title !== undefined ? <Text>{summary.title}</Text> : null}
       {summary.url !== undefined ? <Text dimColor>{`  ${summary.url}`}</Text> : null}
       <Text>{content}</Text>
@@ -1079,7 +1083,10 @@ export function createTuiTool(name: string): any {
           );
       }
     },
-    renderToolUseErrorMessage(error: unknown) {
+    renderToolUseErrorMessage(
+      error: unknown,
+      options?: { readonly verbose?: boolean },
+    ) {
       // Cross-cutting error path: format and dispatch to ToolErrorView.
       // Any tool whose result reaches this path renders with the same
       // red-bold-header style as the upstream FallbackToolUseErrorMessage.
@@ -1101,6 +1108,20 @@ export function createTuiTool(name: string): any {
             : Array.isArray(error)
               ? messageFromStructuredErrorBlocks(error)
               : readableToolError(error);
+      // A failed web_fetch that went through DeepSeek's fetch reads like its
+      // success row: which fetch failed, and why DeepSeek's fell back.
+      if (
+        presentationName === WEB_FETCH_TOOL_NAME_FOR_DISPATCH &&
+        summarizeWebFetchResult(message) !== undefined
+      ) {
+        return (
+          <WebFetchResultView
+            content={abbreviateHomePaths(message)}
+            verbose={options?.verbose ?? false}
+            failed
+          />
+        );
+      }
       const envelope = `<tool-error-name>${name}</tool-error-name>\n<tool-error>${message}</tool-error>`;
       return <ToolErrorView content={envelope} />;
     },
