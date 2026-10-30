@@ -6965,6 +6965,470 @@ describe("WebSearch through DeepSeek's Search API", () => {
   });
 });
 
+describe("web_fetch through DeepSeek's Fetch API", () => {
+  const OFFICIAL_FETCH_URL = "https://api.deepseek.com/v1/tools/fetch";
+  const PAGE = {
+    title: "Example Domain",
+    content: "# Example Domain\n\nThis domain is for use in documentation examples.\n\n[Learn more](https://iana.org/domains/example)",
+  };
+
+  beforeEach(() => {
+    installDeterministicPublicWebFetchDns();
+  });
+
+  afterEach(() => {
+    __setLiveWebFetchDnsAllLookupForTests(undefined);
+  });
+
+  function deepseekSession(
+    config: Record<string, unknown> = {},
+    chat = vi.fn(),
+  ): Session {
+    return withProvider(fakeSession(), {
+      name: "deepseek",
+      config: {
+        apiKey: "sk-session-deepseek",
+        baseURL: "https://api.deepseek.com/v1",
+        model: "deepseek-flash",
+        ...config,
+      },
+      chat,
+      chatStream: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as LLMProvider);
+  }
+
+  function routedFetch(
+    routes: ReadonlyArray<readonly [prefix: string, respond: () => Response]>,
+  ) {
+    return vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      const url = String(input);
+      const route = routes.find(([prefix]) => url.startsWith(prefix));
+      if (!route) throw new Error(`unexpected fetch ${url}`);
+      return route[1]();
+    });
+  }
+
+  const json200 = (body: unknown) => () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const deepSeekError = (status: number, message: string, headers: Record<string, string> = {}) => () =>
+    new Response(
+      JSON.stringify({
+        error: {
+          message: `${message} (request_id: 6b1d-77)`,
+          type: "invalid_request_error",
+          param: null,
+          code: "invalid_request_error",
+        },
+      }),
+      { status, headers: { "content-type": "application/json", ...headers } },
+    );
+  const localPage = (text = "plain local page") => () =>
+    new Response(text, { status: 200, headers: { "content-type": "text/plain" } });
+
+  async function withFetch<T>(
+    fetchMock: ReturnType<typeof vi.fn>,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      return await run();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  }
+
+  function webFetch(options: {
+    readonly session: Session | null;
+    readonly env?: NodeJS.ProcessEnv;
+    readonly deepseekWebFetch?: boolean;
+    readonly emitWarning?: (warning: { cause: string; message: string }) => void;
+  }) {
+    return createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => options.session,
+      env: options.env ?? {},
+      ...(options.deepseekWebFetch !== undefined
+        ? { deepseekWebFetch: options.deepseekWebFetch }
+        : {}),
+      ...(options.emitWarning !== undefined
+        ? { emitWarning: options.emitWarning }
+        : {}),
+    }).find((tool) => tool.name === "web_fetch")!;
+  }
+
+  const fetchedUrls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map((call) => String(call[0]));
+  const deepSeekCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchedUrls(fetchMock).filter((url) => url.includes("/tools/fetch"));
+
+  it.each(["deepseek-flash", "deepseek-v4-pro"])(
+    "a %s session on DeepSeek's API host fetches through the Fetch API by default",
+    async (model) => {
+      const fetchMock = routedFetch([[OFFICIAL_FETCH_URL, json200(PAGE)]]);
+      const tool = webFetch({ session: deepseekSession({ model }) });
+      expect(tool.admissionEstimate?.({ url: "https://example.com/" })).toEqual({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0.00075,
+      });
+      // http is upgraded to https before anything is sent, as on the local path.
+      const result = await withFetch(fetchMock, () =>
+        tool.execute({ url: "http://example.com/docs?page=2" }),
+      );
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe(OFFICIAL_FETCH_URL);
+      expect(init.method).toBe("POST");
+      expect(init.redirect).toBe("error");
+      expect((init.headers as Record<string, string>).authorization).toBe(
+        "Bearer sk-session-deepseek",
+      );
+      expect(JSON.parse(String(init.body))).toEqual({ url: "https://example.com/docs?page=2" });
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({
+        source: "deepseek_fetch",
+        provider: "deepseek",
+        title: "Example Domain",
+        ok: true,
+        url: "https://example.com/docs?page=2",
+        preapproved: false,
+        rendered_as: "markdown",
+        truncated: false,
+        content: PAGE.content,
+      });
+      // One successful fetch, priced at DeepSeek's $0.75 per 1,000.
+      expect(result.admissionUsage).toEqual({
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0.00075,
+      });
+    },
+  );
+
+  it("applies web_fetch's character cap and truncation marker to DeepSeek's page", async () => {
+    const content = `# Long\n\n${"word ".repeat(1_200)}`;
+    const fetchMock = routedFetch([[OFFICIAL_FETCH_URL, json200({ title: "", content })]]);
+    const result = await withFetch(fetchMock, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/long", max_chars: 1_000 }),
+    );
+    const parsed = JSON.parse(result.content);
+    expect(parsed.source).toBe("deepseek_fetch");
+    expect(parsed.title).toBeUndefined();
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.content).toBe(`${content.slice(0, 1_000)}\n\n[truncated ${content.length - 1_000} chars]`);
+  });
+
+  it("runs the prompt against DeepSeek's page like a local one and keeps the full text on disk", async () => {
+    const content = `# Release notes\n\n${"The current release is version 9.9.9 and it shipped today. ".repeat(120)}`;
+    const chat = vi.fn().mockResolvedValue({
+      content: "The current release is 9.9.9.",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "deepseek-flash",
+      finishReason: "stop",
+    });
+    const fetchMock = routedFetch([[OFFICIAL_FETCH_URL, json200({ title: "Releases", content })]]);
+    const result = await withFetch(fetchMock, () =>
+      webFetch({ session: deepseekSession({}, chat) }).execute({
+        url: "https://example.com/releases",
+        prompt: "What is the current release version?",
+      }),
+    );
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content);
+    expect(parsed).toMatchObject({
+      source: "deepseek_fetch",
+      prompt: "What is the current release version?",
+      extracted: "The current release is 9.9.9.",
+    });
+    expect(parsed.content).toBeUndefined();
+    expect(String(parsed.content_preview)).toBe(content.slice(0, 2_000));
+    if (process.platform !== "win32") {
+      const { readFileSync } = await import("node:fs");
+      expect(readFileSync(parsed.full_content_path, "utf8")).toContain("version 9.9.9");
+    }
+    const chatMessages = chat.mock.calls[0]?.[0] as Array<{ content: string }>;
+    expect(chatMessages[0]?.content).toContain('<page url="https://example.com/releases">');
+    expect(chatMessages[0]?.content).toContain("version 9.9.9");
+    // The page fee plus nothing else: extraction is charged at the model boundary.
+    expect(result.admissionUsage?.costUsd).toBe(0.00075);
+  });
+
+  it("falls back to the local fetcher with the reason, unbilled, and warns once", async () => {
+    const fetchMock = routedFetch([
+      [OFFICIAL_FETCH_URL, deepSeekError(402, "Insufficient Balance")],
+      ["https://example.com/", localPage()],
+    ]);
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const tool = webFetch({
+      session: deepseekSession(),
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    const first = await withFetch(fetchMock, () => tool.execute({ url: "https://example.com/a" }));
+    const second = await withFetch(fetchMock, () => tool.execute({ url: "https://example.com/b" }));
+
+    expect(first.isError).toBeUndefined();
+    expect(JSON.parse(first.content)).toEqual({
+      deepseek_fetch_fallback: "HTTP 402: Insufficient Balance",
+      status: 200,
+      ok: true,
+      url: "https://example.com/a",
+      final_url: "https://example.com/a",
+      content_type: "text/plain",
+      preapproved: false,
+      rendered_as: "passthrough",
+      truncated: false,
+      content: "plain local page",
+    });
+    expect(first.admissionUsage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    expect(JSON.parse(second.content).deepseek_fetch_fallback).toBe("HTTP 402: Insufficient Balance");
+    expect(fetchedUrls(fetchMock)).toEqual([
+      OFFICIAL_FETCH_URL,
+      "https://example.com/a",
+      OFFICIAL_FETCH_URL,
+      "https://example.com/b",
+    ]);
+    expect(warnings).toEqual([
+      {
+        cause: "deepseek_web_fetch_failed",
+        message:
+          "DeepSeek web fetch failed (HTTP 402: Insufficient Balance); web_fetch used the local fetcher instead.",
+      },
+    ]);
+  });
+
+  it("keeps the fallback reason on a local failure too", async () => {
+    const fetchMock = routedFetch([
+      [OFFICIAL_FETCH_URL, deepSeekError(404, "failed to fetch URL")],
+      ["https://example.com/", () => new Response("gone", { status: 404, headers: { "content-type": "text/plain" } })],
+    ]);
+    const result = await withFetch(fetchMock, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/missing" }),
+    );
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      deepseek_fetch_fallback: "HTTP 404: failed to fetch URL",
+      status: 404,
+      ok: false,
+      content: "gone",
+    });
+
+    const unreachable = vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === OFFICIAL_FETCH_URL) return deepSeekError(404, "failed to fetch URL")();
+      throw new TypeError("getaddrinfo ENOTFOUND");
+    });
+    const failed = await withFetch(unreachable, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/down" }),
+    );
+    expect(failed.isError).toBe(true);
+    expect(JSON.parse(failed.content)).toEqual({
+      deepseek_fetch_fallback: "HTTP 404: failed to fetch URL",
+      error: "fetch failed: getaddrinfo ENOTFOUND",
+    });
+    expect(failed.admissionUsage?.costUsd).toBe(0);
+  });
+
+  it("falls back unbilled and without a warning when DeepSeek returns an empty page", async () => {
+    const fetchMock = routedFetch([
+      [OFFICIAL_FETCH_URL, json200({ title: "Blank", content: "  " })],
+      ["https://example.com/", localPage()],
+    ]);
+    const warnings: unknown[] = [];
+    const result = await withFetch(fetchMock, () =>
+      webFetch({ session: deepseekSession(), emitWarning: (warning) => warnings.push(warning) })
+        .execute({ url: "https://example.com/blank" }),
+    );
+    expect(JSON.parse(result.content)).toMatchObject({
+      deepseek_fetch_fallback: "no page content",
+      content: "plain local page",
+    });
+    expect(result.admissionUsage?.costUsd).toBe(0);
+    expect(warnings).toEqual([]);
+  });
+
+  it("retries a rate limit once and bills only the fetch that answered", async () => {
+    let deepseekAttempts = 0;
+    const fetchMock = routedFetch([
+      [
+        OFFICIAL_FETCH_URL,
+        () => {
+          deepseekAttempts += 1;
+          return deepseekAttempts === 1
+            ? deepSeekError(429, "Rate limit reached", { "retry-after": "0" })()
+            : json200(PAGE)();
+        },
+      ],
+    ]);
+    const result = await withFetch(fetchMock, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/" }),
+    );
+    expect(deepSeekCalls(fetchMock)).toHaveLength(2);
+    expect(JSON.parse(result.content).source).toBe("deepseek_fetch");
+    expect(result.admissionUsage?.costUsd).toBe(0.00075);
+  });
+
+  it("falls back after one retry of a server error, and never retries other errors", async () => {
+    const serverError = routedFetch([
+      [OFFICIAL_FETCH_URL, deepSeekError(503, "Service temporarily unavailable", { "retry-after": "0" })],
+      ["https://example.com/", localPage()],
+    ]);
+    const retried = await withFetch(serverError, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/" }),
+    );
+    expect(deepSeekCalls(serverError)).toHaveLength(2);
+    expect(JSON.parse(retried.content).deepseek_fetch_fallback).toBe(
+      "HTTP 503: Service temporarily unavailable, retried once",
+    );
+
+    const badRequest = routedFetch([
+      [OFFICIAL_FETCH_URL, deepSeekError(400, "invalid url")],
+      ["https://example.com/", localPage()],
+    ]);
+    const notRetried = await withFetch(badRequest, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/" }),
+    );
+    expect(deepSeekCalls(badRequest)).toHaveLength(1);
+    expect(JSON.parse(notRetried.content).deepseek_fetch_fallback).toBe("HTTP 400: invalid url");
+  });
+
+  it("never sends a local, private, non-public, preapproved or privately resolving URL to DeepSeek", async () => {
+    __setLiveWebFetchDnsAllLookupForTests((hostname, callback) => {
+      callback(null, [{ address: hostname === "split.example.com" ? "10.1.2.3" : "192.0.2.1", family: 4 }]);
+    });
+    const tool = webFetch({ session: deepseekSession() });
+    const control = routedFetch([[OFFICIAL_FETCH_URL, json200(PAGE)]]);
+    // The backend is on: a public name goes to DeepSeek.
+    expect(JSON.parse((await withFetch(control, () => tool.execute({ url: "https://example.com/" }))).content).source)
+      .toBe("deepseek_fetch");
+
+    const local = [
+      "https://printer.local/status",
+      "https://db.internal/admin",
+      "https://wiki/page",
+      "https://93.184.216.34/",
+      "https://[2606:4700:4700::1111]/",
+      `https://example.com/${"a".repeat(8_200)}`,
+      // Preapproved: fetched without asking, so its redirects must stay in scope.
+      "https://docs.python.org/3/library/json.html",
+    ];
+    for (const url of local) {
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        if (String(input).includes("/tools/fetch")) throw new Error(`sent ${url} to DeepSeek`);
+        return localPage()();
+      });
+      const result = await withFetch(fetchMock, () => tool.execute({ url }));
+      expect(deepSeekCalls(fetchMock), url).toEqual([]);
+      expect(fetchedUrls(fetchMock), url).toEqual([new URL(url).toString()]);
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source, url).toBeUndefined();
+      expect(parsed.deepseek_fetch_fallback, url).toBeUndefined();
+      expect(result.admissionUsage?.costUsd, url).toBe(0);
+    }
+
+    // Refused by the local rules: nothing is fetched at all, by either path.
+    for (const url of [
+      "https://split.example.com/",
+      "https://127.0.0.1/",
+      "https://[::1]/",
+      "https://169.254.169.254/latest/meta-data",
+      "https://localhost:8080/",
+      "https://user:secret@example.com/",
+    ]) {
+      const fetchMock = vi.fn(async () => localPage()());
+      const result = await withFetch(fetchMock, () => tool.execute({ url }));
+      expect(fetchMock, url).not.toHaveBeenCalled();
+      expect(result.isError, url).toBe(true);
+    }
+  });
+
+  it("stays off outside a deepseek session on DeepSeek's API host, and when switched off", async () => {
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly session: Session | null;
+      readonly env?: NodeJS.ProcessEnv;
+      readonly deepseekWebFetch?: boolean;
+    }> = [
+      { name: "no session", session: null },
+      {
+        name: "grok session",
+        session: withProvider(fakeSession(), fakeProvider({ apiKey: "xai-test", model: "grok-code-fast-1" })),
+      },
+      { name: "custom DeepSeek host in auto mode", session: deepseekSession({ baseURL: "https://gw.example/deepseek/v1" }) },
+      { name: "no key", session: deepseekSession({ apiKey: undefined }) },
+      { name: "session environment off", session: deepseekSession(), env: { AGENC_DEEPSEEK_WEB_FETCH: "0" } },
+      { name: "config off", session: deepseekSession(), deepseekWebFetch: false },
+      {
+        name: "environment off wins over config on",
+        session: deepseekSession(),
+        env: { AGENC_DEEPSEEK_WEB_FETCH: "false" },
+        deepseekWebFetch: true,
+      },
+    ];
+    // Control: the default session uses DeepSeek.
+    expect(webFetch({ session: deepseekSession() }).admissionEstimate?.({ url: "https://example.com/" }).maxCostUsd)
+      .toBe(0.00075);
+    for (const entry of cases) {
+      const fetchMock = routedFetch([["https://example.com/", localPage()]]);
+      const tool = webFetch(entry);
+      expect(tool.admissionEstimate?.({ url: "https://example.com/" }).maxCostUsd, entry.name).toBe(0);
+      const result = await withFetch(fetchMock, () => tool.execute({ url: "https://example.com/" }));
+      expect(deepSeekCalls(fetchMock), entry.name).toEqual([]);
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source, entry.name).toBeUndefined();
+      expect(parsed.deepseek_fetch_fallback, entry.name).toBeUndefined();
+    }
+  });
+
+  it("AGENC_DEEPSEEK_WEB_FETCH=1 or web_fetch = true uses a custom DeepSeek host", async () => {
+    const proxyFetchUrl = "https://gw.example/deepseek/v1/tools/fetch";
+    for (const enable of [
+      { env: { AGENC_DEEPSEEK_WEB_FETCH: "1" } as NodeJS.ProcessEnv },
+      { env: {} as NodeJS.ProcessEnv, deepseekWebFetch: true },
+    ]) {
+      const fetchMock = routedFetch([[proxyFetchUrl, json200(PAGE)]]);
+      const tool = webFetch({
+        session: deepseekSession({ baseURL: "https://gw.example/deepseek/v1" }),
+        ...enable,
+      });
+      expect(tool.admissionEstimate?.({ url: "https://example.com/" }).maxCostUsd).toBe(0.00075);
+      const result = await withFetch(fetchMock, () => tool.execute({ url: "https://example.com/" }));
+      expect(fetchedUrls(fetchMock)).toEqual([proxyFetchUrl]);
+      expect(JSON.parse(result.content).source).toBe("deepseek_fetch");
+    }
+  });
+
+  it("cancels the DeepSeek request on the admitted abort instead of falling back", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          requestSignal = init?.signal ?? undefined;
+          requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+        }),
+    );
+    const admittedAbort = new AbortController();
+    const reason = new Error("kernel cancelled web fetch");
+    await withFetch(fetchMock, async () => {
+      const running = webFetch({ session: deepseekSession() }).execute({
+        url: "https://example.com/slow",
+        __abortSignal: admittedAbort.signal,
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      admittedAbort.abort(reason);
+      await expect(running).rejects.toBe(reason);
+    });
+    expect(requestSignal?.aborted).toBe(true);
+    // Only the DeepSeek request ran: the abort did not fall through.
+    expect(fetchedUrls(fetchMock)).toEqual([OFFICIAL_FETCH_URL]);
+  });
+});
+
 describe("WebFetch prompt extraction (task 4)", () => {
   beforeEach(() => {
     installDeterministicPublicWebFetchDns();
