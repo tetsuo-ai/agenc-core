@@ -157,11 +157,14 @@ per-domain decision exists to bypass:
 
 - the session's permission mode is "never asks" (`bypassPermissions`, for
   example `--bypass-approvals`), so no domain needs an approval, and
-- no `web_fetch` permission rule is configured: no allow, ask or deny rule,
-  by domain or for the whole tool, in any settings layer.
+- no `web_fetch` rule is in effect after settings loading: no allow, ask or
+  deny rule, by domain or for the whole tool. A rule that settings loading
+  discards (for example an allow rule from project settings) has no effect on
+  either fetcher and does not count.
 
 Every other session, including the default "asks first" mode, keeps the
-local fetcher for every page.
+local fetcher for every page. A sub-agent decides from its own session: its
+own provider, key, permission mode and rules, never its parent's.
 
 Because DeepSeek's servers fetch the page, the only request that leaves your
 machine goes to the session's DeepSeek host (`api.deepseek.com`). Local
@@ -195,8 +198,9 @@ Each successful fetch costs $0.75 per 1,000 (DeepSeek bills an HTTP 200 that
 carries page content); failures, empty pages and timeouts are free. AgenC
 counts the charge in the session cost as the `web_fetch` call's own price
 once it holds non-empty page content; a response that stalls, breaks off,
-is too large or has no content is not counted. The page counts as ordinary
-input on the next model call.
+is too large or has no content is not counted. A call reserves the fee in
+the run budget only when it would use DeepSeek, so a fetch that stays local
+needs no budget. The page counts as ordinary input on the next model call.
 
 `[providers.deepseek] web_fetch` sets it in `config.toml`, and
 `AGENC_DEEPSEEK_WEB_FETCH` in the session environment wins over it. Both

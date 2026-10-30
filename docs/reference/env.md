@@ -157,13 +157,13 @@ of a `deepseek` session reads pages through DeepSeek's Fetch API. `1` turns it
 on for any DeepSeek base URL; `0` turns it off, so every page is fetched from
 your machine. Unset leaves `[providers.deepseek] web_fetch` in charge, and when
 that is unset too it is on only for DeepSeek's own API host. Either way it is
-used only in the "never asks" permission mode with no `web_fetch` permission
-rule configured, because DeepSeek follows redirects on its servers and only the
-starting URL can be checked. DeepSeek's servers fetch the page, so a local
-proxy or egress filter sees only the request to the DeepSeek host; set `0` when
-those controls must apply to page fetches. Only public DNS names that pass the
-local fetcher's own checks are sent. Each successful fetch costs $0.00075
-($0.75 per 1,000). See
+used only in the "never asks" permission mode with no `web_fetch` rule in
+effect after settings loading, because DeepSeek follows redirects on its
+servers and only the starting URL can be checked. DeepSeek's servers fetch the
+page, so a local proxy or egress filter sees only the request to the DeepSeek
+host; set `0` when those controls must apply to page fetches. Only public DNS
+names that pass the local fetcher's own checks are sent. Each successful fetch
+costs $0.00075 ($0.75 per 1,000). See
 [Direct DeepSeek](../providers/deepseek-direct.md#web-fetch).
 
 `AGENC_OPENAI_REASONING_REPLAY` (boolean-like, on by default) controls whether

@@ -1234,7 +1234,7 @@ $0.75 per 1,000 successful searches; see
 [Direct DeepSeek](../providers/deepseek-direct.md#web-search) for the setting
 and the fallback.
 
-In the "never asks" permission mode with no `web_fetch` permission rule, the
+In the "never asks" permission mode with no `web_fetch` rule in effect, the
 `web_fetch` tool of the same session reads pages through DeepSeek's Fetch API,
 also with the session's key and at $0.75 per 1,000 successful fetches, so
 DeepSeek's servers load the page instead of your machine. DeepSeek follows
