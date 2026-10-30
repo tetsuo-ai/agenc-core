@@ -21,7 +21,10 @@ import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
 import type { ProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  createEmptyToolPermissionContext,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
 import type { Session } from "../session/session.js";
 import { backgroundTaskLifecycleForSession, isBackgroundTask } from "../tasks/index.js";
 import {
@@ -6980,11 +6983,15 @@ describe("web_fetch through DeepSeek's Fetch API", () => {
     __setLiveWebFetchDnsAllLookupForTests(undefined);
   });
 
+  /** The "never asks" session with no web_fetch rules: the only one that uses DeepSeek's fetch. */
+  const NEVER_ASKS = createEmptyToolPermissionContext({ mode: "bypassPermissions" });
+
   function deepseekSession(
     config: Record<string, unknown> = {},
     chat = vi.fn(),
+    permissions: ToolPermissionContext | null = NEVER_ASKS,
   ): Session {
-    return withProvider(fakeSession(), {
+    const session = withProvider(fakeSession(), {
       name: "deepseek",
       config: {
         apiKey: "sk-session-deepseek",
@@ -6996,6 +7003,12 @@ describe("web_fetch through DeepSeek's Fetch API", () => {
       chatStream: vi.fn(),
       healthCheck: vi.fn(),
     } as unknown as LLMProvider);
+    if (permissions !== null) {
+      (session as unknown as { permissionModeRegistry: unknown }).permissionModeRegistry = {
+        current: () => permissions,
+      };
+    }
+    return session;
   }
 
   function routedFetch(
@@ -7401,6 +7414,83 @@ describe("web_fetch through DeepSeek's Fetch API", () => {
       expect(fetchedUrls(fetchMock)).toEqual([proxyFetchUrl]);
       expect(JSON.parse(result.content).source).toBe("deepseek_fetch");
     }
+  });
+
+  it("uses DeepSeek only in a session that never asks and has no web_fetch rule", async () => {
+    const rules = (overrides: Partial<ToolPermissionContext>) =>
+      createEmptyToolPermissionContext({ mode: "bypassPermissions", ...overrides });
+    const local: ReadonlyArray<{ readonly name: string; readonly permissions: ToolPermissionContext | null }> = [
+      { name: "asks first (default)", permissions: createEmptyToolPermissionContext() },
+      { name: "edits freely", permissions: createEmptyToolPermissionContext({ mode: "acceptEdits" }) },
+      { name: "auto approve", permissions: createEmptyToolPermissionContext({ mode: "auto" }) },
+      { name: "rules only", permissions: createEmptyToolPermissionContext({ mode: "dontAsk" }) },
+      { name: "plan only", permissions: createEmptyToolPermissionContext({ mode: "plan" }) },
+      { name: "no readable permission context", permissions: null },
+      { name: "never asks, domain allow rule", permissions: rules({ alwaysAllowRules: { userSettings: ["web_fetch(domain:example.com)"] } }) },
+      { name: "never asks, domain deny rule", permissions: rules({ alwaysDenyRules: { userSettings: ["web_fetch(domain:evil.example)"] } }) },
+      { name: "never asks, domain ask rule", permissions: rules({ alwaysAskRules: { projectSettings: ["web_fetch(domain:docs.example)"] } }) },
+      { name: "never asks, whole-tool allow rule", permissions: rules({ alwaysAllowRules: { session: ["web_fetch"] } }) },
+    ];
+    for (const entry of local) {
+      const fetchMock = routedFetch([["https://example.com/", localPage()]]);
+      const result = await withFetch(fetchMock, () =>
+        webFetch({ session: deepseekSession({}, vi.fn(), entry.permissions) }).execute({ url: "https://example.com/" }),
+      );
+      expect(deepSeekCalls(fetchMock), entry.name).toEqual([]);
+      expect(fetchedUrls(fetchMock), entry.name).toEqual(["https://example.com/"]);
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source, entry.name).toBeUndefined();
+      expect(parsed.deepseek_fetch_fallback, entry.name).toBeUndefined();
+      expect(result.admissionUsage?.costUsd, entry.name).toBe(0);
+    }
+
+    // Never asks, and the only rules name other tools: DeepSeek fetches.
+    for (const permissions of [
+      NEVER_ASKS,
+      rules({ alwaysAllowRules: { userSettings: ["Grep", "FileRead(./src/**)"] }, alwaysDenyRules: { userSettings: ["exec_command(rm:*)"] } }),
+    ]) {
+      const fetchMock = routedFetch([[OFFICIAL_FETCH_URL, json200(PAGE)]]);
+      const result = await withFetch(fetchMock, () =>
+        webFetch({ session: deepseekSession({}, vi.fn(), permissions) }).execute({ url: "https://example.com/" }),
+      );
+      expect(fetchedUrls(fetchMock)).toEqual([OFFICIAL_FETCH_URL]);
+      expect(JSON.parse(result.content).source).toBe("deepseek_fetch");
+    }
+  });
+
+  it("counts a stalled resolver against timeout_ms and then falls back", async () => {
+    // The resolver never answers: the URL check must not hold the call.
+    __setLiveWebFetchDnsAllLookupForTests(() => undefined);
+    const fetchMock = vi.fn(async () => localPage()());
+    const started = Date.now();
+    const result = await withFetch(fetchMock, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/slow-dns", timeout_ms: 60 }),
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // Neither DeepSeek nor the page was contacted: the local fetcher's own
+    // timer also expired on the stalled resolver.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      deepseek_fetch_fallback: "timed out after 60ms",
+      error: expect.stringContaining("fetch failed"),
+    });
+    expect(result.admissionUsage?.costUsd).toBe(0);
+  });
+
+  it("caps an oversized title and reports the result as truncated", async () => {
+    const title = "T".repeat(300_000);
+    const fetchMock = routedFetch([[OFFICIAL_FETCH_URL, json200({ title, content: "# Short\n\nA short page." })]]);
+    const result = await withFetch(fetchMock, () =>
+      webFetch({ session: deepseekSession() }).execute({ url: "https://example.com/", max_chars: 1_000 }),
+    );
+    expect(result.content.length).toBeLessThan(2_000);
+    const parsed = JSON.parse(result.content);
+    expect(parsed.source).toBe("deepseek_fetch");
+    expect(Array.from(parsed.title as string).length).toBeLessThanOrEqual(200);
+    expect(parsed.title).toMatch(/…$/u);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.content).toBe("# Short\n\nA short page.");
   });
 
   it("cancels the DeepSeek request on the admitted abort instead of falling back", async () => {

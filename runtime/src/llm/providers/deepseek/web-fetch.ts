@@ -22,6 +22,7 @@ import { isIP } from "node:net";
 
 import { sleep } from "../../../utils/sleep.js";
 import {
+  clip,
   deepSeekHttpFailureReason,
   deepSeekRequestFailureReason,
   deepSeekTimeoutReason,
@@ -38,7 +39,8 @@ export const DEEPSEEK_WEB_FETCH_ENV = "AGENC_DEEPSEEK_WEB_FETCH";
 /**
  * Price of one successful fetch: $0.75 per 1,000. DeepSeek bills a request
  * that returns HTTP 200 with page content; failures, empty pages and
- * timeouts are free.
+ * timeouts are free. AgenC counts a fetch only once it holds non-empty page
+ * content.
  */
 export const DEEPSEEK_FETCH_USD_PER_REQUEST = 0.00075;
 
@@ -48,6 +50,24 @@ export const DEEPSEEK_FETCH_MAX_URL_CHARS = 8_192;
 /** Both attempts together, unless the caller passes its own timeout. */
 export const DEEPSEEK_FETCH_TIMEOUT_MS = 30_000;
 const DEEPSEEK_FETCH_MAX_TIMEOUT_MS = 120_000;
+
+/**
+ * Cap on the page title the model receives. `max_chars` bounds the content
+ * only, so an oversized title is cut here (with an ellipsis).
+ */
+export const DEEPSEEK_FETCH_TITLE_MAX_CHARS = 200;
+
+/**
+ * The time budget for one DeepSeek fetch: the caller's timeout (default 30 s,
+ * at most 120 s). It covers the caller's URL checks too, both attempts and
+ * the wait between them.
+ */
+export function deepSeekFetchBudgetMs(timeoutMs: number | undefined): number {
+  const requested = timeoutMs !== undefined && Number.isFinite(timeoutMs)
+    ? Math.floor(timeoutMs)
+    : DEEPSEEK_FETCH_TIMEOUT_MS;
+  return Math.max(1, Math.min(requested, DEEPSEEK_FETCH_MAX_TIMEOUT_MS));
+}
 
 /** Wait before the one retry when DeepSeek sends no usable Retry-After. */
 export const DEEPSEEK_FETCH_RETRY_DELAY_MS = 1_000;
@@ -132,11 +152,13 @@ export function deepSeekFetchSkipReason(url: string): string | undefined {
 export type DeepSeekFetchOutcome =
   | {
       readonly kind: "content";
-      /** The page title; empty when DeepSeek has none. */
+      /** The page title, at most {@link DEEPSEEK_FETCH_TITLE_MAX_CHARS}; empty when DeepSeek has none. */
       readonly title: string;
+      /** True when the title was longer than the cap and was cut. */
+      readonly titleTruncated: boolean;
       /** The page as Markdown, never empty. */
       readonly content: string;
-      /** HTTP 200 with page content: one billed request. */
+      /** HTTP 200 with non-empty page content: one billed request. */
       readonly billed: true;
       readonly attempts: number;
     }
@@ -144,8 +166,8 @@ export type DeepSeekFetchOutcome =
   | {
       readonly kind: "failed";
       readonly reason: string;
-      /** True only when DeepSeek answered 200 and AgenC could not use the body. */
-      readonly billed: boolean;
+      /** Never billed: AgenC holds no page content. */
+      readonly billed: false;
       readonly attempts: number;
     };
 
@@ -158,8 +180,17 @@ export interface DeepSeekFetchRequest {
   readonly url: string;
   /** The admitted tool signal. Its abort is rethrown, never turned into a fallback. */
   readonly signal?: AbortSignal;
-  /** Budget for both attempts together. Default 30 s, at most 120 s. */
+  /**
+   * Budget for both attempts together, from {@link deepSeekFetchBudgetMs}.
+   * Default 30 s, at most 120 s.
+   */
   readonly timeoutMs?: number;
+  /**
+   * When the caller started that budget (`Date.now()`), so time it already
+   * spent, such as resolving the URL's host, counts against it. Defaults to
+   * now.
+   */
+  readonly budgetStartedAt?: number;
   /** Proxy/TLS options for the session environment (`getProxyFetchOptions`). */
   readonly fetchOptions?: Readonly<Record<string, unknown>>;
   /** Overrides the wait before the retry (tests). */
@@ -190,7 +221,16 @@ interface BoundedBody {
   readonly overflow: boolean;
 }
 
-async function readBodyBounded(response: Response, maxBytes: number): Promise<BoundedBody> {
+/**
+ * Read a response body up to `maxBytes`. `signal` ends the read too: a body
+ * that stalls after the headers is cancelled when the budget runs out, and
+ * the abort reason is thrown.
+ */
+async function readBodyBounded(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<BoundedBody> {
   const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
   if (Number.isFinite(declared) && declared > maxBytes) {
     await response.body?.cancel().catch(() => undefined);
@@ -198,12 +238,18 @@ async function readBodyBounded(response: Response, maxBytes: number): Promise<Bo
   }
   const reader = response.body?.getReader();
   if (reader === undefined) return { text: await response.text(), overflow: false };
+  const onAbort = (): void => {
+    void reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
   const decoder = new TextDecoder();
   let bytes = 0;
   let text = "";
   try {
+    signal.throwIfAborted();
     for (;;) {
       const next = await reader.read();
+      signal.throwIfAborted();
       if (next.done) break;
       bytes += next.value.byteLength;
       if (bytes > maxBytes) {
@@ -215,6 +261,7 @@ async function readBodyBounded(response: Response, maxBytes: number): Promise<Bo
     text += decoder.decode();
     return { text, overflow: false };
   } finally {
+    signal.removeEventListener("abort", onAbort);
     reader.releaseLock();
   }
 }
@@ -228,18 +275,18 @@ async function readBodyBounded(response: Response, maxBytes: number): Promise<Bo
 export async function runDeepSeekFetch(
   request: DeepSeekFetchRequest,
 ): Promise<DeepSeekFetchOutcome> {
-  const timeoutMs = Math.max(
-    1,
-    Math.min(Math.floor(request.timeoutMs ?? DEEPSEEK_FETCH_TIMEOUT_MS), DEEPSEEK_FETCH_MAX_TIMEOUT_MS),
-  );
-  const timeout = AbortSignal.timeout(timeoutMs);
+  const timeoutMs = deepSeekFetchBudgetMs(request.timeoutMs);
+  const spentMs = request.budgetStartedAt === undefined
+    ? 0
+    : Math.max(0, Date.now() - request.budgetStartedAt);
+  const timeout = AbortSignal.timeout(Math.max(1, timeoutMs - spentMs));
   const signal = request.signal
     ? AbortSignal.any([request.signal, timeout])
     : timeout;
-  const failed = (reason: string, attempts: number, billed = false): DeepSeekFetchOutcome => ({
+  const failed = (reason: string, attempts: number): DeepSeekFetchOutcome => ({
     kind: "failed",
     reason,
-    billed,
+    billed: false,
     attempts,
   });
   const transportReason = (error: unknown): string => {
@@ -272,7 +319,7 @@ export async function runDeepSeekFetch(
     if (response.status !== 200) {
       let body = "";
       try {
-        body = (await readBodyBounded(response, DEEPSEEK_FETCH_MAX_ERROR_BYTES)).text;
+        body = (await readBodyBounded(response, DEEPSEEK_FETCH_MAX_ERROR_BYTES, signal)).text;
       } catch {
         request.signal?.throwIfAborted();
       }
@@ -289,15 +336,15 @@ export async function runDeepSeekFetch(
       continue;
     }
 
-    // HTTP 200. DeepSeek bills it when it carries page content, so a body
-    // AgenC cannot read in full still counts as a billed request.
+    // HTTP 200. Only a page AgenC holds and can use counts as billed: a body
+    // that stalls, breaks off, is too large or carries no content does not.
     let raw: BoundedBody;
     try {
-      raw = await readBodyBounded(response, DEEPSEEK_FETCH_MAX_RESPONSE_BYTES);
+      raw = await readBodyBounded(response, DEEPSEEK_FETCH_MAX_RESPONSE_BYTES, signal);
     } catch (error) {
-      return failed(transportReason(error), attempt, true);
+      return failed(transportReason(error), attempt);
     }
-    if (raw.overflow) return failed("response too large", attempt, true);
+    if (raw.overflow) return failed("response too large", attempt);
     let page: Record<string, unknown> | undefined;
     try {
       page = record(JSON.parse(raw.text));
@@ -308,7 +355,18 @@ export async function runDeepSeekFetch(
       return failed("malformed response", attempt);
     }
     if (page.content.trim().length === 0) return { kind: "empty", billed: false, attempts: attempt };
-    const title = typeof page.title === "string" ? page.title.replace(/\s+/gu, " ").trim() : "";
-    return { kind: "content", title, content: page.content, billed: true, attempts: attempt };
+    const fullTitle = typeof page.title === "string" ? page.title.replace(/\s+/gu, " ").trim() : "";
+    // clip() adds an ellipsis, so cut one short to stay within the cap.
+    const title = fullTitle.length > DEEPSEEK_FETCH_TITLE_MAX_CHARS
+      ? clip(fullTitle, DEEPSEEK_FETCH_TITLE_MAX_CHARS - 1)
+      : fullTitle;
+    return {
+      kind: "content",
+      title,
+      titleTruncated: title !== fullTitle,
+      content: page.content,
+      billed: true,
+      attempts: attempt,
+    };
   }
 }

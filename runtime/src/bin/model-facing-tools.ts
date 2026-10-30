@@ -74,11 +74,13 @@ import {
 import {
   DEEPSEEK_FETCH_USD_PER_REQUEST,
   DEEPSEEK_WEB_FETCH_ENV,
+  deepSeekFetchBudgetMs,
   deepSeekFetchEndpoint,
   deepSeekFetchSkipReason,
   resolveDeepSeekWebFetchSetting,
   runDeepSeekFetch,
 } from "../llm/providers/deepseek/web-fetch.js";
+import { deepSeekTimeoutReason } from "../llm/providers/deepseek/tool-api.js";
 import {
   resolveProviderBaseURLEnvironment,
 } from "../llm/registry/provider-ingress.js";
@@ -179,7 +181,13 @@ import {
   createImagineEditTool,
   hasImagineEditBackend,
 } from "../tools/system/imagine-edit.js";
-import { getRuleByContentsForTool } from "../permissions/rules.js";
+import {
+  getAskRuleForTool,
+  getContentRulesForTool,
+  getDenyRuleForTool,
+  getRuleByContentsForTool,
+  toolAlwaysAllowedRule,
+} from "../permissions/rules.js";
 import type {
   PermissionResult,
   PermissionRuleValue,
@@ -1380,32 +1388,94 @@ function resolveDeepSeekWebFetchBackend(
   return endpoint === undefined ? undefined : { endpoint, apiKey };
 }
 
+/** The session's live permission context, or undefined when it cannot be read. */
+function sessionToolPermissionContext(
+  opts: ModelFacingToolOptions,
+): ToolPermissionContext | undefined {
+  const session = opts.getSession() as unknown as {
+    readonly permissionModeRegistry?: { readonly current?: () => unknown };
+    readonly services?: {
+      readonly permissionModeRegistry?: { readonly current?: () => unknown };
+    };
+  } | null;
+  const registry =
+    session?.permissionModeRegistry ?? session?.services?.permissionModeRegistry;
+  if (registry === undefined || typeof registry.current !== "function") {
+    return undefined;
+  }
+  try {
+    const current = registry.current();
+    return typeof current === "object" && current !== null
+      ? (current as ToolPermissionContext)
+      : undefined;
+  } catch {
+    // The registry fences reads while a new context is published; an
+    // unreadable context is treated as one that asks.
+    return undefined;
+  }
+}
+
+/** Whether any permission rule names web_fetch: allow, ask or deny, by domain or for the whole tool. */
+function hasWebFetchPermissionRule(context: ToolPermissionContext): boolean {
+  return (
+    (["allow", "ask", "deny"] as const).some(
+      (behavior) => getContentRulesForTool(context, WEB_FETCH_TOOL_NAME, behavior).length > 0,
+    ) ||
+    toolAlwaysAllowedRule(context, WEB_FETCH_TOOL_NAME) !== null ||
+    getAskRuleForTool(context, WEB_FETCH_TOOL_NAME) !== null ||
+    getDenyRuleForTool(context, WEB_FETCH_TOOL_NAME) !== null
+  );
+}
+
+/**
+ * Whether this session lets web_fetch hand pages to DeepSeek at all.
+ * DeepSeek follows redirects on its own servers and does not report them, so
+ * only the starting URL can be checked: a redirect to another host, to a
+ * host a rule denies or asks about, or down to plain http is followed there,
+ * where the local fetcher refuses each of them. DeepSeek is therefore used
+ * only where no per-domain decision exists to bypass: the session never asks
+ * (`bypassPermissions`), so no domain needs an approval, and no web_fetch rule
+ * is configured. Every other session keeps the local fetcher, which checks
+ * each redirect.
+ */
+function deepSeekFetchPolicyAllows(opts: ModelFacingToolOptions): boolean {
+  const context = sessionToolPermissionContext(opts);
+  if (context === undefined || context.mode !== "bypassPermissions") return false;
+  return !hasWebFetchPermissionRule(context);
+}
+
+type DeepSeekUrlCheck = "send" | "local" | "timed_out";
+
 /**
  * Whether web_fetch may hand `url` to DeepSeek. The URL has already passed
  * the permission check and normalizeUrl (https, no credentials, no private
  * or loopback literal). DeepSeek then gets it only when the local fetcher
  * would dial it too: a public DNS name (deepSeekFetchSkipReason) that
  * resolves to no private, loopback or link-local address here. A URL on the
- * built-in preapproved list stays local, because it is fetched without
- * asking and only the local fetcher can keep its redirects inside the
- * preapproved scope; DeepSeek follows redirects on its own servers and does
- * not report where they led. Anything refused here takes the local path,
- * which applies its own rules and reports them.
+ * built-in preapproved list stays local, because only the local fetcher can
+ * keep its redirects inside the preapproved scope. Anything refused here
+ * takes the local path, which applies its own rules and reports them.
+ * `budget` is the fetch's own timer, already running, so a stalled resolver
+ * uses up the fetch's time instead of holding the call.
  */
-async function deepSeekMayFetchUrl(
+async function checkDeepSeekFetchUrl(
   url: string,
-  signal: AbortSignal | undefined,
-): Promise<boolean> {
-  if (deepSeekFetchSkipReason(url) !== undefined) return false;
+  budget: AbortSignal,
+  effectSignal: AbortSignal | undefined,
+): Promise<DeepSeekUrlCheck> {
+  if (deepSeekFetchSkipReason(url) !== undefined) return "local";
   const parsed = new URL(url);
-  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return false;
+  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return "local";
   try {
-    await assertLiveWebFetchHostAllowed(parsed.hostname, signal);
+    await assertLiveWebFetchHostAllowed(
+      parsed.hostname,
+      effectSignal === undefined ? budget : AbortSignal.any([effectSignal, budget]),
+    );
   } catch {
-    signal?.throwIfAborted();
-    return false;
+    effectSignal?.throwIfAborted();
+    return budget.aborted ? "timed_out" : "local";
   }
-  return true;
+  return "send";
 }
 
 /** web_fetch's charge bound: a provider fetch's listed fee, else free. */
@@ -3870,6 +3940,8 @@ interface FetchedWebPage {
   readonly body: string;
   /** Set when the local byte cap cut the raw response. */
   readonly bytesReadBeforeCap?: number;
+  /** Set when a head field (DeepSeek's page title) was cut to its cap. */
+  readonly headTruncated?: boolean;
 }
 
 /**
@@ -3903,7 +3975,10 @@ async function webFetchPagePayload(
     ...(page.contentType !== undefined ? { content_type: page.contentType } : {}),
     preapproved: page.preapproved,
     rendered_as: page.renderedAs,
-    truncated: page.bytesReadBeforeCap !== undefined || body.length > maxChars,
+    truncated:
+      page.bytesReadBeforeCap !== undefined ||
+      body.length > maxChars ||
+      page.headTruncated === true,
     prompt,
   };
   // Prompt-driven extraction: distill large pages instead of
@@ -4022,22 +4097,34 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
           isError,
         ));
       try {
-        // DeepSeek's Fetch API for a deepseek session. A failure or an empty
-        // page falls through to the local fetcher, which says why.
+        // DeepSeek's Fetch API for a deepseek session that never asks and has
+        // no web_fetch rules. A failure or an empty page falls through to the
+        // local fetcher, which says why.
         const deepseek = resolveDeepSeekWebFetchBackend(opts);
-        if (deepseek !== undefined && await deepSeekMayFetchUrl(normalized, effectSignal)) {
-          const outcome = await runDeepSeekFetch({
-            endpoint: deepseek.endpoint,
-            apiKey: deepseek.apiKey,
-            url: normalized,
-            timeoutMs: numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
-            ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
-            fetchOptions: getProxyFetchOptions({
-              environment: requireModelFacingRequestEnvironment(opts),
-            }),
-          });
-          if (outcome.billed) providerFetchCost += DEEPSEEK_FETCH_USD_PER_REQUEST;
-          if (outcome.kind === "content") {
+        if (deepseek !== undefined && deepSeekFetchPolicyAllows(opts)) {
+          // The fetch's own time budget starts before the URL checks, so a
+          // stalled resolver cannot hold the call past timeout_ms.
+          const budgetMs = deepSeekFetchBudgetMs(numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS);
+          const budgetStartedAt = Date.now();
+          const budget = AbortSignal.timeout(budgetMs);
+          const check = await checkDeepSeekFetchUrl(normalized, budget, effectSignal);
+          const outcome = check === "send"
+            ? await runDeepSeekFetch({
+                endpoint: deepseek.endpoint,
+                apiKey: deepseek.apiKey,
+                url: normalized,
+                timeoutMs: budgetMs,
+                budgetStartedAt,
+                ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
+                fetchOptions: getProxyFetchOptions({
+                  environment: requireModelFacingRequestEnvironment(opts),
+                }),
+              })
+            : check === "timed_out"
+              ? { kind: "failed" as const, reason: deepSeekTimeoutReason(budgetMs), billed: false as const, attempts: 0 }
+              : undefined;
+          if (outcome?.billed === true) providerFetchCost += DEEPSEEK_FETCH_USD_PER_REQUEST;
+          if (outcome?.kind === "content") {
             return finish(await webFetchPagePayload(opts, {
               head: {
                 source: "deepseek_fetch",
@@ -4049,15 +4136,18 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
               preapproved: false,
               renderedAs: "markdown",
               body: outcome.content,
+              ...(outcome.titleTruncated ? { headTruncated: true } : {}),
             }, { maxChars, prompt, signal: effectSignal }));
           }
-          deepseekFetchFallback = outcome.kind === "failed" ? outcome.reason : "no page content";
-          if (outcome.kind === "failed" && !deepseekFetchWarned) {
-            deepseekFetchWarned = true;
-            opts.emitWarning?.({
-              cause: "deepseek_web_fetch_failed",
-              message: `DeepSeek web fetch failed (${outcome.reason}); web_fetch used the local fetcher instead.`,
-            });
+          if (outcome !== undefined) {
+            deepseekFetchFallback = outcome.kind === "failed" ? outcome.reason : "no page content";
+            if (outcome.kind === "failed" && !deepseekFetchWarned) {
+              deepseekFetchWarned = true;
+              opts.emitWarning?.({
+                cause: "deepseek_web_fetch_failed",
+                message: `DeepSeek web fetch failed (${outcome.reason}); web_fetch used the local fetcher instead.`,
+              });
+            }
           }
         }
         const apiKey = ollamaWebFetchKey(opts);

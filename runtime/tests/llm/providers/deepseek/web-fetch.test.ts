@@ -4,7 +4,9 @@ import {
   DEEPSEEK_FETCH_MAX_RETRY_DELAY_MS,
   DEEPSEEK_FETCH_MAX_URL_CHARS,
   DEEPSEEK_FETCH_RETRY_DELAY_MS,
+  DEEPSEEK_FETCH_TITLE_MAX_CHARS,
   DEEPSEEK_FETCH_USD_PER_REQUEST,
+  deepSeekFetchBudgetMs,
   deepSeekFetchEndpoint,
   deepSeekFetchRetryDelayMs,
   deepSeekFetchSkipReason,
@@ -154,6 +156,7 @@ describe("runDeepSeekFetch", () => {
     expect(outcome).toEqual({
       kind: "content",
       title: "Example Domain",
+      titleTruncated: false,
       content: LIVE_SHAPED_PAGE.content,
       billed: true,
       attempts: 1,
@@ -289,11 +292,69 @@ describe("runDeepSeekFetch", () => {
       .resolves.toEqual({ kind: "failed", reason: "malformed response", billed: false, attempts: 1 });
   });
 
-  it("leaves a page above the response cap to the local fetcher, counting DeepSeek's charge", async () => {
+  it("leaves a page above the response cap to the local fetcher, unbilled", async () => {
     vi.stubGlobal("fetch", vi.fn(async () =>
       new Response("{}", { status: 200, headers: { "content-length": "9000000" } })));
     await expect(runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" }))
-      .resolves.toEqual({ kind: "failed", reason: "response too large", billed: true, attempts: 1 });
+      .resolves.toEqual({ kind: "failed", reason: "response too large", billed: false, attempts: 1 });
+  });
+
+  it("does not bill a 200 whose body stalls or breaks off before the page arrives", async () => {
+    const encoder = new TextEncoder();
+    const stalled = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Headers and the first bytes arrive; the rest never does.
+        controller.enqueue(encoder.encode('{"title":"Slow","content":"# Slo'));
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn(async () => stalled()));
+    await expect(
+      runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/", timeoutMs: 40 }),
+    ).resolves.toEqual({ kind: "failed", reason: "timed out after 40ms", billed: false, attempts: 1 });
+
+    const broken = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"title":"Gone","content":"# Go'));
+        controller.error(new TypeError("terminated"));
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn(async () => broken()));
+    await expect(runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" }))
+      .resolves.toEqual({ kind: "failed", reason: "request failed: terminated", billed: false, attempts: 1 });
+  });
+
+  it("caps the title and says when it did", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { title: `${"word ".repeat(100_000)}end`, content: "# Page" })));
+    const outcome = await runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" });
+    expect(outcome.kind).toBe("content");
+    if (outcome.kind !== "content") return;
+    expect(outcome.titleTruncated).toBe(true);
+    expect(outcome.title.length).toBeLessThanOrEqual(DEEPSEEK_FETCH_TITLE_MAX_CHARS);
+    expect(outcome.title.endsWith("…")).toBe(true);
+    expect(outcome.content).toBe("# Page");
+
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { title: "t".repeat(DEEPSEEK_FETCH_TITLE_MAX_CHARS), content: "# Page" })));
+    await expect(runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" }))
+      .resolves.toMatchObject({ title: "t".repeat(DEEPSEEK_FETCH_TITLE_MAX_CHARS), titleTruncated: false });
+  });
+
+  it("counts time the caller already spent against the budget", async () => {
+    vi.stubGlobal("fetch", pendingUntilAborted());
+    const started = Date.now();
+    const outcome = await runDeepSeekFetch({
+      endpoint: ENDPOINT,
+      apiKey: "k",
+      url: "https://example.com/",
+      timeoutMs: 400,
+      // 380 ms of the budget went to resolving the host before the request.
+      budgetStartedAt: Date.now() - 380,
+    });
+    expect(outcome).toEqual({ kind: "failed", reason: "timed out after 400ms", billed: false, attempts: 1 });
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(deepSeekFetchBudgetMs(undefined)).toBe(30_000);
+    expect(deepSeekFetchBudgetMs(500)).toBe(500);
+    expect(deepSeekFetchBudgetMs(10_000_000)).toBe(120_000);
+    expect(deepSeekFetchBudgetMs(0)).toBe(1);
   });
 
   it("falls back on its own timeout", async () => {
