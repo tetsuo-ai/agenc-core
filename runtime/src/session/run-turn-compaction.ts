@@ -131,6 +131,8 @@ async function runAgenCAutoCompact(params: {
     const compactContext = {
       ...toolUseContext,
       liveUserMessageId: state.liveUserMessageId,
+      // Summaries go to this turn's model at this turn's effort.
+      turn: params.ctx,
       options: {
         ...toolUseContext.options,
         contextWindowTokens: request.contextWindowTokens,
