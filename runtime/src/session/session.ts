@@ -6413,17 +6413,38 @@ export class Session {
    * Tells clients that a request this session published is no longer
    * pending, so one that still shows it can close it. A daemon client has no
    * other way to learn that the session stopped waiting.
+   *
+   * Live only, never journaled: AgenC 0.19.25 and older refuse a canonical
+   * journal that holds an event type they do not know, so writing this one
+   * would break a rollback. Readers already accept it (KNOWN_EVENT_TYPES and
+   * the journal schema), so a later release can start storing it.
    */
   private emitElicitationClosed(payload: ElicitationClosedEvent): void {
-    // Nothing can be appended after the session closed its journal.
-    if (this.canonicalJournalSealed) return;
-    this.emit({
-      id: this.nextInternalSubId(),
-      msg: {
-        type: "elicitation_closed",
-        payload,
-      },
+    this.publishLiveOnly({
+      type: "elicitation_closed",
+      payload,
     });
+  }
+
+  /**
+   * Publishes an event to EventLog subscribers (the daemon's client bridge
+   * among them) in order with every other publication, without appending it
+   * to the canonical journal. It gets no sequence, so run.replay never
+   * returns it; daemon clients that attach later still receive it from the
+   * detached-session buffer.
+   */
+  private publishLiveOnly(msg: EventMsg): void {
+    const queue = this.writeBehind;
+    // A failed persistence queue keeps every later publication.
+    if (queue.hasFailed) return;
+    if (queue.draining) queue.drain();
+    const event: Event = { id: this.nextInternalSubId(), msg };
+    const publish = (): void => {
+      this.eventLog.publish(event, (published) => {
+        this.txEvent.send(published);
+      });
+    };
+    if (!queue.defer("event-publication", publish)) queue.observe(publish);
   }
 
   private beginOutOfBandElicitationPause(): () => void {

@@ -1257,7 +1257,15 @@ waiting first (the MCP server cancelled the request, for example on its own
 timeout, the tool call or turn stopped, or the session ended). A client that
 still shows the request closes it and sends no answer: `elicitation.respond`
 for a closed request fails with `INVALID_ARGUMENT` because nothing is pending.
-The TUI closes the form or question at whatever field it shows.
+The TUI closes the form or question at whatever field it shows, and it also
+closes a request once its turn has ended.
+
+The event is live only. It is not written to the run journal and carries no
+`sequence`, so `run.replay` never returns it; AgenC 0.19.25 and older cannot
+read a journal that holds an event type they do not know. A client that
+attaches while the session has no attached client still receives it, in
+order, from the session's detached-event buffer. The journal reader already
+accepts the type, so a later release can start storing it.
 
 ## Startup and restored sessions
 

@@ -1052,7 +1052,7 @@ describe("strict canonical journal contract", () => {
     }
   });
 
-  it("accepts the elicitation_closed payloads the session writes", () => {
+  it("accepts elicitation_closed payloads, so a later release can journal them", () => {
     expect(
       isCanonicalEventPayload("elicitation_closed", {
         kind: "mcp",

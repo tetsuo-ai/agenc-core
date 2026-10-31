@@ -2951,7 +2951,7 @@ function subscribeToDaemonEvents(
   const emit = (event: unknown): void => {
     if (!closed) cb(event);
   };
-  const deliver = (event: JsonObject): void => {
+  const deliver = (event: JsonObject, sequence?: number): void => {
     if (closed) return;
     emit(event);
     void maybeBridgeDaemonApproval(
@@ -2969,6 +2969,7 @@ function subscribeToDaemonEvents(
       event,
       emit,
       pendingElicitations,
+      sequence,
     );
   };
   const unsubscribeSession = client.subscribeToSessionEvents(
@@ -2989,15 +2990,16 @@ function subscribeToDaemonEvents(
         transcriptSnapshot !== undefined &&
         daemonTranscriptSnapshotCoversEvent(transcriptSnapshot, event, transcriptEvent)
       ) return;
+      const sequence = daemonEventSequence(event);
       if (runtimeSettingsReconciler === undefined) {
-        deliver(transcriptEvent);
+        deliver(transcriptEvent, sequence);
       } else if (replayingInitialEvents) {
         runtimeSettingsReconciler.acceptInitial(transcriptEvent, () =>
-          deliver(transcriptEvent),
+          deliver(transcriptEvent, sequence),
         );
       } else {
         runtimeSettingsReconciler.acceptLive(transcriptEvent, () =>
-          deliver(transcriptEvent),
+          deliver(transcriptEvent, sequence),
         );
       }
     },
@@ -3183,6 +3185,16 @@ async function maybeBridgeDaemonApproval(
   }
 }
 
+/** The daemon's journal sequence of a session notification, when it has one. */
+function daemonEventSequence(event: JsonObject): number | undefined {
+  const params = event.params;
+  if (!isJsonObject(params)) return undefined;
+  const sequence = params.sequence;
+  return typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0
+    ? sequence
+    : undefined;
+}
+
 async function maybeBridgeDaemonElicitation(
   client: AgenCDaemonTuiClient,
   sessionId: string,
@@ -3190,10 +3202,16 @@ async function maybeBridgeDaemonElicitation(
   event: unknown,
   cb: (event: unknown) => void,
   pendingElicitations: DaemonElicitationRequests,
+  sequence?: number,
 ): Promise<void> {
   if (!isJsonObject(event) || typeof event.type !== "string") return;
   const payload = event.payload;
   if (!isJsonObject(payload)) return;
+  const endedTurnId = classifyTurnTerminal({ type: event.type, payload })?.turnId;
+  if (typeof endedTurnId === "string") {
+    pendingElicitations.noteTurnEnded(endedTurnId);
+    return;
+  }
   if (event.type === "elicitation_closed") {
     pendingElicitations.close(payload);
     return;
@@ -3214,7 +3232,7 @@ async function maybeBridgeDaemonElicitation(
       kind: "request_user_input",
       requestId,
     };
-    const prompt = pendingElicitations.begin(address, payload.turnId);
+    const prompt = pendingElicitations.begin(address, payload.turnId, sequence);
     if (prompt === undefined) return;
     let response: RequestUserInputResponse | null;
     try {
@@ -3274,7 +3292,7 @@ async function maybeBridgeDaemonElicitation(
       serverName: payload.serverName,
       requestId: payload.requestId,
     };
-    const prompt = pendingElicitations.begin(address, payload.turnId);
+    const prompt = pendingElicitations.begin(address, payload.turnId, sequence);
     if (prompt === undefined) return;
     const response = await resolver
       .request(

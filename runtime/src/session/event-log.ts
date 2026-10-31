@@ -1295,6 +1295,10 @@ export type EventMsg =
       readonly payload: McpElicitationCompleteEvent;
     }
   | {
+      /**
+       * Published live only, never journaled (see Session.publishLiveOnly):
+       * readers accept it so a later release can store it.
+       */
       readonly type: "elicitation_closed";
       readonly payload: ElicitationClosedEvent;
     }

@@ -128,6 +128,19 @@ import { APPROVED, DENIED } from "../permissions/review-decision.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
+import {
+  daemonEventFromUnboundSessionEvent,
+  notificationFromDaemonEvent,
+} from "../app-server/background-agent-runner/daemon-events.js";
+import { AgenCDaemonClientMultiplexer } from "../app-server/client-multiplexer.js";
+import { AgenCDaemonSessionManager } from "../app-server/session-lifecycle.js";
+import type { SessionTranscriptV2Result } from "../app-server/protocol/index.js";
+import type { McpElicitationFormRequest } from "../elicitation/types.js";
+import type { Event as SessionEvent } from "../session/event-log.js";
+import { mkSession } from "../fixtures.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function createBaseSession(): AgenCTuiBridgeSession {
   let permissionContext = {
@@ -4407,7 +4420,7 @@ describe("AgenC TUI daemon session adapter", () => {
   });
 
   /** A daemon TUI session with the TUI's resolvers and the shown request. */
-  function daemonElicitationHarness(): {
+  function daemonElicitationHarness(transcriptSnapshot?: SessionTranscriptV2Result): {
     readonly client: ReturnType<typeof createClient>;
     readonly controller: ReturnType<typeof installElicitationResolvers>;
     readonly shown: () => PendingElicitation | null;
@@ -4421,6 +4434,7 @@ describe("AgenC TUI daemon session adapter", () => {
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      ...(transcriptSnapshot === undefined ? {} : { transcriptSnapshot }),
     });
     const state: { shown: PendingElicitation | null } = { shown: null };
     const controller = installElicitationResolvers(session, (pending) => {
@@ -4455,6 +4469,7 @@ describe("AgenC TUI daemon session adapter", () => {
   function emitProfileForm(
     client: ReturnType<typeof createClient>,
     turnId = "turn_1",
+    sequence?: number,
   ): void {
     client.emit("session_1", {
       jsonrpc: JSON_RPC_VERSION,
@@ -4462,6 +4477,7 @@ describe("AgenC TUI daemon session adapter", () => {
       params: {
         sessionId: "session_1",
         eventId: `form_7_${turnId}`,
+        ...(sequence === undefined ? {} : { sequence }),
         requestId: 7,
         serverName: "profile",
         turnId,
@@ -4598,6 +4614,274 @@ describe("AgenC TUI daemon session adapter", () => {
       expect(harness.responses()).toHaveLength(1);
     } finally {
       harness.dispose();
+    }
+  });
+
+  it("keeps the open daemon form and its answer when an older request is replayed", async () => {
+    const harness = daemonElicitationHarness();
+    try {
+      emitProfileForm(harness.client, "turn_2", 20);
+      await flush();
+      expect(harness.controller.submitPending(harness.shown()!, "Ada")).toBe(true);
+      expect(harness.shown()).toMatchObject({
+        kind: "mcp-form",
+        index: 1,
+        request: { turnId: "turn_2" },
+      });
+
+      // The turn-1 request at the same address is delivered again.
+      emitProfileForm(harness.client, "turn_1", 10);
+      await flush();
+
+      expect(harness.shown()).toMatchObject({
+        kind: "mcp-form",
+        index: 1,
+        request: { turnId: "turn_2" },
+      });
+      expect(harness.controller.submitPending(harness.shown()!, "36")).toBe(true);
+      await flush();
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toEqual([
+        {
+          sessionId: "session_1",
+          requestId: 7,
+          kind: "mcp",
+          serverName: "profile",
+          response: { action: "accept", content: { name: "Ada", age: 36 } },
+        },
+      ]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  it("does not reopen a daemon form delivered again after it was answered or closed", async () => {
+    const harness = daemonElicitationHarness();
+    try {
+      emitProfileForm(harness.client, "turn_1", 10);
+      await flush();
+      expect(harness.controller.submitPending(harness.shown()!, "Ada")).toBe(true);
+      expect(harness.controller.submitPending(harness.shown()!, "36")).toBe(true);
+      await flush();
+      expect(harness.responses()).toHaveLength(1);
+
+      emitProfileForm(harness.client, "turn_1", 10);
+      await flush();
+      expect(harness.shown()).toBeNull();
+
+      emitProfileForm(harness.client, "turn_2", 20);
+      await flush();
+      expect(harness.shown()).toMatchObject({ request: { turnId: "turn_2" } });
+      harness.emitClosed({
+        kind: "mcp",
+        requestId: 7,
+        serverName: "profile",
+        turnId: "turn_2",
+        outcome: "withdrawn",
+      });
+      await flush();
+      expect(harness.shown()).toBeNull();
+
+      emitProfileForm(harness.client, "turn_2", 20);
+      await flush();
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toHaveLength(1);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  it("closes a daemon form when its turn ends", async () => {
+    const harness = daemonElicitationHarness();
+    try {
+      emitProfileForm(harness.client, "turn_1", 10);
+      await flush();
+      expect(harness.shown()).toMatchObject({ kind: "mcp-form" });
+
+      harness.client.emit("session_1", {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          event: {
+            id: "turn_1_aborted",
+            type: "turn_aborted",
+            payload: { turnId: "turn_1", reason: "interrupted" },
+          },
+        },
+      });
+      await flush();
+
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toEqual([]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  const PROFILE_FORM: McpElicitationFormRequest = {
+    mode: "form",
+    message: "Create a profile",
+    requestedSchema: {
+      type: "object",
+      required: ["name", "age"],
+      properties: {
+        name: { type: "string", description: "Your name" },
+        age: { type: "integer", description: "Your age" },
+      },
+    },
+  };
+
+  /**
+   * What a daemon sends for an MCP form whose server cancels it: a session
+   * publishes the journaled request and the live-only close, and the daemon
+   * turns both into client notifications.
+   */
+  async function withdrawnFormNotifications(): Promise<[JsonObject, JsonObject]> {
+    const { session } = mkSession();
+    const published: SessionEvent[] = [];
+    const unsubscribe = session.eventLog.subscribe((event) => published.push(event));
+    try {
+      await session.spawnTask({ subId: "turn_1", kind: "regular", autoStart: false });
+      const serverCancel = new AbortController();
+      const waiting = session.requestMcpElicitation(
+        "profile",
+        7,
+        PROFILE_FORM,
+        serverCancel.signal,
+      );
+      await flush();
+      serverCancel.abort("server cancelled");
+      await expect(waiting).resolves.toBeNull();
+    } finally {
+      unsubscribe();
+      await session.shutdown().catch(() => undefined);
+    }
+    const notifications = published
+      .filter((event) =>
+        event.msg.type === "mcp_elicitation_request" ||
+        event.msg.type === "elicitation_closed")
+      .map((event) =>
+        notificationFromDaemonEvent(
+          "session_1",
+          "agent_1",
+          daemonEventFromUnboundSessionEvent(event)!,
+        ) as unknown as JsonObject);
+    expect(notifications.map((notification) => notification.method)).toEqual([
+      "event.mcp_elicitation_request",
+      "event.session_event",
+    ]);
+    return notifications as [JsonObject, JsonObject];
+  }
+
+  /** A daemon client multiplexer with one live session and no client attached. */
+  async function daemonMultiplexer(): Promise<{
+    readonly multiplexer: AgenCDaemonClientMultiplexer;
+    readonly sent: JsonObject[];
+    readonly dispose: () => void;
+  }> {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-elicitation-replay-"));
+    let attachments = 0;
+    const sessionManager = new AgenCDaemonSessionManager({
+      createSessionId: () => "session_1",
+      createAttachmentId: () => `attachment_${++attachments}`,
+    });
+    await sessionManager.createSession({ agentId: "agent_1", cwd });
+    const multiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
+    const sent: JsonObject[] = [];
+    await multiplexer.registerClient({
+      clientId: "tui_1",
+      send: (message) => {
+        sent.push(message);
+      },
+    });
+    return { multiplexer, sent, dispose: () => rmSync(cwd, { recursive: true, force: true }) };
+  }
+
+  it("keeps a withdrawn form closed for a client that attaches after the close", async () => {
+    const [request, close] = await withdrawnFormNotifications();
+    const requestSequence = (request.params as JsonObject).sequence;
+    expect(requestSequence).toEqual(expect.any(Number));
+    // Live only: the close has no journal sequence, so run.replay never has it.
+    expect(close.params).not.toHaveProperty("sequence");
+
+    const daemon = await daemonMultiplexer();
+    try {
+      // Nobody is attached: the daemon keeps both for the next client, in order.
+      await daemon.multiplexer.broadcastSessionEvent("session_1", request);
+      await daemon.multiplexer.broadcastSessionEvent("session_1", close);
+      await daemon.multiplexer.attachClientToSession("session_1", "tui_1");
+      expect(daemon.sent).toEqual([request, close]);
+
+      const attaches: Array<{
+        readonly snapshot: SessionTranscriptV2Result | undefined;
+        readonly requestShown: boolean;
+      }> = [
+        // Attached while the turn still runs: the request is not in the
+        // snapshot, so the replayed request opens the form and the close shuts it.
+        {
+          snapshot: {
+            schemaVersion: 2, sessionId: "session_1", runId: "run_1",
+            historyEpoch: "initial", asOfSequence: requestSequence as number, messages: [],
+            activeTurn: { turnId: "turn_1" },
+          },
+          requestShown: true,
+        },
+        // Attached after the turn ended: the snapshot covers the request.
+        {
+          snapshot: {
+            schemaVersion: 2, sessionId: "session_1", runId: "run_1",
+            historyEpoch: "initial", asOfSequence: requestSequence as number, messages: [],
+          },
+          requestShown: false,
+        },
+        { snapshot: undefined, requestShown: true },
+      ];
+      for (const { snapshot, requestShown } of attaches) {
+        const harness = daemonElicitationHarness(snapshot);
+        try {
+          harness.client.emit("session_1", daemon.sent[0]!);
+          await flush();
+          expect(harness.shown() !== null).toBe(requestShown);
+          harness.client.emit("session_1", daemon.sent[1]!);
+          await flush();
+          expect(harness.shown()).toBeNull();
+          expect(harness.responses()).toEqual([]);
+        } finally {
+          harness.dispose();
+        }
+      }
+    } finally {
+      daemon.dispose();
+    }
+  });
+
+  it("closes the form for a client that reattaches after the close", async () => {
+    const [request, close] = await withdrawnFormNotifications();
+    const daemon = await daemonMultiplexer();
+    const harness = daemonElicitationHarness();
+    try {
+      await daemon.multiplexer.attachClientToSession("session_1", "tui_1");
+      await daemon.multiplexer.broadcastSessionEvent("session_1", request);
+      for (const message of daemon.sent) harness.client.emit("session_1", message);
+      await flush();
+      expect(harness.controller.submitPending(harness.shown()!, "Ada")).toBe(true);
+      expect(harness.shown()).toMatchObject({ kind: "mcp-form", index: 1 });
+
+      // The connection drops; the close is kept for the session meanwhile.
+      await daemon.multiplexer.detachClientFromSession("session_1", "tui_1");
+      await daemon.multiplexer.broadcastSessionEvent("session_1", close);
+      daemon.sent.length = 0;
+      await daemon.multiplexer.attachClientToSession("session_1", "tui_1");
+      expect(daemon.sent).toEqual([close]);
+
+      for (const message of daemon.sent) harness.client.emit("session_1", message);
+      await flush();
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toEqual([]);
+    } finally {
+      harness.dispose();
+      daemon.dispose();
     }
   });
 
