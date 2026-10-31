@@ -177,6 +177,95 @@ describe("cgroup v1 and other platforms", () => {
     expect(readOomKillCount(options)).toBe(4);
   });
 
+  // A hierarchy can be mounted more than once: a bind mount of another cgroup
+  // (/sibling) listed before the whole hierarchy must not stand in for the
+  // process's own cgroup (/current). Of the mounts whose root is the path or an
+  // ancestor of it, the one with the longest root shows it.
+  const mountLine = (id: number, mountRoot: string, mountPoint: string, type: "cgroup" | "cgroup2", options = "rw") =>
+    `${id} 25 0:${id} ${mountRoot} ${join(root, mountPoint)} rw,relatime - ${type} ${type} ${options}`;
+
+  test("ignores a cgroup2 bind mount of another cgroup listed before the whole hierarchy", () => {
+    write("sibling/cpu.max", "25000 100000\n");
+    write("sibling/memory.max", `${GIB / 2}\n`);
+    write("sibling/memory.events", "oom 9\noom_kill 9\n");
+    write("full/current/cpu.max", "50000 100000\n");
+    write("full/current/memory.max", `${GIB}\n`);
+    write("full/current/memory.events", "oom 2\noom_kill 2\n");
+    const mountInfo = [mountLine(41, "/sibling", "sibling", "cgroup2"), mountLine(42, "/", "full", "cgroup2")]
+      .join("\n");
+    const options = { ...host, mountInfo, procSelfCgroup: "0::/current\n" };
+    expect(ownCgroupV2Directory(options)).toBe(join(root, "full/current"));
+    expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 0.5, memoryLimitBytes: GIB });
+    expect(readOomKillCount(options)).toBe(2);
+  });
+
+  test("ignores v1 bind mounts of another cgroup listed before the whole hierarchies", () => {
+    write("sibling-cpu/cpu.cfs_quota_us", "25000\n");
+    write("sibling-cpu/cpu.cfs_period_us", "100000\n");
+    write("sibling-memory/memory.limit_in_bytes", `${GIB / 2}\n`);
+    write("sibling-memory/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 9\n");
+    write("cpu,cpuacct/current/cpu.cfs_quota_us", "50000\n");
+    write("cpu,cpuacct/current/cpu.cfs_period_us", "100000\n");
+    write("memory/current/memory.limit_in_bytes", `${GIB}\n`);
+    write("memory/current/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 2\n");
+    const mountInfo = [
+      mountLine(30, "/sibling", "sibling-memory", "cgroup", "rw,memory"),
+      mountLine(31, "/sibling", "sibling-cpu", "cgroup", "rw,cpu,cpuacct"),
+      mountLine(32, "/", "memory", "cgroup", "rw,memory"),
+      mountLine(33, "/", "cpu,cpuacct", "cgroup", "rw,cpu,cpuacct"),
+    ].join("\n");
+    const options = { ...host, mountInfo, procSelfCgroup: "12:memory:/current\n4:cpu,cpuacct:/current\n" };
+    expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 0.5, memoryLimitBytes: GIB });
+    expect(readOomKillCount(options)).toBe(2);
+  });
+
+  test("takes the cgroup2 mount with the longest root that holds the path", () => {
+    // The whole hierarchy is listed first; the container's own cgroup is mounted too.
+    write("host/docker/c1/app/memory.max", `${3 * GIB}\n`);
+    write("ctr/cpu.max", "100000 100000\n"); // 1 CPU on /docker/c1, an ancestor up to the mount point
+    write("ctr/app/memory.max", `${GIB}\n`);
+    const mountInfo = [mountLine(41, "/", "host", "cgroup2"), mountLine(42, "/docker/c1", "ctr", "cgroup2")]
+      .join("\n");
+    const options = { ...host, mountInfo, procSelfCgroup: "0::/docker/c1/app\n" };
+    expect(ownCgroupV2Directory(options)).toBe(join(root, "ctr/app"));
+    expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 1, memoryLimitBytes: GIB });
+  });
+
+  test("takes the v1 mount with the longest root that holds the path, on whole path segments", () => {
+    write("memory-all/docker/c1/app/memory.limit_in_bytes", `${3 * GIB}\n`);
+    write("memory-c1/app/memory.limit_in_bytes", `${GIB}\n`);
+    write("memory-all/docker/c10/app/memory.limit_in_bytes", `${2 * GIB}\n`);
+    const mountInfo = [
+      mountLine(30, "/docker/c1", "memory-c1", "cgroup", "rw,memory"),
+      mountLine(31, "/", "memory-all", "cgroup", "rw,memory"),
+    ].join("\n");
+    // /docker/c1/app: both mounts hold it, /docker/c1 is the longer root.
+    expect(readResourceLimits({ ...host, mountInfo, procSelfCgroup: "12:memory:/docker/c1/app\n" }))
+      .toMatchObject({ memoryLimitBytes: GIB });
+    // /docker/c10/app: /docker/c1 is a string prefix but not an ancestor, so only the whole hierarchy holds it.
+    expect(readResourceLimits({ ...host, mountInfo, procSelfCgroup: "12:memory:/docker/c10/app\n" }))
+      .toMatchObject({ memoryLimitBytes: 2 * GIB });
+  });
+
+  test("reports no limit when only a bind mount of another cgroup is mounted", () => {
+    write("sibling/cpu.max", "25000 100000\n");
+    write("sibling/memory.max", `${GIB / 2}\n`);
+    write("sibling/memory.events", "oom 9\noom_kill 9\n");
+    write("sibling-memory/memory.limit_in_bytes", `${GIB / 2}\n`);
+    write("sibling-memory/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 9\n");
+    const v2 = { ...host, mountInfo: mountLine(41, "/sibling", "sibling", "cgroup2"), procSelfCgroup: "0::/current\n" };
+    expect(ownCgroupV2Directory(v2)).toBeUndefined();
+    expect(readResourceLimits(v2)).toEqual({ hostCpus: 24, hostMemoryBytes: 32 * GIB });
+    expect(readOomKillCount(v2)).toBeUndefined();
+    const v1 = {
+      ...host,
+      mountInfo: mountLine(30, "/sibling", "sibling-memory", "cgroup", "rw,memory"),
+      procSelfCgroup: "12:memory:/current\n",
+    };
+    expect(readResourceLimits(v1)).toEqual({ hostCpus: 24, hostMemoryBytes: 32 * GIB });
+    expect(readOomKillCount(v1)).toBeUndefined();
+  });
+
   test.each(["darwin", "win32"] as const)("reports nothing on %s", (platform) => {
     write("cpu.max", "100000 100000\n");
     const options = { ...host, platform, cgroupRoot: root, procSelfCgroup: "0::/\n" };
