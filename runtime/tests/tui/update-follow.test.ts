@@ -1,19 +1,23 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AGENC_DAEMON_RESTART_MAX_WAIT_MS,
   resolveAgenCDaemonRestartFollowDeadlineMs,
   resolveAgenCDaemonRestartHandoffTimeoutMs,
 } from "../../src/app-server/daemon-restart-handoff.js";
-import type { AgenCDaemonRestartOutcome, AgenCDaemonRestartResult } from "../../src/app-server/daemon-restart-outcome.js";
-import { recordAgenCDaemonRestartResult } from "../../src/app-server/daemon-restart-when-idle.js";
+import {
+  AGENC_DAEMON_RESTART_RESULTS_KEPT,
+  type AgenCDaemonRestartOutcome,
+  type AgenCDaemonRestartResult,
+} from "../../src/app-server/daemon-restart-outcome.js";
+import { publishAgenCDaemonRestartResult } from "../../src/app-server/daemon-restart-when-idle.js";
 import { runUpdateRelaunch, type UpdateRelaunchDeps } from "../../src/bin/update-relaunch.js";
 import {
   checkUpdateFollow,
   decideUpdateFollow,
-  readDaemonRestartResult,
+  readDaemonRestartResults,
   readDaemonRuntimeVersion,
   updateFollowReady,
   type UpdateFollowObservation,
@@ -33,19 +37,35 @@ const request = {
   fromVersion: "0.19.25", targetVersion: "0.19.26", command: "/w/agenc", installType: "install.sh" as const, cwd: "/w",
 };
 
-const SINCE = Date.parse("2026-10-31T12:00:00.000Z");
+/** Monotonic clock values (performance.now), not wall-clock times. */
+const SINCE = 50_000;
 const DEADLINE = resolveAgenCDaemonRestartFollowDeadlineMs({}, "linux");
-const following: UpdateFollow = { request, when: "daemon", since: SINCE };
+const MINE = "4a1b2c3d-0000-4000-8000-000000000001";
+const OTHER = "4a1b2c3d-0000-4000-8000-000000000002";
+const following: UpdateFollow = { request, when: "daemon", since: SINCE, requestId: MINE };
 
-function ended(outcome: AgenCDaemonRestartOutcome, at = SINCE + 60_000): AgenCDaemonRestartResult {
-  return { finishedAt: new Date(at).toISOString(), outcome };
+function ended(
+  requestId: string,
+  outcome: AgenCDaemonRestartOutcome,
+  extra: { readonly finishedAt?: string; readonly continuedBy?: string } = {},
+): AgenCDaemonRestartResult {
+  return { requestId, finishedAt: extra.finishedAt ?? "2026-10-31T12:00:00.000Z", outcome, ...(extra.continuedBy ? { continuedBy: extra.continuedBy } : {}) };
 }
 
 function seen(overrides: Partial<UpdateFollowObservation> = {}): UpdateFollowObservation {
-  return { daemonVersion: "0.19.25", restartPending: false, result: null, now: SINCE + 120_000, ...overrides };
+  return { daemonVersion: "0.19.25", restartPending: true, results: [], now: SINCE + 120_000, ...overrides };
 }
 
-afterEach(() => resetUpdateRelaunchStateForTestingOnly());
+const failed = (toVersion = "0.19.26"): AgenCDaemonRestartOutcome => ({
+  status: "failed",
+  reason: "the daemon stopped but did not start again",
+  toVersion,
+});
+
+afterEach(() => {
+  resetUpdateRelaunchStateForTestingOnly();
+  vi.useRealTimers();
+});
 
 describe("following an update", () => {
   it("waits only for idle after this turn, and for the daemon after a busy restart", () => {
@@ -101,20 +121,26 @@ describe("following the daemon after the update stopped waiting for its restart"
     writeFileSync(join(home, "daemon-runtime.json"), JSON.stringify({ pid: 4242, runtimeVersion: version }));
   };
 
+  const pending = (present: boolean): void => {
+    const path = join(home, "daemon-restart-pending.json");
+    if (present) writeFileSync(path, "{}");
+    else rmSync(path, { force: true });
+  };
+
   /** "Update now" whose daemon step outlives the update's wait, as the TUI runs it. */
   async function updateWhoseRestartStillRuns(): Promise<UpdateFollow> {
     let follow: UpdateFollow | null = null;
+    let stepArgs: readonly string[] = [];
     const deps: UpdateRelaunchDeps = {
       pid: 4321,
       platform: "linux",
       env: {},
       now: () => SINCE,
-      runDaemonStep: async () => ({
-        status: "deferred",
-        code: "still-running",
-        reason: "no result after 36 minutes",
-        toVersion: "0.19.26",
-      }),
+      newRequestId: () => MINE,
+      runDaemonStep: async (_request, extraArgs) => {
+        stepArgs = extraArgs;
+        return { status: "deferred", code: "still-running", reason: "no result after 36 minutes", toVersion: "0.19.26" };
+      },
       execve: () => {
         throw new Error("this window stays");
       },
@@ -128,7 +154,8 @@ describe("following the daemon after the update stopped waiting for its restart"
       write: () => {},
     };
     await runUpdateRelaunch(request, deps);
-    expect(follow).toEqual({ request, when: "daemon", since: SINCE });
+    expect(stepArgs).toEqual(["--requester-pid", "4321", "--request-id", MINE]);
+    expect(follow).toEqual({ request, when: "daemon", since: SINCE, requestId: MINE });
     // The reopened TUI picks the follow up.
     setPendingUpdateFollow(follow);
     return follow!;
@@ -137,14 +164,15 @@ describe("following the daemon after the update stopped waiting for its restart"
   it("reports a restart that fails after the update stopped waiting, then stops following", async () => {
     await updateWhoseRestartStillRuns();
     daemonRuns("0.19.25");
+    pending(true);
     expect(check(SINCE + 37 * 60_000)).toBe("wait");
-    // The restart step the update handed off ends later, and fails.
-    recordAgenCDaemonRestartResult(home, {
+    // The step the update handed off ends later, and fails.
+    await publishAgenCDaemonRestartResult(home, ended(MINE, {
       status: "failed",
       reason: "the daemon could not be stopped",
       fromVersion: "0.19.25",
       toVersion: "0.19.26",
-    }, new Date(SINCE + 40 * 60_000));
+    }));
     // Reported at once, even in the middle of a turn.
     expect(check(SINCE + 41 * 60_000, false)).toBe("stop");
     expect(notices).toEqual([{
@@ -157,11 +185,75 @@ describe("following the daemon after the update stopped waiting for its restart"
     expect(notices).toHaveLength(1);
   });
 
+  it("keeps the follow's own failure when another request ends before the next poll", async () => {
+    await updateWhoseRestartStillRuns();
+    daemonRuns("0.19.25");
+    pending(false);
+    // Two ends between two polls: this request's failure, then another one's.
+    await publishAgenCDaemonRestartResult(home, ended(MINE, failed()));
+    await publishAgenCDaemonRestartResult(home, ended(OTHER, { status: "restarted", toVersion: "0.19.27", pid: 7 }));
+    expect(readDaemonRestartResults(home).map((result) => result.requestId)).toEqual([MINE, OTHER]);
+    expect(check(SINCE + 60_000)).toBe("stop");
+    expect(notices[0]?.text).toContain("the daemon stopped but did not start again");
+  });
+
+  it("keeps the last results of 8 requests, one per request", async () => {
+    const ids = Array.from({ length: AGENC_DAEMON_RESTART_RESULTS_KEPT + 1 }, (_, n) => `4a1b2c3d-0000-4000-8000-${String(n).padStart(12, "0")}`);
+    for (const id of ids) await publishAgenCDaemonRestartResult(home, ended(id, failed()));
+    // A second end of the same request replaces its first.
+    await publishAgenCDaemonRestartResult(home, ended(ids[3]!, { status: "restarted", toVersion: "0.19.26", pid: 9 }));
+    const kept = readDaemonRestartResults(home);
+    expect(kept).toHaveLength(AGENC_DAEMON_RESTART_RESULTS_KEPT);
+    expect(kept.map((result) => result.requestId)).toEqual([...ids.slice(1, 3), ...ids.slice(4), ids[3]]);
+    expect(kept.at(-1)?.outcome.status).toBe("restarted");
+  });
+
+  it("does not relaunch between a restart's stop and its end: no daemon and nothing pending is not enough", async () => {
+    await updateWhoseRestartStillRuns();
+    rmSync(join(home, "daemon-runtime.json"), { force: true });
+    pending(false);
+    // The handed-off step sits between stop and start: no result yet.
+    expect(check(SINCE + 60_000)).toBe("wait");
+    // Its end is published before anything is cleared; then the new version starts its own daemon.
+    await publishAgenCDaemonRestartResult(home, ended(MINE, { status: "not-running", toVersion: "0.19.26" }));
+    expect(check(SINCE + 62_000)).toBe("relaunch");
+    expect(relaunched).toEqual([request]);
+  });
+
+  it("sees a failure published before the pending record is cleared", async () => {
+    await updateWhoseRestartStillRuns();
+    rmSync(join(home, "daemon-runtime.json"), { force: true });
+    // Published, not yet cleared: the record is still there.
+    pending(true);
+    await publishAgenCDaemonRestartResult(home, ended(MINE, failed()));
+    expect(check(SINCE + 60_000)).toBe("stop");
+    expect(relaunched).toEqual([]);
+    expect(notices[0]?.kind).toBe("error");
+  });
+
+  it("follows a newer request that took this one's place", async () => {
+    await updateWhoseRestartStillRuns();
+    daemonRuns("0.19.25");
+    pending(true);
+    await publishAgenCDaemonRestartResult(home, ended(MINE, {
+      status: "skipped",
+      reason: "a newer update replaced this restart",
+      toVersion: "0.19.26",
+    }, { continuedBy: OTHER }));
+    expect(check(SINCE + 60_000)).toBe("continue");
+    expect(getPendingUpdateFollow()).toEqual({ request, when: "daemon", since: SINCE, requestId: OTHER });
+    expect(check(SINCE + 62_000)).toBe("wait");
+    // That request's restart then succeeds.
+    await publishAgenCDaemonRestartResult(home, ended(OTHER, { status: "restarted", toVersion: "0.19.26", pid: 5 }));
+    daemonRuns("0.19.26");
+    expect(check(SINCE + 64_000)).toBe("relaunch");
+    expect(notices).toEqual([]);
+  });
+
   it("stops, without an error, when a newer daemon supersedes the target", async () => {
     await updateWhoseRestartStillRuns();
     daemonRuns("0.19.25");
     expect(check(SINCE + 60_000)).toBe("wait");
-    // Another update moved the daemon past this one's version.
     daemonRuns("0.19.27");
     expect(check(SINCE + 62_000)).toBe("stop");
     expect(notices).toEqual([{
@@ -196,74 +288,63 @@ describe("following the daemon after the update stopped waiting for its restart"
   });
 
   it("counts a follow made without a start from its first check", () => {
-    setPendingUpdateFollow({ request, when: "daemon" });
+    setPendingUpdateFollow({ request, when: "daemon", requestId: MINE });
     daemonRuns("0.19.25");
     expect(check(SINCE)).toBe("wait");
-    expect(getPendingUpdateFollow()).toEqual({ request, when: "daemon", since: SINCE });
+    expect(getPendingUpdateFollow()).toEqual({ request, when: "daemon", since: SINCE, requestId: MINE });
     expect(check(SINCE + DEADLINE)).toBe("stop");
-  });
-
-  it("reads the restart result the restart step writes", () => {
-    expect(readDaemonRestartResult(home)).toBeNull();
-    recordAgenCDaemonRestartResult(home, { status: "restarted", fromVersion: "0.19.25", toVersion: "0.19.26", pid: 9 }, new Date(SINCE));
-    expect(readDaemonRestartResult(home)).toEqual({
-      finishedAt: new Date(SINCE).toISOString(),
-      outcome: { status: "restarted", fromVersion: "0.19.25", toVersion: "0.19.26", pid: 9 },
-    });
-    writeFileSync(join(home, "daemon-restart-result.json"), "{");
-    expect(readDaemonRestartResult(home)).toBeNull();
   });
 });
 
 describe("the follow decision", () => {
-  const failed = (toVersion?: string): AgenCDaemonRestartOutcome => ({
-    status: "failed",
-    reason: "the daemon stopped but did not start again",
-    ...(toVersion === undefined ? {} : { toVersion }),
+  it("reads only its own request's end, by id", () => {
+    // Another request's failure, even for the same version.
+    expect(decideUpdateFollow(following, seen({ results: [ended(OTHER, failed())] }), DEADLINE)).toEqual({ kind: "wait" });
+    expect(decideUpdateFollow(following, seen({ results: [ended(OTHER, failed()), ended(MINE, failed())] }), DEADLINE))
+      .toMatchObject({ kind: "stop", notice: { kind: "error" } });
+    // A follow without an id reads no results.
+    expect(decideUpdateFollow({ request, when: "daemon", since: SINCE }, seen({ results: [ended(MINE, failed())] }), DEADLINE))
+      .toEqual({ kind: "wait" });
   });
 
-  it("reads only this update's end: after its step began, toward its version or none", () => {
-    // An earlier restart's end.
-    expect(decideUpdateFollow(following, seen({ result: ended(failed("0.19.26"), SINCE - 1) }), DEADLINE))
-      .toEqual({ kind: "wait" });
-    // A restart toward an older version says nothing about this one.
-    expect(decideUpdateFollow(following, seen({ result: ended(failed("0.19.24")) }), DEADLINE))
-      .toEqual({ kind: "wait" });
-    // A newer target's failure: this restart may still come.
-    expect(decideUpdateFollow(following, seen({ result: ended(failed("0.19.27")) }), DEADLINE))
-      .toEqual({ kind: "wait" });
-    // A step that stopped on an unexpected error names no version.
-    expect(decideUpdateFollow(following, seen({ result: ended(failed()) }), DEADLINE))
-      .toMatchObject({ kind: "stop", notice: { kind: "error" } });
-    expect(decideUpdateFollow(following, seen({ result: ended(failed("0.19.26"), SINCE) }), DEADLINE))
-      .toMatchObject({ kind: "stop", notice: { kind: "error" } });
+  it("is not moved by clock changes: no result time is compared, the deadline uses the monotonic clock", () => {
+    vi.useFakeTimers();
+    const results = [
+      ended(OTHER, failed(), { finishedAt: "2099-01-01T00:00:00.000Z" }),
+      ended(MINE, { status: "restarted", toVersion: "0.19.26", pid: 5 }, { finishedAt: "1999-01-01T00:00:00.000Z" }),
+    ];
+    for (const wallClock of ["1990-01-01T00:00:00.000Z", "2026-10-31T12:00:00.000Z", "2100-01-01T00:00:00.000Z"]) {
+      vi.setSystemTime(new Date(wallClock));
+      // An end from "the past" still counts; a "newer" one of another request does not.
+      expect(decideUpdateFollow(following, seen({ daemonVersion: null, restartPending: false, results }), DEADLINE))
+        .toEqual({ kind: "relaunch" });
+      expect(decideUpdateFollow(following, seen({ results: [] }), DEADLINE)).toEqual({ kind: "wait" });
+    }
   });
 
-  it("stops with the reason when the restart was skipped, and waits on the daemon for current or newer", () => {
+  it("stops with the reason when its restart was skipped, and waits on the daemon for current or newer", () => {
     const replaced = decideUpdateFollow(following, seen({
-      result: ended({ status: "skipped", reason: "a newer update replaced this restart", toVersion: "0.19.26" }),
+      results: [ended(MINE, { status: "skipped", reason: "the daemon stayed busy until the waiting time ran out", toVersion: "0.19.26" })],
     }), DEADLINE);
     expect(replaced).toEqual({
       kind: "stop",
       notice: {
         kind: "info",
-        text: "The daemon did not move to AgenC 0.19.26: a newer update replaced this restart. This window stays on 0.19.25; quit and restart AgenC.",
+        text: "The daemon did not move to AgenC 0.19.26: the daemon stayed busy until the waiting time ran out. This window stays on 0.19.25; quit and restart AgenC.",
       },
     });
     for (const code of ["already-current", "newer-daemon"] as const) {
       expect(decideUpdateFollow(following, seen({
         daemonVersion: undefined,
-        result: ended({ status: "skipped", code, reason: "r", toVersion: "0.19.26" }),
+        results: [ended(MINE, { status: "skipped", code, reason: "r", toVersion: "0.19.26" })],
       }), DEADLINE)).toEqual({ kind: "wait" });
     }
   });
 
-  it("relaunches when the daemon runs the target, whatever the last result says", () => {
-    expect(decideUpdateFollow(following, seen({ daemonVersion: "0.19.26", result: ended(failed("0.19.26")) }), DEADLINE))
+  it("relaunches when the daemon runs the target, whatever its results say", () => {
+    expect(decideUpdateFollow(following, seen({ daemonVersion: "0.19.26", results: [ended(MINE, failed())] }), DEADLINE))
       .toEqual({ kind: "relaunch" });
-    // No daemon and nothing pending, as before, unless this restart failed.
-    expect(decideUpdateFollow(following, seen({ daemonVersion: null }), DEADLINE)).toEqual({ kind: "relaunch" });
-    expect(decideUpdateFollow(following, seen({ daemonVersion: null, result: ended(failed("0.19.26")) }), DEADLINE))
+    expect(decideUpdateFollow(following, seen({ daemonVersion: null, restartPending: false, results: [ended(MINE, failed())] }), DEADLINE))
       .toMatchObject({ kind: "stop", notice: { kind: "error" } });
     expect(decideUpdateFollow({ request, when: "idle" }, seen(), DEADLINE)).toEqual({ kind: "relaunch" });
   });
@@ -280,8 +361,8 @@ describe("the follow decision", () => {
     const notices = [
       decideUpdateFollow(following, seen({ daemonVersion: "10.20.300" }), DEADLINE),
       decideUpdateFollow(following, seen({ now: SINCE + DEADLINE }), DEADLINE),
-      decideUpdateFollow(following, seen({ result: ended({ status: "failed", toVersion: "0.19.26" }) }), DEADLINE),
-      decideUpdateFollow(following, seen({ result: ended({ status: "skipped", toVersion: "0.19.26" }) }), DEADLINE),
+      decideUpdateFollow(following, seen({ results: [ended(MINE, { status: "failed", toVersion: "0.19.26" })] }), DEADLINE),
+      decideUpdateFollow(following, seen({ results: [ended(MINE, { status: "skipped", toVersion: "0.19.26" })] }), DEADLINE),
     ];
     for (const step of notices) {
       expect(step.kind).toBe("stop");

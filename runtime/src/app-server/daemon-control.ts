@@ -4,6 +4,7 @@ import { redactSecrets } from "../secrets/sanitizer.js";
 import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
 import { installAgencDaemonWinSWService } from "../packaging/windows-winsw-service.js";
 import { readAgenCDaemonPid } from "./daemon-discovery.js";
+import { isAgenCDaemonRestartRequestId } from "./daemon-restart-outcome.js";
 export { readAgenCDaemonPid, AGENC_DAEMON_PID_MAX_BYTES } from "./daemon-discovery.js";
 import { withAgenCDaemonLifecycleLock, acquireAgenCDaemonLifecycleLock } from "./daemon-lifecycle-lock.js";
 import {
@@ -273,6 +274,8 @@ export type AgenCDaemonCliCommand =
       readonly waitToken?: string;
       /** Internal: a pinned downgrade, which ends a pending restart onto a newer build. */
       readonly downgrade?: boolean;
+      /** Internal: the TUI's id for this restart request, kept with its result. */
+      readonly requestId?: string;
     }
   | { readonly kind: "install-service" }
   | { readonly kind: "help"; readonly text: string }
@@ -1029,9 +1032,19 @@ function parseDaemonRestartWhenIdleArgs(
   let waitToken: string | undefined;
   let requesterPid: number | undefined;
   let requesterAgentId: string | undefined;
+  let requestId: string | undefined;
   for (let index = 0; index < extra.length; index += 1) {
     const arg = extra[index];
     if (arg === "--when-idle") continue;
+    if (arg === "--request-id") {
+      const value = extra[index + 1];
+      if (!isAgenCDaemonRestartRequestId(value)) {
+        return { kind: "error", message: "daemon restart --request-id needs a request id" };
+      }
+      requestId = value;
+      index += 1;
+      continue;
+    }
     if (arg === "--downgrade") {
       downgrade = true;
       continue;
@@ -1080,6 +1093,7 @@ function parseDaemonRestartWhenIdleArgs(
     ...(requesterPid === undefined ? {} : { requesterPid }),
     ...(requesterAgentId === undefined ? {} : { requesterAgentId }),
     ...(downgrade ? { downgrade: true } : {}),
+    ...(requestId === undefined ? {} : { requestId }),
   };
 }
 

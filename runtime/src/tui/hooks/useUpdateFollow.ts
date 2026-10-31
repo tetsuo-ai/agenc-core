@@ -4,9 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { resolveAgenCDaemonRestartFollowDeadlineMs } from "../../app-server/daemon-restart-handoff.js";
 import {
-  AGENC_DAEMON_RESTART_RESULT_FILENAME,
-  parseAgenCDaemonRestartResult,
-  type AgenCDaemonRestartOutcome,
+  AGENC_DAEMON_RESTART_RESULTS_FILENAME,
+  parseAgenCDaemonRestartResults,
   type AgenCDaemonRestartResult,
 } from "../../app-server/daemon-restart-outcome.js";
 import { order } from "../../utils/semver.js";
@@ -34,12 +33,12 @@ export function readDaemonRuntimeVersion(agencHome: string): string | null | und
   }
 }
 
-/** How the last restart step ended, from its result file; null when none can be read. */
-export function readDaemonRestartResult(agencHome: string): AgenCDaemonRestartResult | null {
+/** How the last restart requests ended, from the results file; none when it cannot be read. */
+export function readDaemonRestartResults(agencHome: string): AgenCDaemonRestartResult[] {
   try {
-    return parseAgenCDaemonRestartResult(readFileSync(join(agencHome, AGENC_DAEMON_RESTART_RESULT_FILENAME), "utf8"));
+    return parseAgenCDaemonRestartResults(readFileSync(join(agencHome, AGENC_DAEMON_RESTART_RESULTS_FILENAME), "utf8"));
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -63,15 +62,17 @@ export interface UpdateFollowObservation {
   /** The daemon's version: null when none runs, undefined when unknown. */
   readonly daemonVersion: string | null | undefined;
   readonly restartPending: boolean;
-  /** How the last restart step ended, when one recorded it. */
-  readonly result: AgenCDaemonRestartResult | null;
-  /** Milliseconds since the epoch. */
+  /** How the last restart requests ended, from the results file. */
+  readonly results: readonly AgenCDaemonRestartResult[];
+  /** The follow's monotonic clock (performance.now). */
   readonly now: number;
 }
 
 export type UpdateFollowStep =
   | { readonly kind: "wait" }
   | { readonly kind: "relaunch" }
+  /** A newer request took this one's place: follow that one instead. */
+  | { readonly kind: "continue"; readonly requestId: string }
   /** The switch is not going to happen: stop following and say why. */
   | { readonly kind: "stop"; readonly notice: UpdateNotice };
 
@@ -84,20 +85,13 @@ function newerVersion(version: string, than: string): boolean {
   }
 }
 
-/**
- * The end of the restart this follow waits for, when the recorded result is
- * that one: it ended after the follow began and moved toward the follow's
- * version (or names none). An older target's end says nothing about this
- * update; a newer target's shows in the daemon's version.
- */
-function followedRestartEnd(
+/** The end of the request this follow waits for: by its id only, never by time. */
+function ownEnd(
   follow: UpdateFollow,
-  result: AgenCDaemonRestartResult | null,
-): AgenCDaemonRestartOutcome | undefined {
-  if (result === null || follow.since === undefined) return undefined;
-  if (Date.parse(result.finishedAt) < follow.since) return undefined;
-  const toVersion = result.outcome.toVersion;
-  return toVersion === undefined || toVersion === follow.request.targetVersion ? result.outcome : undefined;
+  results: readonly AgenCDaemonRestartResult[],
+): AgenCDaemonRestartResult | undefined {
+  if (follow.requestId === undefined) return undefined;
+  return results.find((result) => result.requestId === follow.requestId);
 }
 
 function stop(kind: UpdateNotice["kind"], text: string): UpdateFollowStep {
@@ -106,10 +100,10 @@ function stop(kind: UpdateNotice["kind"], text: string): UpdateFollowStep {
 
 /**
  * The next step of a follow. Relaunch once the daemon runs the new version,
- * or once none runs and nothing is pending. Stop, and say why, once the
- * switch cannot happen: a newer version replaced the target, the restart
- * failed or was skipped, or it can no longer end (`deadlineMs` after
- * `since`).
+ * or once none runs, nothing is pending and this request has ended. Follow a
+ * newer request that took this one's place. Stop, and say why, once the
+ * switch cannot happen: a newer version replaced the target, this request
+ * failed or was skipped, or it can no longer end (`deadlineMs` after `since`).
  */
 export function decideUpdateFollow(
   follow: UpdateFollow,
@@ -129,7 +123,9 @@ export function decideUpdateFollow(
       `The daemon now runs AgenC ${daemon}, newer than ${to}. This window stays on ${from}; quit and restart AgenC.`,
     );
   }
-  const end = followedRestartEnd(follow, seen.result);
+  const own = ownEnd(follow, seen.results);
+  if (own?.continuedBy !== undefined) return { kind: "continue", requestId: own.continuedBy };
+  const end = own?.outcome;
   if (end?.status === "failed") {
     return stop(
       "error",
@@ -142,7 +138,11 @@ export function decideUpdateFollow(
       `The daemon did not move to AgenC ${to}: ${end.reason ?? "no reason given"}. This window stays on ${from}; quit and restart AgenC.`,
     );
   }
-  if (updateFollowReady(follow, daemon, seen.restartPending)) return { kind: "relaunch" };
+  // No daemon and nothing pending: the new version starts its own, once this
+  // request has ended (until then its step may sit between stop and start).
+  if ((own !== undefined || follow.requestId === undefined) && updateFollowReady(follow, daemon, seen.restartPending)) {
+    return { kind: "relaunch" };
+  }
   if (follow.since !== undefined && seen.now - follow.since >= deadlineMs) {
     return stop(
       "info",
@@ -176,9 +176,13 @@ export function checkUpdateFollow({ agencHome, safe, now, deadlineMs, relaunch, 
     : decideUpdateFollow(follow, {
         daemonVersion: readDaemonRuntimeVersion(agencHome),
         restartPending: existsSync(join(agencHome, "daemon-restart-pending.json")),
-        result: readDaemonRestartResult(agencHome),
+        results: readDaemonRestartResults(agencHome),
         now,
       }, deadlineMs);
+  if (step.kind === "continue") {
+    setPendingUpdateFollow({ ...follow, requestId: step.requestId });
+    return "continue";
+  }
   if (step.kind === "stop") {
     setPendingUpdateFollow(null);
     notify(step.notice);
@@ -231,7 +235,7 @@ export function useUpdateFollow({ safe, agencHome, relaunch, notify }: {
       checkUpdateFollow({
         agencHome,
         safe: safeRef.current,
-        now: Date.now(),
+        now: performance.now(),
         deadlineMs,
         relaunch: (request) => relaunchRef.current(request),
         notify: (notice) => notifyRef.current(notice),

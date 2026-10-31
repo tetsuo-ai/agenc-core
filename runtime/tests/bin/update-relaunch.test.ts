@@ -39,6 +39,8 @@ const request: UpdateRelaunchRequest = {
 
 afterEach(() => resetUpdateRelaunchStateForTestingOnly());
 
+const REQUEST_ID = "5b1c2d3e-0000-4000-8000-000000000001";
+
 function harness(outcome: AgenCDaemonRestartOutcome | Error, options: {
   readonly platform?: NodeJS.Platform;
   readonly execError?: Error;
@@ -72,6 +74,7 @@ function harness(outcome: AgenCDaemonRestartOutcome | Error, options: {
     encodeMarker: encodeUpdateRelaunchMarker,
     write: () => {},
     now: () => 1_000,
+    newRequestId: () => REQUEST_ID,
   };
   return { calls, deps, reopened, exec: () => exec, stepArgs: () => stepArgs };
 }
@@ -136,7 +139,7 @@ describe("runUpdateRelaunch", () => {
     const h = harness({ status: "restarted", toVersion: "0.19.26", pid: 9 });
     await runUpdateRelaunch(request, h.deps);
     expect(h.calls).toEqual(["daemon-step", "chdir:/work/project", "execve"]);
-    expect(h.stepArgs()).toEqual(["--requester-pid", "4321", "--requester-agent", "conv-abc123"]);
+    expect(h.stepArgs()).toEqual(["--requester-pid", "4321", "--requester-agent", "conv-abc123", "--request-id", REQUEST_ID]);
     expect(h.exec()).toEqual({
       file: "/home/u/.local/bin/agenc",
       args: ["/home/u/.local/bin/agenc", "--resume", "conv-abc123"],
@@ -148,7 +151,7 @@ describe("runUpdateRelaunch", () => {
     const h = harness({ status: "deferred", reason: "1 client attached", toVersion: "0.19.26" });
     await runUpdateRelaunch(request, h.deps);
     expect(h.calls).toEqual(["daemon-step", "reopen"]);
-    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 1_000 });
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 1_000, requestId: REQUEST_ID });
   });
 
   it("stamps the follow with when the daemon step began, before the step runs", async () => {
@@ -164,7 +167,14 @@ describe("runUpdateRelaunch", () => {
         return step(r, args);
       },
     });
-    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 5_000 });
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 5_000, requestId: REQUEST_ID });
+  });
+
+  it("follows the request whose pending restart a deferral joined", async () => {
+    const joined = "5b1c2d3e-0000-4000-8000-000000000002";
+    const h = harness({ status: "deferred", reason: "1 client attached", toVersion: "0.19.26", requestId: joined });
+    await runUpdateRelaunch(request, h.deps);
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 1_000, requestId: joined });
   });
 
   it("reopens this version with the reason when the new one cannot start", async () => {

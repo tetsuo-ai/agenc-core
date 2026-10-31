@@ -45,12 +45,14 @@ import {
   type AgenCProcessEntry,
 } from "../../src/app-server/daemon-restart-when-idle.js";
 import {
-  AGENC_DAEMON_RESTART_RESULT_FILENAME,
+  AGENC_DAEMON_RESTART_RESULTS_FILENAME,
   formatAgenCDaemonRestartOutcome,
   parseAgenCDaemonRestartOutcome,
-  parseAgenCDaemonRestartResult,
+  parseAgenCDaemonRestartResults,
   type AgenCDaemonRestartResult,
 } from "../../src/app-server/daemon-restart-outcome.js";
+import { resolveAgenCDaemonRestartFollowDeadlineMs } from "../../src/app-server/daemon-restart-handoff.js";
+import { decideUpdateFollow } from "../../src/tui/hooks/useUpdateFollow.js";
 import {
   resolveAgenCDaemonRuntimeInfoPath,
   writeDaemonRuntimeInfo,
@@ -71,14 +73,22 @@ function filesystemProbeTimeout(home: string, label: string): Error {
   });
 }
 
-/** The result file a TUI that follows an update reads; null when none was written. */
-function readRestartResult(home: string): AgenCDaemonRestartResult | null {
+/** The results a TUI that follows an update reads. */
+function readResults(home: string): AgenCDaemonRestartResult[] {
   try {
-    return parseAgenCDaemonRestartResult(readFileSync(join(home, AGENC_DAEMON_RESTART_RESULT_FILENAME), "utf8"));
+    return parseAgenCDaemonRestartResults(readFileSync(join(home, AGENC_DAEMON_RESTART_RESULTS_FILENAME), "utf8"));
   } catch {
-    return null;
+    return [];
   }
 }
+
+function resultOf(home: string, requestId: string): AgenCDaemonRestartResult | undefined {
+  return readResults(home).find((result) => result.requestId === requestId);
+}
+
+const REQ = "6c1d2e3f-0000-4000-8000-000000000001";
+const REQ2 = "6c1d2e3f-0000-4000-8000-000000000002";
+const REQ3 = "6c1d2e3f-0000-4000-8000-000000000003";
 
 const NOW = Date.parse("2026-10-29T12:00:00.000Z");
 const NEW_BUILD = { runtimeVersion: "9.9.9", commit: "new", buildTime: "2026-10-29T00:00:00.000Z" };
@@ -305,6 +315,10 @@ describe("daemon restart --when-idle arguments", () => {
       .toEqual({ kind: "restart-when-idle", json: false, waitToken: token });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--wait", "../x"]))
       .toEqual({ kind: "error", message: "daemon restart --wait needs a restart token" });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--json", "--request-id", REQ]))
+      .toEqual({ kind: "restart-when-idle", json: true, requestId: REQ });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--request-id", "../x"]))
+      .toEqual({ kind: "error", message: "daemon restart --request-id needs a request id" });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--now"]))
       .toEqual({ kind: "error", message: "unknown daemon restart option: --now" });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart"]))
@@ -1350,50 +1364,49 @@ describe("restartAgenCDaemonWhenIdle", () => {
     expect(calls).toEqual([]);
   });
 
-  it("records how it ended for a client that stopped waiting, but not a deferral", async () => {
-    await restartAgenCDaemonWhenIdle(testHost(home), {}, scenario().deps);
-    expect(readRestartResult(home)).toEqual({
+  it("publishes how each request ended under its id, but not a deferral", async () => {
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, { ...scenario().deps, requestId: REQ });
+    expect(resultOf(home, REQ)).toEqual({
+      requestId: REQ,
       finishedAt: new Date(NOW).toISOString(),
       outcome: { status: "restarted", fromVersion: "9.9.8", toVersion: "9.9.9", pid: 5000 },
     });
-    // The new daemon does not come up: the failure and its reason are kept.
-    const failing = scenario({ startExit: 1 });
-    await restartAgenCDaemonWhenIdle(testHost(home), {}, { ...failing.deps, now: () => new Date(NOW + 1_000) });
-    const failed = readRestartResult(home);
-    expect(failed).toMatchObject({
-      finishedAt: new Date(NOW + 1_000).toISOString(),
-      outcome: { status: "failed", fromVersion: "9.9.8", toVersion: "9.9.9" },
-    });
-    expect(failed?.outcome.reason).toContain("the daemon stopped but did not start again");
-    // A deferral is not an end: its waiting process records the end later.
+    // The new daemon does not come up: the failure and its reason are kept, next to the first end.
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, { ...scenario({ startExit: 1 }).deps, requestId: REQ2 });
+    expect(resultOf(home, REQ2)?.outcome).toMatchObject({ status: "failed", fromVersion: "9.9.8", toVersion: "9.9.9" });
+    expect(resultOf(home, REQ2)?.outcome.reason).toContain("the daemon stopped but did not start again");
+    expect(readResults(home).map((result) => result.requestId)).toEqual([REQ, REQ2]);
+    // A deferral is not an end: its record carries the id for its waiting process.
     const busy = scenario({ verdicts: [{ idle: false, reason: "1 client attached" }] });
-    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...busy.deps, now: () => new Date(NOW + 2_000) }))
-      .resolves.toMatchObject({ status: "deferred" });
-    expect(readRestartResult(home)).toEqual(failed);
-    // Nor is a lock that cannot be taken for another reason left unrecorded.
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...busy.deps, requestId: REQ3 }))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ3 });
+    expect(resultOf(home, REQ3)).toBeUndefined();
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ3);
+  });
+
+  it("publishes a lock failure, and nothing for a request without an id", async () => {
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, scenario().deps);
+    expect(readResults(home)).toEqual([]);
     await restartAgenCDaemonWhenIdle(testHost(home), {}, {
       ...scenario().deps,
-      now: () => new Date(NOW + 3_000),
+      requestId: REQ,
       acquireRestartLock: async () => {
         throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
       },
     });
-    expect(readRestartResult(home)).toMatchObject({
-      finishedAt: new Date(NOW + 3_000).toISOString(),
-      outcome: { status: "failed", toVersion: "9.9.9" },
-    });
+    expect(resultOf(home, REQ)?.outcome).toMatchObject({ status: "failed", toVersion: "9.9.9" });
   });
 
-  it("records a restart step that stops on an unexpected error, with this runtime's version", async () => {
+  it("publishes a restart step that stops on an unexpected error, with this runtime's version", async () => {
     const io = quietIo();
-    await expect(runAgenCDaemonRestartWhenIdleCli({ kind: "restart-when-idle", json: true }, testHost(home), io, {}, {
+    await expect(runAgenCDaemonRestartWhenIdleCli({ kind: "restart-when-idle", json: true, requestId: REQ }, testHost(home), io, {}, {
       ...scenario().deps,
       readState: async () => {
         throw new Error("the process table is gone");
       },
     })).resolves.toBe(1);
     expect(parseAgenCDaemonRestartOutcome(io.out().trim())).toMatchObject({ status: "failed", toVersion: "9.9.9" });
-    expect(readRestartResult(home)?.outcome).toEqual(parseAgenCDaemonRestartOutcome(io.out().trim()));
+    expect(resultOf(home, REQ)?.outcome).toEqual(parseAgenCDaemonRestartOutcome(io.out().trim()));
   });
 
   it("prints one JSON line for agenc update", async () => {
@@ -1423,6 +1436,7 @@ describe("the deferred restart waiter", () => {
       notAfter: new Date(NOW + 60_000).toISOString(),
       daemon: { pid: old.pid, instanceId: old.instanceId },
       target: NEW_BUILD,
+      requestId: REQ,
     });
   });
 
@@ -1767,28 +1781,67 @@ describe("the deferred restart waiter", () => {
     expect(calls.filter((call) => call !== "probe")).toEqual([]);
     expect(calls.length).toBe(5);
     expect(readAgenCDaemonPendingRestart(home)).toBeNull();
-    expect(readRestartResult(home)?.outcome).toEqual(outcome);
+    expect(resultOf(home, REQ)?.outcome).toEqual(outcome);
   });
 
-  it("records how it ended, so a TUI that follows the update learns a failure", async () => {
+  it("publishes how it ended under its record's request, so a TUI that follows the update learns a failure", async () => {
     const { deps } = waiterDeps({});
     const outcome = await runAgenCDaemonRestartWaiter(testHost(home), token, {}, { ...deps, startDaemon: async () => 1 });
     expect(outcome).toMatchObject({ status: "failed", fromVersion: "9.9.8", toVersion: "9.9.9" });
-    expect(readRestartResult(home)).toEqual({ finishedAt: new Date(clock).toISOString(), outcome });
+    expect(resultOf(home, REQ)).toEqual({ requestId: REQ, finishedAt: new Date(clock).toISOString(), outcome });
   });
 
-  it("records standing down for a newer update", async () => {
-    writeAgenCDaemonPendingRestart(home, { ...readAgenCDaemonPendingRestart(home)!, token: "11111111-2222-4333-8444-555555555555" });
+  it("publishes its end before it clears its record, so a follower never sees neither", async () => {
     const { deps } = waiterDeps({});
-    await runAgenCDaemonRestartWaiter(testHost(home), token, {}, deps);
-    expect(readRestartResult(home)?.outcome).toEqual({
-      status: "skipped",
-      reason: "a newer update replaced this restart",
-      toVersion: "9.9.9",
+    const atLock: Array<{ readonly pending: boolean; readonly end: string | undefined }> = [];
+    await runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      startDaemon: async () => 1,
+      withLifecycleLock: async (_host, operation) => {
+        atLock.push({ pending: readAgenCDaemonPendingRestart(home) !== null, end: resultOf(home, REQ)?.outcome.status });
+        return operation();
+      },
     });
+    // The last lock is the record's removal: the failure is already published.
+    expect(atLock.at(-1)).toEqual({ pending: true, end: "failed" });
+    expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    // A follower polling at that moment stops with the failure; it does not relaunch.
+    const step = decideUpdateFollow(
+      { request: { fromVersion: "9.9.8", targetVersion: "9.9.9", command: "/w/agenc", installType: "install.sh", cwd: "/w" }, when: "daemon", since: 0, requestId: REQ },
+      { daemonVersion: null, restartPending: true, results: readResults(home), now: 1 },
+      resolveAgenCDaemonRestartFollowDeadlineMs({}, "linux"),
+    );
+    expect(step).toMatchObject({ kind: "stop", notice: { kind: "error" } });
   });
 
-  it("records a waiting process that stops on an unexpected error", async () => {
+  it("stands down for a newer request and names it, so that request's followers go on", async () => {
+    writeAgenCDaemonPendingRestart(home, {
+      ...readAgenCDaemonPendingRestart(home)!,
+      token: "11111111-2222-4333-8444-555555555555",
+      requestId: REQ2,
+    });
+    const { deps } = waiterDeps({});
+    await runAgenCDaemonRestartWaiter(testHost(home), token, {}, { ...deps, requestId: REQ });
+    expect(resultOf(home, REQ)).toMatchObject({
+      outcome: { status: "skipped", reason: "a newer update replaced this restart", toVersion: "9.9.9" },
+      continuedBy: REQ2,
+    });
+    // The newer request's own record stays.
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ2);
+  });
+
+  it("publishes nothing when a newer restart carries the same request on", async () => {
+    writeAgenCDaemonPendingRestart(home, {
+      ...readAgenCDaemonPendingRestart(home)!,
+      token: "11111111-2222-4333-8444-555555555555",
+    });
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, { ...deps, requestId: REQ }))
+      .resolves.toMatchObject({ status: "skipped", reason: "a newer update replaced this restart" });
+    expect(resultOf(home, REQ)).toBeUndefined();
+  });
+
+  it("publishes a waiting process that stops on an unexpected error, before its record goes", async () => {
     const { deps } = waiterDeps({ verdicts: [{ idle: false, reason: "busy" }] });
     await expect(runAgenCDaemonRestartWhenIdleCli({ kind: "restart-when-idle", json: false, waitToken: token }, testHost(home), quietIo(), {}, {
       ...deps,
@@ -1796,12 +1849,112 @@ describe("the deferred restart waiter", () => {
         throw new Error("the clock stopped");
       },
     })).resolves.toBe(1);
-    expect(readRestartResult(home)?.outcome).toEqual({
+    expect(resultOf(home, REQ)?.outcome).toEqual({
       status: "failed",
       reason: "the waiting process stopped: the clock stopped",
       toVersion: "9.9.9",
     });
     expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+  });
+});
+
+describe("two restart requests for the same version, each followed by a TUI", () => {
+  let home: string;
+  const old = identityFor(4242);
+  const deadline = resolveAgenCDaemonRestartFollowDeadlineMs({}, "linux");
+  const follow = (requestId: string) => ({
+    request: { fromVersion: "9.9.8", targetVersion: "9.9.9", command: "/w/agenc", installType: "install.sh" as const, cwd: "/w" },
+    when: "daemon" as const,
+    since: 0,
+    requestId,
+  });
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rwi-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function stepDeps(requestId: string, tokens: string[], idle: boolean): AgenCDaemonRestartWhenIdleDeps {
+    return {
+      now: () => new Date(NOW),
+      sleep: async () => {},
+      ownBuild: () => NEW_BUILD,
+      readState: async () => ({ kind: "running", identity: old }),
+      probe: async () => (idle ? { idle: true } : { idle: false, reason: "1 client attached" }),
+      requestShutdownWhenIdle: async () => (idle ? undefined : { declined: "1 client attached" }),
+      withLifecycleLock: async (_host, operation) => operation(),
+      acquireLifecycleLock: async () => async () => {},
+      daemonCommand: () => `${home}/runtime/9.9.8/tree/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground`,
+      stopDaemon: async (_host, _io, _timeout, stopOptions) => {
+        if (await stopOptions?.beforeShutdownRequest?.(old) !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        const decided = await stopOptions?.requestDaemonShutdown?.(_host, old);
+        if (decided !== undefined && decided !== null && "declined" in decided) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        return 0;
+      },
+      startDaemon: async () => 1,
+      requestIdentity: async () => identityFor(5000, NEW_BUILD),
+      spawnWaiter: (_host, token, id) => {
+        expect(id).toBe(requestId);
+        tokens.push(token);
+        return 6000 + tokens.length;
+      },
+      requestId,
+    };
+  }
+
+  it("the replaced request goes on as the newer one, and neither follow stops early", async () => {
+    const tokens: string[] = [];
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false)))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ });
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ2, tokens, false)))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ2 });
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ2);
+    // The first waiting process finds its record replaced and stands down.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[0]!, {}, stepDeps(REQ, tokens, false));
+    expect(resultOf(home, REQ)).toMatchObject({ outcome: { status: "skipped" }, continuedBy: REQ2 });
+    const waiting = { daemonVersion: "9.9.8", restartPending: true, results: readResults(home), now: 1 };
+    // The newer follow ignores the older request's end; the older one follows the newer request.
+    expect(decideUpdateFollow(follow(REQ2), waiting, deadline)).toEqual({ kind: "wait" });
+    expect(decideUpdateFollow(follow(REQ), waiting, deadline)).toEqual({ kind: "continue", requestId: REQ2 });
+    // The newer request's restart then fails: its followers learn why.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[1]!, {}, stepDeps(REQ2, tokens, true));
+    const after = { daemonVersion: null, restartPending: false, results: readResults(home), now: 2 };
+    expect(decideUpdateFollow(follow(REQ2), after, deadline)).toMatchObject({ kind: "stop", notice: { kind: "error" } });
+    expect(resultOf(home, REQ2)?.outcome.reason).toContain("the daemon stopped but did not start again");
+  });
+
+  it("a step without a request id (agenc update) carries on the request it replaces", async () => {
+    const tokens: string[] = [];
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false));
+    const { requestId: _none, ...anonymous } = stepDeps(REQ, tokens, false);
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, anonymous))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ });
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ);
+    // The replaced waiting process leaves the end to its successor.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[0]!, {}, stepDeps(REQ, tokens, false));
+    expect(resultOf(home, REQ)).toBeUndefined();
+  });
+
+  it("a deferral that joins another request's pending restart follows that request", async () => {
+    const tokens: string[] = [];
+    // A newer build's restart already waits, from another TUI.
+    writeAgenCDaemonPendingRestart(home, {
+      schemaVersion: 1,
+      token: "22222222-2222-4333-8444-555555555555",
+      createdAt: new Date(NOW).toISOString(),
+      notAfter: new Date(NOW + 3_600_000).toISOString(),
+      daemon: { pid: old.pid, instanceId: old.instanceId },
+      target: { runtimeVersion: "9.9.10", commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" },
+      requestId: REQ2,
+    });
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false)))
+      .resolves.toMatchObject({ status: "deferred", toVersion: "9.9.10", requestId: REQ2 });
+    expect(tokens).toEqual([]);
+    // A follow that never saw this outcome (the update stopped waiting) learns it from the results.
+    expect(resultOf(home, REQ)).toMatchObject({ outcome: { status: "deferred" }, continuedBy: REQ2 });
   });
 });
 

@@ -40,6 +40,8 @@ export interface AgenCDaemonRestartOutcome {
   readonly pid?: number;
   /** Deferred: when the waiting process gives up. */
   readonly waitUntil?: string;
+  /** Deferred: the restart request whose end a client should wait for. */
+  readonly requestId?: string;
 }
 
 const STATUSES: ReadonlySet<string> = new Set([
@@ -81,6 +83,7 @@ export function parseAgenCDaemonRestartOutcome(
   const fromVersion = text("fromVersion");
   const toVersion = text("toVersion");
   const waitUntil = text("waitUntil");
+  const requestId = record.requestId;
   const pid = record.pid;
   return {
     status: record.status as AgenCDaemonRestartStatus,
@@ -90,6 +93,7 @@ export function parseAgenCDaemonRestartOutcome(
     ...(toVersion === undefined ? {} : { toVersion }),
     ...(typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
     ...(waitUntil === undefined ? {} : { waitUntil }),
+    ...(isAgenCDaemonRestartRequestId(requestId) ? { requestId } : {}),
   };
 }
 
@@ -140,44 +144,66 @@ export function agenCDaemonRestartIsNews(outcome: AgenCDaemonRestartOutcome): bo
 }
 
 /**
- * `<AGENC_HOME>/daemon-restart-result.json`: how the last restart step that
- * finished ended. A client that stopped waiting for a restart (a TUI that
- * follows an update after `still-running` or `deferred`) reads it to learn
- * the end it no longer sees. Written by the restart step and the waiting
- * process; a deferral is not an end, so it is not written for one.
+ * A restart request's id: `--request-id`, chosen by the TUI that asked, kept
+ * in the pending record, on the deferred outcome and in the results.
  */
-export const AGENC_DAEMON_RESTART_RESULT_FILENAME = "daemon-restart-result.json";
+export function isAgenCDaemonRestartRequestId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(value);
+}
+
+/**
+ * `<AGENC_HOME>/daemon-restart-results.json`: how the last restart requests
+ * ended, oldest first, keyed by request id. A TUI that follows an update
+ * after `still-running` or `deferred` reads the end of its own request here;
+ * it never compares times. Written by the restart step and the waiting
+ * process before either clears the pending record. A deferral is not an end.
+ */
+export const AGENC_DAEMON_RESTART_RESULTS_FILENAME = "daemon-restart-results.json";
+/** The results file keeps the ends of this many requests. */
+export const AGENC_DAEMON_RESTART_RESULTS_KEPT = 8;
 
 export interface AgenCDaemonRestartResult {
-  /** ISO time the restart step finished. */
+  readonly requestId: string;
+  /** When it ended, for people reading the file; never compared. */
   readonly finishedAt: string;
   readonly outcome: AgenCDaemonRestartOutcome;
+  /** This request goes on as that one: a newer request took its place. */
+  readonly continuedBy?: string;
 }
 
-export function formatAgenCDaemonRestartResult(
-  outcome: AgenCDaemonRestartOutcome,
-  finishedAt: Date,
-): string {
-  return `${JSON.stringify({ schemaVersion: 1, finishedAt: finishedAt.toISOString(), outcome }, null, 2)}\n`;
-}
-
-/** Parse the result file; null when it is not one. */
-export function parseAgenCDaemonRestartResult(text: string): AgenCDaemonRestartResult | null {
+/** Parse the results file; an unreadable file holds none. */
+export function parseAgenCDaemonRestartResults(text: string): AgenCDaemonRestartResult[] {
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
-    return null;
+    return [];
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as { readonly schemaVersion?: unknown; readonly finishedAt?: unknown; readonly outcome?: unknown };
-  if (
-    record.schemaVersion !== 1 ||
-    typeof record.finishedAt !== "string" ||
-    !Number.isFinite(Date.parse(record.finishedAt))
-  ) {
-    return null;
+  const record = value as { readonly schemaVersion?: unknown; readonly results?: unknown } | null;
+  if (record?.schemaVersion !== 2 || !Array.isArray(record.results)) return [];
+  const results: AgenCDaemonRestartResult[] = [];
+  for (const entry of record.results.slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT)) {
+    const item = entry as Partial<Record<keyof AgenCDaemonRestartResult, unknown>> | null;
+    if (!isAgenCDaemonRestartRequestId(item?.requestId) || typeof item?.finishedAt !== "string") continue;
+    const outcome = parseAgenCDaemonRestartOutcome(JSON.stringify(item.outcome ?? null));
+    if (outcome === null) continue;
+    results.push({
+      requestId: item.requestId,
+      finishedAt: item.finishedAt,
+      outcome,
+      ...(isAgenCDaemonRestartRequestId(item.continuedBy) ? { continuedBy: item.continuedBy } : {}),
+    });
   }
-  const outcome = parseAgenCDaemonRestartOutcome(JSON.stringify(record.outcome ?? null));
-  return outcome === null ? null : { finishedAt: record.finishedAt, outcome };
+  return results;
+}
+
+/** The file text with `result` added: one entry per request, the newest last. */
+export function addAgenCDaemonRestartResult(
+  existing: string | null,
+  result: AgenCDaemonRestartResult,
+): string {
+  const kept = parseAgenCDaemonRestartResults(existing ?? "")
+    .filter((entry) => entry.requestId !== result.requestId);
+  const results = [...kept, result].slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT);
+  return `${JSON.stringify({ schemaVersion: 2, results }, null, 2)}\n`;
 }
