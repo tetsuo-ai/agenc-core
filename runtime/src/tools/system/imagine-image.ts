@@ -31,6 +31,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
@@ -534,10 +535,15 @@ function gatewayImageBackend(
  * Media credentials are intentionally independent from the reasoning
  * provider. A Meta/OpenAI/etc session key must never become an xAI bearer.
  * Direct Grok sessions retain their existing session-bearer compatibility.
+ * The session is the one making the call (`args`): a sub-agent runs its
+ * parent's tool, and must never spend the parent's session credential.
  */
-function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
+function resolveImageBackend(
+  opts: ImagineImageToolOptions,
+  args?: Readonly<Record<string, unknown>>,
+): BackendResolution {
   const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+  const provider = (readInvokingSession(args) ?? opts.getSession())?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
   let oauthBaseUrlError: string | undefined;
   const metaCredential = resolveProviderApiKeyEnvironment("meta", env);
@@ -1431,7 +1437,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     timeoutMs: 210_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
-      const resolution = resolveImageBackend(opts);
+      const resolution = resolveImageBackend(opts, args);
       const gateway = "backend" in resolution &&
         (resolution.backend.kind === "openrouter" || resolution.backend.kind === "venice")
         ? resolution.backend
@@ -1468,7 +1474,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
-      const backendResolution = resolveImageBackend(opts);
+      const backendResolution = resolveImageBackend(opts, args);
       if ("error" in backendResolution) {
         return refusal({ error: backendResolution.error });
       }

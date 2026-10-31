@@ -3,17 +3,36 @@ import { OLLAMA_WEB_FETCH_URL } from "../gateway-web-search.js";
 /** Observed balance debit for a successful /api/web_fetch, 2026-10-21. */
 export const OLLAMA_WEB_FETCH_USD_PER_REQUEST = 0.001;
 const MAX_BYTES = 4_000_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_TIMEOUT_MS = 120_000;
+
+/**
+ * The time budget for one Ollama fetch: the caller's timeout (default 30 s,
+ * at most 120 s). web_fetch spends it on its own URL checks first, then
+ * gives the rest to {@link runOllamaWebFetch}.
+ */
+export function ollamaFetchBudgetMs(timeoutMs: number | undefined): number {
+  const requested = timeoutMs !== undefined && Number.isFinite(timeoutMs)
+    ? Math.floor(timeoutMs)
+    : DEFAULT_TIMEOUT_MS;
+  return Math.max(1, Math.min(requested, MAX_TIMEOUT_MS));
+}
+
 export type OllamaFetchOutcome =
   | { kind: "content"; title: string; content: string; links: string[]; costUsd: number }
   | { kind: "failed"; reason: string; costUsd: number };
 
-/** The caller validates the target URL. Provider credentials only reach Ollama. */
+/**
+ * The caller validates the target URL: Ollama follows redirects on its own
+ * servers, so web_fetch sends one only where no per-domain decision exists
+ * to bypass (model-facing-tools.ts). Provider credentials only reach Ollama.
+ */
 export async function runOllamaWebFetch(options: {
   apiKey: string; url: string; signal?: AbortSignal; timeoutMs?: number; fetchImpl?: typeof fetch;
 }): Promise<OllamaFetchOutcome> {
   let costUsd = 0;
   try {
-    const timeout = AbortSignal.timeout(Math.max(1, Math.min(options.timeoutMs ?? 30_000, 120_000)));
+    const timeout = AbortSignal.timeout(ollamaFetchBudgetMs(options.timeoutMs));
     const response = await (options.fetchImpl ?? fetch)(OLLAMA_WEB_FETCH_URL, {
       method: "POST", headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({ url: options.url }), redirect: "error",

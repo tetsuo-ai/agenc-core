@@ -130,6 +130,30 @@ export interface AdmissionUsageSummary extends AdmissionUsageTotals {
   })[];
 }
 
+/**
+ * The model calls a tool makes for the session that called it, by the purpose
+ * that leads their admission step id (`<purpose>:<session sub id>`):
+ * WebSearch's Grok native search, XSearch, and web_fetch's prompt extraction.
+ * Their spend belongs to the tool call, not to a turn.
+ */
+export const TOOL_MODEL_CALL_PURPOSES = Object.freeze([
+  "web_search",
+  "x_search",
+  "web_fetch_extraction",
+] as const);
+
+export type ToolModelCallPurpose = (typeof TOOL_MODEL_CALL_PURPOSES)[number];
+
+/**
+ * What one run's own tool calls were charged: the fees tools report on their
+ * tool_exec reservations (web search and fetch, media generation) plus the
+ * model calls tools make ({@link TOOL_MODEL_CALL_PURPOSES}). Settled, priced
+ * reservations only; delegated runs are not included.
+ */
+export interface AdmissionToolCharges {
+  readonly costUsd: number;
+}
+
 /** Immutable observation at one admission revision, materialized at publication. */
 export interface AdmissionUsageSnapshot {
   readonly runId: string;

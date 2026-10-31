@@ -51,6 +51,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
@@ -453,11 +454,16 @@ function gatewayVideoBackend(
   return { kind, baseURL: baseURL.replace(/\/$/, ""), bearer };
 }
 
+/**
+ * The backend for a call from the session that made it (`args`): a sub-agent
+ * runs its parent's tool, and must never spend the parent's session key.
+ */
 function resolveVideoBackend(
   opts: ImagineVideoToolOptions,
+  args?: Readonly<Record<string, unknown>>,
 ): VideoBackendResolution {
   const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+  const provider = (readInvokingSession(args) ?? opts.getSession())?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
   let oauthBaseUrlError: string | undefined;
 
@@ -1827,7 +1833,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
       // OpenRouter and Venice clips have a reviewed per-second ceiling.
-      const resolution = resolveVideoBackend(opts);
+      const resolution = resolveVideoBackend(opts, args);
       const kind = "backend" in resolution ? resolution.backend.kind : undefined;
       const listed = "backend" in resolution && kind === "venice"
         ? cachedVeniceMediaModels(resolution.backend.baseURL)
@@ -1849,7 +1855,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
-      const backendResolution = resolveVideoBackend(opts);
+      const backendResolution = resolveVideoBackend(opts, args);
       if ("error" in backendResolution) {
         return refusal({ error: backendResolution.error });
       }

@@ -136,6 +136,21 @@ export function attachToolRuntimeContext(
   });
 }
 
+/**
+ * The session a dispatched call runs in. A sub-agent runs its parent's tool
+ * objects, so a session a tool captured when it was built is the parent's;
+ * the runtime attaches the invoking session to every dispatched call (a
+ * child's call carries the child's session). Undefined for a call without
+ * runtime context (direct use), where the captured session is the caller's.
+ */
+export function readInvokingSession(
+  args: Readonly<Record<string, unknown>> | undefined,
+): ToolInvocation["session"] | undefined {
+  return args === undefined
+    ? undefined
+    : readToolRuntimeContext(args as Record<string, unknown>)?.invocation?.session;
+}
+
 export function readToolRuntimeContext(
   args: Record<string, unknown>,
 ): ToolRuntimeAttemptContext | undefined {

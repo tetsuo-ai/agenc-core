@@ -204,7 +204,16 @@ continue to use the accounting total.
   protocol used by the SDK subprocess transport
   (`promptViaSubprocess` in `@tetsuo-ai/agenc-sdk`).
 - `--output-format json` emits a single structured result; `text` is human
-  stdout.
+  stdout. Its `tokenUsage` covers the session's own work: `inputTokens`,
+  `outputTokens` and `totalTokens` count its model turns, and `costUsd` is the
+  cost of those turns plus what its tool calls were charged, from the same
+  ledger as `/cost`: web search and fetch fees (DeepSeek, Ollama Cloud,
+  OpenRouter and Venice), media generation, and the model calls a tool makes
+  (`web_fetch`'s `prompt` extraction, Grok's native web search, `XSearch`).
+  A tool call that reports no price (a local tool, or a configured search
+  endpoint) adds nothing. Sub-agents keep their own accounting and are not
+  included. `costKnown` is `false` when the model part is incomplete (for
+  example after a resume) or the tool charges could not be read.
 
 ### Examples
 

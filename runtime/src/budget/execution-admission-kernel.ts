@@ -10,6 +10,7 @@ import type {
   AdmissionJournalEvent,
   AdmissionLease,
   AdmissionReconcileResult,
+  AdmissionToolCharges,
   AdmissionUsage,
   AdmissionUsageSummary,
   AdmissionUsageSnapshot,
@@ -960,6 +961,13 @@ export class ExecutionAdmissionKernel {
     this.#flushCaptured(binding.workspace);
     return binding.workspace.repository.getUsageSummary(binding.scope.runId,
       binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey, true);
+  }
+
+  getDirectToolCharges(binding: ClientBinding): AdmissionToolCharges {
+    this.#assertOpen();
+    this.#flushCaptured(binding.workspace);
+    return binding.workspace.repository.getToolCharges(binding.scope.runId,
+      binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey);
   }
 
   subscribeUsage(
@@ -2013,6 +2021,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   getDirectUsageSummary(): AdmissionUsageSummary {
     return this.kernel.getDirectUsageSummary(this.binding);
+  }
+
+  getDirectToolCharges(): AdmissionToolCharges {
+    return this.kernel.getDirectToolCharges(this.binding);
   }
 
   subscribeUsage(listener: (summary: AdmissionUsageSummary) => void): () => void {

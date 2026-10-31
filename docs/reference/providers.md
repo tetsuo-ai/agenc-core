@@ -1269,12 +1269,20 @@ DeepSeek's own 393,216 ceiling (Cloud refuses more); for other models the 16k
 default and 32k recovery budget are AgenC output budgets, not advertised Cloud
 limits. Cloud quota and model availability depend on the Ollama account.
 
-An Ollama Cloud session uses its own key for `web_fetch` through Ollama's
-`/api/web_fetch` API. Successful fetches cost $0.001 each (balance-verified
-2026-10-21). URL permission checks and private-address rejection still apply.
-A provider failure falls back to guarded direct fetching and is named in the
-result. Ollama returns page text, title and links; it does not report the
-origin HTTP status or the final redirected URL.
+In the "never asks" permission mode with no `web_fetch` rule in effect, an
+Ollama Cloud session's `web_fetch` reads pages through Ollama's
+`/api/web_fetch` API with the session's own key. Successful fetches cost
+$0.001 each (balance-verified 2026-10-21). Ollama follows redirects on its
+servers and does not report them, so, as for
+[DeepSeek's fetch](../providers/deepseek-direct.md#web-fetch), every other
+session keeps the local fetcher, which checks each redirect. A URL goes to
+Ollama only after the local fetcher's own checks on the starting URL pass and
+its host is a public DNS name that does not resolve to a private address;
+preapproved documentation URLs stay local. A sub-agent decides from its own
+session, never its parent's. A provider failure falls back to guarded direct
+fetching and is named in the result (`provider_fetch_fallback`). Ollama
+returns page text, title and links; it does not report the origin HTTP status
+or the final redirected URL.
 
 Sources: https://docs.ollama.com/cloud and
 https://docs.ollama.com/api/openai-compatibility.

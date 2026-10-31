@@ -28,6 +28,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
@@ -106,9 +107,16 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function resolveSpeechBackend(opts: ImagineSpeechToolOptions): SpeechBackend | { readonly error: string } {
+/**
+ * The speech route of the session making the call (`args`): a sub-agent runs
+ * its parent's tool, and speaks only with its own session's key.
+ */
+function resolveSpeechBackend(
+  opts: ImagineSpeechToolOptions,
+  args?: Readonly<Record<string, unknown>>,
+): SpeechBackend | { readonly error: string } {
   const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+  const provider = (readInvokingSession(args) ?? opts.getSession())?.services?.provider;
   const identity = readProviderIdentity(provider as never);
   if ((identity !== "openrouter" && identity !== "venice") || provider === undefined) {
     return { error: "ImagineSpeech speaks only in an OpenRouter or Venice session, with that session's own key." };
@@ -253,7 +261,7 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
     timeoutMs: 120_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
-      const backend = resolveSpeechBackend(opts);
+      const backend = resolveSpeechBackend(opts, args);
       if ("error" in backend) return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: null };
       const model = stringValue(args.model) ?? DEFAULT_SPEECH_MODEL[backend.kind];
       const live = backend.kind === "venice" ? cachedVeniceMediaModels(backend.baseURL) : undefined;
@@ -269,7 +277,7 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
     execute: async (args) => {
       const signal = args.__abortSignal instanceof AbortSignal ? args.__abortSignal : undefined;
       signal?.throwIfAborted();
-      const backend = resolveSpeechBackend(opts);
+      const backend = resolveSpeechBackend(opts, args);
       if ("error" in backend) return refusal(backend.error);
       const text = typeof args.text === "string" ? args.text.trim() : "";
       if (text.length === 0) return refusal("text is required");

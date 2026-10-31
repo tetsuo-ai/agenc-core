@@ -28,6 +28,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
@@ -80,9 +81,16 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function resolveEditBackend(opts: ImagineEditToolOptions): EditBackend | { readonly error: string } {
+/**
+ * The edit route of the session making the call (`args`): a sub-agent runs
+ * its parent's tool, and edits only with its own session's key.
+ */
+function resolveEditBackend(
+  opts: ImagineEditToolOptions,
+  args?: Readonly<Record<string, unknown>>,
+): EditBackend | { readonly error: string } {
   const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+  const provider = (readInvokingSession(args) ?? opts.getSession())?.services?.provider;
   if (readProviderIdentity(provider as never) !== "venice" || provider === undefined) {
     return { error: "ImagineEdit edits images only in a Venice session, with that session's own key." };
   }
@@ -216,7 +224,7 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
     timeoutMs: 200_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
-      const backend = resolveEditBackend(opts);
+      const backend = resolveEditBackend(opts, args);
       const scale = upscaleFactor(args.upscale);
       if ("error" in backend || scale === "invalid") return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: null };
       const listed = cachedVeniceMediaModels(backend.baseURL);
@@ -245,7 +253,7 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
     execute: async (args) => {
       const signal = args.__abortSignal instanceof AbortSignal ? args.__abortSignal : undefined;
       signal?.throwIfAborted();
-      const backend = resolveEditBackend(opts);
+      const backend = resolveEditBackend(opts, args);
       if ("error" in backend) return refusal(backend.error);
       const ref = stringValue(args.image);
       if (ref === undefined) return refusal("image is required");
