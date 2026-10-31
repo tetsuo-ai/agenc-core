@@ -3,11 +3,10 @@
  * the turn's effort. A model-only GPT-6 Astra skill in a GPT-5 session at
  * `minimal` runs Astra at its own default level, so the summary requests carry
  * no level either, not the session's `minimal`, which Astra does not accept.
- * A model downshift before a skill turn summarizes on the previous, larger
- * model at the session's level resolved for that model, never at the skill's
- * level, which that model may not accept; when the session's level does not
- * resolve for that model, the summary keeps the turn's selection. Checked on
- * the requests the OpenAI and Gemini providers send.
+ * Every other compaction, a model downshift's on the previous, larger model
+ * included, selects the session's level as before; a level the summaries'
+ * model does not take becomes `low`. Checked on the requests the OpenAI and
+ * Gemini providers send.
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -252,7 +251,7 @@ describe("automatic compaction in a skill turn, on the wire", () => {
     }
   });
 
-  test("a turn without a skill still summarizes on the session's model at its level", async () => {
+  test("a turn without a skill sends exactly what it sent before: the session's model at its level", async () => {
     const { session, fetchImpl } = await gpt5Session();
 
     const bodies = await compactInTurn(session, session.newDefaultTurn(), fetchImpl);
@@ -267,23 +266,39 @@ describe("automatic compaction in a skill turn, on the wire", () => {
 describe("model-downshift compaction before a skill turn, on the wire", () => {
   test.each([
     [
-      "a GPT-5 skill at minimal",
+      "an Astra session at high, a GPT-5 skill at minimal",
+      "astra",
       { name: "gpt5-review", model: "gpt-5", effort: "minimal" },
       ["minimal", "low", "medium", "high"],
     ],
     [
-      "a GPT-5.1 skill at none",
+      "an Astra session at high, a GPT-5.1 skill at none",
+      "astra",
+      { name: "gpt51-review", model: "gpt-5.1", effort: "none" },
+      ["none", "low", "medium", "high"],
+    ],
+    [
+      "a GPT-5 session at minimal, a GPT-5 skill at minimal",
+      "gpt-5",
+      { name: "gpt5-review", model: "gpt-5", effort: "minimal" },
+      ["minimal", "low", "medium", "high"],
+    ],
+    [
+      "a GPT-5 session at minimal, a GPT-5.1 skill at none",
+      "gpt-5",
       { name: "gpt51-review", model: "gpt-5.1", effort: "none" },
       ["none", "low", "medium", "high"],
     ],
   ] as const)(
-    "after an Astra session at high, %s summarizes on Astra at a level Astra accepts",
-    async (_label, skill, skillModelLevels) => {
-      const { session, fetchImpl } = await astraSession();
+    "after an Astra turn, %s summarizes on Astra at low",
+    async (_label, sessionModel, skill, skillModelLevels) => {
+      const { session, fetchImpl } = sessionModel === "astra"
+        ? await astraSession()
+        : await gpt5Session();
       const admittedTurn = await skillTurn(session, skill);
       expect(admittedTurn.modelInfo.slug).toBe(skill.model);
       expect(admittedTurn.reasoningEffort).toBe(skill.effort);
-      // This session has no models manager, so the skill model's metadata
+      // This session has no models manager, so a skill model's metadata
       // lacks the 400k window and the levels a live session reads for it.
       const turn = {
         ...admittedTurn,
@@ -305,9 +320,9 @@ describe("model-downshift compaction before a skill turn, on the wire", () => {
     },
   );
 
-  test("after a Gemini Pro skill turn, a Gemma skill at high in a Gemma session at minimal summarizes on Gemini Pro at the turn's high", async () => {
+  test("after a Gemini Pro skill turn, a Gemma skill at high in a Gemma session at minimal summarizes on Gemini Pro at a level it takes", async () => {
     // Gemini Pro takes low, medium and high, not the session's minimal, and
-    // Gemini's resolver refuses a level a model lacks rather than dropping it.
+    // Gemini refuses a request naming a level the model lacks.
     const { session, fetchImpl } = await gemmaSession();
     const turn = await skillTurn(session, { name: "gemma-deep", effort: "high" });
     expect(turn.modelInfo.slug).toBe("gemma-4-31b-it");
@@ -326,7 +341,7 @@ describe("model-downshift compaction before a skill turn, on the wire", () => {
     }
     for (const body of bodies) {
       expect((body.generationConfig as { thinkingConfig?: unknown } | undefined)?.thinkingConfig)
-        .toEqual({ thinkingLevel: "high" });
+        .toEqual({ thinkingLevel: "low" });
     }
   });
 });

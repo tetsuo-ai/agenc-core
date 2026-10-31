@@ -80,8 +80,8 @@ function usesListedGatewayEffort(provider: string | undefined): boolean {
  * requested top-tier spelling when supported, translate to the other top-tier
  * spelling when that is the model's only form, and otherwise clamp to `high`.
  *
- * Exported for unit tests and for compaction summaries on a model other than
- * the turn's; other runtime callers use resolveMainLoopReasoningEffort.
+ * Exported for unit tests and for compaction's check that a summary model
+ * takes `none`; other runtime callers use resolveMainLoopReasoningEffort.
  */
 export function resolveSessionReasoningEffort(
   turnEffort: ReasoningEffort | undefined,
