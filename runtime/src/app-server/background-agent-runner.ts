@@ -2912,16 +2912,24 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // user_message or the durable idempotency marker. A refusal leaves the
     // client's existing draft/attachment rollback path intact.
     await consumeDaemonPendingProviderSwitches(active.bootstrap.session, active.bootstrap.configStore);
-    if (params.skillInvocation !== undefined) {
-      // A skill setting the session cannot honor refuses the message before
-      // anything is published, so the user's draft comes back.
-      await admitDaemonSkillInvocation(
-        active.bootstrap.session,
-        active.bootstrap.configStore,
-        params.skillInvocation,
+    // A skill setting the session cannot honor refuses the message before
+    // anything is published, so the user's draft comes back. The prompt is
+    // then sized for the turn it starts: the skill's model, if it has one.
+    const admittedSkill = params.skillInvocation === undefined
+      ? undefined
+      : await admitDaemonSkillInvocation(
+          active.bootstrap.session,
+          active.bootstrap.configStore,
+          params.skillInvocation,
+        );
+    if (admittedSkill === undefined) {
+      await active.bootstrap.session.assertUserPromptFits?.(input);
+    } else {
+      await active.bootstrap.session.assertUserPromptFits?.(
+        input,
+        admittedSkill.overrides,
       );
     }
-    await active.bootstrap.session.assertUserPromptFits?.(input);
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {

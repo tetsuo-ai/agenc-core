@@ -3193,13 +3193,23 @@ export class Session {
     );
   }
 
-  /** Validate daemon input before its transcript and submission identity are committed. */
-  async assertUserPromptFits(input: string | readonly LLMContentPart[]): Promise<void> {
+  /**
+   * Validate daemon input before its transcript and submission identity are
+   * committed, against the turn it starts: a skill turn's own model and
+   * context window when `skillTurn` is given, the session's otherwise.
+   */
+  async assertUserPromptFits(
+    input: string | readonly LLMContentPart[],
+    skillTurn?: SkillInvocationTurnOverrides,
+  ): Promise<void> {
     const configStore = this.services.configStore;
     if (configStore === undefined) throw new Error("Prompt admission requires the session's ConfigStore authority");
     await runWithCurrentRuntimeSession(this, () => runWithCanonicalSettingsAuthority(configStore, async () => {
       const { assertUserPromptFits } = await import("./run-turn.js");
-      await assertUserPromptFits(this, this.newDefaultTurn(), input);
+      const ctx = skillTurn === undefined
+        ? this.newDefaultTurn()
+        : this.newSkillInvocationTurn(skillTurn);
+      await assertUserPromptFits(this, ctx, input);
     }));
   }
 
