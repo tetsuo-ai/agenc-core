@@ -65,6 +65,25 @@ describe("allowed", () => {
   });
 });
 
+describe("here-strings", () => {
+  test.each([
+    ["cat <<< \"hello\"; sleep 30 &", "trailing"],
+    ["cat <<< 'a & b' && nohup ./job > log &", "nohup"],
+    ["grep -q x <<< \"$v\"; cat > f <<EOF\nx & y\nEOF\nnohup ./p > p.log 2>&1 &", "nohup"],
+    ["read -r a b <<<\"$line\"; ./worker & echo started", "trailing"],
+  ] as const)("refused: %s", (cmd, kind) => {
+    expect(findUnwaitedBackgroundJob(cmd)?.kind).toBe(kind);
+  });
+
+  test.each([
+    "cat <<< \"a & b\"",
+    "bc <<< \"2^10\" && echo ok",
+    "while read -r l; do echo \"$l\"; done <<< \"$(ls)\"",
+  ])("allowed: %s", (cmd) => {
+    expect(findUnwaitedBackgroundJob(cmd)).toBeUndefined();
+  });
+});
+
 test("masks quoted text, substitutions and here-document bodies at the same length", () => {
   const cmd = "cat > e.py <<'EOF'\nx & y\nEOF\necho \"a&b\" $(c &) # d &\nnohup p &";
   const masked = maskShellStructure(cmd)!;

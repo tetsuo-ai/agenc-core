@@ -20,8 +20,9 @@
  * when the command returns and the result says so, as before.
  *
  * The scan is conservative: quotes, `$(...)`, backticks, comments and
- * here-document bodies are masked first, and anything it cannot parse
- * (an unterminated quote or here-document) is never refused.
+ * here-document bodies are masked first, here-strings (`<<<`) are read as
+ * one operator, and anything it cannot parse (an unterminated quote or
+ * here-document) is never refused.
  *
  * @module
  */
@@ -167,7 +168,12 @@ export function maskShellStructure(cmd: string): string | undefined {
       index = stop;
       continue;
     }
-    if (ch === "<" && cmd[index + 1] === "<" && cmd[index + 2] !== "<") {
+    if (ch === "<" && cmd[index + 1] === "<" && cmd[index + 2] === "<") {
+      // A here-string: one operator; its word follows as an ordinary word.
+      index += 3;
+      continue;
+    }
+    if (ch === "<" && cmd[index + 1] === "<") {
       // Here-document: remember its delimiter; the body starts after this line.
       let at = index + 2;
       const stripTabs = cmd[at] === "-";
