@@ -18,7 +18,10 @@ interface PendingStop {
 }
 
 const pendingStops = new WeakMap<object, PendingStop>();
-/** The turn each session is running now (its code-mode turn host's token). */
+/**
+ * The turn each session is running now (its code-mode turn host's token).
+ * Stops and nested-call results are scoped to it.
+ */
 const currentTurns = new WeakMap<object, object>();
 
 /** A session's turn starts: stops recorded from now on belong to `turn`. */
@@ -31,6 +34,11 @@ export function startCodeModeNestedStopTurn(session: object, turn: object): void
 export function endCodeModeNestedStopTurn(session: object, turn: object): void {
   if (currentTurns.get(session) === turn) currentTurns.delete(session);
   if (pendingStops.get(session)?.turn === turn) pendingStops.delete(session);
+}
+
+/** Whether `turn` is still the session's running turn. */
+export function isCurrentCodeModeTurn(session: object, turn: object): boolean {
+  return currentTurns.get(session) === turn;
 }
 
 /**

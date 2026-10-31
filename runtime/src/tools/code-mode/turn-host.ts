@@ -2,11 +2,13 @@ import type { Session } from "../../session/session.js";
 import type { ToolRegistry } from "../../tool-registry.js";
 import {
   endCodeModeNestedStopTurn,
+  isCurrentCodeModeTurn,
   recordCodeModeNestedStop,
   startCodeModeNestedStopTurn,
 } from "./nested-stop.js";
 import {
   CODE_MODE_EXEC_TOOL_NAME,
+  CODE_MODE_TURN_ENDED_ERROR,
   CODE_MODE_WAIT_TOOL_NAME,
   type CodeModeNestedToolCall,
   type CodeModeService,
@@ -52,6 +54,13 @@ async function invokeNestedCodeModeTool(
     input: call.input,
     abortSignal: signal,
   });
+  // A call that settles after its turn ended publishes nothing: the session
+  // would file its display result under the turn running now, and its stop
+  // belongs to no turn. Its dispatch was revoked, so the script gets the
+  // refusal a call made after the turn gets.
+  if (!isCurrentCodeModeTurn(session, turn)) {
+    throw new Error(CODE_MODE_TURN_ENDED_ERROR);
+  }
   if (Array.isArray(result.metadata?.displayAttachments) && result.metadata.displayAttachments.length > 0) {
     session.emit({
       id: session.nextInternalSubId(),
@@ -68,8 +77,7 @@ async function invokeNestedCodeModeTool(
     });
   }
   // A refusal that ends the turn must reach the turn loop even if the script
-  // catches the error below; see nested-stop.ts. One that completes after its
-  // turn ended belongs to no turn and is dropped there.
+  // catches the error below; see nested-stop.ts.
   recordCodeModeNestedStop(session, result.metadata, turn);
   if (result.isError === true) {
     throw new Error(result.content);
@@ -138,7 +146,7 @@ export function startCodeModeTurnWorker(
     invokeTool: (call: CodeModeNestedToolCall, signal: AbortSignal) =>
       invokeNestedCodeModeTool(session, call, signal, turn),
     notify: ({ callId, text }) => {
-      emitCodeModeNotify(session, callId, text);
+      if (isCurrentCodeModeTurn(session, turn)) emitCodeModeNotify(session, callId, text);
     },
   });
   return {

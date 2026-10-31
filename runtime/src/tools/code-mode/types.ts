@@ -6,6 +6,9 @@ export const CODE_MODE_WAIT_TOOL_NAME = "wait";
 export const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 export const DEFAULT_WAIT_YIELD_TIME_MS = 10_000;
 export const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
+/** A cell's nested call once the turn that started the cell has ended. */
+export const CODE_MODE_TURN_ENDED_ERROR =
+  "code mode nested tool host is not attached for this turn";
 
 export type CodeModeToolKind = "function" | "freeform";
 

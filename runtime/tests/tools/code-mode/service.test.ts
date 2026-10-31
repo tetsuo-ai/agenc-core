@@ -322,6 +322,60 @@ describe("QuickJsCodeModeService turn hosts", () => {
     nextTurn.dispose();
   });
 
+  test("a nested call that settles after its turn ended publishes no display result into the session's next turn (Codex review 2, item 2)", async () => {
+    const service = makeService();
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let markHeld!: () => void;
+    const held = new Promise<void>((resolve) => { markHeld = resolve; });
+    let calls = 0;
+    const emitted: string[] = [];
+    const session = {
+      services: {
+        codeModeService: service,
+        registry: {
+          dispatch: async () => ({ content: "", isError: false }),
+          // A tool with a display attachment (a chart, say). The second call
+          // ignores the revocation and settles after the turn ended.
+          dispatchCodeModeNestedTool: async () => {
+            calls += 1;
+            if (calls === 2) {
+              markHeld();
+              await released;
+            }
+            return {
+              content: JSON.stringify({ shown: `chart-${calls}.png` }),
+              isError: false,
+              metadata: { displayAttachments: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+            };
+          },
+        },
+      },
+      nextInternalSubId: () => "sub",
+      emit: (event: { readonly msg: { readonly type: string } }) => { emitted.push(event.msg.type); },
+    } as unknown as CodeModeWorkerSession;
+    const firstTurn = startCodeModeTurnWorker(session);
+    const cell = await startCell(service, session, [
+      "text(JSON.stringify(await tools.probe({})));",
+      'try { text(JSON.stringify(await tools.probe({}))); } catch (error) { text("refused: " + String(error)); }',
+    ].join("\n"));
+    await held;
+    // The call inside the turn showed its attachment.
+    expect(emitted).toEqual(["tool_call_completed"]);
+    firstTurn.dispose();
+    const nextTurn = startCodeModeTurnWorker(session);
+    release();
+    const done = await service.wait({ cellId: cell.cellId, yieldTimeMs: 2_000 });
+    nextTurn.dispose();
+
+    // Nothing from the late call reached the session, whose next turn the
+    // attachment would have been filed under; the script was refused.
+    expect(emitted).toEqual(["tool_call_completed"]);
+    const output = [...cell.contentItems, ...done.contentItems];
+    expect(output).toContainEqual({ type: "input_text", text: expect.stringContaining("refused") });
+    expect(JSON.stringify(output)).not.toContain("chart-2.png");
+  });
+
   test("a parent's script keeps its nested calls in the parent while a sub-agent's turn runs", async () => {
     const service = makeService();
     const dispatched: string[] = [];

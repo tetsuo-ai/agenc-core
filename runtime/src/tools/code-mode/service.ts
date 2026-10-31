@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import {
+  CODE_MODE_TURN_ENDED_ERROR,
   DEFAULT_EXEC_YIELD_TIME_MS,
   DEFAULT_WAIT_YIELD_TIME_MS,
   type CodeModeExecuteRequest,
@@ -341,7 +342,7 @@ export class QuickJsCodeModeService implements CodeModeService {
       cell.worker.postMessage({
         type: "tool_error",
         id: call.runtimeToolCallId,
-        error: "code mode nested tool host is not attached for this turn",
+        error: CODE_MODE_TURN_ENDED_ERROR,
       });
       return;
     }
