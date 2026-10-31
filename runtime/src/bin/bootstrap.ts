@@ -746,6 +746,20 @@ export function preloadOrdinarySubmitModules(): Promise<void> {
       () => import("../services/mcp/types.js").then(({ McpJsonConfigSchema }) => {
         McpJsonConfigSchema().safeParse({ mcpServers: {} });
       }),
+      // V8 compiles a regular expression on its first two tests. The
+      // memory-request pattern is large (about 10 ms to compile); the
+      // product-help ones are small. Compile them here instead of in the first
+      // request's attachment pass. They are pure tests of an empty string.
+      () => import("../prompts/attachments/memory-on-request.js").then(({ asksAboutMemory }) => {
+        asksAboutMemory("");
+        asksAboutMemory("");
+      }),
+      () => import("../prompts/attachments/product-help.js").then(({ asksAboutUndo, asksAboutInstructionFiles }) => {
+        for (let pass = 0; pass < 2; pass += 1) {
+          asksAboutUndo("");
+          asksAboutInstructionFiles("");
+        }
+      }),
     ]) {
       try {
         await load();
