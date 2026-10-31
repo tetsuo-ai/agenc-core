@@ -26,9 +26,11 @@ import {
 } from "../../session/provider-model-selection.js";
 import { reasoningEffortForModel } from "../../session/reasoning-effort-for-model.js";
 import type { Session } from "../../session/session.js";
-import type {
-  SkillInvocationSettings,
-  TurnSkillInvocation,
+import {
+  SKILL_TURN_MODEL_DEFAULT_EFFORT,
+  type SkillInvocationSettings,
+  type SkillTurnEffort,
+  type TurnSkillInvocation,
 } from "../../session/skill-invocation.js";
 import type {
   ModelInfo,
@@ -170,7 +172,7 @@ export async function admitSkillInvocation(
   }
   const turnModel = model ?? live.model;
 
-  let reasoningEffort: ReasoningEffort | null | undefined;
+  let effort: SkillTurnEffort | undefined;
   const requestedEffort = settings.effort?.trim().toLowerCase();
   if (requestedEffort !== undefined && requestedEffort.length > 0) {
     if (!isReasoningEffort(requestedEffort)) {
@@ -190,7 +192,7 @@ export async function admitSkillInvocation(
           : `Skill ${name} sets effort ${requestedEffort}, which ${turnModel} does not support (supported: ${levels.join(", ")}).`,
       );
     }
-    reasoningEffort = requestedEffort;
+    effort = requestedEffort;
   } else if (model !== undefined) {
     // As on a model switch: the session's level moves with the model only
     // when the model accepts it, otherwise the model runs at its default.
@@ -205,7 +207,7 @@ export async function admitSkillInvocation(
         provider: live.provider,
         model,
       }).defaultLevel;
-      reasoningEffort = fallback ?? null;
+      effort = fallback ?? SKILL_TURN_MODEL_DEFAULT_EFFORT;
     }
   }
 
@@ -219,6 +221,7 @@ export async function admitSkillInvocation(
   const invocation: TurnSkillInvocation = Object.freeze({
     name,
     ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
     allowedTools: Object.freeze(
       managedOnly ? [] : [...new Set([...grants, invokedSkill])],
     ),
@@ -227,7 +230,6 @@ export async function admitSkillInvocation(
     overrides: Object.freeze({
       invocation,
       ...(modelInfo !== undefined ? { modelInfo } : {}),
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     }),
     withheldGrants: Object.freeze(managedOnly ? grants : []),
   });

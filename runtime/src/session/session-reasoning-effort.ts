@@ -14,7 +14,10 @@ import { getInitialEffortSetting } from "../utils/effort.js";
 import { isHaiku55, anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
 import type { Session } from "./session.js";
 import type { ReasoningEffort, TurnContext } from "./turn-context.js";
-import { skillInvocationRequestModel } from "./skill-invocation.js";
+import {
+  skillInvocationFollowsModelDefault,
+  skillInvocationRequestModel,
+} from "./skill-invocation.js";
 
 type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 
@@ -163,7 +166,8 @@ export function resolveSessionReasoningEffort(
 /**
  * The effort the main loop sends on a turn of `session`: the turn's effort,
  * or the configured one when it has none, resolved for the session's
- * provider and model. A session that cleared its level on purpose sends none.
+ * provider and model. A session that cleared its level on purpose sends none,
+ * and so does a skill turn whose skill runs its model at the model's default.
  * When a model fallback switched the model inside the running turn, the turn's
  * effort was frozen for the old model; the session's own effort, which the
  * switch judged against the new model, applies instead.
@@ -196,7 +200,10 @@ export function resolveMainLoopReasoningEffort(
         session.config?.model ?? turn.modelInfo.slug,
       effortSource: session.services.configStore
         ?.provenance?.("reasoning_effort")?.scope,
-      followsModelDefault: configuration?.reasoningEffortCleared === true,
+      // The session cleared its level, or the turn's skill runs its model at
+      // the model's default.
+      followsModelDefault: configuration?.reasoningEffortCleared === true ||
+        skillInvocationFollowsModelDefault(session, turn),
     },
   );
 }

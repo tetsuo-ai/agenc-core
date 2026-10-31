@@ -1,6 +1,6 @@
 /**
- * A daemon-style session on DeepSeek Flash at high effort, for tests of the
- * turn a user starts by invoking a skill.
+ * A daemon-style session for tests of the turn a user starts by invoking a
+ * skill: DeepSeek Flash at high effort unless a test names another route.
  */
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ import {
 } from "../../src/session/session.js";
 import type {
   Config,
+  ReasoningEffort,
   SessionConfiguration,
 } from "../../src/session/turn-context.js";
 import { AsyncQueue } from "../../src/utils/async-queue.js";
@@ -34,12 +35,22 @@ export function removeSkillTurnHomes(): void {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 }
 
-function configStore(managedPolicy: boolean): {
+function configStore(
+  managedPolicy: boolean,
+  configLines: readonly string[] | undefined,
+): {
   readonly store: ConfigStore;
   readonly managedConfigPath?: string;
 } {
   const home = mkdtempSync(join(tmpdir(), "agenc-skill-turn-"));
   homes.push(home);
+  if (configLines !== undefined) {
+    writeFileSync(
+      join(home, "config.toml"),
+      ["config_version = 2", ...configLines, ""].join("\n"),
+      { mode: 0o600 },
+    );
+  }
   if (!managedPolicy) {
     return { store: new ConfigStore({ home, env: { AGENC_HOME: home }, cwd: "/tmp" }) };
   }
@@ -94,6 +105,16 @@ function provider(): LLMProvider {
   } as LLMProvider;
 }
 
+/** The provider route a test session runs on. */
+export interface SkillTurnRoute {
+  readonly provider: LLMProvider;
+  readonly model: string;
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly supportedReasoningLevels: readonly ReasoningEffort[];
+  readonly contextWindow: number;
+  readonly providerEnvironment: Readonly<Record<string, string>>;
+}
+
 export function deepSeekSkillTurnSession(options: {
   readonly permissionContext?: ToolPermissionContext;
   readonly skillsManager?: unknown;
@@ -101,8 +122,26 @@ export function deepSeekSkillTurnSession(options: {
   readonly managedPolicy?: boolean;
   readonly registry?: unknown;
   readonly codeModeService?: unknown;
+  /** The session's route; DeepSeek Flash at high effort when absent. */
+  readonly route?: SkillTurnRoute;
+  /**
+   * Lines of the session home's config.toml. The store reads them on its
+   * first `reload()`.
+   */
+  readonly configLines?: readonly string[];
 } = {}): Session {
-  const { store, managedConfigPath } = configStore(options.managedPolicy === true);
+  const route: SkillTurnRoute = options.route ?? {
+    provider: provider(),
+    model: "deepseek-flash",
+    reasoningEffort: "high",
+    supportedReasoningLevels: ["low", "high", "max"],
+    contextWindow: 1_048_576,
+    providerEnvironment: { DEEPSEEK_API_KEY: "test-key" },
+  };
+  const { store, managedConfigPath } = configStore(
+    options.managedPolicy === true,
+    options.configLines,
+  );
   const sessionConfiguration: SessionConfiguration = {
     cwd: "/tmp",
     approvalPolicy: { value: "on_request" },
@@ -110,13 +149,18 @@ export function deepSeekSkillTurnSession(options: {
     fileSystemSandboxPolicy: { allowWrite: [], denyWrite: [], allowRead: [], denyRead: [] },
     networkSandboxPolicy: { allowlist: [], denylist: [], allowManagedDomainsOnly: false },
     windowsSandboxLevel: "none",
-    provider: { slug: "deepseek" },
-    collaborationMode: { model: "deepseek-flash", reasoningEffort: "high" },
+    provider: { slug: route.provider.name },
+    collaborationMode: {
+      model: route.model,
+      ...(route.reasoningEffort !== undefined
+        ? { reasoningEffort: route.reasoningEffort }
+        : {}),
+    },
     dynamicTools: [],
     sessionSource: "cli_main",
   } as unknown as SessionConfiguration;
   const config: Config = {
-    model: "deepseek-flash",
+    model: route.model,
     cwd: "/tmp",
     features: createManagedFeatures(),
     multiAgentV2: { usageHintEnabled: false, usageHintText: "", hideSpawnAgentMetadata: false },
@@ -138,8 +182,8 @@ export function deepSeekSkillTurnSession(options: {
       requiredStartupFailures: async () => [],
     },
     mcpStartupCancellationToken: { cancel: () => {}, isCancelled: () => false },
-    provider: provider(),
-    providerEnvironment: { DEEPSEEK_API_KEY: "test-key" },
+    provider: route.provider,
+    providerEnvironment: { ...route.providerEnvironment },
     registry: options.registry ?? {
       tools: [],
       toLLMTools: () => [],
@@ -168,10 +212,10 @@ export function deepSeekSkillTurnSession(options: {
     jsRepl: { id: "repl-skill-turn" },
     config,
     modelInfo: {
-      slug: "deepseek-flash",
+      slug: route.model,
       effectiveContextWindowPercent: 100,
-      contextWindow: 1_048_576,
-      supportedReasoningLevels: ["low", "high", "max"],
+      contextWindow: route.contextWindow,
+      supportedReasoningLevels: [...route.supportedReasoningLevels],
       defaultReasoningSummary: "auto",
       truncationPolicy: "off",
       usedFallbackModelMetadata: false,

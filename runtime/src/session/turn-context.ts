@@ -32,7 +32,10 @@ import type {
   NetworkPolicyDecider,
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
-import type { TurnSkillInvocation } from "./skill-invocation.js";
+import {
+  SKILL_TURN_MODEL_DEFAULT_EFFORT,
+  type TurnSkillInvocation,
+} from "./skill-invocation.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
 import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig } from "../config/schema.js";
 
@@ -1505,14 +1508,10 @@ export function newDefaultTurnWithSubId(
 
 /** What a skill turn changes relative to the session's defaults. */
 export interface SkillInvocationTurnOverrides {
+  /** The admitted settings, effort included (`invocation.effort`). */
   readonly invocation: TurnSkillInvocation;
   /** Metadata of `invocation.model`; required with it. */
   readonly modelInfo?: ModelInfo;
-  /**
-   * Effort for this turn. `undefined` keeps the session's; `null` runs the
-   * turn with no level, so the model uses its own default.
-   */
-  readonly reasoningEffort?: ReasoningEffort | null;
 }
 
 /**
@@ -1536,10 +1535,15 @@ export function newSkillInvocationTurnWithSubId(
   const configuration = session.sessionConfiguration;
   const { reasoningEffort: sessionEffort, ...collaborationMode } =
     configuration.collaborationMode;
+  // The model-default marker stays on `skillInvocation`, which the request's
+  // effort resolution reads, so no configured level refills the turn.
+  const effort = overrides.invocation.effort;
   const reasoningEffort =
-    overrides.reasoningEffort === undefined
+    effort === undefined
       ? sessionEffort
-      : (overrides.reasoningEffort ?? undefined);
+      : effort === SKILL_TURN_MODEL_DEFAULT_EFFORT
+        ? undefined
+        : effort;
   const sessionConfiguration: SessionConfiguration = {
     ...configuration,
     collaborationMode: {

@@ -62,6 +62,7 @@ describe("daemon turn driver and skill invocations", () => {
     expect(turns[0]?.skillInvocation).toEqual({
       name: "deep-review",
       model: "deepseek-v4-pro",
+      effort: "low",
       allowedTools: ["Write", "exec_command(git status:*)", "Skill(deep-review)"],
     });
     expect(turns[0]?.reasoningEffort).toBe("low");

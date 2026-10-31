@@ -11,6 +11,20 @@
  * @module
  */
 
+import type { ReasoningEffort } from "./turn-context.js";
+
+/**
+ * A skill turn's reasoning effort when it is no level at all: the turn sends
+ * none, so the model runs at its own default, and the configured
+ * `reasoning_effort` does not refill it.
+ */
+export const SKILL_TURN_MODEL_DEFAULT_EFFORT = "model_default";
+
+/** The effort a skill turn runs at: a level, or the model's own default. */
+export type SkillTurnEffort =
+  | ReasoningEffort
+  | typeof SKILL_TURN_MODEL_DEFAULT_EFFORT;
+
 /** What a client sends with the turn it starts by invoking a skill. */
 export interface SkillInvocationSettings {
   /** The invoked skill, named in errors and warnings. */
@@ -35,11 +49,40 @@ export interface TurnSkillInvocation {
    */
   readonly model?: string;
   /**
+   * The turn's effort when the skill sets one or its model does not accept
+   * the session's: a level, or {@link SKILL_TURN_MODEL_DEFAULT_EFFORT}.
+   * Absent, the turn runs at the session's effort.
+   */
+  readonly effort?: SkillTurnEffort;
+  /**
    * Canonical allow rules added, for this turn's tool calls only, under the
    * `command` rule source: the skill's `allowed-tools` and `Skill(<name>)`
    * for the invoked skill itself.
    */
   readonly allowedTools: readonly string[];
+}
+
+/**
+ * Whether the turn runs with no reasoning level on purpose because its skill
+ * said so. A provider fallback or switch inside the turn ends it, as it ends
+ * the skill's model.
+ */
+export function skillInvocationFollowsModelDefault(
+  session: { readonly providerBinding?: { readonly revision: number } },
+  turn: {
+    readonly skillInvocation?: TurnSkillInvocation;
+    readonly providerBinding?: { readonly revision: number };
+  },
+): boolean {
+  if (turn.skillInvocation?.effort !== SKILL_TURN_MODEL_DEFAULT_EFFORT) {
+    return false;
+  }
+  const liveRevision = session.providerBinding?.revision;
+  return !(
+    liveRevision !== undefined &&
+    turn.providerBinding !== undefined &&
+    turn.providerBinding.revision !== liveRevision
+  );
 }
 
 /**

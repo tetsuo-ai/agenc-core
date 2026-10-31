@@ -76,9 +76,9 @@ describe("skill invocation admission", () => {
     expect(admitted.overrides.invocation).toEqual({
       name: "deep-review",
       model: "deepseek-v4-pro",
+      effort: "low",
       allowedTools: ["Write", "exec_command(git status:*)", "Skill(deep-review)"],
     });
-    expect(admitted.overrides.reasoningEffort).toBe("low");
     expect(admitted.overrides.modelInfo?.slug).toBe("deepseek-v4-pro");
   });
 
@@ -109,7 +109,7 @@ describe("skill invocation admission", () => {
       name: "same",
       allowedTools: ["Skill(same)"],
     });
-    expect(admitted.overrides).not.toHaveProperty("reasoningEffort");
+    expect(admitted.overrides.invocation).not.toHaveProperty("effort");
     expect(admitted.overrides).not.toHaveProperty("modelInfo");
   });
 
