@@ -3445,6 +3445,22 @@ async function* runTurnKernelInner(
       event: { type: "turn_complete", content: lastContent, usage, stopReason: "exec_unavailable" },
     };
   };
+  // An exit found the task budget reached. A pending refusal ends the turn
+  // first, before the checkpoint asks whether to go on (moot when the turn
+  // ends anyway), as at the top of the loop where the stop precedes the budget
+  // check; one that lands while the checkpoint waits ends it too. Null when the
+  // checkpoint lets the turn go on.
+  const finishReachedTaskBudget = async (): Promise<{
+    readonly terminal: Terminal;
+    readonly event: PhaseEvent;
+  } | null> => {
+    const execStop = await finishPendingExecStop();
+    if (execStop !== null) return execStop;
+    if (await continueInteractiveTaskBudget(session, 0, signal)) return null;
+    const lateExecStop = await finishPendingExecStop();
+    if (lateExecStop !== null) return lateExecStop;
+    return { terminal: { reason: "task_budget" }, event: await finishTaskBudget() };
+  };
 
   yield { type: "turn_start", turnIndex: 0 };
 
@@ -3993,9 +4009,19 @@ async function* runTurnKernelInner(
         if (result.assistantText.length > 0) {
           lastContent = result.assistantText;
         }
-        if (taskBudget?.reached && !await continueInteractiveTaskBudget(session, 0, signal)) {
-          yield await finishTaskBudget();
-          return { reason: "task_budget" };
+        if (taskBudget?.reached) {
+          const budgetStop = await finishReachedTaskBudget();
+          if (budgetStop !== null) {
+            yield budgetStop.event;
+            return budgetStop.terminal;
+          }
+        }
+        // A refusal that a yielded script met while this response was written
+        // ends the turn as that stop instead of the response's own terminal.
+        const execStopAtTerminal = await finishPendingExecStop();
+        if (execStopAtTerminal !== null) {
+          yield execStopAtTerminal.event;
+          return execStopAtTerminal.terminal;
         }
         await syncSessionState();
         emitTurnComplete(
@@ -4050,9 +4076,23 @@ async function* runTurnKernelInner(
         };
         return terminal;
       }
-      if (taskBudget?.reached && !await continueInteractiveTaskBudget(session, 0, signal)) {
-        yield await finishTaskBudget();
-        return { reason: "task_budget" };
+      if (taskBudget?.reached) {
+        const budgetStop = await finishReachedTaskBudget();
+        if (budgetStop !== null) {
+          yield budgetStop.event;
+          return budgetStop.terminal;
+        }
+      }
+      // A refusal that a yielded script met before this failure ends the turn
+      // as that stop instead. A compaction failure that leaves history needing
+      // reconstruction is still raised below; that outcome is not replaced.
+      const unrecoverableCompaction = underlying instanceof PreparedCompactionFailure &&
+        (underlying.original instanceof CompactionTransactionError ||
+          underlying.original instanceof CompactionReconstructionRequiredError);
+      const execStopAtFailure = unrecoverableCompaction ? null : await finishPendingExecStop();
+      if (execStopAtFailure !== null) {
+        yield execStopAtFailure.event;
+        return execStopAtFailure.terminal;
       }
       if (underlying instanceof DeferredCompactionError) {
         const compactionError = underlying instanceof PreparedCompactionFailure
@@ -4097,24 +4137,13 @@ async function* runTurnKernelInner(
 
     // Finish only after tool blocks from the admitted response are dispatched.
     // Pending blocks are handled below, before the post-tool budget check.
+    // A refusal that a yielded script met while this answer was written ends
+    // the turn as that stop; the budget's ending would drop it.
     if (taskBudget?.reached && state.toolUseBlocks.length === 0) {
-      // A refusal that a yielded script met while this answer was written
-      // ends the turn as that stop, before the checkpoint asks whether to go
-      // on (moot when the turn ends anyway), as one that lands while the
-      // checkpoint waits does. The budget's ending would drop it.
-      const execStopAtBudget = await finishPendingExecStop();
-      if (execStopAtBudget !== null) {
-        yield execStopAtBudget.event;
-        return execStopAtBudget.terminal;
-      }
-      if (!await continueInteractiveTaskBudget(session, 0, signal)) {
-        const execStopAtCheckpoint = await finishPendingExecStop();
-        if (execStopAtCheckpoint !== null) {
-          yield execStopAtCheckpoint.event;
-          return execStopAtCheckpoint.terminal;
-        }
-        yield await finishTaskBudget();
-        return { reason: "task_budget" };
+      const budgetStop = await finishReachedTaskBudget();
+      if (budgetStop !== null) {
+        yield budgetStop.event;
+        return budgetStop.terminal;
       }
     }
 
@@ -4476,9 +4505,14 @@ async function* runTurnKernelInner(
 
     // Actual usage may have crossed the cap. Tool results are now available;
     // persist them with the partial summary instead of attempting compaction.
-    if (taskBudget?.reached && !await continueInteractiveTaskBudget(session, 0, signal)) {
-      yield await finishTaskBudget();
-      return { reason: "task_budget" };
+    // A refusal that a yielded script met after the batch took its stops (while
+    // the results above were delivered) ends the turn as that stop instead.
+    if (taskBudget?.reached) {
+      const budgetStop = await finishReachedTaskBudget();
+      if (budgetStop !== null) {
+        yield budgetStop.event;
+        return budgetStop.terminal;
+      }
     }
 
     // Commit the newest tool exchange before the next prepared request's

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
+import { LLMProviderError } from "../../src/llm/errors.js";
 import type { LLMResponse } from "../../src/llm/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
 import type { StopHookHandler, StopHookOutcome } from "../../src/phases/stop-hooks.js";
@@ -887,6 +888,156 @@ describe("a refusal that lands as the step limit or the task budget ends the tur
       expect(requests).toBe(2);
       expect(phases.at(-1)).toMatchObject({ stopReason: "task_budget" });
       expect(warnings(made.events, "exec_unavailable")).toEqual([]);
+    } finally {
+      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+      await closed.dispose();
+    }
+  }, 20_000);
+});
+
+/**
+ * Lead decision on Fxu-3: the three other exits that ended a turn their own way
+ * and dropped a pending refusal (a sampling terminal, a sampling failure, the
+ * post-tool task-budget check) take it first too, with the same precedence.
+ */
+describe("a refusal that lands as a sample fails or the tool results are delivered ends the turn", () => {
+  const PAUSED = "Shell commands are disabled for the rest of this session.";
+
+  async function runWith(
+    made: ReturnType<typeof bypassSession>,
+    prompt: string,
+    opts: Parameters<typeof runTurn>[3] = {},
+    onPhase?: (phase: PhaseEvent) => Promise<void>,
+  ): Promise<PhaseEvent[]> {
+    const phases: PhaseEvent[] = [];
+    for await (const phase of runTurn(made.session, made.ctx, prompt, opts)) {
+      phases.push(phase);
+      await onPhase?.(phase);
+    }
+    return phases;
+  }
+
+  function expectReasonLast(made: ReturnType<typeof bypassSession>, phases: readonly PhaseEvent[]): void {
+    expect(made.state.history.at(-1)?.role).toBe("assistant");
+    expect(String(made.state.history.at(-1)?.content)).toContain(PAUSED);
+    expect(phases.at(-1)).toMatchObject({ content: expect.stringContaining(PAUSED) });
+  }
+
+  function lengthResponse(): LLMResponse {
+    return { content: "truncated output", toolCalls: [], usage: { promptTokens: 128, completionTokens: 32, totalTokens: 160 },
+      model: "test-model", finishReason: "length" };
+  }
+
+  test("a refusal that lands while the response that exhausts output recovery is written ends the turn with exec_unavailable", async () => {
+    root = mkdtempSync(join(tmpdir(), "exec-unavailable-terminal-"));
+    const closed = await closedManager(root);
+    const service = new QuickJsCodeModeService({ enabled: true });
+    try {
+      expect(service.enabled()).toBe(true);
+      const held = heldScript(closed.manager, service);
+      let samples = 0;
+      let refusedDuringLast: boolean | undefined;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        samples += 1;
+        if (samples === 1) return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+        // Output recovery re-enters the loop (whose top check would take a
+        // refusal) after each cut response; the fifth sample is the one whose
+        // result ends the turn as the sampling terminal.
+        if (samples === 5) refusedDuringLast = await held.deliverRefusal();
+        return lengthResponse();
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service });
+      Object.assign(made.ctx, { modelInfo: { ...made.ctx.modelInfo, maxOutputTokens: 32, maxOutputTokensExplicit: true } });
+      const phases = await runWith(made, "Start the background check.");
+
+      expect(samples).toBe(5);
+      expect(refusedDuringLast).toBe(true);
+      expect(held.nested).toEqual(["hold", "list_processes", "finished"]);
+      // Not the output-limit model_error, which would drop the refusal.
+      expectExecUnavailableEnd(phases, made.events);
+      expectReasonLast(made, phases);
+    } finally {
+      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+      await closed.dispose();
+    }
+  }, 20_000);
+
+  test.each([["the provider rejects the request", false], ["the user stops the turn as it fails", true]] as const)(
+    "a refusal that lands while a sample fails ends the turn as that stop unless %s first",
+    async (_label, userStop) => {
+      root = mkdtempSync(join(tmpdir(), "exec-unavailable-failure-"));
+      const closed = await closedManager(root);
+      const service = new QuickJsCodeModeService({ enabled: true });
+      try {
+        expect(service.enabled()).toBe(true);
+        const held = heldScript(closed.manager, service);
+        const stop = new AbortController();
+        let samples = 0;
+        let refusedDuringFailure: boolean | undefined;
+        const provider = mkProvider();
+        provider.chatStream = async (): Promise<LLMResponse> => {
+          samples += 1;
+          if (samples === 1) return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+          refusedDuringFailure = await held.deliverRefusal();
+          if (userStop) stop.abort("user stop");
+          // Not retried: the turn fails with this error.
+          throw new LLMProviderError("stub-provider", "Invalid parameter: tools[0].function.name", 400);
+        };
+        const made = bypassSession(provider, held.registry, { codeModeService: service });
+        const phases = await runWith(made, "Start the background check.", { signal: stop.signal });
+
+        expect(samples).toBe(2);
+        expect(refusedDuringFailure).toBe(true);
+        if (userStop) {
+          // A user stop still comes first.
+          expect(phases.at(-1)).toMatchObject({ stopReason: "cancelled" });
+          expect(warnings(made.events, "exec_unavailable")).toEqual([]);
+        } else {
+          // Not the provider error, which would drop the refusal.
+          expectExecUnavailableEnd(phases, made.events);
+          expectReasonLast(made, phases);
+        }
+      } finally {
+        await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+        await closed.dispose();
+      }
+    },
+    20_000,
+  );
+
+  test("a refusal that lands while the tool results are delivered, with the call allocation reached, ends the turn with exec_unavailable", async () => {
+    root = mkdtempSync(join(tmpdir(), "exec-unavailable-post-tool-"));
+    const closed = await closedManager(root);
+    const service = new QuickJsCodeModeService({ enabled: true });
+    try {
+      expect(service.enabled()).toBe(true);
+      const held = heldScript(closed.manager, service);
+      let samples = 0;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        samples += 1;
+        return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service });
+      // The exec call is the only one the allocation admits.
+      Object.assign(made.session.config, { taskMaxCalls: 1 });
+      let refusedWhileDelivered: boolean | undefined;
+      // The refusal lands after the tool batch took any pending stop, while
+      // its result is handed to the caller, right before the post-tool check.
+      const phases = await runWith(made, "Start the background check.", {}, async (phase) => {
+        if (phase.type === "tool_result" && refusedWhileDelivered === undefined) {
+          refusedWhileDelivered = await held.deliverRefusal();
+        }
+      });
+
+      expect(samples).toBe(1);
+      expect(refusedWhileDelivered).toBe(true);
+      expect(held.nested).toEqual(["hold", "list_processes", "finished"]);
+      // Not task_budget, whose partial-result summary would drop the reason.
+      expectExecUnavailableEnd(phases, made.events);
+      expectReasonLast(made, phases);
+      expect(JSON.stringify(phases)).not.toContain("stopped at the task budget");
     } finally {
       await service.wait({ cellId: "1", terminate: true }).catch(() => {});
       await closed.dispose();
