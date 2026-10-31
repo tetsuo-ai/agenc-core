@@ -357,4 +357,10 @@ export interface ResumableTurn {
   readonly danglingToolUses: ReadonlyArray<DanglingToolUse>;
   /** Tool responses reconstructed from durable effect or operator evidence. */
   readonly reconciledToolResults?: ReadonlyArray<import("./rollout-item.js").ResponseItem>;
+  /**
+   * The skill the user started the turn with, as the turn's latest
+   * `turn_context` journaled it (`skillInvocation`). A resume reads it
+   * strictly (`readSkillInvocationRecord`).
+   */
+  readonly skillInvocation?: unknown;
 }

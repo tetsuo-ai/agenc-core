@@ -44,6 +44,7 @@ import type {
   TruncationPolicy,
 } from "./turn-context.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
+import type { SkillInvocationRecord } from "./skill-invocation.js";
 import type {
   McpElicitationCompleteEvent,
   McpElicitationRequestEvent,
@@ -1095,6 +1096,11 @@ export interface TurnContextItem {
   readonly truncationPolicy?: TruncationPolicy;
   /** Content-free provenance for the exact live instruction envelope. */
   readonly instructionEvidence?: RunInstructionEvidence;
+  /**
+   * The skill the user started this turn with, and what it set: a durable
+   * resume rebuilds the turn from it.
+   */
+  readonly skillInvocation?: SkillInvocationRecord;
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -59,7 +59,7 @@ describe("daemon turn driver and skill invocations", () => {
     await session.submit("plain follow-up");
 
     expect(turns).toHaveLength(2);
-    expect(turns[0]?.skillInvocation).toEqual({
+    expect(turns[0]?.skillInvocation).toMatchObject({
       name: "deep-review",
       model: "deepseek-v4-pro",
       effort: "low",

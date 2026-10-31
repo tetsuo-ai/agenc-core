@@ -27,6 +27,7 @@ import {
 import { reasoningEffortForModel } from "../../session/reasoning-effort-for-model.js";
 import type { Session } from "../../session/session.js";
 import {
+  readSkillInvocationRecord,
   SKILL_TURN_MODEL_DEFAULT_EFFORT,
   type SkillInvocationSettings,
   type SkillTurnEffort,
@@ -36,7 +37,12 @@ import type {
   ModelInfo,
   ReasoningEffort,
   SkillInvocationTurnOverrides,
+  TurnContext,
 } from "../../session/turn-context.js";
+import {
+  sameSkillInvocationSettings,
+  skillInvocationSettingsFor,
+} from "../../skills/skill-invocation-settings.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../../contracts/run-contracts.js";
 
 /** Providers whose effort levels come with the live model list. */
@@ -220,6 +226,14 @@ export async function admitSkillInvocation(
   const managedOnly = readPermissionRulesSnapshot(configStore).managedOnly;
   const invocation: TurnSkillInvocation = Object.freeze({
     name,
+    ...(settings.source !== undefined ? { source: settings.source } : {}),
+    requested: Object.freeze({
+      ...(settings.model !== undefined ? { model: settings.model } : {}),
+      ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
+      ...(settings.allowedTools !== undefined
+        ? { allowedTools: Object.freeze([...settings.allowedTools]) }
+        : {}),
+    }),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     allowedTools: Object.freeze(
@@ -232,5 +246,98 @@ export async function admitSkillInvocation(
       ...(modelInfo !== undefined ? { modelInfo } : {}),
     }),
     withheldGrants: Object.freeze(managedOnly ? grants : []),
+  });
+}
+
+/** The warning a session records when skill grants are withheld by policy. */
+export function emitSkillGrantsWithheld(
+  session: Session,
+  admitted: AdmittedSkillInvocation,
+): void {
+  if (admitted.withheldGrants.length === 0) return;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "skill_tool_grants_withheld",
+        message: `Managed policy allows only managed permission rules, so skill ${admitted.overrides.invocation.name} runs without its allowed-tools grants (${admitted.withheldGrants.join(", ")}).`,
+      },
+    },
+  });
+}
+
+/**
+ * The context a durably resumed skill turn continues with, or undefined to
+ * continue it on the session's settings, after saying why.
+ *
+ * The journal's record is checked against the skill registry as it is now:
+ * the skill must still be there, from the same source, declaring the same
+ * settings. They are then admitted again under the current policy and
+ * session. The turn keeps the model and effort it started with and at most
+ * the grants it had.
+ */
+export async function resumeSkillInvocationTurn(
+  session: Session,
+  configStore: ConfigStore,
+  turn: { readonly turnId: string; readonly skillInvocation?: unknown },
+): Promise<TurnContext | undefined> {
+  const fallback = (reason: string): undefined => {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "durable_resume_skill_settings_dropped",
+          message: `The resumed turn runs on the session's model, effort and permissions: ${reason}.`,
+        },
+      },
+    });
+    return undefined;
+  };
+  const record = readSkillInvocationRecord(turn.skillInvocation);
+  if (record === null) {
+    return fallback("the journal's record of the skill it was started with cannot be read");
+  }
+  const skills = session.services.skillsManager;
+  const skill = skills?.resolveSkill === undefined
+    ? null
+    : await skills.resolveSkill(record.name).catch(() => null);
+  if (skill === null || skill === undefined) {
+    return fallback(`skill ${record.name} is no longer available`);
+  }
+  const current = skillInvocationSettingsFor(skill);
+  if (
+    current === undefined ||
+    current.source !== record.source ||
+    !sameSkillInvocationSettings(current, record.requested)
+  ) {
+    return fallback(`skill ${record.name} changed since the turn started`);
+  }
+  let admitted: AdmittedSkillInvocation;
+  try {
+    admitted = await admitSkillInvocation(session, configStore, current);
+  } catch (error) {
+    if (error instanceof SkillInvocationRejectedError) {
+      return fallback(error.message.replace(/\.$/u, ""));
+    }
+    throw error;
+  }
+  const invocation = admitted.overrides.invocation;
+  if (invocation.model !== record.model || invocation.effort !== record.effort) {
+    return fallback(
+      `skill ${record.name}'s model and effort no longer resolve as when the turn started`,
+    );
+  }
+  emitSkillGrantsWithheld(session, admitted);
+  // A policy that withheld grants when the turn started still withholds them.
+  const allowedTools = invocation.allowedTools.filter((rule) =>
+    record.allowedTools.includes(rule));
+  return session.newSkillInvocationTurnWithSubId(turn.turnId, {
+    ...admitted.overrides,
+    invocation: Object.freeze({
+      ...invocation,
+      allowedTools: Object.freeze(allowedTools),
+    }),
   });
 }

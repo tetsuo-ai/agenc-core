@@ -8,12 +8,14 @@ import {
   COMMAND_NAME_TAG,
 } from "../../constants/xml.js";
 import { AdmissionDeniedError } from "../../budget/admission-client.js";
-import { parseToolRuleStringsFromCLI } from "../../permissions/settings.js";
 import { runWithCurrentRuntimeSession } from "../../session/current-session.js";
 import type { Session } from "../../session/session.js";
 import type { SkillInvocationSettings } from "../../session/skill-invocation.js";
 import { isRepositoryControlledSkillSource } from "../../skills/repository-skill-boundary.js";
-import { bundledSkillAllowedTools } from "../../skills/bundled-skill-grants.js";
+import {
+  skillAllowedToolRules,
+  skillInvocationSettingsFor,
+} from "../../skills/skill-invocation-settings.js";
 import { registerSkillHooks } from "../../utils/hooks/registerSkillHooks.js";
 import {
   isRestrictedToPluginOnly,
@@ -116,21 +118,13 @@ export async function loadDollarSkillCommandForTurn(
     );
   }
 
-  // Built-in skills never pre-approve shell or process tools, whichever
-  // registry produced the command.
-  const allowedTools = repositoryControlled
-    ? []
-    : command.source === "bundled" || command.loadedFrom === "bundled"
-      ? bundledSkillAllowedTools(command.name, command.allowedTools)
-      : parseToolRuleStringsFromCLI(command.allowedTools ?? []);
+  // Repository skills grant nothing and built-in skills only allowlisted
+  // tools, whichever registry produced the command. The daemon computes the
+  // same settings from its own registry when it resumes this turn.
+  const allowedTools = skillAllowedToolRules(command);
   const model = repositoryControlled ? undefined : command.model;
   const effort = repositoryControlled ? undefined : command.effort;
-  const skillInvocation = skillInvocationSettings(
-    command.name,
-    allowedTools,
-    model,
-    effort,
-  );
+  const skillInvocation = skillInvocationSettingsFor(command);
   return {
     metadata: formatDollarSkillInputTags(command.name, parsed.args),
     blocks,
@@ -140,27 +134,6 @@ export async function loadDollarSkillCommandForTurn(
     effort,
     ...(skillInvocation !== undefined ? { skillInvocation } : {}),
   };
-}
-
-/** A skill's frontmatter settings for the turn it starts, if it sets any. */
-function skillInvocationSettings(
-  name: string,
-  allowedTools: readonly string[],
-  model: string | undefined,
-  effort: Extract<Command, { type: "prompt" }>["effort"],
-): SkillInvocationSettings | undefined {
-  const turnModel = model?.trim();
-  const level =
-    effort === undefined ? undefined : String(effort).trim().toLowerCase();
-  if (!turnModel && !level && allowedTools.length === 0) return undefined;
-  return Object.freeze({
-    name,
-    ...(turnModel ? { model: turnModel } : {}),
-    ...(level ? { effort: level } : {}),
-    ...(allowedTools.length > 0
-      ? { allowedTools: Object.freeze([...allowedTools]) }
-      : {}),
-  });
 }
 
 function formatDollarSkillInputTags(commandName: string, args: string): string {

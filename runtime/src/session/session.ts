@@ -3168,13 +3168,17 @@ export class Session {
    * keeps its own settings; the next default turn runs on them.
    */
   newSkillInvocationTurn(overrides: SkillInvocationTurnOverrides): TurnContext {
+    return this.newSkillInvocationTurnWithSubId(this.nextInternalSubId(), overrides);
+  }
+
+  /** {@link newSkillInvocationTurn} for a known turn id (a durable resume). */
+  newSkillInvocationTurnWithSubId(
+    subId: string,
+    overrides: SkillInvocationTurnOverrides,
+  ): TurnContext {
     this.assertProviderSwitchTransactionHealthy();
     this.adoptCompletedModelMetadata();
-    return buildSkillInvocationTurnWithSubId(
-      this,
-      this.nextInternalSubId(),
-      overrides,
-    );
+    return buildSkillInvocationTurnWithSubId(this, subId, overrides);
   }
 
   /**

@@ -329,6 +329,8 @@ import {
 } from "./background-agent-runner/turn-lifecycle.js";
 import {
   admitSkillInvocation,
+  emitSkillGrantsWithheld,
+  resumeSkillInvocationTurn,
   SkillInvocationRejectedError,
 } from "./background-agent-runner/skill-invocation.js";
 import {
@@ -5333,7 +5335,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               session.conversationId,
               this.#now(),
             );
-          })).resumed === true;
+          }, (_session, turn) => resumeDaemonSkillInvocationTurn(
+            session,
+            active.bootstrap.configStore,
+            turn,
+          ))).resumed === true;
         } catch {
           // The resume is best-effort and already records its own failure on
           // the conversation thread record.
@@ -6254,19 +6260,24 @@ async function skillInvocationTurn(
   settings: SkillInvocationSettings,
 ): Promise<TurnContext> {
   const admitted = await admitDaemonSkillInvocation(session, configStore, settings);
-  if (admitted.withheldGrants.length > 0) {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "skill_tool_grants_withheld",
-          message: `Managed policy allows only managed permission rules, so skill ${admitted.overrides.invocation.name} runs without its allowed-tools grants (${admitted.withheldGrants.join(", ")}).`,
-        },
-      },
-    });
-  }
+  emitSkillGrantsWithheld(session, admitted);
   return session.newSkillInvocationTurn(admitted.overrides);
+}
+
+/**
+ * The context a durable resume continues a skill turn with: the skill's
+ * settings when the skill registry and policy still allow them, otherwise
+ * none (the session's settings, with a warning saying why).
+ */
+function resumeDaemonSkillInvocationTurn(
+  session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  turn: { readonly turnId: string; readonly skillInvocation?: unknown },
+): Promise<TurnContext | undefined> {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(configStore, () =>
+      resumeSkillInvocationTurn(session, configStore, turn)),
+  );
 }
 
 async function consumeDaemonPendingProviderSwitches(

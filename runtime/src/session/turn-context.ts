@@ -34,6 +34,7 @@ import type {
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
   SKILL_TURN_MODEL_DEFAULT_EFFORT,
+  skillInvocationRecord,
   type TurnSkillInvocation,
 } from "./skill-invocation.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
@@ -823,6 +824,9 @@ export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
     developerInstructions: ctx.developerInstructions,
     finalOutputJsonSchema: ctx.finalOutputJsonSchema,
     truncationPolicy: ctx.truncationPolicy,
+    ...(ctx.skillInvocation !== undefined
+      ? { skillInvocation: skillInvocationRecord(ctx.skillInvocation) }
+      : {}),
   };
 }
 

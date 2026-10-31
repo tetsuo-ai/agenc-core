@@ -91,6 +91,7 @@ describe("dollar skill trust authority", () => {
 
     expect(loaded.skillInvocation).toEqual({
       name: "authority-skill",
+      source: "userSettings",
       model: "grok-4.5",
       effort: "high",
       allowedTools: ["Bash(git status)", "Read"],

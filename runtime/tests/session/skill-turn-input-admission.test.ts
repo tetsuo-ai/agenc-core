@@ -36,7 +36,7 @@ afterEach(() => {
 
 function skillTurn(session: Session, model: string, contextWindow: number): SkillInvocationTurnOverrides {
   return {
-    invocation: { name: "sized-skill", model, allowedTools: [] },
+    invocation: { name: "sized-skill", requested: { model }, model, allowedTools: [] },
     modelInfo: { ...session.modelInfo, slug: model, contextWindow, maxOutputTokens: 2048 },
   };
 }

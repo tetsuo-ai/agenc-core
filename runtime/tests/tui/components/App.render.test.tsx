@@ -2958,6 +2958,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
               displayUserMessage: `${prefix}deep-review check the diff`,
               skillInvocation: {
                 name: "deep-review",
+                source: "userSettings",
                 model: "deepseek-v4-pro",
                 effort: "low",
                 allowedTools: ["Write", "exec_command(git status:*)"],

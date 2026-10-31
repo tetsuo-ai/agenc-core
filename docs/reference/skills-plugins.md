@@ -146,7 +146,9 @@ allowed-tools: Write, Edit(./docs/**)
   cannot change providers, so a model only another provider serves refuses
   the invocation and names that provider. `inherit` or no value keeps the
   session's model. Without `effort`, the session's effort carries over when
-  the skill's model accepts it; otherwise the model runs at its own default.
+  the skill's model accepts it; otherwise the model runs at its own default
+  (the turn's requests name no level, and the configured `reasoning_effort`
+  does not fill one in).
 - `effort` must be a level the turn's model accepts, as for `/effort`
   (`minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `none`, whichever
   the model takes).
@@ -155,13 +157,17 @@ allowed-tools: Write, Edit(./docs/**)
   rules of the `command` source for that turn's tool calls only, and they
   match exactly as the same rules in config would (`Write`, for example, also
   covers the other file-editing tools, and a whole-tool `exec_command` grant
-  covers every shell command). Deny and ask rules, plan mode, protected paths
-  and the OS sandbox still apply first, and in auto mode the rules auto mode
-  strips from every source (broad shell grants) are left out. Use canonical
-  tool names: legacy `Bash` allow rules grant nothing. Subagents the turn
-  starts do not receive the grants. Under a managed policy that allows only
-  managed permission rules, the skill runs without its grants and the session
-  log records a `skill_tool_grants_withheld` warning.
+  covers every shell command). They apply to the turn's tool calls whether
+  the model calls a tool directly or from a code-mode script. Deny and ask
+  rules, plan mode, protected paths and the OS sandbox still apply first, and
+  in auto mode the rules auto mode strips from every source (broad shell
+  grants) are left out. Use canonical tool names: legacy `Bash` allow rules
+  grant nothing. Subagents the turn starts do not receive the grants. Under a
+  managed policy that allows only managed permission rules, the skill runs
+  without its grants and the session log records a
+  `skill_tool_grants_withheld` warning. The policy is read again for every
+  tool call, so a managed-only policy that arrives during the turn ends the
+  grants from the next call on.
 - Built-in skills pre-approve only built-in tools on an allowlist: `FileRead`,
   `Grep`, `Glob`, `Write`, `Edit`, `MultiEdit`, `ledger_wallet_cli_status` and
   `install_ledger_wallet_cli`. Any other entry in a built-in skill's
@@ -185,6 +191,22 @@ asks for approval if the skill sets any of these fields and then loads only
 the instructions; the settings apply when you invoke the skill by name. In the
 turn you started with a skill, the model may load that same skill again
 without asking (`Skill(<name>)` joins the turn's allow rules).
+
+The daemon sizes the prompt for the skill's model, so a prompt that fits the
+skill's context window is accepted even when it would not fit the session
+model's, and the other way round. A daemon older than the TUI (AgenC 0.19.25)
+does not take the skill's settings: the skill runs on the session's settings
+and the TUI shows a one-line notice to restart the daemon
+(`agenc daemon restart`).
+
+If the daemon stops during a skill turn and the turn is resumed
+(`durableTurns.resume`), the resumed turn keeps the skill's model, effort and
+grants when the skill is still installed from the same place with the same
+settings and the current policy still allows them; it never gets more grants
+than the turn had. Otherwise it continues on the session's settings, and the
+session log records a `durable_resume_skill_settings_dropped` warning with the
+reason. The journal keeps this in the turn's `turn_context` record
+(`skillInvocation`), which older runtimes ignore.
 
 ### `agenc skills list` CLI
 

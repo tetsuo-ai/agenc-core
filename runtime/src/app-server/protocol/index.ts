@@ -2377,6 +2377,19 @@ export interface MessageSendParams extends JsonObject {
 export interface MessageSkillInvocation extends JsonObject {
   /** Invoked skill name, used in errors and warnings. */
   readonly name: string;
+  /**
+   * Where the skill was loaded from. A durable resume of the turn checks the
+   * daemon's skill registry still has that skill there, unchanged.
+   */
+  readonly source?:
+    | "userSettings"
+    | "projectSettings"
+    | "localSettings"
+    | "policySettings"
+    | "flagSettings"
+    | "plugin"
+    | "bundled"
+    | "mcp";
   /** Model on the session's provider for this turn. */
   readonly model?: string;
   /** Reasoning effort for this turn. */

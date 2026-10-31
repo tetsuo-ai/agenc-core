@@ -100,6 +100,7 @@ import {
 import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
+import { SKILL_INVOCATION_SOURCES } from "../session/skill-invocation.js";
 import { PermissionRuleMutationPrecommitError } from "../permissions/permission-updates.js";
 import {
   TOOL_POLICY_METADATA_KEY,
@@ -4853,9 +4854,17 @@ function validateMessageSkillInvocation(value: JsonObject): void {
   const prefix = "message.stream param skillInvocation";
   validateObjectShape(value, {
     methodName: prefix,
-    stringFields: ["name", "model", "effort"],
+    stringFields: ["name", "source", "model", "effort"],
     stringArrayFields: ["allowedTools"],
   });
+  if (
+    value.source !== undefined &&
+    !(SKILL_INVOCATION_SOURCES as readonly unknown[]).includes(value.source)
+  ) {
+    throw invalidParams(
+      `${prefix}.source must be one of ${SKILL_INVOCATION_SOURCES.join(", ")}`,
+    );
+  }
   if (
     typeof value.name !== "string" ||
     value.name.trim().length === 0 ||

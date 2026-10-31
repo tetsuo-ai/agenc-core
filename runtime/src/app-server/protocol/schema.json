@@ -3452,6 +3452,19 @@
           "minLength": 1,
           "maxLength": 256
         },
+        "source": {
+          "type": "string",
+          "enum": [
+            "userSettings",
+            "projectSettings",
+            "localSettings",
+            "policySettings",
+            "flagSettings",
+            "plugin",
+            "bundled",
+            "mcp"
+          ]
+        },
         "model": {
           "type": "string",
           "minLength": 1,

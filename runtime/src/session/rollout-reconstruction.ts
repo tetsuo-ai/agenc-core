@@ -799,6 +799,7 @@ export function reconstructFromRollout(
   // validating every superseded checkpoint would repeatedly rescan growing
   // prefixes. Only an orphan's highest checkpoint can authorize execution.
   const turnBuildIds = new Map<string, string | undefined>();
+  const turnSkillInvocations = new Map<string, unknown>();
   const turnStartedIndexes = new Map<string, number>();
   let latestTurnStartedId: string | undefined;
   let latestAcceptedUserIndex = -1;
@@ -824,6 +825,14 @@ export function reconstructFromRollout(
       hasExplicitUserStop = true;
       userStopHeld = persistedUserStop.stopped;
       if (userStopHeld) latestUserStopIndex = rolloutIndex;
+    }
+    if (item?.type === "turn_context") {
+      // A turn's latest context says how it runs. A resumed turn that fell
+      // back to the session's settings journals one without the skill.
+      if (typeof item.payload.turnId === "string") {
+        turnSkillInvocations.set(item.payload.turnId, item.payload.skillInvocation);
+      }
+      continue;
     }
     if (item?.type !== "event_msg") continue;
     const event = item.payload.msg;
@@ -1156,6 +1165,9 @@ export function reconstructFromRollout(
             ? { resumeHistoryMessageCount } : {}),
           danglingToolUses,
           ...(reconciledToolResults.length > 0 ? { reconciledToolResults } : {}),
+          ...(turnSkillInvocations.get(turnId) !== undefined
+            ? { skillInvocation: turnSkillInvocations.get(turnId) }
+            : {}),
         });
       }
       if (shutdownInterruptedTurns.has(turnId)) continue;

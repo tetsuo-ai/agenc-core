@@ -1424,6 +1424,9 @@ export function createDaemonTuiSession<
             ? {
                 skillInvocation: {
                   name: skillInvocation.name,
+                  ...(skillInvocation.source !== undefined
+                    ? { source: skillInvocation.source }
+                    : {}),
                   ...(skillInvocation.model !== undefined
                     ? { model: skillInvocation.model }
                     : {}),

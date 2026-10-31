@@ -10219,7 +10219,8 @@ describe("AgenC delegate background-agent runner", () => {
     const { runner, session, control } = makeTopLevelRunner({ conversationId: "session-skill-input-size" });
     await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
     const overrides = {
-      invocation: { name: "wide-review", model: "wide-model", allowedTools: ["Skill(wide-review)"] },
+      invocation: { name: "wide-review", requested: { model: "wide-model" }, model: "wide-model",
+        allowedTools: ["Skill(wide-review)"] },
       modelInfo: { slug: "wide-model", contextWindow: 1_000_000 },
     };
     skillAdmission.admitted = { overrides, withheldGrants: [] };

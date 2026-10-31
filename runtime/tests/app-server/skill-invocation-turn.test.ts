@@ -75,6 +75,11 @@ describe("skill invocation admission", () => {
     expect(admitted.withheldGrants).toEqual([]);
     expect(admitted.overrides.invocation).toEqual({
       name: "deep-review",
+      requested: {
+        model: "deepseek-v4-pro",
+        effort: "low",
+        allowedTools: ["Write", " exec_command(git status:*) ", "Write"],
+      },
       model: "deepseek-v4-pro",
       effort: "low",
       allowedTools: ["Write", "exec_command(git status:*)", "Skill(deep-review)"],
@@ -107,6 +112,7 @@ describe("skill invocation admission", () => {
     );
     expect(admitted.overrides.invocation).toEqual({
       name: "same",
+      requested: { model: "deepseek-flash" },
       allowedTools: ["Skill(same)"],
     });
     expect(admitted.overrides.invocation).not.toHaveProperty("effort");
