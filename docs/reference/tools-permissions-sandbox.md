@@ -355,7 +355,8 @@ credential home and connection settings resolve together.
   home, honoring its `GROK_AUTH_MODE`, with each key and its URL taken as one
   pair.
 - Every request the tool sends itself (fetches, searches, media requests and
-  their downloads) goes through that session's own proxy (`HTTPS_PROXY`,
+  their downloads, model lists, and the requests of a provider it rebuilds
+  for native search) goes through that session's own proxy (`HTTPS_PROXY`,
   `NO_PROXY`), client certificate and key (`AGENC_CLIENT_CERT`,
   `AGENC_CLIENT_KEY`) and CA trust, from the same environment its endpoint and
   key come from.
@@ -363,8 +364,12 @@ credential home and connection settings resolve together.
 A session gets its provider environment and credential home when it is
 created: the root session from its client's environment and AgenC home, and
 each sub-agent (one `spawn_agent` starts, a task worker, an in-process
-teammate, a review delegate) its own copy of its parent's. A sub-agent
-without them fails the call with an error rather than using its parent's.
+teammate, a review delegate) its own copy of its parent's current ones. They
+seed the session's own provider state, the state its model calls use, and
+its tools read that state when they run: a key added or rotated in the
+session applies to its next tool call, and after creation a change in one
+session never reaches another. A sub-agent without its own provider state
+fails the call with an error rather than using its parent's.
 The session's permission mode and rules govern a provider fetch,
 and the model calls a tool makes are admitted on its own budget and run. A
 parent's key, sign-in, endpoint, connection settings or model is never used
