@@ -41,6 +41,16 @@ export interface UpdateNotice {
 export interface UpdateFollow {
   readonly request: UpdateRelaunchRequest;
   readonly when: "idle" | "daemon";
+  /**
+   * When the daemon step began, on a monotonic clock (performance.now), for
+   * `daemon`: the follow gives up once the restart can no longer end.
+   */
+  readonly since?: number;
+  /**
+   * The restart request this window waits for, for `daemon`: only a result
+   * with this id ends the follow (daemon-restart-results.json).
+   */
+  readonly requestId?: string;
 }
 
 export const AGENC_UPDATE_RELAUNCH_ENV = "AGENC_UPDATE_RELAUNCH";

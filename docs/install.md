@@ -275,15 +275,67 @@ record is still its own right before that decision. Before it starts its
 runtime it checks again under that lock, and holds the lock until the new
 daemon is spawned. An update older than the build a pending restart targets
 leaves that record in place and reports the newer target, because that
-restart goes further. A pinned downgrade (`agenc update --pin` to an older
-version) ends such a record instead, so its waiting process cannot move the
-daemon back up later. `agenc update` ends it itself before it hands the
-restart to the older runtime, which may not know how. A waiting process
+restart goes further. An explicit pin (`agenc update --pin`) is the version
+the person asked for, whatever versions the updater and the daemon run: it
+moves the daemon to that version even from a newer one, also when `agenc
+update` finds the pinned version already active, and it ends a pending restart
+onto a newer build instead of leaving it, so that waiting process cannot move
+the daemon away later. `agenc update` ends it itself before it hands the
+restart to the activated runtime, which may be too old to know how. When the
+record cannot be ended (the daemon lifecycle lock stays busy for 2 minutes, or
+the record cannot be removed), the update leaves the daemon as it is, because
+a restart now would only be undone by the pending one, and says so: `Daemon restart
+failed: a restart onto 0.19.27 is still pending and could not be cancelled
+(the daemon lifecycle lock stayed busy for 120 s). The daemon was left as it
+is, and that restart can still move it to 0.19.27. To cancel it, delete
+<AGENC_HOME>/daemon-restart-pending.json.` The log then says `cancel failed`,
+never `cancelled`. A waiting process
 also ends when the daemon stopped, or was replaced by a daemon at least as new
 as its own version (for example by a newer `agenc` whose build check
 restarted it). A replacement that is still older, such as an earlier waiting
 process that finished first, is restarted in turn. Outcomes go to `<AGENC_HOME>/daemon-restart.log`.
 Deleting the record cancels a pending restart.
+
+One restart runs at a time in a home, so two updates at the same moment never
+see the daemon between one restart's stop and its start. Each `agenc daemon
+restart --when-idle` holds the restart lock
+`<AGENC_HOME>/daemon-restart.lock.sqlite` from its first look at the daemon
+until the new daemon reports its version, and a waiting process holds it for
+each check. A second update waits for the first restart to finish, up to 15
+minutes, and then decides on the daemon that one left: it restarts a daemon on
+an older version and leaves one that already runs its version or a newer one.
+Only an explicit pin moves a daemon to an older version. While it waits it
+prints `Waiting for another daemon restart to finish (up to 15 minutes).` once
+(on stderr with `--json`). A waiting process that finds the lock taken checks
+again 15 s later. Only these restart steps take the lock: the daemon and
+clients going about their work never wait for it. A lock that fails for
+another reason than a running restart, such as a lock directory macOS cannot
+check in time, is reported with that reason. Downgrading to a version older
+than 0.19.26 hands the restart to a runtime that does not take the restart
+lock, so do not run two updates at once while you do that.
+
+`agenc update` waits for the restart step as long as the step's own limits
+allow: its 15 minutes for another restart, the daemon start (14 readiness
+steps of 45 s by default, plus the `launchd` pid publication on macOS; both
+follow `AGENC_DAEMON_READY_TIMEOUT_MS` and `AGENC_DAEMON_START_MAX_WAIT_MS`),
+and 10 minutes for the checks and the stop, about 36 minutes in all on Linux.
+If the step still has not reported by then, the update says `The daemon
+restart onto 0.19.27 is still running (no result after 36 minutes); it
+continues in the background.` (`deferred`, code `still-running`), and a TUI
+updating itself keeps running and switches once the daemon reaches the new
+version instead of reporting a failure.
+
+A TUI that updates itself gives its restart a request id. The restart step and
+its waiting process write how that request ended to
+`<AGENC_HOME>/daemon-restart-results.json`, which keeps the last 8 requests,
+before they clear the pending record (a deferral is not an end). A TUI that
+follows the update after a busy daemon or a `still-running` result reads only
+its own request's end there, never by time. It switches when the daemon runs
+the new version, and follows a newer request that replaced its own. It stops
+following, keeps running its version and says why when its restart failed or
+was skipped (with the reason), when the daemon moved to a newer version, or
+after about 13 hours on Linux (the 12 hours of a waiting process plus twice the
+update's wait). Quit AgenC and start it again to use the installed version.
 
 Only a daemon started from `<AGENC_HOME>/runtime/` is restarted. The Desktop
 app runs its own bundled runtime in its own home, so its daemon is never

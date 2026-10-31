@@ -20,7 +20,12 @@ export type AgenCDaemonRestartCode =
   | "not-activated"
   | "unsupported"
   /** The daemon cannot stop only when idle (0.19.24 and older): restart it by hand. */
-  | "daemon-too-old";
+  | "daemon-too-old"
+  /**
+   * `agenc update` stopped waiting for the restart step, which keeps going in
+   * the background (status `deferred`): the daemon moves when it finishes.
+   */
+  | "still-running";
 
 export interface AgenCDaemonRestartOutcome {
   readonly status: AgenCDaemonRestartStatus;
@@ -35,6 +40,8 @@ export interface AgenCDaemonRestartOutcome {
   readonly pid?: number;
   /** Deferred: when the waiting process gives up. */
   readonly waitUntil?: string;
+  /** Deferred: the restart request whose end a client should wait for. */
+  readonly requestId?: string;
 }
 
 const STATUSES: ReadonlySet<string> = new Set([
@@ -51,6 +58,7 @@ const CODES: ReadonlySet<string> = new Set([
   "not-activated",
   "unsupported",
   "daemon-too-old",
+  "still-running",
 ]);
 
 /** Parse an outcome line printed by `restart --when-idle --json`. */
@@ -75,6 +83,7 @@ export function parseAgenCDaemonRestartOutcome(
   const fromVersion = text("fromVersion");
   const toVersion = text("toVersion");
   const waitUntil = text("waitUntil");
+  const requestId = record.requestId;
   const pid = record.pid;
   return {
     status: record.status as AgenCDaemonRestartStatus,
@@ -84,6 +93,7 @@ export function parseAgenCDaemonRestartOutcome(
     ...(toVersion === undefined ? {} : { toVersion }),
     ...(typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
     ...(waitUntil === undefined ? {} : { waitUntil }),
+    ...(isAgenCDaemonRestartRequestId(requestId) ? { requestId } : {}),
   };
 }
 
@@ -96,7 +106,9 @@ export function formatAgenCDaemonRestartOutcome(
     case "restarted":
       return `Restarted the daemon on ${target}${outcome.pid === undefined ? "" : ` (pid ${outcome.pid})`}.`;
     case "deferred":
-      return `The daemon is busy (${outcome.reason ?? "in use"}), so it will restart on ${target} once it is idle.`;
+      return outcome.code === "still-running"
+        ? `The daemon restart onto ${target} is still running (${outcome.reason ?? "no result yet"}); it continues in the background.`
+        : `The daemon is busy (${outcome.reason ?? "in use"}), so it will restart on ${target} once it is idle.`;
     case "not-running":
       return `No daemon is running. The next one starts on ${target}.`;
     case "skipped":
@@ -129,4 +141,75 @@ export function agenCDaemonRestartIsNews(outcome: AgenCDaemonRestartOutcome): bo
     outcome.status === "failed" ||
     // A stale daemon that only a manual restart moves.
     (outcome.status === "skipped" && outcome.code === "daemon-too-old");
+}
+
+/**
+ * A restart request's id: `--request-id`, chosen by the TUI that asked, kept
+ * in the pending record, on the deferred outcome and in the results.
+ */
+export function isAgenCDaemonRestartRequestId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(value);
+}
+
+/**
+ * `<AGENC_HOME>/daemon-restart-results.json`: how the last restart requests
+ * ended, oldest first, keyed by request id. A TUI that follows an update
+ * after `still-running` or `deferred` reads the end of its own request here;
+ * it never compares times. Written by the restart step and the waiting
+ * process before either clears the pending record. A deferral is not an end.
+ */
+export const AGENC_DAEMON_RESTART_RESULTS_FILENAME = "daemon-restart-results.json";
+/** The results file keeps the ends of this many requests. */
+export const AGENC_DAEMON_RESTART_RESULTS_KEPT = 8;
+
+export interface AgenCDaemonRestartResult {
+  readonly requestId: string;
+  /** When it ended, for people reading the file; never compared. */
+  readonly finishedAt: string;
+  readonly outcome: AgenCDaemonRestartOutcome;
+  /** This request goes on as that one: a newer request took its place. */
+  readonly continuedBy?: string;
+}
+
+/** Parse the results file; an unreadable file holds none. */
+export function parseAgenCDaemonRestartResults(text: string): AgenCDaemonRestartResult[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const record = value as { readonly schemaVersion?: unknown; readonly results?: unknown } | null;
+  if (record?.schemaVersion !== 2 || !Array.isArray(record.results)) return [];
+  const results: AgenCDaemonRestartResult[] = [];
+  for (const entry of record.results.slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT)) {
+    const item = entry as Partial<Record<keyof AgenCDaemonRestartResult, unknown>> | null;
+    if (!isAgenCDaemonRestartRequestId(item?.requestId) || typeof item?.finishedAt !== "string") continue;
+    const outcome = parseAgenCDaemonRestartOutcome(JSON.stringify(item.outcome ?? null));
+    if (outcome === null) continue;
+    results.push({
+      requestId: item.requestId,
+      finishedAt: item.finishedAt,
+      outcome,
+      ...(isAgenCDaemonRestartRequestId(item.continuedBy) ? { continuedBy: item.continuedBy } : {}),
+    });
+  }
+  return results;
+}
+
+/**
+ * The file text with `result` added: one entry per request, the newest last;
+ * null when nothing changes. For a request the first end wins: a later one,
+ * such as a replaced waiting process that woke after its successor ended under
+ * the same id, never replaces it. A hand-over (`continuedBy`) is not an end.
+ */
+export function addAgenCDaemonRestartResult(
+  existing: string | null,
+  result: AgenCDaemonRestartResult,
+): string | null {
+  const entries = parseAgenCDaemonRestartResults(existing ?? "");
+  if (entries.some((entry) => entry.requestId === result.requestId && entry.continuedBy === undefined)) return null;
+  const kept = entries.filter((entry) => entry.requestId !== result.requestId);
+  const results = [...kept, result].slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT);
+  return `${JSON.stringify({ schemaVersion: 2, results }, null, 2)}\n`;
 }

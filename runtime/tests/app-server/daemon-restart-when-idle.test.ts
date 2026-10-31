@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   AGENC_DAEMON_STOP_DECLINED_EXIT,
+  acquireAgenCDaemonLifecycleLock,
   parseAgenCDaemonCliArgs,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonSocketPath,
@@ -20,6 +21,7 @@ import {
   busyReasonFromServices,
   busyReasonFromSessionDetail,
   busyReasonFromSessions,
+  cancelAgenCDaemonPendingRestartAbove,
   compareAgenCRuntimeBuilds,
   agenCCommandLabel,
   agenCRuntimeTreeOf,
@@ -43,13 +45,50 @@ import {
   type AgenCProcessEntry,
 } from "../../src/app-server/daemon-restart-when-idle.js";
 import {
+  AGENC_DAEMON_RESTART_RESULTS_FILENAME,
   formatAgenCDaemonRestartOutcome,
   parseAgenCDaemonRestartOutcome,
+  parseAgenCDaemonRestartResults,
+  type AgenCDaemonRestartResult,
 } from "../../src/app-server/daemon-restart-outcome.js";
+import { resolveAgenCDaemonRestartFollowDeadlineMs } from "../../src/app-server/daemon-restart-handoff.js";
+import { decideUpdateFollow } from "../../src/tui/hooks/useUpdateFollow.js";
 import {
   resolveAgenCDaemonRuntimeInfoPath,
   writeDaemonRuntimeInfo,
 } from "../../src/app-server/daemon-runtime-info.js";
+import { LocalSqliteLockTimeoutError } from "../../../packages/agenc/lib/sqlite-lock.mjs";
+
+/** What the lock helper throws when another holder kept a lock the whole wait. */
+function busyLockTimeout(home: string, label: string, filename: string, timeoutMs: number): Error {
+  return new LocalSqliteLockTimeoutError({ path: join(home, filename), label, timeoutMs });
+}
+
+/** What it throws on macOS when its `/bin/df` probe of the lock directory takes over 2 s. */
+function filesystemProbeTimeout(home: string, label: string): Error {
+  return new LocalSqliteLockTimeoutError({
+    path: home,
+    label: `${label} (macOS lock filesystem probe via /bin/df)`,
+    timeoutMs: 2_000,
+  });
+}
+
+/** The results a TUI that follows an update reads. */
+function readResults(home: string): AgenCDaemonRestartResult[] {
+  try {
+    return parseAgenCDaemonRestartResults(readFileSync(join(home, AGENC_DAEMON_RESTART_RESULTS_FILENAME), "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+function resultOf(home: string, requestId: string): AgenCDaemonRestartResult | undefined {
+  return readResults(home).find((result) => result.requestId === requestId);
+}
+
+const REQ = "6c1d2e3f-0000-4000-8000-000000000001";
+const REQ2 = "6c1d2e3f-0000-4000-8000-000000000002";
+const REQ3 = "6c1d2e3f-0000-4000-8000-000000000003";
 
 const NOW = Date.parse("2026-10-29T12:00:00.000Z");
 const NEW_BUILD = { runtimeVersion: "9.9.9", commit: "new", buildTime: "2026-10-29T00:00:00.000Z" };
@@ -276,6 +315,10 @@ describe("daemon restart --when-idle arguments", () => {
       .toEqual({ kind: "restart-when-idle", json: false, waitToken: token });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--wait", "../x"]))
       .toEqual({ kind: "error", message: "daemon restart --wait needs a restart token" });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--json", "--request-id", REQ]))
+      .toEqual({ kind: "restart-when-idle", json: true, requestId: REQ });
+    expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--request-id", "../x"]))
+      .toEqual({ kind: "error", message: "daemon restart --request-id needs a request id" });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart", "--when-idle", "--now"]))
       .toEqual({ kind: "error", message: "unknown daemon restart option: --now" });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart"]))
@@ -930,6 +973,232 @@ describe("restartAgenCDaemonWhenIdle", () => {
         .resolves.toMatchObject({ status: "deferred", toVersion: "9.9.9" });
       expect(readAgenCDaemonPendingRestart(home)?.target).toEqual(NEW_BUILD);
     });
+
+    /** A lifecycle lock with a short wait, for a lock another process holds. */
+    const impatientLock = async <T>(
+      host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      const release = await acquireAgenCDaemonLifecycleLock(host, undefined, 50);
+      try {
+        return await operation();
+      } finally {
+        await release();
+      }
+    };
+
+    it("for a pinned downgrade that cannot end it because the lock stays busy, says so and leaves the daemon alone", async () => {
+      const { calls, deps, old } = scenario();
+      publishNewer(old);
+      const host = testHost(home);
+      // Another process holds the daemon lifecycle lock.
+      const release = await acquireAgenCDaemonLifecycleLock(host);
+      const io = quietIo();
+      let exit: number;
+      try {
+        exit = await runAgenCDaemonRestartWhenIdleCli(
+          { kind: "restart-when-idle", json: true, downgrade: true },
+          host,
+          io,
+          {},
+          { ...deps, withLifecycleLock: impatientLock },
+        );
+      } finally {
+        await release();
+      }
+      expect(exit).toBe(1);
+      const outcome = parseAgenCDaemonRestartOutcome(io.out().trim());
+      expect(outcome).toMatchObject({ status: "failed", toVersion: "9.9.9" });
+      expect(outcome?.reason).toBe(
+        "a restart onto 9.9.10 is still pending and could not be cancelled (the daemon lifecycle lock stayed busy for 50 ms). " +
+          `The daemon was left as it is, and that restart can still move it to 9.9.10. To cancel it, delete ${join(home, "daemon-restart-pending.json")}`,
+      );
+      // Nothing was checked, stopped or started, and the newer restart is still there.
+      expect(calls).toEqual([]);
+      expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD });
+    });
+
+    it.skipIf(process.getuid?.() === 0)(
+      "for a pinned downgrade that cannot remove its record, says so, leaves the daemon alone and never logs it as cancelled",
+      async () => {
+        const { calls, deps, old } = scenario();
+        // Warm up: a first restart that finds no daemon creates the lock files a
+        // later restart needs; then the home itself cannot be written.
+        await restartAgenCDaemonWhenIdle(testHost(home), {}, { ...deps, readState: async () => ({ kind: "not-running" }) });
+        publishNewer(old);
+        writeFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "");
+        chmodSync(home, 0o500);
+        let outcome;
+        try {
+          outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, { ...deps, downgrade: true });
+        } finally {
+          chmodSync(home, 0o700);
+        }
+        expect(outcome).toMatchObject({ status: "failed", toVersion: "9.9.9" });
+        expect(outcome.reason).toContain("a restart onto 9.9.10 is still pending and could not be cancelled (the record could not be removed: ");
+        expect(outcome.reason).toContain("The daemon was left as it is, and that restart can still move it to 9.9.10");
+        expect(calls).toEqual([]);
+        expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD });
+        const log = readFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "utf8");
+        expect(log).not.toContain("cancelled:");
+        expect(log).toContain("cancel failed: the restart onto 9.9.10, for a downgrade to 9.9.9, is still pending");
+      },
+    );
+
+    it.skipIf(process.getuid?.() === 0)(
+      "the updater's own cancel reports a record it cannot remove and keeps it, instead of claiming it cancelled",
+      async () => {
+        const host = { env: { AGENC_HOME: home }, userHome: home };
+        publishNewer(identityFor(4242));
+        // The lock database and the log exist; the home itself cannot be written.
+        const release = await acquireAgenCDaemonLifecycleLock(host);
+        await release();
+        writeFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "");
+        chmodSync(home, 0o500);
+        let failure: unknown;
+        try {
+          failure = await cancelAgenCDaemonPendingRestartAbove(host, "9.9.8").then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        } finally {
+          chmodSync(home, 0o700);
+        }
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toContain(
+          "a restart onto 9.9.10 is still pending and could not be cancelled (the record could not be removed: ",
+        );
+        expect((failure as Error).message).toContain(`To cancel it, delete ${join(home, "daemon-restart-pending.json")}`);
+        expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD });
+        const log = readFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "utf8");
+        expect(log).not.toContain("cancelled:");
+        expect(log).toContain("cancel failed: the restart onto 9.9.10, for a downgrade to 9.9.8, is still pending");
+      },
+    );
+
+    it("for a pinned downgrade whose lifecycle lock fails for another reason than contention, keeps that reason", async () => {
+      const { calls, deps, old } = scenario();
+      publishNewer(old);
+      const outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, {
+        ...deps,
+        downgrade: true,
+        withLifecycleLock: async () => {
+          throw filesystemProbeTimeout(home, "AgenC daemon lifecycle");
+        },
+      });
+      expect(outcome.status).toBe("failed");
+      expect(outcome.reason ?? "").toContain(
+        "could not be cancelled (the daemon lifecycle lock could not be taken: agenc: AgenC daemon lifecycle " +
+          "(macOS lock filesystem probe via /bin/df) timed out after 2000ms",
+      );
+      expect(outcome.reason ?? "").not.toContain("stayed busy");
+      expect(calls).toEqual([]);
+      expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD });
+    });
+
+    it("the updater's own cancel reports a busy lock only when a newer restart is pending", async () => {
+      const host = { env: { AGENC_HOME: home }, userHome: home };
+      // Another process holds the daemon lifecycle lock.
+      const release = await acquireAgenCDaemonLifecycleLock(host);
+      try {
+        // Nothing to end: a busy lock does not hold the downgrade up.
+        await expect(cancelAgenCDaemonPendingRestartAbove(host, "9.9.8", undefined, { withLifecycleLock: impatientLock }))
+          .resolves.toBeUndefined();
+        publishNewer(identityFor(4242));
+        await expect(cancelAgenCDaemonPendingRestartAbove(host, "9.9.8", undefined, { withLifecycleLock: impatientLock }))
+          .rejects.toThrow(
+            "a restart onto 9.9.10 is still pending and could not be cancelled (the daemon lifecycle lock stayed busy for 50 ms)",
+          );
+      } finally {
+        await release();
+      }
+      expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD });
+      // Once the lock is free it ends it.
+      await expect(cancelAgenCDaemonPendingRestartAbove(host, "9.9.8")).resolves.toBe("9.9.10");
+      expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    }, 15_000);
+  });
+
+  it("says once that it waits for another restart, then leaves the daemon alone when that one holds the lock too long", async () => {
+    const { calls, deps } = scenario();
+    const waits: number[] = [];
+    const progress: string[] = [];
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...deps,
+      onProgress: (line) => progress.push(line),
+      acquireRestartLock: async (_host, timeoutMs) => {
+        waits.push(timeoutMs);
+        throw busyLockTimeout(home, "AgenC daemon restart", "daemon-restart.lock.sqlite", timeoutMs);
+      },
+    })).resolves.toEqual({
+      status: "failed",
+      reason: "another daemon restart was still running after 15 minutes, so the daemon was left as it is",
+      toVersion: "9.9.9",
+    });
+    // A short try, the waiting line, then the queue wait.
+    expect(waits).toEqual([1_000, 15 * 60 * 1_000]);
+    expect(progress).toEqual(["Waiting for another daemon restart to finish (up to 15 minutes)."]);
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps the real reason when the restart lock fails for anything but another restart", async () => {
+    const { calls, deps } = scenario();
+    const progress: string[] = [];
+    const outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...deps,
+      onProgress: (line) => progress.push(line),
+      acquireRestartLock: async () => {
+        throw filesystemProbeTimeout(home, "AgenC daemon restart");
+      },
+    });
+    expect(outcome).toEqual({
+      status: "failed",
+      reason: "the daemon restart lock could not be taken: agenc: AgenC daemon restart (macOS lock filesystem probe via /bin/df) " +
+        `timed out after 2000ms waiting for local process lock ${home}`,
+      toVersion: "9.9.9",
+    });
+    expect(progress).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("writes its waiting line to stderr for agenc update, and still one JSON line to stdout", async () => {
+    const { deps } = scenario({ state: { kind: "not-running" } });
+    let tries = 0;
+    let stdout = "";
+    let stderr = "";
+    const io = {
+      stdout: { write: (chunk: string | Uint8Array) => { stdout += String(chunk); return true; } },
+      stderr: { write: (chunk: string | Uint8Array) => { stderr += String(chunk); return true; } },
+    } as unknown as AgenCDaemonCliIo;
+    await expect(runAgenCDaemonRestartWhenIdleCli({ kind: "restart-when-idle", json: true }, testHost(home), io, {}, {
+      ...deps,
+      acquireRestartLock: async (_host, timeoutMs) => {
+        tries += 1;
+        if (tries === 1) throw busyLockTimeout(home, "AgenC daemon restart", "daemon-restart.lock.sqlite", timeoutMs);
+        return async () => {};
+      },
+    })).resolves.toBe(0);
+    expect(stderr).toBe("agenc: Waiting for another daemon restart to finish (up to 15 minutes).\n");
+    expect(stdout.trim().split("\n")).toHaveLength(1);
+    expect(parseAgenCDaemonRestartOutcome(stdout.trim())).toEqual({ status: "not-running", toVersion: "9.9.9" });
+  });
+
+  it("never moves a newer daemon down, unless it is a pinned downgrade", async () => {
+    // An older update that runs after a newer one finished its restart.
+    const newer = identityFor(4242, { runtimeVersion: "10.0.0", commit: "n", buildTime: "2026-10-30T00:00:00.000Z" });
+    const { calls, deps } = scenario({ state: { kind: "running", identity: newer } });
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, deps)).resolves.toEqual({
+      status: "skipped",
+      code: "newer-daemon",
+      reason: "the daemon runs 10.0.0, which is not older than 9.9.9",
+      fromVersion: "10.0.0",
+      toVersion: "9.9.9",
+      pid: 4242,
+    });
+    expect(calls).toEqual([]);
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...deps, downgrade: true }))
+      .resolves.toMatchObject({ status: "restarted", fromVersion: "10.0.0", toVersion: "9.9.9" });
+    expect(calls).toEqual(["probe", "stop", "probe", "shutdown", "start"]);
   });
 
   it("passes a live requester to every check and keeps it in the pending record", async () => {
@@ -1095,6 +1364,51 @@ describe("restartAgenCDaemonWhenIdle", () => {
     expect(calls).toEqual([]);
   });
 
+  it("publishes how each request ended under its id, but not a deferral", async () => {
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, { ...scenario().deps, requestId: REQ });
+    expect(resultOf(home, REQ)).toEqual({
+      requestId: REQ,
+      finishedAt: new Date(NOW).toISOString(),
+      outcome: { status: "restarted", fromVersion: "9.9.8", toVersion: "9.9.9", pid: 5000 },
+    });
+    // The new daemon does not come up: the failure and its reason are kept, next to the first end.
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, { ...scenario({ startExit: 1 }).deps, requestId: REQ2 });
+    expect(resultOf(home, REQ2)?.outcome).toMatchObject({ status: "failed", fromVersion: "9.9.8", toVersion: "9.9.9" });
+    expect(resultOf(home, REQ2)?.outcome.reason).toContain("the daemon stopped but did not start again");
+    expect(readResults(home).map((result) => result.requestId)).toEqual([REQ, REQ2]);
+    // A deferral is not an end: its record carries the id for its waiting process.
+    const busy = scenario({ verdicts: [{ idle: false, reason: "1 client attached" }] });
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, { ...busy.deps, requestId: REQ3 }))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ3 });
+    expect(resultOf(home, REQ3)).toBeUndefined();
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ3);
+  });
+
+  it("publishes a lock failure, and nothing for a request without an id", async () => {
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, scenario().deps);
+    expect(readResults(home)).toEqual([]);
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...scenario().deps,
+      requestId: REQ,
+      acquireRestartLock: async () => {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      },
+    });
+    expect(resultOf(home, REQ)?.outcome).toMatchObject({ status: "failed", toVersion: "9.9.9" });
+  });
+
+  it("publishes a restart step that stops on an unexpected error, with this runtime's version", async () => {
+    const io = quietIo();
+    await expect(runAgenCDaemonRestartWhenIdleCli({ kind: "restart-when-idle", json: true, requestId: REQ }, testHost(home), io, {}, {
+      ...scenario().deps,
+      readState: async () => {
+        throw new Error("the process table is gone");
+      },
+    })).resolves.toBe(1);
+    expect(parseAgenCDaemonRestartOutcome(io.out().trim())).toMatchObject({ status: "failed", toVersion: "9.9.9" });
+    expect(resultOf(home, REQ)?.outcome).toEqual(parseAgenCDaemonRestartOutcome(io.out().trim()));
+  });
+
   it("prints one JSON line for agenc update", async () => {
     const { deps } = scenario({ state: { kind: "not-running" } });
     const io = quietIo();
@@ -1122,6 +1436,7 @@ describe("the deferred restart waiter", () => {
       notAfter: new Date(NOW + 60_000).toISOString(),
       daemon: { pid: old.pid, instanceId: old.instanceId },
       target: NEW_BUILD,
+      requestId: REQ,
     });
   });
 
@@ -1438,6 +1753,24 @@ describe("the deferred restart waiter", () => {
     expect(calls).toEqual([]);
   });
 
+  it("logs once a restart lock it cannot take for another reason than a running restart, and checks again later", async () => {
+    let tries = 0;
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      acquireRestartLock: async () => {
+        tries += 1;
+        if (tries <= 2) throw filesystemProbeTimeout(home, "AgenC daemon restart");
+        return async () => {};
+      },
+    })).resolves.toMatchObject({ status: "restarted" });
+    const log = readFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "utf8");
+    expect(log).toContain(
+      "the daemon restart lock could not be taken (agenc: AgenC daemon restart (macOS lock filesystem probe via /bin/df) timed out after 2000ms",
+    );
+    expect(log.match(/the daemon restart lock could not be taken/g)).toHaveLength(1);
+  });
+
   it("gives up at its deadline without stopping anything", async () => {
     const { calls, deps } = waiterDeps({
       verdicts: Array.from({ length: 10 }, () => ({ idle: false as const, reason: "1 client attached" })),
@@ -1448,6 +1781,199 @@ describe("the deferred restart waiter", () => {
     expect(calls.filter((call) => call !== "probe")).toEqual([]);
     expect(calls.length).toBe(5);
     expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    expect(resultOf(home, REQ)?.outcome).toEqual(outcome);
+  });
+
+  it("publishes how it ended under its record's request, so a TUI that follows the update learns a failure", async () => {
+    const { deps } = waiterDeps({});
+    const outcome = await runAgenCDaemonRestartWaiter(testHost(home), token, {}, { ...deps, startDaemon: async () => 1 });
+    expect(outcome).toMatchObject({ status: "failed", fromVersion: "9.9.8", toVersion: "9.9.9" });
+    expect(resultOf(home, REQ)).toEqual({ requestId: REQ, finishedAt: new Date(clock).toISOString(), outcome });
+  });
+
+  it("publishes its end before it clears its record, so a follower never sees neither", async () => {
+    const { deps } = waiterDeps({});
+    const atLock: Array<{ readonly pending: boolean; readonly end: string | undefined }> = [];
+    await runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      startDaemon: async () => 1,
+      withLifecycleLock: async (_host, operation) => {
+        atLock.push({ pending: readAgenCDaemonPendingRestart(home) !== null, end: resultOf(home, REQ)?.outcome.status });
+        return operation();
+      },
+    });
+    // The last lock is the record's removal: the failure is already published.
+    expect(atLock.at(-1)).toEqual({ pending: true, end: "failed" });
+    expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    // A follower polling at that moment stops with the failure; it does not relaunch.
+    const step = decideUpdateFollow(
+      { request: { fromVersion: "9.9.8", targetVersion: "9.9.9", command: "/w/agenc", installType: "install.sh", cwd: "/w" }, when: "daemon", since: 0, requestId: REQ },
+      { daemonVersion: null, restartPending: true, results: readResults(home), now: 1 },
+      resolveAgenCDaemonRestartFollowDeadlineMs({}, "linux"),
+    );
+    expect(step).toMatchObject({ kind: "stop", notice: { kind: "error" } });
+  });
+
+  it("stands down for a newer request and names it, so that request's followers go on", async () => {
+    writeAgenCDaemonPendingRestart(home, {
+      ...readAgenCDaemonPendingRestart(home)!,
+      token: "11111111-2222-4333-8444-555555555555",
+      requestId: REQ2,
+    });
+    const { deps } = waiterDeps({});
+    await runAgenCDaemonRestartWaiter(testHost(home), token, {}, { ...deps, requestId: REQ });
+    expect(resultOf(home, REQ)).toMatchObject({
+      outcome: { status: "skipped", reason: "a newer update replaced this restart", toVersion: "9.9.9" },
+      continuedBy: REQ2,
+    });
+    // The newer request's own record stays.
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ2);
+  });
+
+  it("publishes nothing when a newer restart carries the same request on", async () => {
+    writeAgenCDaemonPendingRestart(home, {
+      ...readAgenCDaemonPendingRestart(home)!,
+      token: "11111111-2222-4333-8444-555555555555",
+    });
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, { ...deps, requestId: REQ }))
+      .resolves.toMatchObject({ status: "skipped", reason: "a newer update replaced this restart" });
+    expect(resultOf(home, REQ)).toBeUndefined();
+  });
+
+  it("publishes a waiting process that stops on an unexpected error, before its record goes", async () => {
+    const { deps } = waiterDeps({ verdicts: [{ idle: false, reason: "busy" }] });
+    await expect(runAgenCDaemonRestartWhenIdleCli({ kind: "restart-when-idle", json: false, waitToken: token }, testHost(home), quietIo(), {}, {
+      ...deps,
+      sleep: async () => {
+        throw new Error("the clock stopped");
+      },
+    })).resolves.toBe(1);
+    expect(resultOf(home, REQ)?.outcome).toEqual({
+      status: "failed",
+      reason: "the waiting process stopped: the clock stopped",
+      toVersion: "9.9.9",
+    });
+    expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+  });
+});
+
+describe("two restart requests for the same version, each followed by a TUI", () => {
+  let home: string;
+  const old = identityFor(4242);
+  const deadline = resolveAgenCDaemonRestartFollowDeadlineMs({}, "linux");
+  const follow = (requestId: string) => ({
+    request: { fromVersion: "9.9.8", targetVersion: "9.9.9", command: "/w/agenc", installType: "install.sh" as const, cwd: "/w" },
+    when: "daemon" as const,
+    since: 0,
+    requestId,
+  });
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rwi-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function stepDeps(requestId: string, tokens: string[], idle: boolean): AgenCDaemonRestartWhenIdleDeps {
+    return {
+      now: () => new Date(NOW),
+      sleep: async () => {},
+      ownBuild: () => NEW_BUILD,
+      readState: async () => ({ kind: "running", identity: old }),
+      probe: async () => (idle ? { idle: true } : { idle: false, reason: "1 client attached" }),
+      requestShutdownWhenIdle: async () => (idle ? undefined : { declined: "1 client attached" }),
+      withLifecycleLock: async (_host, operation) => operation(),
+      acquireLifecycleLock: async () => async () => {},
+      daemonCommand: () => `${home}/runtime/9.9.8/tree/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground`,
+      stopDaemon: async (_host, _io, _timeout, stopOptions) => {
+        if (await stopOptions?.beforeShutdownRequest?.(old) !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        const decided = await stopOptions?.requestDaemonShutdown?.(_host, old);
+        if (decided !== undefined && decided !== null && "declined" in decided) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        return 0;
+      },
+      startDaemon: async () => 1,
+      requestIdentity: async () => identityFor(5000, NEW_BUILD),
+      spawnWaiter: (_host, token, id) => {
+        expect(id).toBe(requestId);
+        tokens.push(token);
+        return 6000 + tokens.length;
+      },
+      requestId,
+    };
+  }
+
+  it("the replaced request goes on as the newer one, and neither follow stops early", async () => {
+    const tokens: string[] = [];
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false)))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ });
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ2, tokens, false)))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ2 });
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ2);
+    // The first waiting process finds its record replaced and stands down.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[0]!, {}, stepDeps(REQ, tokens, false));
+    expect(resultOf(home, REQ)).toMatchObject({ outcome: { status: "skipped" }, continuedBy: REQ2 });
+    const waiting = { daemonVersion: "9.9.8", restartPending: true, results: readResults(home), now: 1 };
+    // The newer follow ignores the older request's end; the older one follows the newer request.
+    expect(decideUpdateFollow(follow(REQ2), waiting, deadline)).toEqual({ kind: "wait" });
+    expect(decideUpdateFollow(follow(REQ), waiting, deadline)).toEqual({ kind: "continue", requestId: REQ2 });
+    // The newer request's restart then fails: its followers learn why.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[1]!, {}, stepDeps(REQ2, tokens, true));
+    const after = { daemonVersion: null, restartPending: false, results: readResults(home), now: 2 };
+    expect(decideUpdateFollow(follow(REQ2), after, deadline)).toMatchObject({ kind: "stop", notice: { kind: "error" } });
+    expect(resultOf(home, REQ2)?.outcome.reason).toContain("the daemon stopped but did not start again");
+  });
+
+  it("a step without a request id (agenc update) carries on the request it replaces", async () => {
+    const tokens: string[] = [];
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false));
+    const { requestId: _none, ...anonymous } = stepDeps(REQ, tokens, false);
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, anonymous))
+      .resolves.toMatchObject({ status: "deferred", requestId: REQ });
+    expect(readAgenCDaemonPendingRestart(home)?.requestId).toBe(REQ);
+    // The replaced waiting process leaves the end to its successor.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[0]!, {}, stepDeps(REQ, tokens, false));
+    expect(resultOf(home, REQ)).toBeUndefined();
+  });
+
+  it("a replaced waiting process that wakes after its successor failed under the same request leaves the failure", async () => {
+    const tokens: string[] = [];
+    // A TUI's request waits; then an agenc update (no id) replaces its record and carries the id on.
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false));
+    const { requestId: _none, ...anonymous } = stepDeps(REQ, tokens, false);
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, anonymous);
+    // The successor's waiting process runs first: its restart fails and its record is cleared.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[1]!, {}, stepDeps(REQ, tokens, true));
+    expect(resultOf(home, REQ)?.outcome.status).toBe("failed");
+    expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    // The original waiting process wakes late, finds no record and stands down: the failure stays.
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), tokens[0]!, {}, stepDeps(REQ, tokens, false)))
+      .resolves.toMatchObject({ status: "skipped", reason: "a newer update replaced this restart" });
+    expect(resultOf(home, REQ)?.outcome).toMatchObject({ status: "failed" });
+    expect(resultOf(home, REQ)?.outcome.reason).toContain("the daemon stopped but did not start again");
+    expect(decideUpdateFollow(follow(REQ), { daemonVersion: null, restartPending: false, results: readResults(home), now: 2 }, deadline))
+      .toMatchObject({ kind: "stop", notice: { kind: "error" } });
+  });
+
+  it("a deferral that joins another request's pending restart follows that request", async () => {
+    const tokens: string[] = [];
+    // A newer build's restart already waits, from another TUI.
+    writeAgenCDaemonPendingRestart(home, {
+      schemaVersion: 1,
+      token: "22222222-2222-4333-8444-555555555555",
+      createdAt: new Date(NOW).toISOString(),
+      notAfter: new Date(NOW + 3_600_000).toISOString(),
+      daemon: { pid: old.pid, instanceId: old.instanceId },
+      target: { runtimeVersion: "9.9.10", commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" },
+      requestId: REQ2,
+    });
+    await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false)))
+      .resolves.toMatchObject({ status: "deferred", toVersion: "9.9.10", requestId: REQ2 });
+    expect(tokens).toEqual([]);
+    // A follow that never saw this outcome (the update stopped waiting) learns it from the results.
+    expect(resultOf(home, REQ)).toMatchObject({ outcome: { status: "deferred" }, continuedBy: REQ2 });
   });
 });
 
@@ -1491,4 +2017,159 @@ describe("stop with a last check before daemon.shutdown", () => {
     });
     expect(exit).toBe(AGENC_DAEMON_STOP_DECLINED_EXIT);
   });
+});
+
+describe("two restarts at the same time", () => {
+  const FIRST_BUILD = { runtimeVersion: "9.9.7", commit: "first", buildTime: "2026-09-01T00:00:00.000Z" };
+  const token = "2b8f5f3c-2b1a-4d6e-9f00-0123456789ab";
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rwi-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  /** A gate a restart waits at once it stopped the daemon, before it starts its own. */
+  function betweenStopAndSpawn() {
+    let open!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const entered = new Promise<void>((resolve) => { reached = resolve; });
+    return { gate, entered, open: () => open(), reached: () => reached() };
+  }
+
+  /**
+   * One daemon home shared by every restart in a test: stop and start act on
+   * the same daemon, and a start finds a daemon that already runs, as the real
+   * start does under the lifecycle lock.
+   */
+  function daemonHome(first: AgenCDaemonInstanceIdentity) {
+    let running: AgenCDaemonInstanceIdentity | null = first;
+    let nextPid = 5000;
+    const spawned: string[] = [];
+    const depsFor = (
+      build: typeof NEW_BUILD,
+      gap?: ReturnType<typeof betweenStopAndSpawn>,
+    ): AgenCDaemonRestartWhenIdleDeps => ({
+      now: () => new Date(NOW),
+      ownBuild: () => build,
+      readState: async () => (running === null ? { kind: "not-running" } : { kind: "running", identity: running }),
+      probe: async () => ({ idle: true }),
+      requestShutdownWhenIdle: async () => undefined,
+      withLifecycleLock: async (_host, operation) => operation(),
+      acquireLifecycleLock: async () => async () => {},
+      daemonCommand: () => `/x/agenc-node ${home}/runtime/${running?.runtimeVersion ?? "none"}/tree/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground`,
+      stopDaemon: async (host, _io, _timeout, stopOptions) => {
+        const current = running;
+        // Like stopAgenCDaemon: a daemon that is already gone is "stopped",
+        // with no last check.
+        if (current === null) return 0;
+        if (await stopOptions?.beforeShutdownRequest?.(current) !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        const decided = await stopOptions?.requestDaemonShutdown?.(host, current);
+        if (decided !== undefined && decided !== null && "declined" in decided) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+        running = null;
+        if (gap !== undefined) {
+          gap.reached();
+          await gap.gate;
+        }
+        return 0;
+      },
+      startDaemon: async () => {
+        if (running !== null) return 0;
+        running = identityFor(nextPid++, build);
+        spawned.push(build.runtimeVersion);
+        return 0;
+      },
+      requestIdentity: async () => {
+        if (running === null) throw new Error("no daemon answers");
+        return running;
+      },
+      spawnWaiter: () => 6000,
+    });
+    return { depsFor, daemon: () => running, spawned };
+  }
+
+  const settled = async (promise: Promise<unknown>, ms: number): Promise<boolean> => {
+    let done = false;
+    void promise.then(() => { done = true; }, () => { done = true; });
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return done;
+  };
+
+  it("a newer update that looks while an older restart is between stop and spawn waits, then moves the daemon to the newer build", async () => {
+    const world = daemonHome(identityFor(4242, FIRST_BUILD));
+    const gap = betweenStopAndSpawn();
+    const older = restartAgenCDaemonWhenIdle(testHost(home), {}, world.depsFor(OLD_BUILD, gap));
+    await gap.entered;
+    const newer = restartAgenCDaemonWhenIdle(testHost(home), {}, world.depsFor(NEW_BUILD));
+    // It decides nothing while the daemon is between stop and spawn: before,
+    // it reported "not running" here and the older build was started after it.
+    expect(await settled(newer, 50)).toBe(false);
+    gap.open();
+    await expect(older).resolves.toMatchObject({ status: "restarted", fromVersion: "9.9.7", toVersion: "9.9.8" });
+    await expect(newer).resolves.toMatchObject({ status: "restarted", fromVersion: "9.9.8", toVersion: "9.9.9" });
+    expect(world.daemon()?.runtimeVersion).toBe("9.9.9");
+    expect(world.spawned).toEqual(["9.9.8", "9.9.9"]);
+  });
+
+  it("an older update that looks while a newer restart is between stop and spawn leaves the newer daemon alone", async () => {
+    const world = daemonHome(identityFor(4242, FIRST_BUILD));
+    const gap = betweenStopAndSpawn();
+    const newer = restartAgenCDaemonWhenIdle(testHost(home), {}, world.depsFor(NEW_BUILD, gap));
+    await gap.entered;
+    const older = restartAgenCDaemonWhenIdle(testHost(home), {}, world.depsFor(OLD_BUILD));
+    expect(await settled(older, 50)).toBe(false);
+    gap.open();
+    await expect(newer).resolves.toMatchObject({ status: "restarted", toVersion: "9.9.9" });
+    await expect(older).resolves.toMatchObject({
+      status: "skipped",
+      code: "newer-daemon",
+      fromVersion: "9.9.9",
+      toVersion: "9.9.8",
+    });
+    expect(world.daemon()?.runtimeVersion).toBe("9.9.9");
+    expect(world.spawned).toEqual(["9.9.9"]);
+  });
+
+  it("a waiting process that looks while another restart is between stop and spawn keeps its restart and finishes it", async () => {
+    const world = daemonHome(identityFor(4242, FIRST_BUILD));
+    // A restart onto 9.9.9 already waits for the first daemon.
+    writeAgenCDaemonPendingRestart(home, {
+      schemaVersion: 1,
+      token,
+      createdAt: new Date(NOW).toISOString(),
+      notAfter: new Date(NOW + 3_600_000).toISOString(),
+      daemon: { pid: 4242, instanceId: "instance-4242" },
+      target: NEW_BUILD,
+    });
+    const gap = betweenStopAndSpawn();
+    const older = restartAgenCDaemonWhenIdle(testHost(home), {}, world.depsFor(OLD_BUILD, gap));
+    await gap.entered;
+    let clock = NOW;
+    let firstSleep!: () => void;
+    const slept = new Promise<void>((resolve) => { firstSleep = resolve; });
+    const waiter = runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...world.depsFor(NEW_BUILD),
+      now: () => new Date(clock),
+      sleep: async (ms) => {
+        clock += ms;
+        firstSleep();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      },
+      pollMs: 15_000,
+    });
+    // Its first check falls into the gap.
+    await Promise.race([slept, waiter]);
+    gap.open();
+    await expect(older).resolves.toMatchObject({ status: "restarted", toVersion: "9.9.8" });
+    await expect(waiter).resolves.toMatchObject({ status: "restarted", fromVersion: "9.9.8", toVersion: "9.9.9" });
+    expect(world.daemon()?.runtimeVersion).toBe("9.9.9");
+    expect(world.spawned).toEqual(["9.9.8", "9.9.9"]);
+    expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    expect(readFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "utf8"))
+      .toContain("replaced the one this restart waited for; waiting for it instead");
+  }, 15_000);
 });

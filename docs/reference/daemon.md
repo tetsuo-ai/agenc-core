@@ -210,8 +210,13 @@ agenc daemon install-service       # write WinSW XML; does not install the servi
 
 `agenc daemon restart --when-idle` is the step `agenc update` runs after it
 activates a new runtime. It restarts an idle daemon right away and leaves a
-busy one alone until it is idle, through one waiting process. The idle check,
-its bounds and the `--json` result are described in
+busy one alone until it is idle, through one waiting process. One such
+restart runs at a time in a home; a second one waits for it and says so on
+stderr. `--downgrade` (passed by `agenc update --pin`) lets it move a newer
+daemon down to this version. How each restart request ended is kept in
+`<AGENC_HOME>/daemon-restart-results.json` (the last 8, by request id) for a
+TUI that follows the update.
+The idle check, its bounds and the `--json` result are described in
 [Daemon restart after an update](../install.md#daemon-restart-after-an-update).
 
 `agenc daemon status` distinguishes three states. `running (pid N)` with uptime,

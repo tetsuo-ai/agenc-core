@@ -24,6 +24,12 @@
  * `daemon.shutdown`, and leaves the daemon alone if anything changed. The
  * replacement must then report this runtime's build.
  *
+ * One restart at a time: each holds the daemon restart lock from its first
+ * look at the daemon until the replacement reported its build, and a waiter
+ * holds it for each check, so no restart sees the daemon between another
+ * one's stop and spawn (two updates at once). Only a pinned downgrade moves a
+ * daemon to an older build, so the newest build wins whatever the order.
+ *
  * Busy: one record, `<AGENC_HOME>/daemon-restart-pending.json`, and one
  * detached waiter (`restart --when-idle --wait <token>`). The waiter checks
  * every {@link AGENC_DAEMON_RESTART_POLL_MS}, restarts after two idle checks
@@ -32,7 +38,9 @@
  * check. A waiter also leaves when the daemon stopped, was replaced (for
  * example by a newer client's build check) or already runs this build.
  * Giving up stops nothing. Outcomes are written to
- * `<AGENC_HOME>/daemon-restart.log`.
+ * `<AGENC_HOME>/daemon-restart.log`, and how each restart request ended to
+ * `<AGENC_HOME>/daemon-restart-results.json` (keyed by the TUI's request id)
+ * for a TUI that stopped waiting for it, before the pending record goes.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -78,6 +86,22 @@ import {
   type AgenCDaemonInstanceIdentity,
 } from "./daemon-instance-identity.js";
 import {
+  AGENC_DAEMON_LIFECYCLE_LOCK_FILENAME,
+  AGENC_DAEMON_LIFECYCLE_LOCK_LABEL,
+  acquireAgenCDaemonRestartLock,
+} from "./daemon-lifecycle-lock.js";
+import {
+  AGENC_DAEMON_RESTART_LOCK_FILENAME,
+  AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS,
+  AGENC_DAEMON_RESTART_LOCK_LABEL,
+  AGENC_DAEMON_RESTART_LOCK_WAIT_MS,
+  AGENC_DAEMON_RESTART_MAX_WAIT_MS,
+  describeAgenCDaemonRestartLockFailure,
+  formatAgenCDaemonRestartWait,
+  formatAgenCDaemonRestartWaitingLine,
+  isLocalSqliteLockBusyTimeout,
+} from "./daemon-restart-handoff.js";
+import {
   daemonInstanceIdentityFromRuntimeInfo,
   readDaemonRuntimeInfo,
   readDistVersion,
@@ -98,22 +122,40 @@ import {
 import { canConnectToUnixSocket } from "./transport/unix-socket.js";
 import { countedAttachments, runningNativeWorkerCount } from "./daemon-idle-check.js";
 import {
+  AGENC_DAEMON_RESTART_RESULTS_FILENAME,
+  addAgenCDaemonRestartResult,
   formatAgenCDaemonRestartOutcome,
+  isAgenCDaemonRestartRequestId,
   type AgenCDaemonRestartOutcome,
+  type AgenCDaemonRestartResult,
 } from "./daemon-restart-outcome.js";
+import { acquireLocalSqliteLock } from "../utils/sqlite-lock.js";
 
 export type { AgenCDaemonRestartOutcome } from "./daemon-restart-outcome.js";
 
 /** How often a deferred restart checks the daemon again. */
 export const AGENC_DAEMON_RESTART_POLL_MS = 15_000;
 /** A deferred restart gives up after this long and changes nothing. */
-export const AGENC_DAEMON_RESTART_MAX_WAIT_MS = 12 * 60 * 60 * 1_000;
+export { AGENC_DAEMON_RESTART_MAX_WAIT_MS };
 /** An agent active more recently than this may still be finishing work. */
 export const AGENC_DAEMON_RESTART_QUIET_MS = 15_000;
 /** Consecutive idle checks a deferred restart needs before it restarts. */
 export const AGENC_DAEMON_RESTART_IDLE_CHECKS = 2;
 export const AGENC_DAEMON_RESTART_PENDING_FILENAME = "daemon-restart-pending.json";
 export const AGENC_DAEMON_RESTART_LOG_FILENAME = "daemon-restart.log";
+/**
+ * A waiting process only looks at the restart lock: when another restart
+ * holds it, the daemon is being restarted right now, so it checks again later.
+ */
+const WAITER_RESTART_LOCK_WAIT_MS = 1_000;
+const RESTART_LOCK = {
+  label: AGENC_DAEMON_RESTART_LOCK_LABEL,
+  filename: AGENC_DAEMON_RESTART_LOCK_FILENAME,
+} as const;
+const LIFECYCLE_LOCK = {
+  label: AGENC_DAEMON_LIFECYCLE_LOCK_LABEL,
+  filename: AGENC_DAEMON_LIFECYCLE_LOCK_FILENAME,
+} as const;
 /**
  * `session.processes.list` (1.13) and `session.goal` (1.14) are the newest
  * requests the check needs. Older daemons cannot be shown to be idle.
@@ -1087,6 +1129,8 @@ export interface AgenCDaemonPendingRestart {
   readonly target: AgenCRuntimeBuild;
   /** The TUI that asked; its own conversation never holds the restart up. */
   readonly requester?: AgenCDaemonRestartRequester;
+  /** The request whose end this restart publishes (see daemon-restart-results.json). */
+  readonly requestId?: string;
 }
 
 function requesterOf(value: unknown): AgenCDaemonRestartRequester | undefined {
@@ -1124,9 +1168,13 @@ export function readAgenCDaemonPendingRestart(
     ) {
       return null;
     }
-    const { requester, ...rest } = value as AgenCDaemonPendingRestart;
+    const { requester, requestId, ...rest } = value as AgenCDaemonPendingRestart;
     const sane = requesterOf(requester);
-    return { ...rest, ...(sane === undefined ? {} : { requester: sane }) };
+    return {
+      ...rest,
+      ...(sane === undefined ? {} : { requester: sane }),
+      ...(isAgenCDaemonRestartRequestId(requestId) ? { requestId } : {}),
+    };
   } catch {
     return null;
   }
@@ -1175,15 +1223,13 @@ export async function updateAgenCDaemonRestartRequesterAttachments(
 /**
  * Remove the record only while it still belongs to `token`. The caller holds
  * the lifecycle lock, which every record change takes, so no newer record
- * can be published between the check and the unlink.
+ * can be published between the check and the unlink. Throws when the record
+ * is there and cannot be removed: a record left behind keeps its restart
+ * alive, so every caller must say so.
  */
 export function removeAgenCDaemonPendingRestartLocked(daemonHome: string, token: string): void {
   if (readAgenCDaemonPendingRestart(daemonHome)?.token !== token) return;
-  try {
-    rmSync(resolveAgenCDaemonPendingRestartPath(daemonHome), { force: true });
-  } catch {
-    // A record left behind is ended by the next waiter or update.
-  }
+  rmSync(resolveAgenCDaemonPendingRestartPath(daemonHome), { force: true });
 }
 
 /** {@link removeAgenCDaemonPendingRestartLocked}, taking the lifecycle lock. */
@@ -1207,6 +1253,62 @@ function logLine(daemonHome: string, message: string, now: Date): void {
   } catch {
     // The log is a convenience; the record and the daemon are the state.
   }
+}
+
+const RESULTS_LOCK = {
+  filename: "daemon-restart-results.lock.sqlite",
+  label: "AgenC daemon restart results",
+  waitMs: 10_000,
+} as const;
+
+/**
+ * Publish how a restart request ended (see AGENC_DAEMON_RESTART_RESULTS_FILENAME):
+ * one atomic rewrite of the bounded file, under a short lock of its own so two
+ * ends never drop each other. Callers publish before they clear the pending
+ * record, so a follower never sees the restart gone without its end. Best
+ * effort: a failure is logged.
+ */
+export async function publishAgenCDaemonRestartResult(
+  daemonHome: string,
+  result: AgenCDaemonRestartResult,
+): Promise<void> {
+  let release: (() => void) | undefined;
+  try {
+    release = await acquireLocalSqliteLock(join(daemonHome, RESULTS_LOCK.filename), {
+      label: RESULTS_LOCK.label,
+      timeoutMs: RESULTS_LOCK.waitMs,
+    });
+    const path = join(daemonHome, AGENC_DAEMON_RESTART_RESULTS_FILENAME);
+    let existing: string | null = null;
+    try {
+      existing = readFileSync(path, "utf8");
+    } catch {
+      existing = null;
+    }
+    const next = addAgenCDaemonRestartResult(existing, result);
+    if (next !== null) writeDurableAtomicFileSync(path, `${path}.${process.pid}.${randomUUID()}.tmp`, next);
+  } catch (error) {
+    logLine(daemonHome, `the end of request ${result.requestId} could not be recorded (${formatCleanupError(error)})`, new Date());
+  } finally {
+    release?.();
+  }
+}
+
+/** Publish the end of `requestId`; a request without an id has nobody following it. */
+async function publishEnd(
+  daemonHome: string,
+  requestId: string | undefined,
+  outcome: AgenCDaemonRestartOutcome,
+  now: Date,
+  continuedBy?: string,
+): Promise<void> {
+  if (requestId === undefined) return;
+  await publishAgenCDaemonRestartResult(daemonHome, {
+    requestId,
+    finishedAt: now.toISOString(),
+    outcome,
+    ...(continuedBy === undefined || continuedBy === requestId ? {} : { continuedBy }),
+  });
 }
 
 /** Start a fresh log for a new pending restart, so it never grows unbounded. */
@@ -1247,10 +1349,20 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   readonly withLifecycleLock?: <T>(host: AgenCDaemonCliHost, operation: () => Promise<T>) => Promise<T>;
   /** The same lock for a waiter's start: held from its last check through the spawn. */
   readonly acquireLifecycleLock?: (host: AgenCDaemonCliHost) => Promise<() => Promise<void>>;
+  /**
+   * The daemon restart lock (see acquireAgenCDaemonRestartLock), waiting at
+   * most `timeoutMs` for another restart to finish.
+   */
+  readonly acquireRestartLock?: (host: AgenCDaemonCliHost, timeoutMs: number) => Promise<() => Promise<void>>;
+  /**
+   * One line for the person while this restart waits for another one; the
+   * CLI writes it to stderr, where `agenc update` picks it up.
+   */
+  readonly onProgress?: (line: string) => void;
   readonly startDaemon?: typeof startAgenCDaemon;
   readonly requestIdentity?: (host: AgenCDaemonCliHost) => Promise<AgenCDaemonInstanceIdentity>;
   /** Start the detached waiter; returns its pid. */
-  readonly spawnWaiter?: (host: AgenCDaemonCliHost, token: string) => number;
+  readonly spawnWaiter?: (host: AgenCDaemonCliHost, token: string, requestId?: string) => number;
   readonly pollMs?: number;
   readonly maxWaitMs?: number;
   readonly idleChecks?: number;
@@ -1269,6 +1381,8 @@ export interface AgenCDaemonRestartWhenIdleDeps {
   readonly downgrade?: boolean;
   /** Runtime roots of this install besides the home's (a Homebrew keg). */
   readonly installRuntimeRoots?: () => readonly string[];
+  /** The TUI's id for this restart request (`--request-id`); its end is published under it. */
+  readonly requestId?: string;
 }
 
 interface RestartContext {
@@ -1280,6 +1394,7 @@ interface RestartContext {
   readonly now: () => Date;
   /** Set from the deps, and by the waiter from its record. */
   readonly requester: { current: AgenCDaemonRestartRequester | undefined };
+  readonly requestId?: string;
 }
 
 function defaultOwnBuild(): AgenCRuntimeBuild | null {
@@ -1615,10 +1730,13 @@ function preflightOutcome(
   }
 }
 
-function defaultSpawnWaiter(host: AgenCDaemonCliHost, token: string): number {
+function defaultSpawnWaiter(host: AgenCDaemonCliHost, token: string, requestId?: string): number {
   const child = spawn(
     host.execPath,
-    [host.entrypointPath, "daemon", "restart", "--when-idle", "--wait", token],
+    [
+      host.entrypointPath, "daemon", "restart", "--when-idle", "--wait", token,
+      ...(requestId === undefined ? [] : ["--request-id", requestId]),
+    ],
     {
       detached: true,
       cwd: resolveAgenCDaemonHome(host.env, host.userHome),
@@ -1661,9 +1779,17 @@ function deferRestartLocked(
     // updater that was slower to get here). Its restart goes further, so it
     // stays; this TUI, when it asked, is exempt from it like from its own.
     const requester = ctx.requester.current;
-    if (requester !== undefined && !requesterIsLive(ctx, pending.requester)) {
-      writeAgenCDaemonPendingRestart(ctx.daemonHome, { ...pending, requester });
+    const takeRequester = requester !== undefined && !requesterIsLive(ctx, pending.requester);
+    // A pending restart without a request id publishes its end under this one.
+    const takeRequestId = pending.requestId === undefined && ctx.requestId !== undefined;
+    if (takeRequester || takeRequestId) {
+      writeAgenCDaemonPendingRestart(ctx.daemonHome, {
+        ...pending,
+        ...(takeRequester ? { requester } : {}),
+        ...(takeRequestId ? { requestId: ctx.requestId } : {}),
+      });
     }
+    const followed = pending.requestId ?? ctx.requestId;
     logLine(
       ctx.daemonHome,
       `kept: a restart onto ${pending.target.runtimeVersion} already waits for the daemon; ${toVersion} is older`,
@@ -1675,8 +1801,12 @@ function deferRestartLocked(
       fromVersion,
       toVersion: pending.target.runtimeVersion,
       waitUntil: pending.notAfter,
+      ...(followed === undefined ? {} : { requestId: followed }),
     };
   }
+  // A step without a request id (`agenc update`) carries on the request of the
+  // restart it replaces, so that request's follower still gets an end.
+  const requestId = ctx.requestId ?? pending?.requestId;
   try {
     // Replacing the record ends any earlier waiter at its next check.
     writeAgenCDaemonPendingRestart(ctx.daemonHome, {
@@ -1687,24 +1817,38 @@ function deferRestartLocked(
       daemon: { pid: identity.pid, instanceId: identity.instanceId },
       target: ctx.build,
       ...(ctx.requester.current === undefined ? {} : { requester: ctx.requester.current }),
+      ...(requestId === undefined ? {} : { requestId }),
     });
     startLog(
       ctx.daemonHome,
       `deferred: daemon pid ${identity.pid} on ${fromVersion} is busy (${reason}); restarting on ${toVersion} once idle, until ${notAfter}`,
       now,
     );
-    const waiterPid = (ctx.deps.spawnWaiter ?? defaultSpawnWaiter)(ctx.host, token);
+    const waiterPid = (ctx.deps.spawnWaiter ?? defaultSpawnWaiter)(ctx.host, token, requestId);
     logLine(ctx.daemonHome, `waiting process pid ${waiterPid}`, ctx.now());
   } catch (error) {
-    removeAgenCDaemonPendingRestartLocked(ctx.daemonHome, token);
+    let leftBehind = "";
+    try {
+      removeAgenCDaemonPendingRestartLocked(ctx.daemonHome, token);
+    } catch (removeError) {
+      leftBehind = `; its record could not be removed either (${formatCleanupError(removeError)}), ` +
+        `delete ${resolveAgenCDaemonPendingRestartPath(ctx.daemonHome)}`;
+    }
     return {
       status: "failed",
-      reason: `the daemon is busy (${reason}) and a later restart could not be arranged: ${formatCleanupError(error)}`,
+      reason: `the daemon is busy (${reason}) and a later restart could not be arranged: ${formatCleanupError(error)}${leftBehind}`,
       fromVersion,
       toVersion,
     };
   }
-  return { status: "deferred", reason, fromVersion, toVersion, waitUntil: notAfter };
+  return {
+    status: "deferred",
+    reason,
+    fromVersion,
+    toVersion,
+    waitUntil: notAfter,
+    ...(requestId === undefined ? {} : { requestId }),
+  };
 }
 
 /** A pending restart, still in time, onto a build newer than `build`. */
@@ -1727,54 +1871,134 @@ function requesterIsLive(ctx: RestartContext, requester: AgenCDaemonRestartReque
   }
 }
 
+type PendingRestartCancel =
+  | { readonly kind: "none" }
+  | { readonly kind: "cancelled"; readonly version: string }
+  /** Still pending: `why` says what stopped the cancellation. */
+  | { readonly kind: "failed"; readonly version: string; readonly why: string };
+
+/**
+ * Busy means another holder kept the lock; any other failure, such as a lock
+ * path that could not be validated in time, keeps its own message.
+ */
+function describeLifecycleLockFailure(error: unknown): string {
+  return isLocalSqliteLockBusyTimeout(error, LIFECYCLE_LOCK)
+    ? `the daemon lifecycle lock stayed busy for ${formatAgenCDaemonRestartWait(error.timeoutMs)}`
+    : `the daemon lifecycle lock could not be taken: ${formatCleanupError(error)}`;
+}
+
+/** What a person reads when a pending restart onto a newer build stays. */
+function cancelFailedReason(
+  daemonHome: string,
+  failed: Extract<PendingRestartCancel, { readonly kind: "failed" }>,
+): string {
+  return `a restart onto ${failed.version} is still pending and could not be cancelled (${failed.why}). ` +
+    `The daemon was left as it is, and that restart can still move it to ${failed.version}. ` +
+    `To cancel it, delete ${resolveAgenCDaemonPendingRestartPath(daemonHome)}`;
+}
+
+/**
+ * End the pending restart `above` selects, for a pinned downgrade to
+ * `targetVersion`, under the lifecycle lock. One that stays is logged and
+ * returned as failed, never as cancelled. When the lock cannot be taken the
+ * record is only read: with nothing above the target, a busy lock costs the
+ * downgrade nothing.
+ */
+async function cancelPendingRestartAbove<H extends Pick<AgenCDaemonCliHost, "env" | "userHome">>(
+  host: H,
+  withLock: <T>(host: H, operation: () => Promise<T>) => Promise<T>,
+  above: (pending: AgenCDaemonPendingRestart) => boolean,
+  targetVersion: string,
+  now: () => Date,
+): Promise<PendingRestartCancel> {
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  let result: PendingRestartCancel;
+  try {
+    result = await withLock(host, async (): Promise<PendingRestartCancel> => {
+      const pending = readAgenCDaemonPendingRestart(daemonHome);
+      if (pending === null || !above(pending)) return { kind: "none" };
+      try {
+        removeAgenCDaemonPendingRestartLocked(daemonHome, pending.token);
+      } catch (error) {
+        return {
+          kind: "failed",
+          version: pending.target.runtimeVersion,
+          why: `the record could not be removed: ${formatCleanupError(error)}`,
+        };
+      }
+      return { kind: "cancelled", version: pending.target.runtimeVersion };
+    });
+  } catch (error) {
+    const pending = readAgenCDaemonPendingRestart(daemonHome);
+    if (pending === null || !above(pending)) return { kind: "none" };
+    result = { kind: "failed", version: pending.target.runtimeVersion, why: describeLifecycleLockFailure(error) };
+  }
+  if (result.kind === "cancelled") {
+    logLine(daemonHome, `cancelled: the restart onto ${result.version}, for a downgrade to ${targetVersion}`, now());
+  } else if (result.kind === "failed") {
+    logLine(
+      daemonHome,
+      `cancel failed: the restart onto ${result.version}, for a downgrade to ${targetVersion}, is still pending: ${result.why}`,
+      now(),
+    );
+  }
+  return result;
+}
+
 /**
  * A pinned downgrade ends a pending restart onto a newer build first, so
  * that restart's waiting process cannot move the daemon back up later.
+ * Returns the outcome to report when that restart stays: then the daemon is
+ * left as it is, since restarting it now would only be undone later.
  */
-async function cancelNewerPendingRestart(ctx: RestartContext): Promise<void> {
-  const withLock = ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock;
-  await withLock(ctx.host, async () => {
-    const pending = readAgenCDaemonPendingRestart(ctx.daemonHome);
-    if (pending === null || compareAgenCRuntimeBuilds(pending.target, ctx.build) !== 1) return;
-    removeAgenCDaemonPendingRestartLocked(ctx.daemonHome, pending.token);
-    logLine(
-      ctx.daemonHome,
-      `cancelled: the restart onto ${pending.target.runtimeVersion}, for a downgrade to ${ctx.build.runtimeVersion}`,
-      ctx.now(),
-    );
-  });
+async function cancelNewerPendingRestart(ctx: RestartContext): Promise<AgenCDaemonRestartOutcome | undefined> {
+  const result = await cancelPendingRestartAbove(
+    ctx.host,
+    ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock,
+    (pending) => compareAgenCRuntimeBuilds(pending.target, ctx.build) === 1,
+    ctx.build.runtimeVersion,
+    ctx.now,
+  );
+  return result.kind === "failed"
+    ? { status: "failed", reason: cancelFailedReason(ctx.daemonHome, result), toVersion: ctx.build.runtimeVersion }
+    : undefined;
 }
 
 /**
  * For `agenc update --pin` to an older version, run by the updater itself
  * before it hands the restart to that runtime, which may be too old to know
  * `--downgrade`: end a pending restart onto a version above the target.
- * Returns the version of the restart it ended.
+ * Returns the version of the restart it ended. Rejects, with a reason a
+ * person can read, when such a restart exists and could not be ended.
  */
 export async function cancelAgenCDaemonPendingRestartAbove(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   targetVersion: string,
   now: () => Date = () => new Date(),
+  options: {
+    readonly withLifecycleLock?: <T>(
+      host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+      operation: () => Promise<T>,
+    ) => Promise<T>;
+  } = {},
 ): Promise<string | undefined> {
-  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
-  return withAgenCDaemonLifecycleLock(host, async () => {
-    const pending = readAgenCDaemonPendingRestart(daemonHome);
-    if (pending === null) return undefined;
-    let order: -1 | 0 | 1;
-    try {
-      order = semverOrder(pending.target.runtimeVersion, targetVersion);
-    } catch {
-      return undefined;
-    }
-    if (order !== 1) return undefined;
-    removeAgenCDaemonPendingRestartLocked(daemonHome, pending.token);
-    logLine(
-      daemonHome,
-      `cancelled: the restart onto ${pending.target.runtimeVersion}, for a downgrade to ${targetVersion}`,
-      now(),
-    );
-    return pending.target.runtimeVersion;
-  });
+  const result = await cancelPendingRestartAbove(
+    host,
+    options.withLifecycleLock ?? withAgenCDaemonLifecycleLock,
+    (pending) => {
+      try {
+        return semverOrder(pending.target.runtimeVersion, targetVersion) === 1;
+      } catch {
+        return false;
+      }
+    },
+    targetVersion,
+    now,
+  );
+  if (result.kind === "failed") {
+    throw new Error(cancelFailedReason(resolveAgenCDaemonHome(host.env, host.userHome), result));
+  }
+  return result.kind === "cancelled" ? result.version : undefined;
 }
 
 /** A daemon the check can never prove idle (too old, no identity). */
@@ -1814,6 +2038,7 @@ function restartContext(
     build,
     now: deps.now ?? (() => new Date()),
     requester: { current: deps.requester },
+    ...(deps.requestId === undefined ? {} : { requestId: deps.requestId }),
   };
 }
 
@@ -1836,9 +2061,68 @@ export async function restartAgenCDaemonWhenIdle(
   }
   const ctx = restartContext(host, options, deps);
   if (!("host" in ctx)) return ctx;
-  if (deps.downgrade === true) await cancelNewerPendingRestart(ctx);
+  return restartWhenIdleSerialized(ctx);
+}
+
+/**
+ * Publish the end of this step's request. A deferral is not an end (the
+ * waiting process publishes the end it reaches), unless it joined a pending
+ * restart of another request: this request then goes on as that one.
+ */
+async function ended(ctx: RestartContext, outcome: AgenCDaemonRestartOutcome): Promise<AgenCDaemonRestartOutcome> {
+  if (outcome.status !== "deferred") {
+    await publishEnd(ctx.daemonHome, ctx.requestId, outcome, ctx.now());
+  } else if (outcome.requestId !== undefined && outcome.requestId !== ctx.requestId) {
+    await publishEnd(ctx.daemonHome, ctx.requestId, outcome, ctx.now(), outcome.requestId);
+  }
+  return outcome;
+}
+
+async function restartWhenIdleSerialized(ctx: RestartContext): Promise<AgenCDaemonRestartOutcome> {
+  const { host, deps } = ctx;
+  // One restart at a time. Another one may have stopped the daemon and not
+  // spawned the next yet, which would read as no daemon at all.
+  const acquire = deps.acquireRestartLock ?? acquireAgenCDaemonRestartLock;
+  let release: () => Promise<void>;
+  try {
+    release = await acquire(host, AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS);
+  } catch (busy) {
+    if (!isLocalSqliteLockBusyTimeout(busy, RESTART_LOCK)) {
+      return ended(ctx, { status: "failed", reason: describeAgenCDaemonRestartLockFailure(busy), toVersion: ctx.build.runtimeVersion });
+    }
+    // Another restart runs: say so once, so the update does not look stuck.
+    try {
+      deps.onProgress?.(formatAgenCDaemonRestartWaitingLine());
+    } catch {
+      // Progress is best effort.
+    }
+    try {
+      release = await acquire(host, AGENC_DAEMON_RESTART_LOCK_WAIT_MS);
+    } catch (error) {
+      return ended(ctx, { status: "failed", reason: describeAgenCDaemonRestartLockFailure(error), toVersion: ctx.build.runtimeVersion });
+    }
+  }
+  try {
+    // Published before the lock goes, so ends land in the order restarts end.
+    return await ended(ctx, await restartWhenIdleLocked(ctx));
+  } finally {
+    // The lock goes with this process at the latest.
+    await release().catch(() => undefined);
+  }
+}
+
+async function restartWhenIdleLocked(ctx: RestartContext): Promise<AgenCDaemonRestartOutcome> {
+  if (ctx.deps.downgrade === true) {
+    const failed = await cancelNewerPendingRestart(ctx);
+    if (failed !== undefined) return failed;
+  }
   const checked = await preflight(ctx);
   if (checked.kind !== "candidate") return preflightOutcome(ctx, checked);
+  if (ctx.deps.downgrade !== true && compareAgenCRuntimeBuilds(checked.identity, ctx.build) === 1) {
+    // Only a pinned downgrade moves a daemon down. Two updates at once can
+    // restart in either order; the newest build wins either way.
+    return preflightOutcome(ctx, { kind: "newer", identity: checked.identity });
+  }
   const verdict = await probeFor(ctx)(checked.identity);
   if (!verdict.idle) {
     return verdict.permanent === true
@@ -1871,9 +2155,29 @@ export async function runAgenCDaemonRestartWaiter(
   const pollMs = deps.pollMs ?? AGENC_DAEMON_RESTART_POLL_MS;
   const idleChecksNeeded = deps.idleChecks ?? AGENC_DAEMON_RESTART_IDLE_CHECKS;
   const hardDeadline = ctx.now().getTime() + (deps.maxWaitMs ?? AGENC_DAEMON_RESTART_MAX_WAIT_MS);
+  /** This restart's request: from `--request-id`, or from its record. */
+  let requestId: string | undefined = ctx.requestId;
   const finish = async (outcome: AgenCDaemonRestartOutcome, removeRecord: boolean): Promise<AgenCDaemonRestartOutcome> => {
+    // A newer restart that replaced this one carries its request on.
+    const current = outcome.status === "skipped" ? readAgenCDaemonPendingRestart(ctx.daemonHome) : null;
+    const successor = current !== null && current.token !== token ? current : null;
+    // Published before the record goes: a follower never sees the restart
+    // gone without its end. When the successor carries this same request,
+    // its end is the one to publish.
+    if (successor?.requestId === undefined || successor.requestId !== requestId) {
+      await publishEnd(ctx.daemonHome, requestId, outcome, ctx.now(), successor?.requestId);
+    }
     if (removeRecord) {
-      await removeAgenCDaemonPendingRestart(ctx.host, token, ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock);
+      try {
+        await removeAgenCDaemonPendingRestart(ctx.host, token, ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock);
+      } catch (error) {
+        // An older update keeps a record onto a newer build, so say how to clear it.
+        logLine(
+          ctx.daemonHome,
+          `this restart's record could not be removed (${formatCleanupError(error)}); delete ${resolveAgenCDaemonPendingRestartPath(ctx.daemonHome)}`,
+          ctx.now(),
+        );
+      }
     }
     logLine(
       ctx.daemonHome,
@@ -1886,6 +2190,19 @@ export async function runAgenCDaemonRestartWaiter(
     readAgenCDaemonPendingRestart(ctx.daemonHome)?.token === token
       ? undefined
       : "a newer update replaced this restart";
+  let lockProblemLogged = false;
+  /** The restart lock, or nothing while another restart holds it. */
+  const restartLock = async (): Promise<(() => Promise<void>) | undefined> => {
+    try {
+      return await (ctx.deps.acquireRestartLock ?? acquireAgenCDaemonRestartLock)(ctx.host, WAITER_RESTART_LOCK_WAIT_MS);
+    } catch (error) {
+      if (!isLocalSqliteLockBusyTimeout(error, RESTART_LOCK) && !lockProblemLogged) {
+        lockProblemLogged = true;
+        logLine(ctx.daemonHome, `the daemon restart lock could not be taken (${formatCleanupError(error)}); checking again later`, ctx.now());
+      }
+      return undefined;
+    }
+  };
   let idleChecks = 0;
   for (;;) {
     const record = readAgenCDaemonPendingRestart(ctx.daemonHome);
@@ -1893,6 +2210,7 @@ export async function runAgenCDaemonRestartWaiter(
       return finish({ status: "skipped", reason: "a newer update replaced this restart", toVersion: ctx.build.runtimeVersion }, false);
     }
     ctx.requester.current = record.requester;
+    requestId = record.requestId ?? requestId;
     const nowMs = ctx.now().getTime();
     const notAfter = Date.parse(record.notAfter);
     if (!Number.isFinite(notAfter) || nowMs > notAfter || nowMs > hardDeadline) {
@@ -1902,56 +2220,80 @@ export async function runAgenCDaemonRestartWaiter(
         toVersion: ctx.build.runtimeVersion,
       }, true);
     }
-    const checked = await preflight(ctx);
-    if (checked.kind === "unproven") {
-      // A daemon that is still starting or stopping; check again later.
+    // Look only while no other restart runs: one that stopped the daemon and
+    // has not spawned the next yet would read as no daemon at all.
+    const release = await restartLock();
+    if (release === undefined) {
       idleChecks = 0;
-    } else if (checked.kind !== "candidate") {
-      // Stopped (the next start uses this runtime), already current, or not
-      // ours to restart.
-      return finish(preflightOutcome(ctx, checked), true);
-    } else if (checked.identity.instanceId !== record.daemon.instanceId) {
-      // Restarted by something else. Still older than this target (an
-      // earlier waiter finished first): keep going with the new instance.
-      if (compareAgenCRuntimeBuilds(checked.identity, ctx.build) !== -1) {
-        return finish({
-          status: "skipped",
-          reason: "the daemon was restarted by something else",
-          fromVersion: checked.identity.runtimeVersion,
-          toVersion: ctx.build.runtimeVersion,
-        }, true);
-      }
-      const adopted = await (ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock)(ctx.host, async () => {
-        if (readAgenCDaemonPendingRestart(ctx.daemonHome)?.token !== token) return false;
-        writeAgenCDaemonPendingRestart(ctx.daemonHome, {
-          ...record,
-          daemon: { pid: checked.identity.pid, instanceId: checked.identity.instanceId },
-        });
-        return true;
-      });
-      if (!adopted) continue;
-      logLine(ctx.daemonHome, `daemon pid ${checked.identity.pid} on ${checked.identity.runtimeVersion} replaced the one this restart waited for; waiting for it instead`, ctx.now());
-      idleChecks = 0;
-    } else {
-      const verdict = await probeFor(ctx)(checked.identity);
-      if (!verdict.idle && verdict.permanent === true) {
-        return finish(cannotCheckOutcome(ctx, checked.identity, verdict.reason, verdict.tooOld === true), true);
-      }
-      idleChecks = verdict.idle ? idleChecks + 1 : 0;
-      if (idleChecks >= idleChecksNeeded) {
-        const attempt = await restartIfStillIdle(ctx, checked.identity, superseded);
-        if (attempt.kind === "done") return finish(attempt.outcome, true);
-        if (attempt.permanent) {
-          return finish(cannotCheckOutcome(ctx, checked.identity, attempt.reason, attempt.tooOld === true), true);
-        }
+      await sleep(pollMs);
+      continue;
+    }
+    try {
+      const checked = await preflight(ctx);
+      if (checked.kind === "unproven") {
+        // A daemon that is still starting or stopping; check again later.
         idleChecks = 0;
+      } else if (checked.kind !== "candidate") {
+        // Stopped (the next start uses this runtime), already current, or not
+        // ours to restart.
+        return await finish(preflightOutcome(ctx, checked), true);
+      } else if (checked.identity.instanceId !== record.daemon.instanceId) {
+        // Restarted by something else. Still older than this target (an
+        // earlier waiter finished first): keep going with the new instance.
+        if (compareAgenCRuntimeBuilds(checked.identity, ctx.build) !== -1) {
+          return await finish({
+            status: "skipped",
+            reason: "the daemon was restarted by something else",
+            fromVersion: checked.identity.runtimeVersion,
+            toVersion: ctx.build.runtimeVersion,
+          }, true);
+        }
+        const adopted = await (ctx.deps.withLifecycleLock ?? withAgenCDaemonLifecycleLock)(ctx.host, async () => {
+          if (readAgenCDaemonPendingRestart(ctx.daemonHome)?.token !== token) return false;
+          writeAgenCDaemonPendingRestart(ctx.daemonHome, {
+            ...record,
+            daemon: { pid: checked.identity.pid, instanceId: checked.identity.instanceId },
+          });
+          return true;
+        });
+        if (!adopted) continue;
+        logLine(ctx.daemonHome, `daemon pid ${checked.identity.pid} on ${checked.identity.runtimeVersion} replaced the one this restart waited for; waiting for it instead`, ctx.now());
+        idleChecks = 0;
+      } else {
+        const verdict = await probeFor(ctx)(checked.identity);
+        if (!verdict.idle && verdict.permanent === true) {
+          return await finish(cannotCheckOutcome(ctx, checked.identity, verdict.reason, verdict.tooOld === true), true);
+        }
+        idleChecks = verdict.idle ? idleChecks + 1 : 0;
+        if (idleChecks >= idleChecksNeeded) {
+          const attempt = await restartIfStillIdle(ctx, checked.identity, superseded);
+          if (attempt.kind === "done") return await finish(attempt.outcome, true);
+          if (attempt.permanent) {
+            return await finish(cannotCheckOutcome(ctx, checked.identity, attempt.reason, attempt.tooOld === true), true);
+          }
+          idleChecks = 0;
+        }
       }
+    } finally {
+      // Released after the record is gone, so a restart that comes next
+      // never keeps a record whose waiting process has finished.
+      await release().catch(() => undefined);
     }
     await sleep(pollMs);
   }
 }
 
 // --- CLI ---------------------------------------------------------------------------------
+
+/** This runtime's version for an outcome after an unexpected error, when known. */
+function ownVersion(deps: AgenCDaemonRestartWhenIdleDeps): { readonly toVersion?: string } {
+  try {
+    const build = (deps.ownBuild ?? defaultOwnBuild)();
+    return build === null ? {} : { toVersion: build.runtimeVersion };
+  } catch {
+    return {};
+  }
+}
 
 export async function runAgenCDaemonRestartWhenIdleCli(
   command: Extract<AgenCDaemonCliCommand, { kind: "restart-when-idle" }>,
@@ -1963,12 +2305,22 @@ export async function runAgenCDaemonRestartWhenIdleCli(
   if (command.waitToken !== undefined) {
     // Detached with no terminal: the log and the record are its only output.
     const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+    const waiterDeps = command.requestId === undefined ? deps : { ...deps, requestId: command.requestId };
     try {
-      const outcome = await runAgenCDaemonRestartWaiter(host, command.waitToken, options, deps);
+      const outcome = await runAgenCDaemonRestartWaiter(host, command.waitToken, options, waiterDeps);
       return outcome.status === "failed" ? 1 : 0;
     } catch (error) {
+      const reason = `the waiting process stopped: ${formatCleanupError(error)}`;
+      const record = readAgenCDaemonPendingRestart(daemonHome);
+      // Published before the record goes, like every other end.
+      await publishEnd(
+        daemonHome,
+        (record?.token === command.waitToken ? record.requestId : undefined) ?? command.requestId,
+        { status: "failed", reason, ...ownVersion(deps) },
+        new Date(),
+      );
       await removeAgenCDaemonPendingRestart(host, command.waitToken).catch(() => undefined);
-      logLine(daemonHome, `failed: the waiting process stopped: ${formatCleanupError(error)}`, new Date());
+      logLine(daemonHome, `failed: ${reason}`, new Date());
       return 1;
     }
   }
@@ -1981,12 +2333,18 @@ export async function runAgenCDaemonRestartWhenIdleCli(
       };
   try {
     outcome = await restartAgenCDaemonWhenIdle(host, options, {
+      // `agenc update` reads this line from stderr and shows it.
+      onProgress: (line) => {
+        io.stderr.write(`agenc: ${line}\n`);
+      },
       ...deps,
       ...(requester === undefined ? {} : { requester }),
       ...(command.downgrade === true ? { downgrade: true } : {}),
+      ...(command.requestId === undefined ? {} : { requestId: command.requestId }),
     });
   } catch (error) {
-    outcome = { status: "failed", reason: formatCleanupError(error) };
+    outcome = { status: "failed", reason: formatCleanupError(error), ...ownVersion(deps) };
+    await publishEnd(resolveAgenCDaemonHome(host.env, host.userHome), command.requestId ?? deps.requestId, outcome, new Date());
   }
   if (command.json) {
     io.stdout.write(`${JSON.stringify(outcome)}\n`);

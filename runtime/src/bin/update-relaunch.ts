@@ -17,6 +17,7 @@
  * fresh instead of exiting.
  */
 
+import { randomUUID } from "node:crypto";
 import type { AgenCDaemonRestartOutcome } from "../app-server/daemon-restart-outcome.js";
 import type {
   UpdateFollow,
@@ -58,7 +59,11 @@ export function decideUpdateRelaunch(
         ...(next === to ? {} : { followVersion: next }),
         notice: {
           kind: "info",
-          text: `Installed AgenC ${to}. The daemon is busy (${outcome.reason ?? "other work"}), so AgenC switches to ${next} once that work is done. This window keeps running ${from} until then.`,
+          // A restart still running past the update's wait is not a failure:
+          // follow the daemon instead of telling the person to start over.
+          text: outcome.code === "still-running"
+            ? `Installed AgenC ${to}. The daemon restart is still running, so AgenC switches to ${next} once it finishes. This window keeps running ${from} until then.`
+            : `Installed AgenC ${to}. The daemon is busy (${outcome.reason ?? "other work"}), so AgenC switches to ${next} once that work is done. This window keeps running ${from} until then.`,
         },
       };
     }
@@ -81,12 +86,16 @@ export function updateRelaunchArgs(request: UpdateRelaunchRequest): string[] {
   return request.conversationId === undefined ? [] : ["--resume", request.conversationId];
 }
 
-/** Daemon step arguments: this process is the requester. */
-export function updateDaemonStepArgs(request: UpdateRelaunchRequest, pid: number): string[] {
+/**
+ * Daemon step arguments: this process is the requester, and `requestId`
+ * names this restart request, whose end the step publishes.
+ */
+export function updateDaemonStepArgs(request: UpdateRelaunchRequest, pid: number, requestId?: string): string[] {
   return [
     "--requester-pid",
     String(pid),
     ...(request.conversationId === undefined ? [] : ["--requester-agent", request.conversationId]),
+    ...(requestId === undefined ? [] : ["--request-id", requestId]),
   ];
 }
 
@@ -129,6 +138,10 @@ export interface UpdateRelaunchDeps {
   readonly markerName: string;
   readonly encodeMarker: (version: string) => string;
   readonly write: (line: string) => void;
+  /** A monotonic clock in milliseconds (performance.now by default), for the follow's deadline. */
+  readonly now?: () => number;
+  /** The id for this restart request; a random UUID by default. */
+  readonly newRequestId?: () => string;
 }
 
 export async function runUpdateRelaunch(
@@ -142,9 +155,12 @@ export async function runUpdateRelaunch(
     }, null);
   }
   deps.write(`agenc: moving to AgenC ${request.targetVersion}`);
+  // The follow's deadline counts from here; its results carry this id.
+  const since = (deps.now ?? (() => performance.now()))();
+  const requestId = (deps.newRequestId ?? randomUUID)();
   let outcome: AgenCDaemonRestartOutcome;
   try {
-    outcome = await deps.runDaemonStep(request, updateDaemonStepArgs(request, deps.pid));
+    outcome = await deps.runDaemonStep(request, updateDaemonStepArgs(request, deps.pid, requestId));
   } catch (error) {
     outcome = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
   }
@@ -156,7 +172,10 @@ export async function runUpdateRelaunch(
     return deps.reopen(
       request,
       decision.notice,
-      decision.follow === undefined ? null : { request: followRequest, when: decision.follow },
+      decision.follow === undefined
+        ? null
+        // A deferral that joined another request's pending restart follows that one.
+        : { request: followRequest, when: decision.follow, since, requestId: outcome.requestId ?? requestId },
     );
   }
   const args = updateRelaunchArgs(request);

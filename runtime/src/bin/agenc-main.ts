@@ -93,10 +93,15 @@ import { oneShotCLI as runDaemonOneShotCLI, type AgenCDaemonCliDeps, startupImag
 // `agenc update` (and the TUI's /update in this process) runs these daemon
 // steps here; update-cli itself never imports the daemon code.
 registerUpdateDaemonHooks({
-  restartStaleDaemon: async () => {
+  restartStaleDaemon: async (request) => {
     const { restartAgenCDaemonWhenIdle } = await import("../app-server/daemon-restart-when-idle.js");
     const { createNodeDaemonCliHost } = await import("../app-server/daemon-control.js");
-    return restartAgenCDaemonWhenIdle(createNodeDaemonCliHost(), {}, { onlyOlderDaemon: true });
+    return restartAgenCDaemonWhenIdle(createNodeDaemonCliHost(), {}, {
+      // `--pin` of this version moves a newer daemon down to it; otherwise
+      // only a daemon older than this runtime moves.
+      ...(request?.pinned === true ? { downgrade: true } : { onlyOlderDaemon: true }),
+      ...(request?.onProgress === undefined ? {} : { onProgress: request.onProgress }),
+    });
   },
   cancelPendingRestartAbove: async (request) => {
     const { cancelAgenCDaemonPendingRestartAbove } = await import("../app-server/daemon-restart-when-idle.js");
@@ -980,7 +985,10 @@ async function relaunchAfterUpdate(
       agencHome,
       env: process.env,
       targetVersion: current.targetVersion,
-    }, { extraArgs }),
+    }, {
+      extraArgs,
+      onProgress: (line) => process.stderr.write(`agenc: ${line}\n`),
+    }),
     execve: (file, args, env) => {
       if (execve === undefined) throw new Error("this Node cannot replace its process");
       execve(file, args, env);

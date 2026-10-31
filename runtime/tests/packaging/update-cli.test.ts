@@ -71,11 +71,20 @@ import {
   type UpdateDaemonRestartRequest,
 } from "../../src/bin/update-cli.js";
 import type { AgenCDaemonRestartOutcome } from "../../src/app-server/daemon-restart-outcome.js";
+import { acquireAgenCDaemonLifecycleLock } from "../../src/app-server/daemon-lifecycle-lock.js";
 import {
   cancelAgenCDaemonPendingRestartAbove,
   readAgenCDaemonPendingRestart,
+  restartAgenCDaemonWhenIdle,
   writeAgenCDaemonPendingRestart,
+  type AgenCDaemonRestartWhenIdleDeps,
 } from "../../src/app-server/daemon-restart-when-idle.js";
+import {
+  AGENC_DAEMON_STOP_DECLINED_EXIT,
+  type AgenCDaemonCliHost,
+} from "../../src/app-server/daemon-control.js";
+import type { AgenCDaemonInstanceIdentity } from "../../src/app-server/daemon-instance-identity.js";
+import { acquireLocalSqliteLock } from "../../src/utils/sqlite-lock.js";
 import {
   resolveActivationLockRegistry,
   wrapperActivationLockPath,
@@ -187,6 +196,8 @@ function makeSyntheticArtifact(
     readonly platform?: "linux" | "win";
     /** Incompressible filler that makes the archive about this much larger. */
     readonly paddingBytes?: number;
+    /** The runtime's `bin/agenc` program; by default it echoes its arguments. */
+    readonly runtimeScript?: string;
   } = {},
 ): { tarball: string; sha: string } {
   const tree = join(dir, "tree");
@@ -200,11 +211,12 @@ function makeSyntheticArtifact(
   chmodSync(binDir, 0o700);
   writeFileSync(
     join(binDir, "agenc"),
-    'console.log("ok " + process.argv.slice(2).join(" "));\n',
+    options.runtimeScript ?? 'console.log("ok " + process.argv.slice(2).join(" "));\n',
   );
   if (options.paddingBytes !== undefined) {
     writeFileSync(join(dirname(binDir), "padding.bin"), randomBytes(options.paddingBytes));
   }
+
   const nodeShim = options.nodeBehavior === "wrong-identity"
     ? [
         "#!/bin/sh",
@@ -720,6 +732,89 @@ function writeInstallPs1Wrapper(
   );
   chmodSync(wrapper, 0o644);
   return wrapper;
+}
+
+interface TestBuild {
+  readonly runtimeVersion: string;
+  readonly commit: string;
+  readonly buildTime: string;
+}
+
+/** A gate a restart step waits at once it stopped the daemon, before its start. */
+function betweenStopAndSpawn() {
+  let open!: () => void;
+  let reached!: () => void;
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  const entered = new Promise<void>((resolve) => { reached = resolve; });
+  return { gate, entered, open: () => open(), reached: () => reached() };
+}
+
+/**
+ * One daemon home shared by the restart steps of a test: stop and start act
+ * on the same daemon, and a start finds a daemon that already runs, as the
+ * real start does under the lifecycle lock.
+ */
+function daemonWorld(home: string, first: TestBuild) {
+  let running: AgenCDaemonInstanceIdentity | null = {
+    pid: 4242, instanceId: "instance-4242", processStart: "start-4242", ...first,
+  };
+  let nextPid = 5000;
+  const spawned: string[] = [];
+  const host: AgenCDaemonCliHost = {
+    env: { AGENC_HOME: home },
+    userHome: home,
+    entrypointPath: join(home, "runtime", "x", "tree", "node_modules", "@tetsuo-ai", "runtime", "bin", "agenc"),
+    execPath: "/usr/bin/node",
+    pid: 7000,
+    platform: "linux",
+    spawnDetachedDaemon: () => {
+      throw new Error("no spawn in this test");
+    },
+    isPidRunning: () => true,
+    readProcessIdentity: (pid) => `start-${pid}`,
+    terminatePid: () => {
+      throw new Error("no signal in this test");
+    },
+    sleep: async () => {},
+  };
+  const stepDeps = (
+    build: TestBuild,
+    gap?: ReturnType<typeof betweenStopAndSpawn>,
+  ): AgenCDaemonRestartWhenIdleDeps => ({
+    ownBuild: () => build,
+    readState: async () => (running === null ? { kind: "not-running" } : { kind: "running", identity: running }),
+    probe: async () => ({ idle: true }),
+    requestShutdownWhenIdle: async () => undefined,
+    withLifecycleLock: async (_host, operation) => operation(),
+    acquireLifecycleLock: async () => async () => {},
+    daemonCommand: () => `/x/node ${home}/runtime/${running?.runtimeVersion ?? "none"}/tree/node_modules/@tetsuo-ai/runtime/bin/agenc daemon start --foreground`,
+    stopDaemon: async (stopHost, _io, _timeout, stopOptions) => {
+      const current = running;
+      if (current === null) return 0;
+      if (await stopOptions?.beforeShutdownRequest?.(current) !== undefined) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+      const decided = await stopOptions?.requestDaemonShutdown?.(stopHost, current);
+      if (decided !== undefined && decided !== null && "declined" in decided) return AGENC_DAEMON_STOP_DECLINED_EXIT;
+      running = null;
+      if (gap !== undefined) {
+        gap.reached();
+        await gap.gate;
+      }
+      return 0;
+    },
+    startDaemon: async () => {
+      if (running !== null) return 0;
+      running = { pid: nextPid, instanceId: `instance-${nextPid}`, processStart: `start-${nextPid}`, ...build };
+      nextPid += 1;
+      spawned.push(build.runtimeVersion);
+      return 0;
+    },
+    requestIdentity: async () => {
+      if (running === null) throw new Error("no daemon answers");
+      return running;
+    },
+    spawnWaiter: () => 6000,
+  });
+  return { host, stepDeps, daemon: () => running, spawned };
 }
 
 describe("agenc update CLI", () => {
@@ -2726,8 +2821,221 @@ describe("agenc update CLI", () => {
         agencHome,
         env: deps!.env,
         targetVersion: NEW_VERSION,
-        downgrade: true,
+        pinned: true,
       }]);
+    });
+
+    test("an explicit pin moves a newer daemon to the pinned version, whatever version this updater runs", async () => {
+      // Three versions: this updater 9.9.8, the pinned target 9.9.9, the daemon 9.9.10.
+      const artifact = makeSyntheticArtifact(work);
+      const manifestPath = writeManifest(work, artifact);
+      writeInstallShWrapper(binDir, agencHome, join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL));
+      const target = { runtimeVersion: NEW_VERSION, commit: "target", buildTime: "2026-10-29T00:00:00.000Z" };
+      const world = daemonWorld(agencHome, { runtimeVersion: "9.9.10-test", commit: "daemon", buildTime: "2026-10-30T00:00:00.000Z" });
+      expect(await runAgenCUpdateCli({
+        kind: "update",
+        check: false,
+        json: false,
+        pinVersion: NEW_VERSION,
+        manifestUrl: `file://${manifestPath}`,
+      }, {
+        ...deps!,
+        currentVersion: OLD_VERSION,
+        cancelPendingRestartAbove: async () => {},
+        // The target's restart step, as `daemon restart --when-idle [--downgrade]` runs it.
+        restartDaemon: async (request) => restartAgenCDaemonWhenIdle(world.host, {}, {
+          ...world.stepDeps(target),
+          ...((request as { readonly pinned?: boolean }).pinned === true ? { downgrade: true } : {}),
+        }),
+      })).toBe(0);
+      expect(out.at(-1)).toBe(`Restarted the daemon on ${NEW_VERSION} (pid 5000).`);
+      expect(world.daemon()?.runtimeVersion).toBe(NEW_VERSION);
+    });
+
+    test("an explicit pin to a newer version also ends a pending restart onto an even newer build", async () => {
+      const artifact = makeSyntheticArtifact(work);
+      const manifestPath = writeManifest(work, artifact);
+      writeInstallShWrapper(binDir, agencHome, join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL));
+      writeAgenCDaemonPendingRestart(agencHome, {
+        schemaVersion: 1,
+        token: "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab",
+        createdAt: "2026-10-30T00:00:00.000Z",
+        notAfter: "2099-01-01T00:00:00.000Z",
+        daemon: { pid: 4242, instanceId: "instance-4242" },
+        target: { runtimeVersion: "98.0.0", commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" },
+      });
+      expect(await runAgenCUpdateCli({
+        kind: "update",
+        check: false,
+        json: false,
+        pinVersion: NEW_VERSION,
+        manifestUrl: `file://${manifestPath}`,
+      }, {
+        ...deps!,
+        currentVersion: OLD_VERSION,
+        cancelPendingRestartAbove: (request) => cancelAgenCDaemonPendingRestartAbove(
+          { env: { ...request.env, AGENC_HOME: request.agencHome }, userHome: agencHome },
+          request.targetVersion,
+        ).then(() => undefined),
+      })).toBe(0);
+      expect(readAgenCDaemonPendingRestart(agencHome)).toBeNull();
+      expect(restartRequests).toMatchObject([{ targetVersion: NEW_VERSION, pinned: true }]);
+    });
+
+    test("takes no restart lock of its own for the handoff: the activated runtime's step does", async () => {
+      // A runtime from before 0.19.26 takes none either; the docs say not to
+      // run two updates at once while downgrading to one.
+      let heldDuringHandoff: boolean | undefined;
+      const { code } = await updateTo();
+      expect(code).toBe(0);
+      deps = {
+        ...deps!,
+        restartDaemon: async () => {
+          try {
+            const release = await acquireLocalSqliteLock(join(agencHome, "daemon-restart.lock.sqlite"), {
+              label: "probe", timeoutMs: 50,
+            });
+            release();
+            heldDuringHandoff = false;
+          } catch {
+            heldDuringHandoff = true;
+          }
+          return restartOutcome;
+        },
+      };
+      rmSync(join(work, "tree"), { recursive: true, force: true });
+      expect((await updateTo()).code).toBe(0);
+      expect(heldDuringHandoff).toBe(false);
+    });
+
+    test("shows the restart step's waiting line once, on stdout, or on stderr with --json", async () => {
+      // The activated runtime's own `daemon restart --when-idle` waits for another restart.
+      const runtimeScript = [
+        "const args = process.argv.slice(2);",
+        "if (args.slice(0, 3).join(' ') === 'daemon restart --when-idle') {",
+        "  process.stderr.write('agenc: Waiting for another daemon restart to finish (up to 15 minutes).\\n');",
+        `  console.log(JSON.stringify({ status: 'restarted', fromVersion: '${OLD_VERSION}', toVersion: '${NEW_VERSION}', pid: 4242 }));`,
+        "} else {",
+        "  console.log('ok ' + args.join(' '));",
+        "}",
+        "",
+      ].join("\n");
+      const { restartDaemon: _injected, ...plainDeps } = deps!;
+      const update = async (json: boolean): Promise<number> => {
+        const artifact = makeSyntheticArtifact(work, { runtimeScript });
+        const manifestPath = writeManifest(work, artifact);
+        writeInstallShWrapper(binDir, agencHome, join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL));
+        return runAgenCUpdateCli({ kind: "update", check: false, json, manifestUrl: `file://${manifestPath}` }, plainDeps);
+      };
+      expect(await update(false)).toBe(0);
+      const tail = out.slice(out.findIndex((entry) => entry.startsWith("  wrapper repointed")) + 1);
+      expect(tail).toEqual([
+        "Waiting for another daemon restart to finish (up to 15 minutes).",
+        `Restarted the daemon on ${NEW_VERSION} (pid 4242).`,
+      ]);
+      out.length = 0;
+      err.length = 0;
+      expect(await update(true)).toBe(0);
+      expect(out).toHaveLength(1);
+      expect(JSON.parse(out[0]!).daemonRestart).toEqual({
+        status: "restarted", fromVersion: OLD_VERSION, toVersion: NEW_VERSION, pid: 4242,
+      });
+      expect(err).toEqual(["Waiting for another daemon restart to finish (up to 15 minutes)."]);
+    }, 15_000);
+
+    describe("a pinned downgrade that cannot end a pending restart onto a newer build", () => {
+      const currentVersion = "99.0.0";
+      const reason =
+        "a restart onto 98.0.0 is still pending and could not be cancelled (the daemon lifecycle lock stayed busy for 120 s). " +
+        "The daemon was left as it is, and that restart can still move it to 98.0.0. To cancel it, delete /home/u/.agenc/daemon-restart-pending.json";
+
+      async function downgrade(
+        flags: { readonly json?: boolean; readonly noRestart?: boolean },
+        cancelPendingRestartAbove: NonNullable<Parameters<typeof runAgenCUpdateCli>[1]>["cancelPendingRestartAbove"],
+      ): Promise<number> {
+        const artifact = makeSyntheticArtifact(work);
+        const manifestPath = writeManifest(work, artifact);
+        writeInstallShWrapper(
+          binDir,
+          agencHome,
+          join(agencHome, "runtime", currentVersion, LINUX_ARTIFACT_KEY, BIN_REL),
+        );
+        return runAgenCUpdateCli({
+          kind: "update",
+          check: false,
+          json: flags.json === true,
+          pinVersion: NEW_VERSION,
+          manifestUrl: `file://${manifestPath}`,
+          ...(flags.noRestart === true ? { noRestart: true } : {}),
+        }, { ...deps!, currentVersion, cancelPendingRestartAbove });
+      }
+
+      test("says so, hands no restart to the older runtime and still installs", async () => {
+        expect(await downgrade({}, async () => { throw new Error(reason); })).toBe(0);
+        // Restarting now would let that newer restart move the daemon back up later.
+        expect(restartRequests).toEqual([]);
+        expect(out[0]).toBe(`Updated agenc ${currentVersion} -> ${NEW_VERSION} (downloaded, sha256 verified).`);
+        expect(out.slice(-2)).toEqual([
+          `Daemon restart failed: ${reason}.`,
+          "Restart the daemon to pick it up: agenc daemon restart",
+        ]);
+      });
+
+      test("reports it in --json, and also with --no-restart", async () => {
+        expect(await downgrade({ json: true }, async () => { throw new Error(reason); })).toBe(0);
+        expect(restartRequests).toEqual([]);
+        expect(JSON.parse(out[0]!)).toMatchObject({
+          activated: true,
+          daemonRestart: { status: "failed", reason, toVersion: NEW_VERSION },
+        });
+        out.length = 0;
+        // --no-restart leaves the daemon alone, but the newer restart would still move it.
+        expect(await downgrade({ json: true, noRestart: true }, async () => { throw new Error(reason); })).toBe(0);
+        expect(JSON.parse(out[0]!).daemonRestart).toEqual({ status: "failed", reason, toVersion: NEW_VERSION });
+      });
+
+      test.skipIf(process.getuid?.() === 0)(
+        "a record the real cancel cannot remove is reported and kept, never logged as cancelled",
+        async () => {
+          writeAgenCDaemonPendingRestart(agencHome, {
+            schemaVersion: 1,
+            token: "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab",
+            createdAt: "2026-10-30T00:00:00.000Z",
+            notAfter: "2099-01-01T00:00:00.000Z",
+            daemon: { pid: 4242, instanceId: "instance-4242" },
+            target: { runtimeVersion: "98.0.0", commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" },
+          });
+          // The lock database and the log exist; the home itself cannot be written.
+          const release = await acquireAgenCDaemonLifecycleLock({ env: { AGENC_HOME: agencHome }, userHome: agencHome });
+          await release();
+          writeFileSync(join(agencHome, "daemon-restart.log"), "");
+          const recordPath = join(agencHome, "daemon-restart-pending.json");
+          expect(await downgrade({}, async (request) => {
+            chmodSync(agencHome, 0o500);
+            try {
+              // The step the CLI entry registers (registerUpdateDaemonHooks).
+              await cancelAgenCDaemonPendingRestartAbove(
+                { env: { ...request.env, AGENC_HOME: request.agencHome }, userHome: agencHome },
+                request.targetVersion,
+              );
+            } finally {
+              chmodSync(agencHome, 0o700);
+            }
+          })).toBe(0);
+          expect(restartRequests).toEqual([]);
+          expect(readAgenCDaemonPendingRestart(agencHome)?.target.runtimeVersion).toBe("98.0.0");
+          const failed = out.find((line) => line.startsWith("Daemon restart failed: "));
+          expect(failed).toContain(
+            `Daemon restart failed: a restart onto 98.0.0 is still pending and could not be cancelled (the record could not be removed: `,
+          );
+          expect(failed).toContain(
+            `The daemon was left as it is, and that restart can still move it to 98.0.0. To cancel it, delete ${recordPath}.`,
+          );
+          const log = readFileSync(join(agencHome, "daemon-restart.log"), "utf8");
+          expect(log).not.toContain("cancelled:");
+          expect(log).toContain(`cancel failed: the restart onto 98.0.0, for a downgrade to ${NEW_VERSION}, is still pending`);
+        },
+      );
     });
 
     test("--json reports what happened to the daemon", async () => {
@@ -2798,6 +3106,21 @@ describe("agenc update CLI", () => {
       expect(out).toEqual([upToDateLine, ...lines]);
     });
 
+    test("--pin of the version it already runs asks to move a newer daemon down to it", async () => {
+      restartOutcome = { status: "restarted", fromVersion: "9.9.10-test", toVersion: NEW_VERSION, pid: 4343 };
+      const artifact = makeSyntheticArtifact(work);
+      const manifestPath = writeManifest(work, artifact);
+      expect(await runAgenCUpdateCli({
+        kind: "update",
+        check: false,
+        json: false,
+        pinVersion: NEW_VERSION,
+        manifestUrl: `file://${manifestPath}`,
+      }, { ...deps, currentVersion: NEW_VERSION })).toBe(0);
+      expect(restartRequests).toEqual([{ agencHome, env: deps!.env, targetVersion: NEW_VERSION, pinned: true }]);
+      expect(out).toEqual([upToDateLine, `Restarted the daemon on ${NEW_VERSION} (pid 4343).`]);
+    });
+
     test("--check never restarts, --no-restart opts out, --json reports the outcome", async () => {
       await upToDate({ check: true, json: true });
       expect(restartRequests).toEqual([]);
@@ -2842,14 +3165,14 @@ describe("agenc update CLI", () => {
       );
     });
 
-    test("passes --downgrade for a pinned downgrade", async () => {
+    test("passes --downgrade for an explicit pin", async () => {
       const seen = join(work, "seen.txt");
       const wrapperPath = fakeWrapper([
         `printf '%s\\n' "$*" > ${JSON.stringify(seen)}`,
         `echo '{"status":"deferred","reason":"busy","toVersion":"1.0.0"}'`,
       ].join("\n"));
       await expect(restartDaemonThroughActivatedWrapper({
-        wrapperPath, agencHome, env: {}, targetVersion: "1.0.0", downgrade: true,
+        wrapperPath, agencHome, env: {}, targetVersion: "1.0.0", pinned: true,
       })).resolves.toMatchObject({ status: "deferred" });
       expect(readFileSync(seen, "utf8")).toBe("daemon restart --when-idle --json --downgrade\n");
     });
@@ -2879,13 +3202,52 @@ describe("agenc update CLI", () => {
       });
     });
 
-    test("stops waiting at its deadline and says the restart continues", async () => {
+    test("waits for a step that queues behind another restart and then takes the longest start it allows", async () => {
+      const release = join(work, "release-restart");
+      const wrapperPath = fakeWrapper([
+        `while [ ! -e ${JSON.stringify(release)} ]; do sleep 0.05; done`,
+        `echo '{"status":"restarted","fromVersion":"1.0.0","toVersion":"1.0.1","pid":77}'`,
+      ].join("\n"));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const outcome = restartDaemonThroughActivatedWrapper({
+          wrapperPath, agencHome, env: {}, targetVersion: "1.0.1",
+        });
+        let early: unknown;
+        void outcome.then((value) => { early = value; });
+        // Almost 15 minutes in the queue behind another restart, then a start
+        // that uses its whole readiness allowance (14 steps of 45 s).
+        await vi.advanceTimersByTimeAsync(15 * 60_000 - 1 + 14 * 45_000);
+        expect(early).toBeUndefined();
+        writeFileSync(release, "");
+        await expect(outcome).resolves.toEqual({ status: "restarted", fromVersion: "1.0.0", toVersion: "1.0.1", pid: 77 });
+      } finally {
+        vi.useRealTimers();
+      }
+    }, 15_000);
+
+    test("shows the step's waiting line once while the step waits for another restart", async () => {
+      const lines: string[] = [];
+      const wrapperPath = fakeWrapper([
+        "echo 'agenc: Waiting for another daemon restart to finish (up to 15 minutes).' >&2",
+        "echo 'agenc: Waiting for another daemon restart to finish (up to 15 minutes).' >&2",
+        `echo '{"status":"restarted","toVersion":"1.0.1","pid":77}'`,
+      ].join("\n"));
+      await expect(restartDaemonThroughActivatedWrapper({
+        wrapperPath, agencHome, env: {}, targetVersion: "1.0.1",
+      }, { onProgress: (line) => lines.push(line) })).resolves.toMatchObject({ status: "restarted" });
+      expect(lines).toEqual(["Waiting for another daemon restart to finish (up to 15 minutes)."]);
+    });
+
+    test("stops waiting at its deadline and reports the restart as still running, not failed", async () => {
       const wrapperPath = fakeWrapper("sleep 5");
       await expect(restartDaemonThroughActivatedWrapper({
         wrapperPath, agencHome, env: {}, targetVersion: "1.0.1",
-      }, { timeoutMs: 100 })).resolves.toMatchObject({
-        status: "failed",
-        reason: "the restart did not finish within 20 minutes; it continues in the background",
+      }, { timeoutMs: 100 })).resolves.toEqual({
+        status: "deferred",
+        code: "still-running",
+        reason: "no result after 100 ms",
+        toVersion: "1.0.1",
       });
     });
   });

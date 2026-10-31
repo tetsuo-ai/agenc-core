@@ -39,6 +39,8 @@ const request: UpdateRelaunchRequest = {
 
 afterEach(() => resetUpdateRelaunchStateForTestingOnly());
 
+const REQUEST_ID = "5b1c2d3e-0000-4000-8000-000000000001";
+
 function harness(outcome: AgenCDaemonRestartOutcome | Error, options: {
   readonly platform?: NodeJS.Platform;
   readonly execError?: Error;
@@ -71,6 +73,8 @@ function harness(outcome: AgenCDaemonRestartOutcome | Error, options: {
     markerName: AGENC_UPDATE_RELAUNCH_ENV,
     encodeMarker: encodeUpdateRelaunchMarker,
     write: () => {},
+    now: () => 1_000,
+    newRequestId: () => REQUEST_ID,
   };
   return { calls, deps, reopened, exec: () => exec, stepArgs: () => stepArgs };
 }
@@ -90,6 +94,19 @@ describe("update relaunch decisions", () => {
     expect(decision).toMatchObject({ kind: "stay", follow: "daemon", notice: { kind: "info" } });
     expect(decision.kind === "stay" && decision.notice.text).toBe(
       "Installed AgenC 0.19.26. The daemon is busy (1 client attached), so AgenC switches to 0.19.26 once that work is done. This window keeps running 0.19.25 until then.",
+    );
+  });
+
+  it("follows the daemon, with no error, when the restart still runs past the update's wait", () => {
+    const decision = decideUpdateRelaunch({
+      status: "deferred",
+      code: "still-running",
+      reason: "no result after 36 minutes",
+      toVersion: "0.19.26",
+    }, request);
+    expect(decision).toMatchObject({ kind: "stay", follow: "daemon", notice: { kind: "info" } });
+    expect(decision.kind === "stay" && decision.notice.text).toBe(
+      "Installed AgenC 0.19.26. The daemon restart is still running, so AgenC switches to 0.19.26 once it finishes. This window keeps running 0.19.25 until then.",
     );
   });
 
@@ -122,7 +139,7 @@ describe("runUpdateRelaunch", () => {
     const h = harness({ status: "restarted", toVersion: "0.19.26", pid: 9 });
     await runUpdateRelaunch(request, h.deps);
     expect(h.calls).toEqual(["daemon-step", "chdir:/work/project", "execve"]);
-    expect(h.stepArgs()).toEqual(["--requester-pid", "4321", "--requester-agent", "conv-abc123"]);
+    expect(h.stepArgs()).toEqual(["--requester-pid", "4321", "--requester-agent", "conv-abc123", "--request-id", REQUEST_ID]);
     expect(h.exec()).toEqual({
       file: "/home/u/.local/bin/agenc",
       args: ["/home/u/.local/bin/agenc", "--resume", "conv-abc123"],
@@ -134,7 +151,30 @@ describe("runUpdateRelaunch", () => {
     const h = harness({ status: "deferred", reason: "1 client attached", toVersion: "0.19.26" });
     await runUpdateRelaunch(request, h.deps);
     expect(h.calls).toEqual(["daemon-step", "reopen"]);
-    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon" });
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 1_000, requestId: REQUEST_ID });
+  });
+
+  it("stamps the follow with when the daemon step began, before the step runs", async () => {
+    let clock = 5_000;
+    const h = harness({ status: "deferred", code: "still-running", reason: "no result after 36 minutes", toVersion: "0.19.26" });
+    const step = h.deps.runDaemonStep;
+    await runUpdateRelaunch(request, {
+      ...h.deps,
+      now: () => clock,
+      // The step takes a while: results that end during it are this update's.
+      runDaemonStep: async (r, args) => {
+        clock = 5_000 + 36 * 60_000;
+        return step(r, args);
+      },
+    });
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 5_000, requestId: REQUEST_ID });
+  });
+
+  it("follows the request whose pending restart a deferral joined", async () => {
+    const joined = "5b1c2d3e-0000-4000-8000-000000000002";
+    const h = harness({ status: "deferred", reason: "1 client attached", toVersion: "0.19.26", requestId: joined });
+    await runUpdateRelaunch(request, h.deps);
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 1_000, requestId: joined });
   });
 
   it("reopens this version with the reason when the new one cannot start", async () => {

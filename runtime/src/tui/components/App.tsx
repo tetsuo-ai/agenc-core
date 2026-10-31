@@ -129,6 +129,7 @@ import {
 import {
   consumePendingUpdateNotice,
   setPendingUpdateRelaunch,
+  type UpdateNotice,
   type UpdateRelaunchRequest,
 } from "../update-relaunch-state.js";
 import { useUpdateFollow } from "../hooks/useUpdateFollow.js";
@@ -4601,6 +4602,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     safe: updateSafe,
     agencHome,
     relaunch: (request: UpdateRelaunchRequest) => requestUpdateRelaunchRef.current(request),
+    // The switch this window waited for is not going to happen: say why.
+    notify: (notice: UpdateNotice) => addNotification({
+      key: "agenc-update",
+      text: notice.text,
+      ...(notice.kind === "error" ? { color: "error" as const } : {}),
+      priority: "high",
+      timeoutMs: 30_000,
+    }),
   });
   const isLocalJSXCommandActive = toolJSX?.isLocalJSXCommand === true;
   const localCommandPopupRef = useRef(toolJSX);

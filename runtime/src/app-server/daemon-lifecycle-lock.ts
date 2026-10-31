@@ -4,6 +4,13 @@ import { join } from "node:path";
 import { acquireLocalSqliteLock } from "../utils/sqlite-lock.js";
 import { resolveAgenCDaemonHome } from "./daemon-discovery.js";
 import type { AgenCDaemonCliHost } from "./daemon-control.js";
+import {
+  AGENC_DAEMON_RESTART_LOCK_FILENAME,
+  AGENC_DAEMON_RESTART_LOCK_LABEL,
+} from "./daemon-restart-handoff.js";
+
+export const AGENC_DAEMON_LIFECYCLE_LOCK_FILENAME = "daemon-lifecycle.lock.sqlite";
+export const AGENC_DAEMON_LIFECYCLE_LOCK_LABEL = "AgenC daemon lifecycle";
 
 export async function withAgenCDaemonLifecycleLock<T>(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
@@ -60,14 +67,39 @@ export async function acquireAgenCDaemonLifecycleLock(
     "daemon home creation complete",
   );
   const release = await acquireLocalSqliteLock(
-    join(daemonHome, "daemon-lifecycle.lock.sqlite"),
+    join(daemonHome, AGENC_DAEMON_LIFECYCLE_LOCK_FILENAME),
     {
-      label: "AgenC daemon lifecycle",
+      label: AGENC_DAEMON_LIFECYCLE_LOCK_LABEL,
       timeoutMs,
       deadline,
       ...(retryWakeSignal === undefined ? {} : { retryWakeSignal }),
       ...(onProgress === undefined ? {} : { onProgress }),
     },
+  );
+  return async () => {
+    release();
+  };
+}
+
+
+/**
+ * The daemon restart lock: one `daemon restart --when-idle` step at a time
+ * for a home. A restart holds it from its first look at the daemon until the
+ * replacement reported its build, through the stop and the spawn, so another
+ * restart never sees the daemon between them. It is a separate lock because
+ * the lifecycle lock cannot be held that long: the daemon's own shutdown
+ * cleanup takes it. Released by the operating system when a process dies.
+ * Never take it while holding the lifecycle lock.
+ */
+export async function acquireAgenCDaemonRestartLock(
+  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+  timeoutMs: number,
+): Promise<() => Promise<void>> {
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  await mkdir(daemonHome, { recursive: true, mode: 0o700 });
+  const release = await acquireLocalSqliteLock(
+    join(daemonHome, AGENC_DAEMON_RESTART_LOCK_FILENAME),
+    { label: AGENC_DAEMON_RESTART_LOCK_LABEL, timeoutMs },
   );
   return async () => {
     release();
