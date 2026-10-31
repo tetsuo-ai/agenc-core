@@ -2969,6 +2969,8 @@ function subscribeToDaemonEvents(
     const run = async (): Promise<void> => {
       do {
         reconcileAgain = false;
+        // Everything this client knows of now was published before the daemon reads its set.
+        const mark = elicitationOccurrences.mark();
         let snapshot: AgenCDaemonResultByMethod["elicitation.pending"];
         try {
           snapshot = await client.request("elicitation.pending", { sessionId });
@@ -2981,6 +2983,7 @@ function subscribeToDaemonEvents(
           continue;
         }
         const resend = elicitationOccurrences.reconcile(
+          mark,
           snapshot.asOfSequence,
           new Set(snapshot.pending.map((entry) => entry.eventId)),
         );

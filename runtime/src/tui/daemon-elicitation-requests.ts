@@ -7,24 +7,31 @@
  * The daemon is the authority on what is pending:
  * - `elicitation_closed` names the occurrence that stopped being pending.
  * - `elicitation.pending` returns every pending occurrence and the event
- *   sequence the set is current at. A request at or below that sequence that
- *   is not in the set is no longer pending, so it is never shown, and a shown
- *   prompt it lists as not pending is closed.
+ *   sequence the set is current at. An occurrence it does not list is no
+ *   longer pending when this client learned of it before asking (the daemon
+ *   had published it by then), or when its sequence is at or below that
+ *   sequence. Such a request is never shown, and a shown prompt is closed.
  *
  * An answer is kept until the daemon takes it or closes its request: if
  * sending fails, the next reconcile sends it again while the request is still
  * pending. Answered and closed occurrences are remembered (a request delivered
- * again never reopens) until a snapshot shows them settled below its
- * sequence, after which the sequence rule covers them.
+ * again never reopens) until a pending set shows them settled at or below its
+ * sequence, after which the sequence rule covers them. Occurrences without a
+ * sequence (the session did not journal them) are remembered until the event
+ * stream ends.
  */
 
-interface Prompt {
-  readonly controller: AbortController;
+interface Known {
   readonly sequence: number | undefined;
+  /** When this client learned of the occurrence, on the registry's clock. */
+  readonly learned: number;
 }
 
-interface Answer {
-  readonly sequence: number | undefined;
+interface Prompt extends Known {
+  readonly controller: AbortController;
+}
+
+interface Answer extends Known {
   readonly send: () => Promise<void>;
   sending: boolean;
 }
@@ -39,8 +46,9 @@ export type DaemonElicitationDelivery =
 export class DaemonElicitationRequests {
   readonly #shown = new Map<string, Prompt>();
   readonly #answers = new Map<string, Answer>();
-  /** Answered and taken, or closed: occurrence id to its request sequence. */
-  readonly #settled = new Map<string, number | undefined>();
+  /** Answered and taken, or closed. */
+  readonly #settled = new Map<string, Known>();
+  #clock = 0;
   #asOfSequence: number | undefined;
   #pendingAtSnapshot: ReadonlySet<string> = new Set();
   #ended = false;
@@ -48,7 +56,7 @@ export class DaemonElicitationRequests {
   /**
    * Returns the signal for a request to show, or undefined when it must not
    * be shown: it is shown or being answered already, it was answered or
-   * closed, or the last snapshot proves it is no longer pending.
+   * closed, or the last pending set proves it is no longer pending.
    */
   begin(occurrenceId: string, sequence: number | undefined): AbortController | undefined {
     if (this.#ended) return undefined;
@@ -61,7 +69,7 @@ export class DaemonElicitationRequests {
       return undefined;
     }
     const controller = new AbortController();
-    this.#shown.set(occurrenceId, { controller, sequence });
+    this.#shown.set(occurrenceId, { controller, sequence, learned: this.#tick() });
     return controller;
   }
 
@@ -79,7 +87,12 @@ export class DaemonElicitationRequests {
       return { status: "closed" };
     }
     this.#shown.delete(occurrenceId);
-    const answer: Answer = { sequence: prompt.sequence, send, sending: false };
+    const answer: Answer = {
+      sequence: prompt.sequence,
+      learned: prompt.learned,
+      send,
+      sending: false,
+    };
     this.#answers.set(occurrenceId, answer);
     const error = await this.#send(occurrenceId, answer);
     return error === undefined ? { status: "delivered" } : { status: "failed", error };
@@ -88,35 +101,45 @@ export class DaemonElicitationRequests {
   /** The daemon closed the request: close its prompt and stop any retry. */
   close(occurrenceId: string, sequence: number | undefined): boolean {
     const prompt = this.#shown.get(occurrenceId);
-    const answer = this.#answers.get(occurrenceId);
+    const known = prompt ?? this.#answers.get(occurrenceId) ?? this.#settled.get(occurrenceId);
     this.#shown.delete(occurrenceId);
     this.#answers.delete(occurrenceId);
-    this.#settled.set(
-      occurrenceId,
-      sequence ?? prompt?.sequence ?? answer?.sequence,
-    );
+    this.#settled.set(occurrenceId, {
+      sequence: sequence ?? known?.sequence,
+      learned: known?.learned ?? this.#tick(),
+    });
     prompt?.controller.abort();
     return prompt !== undefined;
   }
 
   /**
-   * Applies an authoritative pending set taken at `asOfSequence`. Closes
-   * shown prompts it proves settled, settles answers the daemon no longer
-   * waits for, prunes records the sequence rule now covers, and returns the
-   * answers to send again because their requests are still pending.
+   * The point on this registry's clock to pass to `reconcile` with the
+   * pending set requested now: everything learned until then was published
+   * before the daemon reads its set.
    */
-  reconcile(asOfSequence: number, pending: ReadonlySet<string>): readonly string[] {
+  mark(): number {
+    return this.#clock;
+  }
+
+  /**
+   * Applies the pending set the daemon took at `asOfSequence`, requested at
+   * `mark`. Closes shown prompts it proves settled, settles answers the daemon
+   * no longer waits for, prunes records the sequence rule now covers, and
+   * returns the answers to send again because their requests are still
+   * pending. The latest set wins, also one with a lower sequence (a daemon
+   * that restarted on a journal without its last events).
+   */
+  reconcile(mark: number, asOfSequence: number, pending: ReadonlySet<string>): readonly string[] {
     if (this.#ended) return [];
-    // A snapshot older than one already applied says nothing new.
-    if (this.#asOfSequence !== undefined && asOfSequence < this.#asOfSequence) return [];
     this.#asOfSequence = asOfSequence;
     this.#pendingAtSnapshot = new Set(pending);
-    const settled = (id: string, sequence: number | undefined): boolean =>
-      !pending.has(id) && sequence !== undefined && sequence <= asOfSequence;
+    const settled = (id: string, known: Known): boolean =>
+      !pending.has(id) &&
+      (known.learned <= mark || (known.sequence !== undefined && known.sequence <= asOfSequence));
     for (const [id, prompt] of this.#shown) {
-      if (!settled(id, prompt.sequence)) continue;
+      if (!settled(id, prompt)) continue;
       this.#shown.delete(id);
-      this.#settled.set(id, prompt.sequence);
+      this.#settled.set(id, { sequence: prompt.sequence, learned: prompt.learned });
       prompt.controller.abort();
     }
     const resend: string[] = [];
@@ -124,13 +147,13 @@ export class DaemonElicitationRequests {
       if (answer.sending) continue;
       if (pending.has(id)) {
         resend.push(id);
-      } else if (settled(id, answer.sequence)) {
+      } else if (settled(id, answer)) {
         this.#answers.delete(id);
-        this.#settled.set(id, answer.sequence);
+        this.#settled.set(id, { sequence: answer.sequence, learned: answer.learned });
       }
     }
-    for (const [id, sequence] of this.#settled) {
-      if (settled(id, sequence)) this.#settled.delete(id);
+    for (const [id, known] of this.#settled) {
+      if (this.#settledBySnapshot(id, known.sequence)) this.#settled.delete(id);
     }
     return resend;
   }
@@ -160,6 +183,7 @@ export class DaemonElicitationRequests {
     this.#answers.clear();
   }
 
+  /** Not pending at or below the last set's sequence: a replay can never reopen it. */
   #settledBySnapshot(occurrenceId: string, sequence: number | undefined): boolean {
     return (
       this.#asOfSequence !== undefined &&
@@ -167,6 +191,11 @@ export class DaemonElicitationRequests {
       sequence <= this.#asOfSequence &&
       !this.#pendingAtSnapshot.has(occurrenceId)
     );
+  }
+
+  #tick(): number {
+    this.#clock += 1;
+    return this.#clock;
   }
 
   async #send(occurrenceId: string, answer: Answer): Promise<unknown> {
@@ -180,7 +209,7 @@ export class DaemonElicitationRequests {
     }
     if (this.#answers.get(occurrenceId) === answer) {
       this.#answers.delete(occurrenceId);
-      this.#settled.set(occurrenceId, answer.sequence);
+      this.#settled.set(occurrenceId, { sequence: answer.sequence, learned: answer.learned });
     }
     return undefined;
   }

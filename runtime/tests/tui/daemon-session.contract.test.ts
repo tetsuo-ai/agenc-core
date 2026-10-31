@@ -4523,6 +4523,29 @@ describe("AgenC TUI daemon session adapter", () => {
       };
     }
 
+    /** A form the session did not journal (a fork turn): an envelope id and no sequence. */
+    unjournaledForm(turnId = "turn_1", requestId = 9): { readonly eventId: string; readonly notification: JsonObject } {
+      const eventId = `sub-${requestId}`;
+      const occurrence = { eventId, kind: "mcp" as const, requestId, serverName: "profile", turnId };
+      this.occurrences.set(eventId, occurrence);
+      this.waiting.add(eventId);
+      return {
+        eventId,
+        notification: {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.mcp_elicitation_request",
+          params: {
+            sessionId: "session_1",
+            eventId,
+            requestId,
+            serverName: "profile",
+            turnId,
+            request: PROFILE_FORM as unknown as JsonObject,
+          },
+        },
+      };
+    }
+
     /** Stops waiting for an occurrence; returns the live close it sends. */
     close(eventId: string, outcome: "answered" | "withdrawn" = "withdrawn"): JsonObject {
       this.waiting.delete(eventId);
@@ -4921,6 +4944,29 @@ describe("AgenC TUI daemon session adapter", () => {
       // Nothing was queued behind it either.
       expect(harness.shown()).toBeNull();
       expect(harness.everShown()).toEqual([expect.objectContaining({ requestId: 7 })]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  it("closes an unjournaled form on reconnect once the daemon no longer waits for it", async () => {
+    const daemon = new ElicitationDaemon();
+    const harness = daemonElicitationHarness({ daemon });
+    try {
+      const form = daemon.unjournaledForm();
+      harness.emit(form.notification);
+      await flush();
+      harness.answer("Ada");
+      expect(harness.shown()).toMatchObject({ kind: "mcp-form", index: 1 });
+
+      // Away: the session stops waiting; the close never reaches this client.
+      harness.client.emitConnection({ status: "reconnecting" });
+      daemon.close(form.eventId, "withdrawn");
+      harness.client.emitConnection({ status: "connected" });
+      await flush();
+
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toEqual([]);
     } finally {
       harness.dispose();
     }

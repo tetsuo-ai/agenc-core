@@ -61,7 +61,7 @@ describe("DaemonElicitationRequests", () => {
 
   it("ignores a request at or below the pending set's sequence that is not pending", () => {
     const requests = new DaemonElicitationRequests();
-    expect(requests.reconcile(30, new Set(["event:25"]))).toEqual([]);
+    expect(requests.reconcile(requests.mark(), 30, new Set(["event:25"]))).toEqual([]);
 
     expect(requests.begin("event:20", 20)).toBeUndefined();
     expect(requests.begin("event:30", 30)).toBeUndefined();
@@ -76,9 +76,11 @@ describe("DaemonElicitationRequests", () => {
     const requests = new DaemonElicitationRequests();
     const missedClose = requests.begin("event:10", 10)!;
     const stillPending = requests.begin("event:12", 12)!;
+    const mark = requests.mark();
+    // Arrives while the set is requested: published after the daemon read it.
     const newer = requests.begin("event:16", 16)!;
 
-    requests.reconcile(15, new Set(["event:12"]));
+    requests.reconcile(mark, 15, new Set(["event:12"]));
 
     expect(missedClose.signal.aborted).toBe(true);
     expect(stillPending.signal.aborted).toBe(false);
@@ -94,25 +96,46 @@ describe("DaemonElicitationRequests", () => {
     requests.close("ephemeral_1", undefined);
     expect(requests.remembered).toBe(2);
 
-    requests.reconcile(9, new Set());
+    requests.reconcile(requests.mark(), 9, new Set());
     expect(requests.remembered).toBe(2);
     expect(requests.begin("event:10", 10)).toBeUndefined();
 
-    requests.reconcile(10, new Set());
+    requests.reconcile(requests.mark(), 10, new Set());
     // The sequence rule covers it now; only the unsequenced one is kept.
     expect(requests.remembered).toBe(1);
     expect(requests.begin("event:10", 10)).toBeUndefined();
     expect(requests.begin("ephemeral_1", undefined)).toBeUndefined();
   });
 
-  it("does not apply a pending set older than one already applied", () => {
+  it("applies the latest pending set, also one with a lower sequence after a daemon restart", () => {
     const requests = new DaemonElicitationRequests();
-    requests.reconcile(20, new Set());
-    const prompt = requests.begin("event:25", 25)!;
+    requests.reconcile(requests.mark(), 20, new Set());
+    const lost = requests.begin("event:25", 25)!;
 
-    expect(requests.reconcile(10, new Set(["event:5"]))).toEqual([]);
-    expect(requests.begin("event:5", 5)).toBeUndefined();
-    expect(prompt.signal.aborted).toBe(false);
+    // The restarted daemon's journal ends at 10 and its session waits for event:5.
+    requests.reconcile(requests.mark(), 10, new Set(["event:5"]));
+
+    expect(lost.signal.aborted).toBe(true);
+    expect(requests.begin("event:5", 5)).toBeDefined();
+  });
+
+  it("settles a prompt without a sequence only when it was shown before the set was requested", async () => {
+    const requests = new DaemonElicitationRequests();
+    const before = requests.begin("sub-3", undefined)!;
+    const answered = requests.begin("sub-4", undefined)!;
+    await requests.deliver("sub-4", answered, failed);
+    const mark = requests.mark();
+    const after = requests.begin("sub-5", undefined)!;
+
+    expect(requests.reconcile(mark, 50, new Set())).toEqual([]);
+
+    expect(before.signal.aborted).toBe(true);
+    expect(requests.unacknowledged).toEqual([]);
+    expect(after.signal.aborted).toBe(false);
+    // Without a sequence nothing else covers them, so they stay remembered.
+    expect(requests.begin("sub-3", undefined)).toBeUndefined();
+    expect(requests.begin("sub-4", undefined)).toBeUndefined();
+    expect(requests.remembered).toBe(2);
   });
 
   it("keeps an answer that failed to send and sends it again while it is pending", async () => {
@@ -130,7 +153,7 @@ describe("DaemonElicitationRequests", () => {
     // A replay of the request does not reopen it: the answer is kept.
     expect(requests.begin("event:10", 10)).toBeUndefined();
 
-    expect(requests.reconcile(12, new Set(["event:10"]))).toEqual(["event:10"]);
+    expect(requests.reconcile(requests.mark(), 12, new Set(["event:10"]))).toEqual(["event:10"]);
     await expect(requests.resend("event:10")).resolves.toBeUndefined();
     expect(attempts).toBe(2);
     expect(requests.unacknowledged).toEqual([]);
@@ -143,12 +166,12 @@ describe("DaemonElicitationRequests", () => {
     await requests.deliver("event:10", closedPrompt, failed);
     requests.close("event:10", 10);
     expect(requests.unacknowledged).toEqual([]);
-    expect(requests.reconcile(12, new Set(["event:10"]))).toEqual([]);
+    expect(requests.reconcile(requests.mark(), 12, new Set(["event:10"]))).toEqual([]);
 
     const settledPrompt = requests.begin("event:20", 20)!;
     await requests.deliver("event:20", settledPrompt, failed);
     // The pending set no longer lists it: another client answered it.
-    expect(requests.reconcile(22, new Set())).toEqual([]);
+    expect(requests.reconcile(requests.mark(), 22, new Set())).toEqual([]);
     expect(requests.unacknowledged).toEqual([]);
     expect(requests.begin("event:20", 20)).toBeUndefined();
   });
@@ -180,7 +203,7 @@ describe("DaemonElicitationRequests", () => {
       });
     });
 
-    expect(requests.reconcile(12, new Set(["event:10"]))).toEqual([]);
+    expect(requests.reconcile(requests.mark(), 12, new Set(["event:10"]))).toEqual([]);
     await expect(requests.resend("event:10")).resolves.toBeUndefined();
     expect(attempts).toBe(1);
     finish();
@@ -199,6 +222,6 @@ describe("DaemonElicitationRequests", () => {
     expect(prompt.signal.aborted).toBe(true);
     expect(requests.unacknowledged).toEqual([]);
     expect(requests.begin("event:12", 12)).toBeUndefined();
-    expect(requests.reconcile(20, new Set(["event:11"]))).toEqual([]);
+    expect(requests.reconcile(requests.mark(), 20, new Set(["event:11"]))).toEqual([]);
   });
 });
