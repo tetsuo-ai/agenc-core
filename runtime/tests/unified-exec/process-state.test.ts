@@ -90,10 +90,79 @@ describe("session membership", () => {
     );
   });
 
+  it("counts the members it does not name", async () => {
+    const table = new Map<number, ProcessSample>([
+      [700, sample(700, 1, 700, "bash")],
+      [701, sample(701, 700, 700, "make -j1", "sleeping", 2)],
+      [702, sample(702, 701, 700, "cc1 a.c", "running", 9)],
+      [703, sample(703, 701, 700, "as a.s")],
+      [704, sample(704, 700, 700, "tee build.log")],
+    ]);
+    const report = await checkSessionProcesses(700, undefined, { platform: "linux", table });
+    expect(formatSessionProcessReport(report!, 61_000)).toBe(
+      "[no output for 1m01s; 5 processes: cc1 running (9s cpu), make sleeping (2s cpu), bash sleeping, 2 more.]",
+    );
+  });
+
   it("says nothing when the root is gone or the platform has no reader", async () => {
     const table = new Map([[800, sample(800, 1, 800, "other")]]);
     expect(await checkSessionProcesses(700, undefined, { platform: "linux", table })).toBeUndefined();
     expect(await checkSessionProcesses(700, undefined, { platform: "win32" })).toBeUndefined();
     expect(await checkSessionProcesses(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe("AgenC's own containment processes", () => {
+  // Linux E2E on the PC (sandboxed agenc -p in a one-CPU container): the
+  // session root is the process broker, then bubblewrap and the session
+  // sandbox executor, then the command's shell. A quiet poll of
+  // `sleep 70 & sleep 301; wait` read "5 processes: agenc-process-broker
+  // sleeping, bwrap sleeping, agenc-session-sandbox sleeping, ...." and never
+  // named the sleep 301 that was still running.
+  function sandboxedTree(withSleep70: boolean): Map<number, ProcessSample> {
+    const rows: ProcessSample[] = [
+      sample(92, 40, 92, "agenc-process-broker --bootstrap-v2"),
+      sample(93, 92, 93, "bwrap --new-session --die-with-parent --ro-bi..."),
+      sample(94, 93, 94, "agenc-session-sandbox --session-executor-v1"),
+      sample(95, 94, 95, "bash -c sleep 70 & sleep 301; wait"),
+      ...(withSleep70 ? [sample(96, 95, 95, "sleep 70")] : []),
+      sample(97, 95, 95, "sleep 301"),
+    ];
+    return new Map(rows.map((row) => [row.pid, row]));
+  }
+
+  it("leaves the broker, bubblewrap and the session sandbox out of a quiet poll's line", async () => {
+    const first = await checkSessionProcesses(92, undefined, { platform: "linux", table: sandboxedTree(true) });
+    expect(formatSessionProcessReport(first!, 66_000)).toBe(
+      "[no output for 1m06s; 3 processes: sleep x2 sleeping, bash sleeping.]",
+    );
+    const second = await checkSessionProcesses(92, first!.check, { platform: "linux", table: sandboxedTree(false) });
+    expect(formatSessionProcessReport(second!, 75_000)).toBe(
+      "[no output for 1m15s; 2 processes: bash sleeping, sleep sleeping." +
+        " CPU since the last check: 0s. Exited since then: sleep 70 (pid 96).]",
+    );
+  });
+
+  it("keeps a bwrap that the command started itself", async () => {
+    const table = new Map<number, ProcessSample>([
+      [92, sample(92, 40, 92, "agenc-process-broker --bootstrap-v2")],
+      [95, sample(95, 92, 95, "bash -c bwrap --ro-bind / / sleep 30; true")],
+      [96, sample(96, 95, 95, "bwrap --ro-bind / / sleep 30")],
+    ]);
+    const report = await checkSessionProcesses(92, undefined, { platform: "linux", table });
+    expect(formatSessionProcessReport(report!, 61_000)).toBe(
+      "[no output for 1m01s; 2 processes: bash sleeping, bwrap sleeping.]",
+    );
+  });
+
+  it("says so when only containment processes are left", async () => {
+    const table = new Map<number, ProcessSample>([
+      [92, sample(92, 40, 92, "agenc-process-broker --bootstrap-v2")],
+      [93, sample(93, 92, 93, "bwrap --new-session")],
+    ]);
+    const report = await checkSessionProcesses(92, undefined, { platform: "linux", table });
+    expect(formatSessionProcessReport(report!, 61_000)).toBe(
+      "[no output for 1m01s; no process of the command is running.]",
+    );
   });
 });

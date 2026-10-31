@@ -256,7 +256,9 @@ session is never woken for it. A session the model or the user stopped gets no
 such line. A poll of a session
 that has printed nothing for a minute adds one line with its processes' state
 and CPU time, the CPU used since the previous check and the members that
-exited since then (Linux `/proc`, macOS `ps`; nothing on Windows). On Linux
+exited since then (Linux `/proc`, macOS `ps`; nothing on Windows). The line
+names the command's own processes only: AgenC's process broker, bubblewrap
+and session sandbox executor around the command are left out. On Linux
 the environment note of the system prompt adds one line with the cgroup CPU
 quota and memory limit (cgroup v2 `cpu.max` and `memory.max` on the process's
 cgroup path, or the v1 controllers) when one is stricter than what `nproc` and

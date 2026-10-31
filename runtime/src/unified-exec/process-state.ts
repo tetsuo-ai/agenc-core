@@ -13,7 +13,9 @@
  * Membership is the session root, every process in its process group, and
  * their descendants: contained commands run as their own process group
  * (Darwin gate, Linux cgroup leaf), and orphans reparented away from a dead
- * parent keep that group. Linux reads /proc; Darwin reads `ps`; other
+ * parent keep that group. AgenC's own wrappers around the command (the Linux
+ * process broker, bubblewrap, the session sandbox executor) are left out of
+ * the line. Linux reads /proc; Darwin reads `ps`; other
  * platforms report nothing. Sampling is observation only: it never signals
  * or adopts a process, and it is no part of any cleanup proof.
  *
@@ -206,6 +208,44 @@ export function sessionMembers(table: ProcessTable, rootPid: number): ProcessSam
   return [...members.values()];
 }
 
+/**
+ * Programs AgenC itself runs between a session's root and its command: on
+ * Linux the process broker is the root, then bubblewrap and the session
+ * sandbox executor hold the command's shell. They do nothing the model asked
+ * for, and naming them crowded the command's own processes out of the line.
+ */
+const CONTAINMENT_PROGRAMS = new Set([
+  "agenc-process-broker",
+  "agenc-session-sandbox",
+  "agenc-landlock-run",
+  "bwrap",
+]);
+
+/**
+ * The session's containment processes: the root and each member below it
+ * whose parent is one of them, while its program is one of these launchers.
+ * A program of the same name that the command started (under its shell) is
+ * the command's own and stays.
+ */
+function containmentMembers(members: readonly ProcessSample[], rootPid: number): Set<number> {
+  const isContainment = (member: ProcessSample): boolean =>
+    CONTAINMENT_PROGRAMS.has(basename(member.label.split(" ")[0] ?? ""));
+  const containment = new Set<number>();
+  const root = members.find((member) => member.pid === rootPid);
+  if (root === undefined || !isContainment(root)) return containment;
+  containment.add(root.pid);
+  for (let added = true; added;) {
+    added = false;
+    for (const member of members) {
+      if (!containment.has(member.pid) && containment.has(member.ppid) && isContainment(member)) {
+        containment.add(member.pid);
+        added = true;
+      }
+    }
+  }
+  return containment;
+}
+
 /** The previous check of a session, kept on its entry for deltas. */
 export interface SessionProcessCheck {
   readonly cpuSeconds: number;
@@ -243,6 +283,10 @@ export async function checkSessionProcesses(
   if (table === undefined || !table.has(rootPid)) return undefined;
   let members = sessionMembers(table, rootPid);
   if (platform === "linux" && options.table === undefined) members = withLinuxCommandLines(members);
+  // The command's processes only: AgenC's broker and sandbox wrappers are
+  // neither counted, named nor reported as exited.
+  const containment = containmentMembers(members, rootPid);
+  members = members.filter((member) => !containment.has(member.pid));
   const cpuSeconds = members.reduce((sum, member) => sum + member.cpuSeconds, 0);
   const grouped = new Map<string, { label: string; state: ProcessRunState; count: number; cpuSeconds: number }>();
   for (const member of members) {
@@ -293,8 +337,12 @@ export function formatSessionProcessReport(report: SessionProcessReport, quietMs
   const groups = report.groups.map((group) =>
     `${group.label}${group.count > 1 ? ` x${group.count}` : ""} ${group.state}` +
     (group.cpuSeconds >= 0.5 ? ` (${seconds(group.cpuSeconds)} cpu)` : ""));
-  const more = report.memberCount > report.groups.reduce((sum, group) => sum + group.count, 0) ? ", ..." : "";
+  const unnamed = report.memberCount - report.groups.reduce((sum, group) => sum + group.count, 0);
+  const more = unnamed > 0 ? `, ${unnamed} more` : "";
   const delta = report.cpuDeltaSeconds === undefined ? "" : ` CPU since the last check: ${seconds(report.cpuDeltaSeconds)}.`;
   const exited = report.exited.length === 0 ? "" : ` Exited since then: ${report.exited.join(", ")}.`;
+  if (report.memberCount === 0) {
+    return `[no output for ${formatDuration(quietMs)}; no process of the command is running.${exited}]`;
+  }
   return `[no output for ${formatDuration(quietMs)}; ${report.memberCount} process${report.memberCount === 1 ? "" : "es"}: ${groups.join(", ")}${more}.${delta}${exited}]`;
 }
