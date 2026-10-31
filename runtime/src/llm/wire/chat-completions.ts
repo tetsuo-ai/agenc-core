@@ -59,6 +59,7 @@ import {
   buildCerebrasStructuredOutputTextFormat,
 } from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
+import { withRecoveredHarmonyToolCall } from "./harmony-leak.js";
 import {
   decodeReasoningDetailsReplay,
   encodeReasoningDetailsReplay,
@@ -1102,10 +1103,15 @@ export function parseChatCompletionsResponse(
     ? (response.choices as Array<Record<string, unknown>>)
     : [];
   const choice = choices[0] ?? {};
-  const message =
+  // A gpt-oss call some hosts return as harmony text becomes the call it is.
+  const message = withRecoveredHarmonyToolCall(
+    model,
     choice.message && typeof choice.message === "object"
       ? (choice.message as Record<string, unknown>)
-      : {};
+      : {},
+    requestedAdvertisedToolNames,
+    request.providerCapabilityHints?.reasoningContentField ?? "reasoning_content",
+  );
   const allowedFinishReasons =
     request.providerCapabilityHints?.allowedFinishReasons;
   if (
