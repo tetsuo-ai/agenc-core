@@ -124,6 +124,8 @@ export class PrintInvocation {
         return response.result as import("./protocol/index.js").AgenCDaemonResultByMethod[M];
       },
       supportsMethod: () => true,
+      // The resident print connection runs inside this daemon: same build.
+      supportsCapability: () => true,
       subscribeToSessionEvents: (sessionId, cb) => {
         let listeners = this.#listeners.get(sessionId);
         if (listeners === undefined) { listeners = new Set(); this.#listeners.set(sessionId, listeners); }

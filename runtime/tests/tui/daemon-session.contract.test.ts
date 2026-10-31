@@ -3670,8 +3670,11 @@ describe("AgenC TUI daemon session adapter", () => {
     }) })]);
   });
 
-  it("sends a skill's turn settings with that submission only", async () => {
-    const client = createClient();
+  it("sends a skill's turn settings with that submission only, to a daemon that takes them", async () => {
+    const client = Object.assign(createClient(), {
+      supportsCapability: (capability: string) =>
+        capability === "message.stream.skillInvocation",
+    });
     const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
     await session.submit("review the diff", {
       displayUserMessage: "$deep-review",

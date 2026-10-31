@@ -130,6 +130,7 @@ import {
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
   MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
@@ -548,6 +549,7 @@ function buildServerCapabilities(
     ...(hasMethod(inputs.workflow, "startRun") ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true } : {}),
     ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]: true } : {}),
     ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY]: true } : {}),
+    ...(hasMethod(agentManager, "streamAgentMessage") ? { [AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -1024,7 +1026,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...Object.fromEntries(Object.entries(availableCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY)),
+              ...Object.fromEntries(Object.entries(availableCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY && key !== AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY)),
               [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(availableCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
               // Match the filtered routine methods in this remote-access view.
               ...(availableCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
@@ -1033,6 +1035,8 @@ export class AgenCDaemonJsonRpcDispatcher {
                 ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
               ...(availableCapabilities[AGENC_RUN_START_LIGHT_MODE_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
                 ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true as const } : {}),
+              ...(availableCapabilities[AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY] && connection.remoteAccess.allowsMethod("message.stream")
+                ? { [AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY]: true as const } : {}),
             } : availableCapabilities,
           );
           if (!negotiated.supported) {
