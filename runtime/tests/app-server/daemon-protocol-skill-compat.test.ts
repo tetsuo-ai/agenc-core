@@ -18,7 +18,10 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createConnectedAgenCJsonLineDaemonTuiClient } from "../../src/app-server/agent-cli.js";
+import {
+  createAgenCJsonLineDaemonClient,
+  createConnectedAgenCJsonLineDaemonTuiClient,
+} from "../../src/app-server/agent-cli.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -48,6 +51,8 @@ describe("skill invocations across the 0.19.25 protocol boundary", () => {
     const socketPath = join(dir, "daemon.sock");
     const initializeVersions: string[] = [];
     const streamed: Record<string, unknown>[] = [];
+    const executed: string[] = [];
+    const initialized = new WeakSet<object>();
     const server = new AgenCUnixSocketServer({
       socketPath,
       onMessage: async (message, context) => {
@@ -59,16 +64,25 @@ describe("skill invocations across the 0.19.25 protocol boundary", () => {
           );
           initializeVersions.push(version);
           const negotiated = negotiate01925(version);
+          if (negotiated.supported) initialized.add(context);
           await context.send(negotiated.supported
             ? { jsonrpc: "2.0", id: message.id, result: {
                 type: "initialized",
                 protocolVersion: PROTOCOL_0_19_25,
                 protocol: { version: PROTOCOL_0_19_25 },
-                capabilities: { "daemon.methods": { "message.stream": true } },
+                capabilities: { "daemon.methods": { "message.stream": true, "agent.list": true } },
               } }
             : { jsonrpc: "2.0", id: message.id, error: negotiated.error });
           return;
         }
+        // As 0.19.25: nothing runs on a connection that is not initialized.
+        if (!initialized.has(context)) {
+          await context.send({ jsonrpc: "2.0", id: message.id, error: {
+            code: -32000, message: "Not initialized", data: { code: "CONNECTION_NOT_INITIALIZED" },
+          } });
+          return;
+        }
+        executed.push(String(message.method));
         if (message.method === "message.stream") {
           try {
             validateMessageStream01925(params);
@@ -118,6 +132,13 @@ describe("skill invocations across the 0.19.25 protocol boundary", () => {
           message: expect.stringContaining("deep-review runs without its model, effort and allowed-tools"),
         }),
       })]);
+
+      // The one-shot requests the TUI makes (agent.create, agent.list) work
+      // too: refused at 1.35, sent again at 1.34, and run once.
+      const cli = createAgenCJsonLineDaemonClient({ socketPath, authCookie: "test-cookie" });
+      await expect(cli.listAgents()).resolves.toEqual({});
+      expect(initializeVersions.slice(2)).toEqual([AGENC_DAEMON_PROTOCOL_VERSION, PROTOCOL_0_19_25]);
+      expect(executed.filter((method) => method === "agent.list")).toEqual(["agent.list"]);
     } finally {
       unsubscribe();
       await client.close();
