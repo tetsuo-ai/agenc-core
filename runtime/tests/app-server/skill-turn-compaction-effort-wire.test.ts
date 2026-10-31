@@ -3,17 +3,23 @@
  * the turn's effort. A model-only GPT-6 Astra skill in a GPT-5 session at
  * `minimal` runs Astra at its own default level, so the summary requests carry
  * no level either, not the session's `minimal`, which Astra does not accept.
- * Checked on the request bodies the OpenAI provider sends.
+ * A model downshift before a skill turn summarizes on the previous, larger
+ * model at the session's level resolved for that model, never at the skill's
+ * level, which that model may not accept. Checked on the request bodies the
+ * OpenAI provider sends.
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { admitSkillInvocation } from "../../src/app-server/background-agent-runner/skill-invocation.js";
 import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
+import * as autoCompact from "../../src/services/compact/autoCompact.js";
 import { compactConversation } from "../../src/services/compact/compact.js";
-import type { RuntimeMessage } from "../../src/services/compact/types.js";
+import type { CompactContext, RuntimeMessage } from "../../src/services/compact/types.js";
+import { maybeRunPreviousModelInlineCompact } from "../../src/session/run-turn-compaction.js";
 import type { Session } from "../../src/session/session.js";
 import type { TurnContext } from "../../src/session/turn-context.js";
+import { buildInitialTurnState } from "../../src/session/turn-state.js";
 import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import {
   createCompactionTransactionHarness,
@@ -71,6 +77,53 @@ async function gpt5Session(): Promise<{
   return { session, fetchImpl };
 }
 
+/** A GPT-6 Astra session at `high`. */
+async function astraSession(): Promise<{
+  readonly session: Session;
+  readonly fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>;
+}> {
+  const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => summaryResponse());
+  const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-6-astra", fetchImpl });
+  const session = deepSeekSkillTurnSession({
+    route: {
+      provider,
+      model: "gpt-6-astra",
+      reasoningEffort: "high",
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      contextWindow: 1_000_000,
+      providerEnvironment: { OPENAI_API_KEY: "sk-test" },
+    },
+  });
+  await session.services.configStore!.reload();
+  return { session, fetchImpl };
+}
+
+/**
+ * The compaction context a model downshift builds before `turn`: the
+ * session's previous turn ran on Astra, whose window is larger than the
+ * turn's model's, and the history no longer fits the turn's model.
+ */
+async function downshiftCompactContext(
+  session: Session,
+  turn: TurnContext,
+): Promise<CompactContext> {
+  Object.assign(
+    (session.state as unknown as { unsafePeek(): object }).unsafePeek(),
+    { previousTurnSettings: { model: "gpt-6-astra", contextWindow: 4_000_000 } },
+  );
+  const compact = vi.spyOn(autoCompact, "autoCompactIfNeeded")
+    .mockResolvedValue({ wasCompacted: false });
+  try {
+    const state = buildInitialTurnState(turn, { role: "user", content: "continue" });
+    await maybeRunPreviousModelInlineCompact(session, turn, 100_000_000, state);
+    const context = compact.mock.calls[0]?.[1] as CompactContext | undefined;
+    if (context === undefined) throw new Error("the model downshift did not compact");
+    return context;
+  } finally {
+    compact.mockRestore();
+  }
+}
+
 async function skillTurn(
   session: Session,
   skill: { readonly name: string; readonly model: string; readonly effort?: string },
@@ -92,6 +145,7 @@ async function compactInTurn(
   session: Session,
   turn: TurnContext,
   fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>,
+  mainLoopModel: string = turn.modelInfo.slug,
 ): Promise<Array<Record<string, unknown>>> {
   // Enough history that an automatic compaction frees room.
   const source: RuntimeMessage[] = Array.from({ length: 40 }, (_, index) => ({
@@ -117,7 +171,7 @@ async function compactInTurn(
   const before = fetchImpl.mock.calls.length;
   const result = await compactConversation(source, {
     ...harness.context,
-    options: { ...harness.context.options, mainLoopModel: turn.modelInfo.slug },
+    options: { ...harness.context.options, mainLoopModel },
     turn,
   }, "");
   expect(result.transaction).toBeDefined();
@@ -171,4 +225,46 @@ describe("automatic compaction in a skill turn, on the wire", () => {
       expect(effortOf(body)).toBe("minimal");
     }
   });
+});
+
+describe("model-downshift compaction before a skill turn, on the wire", () => {
+  test.each([
+    [
+      "a GPT-5 skill at minimal",
+      { name: "gpt5-review", model: "gpt-5", effort: "minimal" },
+      ["minimal", "low", "medium", "high"],
+    ],
+    [
+      "a GPT-5.1 skill at none",
+      { name: "gpt51-review", model: "gpt-5.1", effort: "none" },
+      ["none", "low", "medium", "high"],
+    ],
+  ] as const)(
+    "after an Astra session at high, %s summarizes on Astra at a level Astra accepts",
+    async (_label, skill, skillModelLevels) => {
+      const { session, fetchImpl } = await astraSession();
+      const admittedTurn = await skillTurn(session, skill);
+      expect(admittedTurn.modelInfo.slug).toBe(skill.model);
+      expect(admittedTurn.reasoningEffort).toBe(skill.effort);
+      // This session has no models manager, so the skill model's metadata
+      // lacks the 400k window and the levels a live session reads for it.
+      const turn = {
+        ...admittedTurn,
+        modelInfo: {
+          ...admittedTurn.modelInfo,
+          contextWindow: 400_000,
+          supportedReasoningLevels: [...skillModelLevels],
+        },
+      };
+
+      const context = await downshiftCompactContext(session, turn);
+      expect(context.options?.mainLoopModel).toBe("gpt-6-astra");
+      const bodies = await compactInTurn(session, context.turn!, fetchImpl, "gpt-6-astra");
+
+      for (const body of bodies) {
+        expect(body.model).toBe("gpt-6-astra");
+        expect(effortOf(body)).toBe("low");
+      }
+    },
+  );
 });
