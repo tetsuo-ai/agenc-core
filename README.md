@@ -24,7 +24,7 @@ Then run `agenc onboard`. Windows and npm installs are on
 [get.agenc.ag](https://get.agenc.ag), and you can
 [verify the download](https://get.agenc.ag/verify/).
 
-- With DeepSeek V4.1 Flash it scored 76.2% on Terminal-Bench 2.1 for $34. Every
+- With DeepSeek V4.1 Flash it scored 84.5% on Terminal-Bench 2.1 for $27. Every
   entry on the Harbor Hub leaderboard spent at least $134.
   [Full results](https://get.agenc.ag/terminal-bench/).
 - Bring any model: OpenAI, Anthropic, Grok, Gemini, DeepSeek, OpenRouter and
@@ -33,7 +33,7 @@ Then run `agenc onboard`. Windows and npm installs are on
   start background agents and follow them from your phone.
 
 <p align="center">
-  <a href="https://get.agenc.ag/terminal-bench/"><img src="docs/media/terminal-bench-2-1-cost.png" width="720" alt="Chart of score against cost on Terminal-Bench 2.1. AgenC Core with DeepSeek V4.1 Flash sits at the top, 76.2% for $34. The leaderboard entries all cost $134 or more."></a>
+  <a href="https://get.agenc.ag/terminal-bench/"><img src="docs/media/terminal-bench-2-1-cost.png" width="720" alt="Chart of score against cost on Terminal-Bench 2.1. AgenC Core with DeepSeek V4.1 Flash sits at the top, 84.5% for $27. The leaderboard entries all cost $134 or more."></a>
 </p>
 
 **AgenC Core** is the implementation repository for the `agenc` CLI. A local
