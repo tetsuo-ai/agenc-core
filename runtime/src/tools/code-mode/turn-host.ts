@@ -1,6 +1,10 @@
 import type { Session } from "../../session/session.js";
 import type { ToolRegistry } from "../../tool-registry.js";
-import { clearCodeModeNestedStop, recordCodeModeNestedStop } from "./nested-stop.js";
+import {
+  endCodeModeNestedStopTurn,
+  recordCodeModeNestedStop,
+  startCodeModeNestedStopTurn,
+} from "./nested-stop.js";
 import {
   CODE_MODE_EXEC_TOOL_NAME,
   CODE_MODE_WAIT_TOOL_NAME,
@@ -27,6 +31,7 @@ async function invokeNestedCodeModeTool(
   session: CodeModeWorkerSession,
   call: CodeModeNestedToolCall,
   signal: AbortSignal,
+  turn: object,
 ): Promise<unknown> {
   if (
     call.toolName === CODE_MODE_EXEC_TOOL_NAME ||
@@ -63,8 +68,9 @@ async function invokeNestedCodeModeTool(
     });
   }
   // A refusal that ends the turn must reach the turn loop even if the script
-  // catches the error below; see nested-stop.ts.
-  recordCodeModeNestedStop(session, result.metadata);
+  // catches the error below; see nested-stop.ts. One that completes after its
+  // turn ended belongs to no turn and is dropped there.
+  recordCodeModeNestedStop(session, result.metadata, turn);
   if (result.isError === true) {
     throw new Error(result.content);
   }
@@ -116,21 +122,29 @@ function emitMissingCodeModeServiceWarning(session: CodeModeWorkerSession): void
 export function startCodeModeTurnWorker(
   session: CodeModeWorkerSession,
 ): CodeModeTurnWorker {
-  clearCodeModeNestedStop(session);
+  // This turn's token: nested-call results and stops are scoped to it.
+  const turn = {};
+  startCodeModeNestedStopTurn(session, turn);
   const codeModeService = session.services.codeModeService;
   if (codeModeService === undefined) {
     emitMissingCodeModeServiceWarning(session);
-    return { dispose: () => undefined };
+    return { dispose: () => endCodeModeNestedStopTurn(session, turn) };
   }
 
-  return codeModeService.startTurnWorker({
+  const worker = codeModeService.startTurnWorker({
     // A parent and its sub-agents share the service; a cell's nested calls
     // stay in the session that started it.
     owner: session,
     invokeTool: (call: CodeModeNestedToolCall, signal: AbortSignal) =>
-      invokeNestedCodeModeTool(session, call, signal),
+      invokeNestedCodeModeTool(session, call, signal, turn),
     notify: ({ callId, text }) => {
       emitCodeModeNotify(session, callId, text);
     },
   });
+  return {
+    dispose: () => {
+      endCodeModeNestedStopTurn(session, turn);
+      worker.dispose();
+    },
+  };
 }

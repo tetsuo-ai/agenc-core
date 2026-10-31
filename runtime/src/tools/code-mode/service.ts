@@ -155,6 +155,11 @@ export class QuickJsCodeModeService implements CodeModeService {
       dispose: () => {
         const index = this.hosts.lastIndexOf(host);
         if (index >= 0) this.hosts.splice(index, 1);
+        // The turn ended: revoke its cells' dispatch authority, including
+        // nested calls still running or waiting on a permission check.
+        for (const cell of this.cells.values()) {
+          if (cell.host === host) cell.abortController.abort("code-mode turn ended");
+        }
       },
     };
   }

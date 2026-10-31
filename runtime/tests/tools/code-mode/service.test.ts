@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { QuickJsCodeModeService } from "./service.js";
 import { codeModeRuntimeResponseToToolResult } from "./tools.js";
 import { startCodeModeTurnWorker, type CodeModeWorkerSession } from "./turn-host.js";
+import { hasCodeModeNestedStop } from "./nested-stop.js";
 import type { CodeModeExecuteRequest, CodeModeTurnHost } from "./types.js";
 
 let services: QuickJsCodeModeService[] = [];
@@ -273,6 +274,52 @@ describe("QuickJsCodeModeService turn hosts", () => {
 
     expect(served).toEqual([]);
     expect(done.contentItems).toEqual([{ type: "input_text", text: expect.stringContaining("refused") }]);
+  });
+
+  test("a nested call still running when its turn ends is aborted, and its refusal cannot reach the session's next turn (Codex review item 1)", async () => {
+    const service = makeService();
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let seen: AbortSignal | undefined;
+    const session = {
+      services: {
+        codeModeService: service,
+        registry: {
+          dispatch: async () => ({ content: "", isError: false }),
+          // Held, as a permission check or a slow tool would hold it, then
+          // refused the way a paused shell refuses.
+          dispatchCodeModeNestedTool: async (call: { readonly abortSignal?: AbortSignal }) => {
+            seen = call.abortSignal;
+            markStarted();
+            await released;
+            return {
+              content: JSON.stringify({ error: "refused", code: "exec_unavailable" }),
+              isError: true,
+              metadata: { execUnavailableStop: { explanation: "Shell commands are paused (from the turn that ended)." } },
+            };
+          },
+        },
+      },
+      nextInternalSubId: () => "sub",
+      emit: () => {},
+    } as unknown as CodeModeWorkerSession;
+    const firstTurn = startCodeModeTurnWorker(session);
+    const cell = await startCell(service, session,
+      'try { await tools.probe({}); } catch (error) { text("refused: " + String(error)); }');
+    await started;
+    firstTurn.dispose();
+    // The turn's dispatch authority is revoked, waits included.
+    expect(seen?.aborted).toBe(true);
+    const nextTurn = startCodeModeTurnWorker(session);
+    release();
+    await service.wait({ cellId: cell.cellId, yieldTimeMs: 2_000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The ended turn's refusal is not the next turn's.
+    expect(hasCodeModeNestedStop(session)).toBe(false);
+    nextTurn.dispose();
   });
 
   test("a parent's script keeps its nested calls in the parent while a sub-agent's turn runs", async () => {
