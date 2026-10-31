@@ -44,6 +44,7 @@ import {
   skillInvocationSettingsFor,
 } from "../../skills/skill-invocation-settings.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../../contracts/run-contracts.js";
+import { pluginScopedIdentifier } from "../../plugins/identifier-normalization.js";
 
 /** Providers whose effort levels come with the live model list. */
 const LIVE_EFFORT_LEVEL_PROVIDERS: ReadonlySet<string> = new Set([
@@ -267,6 +268,49 @@ export function emitSkillGrantsWithheld(
   });
 }
 
+/** A plugin skill's name as the TUI gives it: the plugin's namespace first. */
+function pluginSkillInvocationName(pluginId: string, name: string): string | undefined {
+  try {
+    return pluginScopedIdentifier(pluginId, name.split(":"), "command");
+  } catch {
+    return undefined;
+  }
+}
+
+type RegistrySkill = NonNullable<
+  Awaited<ReturnType<NonNullable<NonNullable<Session["services"]["skillsManager"]>["resolveSkill"]>>>
+>;
+
+/**
+ * The skill a journaled record names, as the daemon's skill registry has it
+ * now. The TUI, and so the record, names a plugin's skill in the plugin's
+ * namespace (`my-plugin:review`), while the registry names it by its path in
+ * the plugin (`review`) with the plugin's id beside it: plugin skills are
+ * matched through that identity, every other skill by name.
+ */
+async function registrySkill(
+  session: Session,
+  configStore: ConfigStore,
+  record: { readonly name: string; readonly source?: string },
+): Promise<RegistrySkill | null> {
+  const skills = session.services.skillsManager;
+  try {
+    if (skills === undefined) return null;
+    if (record.source === "plugin") {
+      const outcome = await skills.skillsForConfig(configStore.current(), null);
+      return (outcome.availableSkills ?? []).find((skill) =>
+        skill.source === "plugin" &&
+        skill.pluginId !== undefined &&
+        pluginSkillInvocationName(skill.pluginId, skill.name) === record.name) ?? null;
+    }
+    if (skills.resolveSkill === undefined) return null;
+    return (await skills.resolveSkill(record.name)) ?? null;
+  } catch {
+    // A registry that cannot answer is a skill the resume cannot verify.
+    return null;
+  }
+}
+
 /**
  * The context a durably resumed skill turn continues with, or undefined to
  * continue it on the session's settings, after saying why.
@@ -299,14 +343,15 @@ export async function resumeSkillInvocationTurn(
   if (record === null) {
     return fallback("the journal's record of the skill it was started with cannot be read");
   }
-  const skills = session.services.skillsManager;
-  const skill = skills?.resolveSkill === undefined
-    ? null
-    : await skills.resolveSkill(record.name).catch(() => null);
-  if (skill === null || skill === undefined) {
+  const skill = await registrySkill(session, configStore, record);
+  if (skill === null) {
     return fallback(`skill ${record.name} is no longer available`);
   }
-  const current = skillInvocationSettingsFor(skill);
+  const registered = skillInvocationSettingsFor(skill);
+  // Admitted under the name the user invoked, as the turn was.
+  const current = registered === undefined
+    ? undefined
+    : { ...registered, name: record.name };
   if (
     current === undefined ||
     current.source !== record.source ||

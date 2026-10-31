@@ -2,9 +2,10 @@
  * A turn the user started with a skill, interrupted by a daemon death, is
  * resumed by the REAL runner over the REAL bootstrap with the skill's
  * settings: the journal's record is checked against the skill registry the
- * restored session loads (a user skill under AGENC_HOME/skills) and admitted
- * again. A skill that changed meanwhile resumes on the session's settings,
- * with a warning saying so.
+ * restored session loads (a user skill under AGENC_HOME/skills, or an
+ * installed plugin's skill, which the TUI names in the plugin's namespace) and
+ * admitted again. A skill that changed meanwhile resumes on the session's
+ * settings, with a warning saying so.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +15,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCDelegateBackgroundAgentRunner } from "../../src/app-server/background-agent-runner.js";
 import { bootstrapLocalRuntimeSession } from "../../src/bin/bootstrap.js";
+import { loadPlugins } from "../../src/plugins/loader.js";
+import { loadPluginSkills } from "../../src/plugins/registration/load-plugin-commands.js";
+import { skillInvocationSettingsFor } from "../../src/skills/skill-invocation-settings.js";
 import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
 import {
   currentBuildId,
@@ -36,12 +40,12 @@ const RECORD: SkillInvocationRecord = {
   allowedTools: ["Write", "Skill(deep-review)"],
 };
 
-function interruptedSkillTurn(): RolloutItem[] {
+function interruptedSkillTurn(record: SkillInvocationRecord): RolloutItem[] {
   return [
     { type: "event_msg", payload: { eventId: `${TURN_ID}-started`, id: `${TURN_ID}-started`, seq: 1,
       msg: { type: "turn_started", payload: { turnId: TURN_ID, buildId: currentBuildId() } } } },
     { type: "turn_context", payload: { turnId: TURN_ID, cwd: "/tmp", approvalPolicy: "on_request",
-      sandboxPolicy: "workspace_write", model: "base-model", skillInvocation: RECORD } },
+      sandboxPolicy: "workspace_write", model: "base-model", skillInvocation: record } },
     { type: "event_msg", payload: { eventId: `${TURN_ID}-checkpoint`, id: `${TURN_ID}-checkpoint`, seq: 2,
       msg: { type: "turn_checkpoint", payload: {
         turnId: TURN_ID, iterationIndex: 1, boundary: "iteration", checkpointSeq: 1,
@@ -66,15 +70,37 @@ describe("durable resume of a skill turn through the daemon runner", () => {
     previousBuildId = process.env.AGENC_BUILD_ID;
     process.env.AGENC_BUILD_ID = "skill-resume-build";
     resetBuildIdForTestingOnly();
+  });
+
+  /** The journal a daemon death left: the interrupted turn of `record`. */
+  function seedInterruptedTurn(record: SkillInvocationRecord): void {
     const seed = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID, agencVersion: VERSION,
       agencHome: home, sessionTempRoot: tmpdir(), autoStartScheduler: false });
     seed.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(), cwd: workspace,
       originator: "agenc-cli", source: "interactive-root", agencVersion: VERSION,
       model: "base-model", modelProvider: "grok" });
-    for (const item of interruptedSkillTurn()) seed.appendRollout(item);
+    for (const item of interruptedSkillTurn(record)) seed.appendRollout(item);
     rolloutPath = seed.rolloutPath;
     seed.close();
-  });
+  }
+
+  /** An installed plugin with one skill, and plugins turned on. */
+  function installPluginSkill(plugin: string, skill: string, allowedTools: string): void {
+    const pluginRoot = join(home, "plugins", plugin);
+    mkdirSync(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    writeFileSync(join(pluginRoot, ".agenc-plugin", "plugin.json"),
+      JSON.stringify({ name: plugin, version: "1.0.0" }));
+    mkdirSync(join(pluginRoot, "skills", skill), { recursive: true });
+    writeFileSync(join(pluginRoot, "skills", skill, "SKILL.md"), [
+      "---",
+      `description: The ${skill} skill of ${plugin}.`,
+      `allowed-tools: ${allowedTools}`,
+      "---",
+      "Review the diff.",
+      "",
+    ].join("\n"));
+    writeFileSync(join(home, "config.toml"), ["config_version = 2", "[plugins]", "enabled = true", ""].join("\n"));
+  }
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -175,6 +201,7 @@ describe("durable resume of a skill turn through the daemon runner", () => {
   }
 
   it("resumes the interrupted turn with the skill's grants", async () => {
+    seedInterruptedTurn(RECORD);
     writeUserSkill("Write");
     await stubProvider();
     const resumed = captureResumedTurn();
@@ -197,6 +224,7 @@ describe("durable resume of a skill turn through the daemon runner", () => {
   }, 60_000);
 
   it("resumes on the session's settings, and says so, when the skill changed", async () => {
+    seedInterruptedTurn(RECORD);
     writeUserSkill("Write, exec_command");
     await stubProvider();
     const resumed = captureResumedTurn();
@@ -211,6 +239,43 @@ describe("durable resume of a skill turn through the daemon runner", () => {
         cause: "durable_resume_skill_settings_dropped",
         message: expect.stringContaining("skill deep-review changed since the turn started"),
       });
+    } finally {
+      await daemon.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it("resumes an installed plugin's skill turn, named in the plugin's namespace, with its grants", async () => {
+    installPluginSkill("my-plugin", "review", "Write");
+    // What the TUI sends for that skill, from the TUI's own plugin loader.
+    const pluginStorageRoot = join(home, "plugins");
+    const plugins = await loadPlugins({
+      pluginStorageRoot, workspaceRoot: workspace, config: { plugins: { enabled: true } },
+    });
+    const commands = await loadPluginSkills({ cwd: workspace, pluginStorageRoot, plugins: plugins.enabled });
+    expect(commands.map((command) => command.name)).toEqual(["my-plugin:review"]);
+    const settings = skillInvocationSettingsFor(commands[0] as never)!;
+    expect(settings).toEqual({ name: "my-plugin:review", source: "plugin", allowedTools: ["Write"] });
+    seedInterruptedTurn({
+      name: settings.name,
+      source: "plugin",
+      requested: { allowedTools: ["Write"] },
+      allowedTools: ["Write", "Skill(my-plugin:review)"],
+    });
+    await stubProvider();
+    const resumed = captureResumedTurn();
+    const warnings = recordWarnings();
+    const daemon = runner();
+    try {
+      await expect(daemon.restoreAgent(restoreParams())).resolves.toBe(true);
+      const turn = await within(resumed, "the resumed turn");
+      expect(turn.ctx?.subId).toBe(TURN_ID);
+      expect(turn.ctx?.skillInvocation).toMatchObject({
+        name: "my-plugin:review",
+        source: "plugin",
+        allowedTools: ["Write", "Skill(my-plugin:review)"],
+      });
+      expect(warnings.filter((warning) => warning.cause.startsWith("durable_resume_skill")))
+        .toEqual([]);
     } finally {
       await daemon.stopAgent(CONVERSATION_ID).catch(() => undefined);
     }
