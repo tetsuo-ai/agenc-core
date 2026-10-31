@@ -3263,21 +3263,6 @@ async function* runTurnKernelInner(
   let lastContent = "";
   const stepTrail = new StepLimitTrail();
   const taskBudget = taskBudgetOf(session);
-  const finishTaskBudget = async (): Promise<PhaseEvent> => {
-    await drainInFlight(state, ctx, session);
-    const partialText = state.assistantMessages.at(-1)?.text;
-    if (partialText) lastContent = partialText;
-    lastContent = taskBudget!.summary(lastContent);
-    state.messages.push({ role: "assistant", content: lastContent });
-    opts.assistantOutputSink?.reset();
-    opts.assistantOutputSink?.writeCanonicalDelta(lastContent);
-    session.emit({ id: session.nextInternalSubId(), msg: {
-      type: "agent_message", payload: { message: lastContent },
-    } });
-    await syncSessionState();
-    emitTurnComplete(lastContent, "task_budget");
-    return { type: "turn_complete", content: lastContent, usage, stopReason: "task_budget" };
-  };
 
   // Run pre-sampling compact before any phase runs. Returns
   // whether compaction happened. (No prewarmed client session exists
@@ -3323,55 +3308,6 @@ async function* runTurnKernelInner(
     mergedSession.dispose,
     mergedTask.dispose,
   );
-  try {
-    // A fast sample already consumed this prefix. Finish its response before
-    // any compaction can replace the history its tool calls belong to.
-    if (fastCanonicalResponse === undefined) {
-      await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
-        onAdvisoryRefusal: deferCompactionRefusal,
-        onDurableHistoryReplaced: onCompactionReplacedHistory,
-      });
-    }
-  } catch (error) {
-    const underlying = compactFailureError(error);
-    if (signal.aborted) {
-      await drainInFlight(state, ctx, session);
-      await syncAbortedSessionState(turnSignalAbortReason(signal.reason));
-      emitTurnAborted(turnSignalAbortReason(signal.reason));
-      const terminal: Terminal = { reason: "cancelled" };
-      yield {
-        type: "turn_complete",
-        content: "",
-        usage: EMPTY_SYNTHETIC_USAGE,
-        stopReason: "cancelled",
-        error: underlying,
-      };
-      return terminal;
-    }
-    if (taskBudget?.reached && !await continueInteractiveTaskBudget(session, 0, signal)) {
-      yield await finishTaskBudget();
-      return { reason: "task_budget" };
-    }
-    emitTurnWarning(
-      session,
-      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
-      underlying.message,
-    );
-    // Pre-compact failure ends the turn; the daemon session must stay
-    // promptable.
-    await syncSessionState();
-    emitTurnComplete("", "compact_failed", underlying);
-    const terminal: Terminal = { reason: "completed", error: underlying };
-    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
-    return terminal;
-  }
-  // Keep the deadline's existing start point after pre-request compaction.
-  commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
-  let deadlineTurnReminderInjected = false;
-
-  const stepReminders = new Set<number>();
-  let emptyResponseRetryCount =
-    state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
   // The deadline stop (#2503): a bounded failure, not a cancellation, so the
   // turn reports `turn_failed deadline_reached` and the print-mode CLI exits
   // with its own code instead of the one for an operator interrupt.
@@ -3423,11 +3359,9 @@ async function* runTurnKernelInner(
   };
   // A shell refusal that a yielded code-mode script met (see nested-stop.ts)
   // ends the turn as the bounded `exec_unavailable` stop, with the reason as
-  // its last words. Each exit the loop can reach after its top check (the
-  // iteration limit and its summary, the task budget) takes it first, or that
-  // exit would end the turn its own way and the next turn would drop it. A
-  // user stop or an expired deadline comes first: nothing is taken then, and
-  // the caller ends the turn as it would have.
+  // its last words, or the next turn would drop it. A user stop or an expired
+  // deadline comes first: nothing is taken then, and the caller ends the turn
+  // as it would have.
   const finishPendingExecStop = async (): Promise<{
     readonly terminal: Terminal;
     readonly event: PhaseEvent;
@@ -3439,10 +3373,56 @@ async function* runTurnKernelInner(
     recordBoundedStopExplanation(state, session, "exec_unavailable", explanation);
     lastContent = explanation;
     await syncSessionState();
+    // A user stop or an expired deadline during those waits still wins.
+    const stopped = await finishCancelledIfAborted();
+    if (stopped !== null) return stopped;
     emitTurnComplete(lastContent, "exec_unavailable");
     return {
       terminal: { reason: "exec_unavailable" },
       event: { type: "turn_complete", content: lastContent, usage, stopReason: "exec_unavailable" },
+    };
+  };
+  // The turn's terminal gate. Every exit calls it right before it publishes
+  // its terminal, after the exit's own finalization waits: a user stop or an
+  // expired run deadline wins, then a pending refusal ends the turn as the
+  // bounded `exec_unavailable` stop, then the exit's own terminal (null). The
+  // effect-review stop keeps the rank #2501 gave it above the refusal. With no
+  // refusal involved the exit ends exactly as it would without the gate.
+  const terminalGate = async (
+    own: Extract<PhaseEvent, { type: "turn_complete" }>["stopReason"],
+  ): Promise<{
+    readonly terminal: Terminal;
+    readonly event: PhaseEvent;
+  } | null> => {
+    if (own === "cancelled" || own === "deadline_reached") return null;
+    // The refusal is this exit's own terminal: a stop during its waits wins.
+    if (own === "exec_unavailable") return finishCancelledIfAborted();
+    if (own === "effect_review_required" || !hasCodeModeNestedStop(session)) return null;
+    return (await finishCancelledIfAborted()) ?? finishPendingExecStop();
+  };
+  // The partial-result summary, published through the terminal gate after its
+  // own waits, so a refusal that lands while it is saved is not lost.
+  const finishTaskBudget = async (): Promise<{
+    readonly terminal: Terminal;
+    readonly event: PhaseEvent;
+  }> => {
+    await drainInFlight(state, ctx, session);
+    const partialText = state.assistantMessages.at(-1)?.text;
+    if (partialText) lastContent = partialText;
+    lastContent = taskBudget!.summary(lastContent);
+    state.messages.push({ role: "assistant", content: lastContent });
+    opts.assistantOutputSink?.reset();
+    opts.assistantOutputSink?.writeCanonicalDelta(lastContent);
+    session.emit({ id: session.nextInternalSubId(), msg: {
+      type: "agent_message", payload: { message: lastContent },
+    } });
+    await syncSessionState();
+    const gated = await terminalGate("task_budget");
+    if (gated !== null) return gated;
+    emitTurnComplete(lastContent, "task_budget");
+    return {
+      terminal: { reason: "task_budget" },
+      event: { type: "turn_complete", content: lastContent, usage, stopReason: "task_budget" },
     };
   };
   // An exit found the task budget reached. A pending refusal ends the turn
@@ -3459,9 +3439,66 @@ async function* runTurnKernelInner(
     if (await continueInteractiveTaskBudget(session, 0, signal)) return null;
     const lateExecStop = await finishPendingExecStop();
     if (lateExecStop !== null) return lateExecStop;
-    return { terminal: { reason: "task_budget" }, event: await finishTaskBudget() };
+    return finishTaskBudget();
   };
 
+  try {
+    // A fast sample already consumed this prefix. Finish its response before
+    // any compaction can replace the history its tool calls belong to.
+    if (fastCanonicalResponse === undefined) {
+      await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
+        onAdvisoryRefusal: deferCompactionRefusal,
+        onDurableHistoryReplaced: onCompactionReplacedHistory,
+      });
+    }
+  } catch (error) {
+    const underlying = compactFailureError(error);
+    if (signal.aborted) {
+      await drainInFlight(state, ctx, session);
+      await syncAbortedSessionState(turnSignalAbortReason(signal.reason));
+      emitTurnAborted(turnSignalAbortReason(signal.reason));
+      const terminal: Terminal = { reason: "cancelled" };
+      yield {
+        type: "turn_complete",
+        content: "",
+        usage: EMPTY_SYNTHETIC_USAGE,
+        stopReason: "cancelled",
+        error: underlying,
+      };
+      return terminal;
+    }
+    if (taskBudget?.reached) {
+      const budgetStop = await finishReachedTaskBudget();
+      if (budgetStop !== null) {
+        yield budgetStop.event;
+        return budgetStop.terminal;
+      }
+    }
+    emitTurnWarning(
+      session,
+      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
+      underlying.message,
+    );
+    // Pre-compact failure ends the turn; the daemon session must stay
+    // promptable.
+    await syncSessionState();
+    const gatedCompactFailure = await terminalGate("compact_failed");
+    if (gatedCompactFailure !== null) {
+      yield gatedCompactFailure.event;
+      return gatedCompactFailure.terminal;
+    }
+    emitTurnComplete("", "compact_failed", underlying);
+    const terminal: Terminal = { reason: "completed", error: underlying };
+    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
+    return terminal;
+  }
+  // Keep the deadline's existing start point after pre-request compaction.
+  commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
+  let deadlineTurnReminderInjected = false;
+
+  const stepReminders = new Set<number>();
+  let emptyResponseRetryCount =
+    state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
   yield { type: "turn_start", turnIndex: 0 };
 
   // Behavioral backstop (goal #3): resolve the no-progress config once
@@ -3523,8 +3560,13 @@ async function* runTurnKernelInner(
         // does not turn the run into a failure.
         const held = state.completionGate.exactOutput === true
           ? state.completionGateHeldAnswer : undefined;
+        if (held !== undefined) lastContent = held;
+        const gatedGate = await terminalGate(held !== undefined ? "completed" : "max_turns");
+        if (gatedGate !== null) {
+          yield gatedGate.event;
+          return gatedGate.terminal;
+        }
         if (held !== undefined) {
-          lastContent = held;
           emitTurnComplete(lastContent);
           yield { type: "turn_complete", content: lastContent, usage, stopReason: "completed" };
           return { reason: "completed" };
@@ -3536,9 +3578,12 @@ async function* runTurnKernelInner(
     }
 
     taskBudgetOf(session); // Include durable usage from delegated work.
-    if (taskBudget?.reached && !await continueInteractiveTaskBudget(session, 0, signal)) {
-      yield await finishTaskBudget();
-      return { reason: "task_budget" };
+    if (taskBudget?.reached) {
+      const budgetStop = await finishReachedTaskBudget();
+      if (budgetStop !== null) {
+        yield budgetStop.event;
+        return budgetStop.terminal;
+      }
     }
     const taskReminder = interactiveTaskBudget(session) && taskBudget?.maxCalls === undefined ? undefined : taskBudget?.reminder();
     if (taskReminder) state.messages.push(taskReminder);
@@ -3584,6 +3629,11 @@ async function* runTurnKernelInner(
     ) {
       await drainInFlight(state, ctx, session);
       await syncSessionState();
+      const gatedCost = await terminalGate("max_budget_usd");
+      if (gatedCost !== null) {
+        yield gatedCost.event;
+        return gatedCost.terminal;
+      }
       emitTurnComplete(lastContent, "max_budget_usd");
       const terminal: Terminal = { reason: "max_budget_usd" };
       yield {
@@ -3636,10 +3686,10 @@ async function* runTurnKernelInner(
       // max_turns, a subagent's receipt would say it completed and the next
       // turn would drop the refusal. A summary already written stays in the
       // transcript, before the reason.
-      const execStopAtLimit = await finishPendingExecStop();
-      if (execStopAtLimit !== null) {
-        yield execStopAtLimit.event;
-        return execStopAtLimit.terminal;
+      const gatedLimit = await terminalGate("max_turns");
+      if (gatedLimit !== null) {
+        yield gatedLimit.event;
+        return gatedLimit.terminal;
       }
       emitTurnComplete(lastContent, "max_turns");
       yield { type: "turn_complete", content: lastContent, usage, stopReason: "max_turns" };
@@ -3739,6 +3789,11 @@ async function* runTurnKernelInner(
 
       await drainInFlight(state, ctx, session); // pair orphan tool_use → tool_result
       await syncSessionState(); // persist history + rollout
+      const gatedBackstop = await terminalGate("no_progress");
+      if (gatedBackstop !== null) {
+        yield gatedBackstop.event;
+        return gatedBackstop.terminal;
+      }
       emitTurnComplete(lastContent, "no_progress");
       const terminal: Terminal = { reason: "no_progress" };
       yield {
@@ -3755,6 +3810,11 @@ async function* runTurnKernelInner(
     if (session.pendingProviderSwitch) {
       await drainInFlight(state, ctx, session);
       await syncSessionState();
+      const gatedSwitch = await terminalGate("completed");
+      if (gatedSwitch !== null) {
+        yield gatedSwitch.event;
+        return gatedSwitch.terminal;
+      }
       emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "completed" };
       yield {
@@ -4016,14 +4076,15 @@ async function* runTurnKernelInner(
             return budgetStop.terminal;
           }
         }
-        // A refusal that a yielded script met while this response was written
-        // ends the turn as that stop instead of the response's own terminal.
-        const execStopAtTerminal = await finishPendingExecStop();
-        if (execStopAtTerminal !== null) {
-          yield execStopAtTerminal.event;
-          return execStopAtTerminal.terminal;
-        }
         await syncSessionState();
+        // A refusal that a yielded script met while this response was written
+        // or saved ends the turn as that stop instead of the response's own
+        // terminal.
+        const gatedTerminal = await terminalGate(terminalToStopReason(result.terminal.reason));
+        if (gatedTerminal !== null) {
+          yield gatedTerminal.event;
+          return gatedTerminal.terminal;
+        }
         emitTurnComplete(
           lastContent,
           terminalToStopReason(result.terminal.reason),
@@ -4083,23 +4144,24 @@ async function* runTurnKernelInner(
           return budgetStop.terminal;
         }
       }
-      // A refusal that a yielded script met before this failure ends the turn
-      // as that stop instead. A compaction failure that leaves history needing
-      // reconstruction is still raised below; that outcome is not replaced.
+      // A refusal that a yielded script met before or while this failure is
+      // saved ends the turn as that stop instead. A compaction failure that
+      // leaves history needing reconstruction is still raised below; that
+      // outcome is not replaced.
       const unrecoverableCompaction = underlying instanceof PreparedCompactionFailure &&
         (underlying.original instanceof CompactionTransactionError ||
           underlying.original instanceof CompactionReconstructionRequiredError);
-      const execStopAtFailure = unrecoverableCompaction ? null : await finishPendingExecStop();
-      if (execStopAtFailure !== null) {
-        yield execStopAtFailure.event;
-        return execStopAtFailure.terminal;
-      }
       if (underlying instanceof DeferredCompactionError) {
         const compactionError = underlying instanceof PreparedCompactionFailure
           ? underlying.original : underlying;
         emitTurnWarning(session, MID_TURN_COMPACT_FAILED_CAUSE,
           `mid_turn_compact_skipped: ${compactionError.message}`);
         await syncSessionState();
+        const gatedCompaction = unrecoverableCompaction ? null : await terminalGate("compact_failed");
+        if (gatedCompaction !== null) {
+          yield gatedCompaction.event;
+          return gatedCompaction.terminal;
+        }
         emitTurnComplete(lastContent, "compact_failed", compactionError);
         yield compactFailedTurnComplete(lastContent, usage, compactionError);
         if (underlying instanceof PreparedCompactionFailure &&
@@ -4108,6 +4170,11 @@ async function* runTurnKernelInner(
         return { reason: "completed", error: compactionError };
       }
       await syncSessionState();
+      const gatedFailure = await terminalGate("error");
+      if (gatedFailure !== null) {
+        yield gatedFailure.event;
+        return gatedFailure.terminal;
+      }
       emitTurnFailed(
         underlying instanceof Error && underlying.message.trim().length > 0
           ? underlying.message
@@ -4240,24 +4307,14 @@ async function* runTurnKernelInner(
         state.transition = undefined;
         continue;
       }
-      const nestedExecStop = takeCodeModeNestedStop(session);
-      if (nestedExecStop !== undefined) {
-        recordBoundedStopExplanation(state, session, "exec_unavailable", nestedExecStop);
-        lastContent = nestedExecStop;
-        await syncSessionState();
-        launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
-        emitTurnComplete(lastContent, "exec_unavailable");
-        yield {
-          type: "turn_complete",
-          content: lastContent,
-          usage,
-          stopReason: "exec_unavailable",
-        };
-        return { reason: "exec_unavailable" };
-      }
       const stopReason =
         assistantText.length === 0 ? "empty_response" : "completed";
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
+      const gatedAnswer = await terminalGate(stopReason);
+      if (gatedAnswer !== null) {
+        yield gatedAnswer.event;
+        return gatedAnswer.terminal;
+      }
       if (stopReason === "empty_response") {
         lastContent = emptyResponseExhaustedMessage(emptyResponseRetryCount);
       }
@@ -4372,6 +4429,11 @@ async function* runTurnKernelInner(
       const error = new Error(lastContent);
       state.messages.push({ role: "assistant", content: lastContent });
       await syncSessionState();
+      const gatedApproval = await terminalGate("error");
+      if (gatedApproval !== null) {
+        yield gatedApproval.event;
+        return gatedApproval.terminal;
+      }
       emitTurnComplete(lastContent, "error", error);
       yield { type: "turn_complete", content: lastContent, usage, stopReason: "error", error };
       return { reason: "aborted_tools", error };
@@ -4388,6 +4450,11 @@ async function* runTurnKernelInner(
       lastContent = workflowApprovalFailure.message;
       state.messages.push({ role: "assistant", content: lastContent });
       await syncSessionState();
+      const gatedWorkflow = await terminalGate("error");
+      if (gatedWorkflow !== null) {
+        yield gatedWorkflow.event;
+        return gatedWorkflow.terminal;
+      }
       emitTurnComplete(lastContent, "error", workflowApprovalFailure);
       yield { type: "turn_complete", content: lastContent, usage, stopReason: "error", error: workflowApprovalFailure };
       return { reason: "aborted_tools", error: workflowApprovalFailure };
@@ -4482,6 +4549,11 @@ async function* runTurnKernelInner(
       }
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
       const stopReason = boundedStop?.stopReason ?? "completed";
+      const gatedBatch = await terminalGate(stopReason);
+      if (gatedBatch !== null) {
+        yield gatedBatch.event;
+        return gatedBatch.terminal;
+      }
       emitTurnComplete(lastContent, stopReason);
       const terminal: Terminal = { reason: stopReason };
       yield {

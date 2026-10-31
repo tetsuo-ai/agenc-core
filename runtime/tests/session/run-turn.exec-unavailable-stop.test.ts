@@ -12,6 +12,7 @@ import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js
 import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { STEP_LIMIT_WRAPUP_INSTRUCTION } from "../../src/session/step-limit-wrapup.js";
+import { taskBudgetOf } from "../../src/session/task-budget.js";
 import type { Event } from "../../src/session/session.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import { QuickJsCodeModeService } from "../../src/tools/code-mode/service.js";
@@ -856,7 +857,7 @@ describe("a refusal that lands as the step limit or the task budget ends the tur
     }
   }, 20_000);
 
-  test("a user stop while the task-budget checkpoint waits keeps that ending when a refusal lands too", async () => {
+  test("a user stop while the task-budget checkpoint waits wins over a refusal that lands too", async () => {
     root = mkdtempSync(join(tmpdir(), "exec-unavailable-task-stop-"));
     const closed = await closedManager(root);
     const service = new QuickJsCodeModeService({ enabled: true });
@@ -886,7 +887,8 @@ describe("a refusal that lands as the step limit or the task budget ends the tur
       const phases = await runWith(made, "Start the background check.", { signal: stop.signal });
 
       expect(requests).toBe(2);
-      expect(phases.at(-1)).toMatchObject({ stopReason: "task_budget" });
+      // The stop comes first; neither the refusal nor the budget ends the turn.
+      expect(phases.at(-1)).toMatchObject({ stopReason: "cancelled" });
       expect(warnings(made.events, "exec_unavailable")).toEqual([]);
     } finally {
       await service.wait({ cellId: "1", terminate: true }).catch(() => {});
@@ -1042,5 +1044,189 @@ describe("a refusal that lands as a sample fails or the tool results are deliver
       await service.wait({ cellId: "1", terminate: true }).catch(() => {});
       await closed.dispose();
     }
+  }, 20_000);
+});
+
+/**
+ * Codex review of 41a8ac118 (items 2 to 4): every exit publishes its terminal
+ * through one gate, after its own finalization waits. A user stop or an
+ * expired deadline wins, then a pending refusal, then the exit's own terminal.
+ */
+describe("the terminal gate decides after each exit's finalization", () => {
+  const PAUSED = "Shell commands are disabled for the rest of this session.";
+
+  function reportedUsage(totalTokens: number) {
+    return { promptTokens: totalTokens - 1, completionTokens: 1, totalTokens, availability: "reported" as const, provenance: "provider" as const };
+  }
+
+  /** Run `action` once, right after the first history save that `when` accepts. */
+  function duringSave(made: ReturnType<typeof bypassSession>, when: (history: string) => boolean, action: () => Promise<void>) {
+    const lock = made.session.state;
+    const write = lock.with.bind(lock) as (fn: (value: unknown) => unknown) => Promise<unknown>;
+    let done = false;
+    vi.spyOn(lock, "with").mockImplementation((async (fn: (value: unknown) => unknown) => {
+      const written = await write(fn);
+      if (!done && when(JSON.stringify(made.state.history))) {
+        done = true;
+        await action();
+      }
+      return written;
+    }) as never);
+    return () => done;
+  }
+
+  async function runTo(made: ReturnType<typeof bypassSession>, opts: Parameters<typeof runTurn>[3] = {}): Promise<PhaseEvent[]> {
+    const phases: PhaseEvent[] = [];
+    for await (const phase of runTurn(made.session, made.ctx, "Start the background check.", opts)) phases.push(phase);
+    return phases;
+  }
+
+  async function withHeldScript(name: string, body: (held: ReturnType<typeof heldScript>, service: QuickJsCodeModeService) => Promise<void>) {
+    root = mkdtempSync(join(tmpdir(), name));
+    const closed = await closedManager(root);
+    const service = new QuickJsCodeModeService({ enabled: true });
+    try {
+      expect(service.enabled()).toBe(true);
+      await body(heldScript(closed.manager, service), service);
+    } finally {
+      await service.wait({ cellId: "1", terminate: true }).catch(() => {});
+      await closed.dispose();
+    }
+  }
+
+  test("a user stop while a refusal's reason is saved ends the turn as cancelled", async () => {
+    await withHeldScript("exec-unavailable-gate-stop-", async (held, service) => {
+      const stop = new AbortController();
+      let requests = 0;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        requests += 1;
+        if (requests === 1) return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+        expect(await held.deliverRefusal()).toBe(true);
+        return textResponse("The check keeps running in the background.");
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service });
+      Object.assign(made.session.config, { taskMaxCalls: 2 });
+      // The stop comes while the reason is being saved, after the refusal was taken.
+      const fired = duringSave(made, (history) => history.includes(PAUSED), async () => { stop.abort("user stop"); });
+      const phases = await runTo(made, { signal: stop.signal });
+
+      expect(fired()).toBe(true);
+      expect(phases.at(-1)).toMatchObject({ stopReason: "cancelled" });
+      expect(terminals(made.events)).not.toContainEqual(expect.objectContaining({ failureCode: "exec_unavailable" }));
+    });
+  }, 20_000);
+
+  test("a refusal that lands while the top-of-loop budget checkpoint waits ends the turn with exec_unavailable", async () => {
+    await withHeldScript("exec-unavailable-gate-loop-top-", async (held, service) => {
+      let requests = 0;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        requests += 1;
+        return { ...toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check."), usage: reportedUsage(11) };
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service });
+      Object.assign(made.session.services, { runtimeOptions: {
+        ...made.session.services.runtimeOptions, interactiveTaskBudget: true, nonInteractive: false,
+      } });
+      Object.assign(made.session.config, { taskTokenBudget: 100_000 });
+      // The allocation runs out after the post-tool check and before the next
+      // top of the loop (as delegated work's usage would), so that check asks.
+      const reached = duringSave(made, (history) => history.includes("status=yielded"), async () => {
+        taskBudgetOf(made.session)!.stop();
+      });
+      let refused: boolean | undefined;
+      const checkpoint = vi.spyOn(made.session, "requestUserInput").mockImplementation(async () => {
+        refused = await held.deliverRefusal();
+        return { answers: { task_budget: { answers: ["Stop here"] } } };
+      });
+      const phases = await runTo(made);
+
+      expect(reached()).toBe(true);
+      expect(refused).toBe(true);
+      expect(requests).toBe(1);
+      expect(checkpoint).toHaveBeenCalledTimes(1);
+      expectExecUnavailableEnd(phases, made.events);
+      expect(String(made.state.history.at(-1)?.content)).toContain(PAUSED);
+    });
+  }, 20_000);
+
+  test("a refusal that lands while the task-budget summary is saved ends the turn with exec_unavailable", async () => {
+    await withHeldScript("exec-unavailable-gate-budget-save-", async (held, service) => {
+      let requests = 0;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        requests += 1;
+        return requests === 1
+          ? toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.")
+          : textResponse("The check keeps running in the background.");
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service });
+      Object.assign(made.session.config, { taskMaxCalls: 2 });
+      let refused: boolean | undefined;
+      const fired = duringSave(made, (history) => history.includes("Partial result: stopped at the task budget"), async () => {
+        refused = await held.deliverRefusal();
+      });
+      const phases = await runTo(made);
+
+      expect(fired()).toBe(true);
+      expect(refused).toBe(true);
+      expect(requests).toBe(2);
+      expectExecUnavailableEnd(phases, made.events);
+      expect(String(made.state.history.at(-1)?.content)).toContain(PAUSED);
+    });
+  }, 20_000);
+
+  test("a refusal that lands while the response that exhausts output recovery is saved ends the turn with exec_unavailable", async () => {
+    await withHeldScript("exec-unavailable-gate-terminal-save-", async (held, service) => {
+      let samples = 0;
+      let lastReturned = false;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        samples += 1;
+        if (samples === 1) return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+        if (samples === 5) lastReturned = true;
+        return { content: "truncated output", toolCalls: [], usage: { promptTokens: 128, completionTokens: 32, totalTokens: 160 },
+          model: "test-model", finishReason: "length" };
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service });
+      Object.assign(made.ctx, { modelInfo: { ...made.ctx.modelInfo, maxOutputTokens: 32, maxOutputTokensExplicit: true } });
+      let refused: boolean | undefined;
+      // The exit's own save: the history then ends with the cut response.
+      const fired = duringSave(made, (history) => lastReturned && history.includes("truncated output"), async () => {
+        refused = await held.deliverRefusal();
+      });
+      const phases = await runTo(made);
+
+      expect(samples).toBe(5);
+      expect(fired()).toBe(true);
+      expect(refused).toBe(true);
+      expectExecUnavailableEnd(phases, made.events);
+      expect(String(made.state.history.at(-1)?.content)).toContain(PAUSED);
+    });
+  }, 20_000);
+
+  test("a refusal that lands while a failed sample is saved ends the turn with exec_unavailable", async () => {
+    await withHeldScript("exec-unavailable-gate-failure-save-", async (held, service) => {
+      let samples = 0;
+      let failed = false;
+      const provider = mkProvider();
+      provider.chatStream = async (): Promise<LLMResponse> => {
+        samples += 1;
+        if (samples === 1) return toolCallResponse("call-1", "exec", { code: HELD_SCRIPT }, "Starting a background check.");
+        failed = true;
+        throw new LLMProviderError("stub-provider", "Invalid parameter: tools[0].function.name", 400);
+      };
+      const made = bypassSession(provider, held.registry, { codeModeService: service });
+      let refused: boolean | undefined;
+      const fired = duringSave(made, () => failed, async () => { refused = await held.deliverRefusal(); });
+      const phases = await runTo(made);
+
+      expect(samples).toBe(2);
+      expect(fired()).toBe(true);
+      expect(refused).toBe(true);
+      expectExecUnavailableEnd(phases, made.events);
+      expect(String(made.state.history.at(-1)?.content)).toContain(PAUSED);
+    });
   }, 20_000);
 });
