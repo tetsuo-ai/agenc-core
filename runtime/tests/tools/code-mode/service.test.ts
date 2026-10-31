@@ -241,6 +241,40 @@ describe("QuickJsCodeModeService turn hosts", () => {
     expect(response.contentItems).toEqual([{ type: "input_text", text: expect.stringContaining("refused") }]);
   });
 
+  test("a sub-agent's script cannot run with the parent's authority after both turns end (job sf review 2, item 1)", async () => {
+    const service = makeService();
+    const served: string[] = [];
+    // Each registry stands for its session's permission context: the parent's
+    // carries grants (a skill's pre-approved tools in job sf's reproduction).
+    const session = (name: string): CodeModeWorkerSession => ({
+      services: {
+        codeModeService: service,
+        registry: {
+          dispatch: async () => ({ content: "", isError: false }),
+          dispatchCodeModeNestedTool: async (call: { readonly name: string }) => {
+            served.push(`${name}:${call.name}`);
+            return { content: JSON.stringify(`${name} authority used`), isError: false };
+          },
+        },
+      },
+      nextInternalSubId: () => "sub",
+      emit: () => {},
+    }) as unknown as CodeModeWorkerSession;
+    const parent = session("parent grants");
+    const child = session("child");
+    const parentTurn = startCodeModeTurnWorker(parent);
+    const childTurn = startCodeModeTurnWorker(child);
+    const started = await startCell(service, child);
+    // The parent's turn ends before the sub-agent's; ending the sub-agent's
+    // turn used to restore the ended parent's host, grants included.
+    parentTurn.dispose();
+    childTurn.dispose();
+    const done = await service.wait({ cellId: started.cellId, yieldTimeMs: 5_000 });
+
+    expect(served).toEqual([]);
+    expect(done.contentItems).toEqual([{ type: "input_text", text: expect.stringContaining("refused") }]);
+  });
+
   test("a parent's script keeps its nested calls in the parent while a sub-agent's turn runs", async () => {
     const service = makeService();
     const dispatched: string[] = [];
