@@ -223,13 +223,20 @@ with `yield_time_ms`. It cannot be combined with `tty`, and
 A detached service is not a managed session handle: it does not appear in
 `list_processes`, and `kill_process all: true` does not reach it.
 
-Long jobs. A background job that the cleanup above would stop a moment after
-it starts, written as `nohup cmd &`, `setsid cmd &`, `cmd & disown` or a
-trailing `cmd &` that the command neither waits for (`wait`) nor stops
-(`kill`), is refused before anything runs, and the refusal names
-`background: true`. Only POSIX shells are
-scanned; quoted text, substitutions, comments and here-document bodies are
-skipped, and a command the scan cannot parse runs as before.
+Long jobs. A background job is refused before anything runs, and the refusal
+names `background: true`, only when it is trailing: nothing after it in
+execution order does real work (only `echo`, `printf`, `true`, `:`, `sleep`,
+`disown`, or a `wait` in another shell may follow) and nothing waits for it
+(a `wait` in its own shell, or the reader of the command or process
+substitution its output feeds). Such a job would only be stopped by the
+cleanup above a moment after it starts. A job followed by real work, such as
+`server & sleep 1; curl ...` or a test run, runs as before, and the cleanup
+stops it afterwards. A function definition starts nothing; a backgrounded
+call of the function is a job like any other. Subshells, brace groups,
+substitutions and pipelines are followed in execution order; a subshell, a
+substitution or a pipeline part is another shell, a brace group is not. Only
+POSIX shells are scanned; quoted text, comments, here-document bodies and
+arithmetic are skipped, and a command the scan cannot parse runs as before.
 `background: true` starts the command as a tracked session: the call returns
 after about a second with its `session_id`, `write_stdin` polls it,
 `kill_process` stops it, and session end stops it. It works inside the

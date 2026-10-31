@@ -1,35 +1,34 @@
 /**
- * Refuse a shell background job that the command never waits for.
+ * Refuse a shell background job that would only be stopped.
  *
  * exec_command stops every process a command leaves behind when the command
- * returns: that is the containment boundary every cleanup proof rests on. A
- * job started with `nohup cmd &`, `setsid cmd &`, `cmd & disown`, or a
- * trailing `cmd &` is meant to outlive the command, so it is always stopped
- * a moment after it starts. On Terminal-Bench (AgenC 0.19.19, 75 trials)
- * models lost training and sampling runs this way and found out minutes
- * later. Such a command is refused before anything runs, and the refusal
- * names the supported way: `background: true` keeps the job running as a
- * tracked session (polled with write_stdin, stopped with kill_process,
- * reported when it ends, stopped at session end).
+ * returns: that is the containment boundary every cleanup proof rests on. On
+ * Terminal-Bench (AgenC 0.19.19, 75 trials) models started training and
+ * sampling runs with `nohup cmd &` or a trailing `cmd &`, the command returned
+ * at once, the run was stopped a moment later, and they found out minutes
+ * later. The supported way is `background: true`: the job runs as a tracked
+ * session (polled with write_stdin, stopped with kill_process, reported when
+ * it ends, stopped at session end).
  *
- * Only these explicit forms are refused, wherever the job sits: at the top
- * level, in a subshell `( ... )` or in a brace group `{ ...; }`, which can
- * all leave a job behind when the command returns. A job inside a command or
- * process substitution whose output still feeds that substitution is waited
- * for (its reader needs the end of file) and runs; one that sends its output
- * elsewhere (`$(nohup srv > log 2>&1 & echo $!)`) can outlive the command
- * and is judged like any other. A job the command waits for (`a & b & wait`)
- * or stops itself (`server & ...; kill $!`), and the server-check pattern
- * `server & sleep 1; curl ...` that relies on the automatic cleanup, still
- * run. Helper processes a command forks (browsers, worker pools, daemons) are
- * not visible here; the containment stops them when the command returns and
- * the result says so, as before.
+ * The rule, in one sentence: a background job is refused only when it is
+ * trailing, that is when nothing after it in execution order does real work
+ * (only `echo`, `printf`, `true`, `:`, `sleep`, `disown`, or a `wait` in
+ * another shell may follow) and nothing waits for it (a `wait` in its own
+ * shell, or the reader of the command or process substitution its output
+ * feeds). A job followed by real work, such as `server & sleep 1; curl ...`
+ * or a test run, serves that work and runs: the cleanup stops it afterwards
+ * and the result says so. `nohup`, `setsid` and `disown` only name the form in
+ * the refusal. A function definition starts nothing; only a backgrounded call
+ * of the function counts. Subshells, brace groups, substitutions and
+ * pipelines are followed in execution order, and a `wait` reaches only jobs
+ * of its own shell (a subshell, a substitution or a pipeline part is another
+ * shell; a brace group is not).
  *
  * The scan is conservative: quotes, comments, here-document bodies, `${...}`
  * and arithmetic are masked first, here-strings (`<<<`) are read as one
  * operator, and anything it cannot parse (an unterminated quote, group or
- * here-document) is never refused. When a form is unclear, the job runs and
- * the cleanup stops it, as before.
+ * here-document) is never refused. Helper processes a command forks are not
+ * visible here; the cleanup stops them and the result says so, as before.
  *
  * @module
  */
@@ -52,7 +51,8 @@ export interface UnwaitedBackgroundJob {
   readonly job: string;
 }
 
-export type ShellGroupKind = "subshell" | "brace" | "command-substitution" | "process-substitution" | "other";
+export type ShellGroupKind =
+  | "subshell" | "brace" | "command-substitution" | "process-substitution" | "function-body" | "other";
 
 /** A parenthesized, braced or substituted region of a command. */
 export interface ShellGroup {
@@ -69,9 +69,10 @@ export interface ShellGroup {
 
 export interface ShellStructure {
   /**
-   * The command with every region that cannot hold shell structure (quoted
-   * text, comments, here-document bodies, `${...}`, arithmetic) replaced by
-   * `x` (comments by spaces), same length as the input. Group delimiters stay.
+   * The command with every region that cannot hold shell structure replaced,
+   * same length as the input: quoted text, `${...}` and arithmetic by `x`,
+   * comments and here-document bodies (with their line breaks) by spaces.
+   * Group delimiters stay.
    */
   readonly masked: string;
   /** Every group, in the order it opens. */
@@ -106,8 +107,12 @@ export function parseShellStructure(cmd: string): ShellStructure | undefined {
     }
     return undefined;
   };
+  // `name()` or `function name` was just read: the next group is a function's body, which runs only when called.
+  let functionBodyNext = false;
   const openGroup = (kind: ShellGroupKind, open: number, start: number, closer: ")" | "}" | "`"): void => {
-    const group: ShellGroup = { kind, open, start, end: -1, parent: innermostGroup() };
+    const body = functionBodyNext && (kind === "subshell" || kind === "brace");
+    functionBodyNext = false;
+    const group: ShellGroup = { kind: body ? "function-body" : kind, open, start, end: -1, parent: innermostGroup() };
     groups.push(group);
     stack.push({ kind: "group", group, closer });
   };
@@ -188,6 +193,7 @@ export function parseShellStructure(cmd: string): ShellStructure | undefined {
       continue;
     }
 
+    if (ch === ";" || ch === "&" || ch === "|") functionBodyNext = false;
     if (ch === "\\") {
       mask(index, Math.min(index + 2, cmd.length));
       index += 2;
@@ -272,7 +278,8 @@ export function parseShellStructure(cmd: string): ShellStructure | undefined {
           const stop = end < 0 ? cmd.length : end;
           const line = cmd.slice(at, stop);
           const closes = (heredoc.stripTabs ? line.replace(/^\t+/u, "") : line) === heredoc.delimiter;
-          mask(at, stop);
+          // The body is no command: blank it with its line breaks, up to the delimiter line's own.
+          mask(at, closes ? stop : stop + 1, " ");
           at = stop + 1;
           if (closes) break;
         }
@@ -292,10 +299,14 @@ export function parseShellStructure(cmd: string): ShellStructure | undefined {
         continue;
       }
       if (cmd[index - 1] === "=") { openGroup("other", index, index + 1, ")"); index += 1; continue; } // array
-      if (atCommandPosition(index)) { openGroup("subshell", index, index + 1, ")"); index += 1; continue; }
       let next = index + 1;
       while (cmd[next] === " " || cmd[next] === "\t") next += 1;
-      if (cmd[next] === ")") { index = next + 1; continue; } // a function definition's ()
+      if (cmd[next] === ")" && !atCommandPosition(index)) { // `name()`: a function definition's ()
+        index = next + 1;
+        functionBodyNext = true;
+        continue;
+      }
+      if (atCommandPosition(index) || functionBodyNext) { openGroup("subshell", index, index + 1, ")"); index += 1; continue; }
       openGroup("other", index, index + 1, ")");
       index += 1;
       continue;
@@ -310,7 +321,7 @@ export function parseShellStructure(cmd: string): ShellStructure | undefined {
       }
       return undefined;
     }
-    if (ch === "{" && /\s/u.test(cmd[index + 1] ?? "") && atCommandPosition(index)) {
+    if (ch === "{" && /\s/u.test(cmd[index + 1] ?? "") && (atCommandPosition(index) || functionBodyNext)) {
       openGroup("brace", index, index + 1, "}");
       index += 1;
       continue;
@@ -333,6 +344,8 @@ export function parseShellStructure(cmd: string): ShellStructure | undefined {
       if (after === undefined || /[\s;&|()<>]/u.test(after)) {
         if (word === "case" && atCommandPosition(index)) {
           stack.push({ kind: "case", sawIn: false, expectPattern: false });
+        } else if (word === "function" && atCommandPosition(index)) {
+          functionBodyNext = true;
         } else if (frame?.kind === "case") {
           if (word === "in" && !frame.sawIn) {
             frame.sawIn = true;
@@ -395,6 +408,94 @@ function scopeItems(masked: string, scope: ShellGroup | undefined, children: rea
   return items;
 }
 
+/** One simple command of a scope: part of a pipeline, an `&&`/`||` list and a list item. */
+interface SimpleCommand {
+  readonly scope: ShellGroup | undefined;
+  readonly start: number;
+  readonly end: number;
+  /** Index of its list item in the scope. */
+  readonly item: number;
+  /** One of two or more commands of a pipeline: each runs in a shell of its own. */
+  readonly piped: boolean;
+  /** Its list item ends with `&`: it runs in a shell of its own. */
+  readonly backgrounded: boolean;
+}
+
+function simpleCommands(
+  masked: string,
+  scope: ShellGroup | undefined,
+  items: readonly ListItem[],
+  children: readonly ShellGroup[],
+): SimpleCommand[] {
+  const childAt = new Map(children.map((child) => [child.open, child]));
+  const commands: SimpleCommand[] = [];
+  items.forEach((item, index) => {
+    const pieces: { start: number; end: number; pipe: boolean }[] = [];
+    let start = item.start;
+    for (let at = item.start; at < item.end; at += 1) {
+      const child = childAt.get(at);
+      if (child !== undefined) {
+        at = child.end;
+        continue;
+      }
+      const ch = masked[at]!;
+      if ((ch === "&" || ch === "|") && masked[at + 1] === ch) { // `&&`, `||`
+        pieces.push({ start, end: at, pipe: false });
+        at += 1;
+        start = at + 1;
+      } else if (ch === "|") { // `|` and `|&`
+        pieces.push({ start, end: at, pipe: true });
+        if (masked[at + 1] === "&") at += 1;
+        start = at + 1;
+      }
+    }
+    pieces.push({ start, end: item.end, pipe: false });
+    pieces.forEach((piece, position) => {
+      commands.push({
+        scope, start: piece.start, end: piece.end, item: index,
+        piped: piece.pipe || (position > 0 && pieces[position - 1]!.pipe),
+        backgrounded: item.terminator === "&",
+      });
+    });
+  });
+  return commands;
+}
+
+/** Words before a command that start no work of their own. */
+const LEADING_RESERVED_WORDS: ReadonlySet<string> = new Set([
+  "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "time", "esac", "in",
+]);
+/** A loop, case or function header: no work of its own; its substitutions still run. */
+const HEADER_WORDS: ReadonlySet<string> = new Set(["for", "select", "case", "function"]);
+/** What may follow a trailing job without serving it. */
+const NO_WORK_COMMANDS: ReadonlySet<string> = new Set(["echo", "printf", "true", ":", "sleep", "disown"]);
+
+/**
+ * The command a simple command runs, from its text with its groups blanked:
+ * reserved words, variable assignments and redirections are skipped. "" for a
+ * header, undefined for none (an assignment or a bare group).
+ */
+function commandWord(text: string): string | undefined {
+  const tokens = text.split(/\s+/u).filter((token) => token.length > 0);
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index]!;
+    if (LEADING_RESERVED_WORDS.has(token) || /^[A-Za-z_][A-Za-z0-9_]*\+?=/u.test(token)) {
+      index += 1;
+      continue;
+    }
+    if (/^(?:\d*|&)[<>]/u.test(token)) {
+      // `> file` takes the next word as its target; `>file` and `2>&1` do not.
+      index += /^(?:\d*|&)(?:<|>|>>|<<<|>\|)$/u.test(token) ? 2 : 1;
+      continue;
+    }
+    break;
+  }
+  const word = tokens[index];
+  if (word === undefined) return undefined;
+  return HEADER_WORDS.has(word) ? "" : word.split("/").pop();
+}
+
 /**
  * Whether a job's own redirections send its standard output away from where
  * it would go (a file, /dev/null, another descriptor). `2>&1` and `2>file`
@@ -416,24 +517,13 @@ function redirectsStdout(job: string): boolean {
   return false;
 }
 
-/** A command word at command position: start of a list item or after `&&`, `||`, `|`, `!`, `(`, `{`, `then`, `do`, `else`, `time`, or env assignments. */
-function commandWordPattern(words: string): RegExp {
-  return new RegExp(
-    String.raw`(?:^|[;&|(!{]|\b(?:then|do|else|time))\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*/)?(?:${words})(?=\s|$|[;&|)])`,
-    "u",
-  );
-}
-
-const DETACH_WORD = commandWordPattern("nohup|setsid");
-const DISOWN_WORD = commandWordPattern("disown");
-const WAIT_OR_KILL_WORD = commandWordPattern("wait|kill|pkill");
-/** Commands after a job that neither use nor wait for it. */
-const INERT_ITEM = /^\s*(?:(?:echo|printf|true|:)(?:\s.*)?)?$/u;
+/** `nohup` or `setsid` as the job's command, for the refusal's wording. */
+const DETACH_WORD =
+  /(?:^|[;&|(!{]|\b(?:then|do|else|time))\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*\/)?(?:nohup|setsid)(?=\s|$|[;&|)])/u;
 
 /**
- * The first background job in `cmd`, in the order it is written, that the
- * command neither waits for nor stops and that can outlive it, or undefined.
- * See the module note for what counts.
+ * The first background job in `cmd`, in the order it is written, that is
+ * trailing (see the module note), or undefined.
  */
 export function findUnwaitedBackgroundJob(cmd: string): UnwaitedBackgroundJob | undefined {
   if (!cmd.includes("&")) return undefined;
@@ -446,67 +536,167 @@ export function findUnwaitedBackgroundJob(cmd: string): UnwaitedBackgroundJob | 
     if (siblings === undefined) childrenOf.set(group.parent, [group]);
     else siblings.push(group);
   }
+  const children = (scope: ShellGroup | undefined): ShellGroup[] => childrenOf.get(scope) ?? [];
   const itemsCache = new Map<ShellGroup | undefined, ListItem[]>();
   const itemsOf = (scope: ShellGroup | undefined): ListItem[] => {
     let items = itemsCache.get(scope);
     if (items === undefined) {
-      items = scopeItems(masked, scope, childrenOf.get(scope) ?? []);
+      items = scopeItems(masked, scope, children(scope));
       itemsCache.set(scope, items);
     }
     return items;
   };
-  const ancestry = (scope: ShellGroup | undefined): ShellGroup[] => {
-    const chain: ShellGroup[] = [];
-    for (let group = scope; group !== undefined; group = group.parent) chain.push(group);
-    return chain;
-  };
-  /** What runs after the job: the rest of its scope, then the rest of each enclosing scope. */
-  const laterItems = (scope: ShellGroup | undefined, position: number): { text: string; terminator: "&" | ";" }[] => {
-    const later: { text: string; terminator: "&" | ";" }[] = [];
-    let current = scope;
-    let at = position;
-    for (;;) {
-      for (const next of itemsOf(current).slice(at + 1)) {
-        later.push({ text: masked.slice(next.start, next.end), terminator: next.terminator });
+  const commandsCache = new Map<ShellGroup | undefined, SimpleCommand[]>();
+  /** Each simple command's own groups (substitutions in its words, or the subshell or brace group it is). */
+  const groupsIn = new Map<SimpleCommand, ShellGroup[]>();
+  const commandsOf = (scope: ShellGroup | undefined): SimpleCommand[] => {
+    let commands = commandsCache.get(scope);
+    if (commands === undefined) {
+      commands = simpleCommands(masked, scope, itemsOf(scope), children(scope));
+      const kids = children(scope);
+      let next = 0;
+      for (const command of commands) {
+        while (next < kids.length && kids[next]!.open < command.start) next += 1;
+        const own: ShellGroup[] = [];
+        while (next < kids.length && kids[next]!.open < command.end) own.push(kids[next++]!);
+        groupsIn.set(command, own);
       }
-      if (current === undefined) return later;
-      const group = current;
-      current = group.parent;
-      at = itemsOf(current).findIndex((item) => item.start <= group.open && group.open < item.end);
-      if (at < 0) return later;
+      commandsCache.set(scope, commands);
     }
+    return commands;
+  };
+  /** The shell a scope's commands run in: the nearest subshell or substitution, else the top level. */
+  const shellOf = (scope: ShellGroup | undefined): ShellGroup | undefined => {
+    for (let group = scope; group !== undefined; group = group.parent) {
+      if (group.kind === "subshell" || group.kind === "command-substitution" || group.kind === "process-substitution") {
+        return group;
+      }
+    }
+    return undefined;
+  };
+  const runs = (scope: ShellGroup | undefined): boolean => {
+    for (let group = scope; group !== undefined; group = group.parent) {
+      if (group.kind === "function-body" || group.kind === "other") return false;
+    }
+    return true;
   };
 
-  const jobs: { scope: ShellGroup | undefined; position: number; item: ListItem }[] = [];
-  for (const scope of [undefined, ...groups]) {
-    const chain = ancestry(scope);
-    // An array literal or another region that holds no commands.
-    if (chain.some((group) => group.kind === "other")) continue;
-    for (const [position, item] of itemsOf(scope).entries()) {
-      if (item.terminator === "&" && masked.slice(item.start, item.end).trim().length > 0) {
-        jobs.push({ scope, position, item });
-      }
-    }
+  interface Step {
+    readonly word: string | undefined;
+    readonly shell: ShellGroup | undefined;
+    /** It runs in a shell of its own (a pipeline part or a backgrounded list). */
+    readonly ownShell: boolean;
   }
-  jobs.sort((left, right) => left.item.start - right.item.start);
-  for (const { scope, position, item } of jobs) {
-    const later = laterItems(scope, position);
-    const laterText = later.map((next) => next.text).join(";");
-    if (WAIT_OR_KILL_WORD.test(laterText)) continue;
-    const jobMasked = masked.slice(item.start, item.end);
-    // Its output still feeds a substitution, whose reader waits for it.
-    const substituted = ancestry(scope).some((group) =>
-      group.kind === "command-substitution" || group.kind === "process-substitution");
+  const steps = new Map<SimpleCommand, Step>();
+  /**
+   * The command's own step. Its word is read with its groups blanked out: a
+   * substitution is part of a word (`x=$(...)`, `"$(...)"`), a subshell or
+   * brace group is a command of its own whose content is read separately.
+   */
+  const stepOf = (command: SimpleCommand): Step => {
+    let step = steps.get(command);
+    if (step === undefined) {
+      const text = masked.slice(command.start, command.end).split("");
+      for (const group of groupsIn.get(command) ?? []) {
+        const fill = group.kind === "command-substitution" || group.kind === "process-substitution" ? "x" : " ";
+        for (let at = group.open; at <= group.end && at < command.end; at += 1) text[at - command.start] = fill;
+      }
+      step = { word: commandWord(text.join("")), shell: shellOf(command.scope), ownShell: command.piped || command.backgrounded };
+      steps.set(command, step);
+    }
+    return step;
+  };
+  /** What a stretch of the command does: any real work, a disown, and the shells its waits run in. */
+  interface Summary {
+    readonly work: boolean;
+    readonly disown: boolean;
+    readonly waits?: ReadonlySet<ShellGroup | undefined>;
+  }
+  const NOTHING: Summary = { work: false, disown: false };
+  const merge = (left: Summary, right: Summary): Summary => {
+    if (right === NOTHING) return left;
+    if (left === NOTHING) return right;
+    let waits = left.waits;
+    if (right.waits !== undefined) waits = waits === undefined ? right.waits : new Set([...waits, ...right.waits]);
+    return { work: left.work || right.work, disown: left.disown || right.disown, ...(waits !== undefined ? { waits } : {}) };
+  };
+  const stepSummary = (step: Step): Summary => {
+    if (step.word === undefined || step.word === "") return NOTHING;
+    if (step.word === "disown") return { work: false, disown: true };
+    // A wait in a pipeline part or a backgrounded list runs in a shell of its own and reaches no job.
+    if (step.word === "wait") return step.ownShell ? NOTHING : { work: false, disown: false, waits: new Set([step.shell]) };
+    return NO_WORK_COMMANDS.has(step.word) ? NOTHING : { work: true, disown: false };
+  };
+  const commandSummaries = new Map<SimpleCommand, Summary>();
+  const suffixes = new Map<ShellGroup | undefined, Summary[]>();
+  /** suffix[i]: what commands i.. of the scope do, with everything inside them. */
+  const suffixOf = (scope: ShellGroup | undefined): Summary[] => {
+    let suffix = suffixes.get(scope);
+    if (suffix === undefined) {
+      const commands = commandsOf(scope);
+      suffix = new Array<Summary>(commands.length + 1);
+      suffix[commands.length] = NOTHING;
+      for (let index = commands.length - 1; index >= 0; index -= 1) {
+        suffix[index] = merge(commandSummary(commands[index]!), suffix[index + 1]!);
+      }
+      suffixes.set(scope, suffix);
+    }
+    return suffix;
+  };
+  const groupSummary = (group: ShellGroup): Summary =>
+    group.kind === "function-body" || group.kind === "other" ? NOTHING : suffixOf(group)[0]!;
+  function commandSummary(command: SimpleCommand): Summary {
+    let summary = commandSummaries.get(command);
+    if (summary === undefined) {
+      summary = stepSummary(stepOf(command));
+      for (const group of groupsIn.get(command) ?? []) summary = merge(summary, groupSummary(group));
+      commandSummaries.set(command, summary);
+    }
+    return summary;
+  }
+  /** What runs after the job's list item, in execution order, up to the top level. */
+  const summaryAfter = (scope: ShellGroup | undefined, item: number): Summary => {
+    const commands = commandsOf(scope);
+    const next = commands.findIndex((command) => command.item > item);
+    let summary = suffixOf(scope)[next < 0 ? commands.length : next]!;
+    for (let group = scope; group !== undefined; group = group.parent) {
+      const siblings = commandsOf(group.parent);
+      const position = siblings.findIndex((command) => command.start <= group.open && group.open < command.end);
+      if (position < 0) break;
+      const container = siblings[position]!;
+      // The command around the group runs once the group has (a substitution's reader, `( ... ) && next`).
+      summary = merge(summary, stepSummary(stepOf(container)));
+      for (const later of groupsIn.get(container) ?? []) {
+        if (later.open > group.end) summary = merge(summary, groupSummary(later));
+      }
+      summary = merge(summary, suffixOf(group.parent)[position + 1]!);
+    }
+    return summary;
+  };
+
+  const jobs: { scope: ShellGroup | undefined; item: number; range: ListItem }[] = [];
+  for (const scope of [undefined, ...groups]) {
+    if (!runs(scope)) continue;
+    itemsOf(scope).forEach((range, item) => {
+      if (range.terminator === "&" && masked.slice(range.start, range.end).trim().length > 0) jobs.push({ scope, item, range });
+    });
+  }
+  jobs.sort((left, right) => left.range.start - right.range.start);
+  for (const { scope, item, range } of jobs) {
+    const jobMasked = masked.slice(range.start, range.end);
+    // Its output feeds a command or process substitution, whose reader waits for it.
+    let substituted = false;
+    for (let group = scope; group !== undefined; group = group.parent) {
+      if (group.kind === "command-substitution" || group.kind === "process-substitution") substituted = true;
+    }
     if (substituted && !redirectsStdout(jobMasked)) continue;
-    const job = cmd.slice(item.start, item.end).trim();
+    const after = summaryAfter(scope, item);
+    // Real work after it, or a wait its own shell runs: something serves the job.
+    if (after.work || after.waits?.has(shellOf(scope)) === true) continue;
+    const job = cmd.slice(range.start, range.end).trim();
     const detached = DETACH_WORD.exec(jobMasked);
-    if (detached !== null) {
-      return { kind: /setsid/u.test(detached[0]) ? "setsid" : "nohup", job };
-    }
-    if (DISOWN_WORD.test(laterText)) return { kind: "disown", job };
-    if (later.every((next) => next.terminator !== "&" && INERT_ITEM.test(next.text))) {
-      return { kind: "trailing", job };
-    }
+    if (detached !== null) return { kind: /setsid/u.test(detached[0]) ? "setsid" : "nohup", job };
+    return { kind: after.disown ? "disown" : "trailing", job };
   }
   return undefined;
 }
