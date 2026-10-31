@@ -2580,6 +2580,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       deadline.abort();
     }
 
+    // A quiet session's process sample can take a moment (macOS runs ps), so
+    // it is taken before the output is drained and the state is read: output
+    // or an exit that arrives during the sample belongs to this result, and
+    // nothing below awaits.
+    const sample = entry.exitState === null && entry.hardTimeoutExpired !== true && !entry.stopRequested
+      ? await this.sampleQuietProcessState(entry)
+      : undefined;
     const chunks = entry.output.drain();
     for (const chunk of chunks) {
       options.onProgress?.({
@@ -2603,9 +2610,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const reportTimeLimit = running && !entry.stopRequested &&
       timeLimit?.reachedAt !== undefined && !timeLimit.reported;
     if (reportTimeLimit) timeLimit!.reported = true;
-    const processState = running && !entry.stopRequested && chunks.length === 0
-      ? await this.quietProcessState(entry)
-      : undefined;
+    // The sample describes a session that is still running and still quiet;
+    // only then does it become the baseline of the next check.
+    let processState: string | undefined;
+    if (sample !== undefined && running && !entry.stopRequested && chunks.length === 0) {
+      entry.processCheck = sample.check;
+      processState = sample.line;
+    }
     return createResult({
       stdout,
       stderr,
@@ -2629,18 +2640,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   /**
    * One line on what a running session that has printed nothing for
-   * {@link QUIET_PROCESS_STATE_AFTER_MS} is doing, or undefined (not quiet
-   * long enough, no process reader on this platform, or the root is gone).
-   * Observation only: nothing here signals, adopts or proves anything.
+   * {@link QUIET_PROCESS_STATE_AFTER_MS} is doing, with the check it came
+   * from, or undefined (not quiet long enough, no process reader on this
+   * platform, or the root is gone). The caller keeps the check as the next
+   * baseline only when it uses the line. Observation only: nothing here
+   * signals, adopts or proves anything.
    */
-  private async quietProcessState(entry: ProcessEntry): Promise<string | undefined> {
+  private async sampleQuietProcessState(
+    entry: ProcessEntry,
+  ): Promise<{ readonly line: string; readonly check: SessionProcessCheck } | undefined> {
     const quietMs = Date.now() - entry.output.lastOutputAt;
     if (quietMs < this.quietProcessStateAfterMs) return undefined;
     try {
       const report = await checkSessionProcesses(entry.stored.process.pid, entry.processCheck);
       if (report === undefined) return undefined;
-      entry.processCheck = report.check;
-      return formatSessionProcessReport(report, quietMs);
+      return { line: formatSessionProcessReport(report, quietMs), check: report.check };
     } catch {
       return undefined;
     }

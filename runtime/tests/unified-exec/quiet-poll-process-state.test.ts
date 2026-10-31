@@ -1,5 +1,20 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+/** How long the next process sample takes; on macOS it runs `ps`, which is asynchronous. */
+const sampling = vi.hoisted(() => ({ delayMs: 0 }));
+vi.mock("../../src/unified-exec/process-state.js", async (original) => {
+  const actual = await original<typeof import("../../src/unified-exec/process-state.js")>();
+  return {
+    ...actual,
+    checkSessionProcesses: vi.fn(async (...args: Parameters<typeof actual.checkSessionProcesses>) => {
+      if (sampling.delayMs > 0) await delay(sampling.delayMs);
+      return actual.checkSessionProcesses(...args);
+    }),
+  };
+});
+
+const { UnifiedExecProcessManager } = await import("../../src/unified-exec/process-manager.js");
 
 // A poll of a session that printed nothing for a while carries one line on
 // what its processes are doing (state, CPU time, members that exited since
@@ -8,8 +23,9 @@ import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manage
 // had died. Real processes on Linux (/proc) and Darwin (ps).
 
 describe("quiet polls", () => {
-  const managers: UnifiedExecProcessManager[] = [];
+  const managers: InstanceType<typeof UnifiedExecProcessManager>[] = [];
   afterEach(async () => {
+    sampling.delayMs = 0;
     await Promise.all(managers.splice(0).map((instance) => instance.closeAll("test_cleanup")));
   });
 
@@ -30,6 +46,18 @@ describe("quiet polls", () => {
     expect(later.session_id).toBe(started.session_id);
     expect(later.process_state).toContain("CPU since the last check:");
     expect(later.process_state).toContain("Exited since then: sleep 0.8 (pid ");
+  }, 20_000);
+
+  it("keep the output and the exit that arrive while the processes are sampled", async () => {
+    const processes = new UnifiedExecProcessManager({ quietProcessStateAfterMs: 0 });
+    managers.push(processes);
+    // The command prints its last line and exits during the sample.
+    sampling.delayMs = 1_500;
+    const result = await processes.execCommand({ cmd: "sleep 0.5; echo final-line", yield_time_ms: 200 });
+    expect(result.output).toContain("final-line");
+    expect(result.exit_code).toBe(0);
+    expect(result.session_id).toBeUndefined();
+    expect(result.process_state).toBeUndefined();
   }, 20_000);
 
   it("leave a session that printed recently alone", async () => {
