@@ -125,6 +125,16 @@ export function resolveSessionReasoningEffort(
         contract?.levels.includes("none") === true) {
       return "none";
     }
+    // QwenCloud Qwen3.8 Max and Flash think at xhigh when the field is
+    // omitted and turn thinking off only with a literal `none` (live on the
+    // Token Plan, 2026-10-31, round 4 job qtp).
+    if ((selection?.provider === "qwen" || selection?.provider === "qwen-token-plan") &&
+        /^qwen3\.8-(?:max|flash)(?:$|-)/u.test(selection.model.trim().toLowerCase()) &&
+        (supportedReasoningLevels !== undefined
+          ? supportedReasoningLevels.includes("none")
+          : contract?.levels.includes("none") === true)) {
+      return "none";
+    }
     // OpenAI models that document `none` (GPT-6 Sol and Luna) run a
     // reasoning default when the field is omitted, so the opt-out has to be
     // sent literally. Elsewhere `none` still means "send no effort".

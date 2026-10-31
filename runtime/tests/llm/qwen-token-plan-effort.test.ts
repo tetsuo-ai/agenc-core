@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { QwenTokenPlanProvider } from "../../src/llm/providers/qwen/index.js";
 import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
 import { resolveRegisteredModelCatalogEntry } from "../../src/llm/registry/model-catalog.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 
 // Qwen3.8 Max and Flash accept reasoning_effort none, which turns thinking off
 // (alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions;
@@ -38,5 +39,24 @@ describe("Qwen3.8 thinking off through the none effort", () => {
     const sent = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
     expect(sent.reasoning_effort).toBe("none");
     expect(sent.enable_thinking).toBeUndefined();
+  });
+
+  // Omitting the field leaves Qwen3.8 thinking at its xhigh default, so a session set to none (the TUI's
+  // "effort off", config reasoning_effort = "none", AGENC_EFFORT_LEVEL=none) has to send none literally.
+  it.each([
+    ["qwen-token-plan", "qwen3.8-max"], ["qwen-token-plan", "qwen3.8-flash"],
+    ["qwen", "qwen3.8-max"], ["qwen", "qwen3.8-flash"],
+  ] as const)("a %s %s session set to none sends none", (provider, model) => {
+    const levels = resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels;
+    expect(resolveSessionReasoningEffort("none", levels, { provider, model })).toBe("none");
+  });
+
+  it("keeps none as no effort field where the Qwen deployment does not list it", () => {
+    expect(resolveSessionReasoningEffort("none", ["low", "medium", "xhigh"],
+      { provider: "qwen", model: "qwen3.8-27b" })).toBeUndefined();
+    expect(resolveSessionReasoningEffort("none", ["low", "medium", "xhigh"],
+      { provider: "qwen", model: "qwen3.8-max-0902" })).toBeUndefined();
+    expect(resolveSessionReasoningEffort("none", undefined,
+      { provider: "qwen-token-plan", model: "qwen3.7-max" })).toBeUndefined();
   });
 });
