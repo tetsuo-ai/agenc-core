@@ -1012,6 +1012,21 @@ function sandboxAutoAllow(
   };
 }
 
+const EXEC_COMMAND_DESCRIPTION =
+  "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms or timeoutMs returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, kill_process stops it, and a later result reports when it ends. Start a long job with background: true, not & or nohup (refused); every other process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.";
+
+/**
+ * exec_command's description. With the hard timeout restored
+ * (tools/system/exec-timeout-mode.ts) a command still running at timeoutMs is
+ * stopped, so only yield_time_ms leaves it running as a session; the default
+ * text is unchanged.
+ */
+export function execCommandDescription(hardTimeout: boolean): string {
+  return hardTimeout
+    ? EXEC_COMMAND_DESCRIPTION.replace("after yield_time_ms or timeoutMs", "after yield_time_ms")
+    : EXEC_COMMAND_DESCRIPTION;
+}
+
 export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   const manager =
     config?.unifiedExecManager ??
@@ -1023,8 +1038,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   const defaultShell = manager.shellPath ?? (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
   return observationCapableShell({
     name: "exec_command",
-    description:
-      "Run a shell command in the workspace and return its stdout and stderr: inspection, tests, builds and other terminal work. Change source files with Edit, MultiEdit or Write; rm and mv are fine here for deleting or renaming. Call tools directly; never run a command just to print notes or placeholders.\n\nA command still running after yield_time_ms or timeoutMs returns a session_id and keeps running in the background: write_stdin polls it (chars='') or sends input, kill_process stops it, and a later result reports when it ends. Start a long job with background: true, not & or nohup (refused); every other process a command leaves behind is stopped when it returns. A server or other service that must outlive the command and the session needs detach: true (outside the sandbox, including an approved require_escalated launch); the result carries its pid and log file.",
+    // Read wherever the description is shown (the schema, code mode's exec
+    // description and ALL_TOOLS, system.searchTools), so each follows the
+    // session's hard-timeout switch.
+    get description(): string {
+      return execCommandDescription(config?.hardTimeout?.() === true);
+    },
     metadata: {
       family: "terminal",
       source: "builtin",
