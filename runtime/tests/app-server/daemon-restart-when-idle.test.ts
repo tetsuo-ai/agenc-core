@@ -52,6 +52,21 @@ import {
   resolveAgenCDaemonRuntimeInfoPath,
   writeDaemonRuntimeInfo,
 } from "../../src/app-server/daemon-runtime-info.js";
+import { LocalSqliteLockTimeoutError } from "../../../packages/agenc/lib/sqlite-lock.mjs";
+
+/** What the lock helper throws when another holder kept a lock the whole wait. */
+function busyLockTimeout(home: string, label: string, filename: string, timeoutMs: number): Error {
+  return new LocalSqliteLockTimeoutError({ path: join(home, filename), label, timeoutMs });
+}
+
+/** What it throws on macOS when its `/bin/df` probe of the lock directory takes over 2 s. */
+function filesystemProbeTimeout(home: string, label: string): Error {
+  return new LocalSqliteLockTimeoutError({
+    path: home,
+    label: `${label} (macOS lock filesystem probe via /bin/df)`,
+    timeoutMs: 2_000,
+  });
+}
 
 const NOW = Date.parse("2026-10-29T12:00:00.000Z");
 const NEW_BUILD = { runtimeVersion: "9.9.9", commit: "new", buildTime: "2026-10-29T00:00:00.000Z" };
@@ -1035,6 +1050,26 @@ describe("restartAgenCDaemonWhenIdle", () => {
       },
     );
 
+    it("for a pinned downgrade whose lifecycle lock fails for another reason than contention, keeps that reason", async () => {
+      const { calls, deps, old } = scenario();
+      publishNewer(old);
+      const outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, {
+        ...deps,
+        downgrade: true,
+        withLifecycleLock: async () => {
+          throw filesystemProbeTimeout(home, "AgenC daemon lifecycle");
+        },
+      });
+      expect(outcome.status).toBe("failed");
+      expect(outcome.reason ?? "").toContain(
+        "could not be cancelled (the daemon lifecycle lock could not be taken: agenc: AgenC daemon lifecycle " +
+          "(macOS lock filesystem probe via /bin/df) timed out after 2000ms",
+      );
+      expect(outcome.reason ?? "").not.toContain("stayed busy");
+      expect(calls).toEqual([]);
+      expect(readAgenCDaemonPendingRestart(home)).toMatchObject({ token: newerToken, target: NEWER_BUILD });
+    });
+
     it("the updater's own cancel reports a busy lock only when a newer restart is pending", async () => {
       const host = { env: { AGENC_HOME: home }, userHome: home };
       // Another process holds the daemon lifecycle lock.
@@ -1058,23 +1093,68 @@ describe("restartAgenCDaemonWhenIdle", () => {
     }, 15_000);
   });
 
-  it("leaves the daemon alone, and says why, when another restart holds the restart lock too long", async () => {
+  it("says once that it waits for another restart, then leaves the daemon alone when that one holds the lock too long", async () => {
     const { calls, deps } = scenario();
-    const busy = Object.assign(
-      new Error("agenc: AgenC daemon restart timed out after 900000ms waiting for local process lock /x"),
-      { name: "LocalSqliteLockTimeoutError", timeoutMs: 900_000 },
-    );
+    const waits: number[] = [];
+    const progress: string[] = [];
     await expect(restartAgenCDaemonWhenIdle(testHost(home), {}, {
       ...deps,
-      acquireRestartLock: async () => {
-        throw busy;
+      onProgress: (line) => progress.push(line),
+      acquireRestartLock: async (_host, timeoutMs) => {
+        waits.push(timeoutMs);
+        throw busyLockTimeout(home, "AgenC daemon restart", "daemon-restart.lock.sqlite", timeoutMs);
       },
     })).resolves.toEqual({
       status: "failed",
       reason: "another daemon restart was still running after 15 minutes, so the daemon was left as it is",
       toVersion: "9.9.9",
     });
+    // A short try, the waiting line, then the queue wait.
+    expect(waits).toEqual([1_000, 15 * 60 * 1_000]);
+    expect(progress).toEqual(["Waiting for another daemon restart to finish (up to 15 minutes)."]);
     expect(calls).toEqual([]);
+  });
+
+  it("keeps the real reason when the restart lock fails for anything but another restart", async () => {
+    const { calls, deps } = scenario();
+    const progress: string[] = [];
+    const outcome = await restartAgenCDaemonWhenIdle(testHost(home), {}, {
+      ...deps,
+      onProgress: (line) => progress.push(line),
+      acquireRestartLock: async () => {
+        throw filesystemProbeTimeout(home, "AgenC daemon restart");
+      },
+    });
+    expect(outcome).toEqual({
+      status: "failed",
+      reason: "the daemon restart lock could not be taken: agenc: AgenC daemon restart (macOS lock filesystem probe via /bin/df) " +
+        `timed out after 2000ms waiting for local process lock ${home}`,
+      toVersion: "9.9.9",
+    });
+    expect(progress).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("writes its waiting line to stderr for agenc update, and still one JSON line to stdout", async () => {
+    const { deps } = scenario({ state: { kind: "not-running" } });
+    let tries = 0;
+    let stdout = "";
+    let stderr = "";
+    const io = {
+      stdout: { write: (chunk: string | Uint8Array) => { stdout += String(chunk); return true; } },
+      stderr: { write: (chunk: string | Uint8Array) => { stderr += String(chunk); return true; } },
+    } as unknown as AgenCDaemonCliIo;
+    await expect(runAgenCDaemonRestartWhenIdleCli({ kind: "restart-when-idle", json: true }, testHost(home), io, {}, {
+      ...deps,
+      acquireRestartLock: async (_host, timeoutMs) => {
+        tries += 1;
+        if (tries === 1) throw busyLockTimeout(home, "AgenC daemon restart", "daemon-restart.lock.sqlite", timeoutMs);
+        return async () => {};
+      },
+    })).resolves.toBe(0);
+    expect(stderr).toBe("agenc: Waiting for another daemon restart to finish (up to 15 minutes).\n");
+    expect(stdout.trim().split("\n")).toHaveLength(1);
+    expect(parseAgenCDaemonRestartOutcome(stdout.trim())).toEqual({ status: "not-running", toVersion: "9.9.9" });
   });
 
   it("never moves a newer daemon down, unless it is a pinned downgrade", async () => {
@@ -1599,6 +1679,24 @@ describe("the deferred restart waiter", () => {
     await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, deps))
       .resolves.toEqual({ status: "not-running", toVersion: "9.9.9" });
     expect(calls).toEqual([]);
+  });
+
+  it("logs once a restart lock it cannot take for another reason than a running restart, and checks again later", async () => {
+    let tries = 0;
+    const { deps } = waiterDeps({});
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), token, {}, {
+      ...deps,
+      acquireRestartLock: async () => {
+        tries += 1;
+        if (tries <= 2) throw filesystemProbeTimeout(home, "AgenC daemon restart");
+        return async () => {};
+      },
+    })).resolves.toMatchObject({ status: "restarted" });
+    const log = readFileSync(join(home, AGENC_DAEMON_RESTART_LOG_FILENAME), "utf8");
+    expect(log).toContain(
+      "the daemon restart lock could not be taken (agenc: AgenC daemon restart (macOS lock filesystem probe via /bin/df) timed out after 2000ms",
+    );
+    expect(log.match(/the daemon restart lock could not be taken/g)).toHaveLength(1);
   });
 
   it("gives up at its deadline without stopping anything", async () => {

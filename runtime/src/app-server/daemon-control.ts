@@ -6,6 +6,10 @@ import { installAgencDaemonWinSWService } from "../packaging/windows-winsw-servi
 import { readAgenCDaemonPid } from "./daemon-discovery.js";
 export { readAgenCDaemonPid, AGENC_DAEMON_PID_MAX_BYTES } from "./daemon-discovery.js";
 import { withAgenCDaemonLifecycleLock, acquireAgenCDaemonLifecycleLock } from "./daemon-lifecycle-lock.js";
+import {
+  resolveAgenCDaemonReadyTimeoutMs,
+  resolveAgenCDaemonStartMaxWaitMs,
+} from "./daemon-restart-handoff.js";
 export { withAgenCDaemonLifecycleLock, reportAgenCDaemonLifecycleLockProgress, acquireAgenCDaemonLifecycleLock } from "./daemon-lifecycle-lock.js";
 import { resolveAgenCDaemonHome, resolveAgenCDaemonPidPath, resolveAgenCDaemonSocketPath, resolveAgenCDaemonCookiePath, AGENC_DAEMON_PID_FILENAME } from "./daemon-discovery.js";
 export { resolveAgenCDaemonHome, resolveAgenCDaemonPidPath, resolveAgenCDaemonSocketPath, resolveAgenCDaemonCookiePath, AGENC_DAEMON_PID_FILENAME, AGENC_DAEMON_COOKIE_FILENAME } from "./daemon-discovery.js";
@@ -218,87 +222,18 @@ function isAgenCDaemonShutdownDeclined(value: unknown): value is AgenCDaemonShut
 /** `stop` left the daemon running because `beforeShutdownRequest` declined. */
 export const AGENC_DAEMON_STOP_DECLINED_EXIT = 3;
 
-/**
- * Env override (ms) for how long the daemon readiness waits block, plus the
- * default applied when unset/invalid. This single name covers BOTH the bare
- * daemon controls (`start`/`restart`/`reload`, here) and the agent autostart
- * path (`waitForAgenCDaemonReady` in `daemon-autostart.ts`), which imports
- * {@link resolveAgenCDaemonReadyTimeoutMs} so both budgets stay in sync from
- * one resolved value.
- */
-export const AGENC_DAEMON_READY_TIMEOUT_MS_ENV =
-  "AGENC_DAEMON_READY_TIMEOUT_MS";
-
-/**
- * Bound for how long the daemon readiness waits block for the detached daemon
- * to bind and accept on its control socket before giving up.
- *
- * Raised from 15s to 45s: a cold start has to pay the full hydration cost
- * (state recovery + MCP server start + `socketServer.listen()`) before it can
- * accept, which empirically lands at ~15-16.5s — leaving the old 15s budget with
- * near-zero margin and producing false "did not become ready before timeout"
- * failures on healthy daemons. 45s gives ~3x headroom; CI can tune it back down
- * via {@link AGENC_DAEMON_READY_TIMEOUT_MS_ENV}. A longer budget only makes a
- * genuinely-broken daemon take longer to surface, which is the safer tradeoff
- * against false negatives on cold start.
- */
-export const DEFAULT_DAEMON_READY_TIMEOUT_MS = 45_000;
+// The readiness and start budgets are shared with `agenc update`, which
+// derives its restart handoff timeout from them without loading this module.
+export {
+  AGENC_DAEMON_READY_TIMEOUT_MS_ENV,
+  AGENC_DAEMON_START_MAX_WAIT_MS_ENV,
+  DEFAULT_DAEMON_READY_TIMEOUT_MS,
+  DEFAULT_DAEMON_START_MAX_WAIT_MS,
+  resolveAgenCDaemonReadyTimeoutMs,
+  resolveAgenCDaemonStartMaxWaitMs,
+} from "./daemon-restart-handoff.js";
 
 export const DEFAULT_DAEMON_READY_POLL_MS = 25;
-
-
-/**
- * Resolve the daemon readiness timeout (ms) from the env override, falling back
- * to {@link DEFAULT_DAEMON_READY_TIMEOUT_MS} when unset or invalid. Matches the
- * codebase env-int convention (e.g. `getMaxMcpOutputTokens`): only a finite,
- * strictly-positive parse wins; everything else (non-numeric, NaN, <= 0) falls
- * back to the default. Exported so the autostart path resolves the same value.
- */
-export function resolveAgenCDaemonReadyTimeoutMs(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const envValue = env[AGENC_DAEMON_READY_TIMEOUT_MS_ENV];
-  if (envValue !== undefined && envValue.trim().length > 0) {
-    const parsed = Number(envValue);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return DEFAULT_DAEMON_READY_TIMEOUT_MS;
-}
-
-
-/**
- * Env override (ms) for the total time `daemon start` keeps waiting for a
- * spawned daemon that is still hydrating past the readiness budget.
- */
-export const AGENC_DAEMON_START_MAX_WAIT_MS_ENV =
-  "AGENC_DAEMON_START_MAX_WAIT_MS";
-
-
-/**
- * Bound for that extended wait. A home with hundreds of sessions takes longer
- * than {@link DEFAULT_DAEMON_READY_TIMEOUT_MS} to open its state and recover
- * its runs (observed: 60 s for 877 sessions). Cancelling such a daemon at the
- * deadline and letting the caller start another one produced a loop in which
- * no daemon ever finished starting. While the startup log keeps advancing the
- * wait continues, in readiness-budget steps, up to this total.
- */
-export const DEFAULT_DAEMON_START_MAX_WAIT_MS = 600_000;
-
-
-export function resolveAgenCDaemonStartMaxWaitMs(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const envValue = env[AGENC_DAEMON_START_MAX_WAIT_MS_ENV];
-  if (envValue !== undefined && envValue.trim().length > 0) {
-    const parsed = Number(envValue);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return DEFAULT_DAEMON_START_MAX_WAIT_MS;
-}
 
 
 export const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(

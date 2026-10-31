@@ -275,13 +275,16 @@ record is still its own right before that decision. Before it starts its
 runtime it checks again under that lock, and holds the lock until the new
 daemon is spawned. An update older than the build a pending restart targets
 leaves that record in place and reports the newer target, because that
-restart goes further. A pinned downgrade (`agenc update --pin` to an older
-version) ends such a record instead, so its waiting process cannot move the
-daemon back up later. `agenc update` ends it itself before it hands the
-restart to the older runtime, which may not know how. When the record cannot
-be ended (the daemon lifecycle lock stays busy for 2 minutes, or the record
-cannot be removed), the update leaves the daemon as it is, because a restart
-now would only be undone by the pending one, and says so: `Daemon restart
+restart goes further. An explicit pin (`agenc update --pin`) is the version
+the person asked for, whatever versions the updater and the daemon run: it
+moves the daemon to that version even from a newer one, also when `agenc
+update` finds the pinned version already active, and it ends a pending restart
+onto a newer build instead of leaving it, so that waiting process cannot move
+the daemon away later. `agenc update` ends it itself before it hands the
+restart to the activated runtime, which may be too old to know how. When the
+record cannot be ended (the daemon lifecycle lock stays busy for 2 minutes, or
+the record cannot be removed), the update leaves the daemon as it is, because
+a restart now would only be undone by the pending one, and says so: `Daemon restart
 failed: a restart onto 0.19.27 is still pending and could not be cancelled
 (the daemon lifecycle lock stayed busy for 120 s). The daemon was left as it
 is, and that restart can still move it to 0.19.27. To cancel it, delete
@@ -301,10 +304,27 @@ until the new daemon reports its version, and a waiting process holds it for
 each check. A second update waits for the first restart to finish, up to 15
 minutes, and then decides on the daemon that one left: it restarts a daemon on
 an older version and leaves one that already runs its version or a newer one.
-Only a pinned downgrade moves a daemon to an older version. A waiting process
-that finds the lock taken checks again 15 s later. Only these restart steps
-take the lock: the daemon and clients going about their work never wait for
-it.
+Only an explicit pin moves a daemon to an older version. While it waits it
+prints `Waiting for another daemon restart to finish (up to 15 minutes).` once
+(on stderr with `--json`). A waiting process that finds the lock taken checks
+again 15 s later. Only these restart steps take the lock: the daemon and
+clients going about their work never wait for it. A lock that fails for
+another reason than a running restart, such as a lock directory macOS cannot
+check in time, is reported with that reason. When `agenc update` activates a
+runtime from before the lock (0.19.25 and older, whose build does not list the
+`daemon-restart-lock` capability in its `dist/VERSION`), it takes the lock
+itself and holds it until that runtime's restart reports back.
+
+`agenc update` waits for the restart step as long as the step's own limits
+allow: its 15 minutes for another restart, the daemon start (14 readiness
+steps of 45 s by default, plus the `launchd` pid publication on macOS; both
+follow `AGENC_DAEMON_READY_TIMEOUT_MS` and `AGENC_DAEMON_START_MAX_WAIT_MS`),
+and 10 minutes for the checks and the stop, about 36 minutes in all on Linux.
+If the step still has not reported by then, the update says `The daemon
+restart onto 0.19.27 is still running (no result after 36 minutes); it
+continues in the background.` (`deferred`, code `still-running`), and a TUI
+updating itself keeps running and switches once the daemon reaches the new
+version instead of reporting a failure.
 
 Only a daemon started from `<AGENC_HOME>/runtime/` is restarted. The Desktop
 app runs its own bundled runtime in its own home, so its daemon is never

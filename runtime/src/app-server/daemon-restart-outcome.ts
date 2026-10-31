@@ -20,7 +20,12 @@ export type AgenCDaemonRestartCode =
   | "not-activated"
   | "unsupported"
   /** The daemon cannot stop only when idle (0.19.24 and older): restart it by hand. */
-  | "daemon-too-old";
+  | "daemon-too-old"
+  /**
+   * `agenc update` stopped waiting for the restart step, which keeps going in
+   * the background (status `deferred`): the daemon moves when it finishes.
+   */
+  | "still-running";
 
 export interface AgenCDaemonRestartOutcome {
   readonly status: AgenCDaemonRestartStatus;
@@ -51,6 +56,7 @@ const CODES: ReadonlySet<string> = new Set([
   "not-activated",
   "unsupported",
   "daemon-too-old",
+  "still-running",
 ]);
 
 /** Parse an outcome line printed by `restart --when-idle --json`. */
@@ -96,7 +102,9 @@ export function formatAgenCDaemonRestartOutcome(
     case "restarted":
       return `Restarted the daemon on ${target}${outcome.pid === undefined ? "" : ` (pid ${outcome.pid})`}.`;
     case "deferred":
-      return `The daemon is busy (${outcome.reason ?? "in use"}), so it will restart on ${target} once it is idle.`;
+      return outcome.code === "still-running"
+        ? `The daemon restart onto ${target} is still running (${outcome.reason ?? "no result yet"}); it continues in the background.`
+        : `The daemon is busy (${outcome.reason ?? "in use"}), so it will restart on ${target} once it is idle.`;
     case "not-running":
       return `No daemon is running. The next one starts on ${target}.`;
     case "skipped":

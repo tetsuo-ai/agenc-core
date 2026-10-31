@@ -58,7 +58,11 @@ export function decideUpdateRelaunch(
         ...(next === to ? {} : { followVersion: next }),
         notice: {
           kind: "info",
-          text: `Installed AgenC ${to}. The daemon is busy (${outcome.reason ?? "other work"}), so AgenC switches to ${next} once that work is done. This window keeps running ${from} until then.`,
+          // A restart still running past the update's wait is not a failure:
+          // follow the daemon instead of telling the person to start over.
+          text: outcome.code === "still-running"
+            ? `Installed AgenC ${to}. The daemon restart is still running, so AgenC switches to ${next} once it finishes. This window keeps running ${from} until then.`
+            : `Installed AgenC ${to}. The daemon is busy (${outcome.reason ?? "other work"}), so AgenC switches to ${next} once that work is done. This window keeps running ${from} until then.`,
         },
       };
     }

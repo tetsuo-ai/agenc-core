@@ -72,6 +72,19 @@ import {
   type AgenCDaemonRestartOutcome,
 } from "../app-server/daemon-restart-outcome.js";
 import {
+  AGENC_DAEMON_RESTART_LOCK_FILENAME,
+  AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS,
+  AGENC_DAEMON_RESTART_LOCK_LABEL,
+  AGENC_DAEMON_RESTART_LOCK_WAIT_MS,
+  AGENC_DAEMON_RESTART_WAITING_PREFIX,
+  AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK,
+  describeAgenCDaemonRestartLockFailure,
+  formatAgenCDaemonRestartWait,
+  formatAgenCDaemonRestartWaitingLine,
+  isLocalSqliteLockBusyTimeout,
+  resolveAgenCDaemonRestartHandoffTimeoutMs,
+} from "../app-server/daemon-restart-handoff.js";
+import {
   validateEmbeddedNodeRuntimeArchive,
   type EmbeddedNodeIdentity,
 } from "../utils/runtime-archive.js";
@@ -3819,11 +3832,11 @@ export interface UpdateCliDeps {
     request: UpdateDaemonRestartRequest,
   ) => Promise<AgenCDaemonRestartOutcome>;
   /**
-   * A pinned downgrade: end a pending restart onto a version above the
-   * target, here, before the older runtime (which may not know
-   * `--downgrade`) gets the restart step. Rejects, with a reason a person
-   * can read, when such a restart exists and could not be ended: the update
-   * then reports it and leaves the daemon as it is.
+   * An explicit pin (`--pin`): end a pending restart onto a version above
+   * the target, here, before the activated runtime (which may be too old to
+   * know `--downgrade`) gets the restart step. Rejects, with a reason a
+   * person can read, when such a restart exists and could not be ended: the
+   * update then reports it and leaves the daemon as it is.
    */
   readonly cancelPendingRestartAbove?: (
     request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
@@ -3841,35 +3854,46 @@ export interface UpdateDaemonRestartRequest {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly targetVersion: string;
   /**
-   * A pinned downgrade: the restart ends a pending restart onto a newer
-   * build, which would otherwise move the daemon back up later.
+   * An explicit pin (`agenc update --pin`): the person asked for exactly this
+   * version. The restart moves the daemon to it even from a newer build, and
+   * ends a pending restart onto a newer build, which would otherwise move the
+   * daemon away from it later. Sent as `--downgrade`, which runtimes have
+   * known since 0.19.25.
    */
-  readonly downgrade?: boolean;
+  readonly pinned?: boolean;
 }
 
-/**
- * The restart can wait for a large home's daemon to stop and start again
- * (up to about 11 minutes in the start path); past this the update reports
- * failure and lets the restart finish on its own.
- */
-const DAEMON_RESTART_HANDOFF_TIMEOUT_MS = 20 * 60 * 1_000;
 const DAEMON_RESTART_HANDOFF_OUTPUT_MAX_CHARS = 64 * 1_024;
+const RESTART_LOCK = {
+  label: AGENC_DAEMON_RESTART_LOCK_LABEL,
+  filename: AGENC_DAEMON_RESTART_LOCK_FILENAME,
+} as const;
 
 /**
  * The in-process daemon steps `agenc update` needs: restart a daemon still
  * on an older build (up to date), and end a pending restart onto a newer
- * version before a pinned downgrade. The CLI entry registers them; this
+ * version before an explicit pin. The CLI entry registers them; this
  * module never imports the daemon code itself, so the SDK wire graph that
  * reaches it (through the `/update` command) stays free of daemon producers.
  * Kept on globalThis because the TUI bundle carries its own copy of this
  * module.
  */
 export interface UpdateDaemonHooks {
-  readonly restartStaleDaemon: () => Promise<AgenCDaemonRestartOutcome>;
+  readonly restartStaleDaemon: (
+    request?: UpdateStaleDaemonRestartRequest,
+  ) => Promise<AgenCDaemonRestartOutcome>;
   /** Rejects when a pending restart above the target could not be ended. */
   readonly cancelPendingRestartAbove: (
     request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
   ) => Promise<void>;
+}
+
+/** What `agenc update` asks of the in-process restart when it is up to date. */
+export interface UpdateStaleDaemonRestartRequest {
+  /** `--pin` of this very version: move a newer daemon down to it too. */
+  readonly pinned?: boolean;
+  /** One line while the restart waits for another one. */
+  readonly onProgress?: (line: string) => void;
 }
 
 const UPDATE_DAEMON_HOOKS_KEY = Symbol.for("agenc.update.daemonHooks");
@@ -3883,12 +3907,14 @@ function updateDaemonHooks(): UpdateDaemonHooks | undefined {
 }
 
 /** This process runs the current runtime: restart a daemon still on an older build here. */
-async function restartStaleDaemonHere(): Promise<AgenCDaemonRestartOutcome> {
+async function restartStaleDaemonHere(
+  request: UpdateStaleDaemonRestartRequest,
+): Promise<AgenCDaemonRestartOutcome> {
   const hooks = updateDaemonHooks();
   if (hooks === undefined) {
     return { status: "skipped", code: "unsupported", reason: "this process cannot restart the daemon itself" };
   }
-  return hooks.restartStaleDaemon();
+  return hooks.restartStaleDaemon(request);
 }
 
 async function defaultCancelPendingRestartAbove(
@@ -3897,22 +3923,91 @@ async function defaultCancelPendingRestartAbove(
   await updateDaemonHooks()?.cancelPendingRestartAbove(request);
 }
 
-function defaultRestartDaemon(request: UpdateDaemonRestartRequest): Promise<AgenCDaemonRestartOutcome> {
+function defaultRestartDaemon(
+  request: UpdateDaemonRestartRequest,
+  onProgress?: (line: string) => void,
+): Promise<AgenCDaemonRestartOutcome> {
   return request.wrapperPath === undefined
-    ? restartStaleDaemonHere()
-    : restartDaemonThroughActivatedWrapper({ ...request, wrapperPath: request.wrapperPath });
+    ? restartStaleDaemonHere({
+        ...(request.pinned === true ? { pinned: true } : {}),
+        ...(onProgress === undefined ? {} : { onProgress }),
+      })
+    : restartDaemonThroughActivatedWrapper(
+        { ...request, wrapperPath: request.wrapperPath },
+        onProgress === undefined ? {} : { onProgress },
+      );
+}
+
+/**
+ * Whether the runtime at `runtimeBin` takes the daemon restart lock in its
+ * own restart step: its build lists the capability in `dist/VERSION`. A
+ * runtime from before the lock (0.19.25 and older) lists none.
+ */
+export function runtimeTakesDaemonRestartLock(runtimeBin: string): boolean {
+  try {
+    const path = join(dirname(dirname(runtimeBin)), "dist", "VERSION");
+    if (lstatSync(path).size > 64 * 1_024) return false;
+    const info = JSON.parse(readFileSync(path, "utf8")) as { readonly capabilities?: unknown };
+    return Array.isArray(info.capabilities) &&
+      info.capabilities.includes(AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The daemon restart lock, held here for a restart handed to a runtime that
+ * does not take it. Waits like a restart step: one try, the waiting line,
+ * then up to the queue wait. Returns the reason when it cannot be had.
+ */
+export async function holdDaemonRestartLockForHandoff(
+  agencHome: string,
+  onProgress: (line: string) => void,
+  acquire: typeof acquireLocalSqliteLock = acquireLocalSqliteLock,
+): Promise<{ readonly release: () => void } | { readonly reason: string }> {
+  const path = join(agencHome, AGENC_DAEMON_RESTART_LOCK_FILENAME);
+  const take = (timeoutMs: number) => acquire(path, { label: AGENC_DAEMON_RESTART_LOCK_LABEL, timeoutMs });
+  try {
+    return { release: await take(AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS) };
+  } catch (busy) {
+    if (!isLocalSqliteLockBusyTimeout(busy, RESTART_LOCK)) {
+      return { reason: describeAgenCDaemonRestartLockFailure(busy) };
+    }
+  }
+  try {
+    onProgress(formatAgenCDaemonRestartWaitingLine());
+  } catch {
+    // Progress is best effort.
+  }
+  try {
+    return { release: await take(AGENC_DAEMON_RESTART_LOCK_WAIT_MS) };
+  } catch (error) {
+    return { reason: describeAgenCDaemonRestartLockFailure(error) };
+  }
 }
 
 /** Run the activated runtime's `daemon restart --when-idle --json`. */
 export function restartDaemonThroughActivatedWrapper(
   request: UpdateDaemonRestartRequest & { readonly wrapperPath: string },
   options: {
+    /**
+     * Defaults to {@link resolveAgenCDaemonRestartHandoffTimeoutMs}: the
+     * step's own waits plus margin, so this never gives up first.
+     */
     readonly timeoutMs?: number;
     /** More `restart --when-idle` options, for example a requesting TUI. */
     readonly extraArgs?: readonly string[];
+    /** The step's waiting line, shown once while it waits for another restart. */
+    readonly onProgress?: (line: string) => void;
   } = {},
 ): Promise<AgenCDaemonRestartOutcome> {
   const toVersion = request.targetVersion;
+  const childEnv = {
+    ...userRuntimeEnvironment(request.env as NodeJS.ProcessEnv),
+    AGENC_HOME: request.agencHome,
+  };
+  const timeoutMs = options.timeoutMs ??
+    resolveAgenCDaemonRestartHandoffTimeoutMs(childEnv, process.platform);
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -3934,14 +4029,11 @@ export function restartDaemonThroughActivatedWrapper(
     try {
       child = spawn(request.wrapperPath, [
         "daemon", "restart", "--when-idle", "--json",
-        ...(request.downgrade === true ? ["--downgrade"] : []),
+        ...(request.pinned === true ? ["--downgrade"] : []),
         ...(options.extraArgs ?? []),
       ], {
         cwd: request.agencHome,
-        env: {
-          ...userRuntimeEnvironment(request.env as NodeJS.ProcessEnv),
-          AGENC_HOME: request.agencHome,
-        },
+        env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -3957,19 +4049,39 @@ export function restartDaemonThroughActivatedWrapper(
       child.stdout?.destroy();
       child.stderr?.destroy();
       child.unref();
+      // Past every budget of the step, yet it still runs: it may still move
+      // the daemon, so this is a restart under way, not a failed one.
       finish({
-        status: "failed",
-        reason: "the restart did not finish within 20 minutes; it continues in the background",
+        status: "deferred",
+        code: "still-running",
+        reason: `no result after ${formatAgenCDaemonRestartWait(timeoutMs)}`,
         toVersion,
       });
-    }, options.timeoutMs ?? DAEMON_RESTART_HANDOFF_TIMEOUT_MS);
+    }, timeoutMs);
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       if (stdout.length < DAEMON_RESTART_HANDOFF_OUTPUT_MAX_CHARS) stdout += chunk;
     });
+    let progressShown = false;
+    let progressScanned = 0;
     child.stderr?.on("data", (chunk: string) => {
       if (stderr.length < DAEMON_RESTART_HANDOFF_OUTPUT_MAX_CHARS) stderr += chunk;
+      if (progressShown || options.onProgress === undefined) return;
+      // The step's one waiting line, once it is complete.
+      const end = stderr.lastIndexOf("\n");
+      if (end < progressScanned) return;
+      const waiting = stderr.slice(progressScanned, end).split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith(`agenc: ${AGENC_DAEMON_RESTART_WAITING_PREFIX}`));
+      progressScanned = end + 1;
+      if (waiting === undefined) return;
+      progressShown = true;
+      try {
+        options.onProgress(sanitizeTerminalText(waiting.slice("agenc: ".length), 300));
+      } catch {
+        // Progress is best effort.
+      }
     });
     child.on("error", (error) => {
       finish({ status: "failed", reason: `the new runtime could not run: ${error.message}`, toVersion });
@@ -3982,7 +4094,7 @@ export function restartDaemonThroughActivatedWrapper(
         return;
       }
       if (/unknown daemon restart option/.test(stderr)) {
-        // A runtime older than this updater (a pinned downgrade).
+        // A runtime older than this updater (a pinned older version).
         finish({
           status: "skipped",
           code: "unsupported",
@@ -4143,6 +4255,7 @@ async function restartStaleDaemon(
   env: Readonly<Record<string, string | undefined>>,
   platform: NodeJS.Platform,
   currentVersion: string,
+  progress: (line: string) => void,
 ): Promise<AgenCDaemonRestartOutcome> {
   if (command.noRestart === true) {
     return { status: "skipped", code: "opt-out", reason: "--no-restart", toVersion: currentVersion };
@@ -4157,11 +4270,16 @@ async function restartStaleDaemon(
   }
   try {
     const agencHome = canonicalizeAgenCHome(resolveAgencHome(env));
-    return await (deps.restartDaemon ?? defaultRestartDaemon)({
+    const request: UpdateDaemonRestartRequest = {
       agencHome,
       env,
       targetVersion: currentVersion,
-    });
+      // `--pin` of this very version: a newer daemon moves down to it too.
+      ...(command.pinVersion === undefined ? {} : { pinned: true }),
+    };
+    return await (deps.restartDaemon === undefined
+      ? defaultRestartDaemon(request, progress)
+      : deps.restartDaemon(request));
   } catch (error) {
     return {
       status: "failed",
@@ -4200,6 +4318,13 @@ export async function runAgenCUpdateCli(
   const env = deps.env ?? process.env;
   const currentVersion = deps.currentVersion ?? VERSION;
   const platform = deps.platform ?? process.platform;
+  // The one line of a restart that waits for another one: with the summary on
+  // a terminal, on stderr in --json mode, where stdout is one JSON line.
+  const restartProgress = (line: string): void => {
+    if (deps.onProgress !== undefined) deps.onProgress(line);
+    else if (command.json) stderr(line);
+    else stdout(sanitizeTerminalText(line, 300));
+  };
   let checked: Awaited<ReturnType<typeof checkAgenCUpdate>>;
   try {
     checked = await checkAgenCUpdate(command, deps);
@@ -4215,7 +4340,7 @@ export async function runAgenCUpdateCli(
     // on the previous build. --check never acts.
     const daemonRestart = command.check
       ? undefined
-      : await restartStaleDaemon(command, deps, env, platform, currentVersion);
+      : await restartStaleDaemon(command, deps, env, platform, currentVersion, restartProgress);
     if (command.json) {
       stdout(
         JSON.stringify({
@@ -4391,14 +4516,15 @@ export async function runAgenCUpdateCli(
     }
   }
 
-  const downgrade = pinned && semverGt(currentVersion, latestVersion);
   const restartDaemon = async (): Promise<AgenCDaemonRestartOutcome> => {
     if (!activation.activated) {
       return { status: "skipped", code: "not-activated", reason: "the active runtime did not change" };
     }
-    if (downgrade) {
-      // Here, not only in the older runtime: it may not know --downgrade,
-      // and a waiting restart onto a newer build would undo the downgrade.
+    if (pinned) {
+      // The person asked for exactly this version, wherever the daemon and
+      // this updater are. End a pending restart onto a newer build here, not
+      // only in the restart step: an older runtime may not know --downgrade,
+      // and that restart would move the daemon away from this version later.
       try {
         await (deps.cancelPendingRestartAbove ?? defaultCancelPendingRestartAbove)({
           agencHome,
@@ -4428,20 +4554,34 @@ export async function runAgenCUpdateCli(
       };
     }
     deps.onProgress?.("Checking whether the daemon can restart on the new runtime.");
+    // A runtime from before the restart lock does not take it in its restart
+    // step: hold it here until that restart reports back, so no other
+    // restart sees the daemon between its stop and its start.
+    let held: { readonly release: () => void } | undefined;
+    if (!runtimeTakesDaemonRestartLock(result.binPath)) {
+      const lock = await holdDaemonRestartLockForHandoff(agencHome, restartProgress);
+      if ("reason" in lock) return { status: "failed", reason: lock.reason, toVersion: latestVersion };
+      held = lock;
+    }
     try {
-      return await (deps.restartDaemon ?? defaultRestartDaemon)({
+      const request: UpdateDaemonRestartRequest = {
         wrapperPath: wrappers[0]!.path,
         agencHome,
         env,
         targetVersion: latestVersion,
-        ...(downgrade ? { downgrade: true } : {}),
-      });
+        ...(pinned ? { pinned: true } : {}),
+      };
+      return await (deps.restartDaemon === undefined
+        ? defaultRestartDaemon(request, restartProgress)
+        : deps.restartDaemon(request));
     } catch (error) {
       return {
         status: "failed",
         reason: error instanceof Error ? error.message : String(error),
         toVersion: latestVersion,
       };
+    } finally {
+      held?.release();
     }
   };
 

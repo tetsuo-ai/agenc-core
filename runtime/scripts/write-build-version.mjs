@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Write `runtime/dist/VERSION` containing { commit, buildTime, runtimeVersion }
- * so the daemon can print a startup banner that proves which build is running.
+ * Write `runtime/dist/VERSION` containing { commit, buildTime, runtimeVersion,
+ * capabilities } so the daemon can print a startup banner that proves which
+ * build is running, and `agenc update` can tell what a runtime supports.
  *
  * This script also copies runtime assets that must sit beside the built chunks.
  */
@@ -84,6 +85,12 @@ async function main() {
     shortCommit,
     buildTime,
     runtimeVersion,
+    // What this build does that older runtimes do not, read by `agenc update`
+    // before it hands a step to this runtime. "daemon-restart-lock": its
+    // `daemon restart --when-idle` takes the daemon restart lock itself
+    // (AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK in
+    // src/app-server/daemon-restart-handoff.ts).
+    capabilities: ["daemon-restart-lock"],
   };
 
   writeFileSync(versionPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");

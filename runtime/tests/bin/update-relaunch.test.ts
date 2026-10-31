@@ -93,6 +93,19 @@ describe("update relaunch decisions", () => {
     );
   });
 
+  it("follows the daemon, with no error, when the restart still runs past the update's wait", () => {
+    const decision = decideUpdateRelaunch({
+      status: "deferred",
+      code: "still-running",
+      reason: "no result after 36 minutes",
+      toVersion: "0.19.26",
+    }, request);
+    expect(decision).toMatchObject({ kind: "stay", follow: "daemon", notice: { kind: "info" } });
+    expect(decision.kind === "stay" && decision.notice.text).toBe(
+      "Installed AgenC 0.19.26. The daemon restart is still running, so AgenC switches to 0.19.26 once it finishes. This window keeps running 0.19.25 until then.",
+    );
+  });
+
   it.each([
     [{ status: "failed", reason: "the daemon could not be stopped" }],
     [{ status: "skipped", reason: "the daemon runs from outside this install (for example the Desktop app)" }],

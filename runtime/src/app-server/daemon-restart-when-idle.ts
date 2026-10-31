@@ -83,7 +83,21 @@ import {
   isAgenCDaemonInstanceIdentity,
   type AgenCDaemonInstanceIdentity,
 } from "./daemon-instance-identity.js";
-import { acquireAgenCDaemonRestartLock } from "./daemon-lifecycle-lock.js";
+import {
+  AGENC_DAEMON_LIFECYCLE_LOCK_FILENAME,
+  AGENC_DAEMON_LIFECYCLE_LOCK_LABEL,
+  acquireAgenCDaemonRestartLock,
+} from "./daemon-lifecycle-lock.js";
+import {
+  AGENC_DAEMON_RESTART_LOCK_FILENAME,
+  AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS,
+  AGENC_DAEMON_RESTART_LOCK_LABEL,
+  AGENC_DAEMON_RESTART_LOCK_WAIT_MS,
+  describeAgenCDaemonRestartLockFailure,
+  formatAgenCDaemonRestartWait,
+  formatAgenCDaemonRestartWaitingLine,
+  isLocalSqliteLockBusyTimeout,
+} from "./daemon-restart-handoff.js";
 import {
   daemonInstanceIdentityFromRuntimeInfo,
   readDaemonRuntimeInfo,
@@ -122,15 +136,18 @@ export const AGENC_DAEMON_RESTART_IDLE_CHECKS = 2;
 export const AGENC_DAEMON_RESTART_PENDING_FILENAME = "daemon-restart-pending.json";
 export const AGENC_DAEMON_RESTART_LOG_FILENAME = "daemon-restart.log";
 /**
- * How long a restart waits for another restart of the same daemon to finish
- * (its stop, and a large home's start of up to 10 minutes) before it gives up.
- */
-export const AGENC_DAEMON_RESTART_LOCK_WAIT_MS = 15 * 60 * 1_000;
-/**
  * A waiting process only looks at the restart lock: when another restart
  * holds it, the daemon is being restarted right now, so it checks again later.
  */
 const WAITER_RESTART_LOCK_WAIT_MS = 1_000;
+const RESTART_LOCK = {
+  label: AGENC_DAEMON_RESTART_LOCK_LABEL,
+  filename: AGENC_DAEMON_RESTART_LOCK_FILENAME,
+} as const;
+const LIFECYCLE_LOCK = {
+  label: AGENC_DAEMON_LIFECYCLE_LOCK_LABEL,
+  filename: AGENC_DAEMON_LIFECYCLE_LOCK_FILENAME,
+} as const;
 /**
  * `session.processes.list` (1.13) and `session.goal` (1.14) are the newest
  * requests the check needs. Older daemons cannot be shown to be idle.
@@ -1267,6 +1284,11 @@ export interface AgenCDaemonRestartWhenIdleDeps {
    * most `timeoutMs` for another restart to finish.
    */
   readonly acquireRestartLock?: (host: AgenCDaemonCliHost, timeoutMs: number) => Promise<() => Promise<void>>;
+  /**
+   * One line for the person while this restart waits for another one; the
+   * CLI writes it to stderr, where `agenc update` picks it up.
+   */
+  readonly onProgress?: (line: string) => void;
   readonly startDaemon?: typeof startAgenCDaemon;
   readonly requestIdentity?: (host: AgenCDaemonCliHost) => Promise<AgenCDaemonInstanceIdentity>;
   /** Start the detached waiter; returns its pid. */
@@ -1759,21 +1781,13 @@ type PendingRestartCancel =
   /** Still pending: `why` says what stopped the cancellation. */
   | { readonly kind: "failed"; readonly version: string; readonly why: string };
 
-/** A local SQLite lock that stayed busy (`LocalSqliteLockTimeoutError`). */
-function isLockTimeout(error: unknown): error is { readonly timeoutMs: number } {
-  const value = error as { readonly name?: unknown; readonly timeoutMs?: unknown } | null;
-  return value?.name === "LocalSqliteLockTimeoutError" && typeof value.timeoutMs === "number";
-}
-
-function formatWait(ms: number): string {
-  if (ms < 1_000) return `${ms} ms`;
-  if (ms <= 120_000) return `${Math.round(ms / 1_000)} s`;
-  return `${Math.round(ms / 60_000)} minutes`;
-}
-
+/**
+ * Busy means another holder kept the lock; any other failure, such as a lock
+ * path that could not be validated in time, keeps its own message.
+ */
 function describeLifecycleLockFailure(error: unknown): string {
-  return isLockTimeout(error)
-    ? `the daemon lifecycle lock stayed busy for ${formatWait(error.timeoutMs)}`
+  return isLocalSqliteLockBusyTimeout(error, LIFECYCLE_LOCK)
+    ? `the daemon lifecycle lock stayed busy for ${formatAgenCDaemonRestartWait(error.timeoutMs)}`
     : `the daemon lifecycle lock could not be taken: ${formatCleanupError(error)}`;
 }
 
@@ -1952,20 +1966,25 @@ export async function restartAgenCDaemonWhenIdle(
   if (!("host" in ctx)) return ctx;
   // One restart at a time. Another one may have stopped the daemon and not
   // spawned the next yet, which would read as no daemon at all.
+  const acquire = deps.acquireRestartLock ?? acquireAgenCDaemonRestartLock;
   let release: () => Promise<void>;
   try {
-    release = await (deps.acquireRestartLock ?? acquireAgenCDaemonRestartLock)(
-      host,
-      AGENC_DAEMON_RESTART_LOCK_WAIT_MS,
-    );
-  } catch (error) {
-    return {
-      status: "failed",
-      reason: isLockTimeout(error)
-        ? `another daemon restart was still running after ${formatWait(error.timeoutMs)}, so the daemon was left as it is`
-        : `the daemon restart lock could not be taken: ${formatCleanupError(error)}`,
-      toVersion: ctx.build.runtimeVersion,
-    };
+    release = await acquire(host, AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS);
+  } catch (busy) {
+    if (!isLocalSqliteLockBusyTimeout(busy, RESTART_LOCK)) {
+      return { status: "failed", reason: describeAgenCDaemonRestartLockFailure(busy), toVersion: ctx.build.runtimeVersion };
+    }
+    // Another restart runs: say so once, so the update does not look stuck.
+    try {
+      deps.onProgress?.(formatAgenCDaemonRestartWaitingLine());
+    } catch {
+      // Progress is best effort.
+    }
+    try {
+      release = await acquire(host, AGENC_DAEMON_RESTART_LOCK_WAIT_MS);
+    } catch (error) {
+      return { status: "failed", reason: describeAgenCDaemonRestartLockFailure(error), toVersion: ctx.build.runtimeVersion };
+    }
   }
   try {
     return await restartWhenIdleLocked(ctx);
@@ -2049,7 +2068,7 @@ export async function runAgenCDaemonRestartWaiter(
     try {
       return await (ctx.deps.acquireRestartLock ?? acquireAgenCDaemonRestartLock)(ctx.host, WAITER_RESTART_LOCK_WAIT_MS);
     } catch (error) {
-      if (!isLockTimeout(error) && !lockProblemLogged) {
+      if (!isLocalSqliteLockBusyTimeout(error, RESTART_LOCK) && !lockProblemLogged) {
         lockProblemLogged = true;
         logLine(ctx.daemonHome, `the daemon restart lock could not be taken (${formatCleanupError(error)}); checking again later`, ctx.now());
       }
@@ -2165,6 +2184,10 @@ export async function runAgenCDaemonRestartWhenIdleCli(
       };
   try {
     outcome = await restartAgenCDaemonWhenIdle(host, options, {
+      // `agenc update` reads this line from stderr and shows it.
+      onProgress: (line) => {
+        io.stderr.write(`agenc: ${line}\n`);
+      },
       ...deps,
       ...(requester === undefined ? {} : { requester }),
       ...(command.downgrade === true ? { downgrade: true } : {}),

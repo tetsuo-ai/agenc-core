@@ -374,7 +374,7 @@ agenc update --pin <x.y.z>
 | --- | --- |
 | `--check` | Report whether an update is available; no downloads or writes |
 | `--json` | Machine-readable result on stdout |
-| `--pin <x.y.z>` | Install a private-Node release (`0.11.2` or newer) instead of latest |
+| `--pin <x.y.z>` | Install a private-Node release (`0.11.2` or newer) instead of latest; a running daemon moves to exactly that version, even from a newer one |
 | `--repo <owner/name>` | Release repository override |
 | `--manifest-url <url>` | Manifest override (`file://` allowed for testing) |
 | `--wrapper <path>` | Explicit wrapper script to repoint |
