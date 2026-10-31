@@ -138,6 +138,7 @@ import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
 import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
+import { getCliHighlightPromise } from "../utils/cliHighlight.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
@@ -1416,7 +1417,7 @@ export function createDaemonTuiSession<
             },
           });
         }
-        const result = await client.request("message.stream", {
+        const streamed = client.request("message.stream", {
           sessionId,
           content,
           ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
@@ -1442,6 +1443,13 @@ export function createDaemonTuiSession<
           clientMessageId,
           streamId,
         } satisfies MessageStreamParams);
+        // Answers render as Markdown, and the first render loads the code
+        // highlighter (cli-highlight with every highlight.js language, about
+        // 50 to 70 ms of synchronous module evaluation). Load it while the
+        // model works on this request, not after its last reply, where it
+        // held the finished turn off the screen. Later calls share the load.
+        void getCliHighlightPromise();
+        const result = await streamed;
         if (result.terminal !== undefined && (
           !isJsonObject(result.terminal) ||
           (result.terminal.code !== 0 && result.terminal.code !== 1 && result.terminal.code !== 130) ||
