@@ -78,6 +78,36 @@ describe("a run's own tool charges", () => {
     expect(parent.getDirectToolCharges?.()?.costUsd).toBe(0);
   });
 
+  it("encodes same-run session ids so colons cannot move a step's purpose", async () => {
+    const parent = root(kernel(), 5);
+    const worker = parent.forSession({ runId: "worker", sessionId: "worker" });
+    // Same-run clients for other sessions, ids with colons and quotes.
+    const slot = worker.forSession({ sessionId: "worker:slot" });
+    const lookalike = worker.forSession({ sessionId: "worker:web_search" });
+    const nested = slot.forSession({ sessionId: 'inner "q":1' });
+    const task = worker.forSession({ sessionId: "worker", taskId: "task:a" });
+    const taskSlot = task.forSession({ sessionId: "slot:1" });
+
+    const slotSearch = await acquire(slot, "web_search:sub-1", 0.5);
+    expect(slotSearch.reservation.step.stepId).toBe('session:"worker:slot":web_search:sub-1');
+    reconcile(slot, slotSearch, 0.004);
+    // A primary model call whose session id holds a purpose's text.
+    const lookalikeTurn = await acquire(lookalike, "model:sub-2:primary", 0.5);
+    expect(lookalikeTurn.reservation.step.stepId).toBe('session:"worker:web_search":model:sub-2:primary');
+    reconcile(lookalike, lookalikeTurn, 0.25);
+    const nestedFetch = await acquire(nested, "web_fetch_extraction:sub-3", 0.5);
+    expect(nestedFetch.reservation.step.stepId)
+      .toBe('session:"worker:slot":session:"inner \\"q\\":1":web_fetch_extraction:sub-3');
+    reconcile(nested, nestedFetch, 0.001);
+    const taskSearch = await acquire(taskSlot, "x_search:sub-4", 0.5);
+    expect(taskSearch.reservation.step.stepId).toBe('task:"task:a":session:"slot:1":x_search:sub-4');
+    reconcile(taskSlot, taskSearch, 0.002);
+
+    // The run counts each tool model call once and no session's own call.
+    expect(worker.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.004 + 0.001 + 0.002, 12);
+    expect(task.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.002, 12);
+  });
+
   it("adds nothing for a call still running or a charge the tool never priced", async () => {
     // Uncapped: a hard cost cap refuses an unpriced call before it runs.
     const parent = root(kernel());
@@ -93,6 +123,8 @@ describe("a run's own tool charges", () => {
 
 describe("isToolModelCallStep", () => {
   const task = (id: string) => `task:${JSON.stringify(id)}:`;
+  // How forSession writes a same-run session's prefix.
+  const session = (id: string) => `session:${JSON.stringify(id)}:`;
 
   it.each([
     "web_fetch_extraction:sub-1",
@@ -101,8 +133,17 @@ describe("isToolModelCallStep", () => {
     `${task("task-a")}web_fetch_extraction:sub-1`,
     `${task('quoted "id": with colons')}x_search:sub-2`,
     `${task("back\\slash")}web_search:sub-3`,
-    "session:helper:web_search:sub-4",
-    `${task("task-a")}session:helper:session:inner:web_fetch_extraction:sub-5`,
+    // Session ids holding colons, quotes or a purpose's text.
+    `${session("worker:slot")}web_search:sub-4`,
+    `${session('say "hi": twice')}x_search:sub-5`,
+    `${session("web_search:")}web_fetch_extraction:sub-6`,
+    // Under a task prefix, and nested.
+    `${task("task:a")}${session("worker:slot")}x_search:sub-7`,
+    `${session("outer:1")}${session("inner:2")}web_fetch_extraction:sub-8`,
+    `${task("task-a")}${session("a:b")}${session('c "d"')}web_search:sub-9`,
+    // A row written before session ids were encoded: best effort.
+    "session:helper:web_search:sub-10",
+    `${task("task-a")}session:helper:session:inner:web_fetch_extraction:sub-11`,
   ])("counts %s", (stepId) => {
     expect(isToolModelCallStep(stepId)).toBe(true);
   });
@@ -120,6 +161,13 @@ describe("isToolModelCallStep", () => {
     'task:"task-a"web_search:sub-1',
     "session:web_search",
     "xweb_search:sub-1",
+    // A session's own model call, whatever its id holds.
+    `${session("worker:web_search")}model:sub-1:primary`,
+    `${session("x_search:")}turn-1:primary`,
+    `${task("task-a")}${session("slot:web_fetch_extraction")}model:sub-2:primary`,
+    `${session("outer:1")}${session("inner:web_search")}model:sub-3:primary`,
+    'session:"unterminated web_search:sub-4',
+    'session:"worker"web_search:sub-5',
   ])("does not count %s", (stepId) => {
     expect(isToolModelCallStep(stepId)).toBe(false);
   });

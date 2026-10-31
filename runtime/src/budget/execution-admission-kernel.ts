@@ -910,11 +910,15 @@ export class ExecutionAdmissionKernel {
       const budget: ClientBudgetState = { ...baseBudget, scopes, runAllocationKey,
         ...(taskAllocationKey !== undefined ? { taskAllocationKey } : {}),
       };
+      // A same-run client for another session scopes its steps by that
+      // session id, written as one JSON string like a task id
+      // (stepIdFor), so a colon in the id cannot shift where the step it
+      // scopes begins (admission-types.ts isToolModelCallStep).
       const stepPrefix = createsChildRun
         ? undefined
         : options.sessionId === binding.scope.sessionId
           ? binding.stepPrefix
-          : `${binding.stepPrefix ?? ""}session:${options.sessionId}:`;
+          : `${binding.stepPrefix ?? ""}session:${JSON.stringify(options.sessionId)}:`;
       return new KernelAdmissionClient(this, {
         workspace: binding.workspace,
         scope,

@@ -608,11 +608,12 @@ describe("ExecutionAdmissionKernel recovery", () => {
     expect(second.scope.runId).toBe("root-run-id");
     expect(firstLease.request.step).toMatchObject({
       runId: "root-run-id",
-      stepId: "session:review-a:same-logical-step",
+      // The session id is one JSON string, so a colon in it stays in it.
+      stepId: 'session:"review-a":same-logical-step',
     });
     expect(secondLease.request.step).toMatchObject({
       runId: "root-run-id",
-      stepId: "session:review-b:same-logical-step",
+      stepId: 'session:"review-b":same-logical-step',
     });
     first.reconcile(firstLease.reservation.reservationId, {
       inputTokens: 0,
