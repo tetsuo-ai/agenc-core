@@ -1451,8 +1451,22 @@ export interface SessionServices {
    * support live switching bind the preparation resolver at environment ingress.
    */
   readonly providerService?: SessionProviderService;
-  /** Immutable provider-only environment captured for this session. */
+  /**
+   * Immutable provider-only environment captured for this session. Tools
+   * resolve a call's separate backends, canonical keys and HTTP transport
+   * (proxy, client certificate and key, CA trust) from it. Every session a
+   * tool can run under sets it when it is created; a sub-agent gets its own
+   * copy of its parent's. A tool call from a session without one fails
+   * closed rather than borrowing another session's.
+   */
   readonly providerEnvironment?: ProviderEnvironment;
+  /**
+   * Where this session's tools read stored sign-ins (for example an xAI
+   * sign-in for XSearch or xAI media from a non-Grok session). Set with
+   * `providerEnvironment` when the session is created; a sub-agent gets its
+   * parent's. Never substituted at call time.
+   */
+  readonly credentialHome?: import("../config/home.js").HomeContext;
   /** Read-only projection of `providerService.current().instance`. */
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;

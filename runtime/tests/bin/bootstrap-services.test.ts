@@ -24,6 +24,7 @@ import {
 } from "../hooks/configured-hooks.js";
 import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { resolveHomeContext } from "../config/home.js";
 import { defaultConfig } from "../config/schema.js";
 import {
   COORDINATED_CONFIG_STORE_PUBLICATION,
@@ -1391,6 +1392,70 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       await handle.shutdown();
       await shutdownLspServerManager(sandboxExecutionBroker);
       _resetLspManagerForTesting();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildBootstrapSessionServices tool authority", () => {
+  test("sets the root session's provider environment and credential home explicitly", async () => {
+    policyLimitsMocks.configurePolicyLimitsService.mockReturnValue({
+      initializePolicyLimitsLoadingPromise: vi.fn(),
+      loadPolicyLimits: vi.fn(async () => {}),
+      stopBackgroundPolling: vi.fn(),
+    } as never);
+    const home = mkdtempSync(join(tmpdir(), "agenc-tool-authority-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-tool-authority-ws-"));
+    const homeContext = resolveHomeContext({ AGENC_HOME: home }, { platformHome: home });
+    const handle = buildBootstrapSessionServices({
+      provider: {
+        name: "anthropic",
+        chat: async () => ({ content: "ok", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }),
+        chatStream: async () => ({ content: "ok", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }),
+        healthCheck: async () => true,
+      },
+      providerName: "anthropic",
+      registry: { tools: [] } as never,
+      mcpManager: {} as never,
+      unifiedExecManager: {} as never,
+      permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext()),
+      configStore: {
+        current: () => defaultConfig(),
+        authoritySnapshot: () => ({ config: defaultConfig(), layers: [] }),
+        subscribe: () => () => {},
+        homeContext,
+      } as never,
+      toolApprovals: {
+        get: () => undefined,
+        set: () => {},
+        clear: () => {},
+        withCachedApproval: async (request: { fetchDecision: () => Promise<unknown> }) => request.fetchDecision(),
+      } as never,
+      networkApproval: {
+        clearSessionHosts: () => {},
+        requestNetworkApproval: async () => ({ kind: "approved" }),
+        requestDeferredApproval: async () => ({ kind: "approved" }),
+      } as never,
+      modelsManager: {} as never,
+      agencHome: home,
+      workspaceRoot: workspace,
+      env: { HOME: home, SHELL: "/bin/sh", OPENAI_API_KEY: "root-key", HTTPS_PROXY: "http://root-proxy.test:8080" },
+      conversationId: "session-tool-authority",
+      model: "agenc-opus-4-7",
+      sessionConfiguration: {} as never,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+      commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
+    });
+    try {
+      expect(handle.services.providerEnvironment).toMatchObject({
+        OPENAI_API_KEY: "root-key",
+        HTTPS_PROXY: "http://root-proxy.test:8080",
+      });
+      expect(Object.isFrozen(handle.services.providerEnvironment)).toBe(true);
+      expect(handle.services.credentialHome).toBe(homeContext);
+    } finally {
+      await handle.shutdown();
       rmSync(home, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }

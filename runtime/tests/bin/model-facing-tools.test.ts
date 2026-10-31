@@ -201,6 +201,9 @@ function fakeSession(cwd = process.cwd()): Session {
     },
     services: {
       admissionRequired: false,
+      // Every session carries its own tool authority from creation; a
+      // fixture that runs as a sub-agent has an empty one of its own.
+      providerEnvironment: Object.freeze({}),
       modelsManager: {
         tryListModels: () => [modelInfo],
         listModels: async () => [modelInfo],

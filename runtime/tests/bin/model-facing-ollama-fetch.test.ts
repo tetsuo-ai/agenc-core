@@ -13,7 +13,11 @@ function ollamaSession(
   permissions: ToolPermissionContext | null | (() => ToolPermissionContext) = NEVER_ASKS,
 ): Session {
   return {
-    services: { provider: { name: "ollama-cloud", config: { apiKey: "session-key", model: "gemma4:31b", ...overrides } } },
+    services: {
+      provider: { name: "ollama-cloud", config: { apiKey: "session-key", model: "gemma4:31b", ...overrides } },
+      // Its own tool authority, as every session carries from creation.
+      providerEnvironment: Object.freeze({}),
+    },
     ...(permissions === null ? {} : {
       permissionModeRegistry: { current: typeof permissions === "function" ? permissions : () => permissions },
     }),
@@ -173,7 +177,10 @@ describe("Ollama Cloud web fetch gate (follows redirects on Ollama's servers)", 
 
   it("chooses Ollama from the invoking sub-agent session, with its own key", async () => {
     const openAiSession = {
-      services: { provider: { name: "openai", config: { apiKey: "sk-openai", model: "gpt-5.5" } } },
+      services: {
+        provider: { name: "openai", config: { apiKey: "sk-openai", model: "gpt-5.5" } },
+        providerEnvironment: Object.freeze({}),
+      },
       permissionModeRegistry: { current: () => NEVER_ASKS },
     } as unknown as Session;
     // An OpenAI child of a "never asks" Ollama parent fetches locally.

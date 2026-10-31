@@ -14,6 +14,7 @@ import {
   __setLiveWebFetchDnsAllLookupForTests,
   createModelFacingTools,
 } from "../../src/bin/model-facing-tools.js";
+import { resolveHomeContext, type HomeContext } from "../../src/config/home.js";
 import { createProvider, type ProviderFactoryOptions } from "../../src/llm/provider.js";
 import type { LLMProvider, LLMResponse } from "../../src/llm/types.js";
 import type { Session } from "../../src/session/session.js";
@@ -81,11 +82,20 @@ interface FakeSession {
   readonly admission: FakeAdmission;
 }
 
-/** A session with its own provider, admission client, internal ids and environment. */
+/** The credential home every session in these tests carries (empty: no stored sign-in). */
+function testCredentialHome(): HomeContext {
+  return resolveHomeContext({ AGENC_HOME: home });
+}
+
+/**
+ * A session with its own provider, admission client, internal ids and tool
+ * authority (an empty environment and the test home unless given), as every
+ * session carries from creation.
+ */
 function sessionOn(
   id: string,
   provider: LLMProvider,
-  providerEnvironment?: Readonly<Record<string, string>>,
+  authority: { readonly providerEnvironment?: Readonly<Record<string, string>> } = {},
 ): FakeSession {
   const admission = fakeAdmission(id);
   let sub = 0;
@@ -98,7 +108,8 @@ function sessionOn(
       provider,
       executionAdmission: admission,
       admissionRequired: true,
-      ...(providerEnvironment !== undefined ? { providerEnvironment } : {}),
+      providerEnvironment: Object.freeze({ ...(authority.providerEnvironment ?? {}) }),
+      credentialHome: testCredentialHome(),
     },
     emit: () => {},
   } as unknown as Session;
@@ -269,8 +280,10 @@ describe("WebSearch through Grok's native search", () => {
     vi.stubGlobal("fetch", fetch);
     const { nativeChat, providerFactory } = grokFactory();
     const parent = sessionOn("grok-parent", chatProvider("grok", { apiKey: "xai-parent", model: "grok-4-fast" }));
+    // The sub-agent's own copy of the parent's environment, as it gets one at creation.
     const child = sessionOn("openai-child", chatProvider("openai",
-      { apiKey: "sk-child", baseURL: "https://api.openai.com/v1", model: "gpt-5.5" }));
+      { apiKey: "sk-child", baseURL: "https://api.openai.com/v1", model: "gpt-5.5" }),
+      { providerEnvironment: { AGENC_WEB_SEARCH_ENDPOINT: "http://127.0.0.1/search" } });
     const tool = modelFacingTools(parent.session, {
       env: { AGENC_HOME: home, AGENC_WEB_SEARCH_ENDPOINT: "http://127.0.0.1/search" },
       providerFactory: providerFactory as never,
@@ -325,7 +338,7 @@ describe("WebSearch with a configured search endpoint", () => {
     const openai = (key: string) => chatProvider("openai",
       { apiKey: key, baseURL: "https://api.openai.com/v1", model: "gpt-5.5" });
     const parent = sessionOn("parent-session", openai("sk-parent"));
-    const child = sessionOn("child-agent", openai("sk-child"), search("child"));
+    const child = sessionOn("child-agent", openai("sk-child"), { providerEnvironment: search("child") });
     const tool = modelFacingTools(parent.session, { env: { AGENC_HOME: home, ...search("parent") } })
       .find((entry) => entry.name === "WebSearch")!;
 
@@ -415,9 +428,16 @@ describe("media tools", () => {
   const authorization = (fetchImpl: ReturnType<typeof vi.fn>) =>
     (fetchImpl.mock.calls[0]?.[1] as { headers?: Record<string, string> } | undefined)?.headers?.authorization;
 
+  /** A parent session and a sub-agent carrying its own (empty) environment and the test home. */
   function sessions(parentProvider: LLMProvider, childProvider: LLMProvider) {
     const parent = { services: { provider: parentProvider } } as unknown as Session;
-    const child = { services: { provider: childProvider } } as unknown as Session;
+    const child = {
+      services: {
+        provider: childProvider,
+        providerEnvironment: Object.freeze({}),
+        credentialHome: testCredentialHome(),
+      },
+    } as unknown as Session;
     return { parent, child };
   }
 

@@ -962,7 +962,11 @@ export function buildBootstrapSessionServices(
     modelClient,
     codeModeService,
     providerService,
+    // The root session's tool authority, set here explicitly: tools resolve
+    // separate backends, canonical keys and transport from this environment
+    // and stored sign-ins from the home its providers use.
     providerEnvironment,
+    credentialHome: opts.configStore.homeContext,
     provider: opts.provider,
     registry: opts.registry,
     ...(opts.executionAdmission !== undefined

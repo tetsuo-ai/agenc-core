@@ -51,10 +51,12 @@ import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
 import {
   isManagedProviderRoute,
+  resolveToolCallAuthority,
   sessionApiKeyRoute,
-  sessionCredentialHome,
   sessionXaiRoute,
-  toolCallEnvironment,
+  type ToolCallAuthority,
+  toolCallSession,
+  withToolCallTransport,
 } from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
@@ -391,7 +393,7 @@ const VIDEO_DOWNLOAD_POLICY: Readonly<
 });
 
 type VideoBackendResolution =
-  | { readonly backend: VideoBackend }
+  | { readonly backend: VideoBackend; readonly authority: ToolCallAuthority }
   | { readonly error: string };
 
 /**
@@ -468,11 +470,29 @@ function resolveVideoBackend(
   opts: ImagineVideoToolOptions,
   args?: Readonly<Record<string, unknown>>,
 ): VideoBackendResolution {
-  const session = readInvokingSession(args) ?? opts.getSession();
-  const env = toolCallEnvironment(session, opts.env);
-  const provider = session?.services?.provider;
+  const call = toolCallSession(readInvokingSession(args), opts.getSession);
+  const session = call.session;
+  const authority = resolveToolCallAuthority(
+    "ImagineVideo", call, { env: opts.env, home: opts.home }, true,
+  );
+  if ("error" in authority) return authority;
+  // Present whenever the authority resolved (it was required above).
+  if (authority.credentialHome === undefined) {
+    return { error: "ImagineVideo cannot run: this session has no credential home of its own." };
+  }
+  const resolution = resolveVideoBackendWith(
+    authority, session?.services?.provider, authority.credentialHome,
+  );
+  return "backend" in resolution ? { backend: resolution.backend, authority } : resolution;
+}
+
+function resolveVideoBackendWith(
+  authority: ToolCallAuthority,
+  provider: unknown,
+  home: HomeContext,
+): { readonly backend: VideoBackend } | { readonly error: string } {
+  const env = authority.environment;
   const providerIdentity = readProviderIdentity(provider as never);
-  const home = sessionCredentialHome(provider) ?? opts.home;
   let oauthBaseUrlError: string | undefined;
 
   // An OpenRouter or Venice session generates with its own key and nobody
@@ -1897,7 +1917,9 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       const ctx: VideoRunContext = {
         opts,
         backend,
-        fetchImpl: opts.fetchImpl ?? fetch,
+        // Every request goes out through the calling session's own proxy,
+        // client certificate and CA trust.
+        fetchImpl: withToolCallTransport(opts.fetchImpl ?? fetch, backendResolution.authority),
         signal: admittedSignal,
         args,
         prompt,

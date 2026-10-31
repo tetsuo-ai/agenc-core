@@ -29,11 +29,14 @@ export type OllamaFetchOutcome =
  */
 export async function runOllamaWebFetch(options: {
   apiKey: string; url: string; signal?: AbortSignal; timeoutMs?: number; fetchImpl?: typeof fetch;
+  /** The calling session's transport: proxy, client certificate and key, CA trust. */
+  fetchOptions?: Readonly<Record<string, unknown>>;
 }): Promise<OllamaFetchOutcome> {
   let costUsd = 0;
   try {
     const timeout = AbortSignal.timeout(ollamaFetchBudgetMs(options.timeoutMs));
     const response = await (options.fetchImpl ?? fetch)(OLLAMA_WEB_FETCH_URL, {
+      ...(options.fetchOptions ?? {}),
       method: "POST", headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({ url: options.url }), redirect: "error",
       signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,

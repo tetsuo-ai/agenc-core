@@ -31,10 +31,12 @@ import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
 import {
   isManagedProviderRoute,
+  resolveToolCallAuthority,
   sessionApiKeyRoute,
-  sessionCredentialHome,
   sessionXaiRoute,
-  toolCallEnvironment,
+  type ToolCallAuthority,
+  toolCallSession,
+  withToolCallTransport,
 } from "./session-provider-authority.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { validationErrorToolResult } from "../results.js";
@@ -275,7 +277,7 @@ type ImageBackend =
     };
 
 type BackendResolution =
-  | { readonly backend: ImageBackend }
+  | { readonly backend: ImageBackend; readonly authority: ToolCallAuthority }
   | { readonly error: string };
 
 function withoutTrailingSlash(value: string): string {
@@ -544,11 +546,29 @@ function resolveImageBackend(
   opts: ImagineImageToolOptions,
   args?: Readonly<Record<string, unknown>>,
 ): BackendResolution {
-  const session = readInvokingSession(args) ?? opts.getSession();
-  const env = toolCallEnvironment(session, opts.env);
-  const provider = session?.services?.provider;
+  const call = toolCallSession(readInvokingSession(args), opts.getSession);
+  const session = call.session;
+  const authority = resolveToolCallAuthority(
+    "ImagineImage", call, { env: opts.env, home: opts.home }, true,
+  );
+  if ("error" in authority) return authority;
+  // Present whenever the authority resolved (it was required above).
+  if (authority.credentialHome === undefined) {
+    return { error: "ImagineImage cannot run: this session has no credential home of its own." };
+  }
+  const resolution = resolveImageBackendWith(
+    authority, session?.services?.provider, authority.credentialHome,
+  );
+  return "backend" in resolution ? { backend: resolution.backend, authority } : resolution;
+}
+
+function resolveImageBackendWith(
+  authority: ToolCallAuthority,
+  provider: unknown,
+  home: HomeContext,
+): { readonly backend: ImageBackend } | { readonly error: string } {
+  const env = authority.environment;
   const providerIdentity = readProviderIdentity(provider as never);
-  const home = sessionCredentialHome(provider) ?? opts.home;
   let oauthBaseUrlError: string | undefined;
   const metaCredential = resolveProviderApiKeyEnvironment("meta", env);
   const metaBackend = (): ImageBackend | undefined => {
@@ -1392,8 +1412,12 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     opts.getSession() === null;
   // Venice prices any model from its live list; read it now so a call's
   // admission finds the price.
-  if (advertisedBackend?.kind === "venice" && cachedVeniceMediaModels(advertisedBackend.baseURL) === undefined) {
-    void loadVeniceMediaModels(advertisedBackend.baseURL, advertisedBackend.bearer, opts.fetchImpl ?? fetch)
+  if (
+    advertisedResolution !== undefined && "backend" in advertisedResolution &&
+    advertisedBackend?.kind === "venice" && cachedVeniceMediaModels(advertisedBackend.baseURL) === undefined
+  ) {
+    void loadVeniceMediaModels(advertisedBackend.baseURL, advertisedBackend.bearer,
+      withToolCallTransport(opts.fetchImpl ?? fetch, advertisedResolution.authority))
       .catch(() => undefined);
   }
   return {
@@ -1429,8 +1453,12 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         (gateway !== undefined ? defaultImageModel(gateway) : "glm-image");
       const requestedImages = typeof args.n === "number" && Number.isFinite(args.n)
         ? Math.max(1, Math.floor(args.n)) : 1;
-      if (gateway?.kind === "venice" && cachedVeniceMediaModels(gateway.baseURL) === undefined) {
-        void loadVeniceMediaModels(gateway.baseURL, gateway.bearer, opts.fetchImpl ?? fetch).catch(() => undefined);
+      if (
+        "backend" in resolution && gateway?.kind === "venice" &&
+        cachedVeniceMediaModels(gateway.baseURL) === undefined
+      ) {
+        void loadVeniceMediaModels(gateway.baseURL, gateway.bearer,
+          withToolCallTransport(opts.fetchImpl ?? fetch, resolution.authority)).catch(() => undefined);
       }
       const gatewayPrice = gateway === undefined
         ? undefined
@@ -1462,6 +1490,9 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         return refusal({ error: backendResolution.error });
       }
       const { backend } = backendResolution;
+      // Every request below goes out through the calling session's own
+      // proxy, client certificate and CA trust.
+      const sessionFetch = withToolCallTransport(opts.fetchImpl ?? fetch, backendResolution.authority);
 
       const prompt = stringValue(args.prompt);
       if (!prompt) return refusal({ error: "prompt is required" });
@@ -1515,7 +1546,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       } else if (backend.kind === "venice") {
         // Venice's own list decides; the reviewed table answers only while
         // the list cannot be read.
-        const listed = await loadVeniceMediaModels(backend.baseURL, backend.bearer, opts.fetchImpl ?? fetch, admittedSignal);
+        const listed = await loadVeniceMediaModels(backend.baseURL, backend.bearer, sessionFetch, admittedSignal);
         const live = listed?.get(model);
         const known = listed === undefined ? VENICE_IMAGE_MODELS.has(model) : live?.type === "image";
         if (!known || gatewayImagePrice(backend, model, stringValue(args.aspect_ratio)) === undefined) {
@@ -1613,7 +1644,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         body.resolution = resolution.toUpperCase();
       }
 
-      const fetchImpl = opts.fetchImpl ?? fetch;
+      const fetchImpl = sessionFetch;
       const timeoutSignal = AbortSignal.timeout(180_000);
       const requestSignal = admittedSignal
         ? AbortSignal.any([admittedSignal, timeoutSignal])

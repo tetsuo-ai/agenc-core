@@ -16,6 +16,7 @@ import { registerChildApprovalSession, revokeChildApprovalSession } from "../age
 import { createHash } from "node:crypto";
 
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
+import { childSessionAuthority } from "./session-authority.js";
 import type { LLMChatOptions, LLMMessage, LLMProvider } from "../llm/types.js";
 import { STREAM_IDLE_ABORT_REASON } from "../llm/stream-watchdog.js";
 import {
@@ -616,6 +617,9 @@ function buildChildServices(
 ): SessionServices {
   return {
     ...parent.services,
+    // The delegate's own copy of the parent's tool authority, taken at
+    // creation (its registry is disabled, but the contract is the same).
+    ...childSessionAuthority(parent),
     provider,
     // A delegate owns its provider binding. Reusing the parent's provider
     // service would make the child ignore `provider` above and route review

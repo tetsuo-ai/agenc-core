@@ -339,8 +339,8 @@ disabled for the rest of the session; start a new session then.
 When a sub-agent calls `WebSearch`, `XSearch`, `web_fetch` or a media tool
 (`ImagineImage`, `ImagineVideo`, `ImagineSpeech`, `ImagineEdit`), the tool
 works from the sub-agent's own session, and one session's authority covers
-the whole call: endpoint, credential, auth mode (API key or sign-in) and
-credential home resolve together.
+the whole call: endpoint, credential, auth mode (API key or sign-in),
+credential home and connection settings resolve together.
 
 - A tool that calls the session's own provider (Grok's native search,
   `web_fetch`'s `prompt` extraction, `XSearch` in a Grok session, the
@@ -354,11 +354,22 @@ credential home resolve together.
   provider key) resolves from that session's own environment and credential
   home, honoring its `GROK_AUTH_MODE`, with each key and its URL taken as one
   pair.
+- Every request the tool sends itself (fetches, searches, media requests and
+  their downloads) goes through that session's own proxy (`HTTPS_PROXY`,
+  `NO_PROXY`), client certificate and key (`AGENC_CLIENT_CERT`,
+  `AGENC_CLIENT_KEY`) and CA trust, from the same environment its endpoint and
+  key come from.
 
-The session's permission mode and rules govern a provider fetch, and the
-model calls a tool makes are admitted on its own budget and run. A parent's
-key, sign-in, endpoint or model is never used for a sub-agent's call, and a
-call with no usable credential fails with an error.
+A session gets its provider environment and credential home when it is
+created: the root session from its client's environment and AgenC home, and
+each sub-agent (one `spawn_agent` starts, a task worker, an in-process
+teammate, a review delegate) its own copy of its parent's. A sub-agent
+without them fails the call with an error rather than using its parent's.
+The session's permission mode and rules govern a provider fetch,
+and the model calls a tool makes are admitted on its own budget and run. A
+parent's key, sign-in, endpoint, connection settings or model is never used
+for a sub-agent's call, and a call with no usable credential fails with an
+error.
 
 There is **no** separate LIVE tool named `web_search`; that string is only a
 provider-native server-side tool id used internally by the Grok web-search

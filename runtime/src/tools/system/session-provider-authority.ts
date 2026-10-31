@@ -9,49 +9,170 @@
  *   and auth mode that session's model calls use, read from its provider's
  *   factory options.
  * - A tool that calls a separate backend (xAI or Meta from another provider's
- *   session, a canonical media key) resolves it from that session's own
- *   environment and credential home, credential and endpoint as one pair.
+ *   session, a canonical media key, a configured search endpoint) resolves it
+ *   from that session's own environment and credential home, credential and
+ *   endpoint as one pair.
+ * - Every HTTP request the tool makes itself uses the same session's
+ *   transport: proxy, client certificate and key, and CA trust from its
+ *   environment.
  *
- * One session's endpoint is never paired with another session's credential,
- * and nothing falls back to the parent's credential.
+ * A session carries its environment and credential home from creation
+ * (session/session-authority.ts). One session's endpoint is never paired
+ * with another session's credential, and a session that lacks its own
+ * authority fails closed instead of falling back to the parent's.
  *
  * @module
  */
 
 import type { HomeContext } from "../../config/home.js";
+import {
+  type ConfiguredProviderAuth,
+  withConfiguredProviderAuth,
+} from "../../llm/provider-auth-selection.js";
 import { readProviderFactoryOptions } from "../../llm/provider.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../../services/xai/oauth.js";
+import { getProxyFetchOptions } from "../../utils/proxy.js";
 import {
   isXaiOauthBearer,
   readXaiOauthAccessToken,
 } from "../../utils/xaiOauthCredentials.js";
 
+type EnvironmentRecord = Readonly<Record<string, string | undefined>>;
+
 /** The parts of a session a tool reads its authority from. */
 export interface ToolCallSession {
   readonly services?: {
     readonly provider?: unknown;
-    readonly providerEnvironment?: Readonly<Record<string, string | undefined>>;
+    readonly providerEnvironment?: EnvironmentRecord;
+    readonly credentialHome?: HomeContext;
+    readonly configStore?: { current(): unknown };
   };
 }
 
-/**
- * The environment a session's separate backends resolve from: the provider
- * environment the session captured (a sub-agent's is the one its parent
- * gave it), else the tool's own captured environment.
- */
-export function toolCallEnvironment(
-  session: ToolCallSession | null | undefined,
-  fallback: NodeJS.ProcessEnv | undefined,
-): NodeJS.ProcessEnv {
-  return (session?.services?.providerEnvironment as NodeJS.ProcessEnv | undefined) ??
-    fallback ??
-    process.env;
+/** Everything a tool call resolves credentials and transport from. */
+export interface ToolCallAuthority {
+  /**
+   * Credential selection: the session's environment with its config's
+   * `[providers.<openai|grok>] auth` choices filled in where the environment
+   * leaves them unset, as its provider resolution does.
+   */
+  readonly environment: NodeJS.ProcessEnv;
+  /** The session's own environment: proxy, client certificate and key, CA trust. */
+  readonly transportEnvironment: EnvironmentRecord;
+  /** Where the session's stored sign-ins are read; absent when it has none. */
+  readonly credentialHome?: HomeContext;
 }
 
-/** The credential home the session's own provider uses, when it names one. */
-export function sessionCredentialHome(provider: unknown): HomeContext | undefined {
-  if (provider === undefined || provider === null) return undefined;
-  return readProviderFactoryOptions(provider as never).credentialHome;
+export type ToolCallAuthorityResolution = ToolCallAuthority | { readonly error: string };
+
+function configuredProviderAuth(
+  configStore: { current(): unknown } | undefined,
+): ConfiguredProviderAuth | undefined {
+  try {
+    return configStore?.current() as ConfiguredProviderAuth | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A tool call's session and whether it is the one its registry was built for. */
+export interface ToolCallSessionRef<S extends ToolCallSession = ToolCallSession> {
+  readonly session: S | null;
+  readonly registrySession: boolean;
+}
+
+/**
+ * The session a tool call runs for: the session the runtime attached to the
+ * call (`invoking`, a sub-agent's own when it calls its parent's tool), or,
+ * for a call without one (direct use, registration), the session the
+ * registry was built for. `registrySession` is true only when the call's
+ * session is that same session object.
+ */
+export function toolCallSession<S extends ToolCallSession>(
+  invoking: S | null | undefined,
+  getRegistrySession: () => S | null,
+): ToolCallSessionRef<S> {
+  if (invoking === null || invoking === undefined) {
+    return { session: getRegistrySession(), registrySession: true };
+  }
+  return { session: invoking, registrySession: invoking === getRegistrySession() };
+}
+
+/**
+ * The authority for one call. The tool's own captured environment and home
+ * were given to it for the session its registry was built for (bootstrap
+ * passes that session's), so they serve that same session and a call with
+ * no session at all, and nothing else. Any other session must carry its own
+ * environment, and its own credential home when `needsCredentialHome`;
+ * otherwise the call fails closed with a clear error.
+ */
+export function resolveToolCallAuthority(
+  toolName: string,
+  call: ToolCallSessionRef,
+  captured: { readonly env?: EnvironmentRecord; readonly home?: HomeContext },
+  needsCredentialHome = false,
+): ToolCallAuthorityResolution {
+  const session = call.session;
+  if (session === null) {
+    const environment = captured.env ?? process.env;
+    return {
+      environment: environment as NodeJS.ProcessEnv,
+      transportEnvironment: environment,
+      ...(captured.home !== undefined ? { credentialHome: captured.home } : {}),
+    };
+  }
+  // The registry's own session keeps what the tool was built with for it
+  // (the same environment and home bootstrap gave the session); any other
+  // session has only what it carries itself.
+  const ownSession = call.registrySession;
+  const services = session.services;
+  const transportEnvironment = ownSession
+    ? captured.env ?? services?.providerEnvironment
+    : services?.providerEnvironment;
+  if (transportEnvironment === undefined) {
+    return {
+      error:
+        `${toolName} cannot run: this session has no provider environment of its own, ` +
+        "and a tool never borrows another session's credentials or connection settings.",
+    };
+  }
+  const credentialHome = ownSession
+    ? captured.home ?? services?.credentialHome
+    : services?.credentialHome;
+  if (needsCredentialHome && credentialHome === undefined) {
+    return {
+      error:
+        `${toolName} cannot run: this session has no credential home of its own, ` +
+        "and a tool never reads another session's stored sign-ins.",
+    };
+  }
+  return {
+    environment: withConfiguredProviderAuth(
+      transportEnvironment,
+      configuredProviderAuth(services?.configStore),
+    ) as NodeJS.ProcessEnv,
+    transportEnvironment,
+    ...(credentialHome !== undefined ? { credentialHome } : {}),
+  };
+}
+
+/** Fetch options carrying the session's own proxy, client certificate and key, and CA trust. */
+export function toolCallFetchOptions(
+  authority: ToolCallAuthority,
+): ReturnType<typeof getProxyFetchOptions> {
+  return getProxyFetchOptions({ environment: authority.transportEnvironment });
+}
+
+/** `fetchImpl` sending every request through the session's own transport. */
+export function withToolCallTransport(
+  fetchImpl: typeof fetch,
+  authority: ToolCallAuthority,
+): typeof fetch {
+  return ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    fetchImpl(input, {
+      ...(init ?? {}),
+      ...toolCallFetchOptions(authority),
+    } as RequestInit)) as typeof fetch;
 }
 
 function trimmed(value: unknown): string | undefined {

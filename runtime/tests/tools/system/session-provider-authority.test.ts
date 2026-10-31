@@ -96,13 +96,23 @@ async function harness() {
     import("../../../src/utils/model/providers.js"),
   ]);
   let sub = 0;
-  const sessionOf = (id: string, provider: unknown, providerEnvironment?: Record<string, string>) => ({
+  /**
+   * A session; `authority` is what a sub-agent carries from creation (a
+   * registry's own session may leave it out: the tool was built with its).
+   */
+  const sessionOf = (id: string, provider: unknown, authority: {
+    readonly providerEnvironment?: Record<string, string>;
+    readonly credentialHome?: HomeContext;
+  } = {}) => ({
     conversationId: id,
     nextInternalSubId: () => `${id}-sub-${++sub}`,
     services: {
       admissionRequired: false,
       provider,
-      ...(providerEnvironment !== undefined ? { providerEnvironment } : {}),
+      ...(authority.providerEnvironment !== undefined
+        ? { providerEnvironment: Object.freeze({ ...authority.providerEnvironment }) }
+        : {}),
+      ...(authority.credentialHome !== undefined ? { credentialHome: authority.credentialHome } : {}),
     },
   });
   const dispatched = (args: Record<string, unknown>, session: unknown, toolName: string) => {
@@ -152,13 +162,14 @@ async function harness() {
     const options = readProviderFactoryOptions(result.value);
     return { baseURL: options.baseURL, bearer: options.apiKey, authMode: options.extra?.authMode };
   });
-  const media = (kind: "image" | "video", home: HomeContext, root: string, parent: unknown) => {
+  const media = (kind: "image" | "video", home: HomeContext, root: string, parent: unknown,
+    env: Record<string, string> = {}) => {
     const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
     const options = {
       workspaceRoot: root,
       home,
       getSession: () => parent as never,
-      env: {},
+      env,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     };
     const tool = kind === "image" ? createImagineImageTool(options) : createImagineVideoTool(options);
@@ -176,9 +187,10 @@ describe("tool calls from a sub-agent with its own xAI authority", () => {
   async function signedInParentAndByokChild(tools: Awaited<ReturnType<typeof harness>>, home: HomeContext) {
     const parent = tools.sessionOf("grok-parent",
       tools.createProvider("grok", { credentialHome: home, model: "grok-4.6" }));
+    // The sub-agent got its own copy of the parent's authority at creation.
     const child = tools.sessionOf("grok-child", tools.createProvider("grok", {
       credentialHome: home, apiKey: "child-key", model: "grok-4.6", extra: { authMode: "api_key" },
-    }));
+    }), { providerEnvironment: { AGENC_HOME: home.path }, credentialHome: home });
     return { parent, child };
   }
 
@@ -228,7 +240,7 @@ describe("tool calls from a sub-agent with its own xAI authority", () => {
     const child = tools.sessionOf("grok-child", tools.createProvider("grok", {
       credentialHome: home, apiKey: "child-key", model: "grok-4.6",
       baseURL: "https://xai-gateway.example/v1", extra: { authMode: "api_key" },
-    }));
+    }), { providerEnvironment: { AGENC_HOME: home.path }, credentialHome: home });
 
     await tools.withXSearch(home, parent, async (xSearch) => {
       await xSearch.execute(tools.dispatched({ query: "xAI" }, child, "XSearch"));
@@ -248,7 +260,10 @@ describe("tool calls from a sub-agent with its own xAI authority", () => {
     // A DeepSeek sub-agent whose environment selects xAI API-key billing.
     const child = tools.sessionOf("deepseek-child", tools.createProvider("deepseek", {
       credentialHome: home, apiKey: "deepseek-key", model: "deepseek-v4-pro",
-    }), { AGENC_HOME: home.path, GROK_AUTH_MODE: "api-key", XAI_API_KEY: "child-xai-key" });
+    }), {
+      providerEnvironment: { AGENC_HOME: home.path, GROK_AUTH_MODE: "api-key", XAI_API_KEY: "child-xai-key" },
+      credentialHome: home,
+    });
 
     await tools.withXSearch(home, parent, async (xSearch) => {
       expect((await xSearch.execute(tools.dispatched({ query: "xAI" }, child, "XSearch"))).isError).toBeUndefined();
@@ -256,6 +271,75 @@ describe("tool calls from a sub-agent with its own xAI authority", () => {
     expect(tools.xSearchCredentials()).toEqual([
       { baseURL: "https://api.x.ai/v1", bearer: "child-xai-key", authMode: "api_key" },
     ]);
+  });
+});
+
+describe("a sub-agent without its own authority", () => {
+  type Harness = Awaited<ReturnType<typeof harness>>;
+  const deepSeekChild = (tools: Harness, authority: Parameters<Harness["sessionOf"]>[2]) =>
+    tools.sessionOf("deepseek-child", tools.createProvider("deepseek", {
+      apiKey: "deepseek-key", model: "deepseek-v4-pro",
+    }), authority);
+
+  it.each([
+    ["image", "ImagineImage"],
+    ["video", "ImagineVideo"],
+  ] as const)("Imagine %s fails closed without the sub-agent's environment instead of using the parent's key",
+    async (kind, toolName) => {
+      const home = await createHome(`no-environment-${kind}`);
+      const tools = await harness();
+      const parent = tools.sessionOf("openai-parent",
+        tools.createProvider("openai", { apiKey: "parent-key", model: "gpt-5" }));
+      // A credential home, but no provider environment of its own.
+      const child = deepSeekChild(tools, { credentialHome: home });
+      const { tool, requests } = tools.media(kind, home, await mkdtemp(join(testRoot, "media-")), parent,
+        { OPENAI_API_KEY: "parent-key" });
+
+      const result = await tool.execute(tools.dispatched({ prompt: "a cat" }, child, toolName));
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/no provider environment of its own/u);
+      expect(requests()).toEqual([]);
+    });
+
+  it.each([
+    ["image", "ImagineImage"],
+    ["video", "ImagineVideo"],
+  ] as const)("Imagine %s fails closed without the sub-agent's credential home instead of the parent's sign-in",
+    async (kind, toolName) => {
+      const home = await signedInHome(`no-home-${kind}`, "parent-oauth");
+      const tools = await harness();
+      const parent = tools.sessionOf("grok-parent",
+        tools.createProvider("grok", { credentialHome: home, model: "grok-4.6" }));
+      // An explicitly empty environment, and no credential home anywhere.
+      const child = deepSeekChild(tools, { providerEnvironment: {} });
+      const { tool, requests } = tools.media(kind, home, await mkdtemp(join(testRoot, "media-")), parent);
+
+      const result = await tool.execute(tools.dispatched({ prompt: "a cat" }, child, toolName));
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/no credential home of its own/u);
+      expect(requests()).toEqual([]);
+    });
+
+  it("XSearch fails closed without the sub-agent's environment or credential home", async () => {
+    const home = await signedInHome("no-authority-xsearch", "parent-oauth");
+    const tools = await harness();
+    const parent = tools.sessionOf("grok-parent",
+      tools.createProvider("grok", { credentialHome: home, model: "grok-4.6" }));
+    const noEnvironment = deepSeekChild(tools, { credentialHome: home });
+    const noHome = deepSeekChild(tools, { providerEnvironment: {} });
+
+    await tools.withXSearch(home, parent, async (xSearch) => {
+      const first = await xSearch.execute(tools.dispatched({ query: "xAI" }, noEnvironment, "XSearch"));
+      expect(first.isError).toBe(true);
+      expect(first.content).toMatch(/no provider environment of its own/u);
+      const second = await xSearch.execute(tools.dispatched({ query: "xAI" }, noHome, "XSearch"));
+      expect(second.isError).toBe(true);
+      expect(second.content).toMatch(/no credential home of its own/u);
+    });
+    // Neither call built a provider, so the parent's sign-in was never sent.
+    expect(tools.xSearchCredentials()).toEqual([]);
   });
 });
 
@@ -304,6 +388,38 @@ describe("session provider authority", () => {
     expect(sessionXaiRoute(createProvider("grok", {
       apiKey: "gateway-key", model: "grok-4.6", baseURL: "https://xai-gateway.example/v1/",
     }), xai)).toEqual({ bearer: "gateway-key", baseURL: "https://xai-gateway.example/v1", authMode: "api_key" });
+  });
+
+  it("gives the registry's own session the tool's captured authority, and no other session", async () => {
+    const { resolveToolCallAuthority, toolCallSession } = await authority();
+    const home = await createHome("captured-authority");
+    const captured = { env: Object.freeze({ XAI_API_KEY: "registry-key" }), home };
+    const registry = { services: {} };
+    const other = { services: {} };
+    const own = resolveToolCallAuthority("XSearch", toolCallSession(registry, () => registry), captured, true);
+    expect(own).toMatchObject({ environment: { XAI_API_KEY: "registry-key" }, credentialHome: home });
+    // A call with no session at all is the registry owner's own as well.
+    expect(resolveToolCallAuthority("XSearch", toolCallSession(undefined, () => null), captured, true))
+      .toMatchObject({ environment: { XAI_API_KEY: "registry-key" }, credentialHome: home });
+    expect(resolveToolCallAuthority("XSearch", toolCallSession(other, () => registry), captured, true))
+      .toEqual({ error: expect.stringMatching(/no provider environment of its own/u) });
+  });
+
+  it("fills a session's configured provider auth choice into its environment, an exported value first", async () => {
+    const { resolveToolCallAuthority, toolCallSession } = await authority();
+    const home = await createHome("configured-auth");
+    const configStore = { current: () => ({ providers: { grok: { auth: "api-key" } } }) };
+    const child = (providerEnvironment: Record<string, string>) => ({
+      services: { providerEnvironment: Object.freeze(providerEnvironment), credentialHome: home, configStore },
+    });
+    const filled = resolveToolCallAuthority("XSearch",
+      toolCallSession(child({ XAI_API_KEY: "child-key" }), () => null), {}, true);
+    expect(filled).toMatchObject({ environment: { XAI_API_KEY: "child-key", GROK_AUTH_MODE: "api-key" } });
+    // The transport environment stays the session's own object.
+    const exported = child({ XAI_API_KEY: "child-key", GROK_AUTH_MODE: "oauth" });
+    const kept = resolveToolCallAuthority("XSearch", toolCallSession(exported, () => null), {}, true);
+    expect(kept).toMatchObject({ environment: { GROK_AUTH_MODE: "oauth" } });
+    expect("transportEnvironment" in kept && kept.transportEnvironment).toBe(exported.services.providerEnvironment);
   });
 
   it("never pairs a sign-in with a custom endpoint", async () => {
