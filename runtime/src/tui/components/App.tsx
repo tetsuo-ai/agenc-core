@@ -4587,13 +4587,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     safe: updateSafe,
     agencHome,
     relaunch: (request: UpdateRelaunchRequest) => requestUpdateRelaunchRef.current(request),
-    // The switch this window waited for is not going to happen: say why,
-    // in full, since what to do comes last.
+    // The switch this window waited for is not going to happen: say why.
     notify: (notice: UpdateNotice) => addNotification({
       key: "agenc-update",
       text: notice.text,
       ...(notice.kind === "error" ? { color: "error" as const } : {}),
-      wrap: true,
       priority: "high",
       timeoutMs: 30_000,
     }),

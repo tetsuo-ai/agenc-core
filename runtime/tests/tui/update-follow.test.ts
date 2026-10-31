@@ -149,7 +149,7 @@ describe("following the daemon after the update stopped waiting for its restart"
     expect(check(SINCE + 41 * 60_000, false)).toBe("stop");
     expect(notices).toEqual([{
       kind: "error",
-      text: "The daemon could not move to AgenC 0.19.26 (the daemon could not be stopped). This window keeps running 0.19.25. Quit AgenC and start it again to use 0.19.26.",
+      text: "Could not move to AgenC 0.19.26: the daemon could not be stopped. This window stays on 0.19.25; quit and restart AgenC.",
     }]);
     expect(relaunched).toEqual([]);
     expect(getPendingUpdateFollow()).toBeNull();
@@ -166,7 +166,7 @@ describe("following the daemon after the update stopped waiting for its restart"
     expect(check(SINCE + 62_000)).toBe("stop");
     expect(notices).toEqual([{
       kind: "info",
-      text: "The daemon moved to AgenC 0.19.27, which is newer than 0.19.26. This window keeps running 0.19.25. Quit AgenC and start it again to use 0.19.27.",
+      text: "The daemon now runs AgenC 0.19.27, newer than 0.19.26. This window stays on 0.19.25; quit and restart AgenC.",
     }]);
     expect(relaunched).toEqual([]);
     expect(getPendingUpdateFollow()).toBeNull();
@@ -179,7 +179,7 @@ describe("following the daemon after the update stopped waiting for its restart"
     expect(check(SINCE + DEADLINE)).toBe("stop");
     expect(notices).toEqual([{
       kind: "info",
-      text: "Stopped waiting for the daemon to move to AgenC 0.19.26 after 13 hours. This window keeps running 0.19.25. Quit AgenC and start it again to use 0.19.26.",
+      text: "The daemon did not move to AgenC 0.19.26 within 13 hours. This window stays on 0.19.25; quit and restart AgenC.",
     }]);
     expect(getPendingUpdateFollow()).toBeNull();
   });
@@ -247,7 +247,7 @@ describe("the follow decision", () => {
       kind: "stop",
       notice: {
         kind: "info",
-        text: "The daemon did not move to AgenC 0.19.26 (a newer update replaced this restart). This window keeps running 0.19.25. Quit AgenC and start it again to use the installed version.",
+        text: "The daemon did not move to AgenC 0.19.26: a newer update replaced this restart. This window stays on 0.19.25; quit and restart AgenC.",
       },
     });
     for (const code of ["already-current", "newer-daemon"] as const) {
@@ -274,6 +274,19 @@ describe("the follow decision", () => {
     expect(decideUpdateFollow(following, seen({ daemonVersion: "0.19.25", restartPending: true }), DEADLINE))
       .toEqual({ kind: "wait" });
     expect(decideUpdateFollow(following, seen({ daemonVersion: "not a version" }), DEADLINE)).toEqual({ kind: "wait" });
+  });
+
+  it("fits each notice without a reason on the prompt's one notification row of a 120-column terminal", () => {
+    const notices = [
+      decideUpdateFollow(following, seen({ daemonVersion: "10.20.300" }), DEADLINE),
+      decideUpdateFollow(following, seen({ now: SINCE + DEADLINE }), DEADLINE),
+      decideUpdateFollow(following, seen({ result: ended({ status: "failed", toVersion: "0.19.26" }) }), DEADLINE),
+      decideUpdateFollow(following, seen({ result: ended({ status: "skipped", toVersion: "0.19.26" }) }), DEADLINE),
+    ];
+    for (const step of notices) {
+      expect(step.kind).toBe("stop");
+      expect(step.kind === "stop" && step.notice.text.length).toBeLessThanOrEqual(117);
+    }
   });
 
   it("outlasts every restart that can still end: the step, the waiting process and its restart", () => {

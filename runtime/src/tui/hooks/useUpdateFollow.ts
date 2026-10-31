@@ -121,30 +121,32 @@ export function decideUpdateFollow(
   const from = follow.request.fromVersion;
   const daemon = seen.daemonVersion;
   if (daemon === to) return { kind: "relaunch" };
+  // One line each: the prompt shows a notice on one row, so what happened
+  // and why come first, and what to do last.
   if (typeof daemon === "string" && newerVersion(daemon, to)) {
     return stop(
       "info",
-      `The daemon moved to AgenC ${daemon}, which is newer than ${to}. This window keeps running ${from}. Quit AgenC and start it again to use ${daemon}.`,
+      `The daemon now runs AgenC ${daemon}, newer than ${to}. This window stays on ${from}; quit and restart AgenC.`,
     );
   }
   const end = followedRestartEnd(follow, seen.result);
   if (end?.status === "failed") {
     return stop(
       "error",
-      `The daemon could not move to AgenC ${to} (${end.reason ?? "unknown error"}). This window keeps running ${from}. Quit AgenC and start it again to use ${to}.`,
+      `Could not move to AgenC ${to}: ${end.reason ?? "the daemon restart failed"}. This window stays on ${from}; quit and restart AgenC.`,
     );
   }
   if (end?.status === "skipped" && end.code !== "already-current" && end.code !== "newer-daemon") {
     return stop(
       "info",
-      `The daemon did not move to AgenC ${to} (${end.reason ?? "skipped"}). This window keeps running ${from}. Quit AgenC and start it again to use the installed version.`,
+      `The daemon did not move to AgenC ${to}: ${end.reason ?? "no reason given"}. This window stays on ${from}; quit and restart AgenC.`,
     );
   }
   if (updateFollowReady(follow, daemon, seen.restartPending)) return { kind: "relaunch" };
   if (follow.since !== undefined && seen.now - follow.since >= deadlineMs) {
     return stop(
       "info",
-      `Stopped waiting for the daemon to move to AgenC ${to} after ${Math.round(deadlineMs / 3_600_000)} hours. This window keeps running ${from}. Quit AgenC and start it again to use ${to}.`,
+      `The daemon did not move to AgenC ${to} within ${Math.round(deadlineMs / 3_600_000)} hours. This window stays on ${from}; quit and restart AgenC.`,
     );
   }
   return { kind: "wait" };
