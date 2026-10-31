@@ -42,9 +42,13 @@ import type {
 import {
   sameSkillInvocationSettings,
   skillInvocationSettingsFor,
+  type SkillSettingsSource,
 } from "../../skills/skill-invocation-settings.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../../contracts/run-contracts.js";
-import { pluginScopedIdentifier } from "../../plugins/identifier-normalization.js";
+import {
+  loadPluginCommands,
+  loadPluginSkills,
+} from "../../plugins/registration/load-plugin-commands.js";
 
 /** Providers whose effort levels come with the live model list. */
 const LIVE_EFFORT_LEVEL_PROVIDERS: ReadonlySet<string> = new Set([
@@ -268,42 +272,50 @@ export function emitSkillGrantsWithheld(
   });
 }
 
-/** A plugin skill's name as the TUI gives it: the plugin's namespace first. */
-function pluginSkillInvocationName(pluginId: string, name: string): string | undefined {
-  try {
-    return pluginScopedIdentifier(pluginId, name.split(":"), "command");
-  } catch {
-    return undefined;
-  }
+/**
+ * The plugin skill or command a journaled record names, loaded the way the
+ * TUI loads it when the user invokes it: named in the plugin's namespace
+ * before any deduplication by bare name (two plugins, or a personal skill,
+ * may share that name), with the same placeholder expansion in its
+ * allowed-tools.
+ */
+async function pluginInvocationSource(
+  session: Session,
+  configStore: ConfigStore,
+  name: string,
+): Promise<SkillSettingsSource | null> {
+  const pluginStorageRoot = session.services.runtimeOptions?.pluginStorageRoot;
+  if (pluginStorageRoot === undefined) return null;
+  const options = {
+    cwd: session.sessionConfiguration.cwd,
+    config: configStore.current(),
+    pluginStorageRoot,
+    fresh: true,
+  };
+  const [commands, skills] = await Promise.all([
+    loadPluginCommands(options),
+    loadPluginSkills(options),
+  ]);
+  // The TUI lists a plugin's commands before its skills; the first of a name wins.
+  const command = [...commands, ...skills].find((candidate) => candidate.name === name);
+  return command?.type === "prompt" ? command : null;
 }
 
-type RegistrySkill = NonNullable<
-  Awaited<ReturnType<NonNullable<NonNullable<Session["services"]["skillsManager"]>["resolveSkill"]>>>
->;
-
 /**
- * The skill a journaled record names, as the daemon's skill registry has it
- * now. The TUI, and so the record, names a plugin's skill in the plugin's
- * namespace (`my-plugin:review`), while the registry names it by its path in
- * the plugin (`review`) with the plugin's id beside it: plugin skills are
- * matched through that identity, every other skill by name.
+ * The skill a journaled record names as it is now: a plugin's skill or
+ * command from the plugins, any other skill from the daemon's registry.
  */
 async function registrySkill(
   session: Session,
   configStore: ConfigStore,
   record: { readonly name: string; readonly source?: string },
-): Promise<RegistrySkill | null> {
-  const skills = session.services.skillsManager;
+): Promise<SkillSettingsSource | null> {
   try {
-    if (skills === undefined) return null;
     if (record.source === "plugin") {
-      const outcome = await skills.skillsForConfig(configStore.current(), null);
-      return (outcome.availableSkills ?? []).find((skill) =>
-        skill.source === "plugin" &&
-        skill.pluginId !== undefined &&
-        pluginSkillInvocationName(skill.pluginId, skill.name) === record.name) ?? null;
+      return await pluginInvocationSource(session, configStore, record.name);
     }
-    if (skills.resolveSkill === undefined) return null;
+    const skills = session.services.skillsManager;
+    if (skills?.resolveSkill === undefined) return null;
     return (await skills.resolveSkill(record.name)) ?? null;
   } catch {
     // A registry that cannot answer is a skill the resume cannot verify.

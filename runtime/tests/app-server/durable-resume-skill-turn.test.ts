@@ -3,9 +3,11 @@
  * resumed by the REAL runner over the REAL bootstrap with the skill's
  * settings: the journal's record is checked against the skill registry the
  * restored session loads (a user skill under AGENC_HOME/skills, or an
- * installed plugin's skill, which the TUI names in the plugin's namespace) and
- * admitted again. A skill that changed meanwhile resumes on the session's
- * settings, with a warning saying so.
+ * installed plugin's skill, which the TUI names in the plugin's namespace,
+ * even when another plugin or a personal skill has the same bare name, and
+ * whose allowed-tools may name the plugin's root) and admitted again. A skill
+ * that changed meanwhile resumes on the session's settings, with a warning
+ * saying so.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -111,11 +113,11 @@ describe("durable resume of a skill turn through the daemon runner", () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  function writeUserSkill(allowedTools: string): void {
-    mkdirSync(join(home, "skills", "deep-review"), { recursive: true });
-    writeFileSync(join(home, "skills", "deep-review", "SKILL.md"), [
+  function writeUserSkill(allowedTools: string, name = "deep-review"): void {
+    mkdirSync(join(home, "skills", name), { recursive: true });
+    writeFileSync(join(home, "skills", name, "SKILL.md"), [
       "---",
-      "name: deep-review",
+      `name: ${name}`,
       "description: Review the diff carefully.",
       `allowed-tools: ${allowedTools}`,
       "---",
@@ -190,6 +192,49 @@ describe("durable resume of a skill turn through the daemon runner", () => {
       explicitColdResume: true,
       envOverrides: { XAI_API_KEY: "test-key" },
     } as never;
+  }
+
+  /** The settings the TUI sends for a plugin skill, from the TUI's own plugin loader. */
+  async function tuiPluginSkillSettings(name: string) {
+    const pluginStorageRoot = join(home, "plugins");
+    const plugins = await loadPlugins({
+      pluginStorageRoot, workspaceRoot: workspace, config: { plugins: { enabled: true } },
+    });
+    const commands = await loadPluginSkills({ cwd: workspace, pluginStorageRoot, plugins: plugins.enabled });
+    const command = commands.find((candidate) => candidate.name === name);
+    expect(command, `the TUI lists ${name}`).toBeDefined();
+    return skillInvocationSettingsFor(command as never)!;
+  }
+
+  /**
+   * Interrupt a turn the TUI started with the plugin skill `name`, resume it
+   * through the real runner, and expect the skill's grants back with no
+   * fallback warning.
+   */
+  async function expectPluginSkillTurnResumes(name: string): Promise<void> {
+    const settings = await tuiPluginSkillSettings(name);
+    expect(settings.source).toBe("plugin");
+    const allowedTools = [...(settings.allowedTools ?? []), `Skill(${name})`];
+    seedInterruptedTurn({
+      name: settings.name,
+      source: "plugin",
+      requested: { allowedTools: [...(settings.allowedTools ?? [])] },
+      allowedTools,
+    });
+    await stubProvider();
+    const resumed = captureResumedTurn();
+    const warnings = recordWarnings();
+    const daemon = runner();
+    try {
+      await expect(daemon.restoreAgent(restoreParams())).resolves.toBe(true);
+      const turn = await within(resumed, "the resumed turn");
+      expect(turn.ctx?.subId).toBe(TURN_ID);
+      expect(turn.ctx?.skillInvocation).toMatchObject({ name, source: "plugin", allowedTools });
+      expect(warnings.filter((warning) => warning.cause.startsWith("durable_resume_skill")))
+        .toEqual([]);
+    } finally {
+      await daemon.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
   }
 
   async function within<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -279,5 +324,29 @@ describe("durable resume of a skill turn through the daemon runner", () => {
     } finally {
       await daemon.stopAgent(CONVERSATION_ID).catch(() => undefined);
     }
+  }, 60_000);
+
+  it.each(["alpha-plugin", "beta-plugin"])(
+    "resumes %s's review while another plugin has a review skill too",
+    async (plugin) => {
+      installPluginSkill("alpha-plugin", "review", "Write");
+      installPluginSkill("beta-plugin", "review", "Edit");
+      await expectPluginSkillTurnResumes(`${plugin}:review`);
+    },
+    60_000,
+  );
+
+  it("resumes a plugin's review while a personal review skill exists", async () => {
+    installPluginSkill("my-plugin", "review", "Write");
+    writeUserSkill("Edit", "review");
+    await expectPluginSkillTurnResumes("my-plugin:review");
+  }, 60_000);
+
+  it("resumes a plugin skill whose allowed-tools name the plugin's root", async () => {
+    installPluginSkill("my-plugin", "review", "FileRead(${AGENC_PLUGIN_ROOT}/**)");
+    const settings = await tuiPluginSkillSettings("my-plugin:review");
+    // The TUI sends the rule with the plugin's root filled in.
+    expect(settings.allowedTools).toEqual([`FileRead(${join(home, "plugins", "my-plugin")}/**)`]);
+    await expectPluginSkillTurnResumes("my-plugin:review");
   }, 60_000);
 });
