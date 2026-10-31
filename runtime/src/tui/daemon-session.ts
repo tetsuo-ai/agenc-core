@@ -21,6 +21,7 @@ import {
   resolveDaemonTranscriptTextArtifacts,
 } from "./daemon-transcript-snapshot.js";
 import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
+import { AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY } from "../app-server/protocol/index.js";
 import type {
   AgentAttachParams,
   AgentAttachResult,
@@ -30,6 +31,7 @@ import type {
   JsonObject,
   JsonValue,
   MessageContentBlock,
+  MessageSkillInvocation,
   MessageStreamParams,
   MessageStreamResult,
   RequestId,
@@ -453,6 +455,8 @@ export type AgenCDaemonBackedTuiSession<
 
 export interface AgenCDaemonTuiClient {
   supportsMethod?(method: string): boolean;
+  /** Whether the daemon advertised `capability` when this client connected. */
+  supportsCapability?(capability: string): boolean;
   request(
     method: "session.shell.execute",
     params?: JsonObject,
@@ -1395,10 +1399,46 @@ export function createDaemonTuiSession<
             : {}),
         };
         submission.dispatched = true;
+        // Only a daemon that advertises it accepts `skillInvocation`; an
+        // older one refuses the whole request. It gets the message as before,
+        // and the user learns the skill's settings wait for a daemon restart.
+        const skillInvocation =
+          opts?.skillInvocation !== undefined &&
+          client.supportsCapability?.(AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY) === true
+            ? opts.skillInvocation
+            : undefined;
+        if (opts?.skillInvocation !== undefined && skillInvocation === undefined) {
+          broadcastDaemonEvent({
+            type: "warning",
+            payload: {
+              cause: "skill_settings_need_daemon_restart",
+              message: `${opts.skillInvocation.name} runs without its model, effort and allowed-tools: the running daemon is older than this TUI. Restart it (agenc daemon restart) to use them.`,
+            },
+          });
+        }
         const result = await client.request("message.stream", {
           sessionId,
           content,
           ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          ...(skillInvocation !== undefined
+            ? {
+                skillInvocation: {
+                  name: skillInvocation.name,
+                  ...(skillInvocation.source !== undefined
+                    ? { source: skillInvocation.source }
+                    : {}),
+                  ...(skillInvocation.model !== undefined
+                    ? { model: skillInvocation.model }
+                    : {}),
+                  ...(skillInvocation.effort !== undefined
+                    ? { effort: skillInvocation.effort as NonNullable<MessageSkillInvocation["effort"]> }
+                    : {}),
+                  ...(skillInvocation.allowedTools !== undefined
+                    ? { allowedTools: [...skillInvocation.allowedTools] }
+                    : {}),
+                },
+              }
+            : {}),
           clientMessageId,
           streamId,
         } satisfies MessageStreamParams);

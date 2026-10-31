@@ -95,6 +95,62 @@ describe("daemon session-control internal method dispatch", () => {
     expect(forged).toMatchObject({ error: { code: -32602 } });
   });
 
+  it("forwards a skill's turn settings on message.stream and rejects malformed ones", async () => {
+    const streamAgentMessage = vi.fn(async () => ({ disposition: "started", acceptedAt: "2026-09-09T00:00:00Z" }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { streamAgentMessage } as never });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+    const skillInvocation = {
+      name: "deep-review",
+      model: "deepseek-v4-pro",
+      effort: "low",
+      allowedTools: ["Write", "exec_command(git status:*)"],
+    };
+    await expect(connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "skill",
+      method: "message.stream",
+      params: { sessionId: "s", content: "review", skillInvocation },
+    })).resolves.toMatchObject({ result: { acceptedAt: "2026-09-09T00:00:00Z" } });
+    expect(streamAgentMessage).toHaveBeenLastCalledWith(expect.objectContaining({ skillInvocation }));
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "plain",
+      method: "message.stream",
+      params: { sessionId: "s", content: "next" },
+    });
+    expect(streamAgentMessage).toHaveBeenLastCalledWith(expect.not.objectContaining({
+      skillInvocation: expect.anything(),
+    }));
+    for (const malformed of [
+      { ...skillInvocation, extra: true },
+      { ...skillInvocation, name: "" },
+      { ...skillInvocation, model: "" },
+      { ...skillInvocation, effort: "32000" },
+      { ...skillInvocation, allowedTools: "Write" },
+      { ...skillInvocation, allowedTools: [" "] },
+      { ...skillInvocation, allowedTools: Array.from({ length: 65 }, (_, index) => `Tool${index}`) },
+      { name: "deep-review" },
+      "deep-review",
+    ]) {
+      const result = await connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "malformed",
+        method: "message.stream",
+        params: { sessionId: "s", content: "review", skillInvocation: malformed },
+      });
+      expect(result).toMatchObject({ error: { code: -32602 } });
+    }
+    const send = await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "send",
+      method: "message.send",
+      params: { sessionId: "s", content: "review", skillInvocation },
+    });
+    expect(send).toMatchObject({ error: { code: -32602 } });
+    expect(streamAgentMessage).toHaveBeenCalledTimes(2);
+  });
+
   it("routes the exact SDK 0.3.0 tool-resolution shape and rejects partial hybrids", async () => {
     // The reviewer is derived from the attachment, whatever the request body says.
     const { connection, resolveSessionToolCall } = await attachedToolResolutionConnection("operator-client");

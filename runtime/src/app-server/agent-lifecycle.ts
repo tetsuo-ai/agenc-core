@@ -107,6 +107,7 @@ import type {
   JsonObject,
   JsonValue,
   MessageContent,
+  MessageSkillInvocation,
   PermissionListParams,
   PermissionListResult,
   RunCancelParams,
@@ -4424,6 +4425,8 @@ export class AgenCDaemonAgentManager {
 
   async streamAgentMessage(params: {
     readonly exactOutput?: boolean;
+    /** Settings of the skill the user started this turn with. */
+    readonly skillInvocation?: MessageSkillInvocation;
     readonly sessionId: string;
     readonly content: MessageContent;
     readonly messageId: string;
@@ -4498,6 +4501,9 @@ export class AgenCDaemonAgentManager {
         content: params.content,
         originalContent: params.content,
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
+        ...(params.skillInvocation !== undefined
+          ? { skillInvocation: params.skillInvocation }
+          : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
         ...(params.userPromptText !== undefined ? { userPromptText: params.userPromptText } : {}),
         ...(params.displayUserMessage !== undefined

@@ -71,7 +71,9 @@ literal placeholder was not rendered from a plugin root.
 
 The local loader defines eleven built-in skills: `update-config`,
 `keybindings`, `debug`, `simplify`, `batch`, `loop`, `agenc-in-browser`,
-`schedule-agents`, `agenc-api`, `ledger-wallet-cli`, and `verify`.
+`schedule-agents`, `agenc-api`, `ledger-wallet-cli`, and `verify`. Built-in
+skills pre-approve only an allowlist of built-in tools, never a shell, process
+or MCP tool ([details](#skill-settings-for-the-turn-you-start)).
 
 Separately, `registerBundledSkill` in `bundledSkills.ts` registers these two
 commands. They are compiled into the runtime and appear as
@@ -107,18 +109,103 @@ Parsed fields include:
 | `description` | Listing / model-facing blurb |
 | `when_to_use` | Guidance for auto-invocation |
 | `argument-hint` / `arguments` | Argument names / hint |
-| `allowed-tools` | Tool allowlist for the skill run |
-| `model` | Optional model override |
+| `allowed-tools` | Permission rules the skill's turn may use without a prompt ([below](#skill-settings-for-the-turn-you-start)) |
+| `model` | Model for the skill's turn, on the session's provider ([below](#skill-settings-for-the-turn-you-start)) |
+| `effort` | Reasoning effort for the skill's turn ([below](#skill-settings-for-the-turn-you-start)) |
 | `user-invocable` | Default true |
 | `disable-model-invocation` | Hide from model-driven invoke |
 | `context` | `inline` \| `fork` |
-| `agent` / `effort` / `shell` | Execution hints |
+| `agent` / `shell` | Execution hints |
 | `paths` | Path filters |
 | `hooks` | Optional hook map (validated when present) |
 | `version` | Optional |
 
 Author under e.g. `.agenc/skills/my-skill/SKILL.md` in the project or
 `$AGENC_HOME/skills/my-skill/SKILL.md` for user-global skills.
+
+### Skill settings for the turn you start
+
+When you start a turn by invoking a skill by name in the TUI (`$name` or
+`/name`), that turn runs with the skill's `model`, `effort` and
+`allowed-tools`. The next turn runs on the session's own settings again:
+nothing is written to the session's model, effort or permission rules.
+
+```yaml
+---
+name: deep-review
+description: Review the current diff carefully.
+model: deepseek-v4-pro
+effort: max
+allowed-tools: Write, Edit(./docs/**)
+---
+```
+
+- `model` must be a model the session's provider serves; it is checked like
+  `/model` (provider catalog, managed model allowlist, conversation history).
+  A model id two providers share is read as the session provider's. A turn
+  cannot change providers, so a model only another provider serves refuses
+  the invocation and names that provider. `inherit` or no value keeps the
+  session's model. Without `effort`, the session's effort carries over when
+  the skill's model accepts it; otherwise the model runs at its own default
+  (the turn's requests name no level, and the configured `reasoning_effort`
+  does not fill one in).
+- `effort` must be a level the turn's model accepts, as for `/effort`
+  (`minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `none`, whichever
+  the model takes).
+- `allowed-tools` lists permission rules in the `/permissions` syntax (comma
+  or space separated), such as `Write` or `Edit(./docs/**)`. They are allow
+  rules of the `command` source for that turn's tool calls only, and they
+  match exactly as the same rules in config would (`Write`, for example, also
+  covers the other file-editing tools, and a whole-tool `exec_command` grant
+  covers every shell command). Inside code mode, nested tool calls do not
+  use a skill's allowed-tools. Deny and ask rules, plan mode, protected paths
+  and the OS sandbox still apply first, and in auto mode the rules auto mode
+  strips from every source (broad shell grants) are left out. Use canonical
+  tool names: legacy `Bash` allow rules grant nothing. Subagents the turn
+  starts do not receive the grants. Under a managed policy that allows only
+  managed permission rules, the skill runs without its grants and the TUI
+  shows a `skill_tool_grants_withheld` warning. The policy is read again for
+  every tool call, so a managed-only policy that arrives during the turn ends
+  the grants from the next call on.
+- Built-in skills pre-approve only built-in tools on an allowlist: `FileRead`,
+  `Grep`, `Glob`, `Write`, `Edit`, `MultiEdit`, `ledger_wallet_cli_status` and
+  `install_ledger_wallet_cli`. Any other entry in a built-in skill's
+  `allowed-tools` is ignored with a debug-log warning: shell and process tools
+  (`exec_command`, `system.bash`, `PowerShell`, `write_stdin`, `kill_process`,
+  `Monitor`, the `js_repl` tools), MCP tools and servers in any spelling
+  (`mcp__server__tool`, `mcp__server`, `mcp__server__*`), wildcards, and every
+  tool not listed. The shell commands of that turn ask as in any other turn.
+  The allowed grants apply: `/update-config` and `/keybindings` read and edit
+  files without asking, `/debug` reads, and `/ledger-wallet-cli` runs its own
+  status and installer tools (the installer still asks for its own
+  confirmation). User and plugin skills keep the grants their author declares.
+
+A setting the session cannot honor refuses the invocation before anything is
+sent: the TUI shows the reason and gives your input back. Project skills
+(and skills from project- or local-scope plugin installs) are
+repository-controlled: their `model`, `effort` and `allowed-tools` are
+stripped, so they run on the session's settings. MCP-served skills never
+carry these fields. When the model loads a skill through the `Skill` tool, it
+asks for approval if the skill sets any of these fields and then loads only
+the instructions; the settings apply when you invoke the skill by name. In the
+turn you started with a skill, the model may load that same skill again
+without asking (`Skill(<name>)` joins the turn's allow rules).
+
+The daemon sizes the prompt for the skill's model, so a prompt that fits the
+skill's context window is accepted even when it would not fit the session
+model's, and the other way round. A daemon older than the TUI (AgenC 0.19.25)
+does not take the skill's settings: the skill runs on the session's settings
+and the TUI shows a one-line notice to restart the daemon
+(`agenc daemon restart`).
+
+If the daemon stops during a skill turn and the turn is resumed
+(`durableTurns.resume`), the resumed turn keeps the skill's model, effort and
+grants when the skill is still installed from the same place with the same
+settings and the current policy still allows them; it never gets more grants
+than the turn had. Otherwise it continues on the session's settings, and the
+TUI shows a `durable_resume_skill_settings_dropped` warning with the reason.
+The journal keeps this in the turn's `turn_context` record
+(`skillInvocation`), which older runtimes ignore.
 
 ### `agenc skills list` CLI
 

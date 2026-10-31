@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.34.0",
+  "x-agenc-protocol-version": "1.35.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -3432,11 +3432,68 @@
         "streamId": {
           "type": "string",
           "minLength": 1
+        },
+        "skillInvocation": {
+          "$ref": "#/definitions/MessageSkillInvocation"
         }
       },
       "required": [
         "sessionId",
         "content"
+      ]
+    },
+    "MessageSkillInvocation": {
+      "description": "Protocol 1.35: settings of a skill the user invoked by name, for that turn only. Sent only to a daemon advertising the message.stream.skillInvocation capability.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "userSettings",
+            "projectSettings",
+            "localSettings",
+            "policySettings",
+            "flagSettings",
+            "plugin",
+            "bundled",
+            "mcp"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "effort": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "none"
+          ]
+        },
+        "allowedTools": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "name"
       ]
     },
     "ThreadRealtimeVersion": {

@@ -2,6 +2,7 @@ import type {
   PermissionMode,
   ToolPermissionContext,
 } from "../permissions/types.js";
+import type { SkillInvocationSettings } from "./skill-invocation.js";
 
 export const AUTONOMOUS_TICK_TAG = "tick";
 export const AUTONOMOUS_SUBMIT_SOURCE = "autonomous_tick";
@@ -23,6 +24,11 @@ export interface SessionSubmitOptions {
   readonly displayUserMessage?: string | null;
   /** Expanded human input before skill/hook transforms, separate from display. */
   readonly userPromptText?: string;
+  /**
+   * Model, effort and tool grants of a skill the user invoked by name,
+   * scoped to this submitted turn.
+   */
+  readonly skillInvocation?: SkillInvocationSettings;
 }
 
 function readPermissionMode(

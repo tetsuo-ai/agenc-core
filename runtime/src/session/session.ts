@@ -192,6 +192,7 @@ import {
   buildPerTurnConfig,
   buildTurnContext,
   newDefaultTurnWithSubId as buildDefaultTurnWithSubId,
+  newSkillInvocationTurnWithSubId as buildSkillInvocationTurnWithSubId,
   newTurnWithSubId as buildTurnWithSubId,
   type Config,
   AuthManager,
@@ -203,6 +204,7 @@ import {
   SessionConfiguration,
   SkillLoadOutcome,
   type Personality,
+  type SkillInvocationTurnOverrides,
   type TurnContext,
 } from "./turn-context.js";
 import type { ExternalInstructionApprovalStore } from "../prompts/secure-instruction-file.js";
@@ -3176,13 +3178,58 @@ export class Session {
     return this.newDefaultTurnWithSubId(this.nextInternalSubId());
   }
 
-  /** Validate daemon input before its transcript and submission identity are committed. */
-  async assertUserPromptFits(input: string | readonly LLMContentPart[]): Promise<void> {
+  /**
+   * The context of a turn the user started by invoking a skill: the default
+   * turn with the skill's admitted model, effort and tool grants. The session
+   * keeps its own settings; the next default turn runs on them.
+   */
+  newSkillInvocationTurn(overrides: SkillInvocationTurnOverrides): TurnContext {
+    return this.newSkillInvocationTurnWithSubId(this.nextInternalSubId(), overrides);
+  }
+
+  /** {@link newSkillInvocationTurn} for a known turn id (a durable resume). */
+  newSkillInvocationTurnWithSubId(
+    subId: string,
+    overrides: SkillInvocationTurnOverrides,
+  ): TurnContext {
+    this.assertProviderSwitchTransactionHealthy();
+    this.adoptCompletedModelMetadata();
+    return buildSkillInvocationTurnWithSubId(this, subId, overrides);
+  }
+
+  /**
+   * Metadata of `model` as the live provider binding would serve it, derived
+   * as a provider switch derives it, without switching anything.
+   */
+  async modelInfoForLiveProvider(model: string): Promise<ModelInfo> {
+    const binding = this.providerService.current();
+    return withoutXaiSignInFastTier(
+      await deriveNextModelInfo(
+        this.services.modelsManager,
+        model,
+        binding.provider,
+      ),
+      binding,
+    );
+  }
+
+  /**
+   * Validate daemon input before its transcript and submission identity are
+   * committed, against the turn it starts: a skill turn's own model and
+   * context window when `skillTurn` is given, the session's otherwise.
+   */
+  async assertUserPromptFits(
+    input: string | readonly LLMContentPart[],
+    skillTurn?: SkillInvocationTurnOverrides,
+  ): Promise<void> {
     const configStore = this.services.configStore;
     if (configStore === undefined) throw new Error("Prompt admission requires the session's ConfigStore authority");
     await runWithCurrentRuntimeSession(this, () => runWithCanonicalSettingsAuthority(configStore, async () => {
       const { assertUserPromptFits } = await import("./run-turn.js");
-      await assertUserPromptFits(this, this.newDefaultTurn(), input);
+      const ctx = skillTurn === undefined
+        ? this.newDefaultTurn()
+        : this.newSkillInvocationTurn(skillTurn);
+      await assertUserPromptFits(this, ctx, input);
     }));
   }
 

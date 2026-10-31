@@ -2877,6 +2877,102 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  describe.each(["/", "$"])("%s skill frontmatter settings", (prefix) => {
+    test("carry a user skill's model, effort and grants on its own turn only", async () => {
+      const { AgenCTuiApp } = await import("./App.js");
+      resetShellSurfaceProbe();
+      const skill = (name: string, source: string) => ({
+        name,
+        type: "prompt",
+        loadedFrom: "skills",
+        source,
+        progressMessage: `Loading ${name}`,
+        contentLength: 1,
+        model: "deepseek-v4-pro",
+        effort: "low",
+        // This file mocks rule-string splitting; the loader test covers it.
+        allowedTools: ["Write", "exec_command(git status:*)"],
+        getPromptForCommand: vi.fn(async () => [
+          { type: "text", text: `${name} body` },
+        ]),
+      });
+      mockTuiCommandList.push(
+        skill("deep-review", "userSettings"),
+        skill("repo-review", "projectSettings"),
+      );
+      const subscribers = new Set<(event: unknown) => void>();
+      let turn = 0;
+      const completeTurn = () => {
+        turn += 1;
+        for (const subscriber of subscribers) {
+          subscriber({ type: "turn_started", payload: { turnId: `skill-turn-${turn}` } });
+          subscriber({
+            type: "turn_complete",
+            payload: { turnId: `skill-turn-${turn}`, lastAgentMessage: "Done" },
+          });
+        }
+      };
+      const session = {
+        ...createSession(),
+        enqueueIdleInput: vi.fn(() => 1),
+        submit: vi.fn(async () => {}),
+        subscribeToEvents: (subscriber: (event: unknown) => void) => {
+          subscribers.add(subscriber);
+          return () => {
+            subscribers.delete(subscriber);
+          };
+        },
+      } satisfies AgenCBridgeSession;
+      const helpers = {
+        clearBuffer: vi.fn(),
+        resetHistory: vi.fn(),
+        setCursorOffset: vi.fn(),
+      };
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async () => {
+          const submitText = async (text: string, calls: number) => {
+            const onSubmit = providerProbe.promptProps.at(-1)?.onSubmit as (
+              input: string,
+              submitHelpers: typeof helpers,
+            ) => Promise<void>;
+            await onSubmit(text, helpers);
+            await vi.waitFor(() => {
+              expect(session.submit).toHaveBeenCalledTimes(calls);
+            });
+            completeTurn();
+            await vi.waitFor(() => {
+              expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(false);
+            });
+          };
+
+          await submitText(`${prefix}deep-review check the diff`, 1);
+          await submitText("a plain follow-up", 2);
+          await submitText(`${prefix}repo-review check the diff`, 3);
+
+          expect(session.submit.mock.calls[0]).toEqual([
+            "",
+            {
+              source: "user",
+              clientMessageId: expect.any(String),
+              displayUserMessage: `${prefix}deep-review check the diff`,
+              skillInvocation: {
+                name: "deep-review",
+                source: "userSettings",
+                model: "deepseek-v4-pro",
+                effort: "low",
+                allowedTools: ["Write", "exec_command(git status:*)"],
+              },
+            },
+          ]);
+          // The next turn and a repository skill's turn carry nothing.
+          expect(session.submit.mock.calls[1]?.[1]).not.toHaveProperty("skillInvocation");
+          expect(session.submit.mock.calls[2]?.[1]).not.toHaveProperty("skillInvocation");
+        },
+      );
+    });
+  });
+
   test("passes current transcript messages to dollar skill commands", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     resetShellSurfaceProbe();

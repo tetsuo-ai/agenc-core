@@ -131,6 +131,8 @@ export interface AgenCDaemonTuiConnectionState {
 
 export interface AgenCJsonLineDaemonTuiClient extends AgenCJsonLineDaemonRequestClient {
   supportsMethod?(method: string): boolean;
+  /** Whether the connected daemon advertised `capability` (other than methods). */
+  supportsCapability?(capability: string): boolean;
   subscribeToNotifications(cb: (event: JsonObject) => void): () => void;
   subscribeToSessionEvents(
     sessionId: string,
@@ -444,6 +446,69 @@ export async function createConnectedAgenCJsonLineDaemonTuiClient(
   });
 }
 
+/**
+ * The oldest daemon protocol the TUI, and the daemon requests it makes
+ * through this module, drive. Every surface they need exists there; what they
+ * use from later versions is optional and gated by capability (1.35: a
+ * skill's settings on `message.stream`). A daemon that refuses this client's
+ * own version, but speaks this one or a later one, is initialized again at
+ * the daemon's version.
+ */
+export const AGENC_TUI_MINIMUM_DAEMON_PROTOCOL_VERSION = "1.34.0" as const;
+
+function parseDaemonProtocolMinor(
+  version: unknown,
+): { readonly major: number; readonly minor: number } | undefined {
+  if (typeof version !== "string") return undefined;
+  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/u.exec(version);
+  return match === null
+    ? undefined
+    : { major: Number(match[1]), minor: Number(match[2]) };
+}
+
+/**
+ * The older daemon protocol to initialize at again after `error`, or
+ * undefined when the refusal was for another reason or the daemon is older
+ * than {@link AGENC_TUI_MINIMUM_DAEMON_PROTOCOL_VERSION}.
+ */
+export function olderSupportedDaemonProtocolVersion(error: unknown): string | undefined {
+  if (!(error instanceof AgenCDaemonResponseError) || !isRecord(error.data)) {
+    return undefined;
+  }
+  if (error.data.code !== "PROTOCOL_VERSION_UNSUPPORTED") return undefined;
+  const serverVersion = error.data.serverVersion;
+  const server = parseDaemonProtocolMinor(serverVersion);
+  const minimum = parseDaemonProtocolMinor(AGENC_TUI_MINIMUM_DAEMON_PROTOCOL_VERSION)!;
+  const own = parseDaemonProtocolMinor(AGENC_DAEMON_PROTOCOL_VERSION)!;
+  if (
+    server === undefined ||
+    server.major !== own.major ||
+    server.minor < minimum.minor ||
+    server.minor >= own.minor
+  ) {
+    return undefined;
+  }
+  return serverVersion as string;
+}
+
+/** `initialize` at this client's protocol, or at an older daemon's it supports. */
+async function initializeDaemonConnection(
+  client: Pick<AgenCJsonLineDaemonTuiClient, "request">,
+  params: JsonObject,
+): Promise<AgenCDaemonResultByMethod["initialize"]> {
+  try {
+    return await client.request("initialize", params);
+  } catch (error) {
+    const olderVersion = olderSupportedDaemonProtocolVersion(error);
+    if (olderVersion === undefined) throw error;
+    return client.request("initialize", {
+      ...params,
+      protocolVersion: olderVersion,
+      protocol: { version: olderVersion },
+    });
+  }
+}
+
 async function createReconnectableDaemonTuiClient(options: {
   readonly socketPath: string;
   readonly timeoutMs: number;
@@ -452,6 +517,7 @@ async function createReconnectableDaemonTuiClient(options: {
 }): Promise<AgenCJsonLineDaemonTuiClient> {
   const { socketPath, timeoutMs, initializeParams } = options;
   let advertisedMethods = new Set<string>();
+  let advertisedCapabilities = new Set<string>();
   const sessionListeners = new Map<string, Set<(event: JsonObject) => void>>();
   // Mirror the persistent client's pre-subscribe buffer so agent.attach
   // replay that arrives before the TUI wires subscribeToSessionEvents is not
@@ -614,13 +680,20 @@ async function createReconnectableDaemonTuiClient(options: {
         options.startupGuard?.readinessTimeoutMs,
       );
       let nextMethods: string[] = [];
+      let nextCapabilities: string[] = [];
       try {
-        const initialized = await nextClient.request("initialize", initializeParams);
+        const initialized = await initializeDaemonConnection(nextClient, initializeParams);
         options.startupGuard?.initialized(nextClient, initialized);
-        const methods = isRecord(initialized.capabilities)
-          ? initialized.capabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]
+        const capabilities = isRecord(initialized.capabilities)
+          ? initialized.capabilities
           : undefined;
+        const methods = capabilities?.[AGENC_DAEMON_METHOD_CAPABILITIES_KEY];
         if (isRecord(methods)) nextMethods = Object.keys(methods).filter(method => methods[method] === true);
+        if (capabilities !== undefined) {
+          nextCapabilities = Object.keys(capabilities).filter((capability) =>
+            capability !== AGENC_DAEMON_METHOD_CAPABILITIES_KEY &&
+            capabilities[capability] === true);
+        }
         await reattachSessions(nextClient);
       } catch (error) {
         await nextClient.close().catch(() => {});
@@ -631,6 +704,7 @@ async function createReconnectableDaemonTuiClient(options: {
         throw new Error("Daemon connection is closed");
       }
       advertisedMethods = new Set(nextMethods);
+      advertisedCapabilities = new Set(nextCapabilities);
       attachInnerClient(nextClient);
       return nextClient;
     };
@@ -683,6 +757,8 @@ async function createReconnectableDaemonTuiClient(options: {
 
   const client: AgenCJsonLineDaemonTuiClient = {
     supportsMethod: (method) => !closedByClient && advertisedMethods.has(method),
+    supportsCapability: (capability) =>
+      !closedByClient && advertisedCapabilities.has(capability),
     request: async (method, params = {}, requestOptions = {}) => {
       if (requestOptions.signal?.aborted === true) {
         throw new Error("Daemon request cancelled");
@@ -1643,16 +1719,20 @@ async function requestDaemonInner<Method extends AgenCDaemonMethod>(
 ): Promise<AgenCDaemonResultByMethod[Method]> {
   const resolvedAuthCookie = await authCookie;
   if (signal?.aborted) throw new Error("Daemon request cancelled");
+  const initializeParams = (version: string): JsonObject => ({
+    protocolVersion: version,
+    protocol: { version },
+    clientName: "agenc-agent-cli",
+    authCookie: resolvedAuthCookie,
+    capabilities: {},
+  });
   if (UNBOUNDED_DAEMON_METHODS.has(method)) {
     const client = await connectPersistentDaemonClient(socketPath, timeoutMs);
     try {
-      await client.request("initialize", {
-        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
-        clientName: "agenc-agent-cli",
-        authCookie: resolvedAuthCookie,
-        capabilities: {},
-      });
+      await initializeDaemonConnection(
+        client,
+        initializeParams(AGENC_DAEMON_PROTOCOL_VERSION),
+      );
       return await client.request(
         method,
         params,
@@ -1662,18 +1742,12 @@ async function requestDaemonInner<Method extends AgenCDaemonMethod>(
       await client.close();
     }
   }
-  const responses = await sendJsonLineRequestWithRetry(socketPath, timeoutMs, [
+  const batch = (version: string): JsonObject[] => [
     {
       jsonrpc: JSON_RPC_VERSION,
       id: 1,
       method: "initialize",
-      params: {
-        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
-        clientName: "agenc-agent-cli",
-        authCookie: resolvedAuthCookie,
-        capabilities: {},
-      },
+      params: initializeParams(version),
     },
     {
       jsonrpc: JSON_RPC_VERSION,
@@ -1681,7 +1755,27 @@ async function requestDaemonInner<Method extends AgenCDaemonMethod>(
       method,
       params,
     },
-  ], signal);
+  ];
+  let responses = await sendJsonLineRequestWithRetry(
+    socketPath,
+    timeoutMs,
+    batch(AGENC_DAEMON_PROTOCOL_VERSION),
+    signal,
+  );
+  // An older daemon refuses this client's protocol at `initialize`, so the
+  // request after it never ran: send both again at the daemon's version.
+  const refusedInitialize = responses[0];
+  const olderVersion = refusedInitialize !== undefined && isErrorResponse(refusedInitialize)
+    ? olderSupportedDaemonProtocolVersion(new AgenCDaemonResponseError(refusedInitialize.error))
+    : undefined;
+  if (olderVersion !== undefined) {
+    responses = await sendJsonLineRequestWithRetry(
+      socketPath,
+      timeoutMs,
+      batch(olderVersion),
+      signal,
+    );
+  }
   const [initializeResponse, response] = responses;
   if (initializeResponse === undefined) {
     throw new Error("daemon did not return an initialize response");

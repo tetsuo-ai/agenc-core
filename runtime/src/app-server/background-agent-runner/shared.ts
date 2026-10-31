@@ -28,6 +28,7 @@ import type {
 } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
 import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
+import type { SkillInvocationSettings } from "../../session/skill-invocation.js";
 import type {
   SessionElicitationResponseParams,
 } from "../../elicitation/respond.js";
@@ -301,6 +302,8 @@ export interface AgenCBackgroundAgentSessionEventBinding {
 
 export interface AgenCBackgroundAgentMessageParams {
   readonly exactOutput?: boolean;
+  /** Settings of the skill the user started this turn with (`message.stream`). */
+  readonly skillInvocation?: SkillInvocationSettings;
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly originalContent: MessageContent;
@@ -327,6 +330,7 @@ export type AgenCBackgroundAgentMessageTerminal = import("../protocol/index.js")
 export type AgenCBackgroundAgentMessageErrorCode =
   | "TURN_IN_PROGRESS"
   | "CLIENT_MESSAGE_ID_CONFLICT"
+  | "INVALID_ARGUMENT"
   | "PROMPT_BLOCKED"
   | "SESSION_HISTORY_BLOCKED";
 

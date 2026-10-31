@@ -248,7 +248,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.34.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.35.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",

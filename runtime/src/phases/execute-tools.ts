@@ -82,6 +82,7 @@ import {
   type ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
+import { turnPermissionContext } from "../permissions/turn-grants.js";
 import { recoverableFailureKind } from "../tools/result-metadata.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
 import { takeCodeModeNestedStop } from "../tools/code-mode/nested-stop.js";
@@ -525,6 +526,10 @@ export function buildLiveToolDispatchOptions(
   const permissionModeRegistry = session.services.permissionModeRegistry;
   const discoveredToolNames =
     session.services.registry.getDiscoveredToolNames?.();
+  // A skill turn's `allowed-tools` grants join each evaluation's snapshot of
+  // the live registry, never the registry itself, so they end with the turn.
+  // Composing the snapshot reads the managed-only policy again every time.
+  const composeTurnPermissions = turnPermissionContext(session, ctx);
   const permissionContext: ToolEvaluatorContext | null = permissionModeRegistry
     ? attachContextDefaults({
         session,
@@ -533,7 +538,8 @@ export function buildLiveToolDispatchOptions(
         // The same mode the dispatch options below hand the orchestrator.
         sandboxMode: orchestratorPolicy.sandboxMode,
         getAppState: (): AppStateSnapshot => {
-          const current = permissionModeRegistry.current();
+          const live = permissionModeRegistry.current();
+          const current = composeTurnPermissions?.(live) ?? live;
           return {
             toolPermissionContext: current,
             denialTracking: resolvedDenialTracking,

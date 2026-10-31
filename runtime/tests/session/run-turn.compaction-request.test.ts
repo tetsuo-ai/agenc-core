@@ -140,4 +140,31 @@ describe("automatic compaction sampling request accounting", () => {
       );
     },
   );
+
+  test("hands the running turn to the compaction, so its summaries use the turn's model and effort", async () => {
+    const { session } = mkSession();
+    vi.spyOn(session.services.registry, "toLLMTools").mockReturnValue([]);
+    const context = mkCtx({
+      modelInfo: { ...mkCtx().modelInfo, slug: "gpt-6-astra" },
+      skillInvocation: {
+        name: "astra-review",
+        source: "userSettings",
+        requested: { model: "gpt-6-astra" },
+        model: "gpt-6-astra",
+        effort: "model_default",
+        allowedTools: [],
+      },
+    });
+    const state = buildInitialTurnState(context, { role: "user", content: "continue" });
+    const compact = vi.spyOn(autoCompact, "autoCompactIfNeeded")
+      .mockResolvedValue({ wasCompacted: false });
+
+    await runAutoCompact(
+      session, context, "do_not_inject", "context_limit", "in_turn", state,
+    );
+
+    const compactContext = compact.mock.calls[0]?.[1];
+    expect(compactContext?.turn).toBe(context);
+    expect(compactContext?.options?.mainLoopModel).toBe("gpt-6-astra");
+  });
 });

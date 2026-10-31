@@ -22,7 +22,8 @@ import {
   completedEventReplayRequired,
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
-import { modelContextWindow } from "../session/turn-context.js";
+import { modelContextWindow, type TurnContext } from "../session/turn-context.js";
+import type { SkillInvocationSettings } from "../session/skill-invocation.js";
 import { readPreparedContextPressure, clearPreparedContextPressure } from "../session/prepared-context-pressure.js";
 import { readCompactionProgress, subscribeToCompactionProgress } from "../services/compact/progress.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
@@ -326,6 +327,12 @@ import {
   submitStructuredAgentInput,
   messageContentDisplayText,
 } from "./background-agent-runner/turn-lifecycle.js";
+import {
+  admitSkillInvocation,
+  emitSkillGrantsWithheld,
+  resumeSkillInvocationTurn,
+  SkillInvocationRejectedError,
+} from "./background-agent-runner/skill-invocation.js";
 import {
   replayRecoveredToolCalls,
   hydrateRecoveredSessionHistory,
@@ -2907,7 +2914,24 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // user_message or the durable idempotency marker. A refusal leaves the
     // client's existing draft/attachment rollback path intact.
     await consumeDaemonPendingProviderSwitches(active.bootstrap.session, active.bootstrap.configStore);
-    await active.bootstrap.session.assertUserPromptFits?.(input);
+    // A skill setting the session cannot honor refuses the message before
+    // anything is published, so the user's draft comes back. The prompt is
+    // then sized for the turn it starts: the skill's model, if it has one.
+    const admittedSkill = params.skillInvocation === undefined
+      ? undefined
+      : await admitDaemonSkillInvocation(
+          active.bootstrap.session,
+          active.bootstrap.configStore,
+          params.skillInvocation,
+        );
+    if (admittedSkill === undefined) {
+      await active.bootstrap.session.assertUserPromptFits?.(input);
+    } else {
+      await active.bootstrap.session.assertUserPromptFits?.(
+        input,
+        admittedSkill.overrides,
+      );
+    }
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {
@@ -2951,6 +2975,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const submitOptions: DaemonHumanSessionSubmitOptions = {
       clientMessageId: params.messageId,
       ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
+      ...(params.skillInvocation !== undefined
+        ? { skillInvocation: params.skillInvocation }
+        : {}),
       [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
       [DAEMON_USER_PROMPT_PREPARED]: true as const,
@@ -5308,7 +5335,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               session.conversationId,
               this.#now(),
             );
-          })).resumed === true;
+          }, (_session, turn) => resumeDaemonSkillInvocationTurn(
+            session,
+            active.bootstrap.configStore,
+            turn,
+          ))).resumed === true;
         } catch {
           // The resume is best-effort and already records its own failure on
           // the conversation thread record.
@@ -6196,6 +6227,59 @@ function prepareDaemonUserPrompt(params: {
   );
 }
 
+function admitDaemonSkillInvocation(
+  session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  settings: SkillInvocationSettings,
+): ReturnType<typeof admitSkillInvocation> {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(configStore, async () => {
+      try {
+        return await admitSkillInvocation(session, configStore, settings);
+      } catch (error) {
+        if (error instanceof SkillInvocationRejectedError) {
+          throw new AgenCBackgroundAgentMessageError(
+            "INVALID_ARGUMENT",
+            error.message,
+          );
+        }
+        throw error;
+      }
+    }),
+  );
+}
+
+/**
+ * The context of a turn started by invoking a skill. Admission ran when the
+ * message arrived; it runs again here because a provider switch may have been
+ * applied since, and a grant the managed-only policy withholds is reported.
+ */
+async function skillInvocationTurn(
+  session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  settings: SkillInvocationSettings,
+): Promise<TurnContext> {
+  const admitted = await admitDaemonSkillInvocation(session, configStore, settings);
+  emitSkillGrantsWithheld(session, admitted);
+  return session.newSkillInvocationTurn(admitted.overrides);
+}
+
+/**
+ * The context a durable resume continues a skill turn with: the skill's
+ * settings when the skill registry and policy still allow them, otherwise
+ * none (the session's settings, with a warning saying why).
+ */
+function resumeDaemonSkillInvocationTurn(
+  session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  turn: { readonly turnId: string; readonly skillInvocation?: unknown },
+): Promise<TurnContext | undefined> {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(configStore, () =>
+      resumeSkillInvocationTurn(session, configStore, turn)),
+  );
+}
+
 async function consumeDaemonPendingProviderSwitches(
   session: LocalRuntimeBootstrap["session"],
   configStore: LocalRuntimeBootstrap["configStore"],
@@ -6352,10 +6436,13 @@ function installDaemonTurnDriverHooks(
       // mid-turn switches, so omitting this boundary would make the kernel see
       // the staged switch and close this user turn without sampling.
       await consumeDaemonPendingProviderSwitches(session, configStore);
-      const baseCtx = (
-        session as unknown as { newDefaultTurn: () => unknown }
-      ).newDefaultTurn();
-      const ctx = baseCtx;
+      // A turn the user started with a skill runs on the skill's settings;
+      // every other turn, including the next one, on the session's.
+      const ctx = opts?.skillInvocation !== undefined
+        ? await skillInvocationTurn(session, configStore, opts.skillInvocation)
+        : (
+            session as unknown as { newDefaultTurn: () => unknown }
+          ).newDefaultTurn();
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.userPromptText ?? opts?.displayUserMessage ?? promptDisplayText)

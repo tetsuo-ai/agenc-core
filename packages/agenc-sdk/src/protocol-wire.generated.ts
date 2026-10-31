@@ -57,10 +57,15 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.33 adds memory-only provider API key replacement for an idle session.
  * 1.34 adds parent review of descendant effects, an optional effectSessionId
  * owner selector, and owning-session metadata on pending effect reviews.
+ * 1.35 adds the optional `skillInvocation` on `message.stream`: the model,
+ * effort and allowed-tools of a skill the user invoked by name, for that turn
+ * only. A daemon that accepts it advertises the
+ * `message.stream.skillInvocation` capability; a client sends it only to
+ * such a daemon.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.34.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.35.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -1187,9 +1192,34 @@ export interface MessageSendParams extends JsonObject {
     readonly metadata?: JsonObject;
 }
 
+/**
+ * Frontmatter settings of a skill the user invoked by name, for the one turn
+ * the message starts. The daemon checks each against the session (the model
+ * against the session provider's catalog and the managed model allowlist, the
+ * effort against that model, the grants against managed policy) and refuses
+ * the message when one does not apply. Nothing is kept for later turns.
+ */
+export interface MessageSkillInvocation extends JsonObject {
+    /** Invoked skill name, used in errors and warnings. */
+    readonly name: string;
+    /**
+     * Where the skill was loaded from. A durable resume of the turn checks the
+     * daemon's skill registry still has that skill there, unchanged.
+     */
+    readonly source?: "userSettings" | "projectSettings" | "localSettings" | "policySettings" | "flagSettings" | "plugin" | "bundled" | "mcp";
+    /** Model on the session's provider for this turn. */
+    readonly model?: string;
+    /** Reasoning effort for this turn. */
+    readonly effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "none";
+    /** Permission allow rules (`/permissions` syntax) for this turn's tool calls. */
+    readonly allowedTools?: readonly string[];
+}
+
 export interface MessageStreamParams extends MessageSendParams {
     /** Explicit output contract for this turn, including headless continuation. */
     readonly exactOutput?: boolean;
+    /** Settings of the skill the user started this turn with. */
+    readonly skillInvocation?: MessageSkillInvocation;
     readonly streamId?: string;
 }
 
@@ -1425,6 +1455,12 @@ export const AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY = "session.ap
 /** session.applyConfig accepts reasoningEffort null: the session follows its model's default. */
 export const AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY = "session.applyConfig.reasoningEffortClear" as const;
 
+/**
+ * `message.stream` accepts `skillInvocation` (protocol 1.35): a daemon without
+ * it refuses the whole request when the field is present.
+ */
+export const AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY = "message.stream.skillInvocation" as const;
+
 export type AgenCDaemonServerCapabilities = JsonObject & {
     readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
     readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
@@ -1432,6 +1468,7 @@ export type AgenCDaemonServerCapabilities = JsonObject & {
     readonly [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]?: true;
     readonly [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]?: true;
     readonly [AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY]?: true;
+    readonly [AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY]?: true;
 };
 
 export interface DaemonInstanceIdentity extends JsonObject {

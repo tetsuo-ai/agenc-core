@@ -835,6 +835,25 @@ Hidden-user submissions persist a non-rendering `message_submission` marker
 with a SHA-256 content fingerprint, so their idempotency identity also survives
 a process crash without duplicating the hidden prompt in that marker.
 
+`message.stream` also takes `skillInvocation` (protocol 1.35; `name`, an
+optional `source` such as `userSettings`, `plugin` or `bundled`, plus at least
+one of `model`, `effort` and `allowedTools`): the frontmatter settings of a
+skill the user invoked by name, which the TUI sends with that turn. The daemon checks them against the session before it publishes the
+message (the model against the session provider's catalog, the managed model
+allowlist and the history; the effort against that model; the grants as
+permission rules, withheld under managed-only policy), sizes the prompt for
+the skill's model, and refuses the message with `INVALID_ARGUMENT` when one
+cannot apply. The turn then runs on them, and the next turn on the session's
+own settings. The turn's `turn_context` journal record keeps the skill, so a
+durable resume can rebuild the turn after checking the skill registry and the
+current policy again. A daemon that accepts the field advertises the
+`message.stream.skillInvocation` capability in its `initialize` result, and
+the TUI sends the field only to such a daemon. An older daemon (protocol 1.34,
+AgenC 0.19.25) refuses a newer TUI's protocol version, so the TUI initializes
+again at 1.34, sends skill turns without the field, and shows a one-line
+notice that the skill's model, effort and allowed-tools need a daemon restart.
+See [skills-plugins.md](skills-plugins.md#skill-settings-for-the-turn-you-start).
+
 When `clientMessageId` is omitted, the daemon assigns a collision-resistant
 ID with a random UUID suffix. Concurrent requests remain separate submissions
 even if they have identical content or arrive in the same millisecond. Treat

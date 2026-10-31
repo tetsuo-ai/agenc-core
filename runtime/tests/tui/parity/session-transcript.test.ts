@@ -2117,6 +2117,17 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.streamQuietWarning).toBe("no output from the model for 10 minutes");
     });
 
+    test.each([
+      ["skill_settings_need_daemon_restart", "deep-review runs without its model, effort and allowed-tools: the running daemon is older than this TUI. Restart it (agenc daemon restart) to use them."],
+      ["skill_tool_grants_withheld", "Managed policy allows only managed permission rules, so skill deep-review runs without its allowed-tools grants (Write)."],
+      ["durable_resume_skill_settings_dropped", "The resumed turn runs on the session's model, effort and permissions: skill deep-review changed since the turn started."],
+    ] as const)("shows why a skill runs without its settings: %s", (cause, message) => {
+      const transcript = adaptTranscriptEvents([
+        { id: "skill-notice", msg: { type: "warning", payload: { cause, message } } },
+      ]);
+      expect(transcript.messages).toMatchObject([{ type: "system", level: "warning", content: message }]);
+    });
+
     test.each(["permission_mode_queued", "permission_mode_unconfirmed", "permission_mode_sync_failed"])(
       "shows the operator's permission change status: %s", (cause) => {
         const message = "Permission change queued after the current turn. Esc can still stop the turn.";

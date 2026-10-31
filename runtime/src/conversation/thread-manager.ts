@@ -50,6 +50,7 @@ import {
 } from "../session/durable-turns.js";
 import { isResumeReplaySafe } from "../tool-registry.js";
 import type { Session, SessionRunTurnOptions, SessionState } from "../session/session.js";
+import type { TurnContext } from "../session/turn-context.js";
 
 export type ConversationPrewarmState =
   | "not_started"
@@ -610,6 +611,7 @@ export class ConversationThreadManager extends ThreadManager {
   async runDeferredDurableTurnResume(
     session: Session,
     beforeResume?: () => void,
+    resumeTurnContext?: DurableResumeTurnContext,
   ): Promise<DurableResumeAttempt> {
     if (!rootCanContinueAfterRestart(session)) {
       this.pendingDurableTurnResumes.delete(session);
@@ -627,7 +629,7 @@ export class ConversationThreadManager extends ThreadManager {
       : this.registerRootSession(session);
     const record = this.upsertRecord(thread);
     try {
-      const resume = attemptDurableTurnResume(session, beforeResume);
+      const resume = attemptDurableTurnResume(session, beforeResume, resumeTurnContext);
       this.inFlightDurableTurnResumes.set(session, resume);
       let attempt: DurableResumeAttempt;
       try {
@@ -1035,6 +1037,18 @@ function emitSynthesizedEvents(
 
 const lastReconstructionBySession = new WeakMap<Session, RolloutReconstruction>();
 
+/**
+ * Builds the context a resumed turn runs with when the interrupted turn was
+ * started by invoking a skill (its journal carries the skill's record). It
+ * returns undefined to run the turn on the session's settings, and says why
+ * itself. The daemon provides it; it revalidates the skill against the
+ * current policy and skill registry.
+ */
+export type DurableResumeTurnContext = (
+  session: Session,
+  turn: ResumableTurn,
+) => Promise<TurnContext | undefined>;
+
 export interface DurableResumeAttempt {
   /** True when the turn was resumed-continued (vs left for a fresh turn). */
   readonly resumed: boolean;
@@ -1358,6 +1372,7 @@ export async function resumeTurnFromCheckpoint(
   signal?: AbortSignal,
   turnOptions?: Pick<SessionRunTurnOptions, "ctx" | "systemPrompt" | "systemPromptTrust">,
   beforeResume?: () => void,
+  resumeTurnContext?: DurableResumeTurnContext,
 ): Promise<DurableResumeAttempt> {
   if (!rootCanContinueAfterRestart(session)) {
     return { resumed: false };
@@ -1455,11 +1470,18 @@ export async function resumeTurnFromCheckpoint(
           : {}),
       };
     }
+    // A turn started with a skill continues on the skill's settings when they
+    // still apply, otherwise on the session's (and the session says so).
+    const resumedTurnOptions = turnOptions?.ctx === undefined &&
+      turn.skillInvocation !== undefined
+      ? await skillTurnOptionsForResume(session, turn, turnOptions, resumeTurnContext)
+      : turnOptions;
+    signal?.throwIfAborted();
     // A daemon continuation is ordinary turn activity even without new user
     // input. Commit its startup authority before pairing results or starting
     // the turn, while leaving rejected or absent continuations unactivated.
     beforeResume?.();
-    await driveResumedTurn(session, currentReconstruction, turn, plan, signal, turnOptions);
+    await driveResumedTurn(session, currentReconstruction, turn, plan, signal, resumedTurnOptions);
     return {
       resumed: true,
       ...(plan.haltedSideEffectingTools.length > 0
@@ -1469,6 +1491,26 @@ export async function resumeTurnFromCheckpoint(
   } finally {
     leaseAttempt.lease?.release();
   }
+}
+
+async function skillTurnOptionsForResume(
+  session: Session,
+  turn: ResumableTurn,
+  turnOptions: Pick<SessionRunTurnOptions, "ctx" | "systemPrompt" | "systemPromptTrust"> | undefined,
+  resumeTurnContext: DurableResumeTurnContext | undefined,
+): Promise<Pick<SessionRunTurnOptions, "ctx" | "systemPrompt" | "systemPromptTrust"> | undefined> {
+  if (resumeTurnContext === undefined) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: { type: "warning", payload: {
+        cause: "durable_resume_skill_settings_dropped",
+        message: "The resumed turn runs on the session's model, effort and permissions: this runtime does not restore the settings of the skill the turn was started with.",
+      } },
+    });
+    return turnOptions;
+  }
+  const ctx = await resumeTurnContext(session, turn);
+  return ctx === undefined ? turnOptions : { ...turnOptions, ctx };
 }
 
 /**
@@ -1483,6 +1525,7 @@ export async function resumeTurnFromCheckpoint(
 async function attemptDurableTurnResume(
   session: Session,
   beforeResume?: () => void,
+  resumeTurnContext?: DurableResumeTurnContext,
 ): Promise<DurableResumeAttempt> {
   const reconstruction = lastReconstructionBySession.get(session);
   if (reconstruction === undefined) return { resumed: false };
@@ -1492,6 +1535,7 @@ async function attemptDurableTurnResume(
     undefined,
     undefined,
     beforeResume,
+    resumeTurnContext,
   );
 }
 

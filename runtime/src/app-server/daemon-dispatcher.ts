@@ -99,6 +99,8 @@ import {
 } from "../session/runtime-options.js";
 import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
+import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
+import { SKILL_INVOCATION_SOURCES } from "../session/skill-invocation.js";
 import { PermissionRuleMutationPrecommitError } from "../permissions/permission-updates.js";
 import {
   TOOL_POLICY_METADATA_KEY,
@@ -129,6 +131,7 @@ import {
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
   MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
@@ -547,6 +550,7 @@ function buildServerCapabilities(
     ...(hasMethod(inputs.workflow, "startRun") ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true } : {}),
     ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]: true } : {}),
     ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY]: true } : {}),
+    ...(hasMethod(agentManager, "streamAgentMessage") ? { [AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -1023,7 +1027,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...Object.fromEntries(Object.entries(availableCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY)),
+              ...Object.fromEntries(Object.entries(availableCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY && key !== AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY)),
               [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(availableCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
               // Match the filtered routine methods in this remote-access view.
               ...(availableCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
@@ -1032,6 +1036,8 @@ export class AgenCDaemonJsonRpcDispatcher {
                 ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
               ...(availableCapabilities[AGENC_RUN_START_LIGHT_MODE_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
                 ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true as const } : {}),
+              ...(availableCapabilities[AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY] && connection.remoteAccess.allowsMethod("message.stream")
+                ? { [AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY]: true as const } : {}),
             } : availableCapabilities,
           );
           if (!negotiated.supported) {
@@ -2674,6 +2680,9 @@ export class AgenCDaemonJsonRpcDispatcher {
           sessionId: streamParams.sessionId,
           content: streamParams.content,
           ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
+          ...(streamParams.skillInvocation !== undefined
+            ? { skillInvocation: streamParams.skillInvocation }
+            : {}),
           ...displayUserMessageFromMetadata(
             "message.stream",
             streamParams.metadata,
@@ -4810,7 +4819,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   const validated = validateObjectShape(params, {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
-    objectFields: ["metadata"],
+    objectFields: ["metadata", "skillInvocation"],
     valueFields: ["content", "exactOutput"],
   });
   if (
@@ -4826,7 +4835,84 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   if (validated.exactOutput !== undefined && typeof validated.exactOutput !== "boolean") {
     throw invalidParams("message.stream param exactOutput must be a boolean");
   }
+  if (validated.skillInvocation !== undefined) {
+    validateMessageSkillInvocation(validated.skillInvocation as JsonObject);
+  }
   return validated as MessageStreamParams;
+}
+
+const MAX_SKILL_INVOCATION_NAME_LENGTH = 256;
+const MAX_SKILL_INVOCATION_MODEL_LENGTH = 256;
+const MAX_SKILL_INVOCATION_GRANTS = 64;
+
+/**
+ * Shape check for `message.stream` `skillInvocation`. The runner checks the
+ * values against the session (model catalog, effort support, grant syntax
+ * and managed policy) before the message is admitted.
+ */
+function validateMessageSkillInvocation(value: JsonObject): void {
+  const prefix = "message.stream param skillInvocation";
+  validateObjectShape(value, {
+    methodName: prefix,
+    stringFields: ["name", "source", "model", "effort"],
+    stringArrayFields: ["allowedTools"],
+  });
+  if (
+    value.source !== undefined &&
+    !(SKILL_INVOCATION_SOURCES as readonly unknown[]).includes(value.source)
+  ) {
+    throw invalidParams(
+      `${prefix}.source must be one of ${SKILL_INVOCATION_SOURCES.join(", ")}`,
+    );
+  }
+  if (
+    typeof value.name !== "string" ||
+    value.name.trim().length === 0 ||
+    value.name.length > MAX_SKILL_INVOCATION_NAME_LENGTH
+  ) {
+    throw invalidParams(
+      `${prefix}.name must be a skill name of 1 to ${MAX_SKILL_INVOCATION_NAME_LENGTH} characters`,
+    );
+  }
+  if (
+    value.model !== undefined &&
+    (typeof value.model !== "string" ||
+      value.model.trim().length === 0 ||
+      value.model.length > MAX_SKILL_INVOCATION_MODEL_LENGTH)
+  ) {
+    throw invalidParams(
+      `${prefix}.model must be a model name of 1 to ${MAX_SKILL_INVOCATION_MODEL_LENGTH} characters`,
+    );
+  }
+  if (
+    value.effort !== undefined &&
+    !(RUN_RUNTIME_REASONING_EFFORTS as readonly unknown[]).includes(value.effort)
+  ) {
+    throw invalidParams(
+      `Skill ${value.name} sets effort ${String(value.effort)}; a skill's effort must be one of ${RUN_RUNTIME_REASONING_EFFORTS.join(", ")}`,
+    );
+  }
+  const grants = value.allowedTools as readonly string[] | undefined;
+  if (
+    grants !== undefined &&
+    (grants.length > MAX_SKILL_INVOCATION_GRANTS ||
+      grants.some(
+        (grant) =>
+          grant.trim().length === 0 ||
+          Buffer.byteLength(grant, "utf8") > MAX_SESSION_PERMISSION_RULE_UTF8_BYTES,
+      ))
+  ) {
+    throw invalidParams(
+      `${prefix}.allowedTools must hold at most ${MAX_SKILL_INVOCATION_GRANTS} non-empty permission rules of at most ${MAX_SESSION_PERMISSION_RULE_UTF8_BYTES} bytes`,
+    );
+  }
+  if (
+    value.model === undefined &&
+    value.effort === undefined &&
+    (grants === undefined || grants.length === 0)
+  ) {
+    throw invalidParams(`${prefix} must set model, effort or allowedTools`);
+  }
 }
 
 function validateMessageContent(

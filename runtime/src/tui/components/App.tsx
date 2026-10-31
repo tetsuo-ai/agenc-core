@@ -3955,6 +3955,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               clientMessageId,
               displayUserMessage: displayText,
               ...(expandedValue !== value ? { userPromptText: expandedValue } : {}),
+              // The skill's model, effort and tool grants apply to this turn
+              // only; the daemon checks them against the session.
+              ...(loaded.skillInvocation !== undefined
+                ? { skillInvocation: loaded.skillInvocation }
+                : {}),
             };
             const admissionToken = admitPendingInputs(submission.inputs);
             admissionLease = {

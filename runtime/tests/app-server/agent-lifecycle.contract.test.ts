@@ -6154,6 +6154,54 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
+  it("forwards a skill's turn settings from message.stream to the background runner", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const submitted: Array<{ readonly skillInvocation?: unknown }> = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_skill",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async (_agentId, params) => {
+        submitted.push(params);
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner,
+    });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "review" });
+    const skillInvocation = {
+      name: "deep-review",
+      model: "deepseek-v4-pro",
+      effort: "low" as const,
+      allowedTools: ["Write"],
+    };
+
+    await agents.streamAgentMessage({
+      sessionId: "session_1",
+      content: "review the diff",
+      messageId: "message_1",
+      streamId: "stream_1",
+      acceptedAt: "2026-05-01T12:00:01.000Z",
+      skillInvocation,
+    });
+    await agents.streamAgentMessage({
+      sessionId: "session_1",
+      content: "next",
+      messageId: "message_2",
+      streamId: "stream_2",
+      acceptedAt: "2026-05-01T12:00:02.000Z",
+    });
+
+    expect(submitted[0]?.skillInvocation).toEqual(skillInvocation);
+    expect(submitted[1]).not.toHaveProperty("skillInvocation");
+  });
+
   it("records snapshot-policy hooks for agent status and message exchanges", async () => {
     const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-snapshot-policy-cwd-"));
     const sessions = new AgenCDaemonSessionManager({

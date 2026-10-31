@@ -21,6 +21,24 @@ import vm from "node:vm";
 import { transformSync } from "esbuild";
 import { describe, expect, it, vi } from "vitest";
 
+const skillAdmission = vi.hoisted(() => ({
+  admitted: undefined as unknown,
+}));
+
+// A test that sets `skillAdmission.admitted` sees the daemon admit a skill
+// invocation as that value; every other test admits through the original.
+vi.mock("../../src/app-server/background-agent-runner/skill-invocation.js", async (importOriginal) => {
+  const original = await importOriginal<
+    typeof import("../../src/app-server/background-agent-runner/skill-invocation.js")
+  >();
+  return {
+    ...original,
+    admitSkillInvocation: async (
+      ...args: Parameters<typeof original.admitSkillInvocation>
+    ) => skillAdmission.admitted ?? original.admitSkillInvocation(...args),
+  };
+});
+
 import {
   AgenCBackgroundAgentMessageError,
   AgenCBackgroundAgentSuspensionShutdownError,
@@ -10195,6 +10213,42 @@ describe("AgenC delegate background-agent runner", () => {
       ["user_message", "message_submission"].includes((event as { msg: { type: string } }).msg.type))).toBe(false);
     await runner.submitAgentMessage("session-input-size-refusal", { ...params, content: "hello", originalContent: "hello", messageId: "small" });
     expect(control.sendInput).toHaveBeenCalledOnce();
+  });
+
+  it("[managed-thread] sizes a skill invocation's prompt for the skill's admitted turn before publishing it", async () => {
+    const { runner, session, control } = makeTopLevelRunner({ conversationId: "session-skill-input-size" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    const overrides = {
+      invocation: { name: "wide-review", requested: { model: "wide-model" }, model: "wide-model",
+        allowedTools: ["Skill(wide-review)"] },
+      modelInfo: { slug: "wide-model", contextWindow: 1_000_000 },
+    };
+    skillAdmission.admitted = { overrides, withheldGrants: [] };
+    try {
+      const validate = vi.fn().mockRejectedValueOnce(new Error("This prompt is too large. Trim the text."))
+        .mockResolvedValue(undefined);
+      Object.assign(session, { assertUserPromptFits: validate });
+      const before = vi.mocked(session.emit).mock.calls.length;
+      const params = { sessionId: "session_1", content: "review it", originalContent: "review it",
+        messageId: "skill-too-large", streamId: "stream_1", acceptedAt: "2026-09-10T00:00:00.000Z",
+        skillInvocation: { name: "wide-review", model: "wide-model" } };
+      await expect(runner.submitAgentMessage("session-skill-input-size", params)).rejects.toThrow("too large");
+      expect(validate).toHaveBeenLastCalledWith("review it", overrides);
+      expect(control.sendInput).not.toHaveBeenCalled();
+      expect(vi.mocked(session.emit).mock.calls.slice(before).some(([event]) =>
+        ["user_message", "message_submission"].includes((event as { msg: { type: string } }).msg.type))).toBe(false);
+
+      await runner.submitAgentMessage("session-skill-input-size", { ...params, messageId: "skill-fits" });
+      expect(validate).toHaveBeenLastCalledWith("review it", overrides);
+      expect(control.sendInput).toHaveBeenCalledOnce();
+      // A message without a skill is sized for the session's own turn.
+      await runner.submitAgentMessage("session-skill-input-size", {
+        ...params, messageId: "plain", skillInvocation: undefined,
+      });
+      expect(validate).toHaveBeenLastCalledWith("review it");
+    } finally {
+      skillAdmission.admitted = undefined;
+    }
   });
 
   it.each([false, true])("[managed-thread] passes the ingress stop generation to durable turn admission (newerStop=%s)", async (newerStop) => {

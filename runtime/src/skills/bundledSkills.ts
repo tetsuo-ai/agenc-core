@@ -7,6 +7,7 @@ import {
   getBundledSkillDirectory,
 } from './bundled-extraction-registry.js'
 import { getCurrentBundledSkillExtractionRoot } from './bundled-root-authority.js'
+import { bundledSkillAllowedTools } from './bundled-skill-grants.js'
 // Pure data (type-only back-reference to this module — no runtime cycle).
 import { AGENC_MARKETPLACE_KIT_INSTALLER_SKILL } from './bundled/agencMarketplaceKitInstaller.js'
 import { BROWSER_AUTOMATION_SKILL } from './bundled/browserAutomation.js'
@@ -109,7 +110,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     description: definition.description,
     aliases: definition.aliases,
     hasUserSpecifiedDescription: true,
-    allowedTools: definition.allowedTools ?? [],
+    allowedTools: bundledSkillAllowedTools(definition.name, definition.allowedTools),
     argumentHint: definition.argumentHint,
     whenToUse: definition.whenToUse,
     model: definition.model,

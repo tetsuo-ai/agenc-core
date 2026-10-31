@@ -77,8 +77,76 @@ describe("dollar skill trust authority", () => {
       model: undefined,
       effort: undefined,
     });
+    expect(loaded.skillInvocation).toBeUndefined();
     expect(authorityMocks.registerSkillHooks).not.toHaveBeenCalled();
     expect(authorityMocks.addInvokedSkill).toHaveBeenCalledOnce();
+  });
+
+  test("a user skill carries its model, effort and grants to the turn it starts", async () => {
+    const loaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      command("userSettings") as never,
+      context(),
+    );
+
+    expect(loaded.skillInvocation).toEqual({
+      name: "authority-skill",
+      source: "userSettings",
+      model: "grok-4.5",
+      effort: "high",
+      allowedTools: ["Bash(git status)", "Read"],
+    });
+  });
+
+  test("a skill without settings starts an ordinary turn", async () => {
+    const plain = {
+      ...command("userSettings"),
+      allowedTools: [],
+      model: undefined,
+      effort: undefined,
+    };
+    const loaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      plain as never,
+      context(),
+    );
+
+    expect(loaded.skillInvocation).toBeUndefined();
+  });
+
+  test("a built-in skill carries only allowlisted grants; a user skill keeps its own", async () => {
+    const shellHeavy = [
+      "FileRead, exec_command(git status:*)",
+      "PowerShell",
+      "write_stdin",
+      "mcp__terminal__exec_command mcp__terminal__*",
+    ];
+    const builtIn = {
+      ...command("bundled"),
+      loadedFrom: "bundled" as const,
+      allowedTools: shellHeavy,
+    };
+    const builtInLoaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      builtIn as never,
+      context(),
+    );
+    expect(builtInLoaded.allowedTools).toEqual(["FileRead"]);
+    expect(builtInLoaded.skillInvocation?.allowedTools).toEqual(["FileRead"]);
+
+    const userLoaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      { ...command("userSettings"), allowedTools: shellHeavy } as never,
+      context(),
+    );
+    expect(userLoaded.allowedTools).toEqual([
+      "FileRead",
+      "exec_command(git status:*)",
+      "PowerShell",
+      "write_stdin",
+      "mcp__terminal__exec_command",
+      "mcp__terminal__*",
+    ]);
   });
 
   test("plugin-only policy rejects user hooks but admits plugin authority", async () => {

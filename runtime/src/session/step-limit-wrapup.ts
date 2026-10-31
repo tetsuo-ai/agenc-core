@@ -4,6 +4,7 @@ import { buildProviderOptions, type StreamModelRequestContract } from "../phases
 import type { Session } from "./session.js";
 import { usageToTokenCountEvent } from "./event-log.js";
 import type { TurnContext } from "./turn-context.js";
+import { skillInvocationRequestModel } from "./skill-invocation.js";
 import { sanitizeModelOutput, stripCitations, stripProposedPlanBlocks } from "../llm/stream-parser.js";
 import { isPlanMode } from "./plan-mode.js";
 
@@ -99,7 +100,8 @@ export async function stepLimitWrapup(args: {
       session, provider: session.services.provider, messages, options,
       stepId: `${ctx.subId}:step-limit-wrapup`,
       sessionId: session.conversationId,
-      model: session.config?.model ?? ctx.config.model,
+      model: skillInvocationRequestModel(session, ctx) ??
+        session.config?.model ?? ctx.config.model,
       providerName: session.services.provider.name,
       signal: controller.signal,
       invoke: (admitted) => session.services.provider.chatStream(messages, () => {}, admitted),

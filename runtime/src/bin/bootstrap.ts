@@ -96,7 +96,10 @@ import { AgentControl } from "../agents/control.js";
 import { AgentRoleCatalog } from "../agents/role-catalog.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { ConversationThreadManager } from "../conversation/thread-manager.js";
-import type { DurableResumeAttempt } from "../conversation/thread-manager.js";
+import type {
+  DurableResumeAttempt,
+  DurableResumeTurnContext,
+} from "../conversation/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
 import { createAgentRoleWorkspace } from "../agents/role.js";
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
@@ -702,10 +705,12 @@ export interface LocalRuntimeBootstrap {
    *
    * `beforeResume` commits caller-owned startup authority after eligibility
    * checks and before the continuation's first durable write. A failure
-   * prevents the turn from starting.
+   * prevents the turn from starting. `resumeTurnContext` rebuilds the
+   * context of a turn the user started with a skill.
    */
   readonly runDeferredDurableTurnResume?: (
     beforeResume?: () => void,
+    resumeTurnContext?: DurableResumeTurnContext,
   ) => Promise<DurableResumeAttempt>;
 }
 
@@ -2483,10 +2488,15 @@ async function bootstrapLocalRuntimeSessionScoped(
       autonomousModeEnabled,
       runDeferredDurableTurnResume: async (
         beforeResume,
+        resumeTurnContext,
       ): Promise<DurableResumeAttempt> => {
         const manager = conversationThreadManagerForReturn;
         if (manager === null) return { resumed: false };
-        return manager.runDeferredDurableTurnResume(session, beforeResume);
+        return manager.runDeferredDurableTurnResume(
+          session,
+          beforeResume,
+          resumeTurnContext,
+        );
       },
     };
   } catch (err) {

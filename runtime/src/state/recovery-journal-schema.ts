@@ -17,6 +17,7 @@ import type {
   RunSuspensionReason,
 } from "../contracts/run-contracts.js";
 import type { RolloutItem } from "../session/rollout-item.js";
+import type { SkillInvocationRecord } from "../session/skill-invocation.js";
 import {
   readCompactionRolloutPayload,
   type CompactionRolloutType,
@@ -326,6 +327,24 @@ const isInstructionEvidence = objectShape({
   repositoryContentAuthority: literal("guidance_only"),
 });
 
+/**
+ * The skill a turn was started with (`turn_context.skillInvocation`). Only
+ * shapes are checked, never value sets, so a newer runtime's skill source or
+ * effort cannot make this journal unreadable; a durable resume reads the
+ * record strictly and runs on the session's settings when it cannot.
+ */
+const isSkillInvocationRecord = objectShape(
+  {
+    name: isString,
+    requested: objectShape(
+      {},
+      { model: isString, effort: isString, allowedTools: isStringArray },
+    ),
+    allowedTools: isStringArray,
+  },
+  { source: isString, model: isString, effort: isString },
+) as unknown as Validator<SkillInvocationRecord, keyof SkillInvocationRecord>;
+
 const isTurnContext = objectShape(
   {
     cwd: isString,
@@ -354,6 +373,7 @@ const isTurnContext = objectShape(
     finalOutputJsonSchema: isUnknown,
     truncationPolicy: oneOf("head", "middle", "off"),
     instructionEvidence: isInstructionEvidence,
+    skillInvocation: isSkillInvocationRecord,
   },
 );
 

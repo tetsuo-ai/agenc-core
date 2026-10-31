@@ -176,6 +176,19 @@ export function shouldAllowManagedPermissionRulesOnly(
   return policySettings?.allowManagedPermissionRulesOnly === true;
 }
 
+/**
+ * Whether the store's published managed policy allows only managed permission
+ * rules. Reads the current generation without yielding, so a caller can ask on
+ * every permission evaluation and see a policy reload at once.
+ */
+export function readManagedPermissionRulesOnly(
+  configStore: ConfigStoreAuthority,
+): boolean {
+  return shouldAllowManagedPermissionRulesOnly(
+    settingsForSource("policySettings", { configStore }),
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Load all rules from disk
 // ─────────────────────────────────────────────────────────────────────

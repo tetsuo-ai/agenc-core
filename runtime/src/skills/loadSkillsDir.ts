@@ -107,6 +107,19 @@ function parseHooksFromFrontmatter(
 }
 
 /**
+ * A skill's `effort`: a level, an integer, or `none`, the opt-out the turn a
+ * user starts with the skill takes as `/effort none` would.
+ */
+export type SkillEffortValue = EffortValue | 'none'
+
+function parseSkillEffortValue(value: unknown): SkillEffortValue | undefined {
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'none') {
+    return 'none'
+  }
+  return parseEffortValue(value)
+}
+
+/**
  * Parses all skill frontmatter fields that are shared between file-based and
  * MCP skill loading. Caller supplies the resolved skill name and the
  * source/loadedFrom/baseDir/paths fields separately.
@@ -131,7 +144,7 @@ export function parseSkillFrontmatterFields(
   hooks: HooksSettings | undefined
   executionContext: 'fork' | undefined
   agent: string | undefined
-  effort: EffortValue | undefined
+  effort: SkillEffortValue | undefined
   shell: FrontmatterShell | undefined
 } {
   const validatedDescription = coerceDescriptionToString(
@@ -151,10 +164,10 @@ export function parseSkillFrontmatterFields(
 
   const effortRaw = frontmatter['effort']
   const effort =
-    effortRaw !== undefined ? parseEffortValue(effortRaw) : undefined
+    effortRaw !== undefined ? parseSkillEffortValue(effortRaw) : undefined
   if (effortRaw !== undefined && effort === undefined) {
     logForDebugging(
-      `Skill ${resolvedName} has invalid effort '${effortRaw}'. Valid options: ${EFFORT_LEVELS.join(', ')} or an integer`,
+      `Skill ${resolvedName} has invalid effort '${effortRaw}'. Valid options: ${EFFORT_LEVELS.join(', ')}, none or an integer`,
     )
   }
 
@@ -235,7 +248,7 @@ export function createSkillCommand({
   executionContext: 'inline' | 'fork' | undefined
   agent: string | undefined
   paths: string[] | undefined
-  effort: EffortValue | undefined
+  effort: SkillEffortValue | undefined
   shell: FrontmatterShell | undefined
 }): Command {
   const repositoryControlled = isRepositoryControlledSkillSource(source)

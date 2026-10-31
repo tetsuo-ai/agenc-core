@@ -45,7 +45,8 @@ export type PromptCommand = {
   // Agent type to use when forked (e.g., 'Bash', 'general-purpose')
   // Only applicable when context is 'fork'
   agent?: string
-  effort?: EffortValue
+  // A skill's effort; `none` is the opt-out (see loadSkillsDir).
+  effort?: EffortValue | 'none'
   // Glob patterns for file paths this skill applies to
   // When set, the skill is only visible after the model touches matching files
   paths?: string[]

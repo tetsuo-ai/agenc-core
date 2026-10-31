@@ -8,10 +8,14 @@ import {
   COMMAND_NAME_TAG,
 } from "../../constants/xml.js";
 import { AdmissionDeniedError } from "../../budget/admission-client.js";
-import { parseToolRuleStringsFromCLI } from "../../permissions/settings.js";
 import { runWithCurrentRuntimeSession } from "../../session/current-session.js";
 import type { Session } from "../../session/session.js";
+import type { SkillInvocationSettings } from "../../session/skill-invocation.js";
 import { isRepositoryControlledSkillSource } from "../../skills/repository-skill-boundary.js";
+import {
+  skillAllowedToolRules,
+  skillInvocationSettingsFor,
+} from "../../skills/skill-invocation-settings.js";
 import { registerSkillHooks } from "../../utils/hooks/registerSkillHooks.js";
 import {
   isRestrictedToPluginOnly,
@@ -32,6 +36,11 @@ interface LoadedDollarSkillCommand {
   readonly allowedTools?: string[];
   readonly model?: string;
   readonly effort?: Extract<Command, { type: "prompt" }>["effort"];
+  /**
+   * The settings above as the turn carries them to the daemon, absent when the
+   * skill sets none (always for repository-controlled skills).
+   */
+  readonly skillInvocation?: SkillInvocationSettings;
 }
 
 export function parseDollarSkillCommand(
@@ -109,15 +118,21 @@ export async function loadDollarSkillCommandForTurn(
     );
   }
 
+  // Repository skills grant nothing and built-in skills only allowlisted
+  // tools, whichever registry produced the command. The daemon computes the
+  // same settings from its own registry when it resumes this turn.
+  const allowedTools = skillAllowedToolRules(command);
+  const model = repositoryControlled ? undefined : command.model;
+  const effort = repositoryControlled ? undefined : command.effort;
+  const skillInvocation = skillInvocationSettingsFor(command);
   return {
     metadata: formatDollarSkillInputTags(command.name, parsed.args),
     blocks,
     skillContent,
-    allowedTools: repositoryControlled
-      ? []
-      : parseToolRuleStringsFromCLI(command.allowedTools ?? []),
-    model: repositoryControlled ? undefined : command.model,
-    effort: repositoryControlled ? undefined : command.effort,
+    allowedTools,
+    model,
+    effort,
+    ...(skillInvocation !== undefined ? { skillInvocation } : {}),
   };
 }
 

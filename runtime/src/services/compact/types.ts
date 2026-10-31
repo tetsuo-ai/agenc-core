@@ -15,6 +15,7 @@ import type {
   ProviderReasoningProvenance,
 } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
+import type { TurnContext } from "../../session/turn-context.js";
 import type { ToolResultIntegrity } from "../../session/tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../../contracts/agent-invocation-envelope.js";
 import type { CompactionHistoryMarkerV1 } from "../../session/compaction-history-marker.js";
@@ -58,6 +59,12 @@ export type RuntimeMessage = {
   };
 };
 
+/** What a compaction inside a turn reads from that turn. */
+export type CompactionTurn = Pick<
+  TurnContext,
+  "reasoningEffort" | "modelInfo" | "providerBinding" | "skillInvocation"
+>;
+
 export type CompactContext = {
   /** Trusted turn-local identity; recovery prompts cannot replace this request. */
   readonly liveUserMessageId?: string;
@@ -67,6 +74,13 @@ export type CompactContext = {
   readonly provider?: LLMProvider;
   /** Live owner used to admit every provider-backed compaction pass. */
   readonly admissionSession?: Session;
+  /**
+   * The turn this compaction runs in, if it runs in one. Its summary calls go
+   * to that turn's model and send the effort the turn's own requests send: a
+   * skill turn's level or its model-default marker, never the session's level,
+   * which the skill's model may not accept.
+   */
+  readonly turn?: CompactionTurn;
   /** Canonical rollout/pin owner for durable transactional compaction. */
   readonly compactionTransaction?: CompactionTransactionAdapter;
   /** Explicit callers bypass the persistent automatic-failure suppression. */
