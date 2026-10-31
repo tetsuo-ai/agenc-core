@@ -36,6 +36,7 @@ import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
 import { QWEN_CURRENT_MODEL_CATALOG } from "./qwen-current-models.js";
+import { QWEN_TOKEN_PLAN_HOSTED_CATALOG } from "./qwen-token-plan-models.js";
 import { AGENC_DEEPSEEK_MODELS, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
 import {
   GEMINI_THINKING_MODELS,
@@ -147,6 +148,13 @@ const QWEN_38_REASONING_LEVELS = Object.freeze([
   "low",
   "medium",
   "xhigh",
+] as const satisfies readonly ReasoningEffort[]);
+// Qwen3.8 Max and Flash also take `none`, which turns thinking off
+// (reasoning_effort none = enable_thinking false; live on the Token Plan,
+// 2026-10-31). The thinking-only 2.4T and the 27B keep the three levels.
+const QWEN_38_MAX_FLASH_REASONING_LEVELS = Object.freeze([
+  "none",
+  ...QWEN_38_REASONING_LEVELS,
 ] as const satisfies readonly ReasoningEffort[]);
 const CEREBRAS_QWEN_GEMMA_REASONING_LEVELS = Object.freeze([
   "none",
@@ -547,6 +555,8 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
           defaultReasoningSummary: "none" as const,
           supportedReasoningLevels: model.model === "qwen3.8-omni-flash"
             ? Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const)
+            : model.model === "qwen3.8-max" || model.model === "qwen3.8-flash"
+            ? QWEN_38_MAX_FLASH_REASONING_LEVELS
             : supportsReasoningEffort
             ? QWEN_38_REASONING_LEVELS
             : NO_REASONING_LEVELS,
@@ -908,6 +918,7 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     })),
     ...qwenCloudCatalogEntries(),
     ...QWEN_CURRENT_MODEL_CATALOG,
+    ...QWEN_TOKEN_PLAN_HOSTED_CATALOG,
     ...[...DEEPSEEK_MODELS, ...DEEPSEEK_MODEL_ALIASES].map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "deepseek",
       model: entry.model,

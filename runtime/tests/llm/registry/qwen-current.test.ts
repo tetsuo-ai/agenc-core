@@ -5,6 +5,7 @@ import { resolveProviderRuntimeRequest } from "../../../src/llm/provider-request
 import { buildProviderModelCatalog, resolveProviderModelInput } from "../../../src/config/provider-model-authority.js";
 import { resolveModelCatalogMetadata, resolveRegisteredModelCatalogEntry } from "../../../src/llm/registry/model-catalog.js";
 import { QWEN_CURRENT_MODELS } from "../../../src/llm/registry/qwen-current-models.js";
+import { QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS } from "../../../src/llm/registry/qwen-token-plan-models.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../../src/llm/wire/capability-gating.js";
 import { buildChatCompletionsRequest } from "../../../src/llm/wire/chat-completions.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry, selectCallRates } from "../../../src/session/cost.js";
@@ -26,7 +27,9 @@ describe("Qwen current native and hosted chat models", () => {
       const config = hidden ? { providers: { qwen: { default_model: model } } } : {};
       if (hidden) expect(catalog.qwen).not.toContain(model);
       else expect(catalog.qwen).toContain(model);
-      expect(catalog["qwen-token-plan"]).not.toContain(model);
+      // The Token Plan lists only the hosted deployments it serves itself.
+      if (QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS.includes(model)) expect(catalog["qwen-token-plan"]).toContain(model);
+      else expect(catalog["qwen-token-plan"]).not.toContain(model);
       expect(resolveProviderModelInput(config, "qwen", model)).toEqual({ provider: "qwen", model });
       expect(resolveProviderRuntimeRequest({ provider: "qwen", model, config, environment: {} }).requested)
         .toMatchObject({ model });

@@ -1,6 +1,7 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
+import { QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS } from "../../registry/qwen-token-plan-models.js";
 import {
   createQwenOfficialDnsTransport,
   type QwenDnsTransport,
@@ -12,12 +13,13 @@ export type QwenCloudProviderName = "qwen" | "qwen-token-plan";
 
 const NON_CHAT_QWEN_MODEL =
   /(?:^|[/:])(?:qwen-image|qwen-audio|qwen-tts|qwen-asr|wan\d|qwen.*(?:embedding|rerank))(?:$|[-_.:])/i;
-const TOKEN_PLAN_QWEN_CHAT_MODELS = new Set([
+const TOKEN_PLAN_CHAT_MODELS = new Set([
   "qwen3.8-max",
   "qwen3.8-flash",
   "qwen3.7-max",
   "qwen3.7-plus",
   "qwen3.6-flash",
+  ...QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS,
 ]);
 
 function assertQwenChatModel(
@@ -34,10 +36,10 @@ function assertQwenChatModel(
   }
   if (
     providerName === "qwen-token-plan" &&
-    !TOKEN_PLAN_QWEN_CHAT_MODELS.has(normalized.toLowerCase())
+    !TOKEN_PLAN_CHAT_MODELS.has(normalized.toLowerCase())
   ) {
     throw new Error(
-      `qwen-token-plan model "${normalized}" is not in the current Token Plan Qwen chat allowlist`,
+      `qwen-token-plan model "${normalized}" is not in the current Token Plan chat allowlist`,
     );
   }
 }

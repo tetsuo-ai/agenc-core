@@ -34,6 +34,7 @@ import type { ProviderReasoningProvenance } from "../types.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
 import { resolveQwenCurrentModel } from "../registry/qwen-current-models.js";
+import { resolveQwenTokenPlanHostedModel } from "../registry/qwen-token-plan-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL } from "../registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel } from "../registry/deepseek-models.js";
 import { gatewayFamilyDefaultEffort, gatewayModelFamily } from "../model-family.js";
@@ -110,9 +111,12 @@ export interface ChatCompletionsCapabilityHints {
    * end of the conversation (Claude through OpenRouter). `system_prompt` marks
    * the system prompt, so its tokens and the tools are read from cache on
    * every later call (Gemini through OpenRouter; in live probes a marker on
-   * the newest message was not reused by the next request).
+   * the newest message was not reused by the next request). `rolling` marks
+   * the system prompt and the newest message, so each call reads the previous
+   * call's whole prefix and writes only the new tail (QwenCloud models that
+   * have no implicit cache).
    */
-  readonly promptCacheControl?: "top_level" | "system_prompt";
+  readonly promptCacheControl?: "top_level" | "system_prompt" | "rolling";
   readonly acceptsImplicitCacheTtl?: boolean;
   /** Explain encoded function aliases when instructions use canonical names. */
   readonly includeToolNameAliases?: boolean;
@@ -460,9 +464,17 @@ export function chatCompletionsCapabilityHintsForProvider(
     );
   const isQwenCloud = (slug === "qwen" || slug === "qwen-token-plan") &&
     !isQwenCoder30BModel(model);
-  const qwenCurrentModel = slug === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+  const qwenCurrentModel = slug === "qwen"
+    ? resolveQwenCurrentModel(model)
+    : slug === "qwen-token-plan" ? resolveQwenTokenPlanHostedModel(model) : undefined;
   const isQwenDirectKimi = slug === "qwen" && normalizedModel === "kimi/kimi-k3";
   const isQwenFlashNext = slug === "qwen" && isQwenFlashNextModel(model);
+  // Qwen3.6 has no implicit cache; only explicit cache_control markers cache
+  // (alibabacloud.com/help/en/model-studio/context-cache). On the Token Plan
+  // a rolling marker cached 81% of qwen3.6-flash agent-loop input against
+  // 0% without markers (live, 2026-10-31). Qwen3.7/3.8 cache implicitly.
+  const usesRollingCacheMarkers = slug === "qwen-token-plan" &&
+    /(?:^|[/:])qwen3\.6-(?:flash|plus)(?:$|[-_.:])/i.test(model ?? "");
   const preservesThinkingHistory =
     (slug === "qwen" &&
       /(?:^|[/:])qwen3\.(?:7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/i.test(
@@ -758,6 +770,7 @@ export function chatCompletionsCapabilityHintsForProvider(
     ...(isQwenCloud
       ? {
           replaysReasoningContent: true,
+          ...(usesRollingCacheMarkers ? { promptCacheControl: "rolling" as const } : {}),
           ...(preservesThinkingHistory
             ? { preservesThinkingHistory: true }
             : {}),

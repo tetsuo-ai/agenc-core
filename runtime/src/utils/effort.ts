@@ -245,17 +245,19 @@ function getAvailableEffortLevelsForOptionalContext(
 
 /**
  * Whether this model takes `none`, thinking off, as a level a user can pick:
- * the Ollama Cloud and Venice models whose live list names it, and
- * abliterated-model. Requests send it literally there
- * (session-reasoning-effort); leaving the effort out keeps the model at its
- * own default, which for most of them thinks.
+ * the Ollama Cloud and Venice models whose live list names it,
+ * abliterated-model, and the QwenCloud (Pay-As-You-Go and Token Plan)
+ * deployments that list it (Qwen3.8 Max and Flash, GLM-5.2). Requests send it
+ * literally there (session-reasoning-effort); leaving the effort out keeps
+ * the model at its own default, which for most of them thinks.
  */
 export function modelOffersEffortOffForContext(
   model: string,
   context: ProviderAuthReadContext,
 ): boolean {
   const provider = inferCatalogProvider(model, context)
-  if (provider !== 'ollama-cloud' && provider !== 'venice' && provider !== 'abliteration') return false
+  if (provider !== 'ollama-cloud' && provider !== 'venice' && provider !== 'abliteration' &&
+      provider !== 'qwen' && provider !== 'qwen-token-plan') return false
   return resolveReasoningEffort({ provider, model }).levels.includes('none')
 }
 

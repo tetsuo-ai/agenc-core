@@ -51,11 +51,15 @@ function lightFinish(glmBatchedSteps: boolean): string {
  */
 export const LIGHT_LIMITED_FINISH = lightLimitedFinish(false);
 
-function lightLimitedFinish(glmBatchedSteps: boolean): string {
+/**
+ * `computeFromData` keeps LIGHT_COMPUTE_FROM_DATA in the limited paragraph (QwenCloud Qwen3.8, which has no
+ * measured habit of computing totals with a command); DeepSeek's paragraph stays without it.
+ */
+function lightLimitedFinish(glmBatchedSteps: boolean, computeFromData = false): string {
   const failureHandling = glmBatchedSteps
     ? "fixing all failures you can diagnose"
     : "fixing the first failure's cause";
-  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. ${LIGHT_KEEP_BEHAVIOR} Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and do not re-verify what already passed. ${LIGHT_MISSING_CHECK_TOOLS} When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
+  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. ${LIGHT_KEEP_BEHAVIOR} Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and do not re-verify what already passed. ${computeFromData ? `${LIGHT_COMPUTE_FROM_DATA} ` : ""}${LIGHT_MISSING_CHECK_TOOLS} When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
 }
 
 /** Consolidate finish rules so the unattended review does not repeat them. */
@@ -85,14 +89,14 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * GPT sessions keep theirs here. Greetings and questions about AgenC are answered without tools;
  * the undo paths arrive with a message that asks about them (prompts/attachments/product-help.ts).
  */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false): string {
   const editing = editsWithApplyPatch
     ? " Edit and create files with apply_patch; put all hunks of one change in one patch." +
       (statesTaskLimits ? " When their contents are known, include the task's source, tests and requested documentation in the same patch." : "")
     : "";
   const finishing = nonInteractive
-    ? lightUnattendedFinish(glmBatchedSteps, !statesTaskLimits)
-    : statesTaskLimits ? lightLimitedFinish(glmBatchedSteps) : lightFinish(glmBatchedSteps);
+    ? lightUnattendedFinish(glmBatchedSteps, !statesTaskLimits || limitedComputesFromData)
+    : statesTaskLimits ? lightLimitedFinish(glmBatchedSteps, limitedComputesFromData) : lightFinish(glmBatchedSteps);
   return [
     "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. Put independent tool calls in one response; omit default arguments. Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change." + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
     ...(glmBatchedSteps ? [LIGHT_GLM_BATCHED_STEPS] : []),

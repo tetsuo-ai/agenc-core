@@ -44,6 +44,18 @@ export function lightEditsWithApplyPatch(
     (providerName === "deepseek" && model?.trim().toLowerCase() === "deepseek-flash");
 }
 
+/**
+ * QwenCloud Qwen3.8 Max and Flash on Pay-As-You-Go or the Token Plan. Without the task limits these models wrote
+ * larger patches with unrequested handling, swept extra verification and wrote long reports (round 4 job qtp
+ * baseline); Light states the limits for them, keeps the rule to compute numeric answers with a command, and uses
+ * batch Edit. Other Qwen versions keep the default Light workflow until measured.
+ */
+export function lightUsesQwenTuning(providerName: string | undefined, model?: string): boolean {
+  const slug = providerName?.trim().toLowerCase();
+  return (slug === "qwen" || slug === "qwen-token-plan") &&
+    /^qwen3\.8-(?:max|flash)(?:$|-)/u.test(model?.trim().toLowerCase() ?? "");
+}
+
 /** `AGENC_LIGHT_TASK_LIMITS=1` or `=0` in the session environment overrides the provider default. */
 export const LIGHT_TASK_LIMITS_ENV = "AGENC_LIGHT_TASK_LIMITS";
 
@@ -62,10 +74,11 @@ export function lightStatesTaskLimits(
   const value = env[LIGHT_TASK_LIMITS_ENV];
   if (isEnvDefinedFalsy(value)) return false;
   if (isEnvTruthy(value)) return true;
-  return modelFamilyFor(providerName, model) === "deepseek";
+  return modelFamilyFor(providerName, model) === "deepseek" || lightUsesQwenTuning(providerName, model);
 }
 
-/** DeepSeek and abliteration.ai Large V2 Light sessions use batch Edit (#3163). */
+/** DeepSeek, abliteration.ai Large V2 and QwenCloud Qwen3.8 Light sessions use batch Edit (#3163). */
 export function lightUsesBatchEdit(providerName: string | undefined, model?: string): boolean {
-  return modelFamilyFor(providerName, model) === "deepseek" || lightUsesGlmTuning(providerName, model);
+  return modelFamilyFor(providerName, model) === "deepseek" || lightUsesGlmTuning(providerName, model) ||
+    lightUsesQwenTuning(providerName, model);
 }

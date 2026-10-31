@@ -94,6 +94,20 @@ function geminiLongQuota(value: unknown): boolean {
   });
 }
 
+/**
+ * QwenCloud Token Plan answers an exhausted plan quota with HTTP 429
+ * insufficient_quota ("Your token-plan quota has been exhausted."). Calls stay
+ * blocked until the monthly reset, a quota pack or a plan change, so this is a
+ * funds refusal. Ordinary throttling (429 "Requests rate limit exceeded")
+ * stays retryable. A streamed request may carry the body as one SSE frame, so
+ * the documented sentence counts as evidence too.
+ * https://www.alibabacloud.com/help/en/model-studio/token-plan-faq
+ */
+export function isQwenTokenPlanQuotaRefusal(status: unknown, code: string | undefined, message: string): boolean {
+  return status === 429 &&
+    (code === "insufficient_quota" || /token-plan quota has been exhausted/i.test(message));
+}
+
 export function isProviderFundsFailure(providerName: string, error: unknown): boolean {
   const provider = providerName.toLowerCase();
   let current: unknown = error;
@@ -120,6 +134,7 @@ function isFundsFailureNode(provider: string, item: Record<string, unknown>): bo
   // Qwen PAYG authenticates this account but refuses inference until paid
   // access is enabled. Keep ordinary 403 permissions and 429 throttling out.
   if (provider === "qwen" && status === 403 && code === "AllocationQuota.FreeTierOnly") return true;
+  if (provider === "qwen-token-plan" && isQwenTokenPlanQuotaRefusal(status, code, message)) return true;
   if ((status === 402 || status === 403) &&
     (EXHAUSTED_CREDITS_RE.test(message) ||
       ["insufficient_quota", "insufficient_credits", "credit_balance_exhausted"].includes(code ?? ""))) return true;

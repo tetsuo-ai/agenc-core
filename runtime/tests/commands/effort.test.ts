@@ -351,6 +351,63 @@ describe("/effort off where the live list offers it (Ollama Cloud)", () => {
   });
 });
 
+describe("/effort off on the QwenCloud deployments that list none", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  // Qwen3.8 Max and Flash and GLM-5.2 turn thinking off only with a literal none
+  // (live on the Token Plan, 2026-10-31); both QwenCloud routes share the contract.
+  test.each([
+    ["qwen-token-plan", "qwen3.8-max", "off"], ["qwen-token-plan", "qwen3.8-flash", "none"],
+    ["qwen-token-plan", "glm-5.2", "off"], ["qwen", "qwen3.8-max", "none"],
+    ["qwen", "qwen3.8-flash", "off"], ["qwen", "glm-5.2", "none"],
+  ] as const)("%s %s takes /effort %s: the session sends none and new sessions save it", async (provider, model, arg) => {
+    const { context, getAppState } = commandContext(model, arg, { provider });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+    const result = await effortCommand.execute(context);
+    expect(result).toEqual({ kind: "text", text: `Thinking off for ${model}.` });
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: "none" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: "none" });
+    expect(getAppState().effortValue).toBe("none");
+    expect(getSessionEffortLabelForContext(model, "none", { provider } as never)).toBe("effort off");
+  });
+
+  test.each([
+    ["qwen-token-plan", "glm-5.3"], ["qwen-token-plan", "deepseek-v4.1-flash"], ["qwen", "qwen3.8-27b"],
+  ] as const)("refuses off for %s %s, which does not list none", async (provider, model) => {
+    const refused = await effortCommand.execute(commandContext(model, "off", { provider }).context);
+    expect(refused).toMatchObject({ kind: "error" });
+    if (refused.kind === "error") expect(refused.message).toContain("cannot turn thinking off");
+    expect(settings.update).not.toHaveBeenCalled();
+  });
+
+  test("a deployment without effort levels still refuses every effort", async () => {
+    const refused = await effortCommand.execute(commandContext("qwen3.7-max", "off", { provider: "qwen-token-plan" }).context);
+    expect(refused).toEqual({ kind: "error", message: "qwen3.7-max does not support effort levels." });
+    expect(settings.update).not.toHaveBeenCalled();
+  });
+
+  test("names off in the usage line and the picker offers Off before the levels", async () => {
+    const usage = await effortCommand.execute(commandContext("qwen3.8-max", "bogus", { provider: "qwen-token-plan" }).context);
+    expect(usage).toMatchObject({ kind: "error" });
+    if (usage.kind === "error") expect(usage.message).toBe("Usage: /effort <low, medium, xhigh, off>, or /effort default.");
+    const { context } = commandContext("qwen3.8-flash", "", { provider: "qwen-token-plan" });
+    let rows: readonly { readonly choice: string; readonly label: string }[] = [];
+    (context as { appState: Record<string, unknown> }).appState.setToolJSX = vi.fn();
+    const menu = await import("../../src/commands/effort-menu.js");
+    const open = vi.spyOn(menu, "openEffortMenu").mockImplementation((_ctx, snapshot) => {
+      rows = snapshot.rows;
+      return true;
+    });
+    try {
+      await effortCommand.execute(context);
+    } finally {
+      open.mockRestore();
+    }
+    expect(rows.map(row => row.label)).toEqual(["Default", "Off", "Low", "Medium", "Extra High"]);
+  });
+});
+
 describe("/effort default with a native none default", () => {
   beforeEach(() => settings.update.mockClear());
 
