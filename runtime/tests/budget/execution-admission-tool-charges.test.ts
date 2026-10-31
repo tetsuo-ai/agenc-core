@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
-import type { AdmissionLease } from "../../src/budget/admission-types.js";
+import { type AdmissionLease, isToolModelCallStep } from "../../src/budget/admission-types.js";
 import { acquire, kernel, reconcile, root } from "./child-budget.fixture.js";
 
 function acquireTool(client: ExecutionAdmissionClient, stepId: string, cost: number | null) {
@@ -45,15 +45,36 @@ describe("a run's own tool charges", () => {
     expect(child.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.00075 + 0.0625, 12);
   });
 
-  it("finds a task-scoped client's tool model calls under its own step prefix", async () => {
+  it("counts a task's tool model calls in the task's and its owning run's totals, once each", async () => {
     const parent = root(kernel(), 5);
     const worker = parent.forSession({ runId: "worker", sessionId: "worker" });
+    // A second sub-agent whose run and session id extend the first one's.
+    const sibling = parent.forSession({ runId: "worker-2", sessionId: "worker-2" });
     const task = worker.forSession({ sessionId: "worker", taskId: "task-a" });
+    const laterTask = worker.forSession({ sessionId: "worker", taskId: "task-a2" });
+    const siblingTask = sibling.forSession({ sessionId: "worker-2", taskId: "task-a" });
+
     // Stored as task:"task-a":<step id>.
     reconcile(task, await acquire(task, "web_fetch_extraction:worker-sub-1", 0.5), 0.004);
     reconcile(task, await acquire(task, "model:worker-sub-2:1:0:primary", 0.5), 0.25);
     settleTool(task, await acquireTool(task, "tool:worker-turn:call-1", 0.001), 0.001);
-    expect(task.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.005, 12);
+    reconcile(laterTask, await acquire(laterTask, "web_search:worker-sub-3", 0.5), 0.002);
+    // The worker run's own calls outside any task.
+    reconcile(worker, await acquire(worker, "x_search:worker-sub-4", 0.5), 0.008);
+    settleTool(worker, await acquireTool(worker, "tool:worker-turn:call-2", 0.0005), 0.0005);
+    reconcile(worker, await acquire(worker, "worker-turn:primary", 1), 0.5);
+    // The sibling's charges are its own.
+    reconcile(siblingTask, await acquire(siblingTask, "web_fetch_extraction:worker-2-sub-1", 0.5), 0.016);
+    settleTool(siblingTask, await acquireTool(siblingTask, "tool:worker-2-turn:call-1", 0.032), 0.032);
+    reconcile(sibling, await acquire(sibling, "web_search:worker-2-sub-2", 0.5), 0.064);
+
+    expect(task.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.004 + 0.001, 12);
+    expect(laterTask.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.002, 12);
+    // The owning run: its tasks' calls and its own, each once.
+    expect(worker.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.004 + 0.001 + 0.002 + 0.008 + 0.0005, 12);
+    expect(siblingTask.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.016 + 0.032, 12);
+    expect(sibling.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.016 + 0.032 + 0.064, 12);
+    // Delegated runs are not the root's own.
     expect(parent.getDirectToolCharges?.()?.costUsd).toBe(0);
   });
 
@@ -67,5 +88,39 @@ describe("a run's own tool charges", () => {
     parent.markDispatched(unpriced.reservation.reservationId, { boundary: "tool_effect" });
     parent.holdUnknown(unpriced.reservation.reservationId, "missing_tool_usage");
     expect(parent.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.00075, 12);
+  });
+});
+
+describe("isToolModelCallStep", () => {
+  const task = (id: string) => `task:${JSON.stringify(id)}:`;
+
+  it.each([
+    "web_fetch_extraction:sub-1",
+    "web_search:sub-2",
+    "x_search:sub-3",
+    `${task("task-a")}web_fetch_extraction:sub-1`,
+    `${task('quoted "id": with colons')}x_search:sub-2`,
+    `${task("back\\slash")}web_search:sub-3`,
+    "session:helper:web_search:sub-4",
+    `${task("task-a")}session:helper:session:inner:web_fetch_extraction:sub-5`,
+  ])("counts %s", (stepId) => {
+    expect(isToolModelCallStep(stepId)).toBe(true);
+  });
+
+  it.each([
+    "turn-1:primary",
+    "model:worker-sub-2:1:0:primary",
+    "compact:attempt-1:1",
+    "web_searches:sub-4",
+    "tool:turn-1:call-search",
+    "tool:turn-1:web_search:call-1",
+    `${task("task-a")}turn-1:primary`,
+    `${task("web_search:")}model:sub-1:primary`,
+    'task:"unterminated web_search:sub-1',
+    'task:"task-a"web_search:sub-1',
+    "session:web_search",
+    "xweb_search:sub-1",
+  ])("does not count %s", (stepId) => {
+    expect(isToolModelCallStep(stepId)).toBe(false);
   });
 });

@@ -21,6 +21,8 @@ import type {
 import {
   admissionPeriodScopeKey,
   admissionRecordKey,
+  isToolModelCallStep,
+  TOOL_MODEL_CALL_PURPOSES,
 } from "../budget/admission-types.js";
 import type { BudgetReservation } from "../contracts/run-contracts.js";
 import {
@@ -1819,33 +1821,40 @@ export class ExecutionAdmissionRepository {
   }
 
   /**
-   * What `runId`'s own tool calls were charged (AdmissionToolCharges): the
-   * settled cost of its tool_exec reservations plus the model calls its
-   * tools made, whose step ids start with one of `toolModelStepPrefixes`
-   * (the binding's own step prefix plus a TOOL_MODEL_CALL_PURPOSES entry).
-   * Delegated runs, unsettled reservations and charges without a price add
-   * nothing.
+   * What `runId`'s own tool calls were charged (AdmissionToolCharges) within
+   * the allocation `allocationKey`: the settled cost of its tool_exec
+   * reservations plus the model calls its tools made (isToolModelCallStep),
+   * whichever of the run's clients admitted them, so a run's total includes
+   * its task-bound clients' calls and a task's total only its own. Each
+   * reservation counts once. Delegated runs, unsettled reservations and
+   * charges without a price add nothing.
    */
-  getToolCharges(
-    runId: string,
-    allocationKey: string,
-    toolModelStepPrefixes: readonly string[],
-  ): AdmissionToolCharges {
+  getToolCharges(runId: string, allocationKey: string): AdmissionToolCharges {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
-    const prefixMatch = toolModelStepPrefixes.length === 0
-      ? "0"
-      : toolModelStepPrefixes.map(() => "substr(reservation.step_id, 1, length(?)) = ?").join(" OR ");
-    const row = this.#driver.prepareState<string[], { cost_nanos: number }>(
-      `SELECT COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun')
-           THEN COALESCE(reservation.actual_cost_nanos, 0) ELSE 0 END), 0) AS cost_nanos
-       FROM execution_admission_reservations AS reservation
-       JOIN execution_admission_reservation_allocations AS allocation
-         ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
-       WHERE reservation.run_id = ? AND reservation.status != 'voided'
-         AND (reservation.kind = 'tool_exec' OR (reservation.kind = 'model_turn' AND (${prefixMatch})))`,
-    ).get(allocationKey, runId, ...toolModelStepPrefixes.flatMap((prefix) => [prefix, prefix]));
-    return { costUsd: nanosToUsd(row?.cost_nanos ?? 0) };
+    return this.#driver.transaction(() => {
+      const settled = `FROM execution_admission_reservations AS reservation
+         JOIN execution_admission_reservation_allocations AS allocation
+           ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
+         WHERE reservation.run_id = ? AND reservation.status IN ('reconciled', 'provider_overrun')
+           AND reservation.actual_cost_nanos IS NOT NULL`;
+      const tools = this.#driver.prepareState<[string, string], { cost_nanos: number }>(
+        `SELECT COALESCE(SUM(reservation.actual_cost_nanos), 0) AS cost_nanos ${settled}
+           AND reservation.kind = 'tool_exec'`,
+      ).get(allocationKey, runId)?.cost_nanos ?? 0;
+      // Narrowed by the purposes' text here; isToolModelCallStep decides.
+      const purposes = TOOL_MODEL_CALL_PURPOSES.map((purpose) => `${purpose}:`);
+      const candidates = this.#driver.prepareState<string[], { step_id: string; cost_nanos: number }>(
+        `SELECT reservation.step_id AS step_id, reservation.actual_cost_nanos AS cost_nanos ${settled}
+           AND reservation.kind = 'model_turn'
+           AND (${purposes.map(() => "instr(reservation.step_id, ?) > 0").join(" OR ")})`,
+      ).all(allocationKey, runId, ...purposes);
+      const models = candidates.reduce(
+        (sum, row) => isToolModelCallStep(row.step_id) ? sum + row.cost_nanos : sum,
+        0,
+      );
+      return { costUsd: nanosToUsd(tools + models) };
+    });
   }
 
   getUsageSummary(runId: string, allocationKey: string, directOnly = false): AdmissionUsageSummary {

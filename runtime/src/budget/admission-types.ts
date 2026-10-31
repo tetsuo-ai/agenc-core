@@ -145,10 +145,37 @@ export const TOOL_MODEL_CALL_PURPOSES = Object.freeze([
 export type ToolModelCallPurpose = (typeof TOOL_MODEL_CALL_PURPOSES)[number];
 
 /**
+ * Whether a stored admission step id is a tool's model call. The kernel
+ * stores a client's step as `[task:<JSON task id>:][session:<id>:]...<step>`
+ * (execution-admission-kernel.ts stepIdFor), so a call a task-bound client
+ * admitted reads `task:"call_1":web_fetch_extraction:sub-7`. Each prefix is
+ * removed as a whole (the task id as a JSON string, so an id holding quotes
+ * or colons cannot end it early) before the purpose is read.
+ */
+export function isToolModelCallStep(stepId: string): boolean {
+  let rest = stepId;
+  if (rest.startsWith('task:"')) {
+    let index = 'task:"'.length;
+    while (index < rest.length && rest[index] !== '"') {
+      index += rest[index] === "\\" ? 2 : 1;
+    }
+    if (index >= rest.length || rest[index + 1] !== ":") return false;
+    rest = rest.slice(index + 2);
+  }
+  while (rest.startsWith("session:")) {
+    const end = rest.indexOf(":", "session:".length);
+    if (end < 0) return false;
+    rest = rest.slice(end + 1);
+  }
+  return TOOL_MODEL_CALL_PURPOSES.some((purpose) => rest.startsWith(`${purpose}:`));
+}
+
+/**
  * What one run's own tool calls were charged: the fees tools report on their
  * tool_exec reservations (web search and fetch, media generation) plus the
- * model calls tools make ({@link TOOL_MODEL_CALL_PURPOSES}). Settled, priced
- * reservations only; delegated runs are not included.
+ * model calls tools make ({@link isToolModelCallStep}), including those its
+ * task-bound clients admitted. Settled, priced reservations only; delegated
+ * runs are not included.
  */
 export interface AdmissionToolCharges {
   readonly costUsd: number;
