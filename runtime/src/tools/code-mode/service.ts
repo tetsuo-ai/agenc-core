@@ -57,12 +57,17 @@ export interface QuickJsCodeModeServiceOptions {
   readonly enabled?: boolean;
 }
 
-function quickJsAvailable(): boolean {
+/**
+ * The package entry, resolved from this module, so from the runtime's own
+ * install. A cell runs in an eval worker, which resolves a bare `require` from
+ * the process working directory; the daemon runs in AGENC_HOME, outside the
+ * install, so the worker loads the package by this absolute path instead.
+ */
+function quickJsModulePath(): string | undefined {
   try {
-    require.resolve("quickjs-emscripten");
-    return true;
+    return require.resolve("quickjs-emscripten");
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -101,6 +106,7 @@ function missingCellResponse(cellId: string): CodeModeRuntimeResponse {
 }
 
 export class QuickJsCodeModeService implements CodeModeService {
+  private readonly quickJsModule: string | undefined;
   private readonly available: boolean;
   private readonly active: boolean;
   private readonly cells = new Map<string, CodeModeCell>();
@@ -109,7 +115,8 @@ export class QuickJsCodeModeService implements CodeModeService {
   private host: CodeModeTurnHost | null = null;
 
   constructor(opts: QuickJsCodeModeServiceOptions = {}) {
-    this.available = quickJsAvailable();
+    this.quickJsModule = quickJsModulePath();
+    this.available = this.quickJsModule !== undefined;
     this.active = shouldEnableCodeMode(opts) && this.available;
   }
 
@@ -202,6 +209,7 @@ export class QuickJsCodeModeService implements CodeModeService {
     const worker = new Worker(QUICKJS_CODE_MODE_WORKER_SOURCE, {
       eval: true,
       workerData: {
+        quickJsModule: this.quickJsModule,
         cellId: request.cellId,
         toolCallId: request.toolCallId,
         enabledTools: request.enabledTools,

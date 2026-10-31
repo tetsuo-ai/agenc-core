@@ -1,6 +1,8 @@
 export const QUICKJS_CODE_MODE_WORKER_SOURCE = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
-const { getQuickJS } = require("quickjs-emscripten");
+// An eval worker resolves a bare require from the process working directory
+// (AGENC_HOME for the daemon), so the parent passes the package's absolute path.
+const { getQuickJS } = require(workerData.quickJsModule || "quickjs-emscripten");
 
 const EXIT_SENTINEL = "__AGENC_CODE_MODE_EXIT__";
 

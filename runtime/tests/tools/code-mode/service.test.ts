@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { QuickJsCodeModeService } from "./service.js";
 import { codeModeRuntimeResponseToToolResult } from "./tools.js";
@@ -125,5 +129,38 @@ describe("QuickJsCodeModeService", () => {
       terminate: true,
     });
     expect(terminated.type).toBe("terminated");
+  });
+});
+
+/**
+ * Released 0.19.25 regression (job xu, Fxu-4): every script failed in a daemon
+ * session with "Cannot find module 'quickjs-emscripten'", required from
+ * "~/.agenc/[worker eval]". A cell runs in an eval worker, which resolves a bare
+ * require from the process working directory, and the daemon runs in
+ * AGENC_HOME, outside the runtime install that holds the package.
+ */
+describe("QuickJsCodeModeService outside the runtime install", () => {
+  test("runs a script when the working directory cannot resolve quickjs-emscripten, as the daemon's AGENC_HOME cannot", async () => {
+    const previous = process.cwd();
+    const home = mkdtempSync(join(tmpdir(), "agenc-home-cwd-"));
+    try {
+      process.chdir(home);
+      // The layout this test stands for: nothing above the working directory
+      // provides the package, as for ~/.agenc in an installed runtime.
+      expect(() => createRequire(join(home, "[worker eval]")).resolve("quickjs-emscripten")).toThrow();
+      const service = makeService();
+      expect(service.enabled()).toBe(true);
+      const response = await service.execute(
+        await request(service, 'text("code mode ran: " + (6 * 7))', { yieldTimeMs: 10_000 }),
+      );
+
+      expect(codeModeRuntimeResponseToToolResult(response).content).not.toContain("Cannot find module");
+      expect(response).toMatchObject({ type: "result" });
+      expect(response.type === "result" ? response.errorText : "not a result").toBeUndefined();
+      expect(response.contentItems).toEqual([{ type: "input_text", text: "code mode ran: 42" }]);
+    } finally {
+      process.chdir(previous);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
