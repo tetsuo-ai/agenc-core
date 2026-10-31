@@ -305,7 +305,12 @@ after it, cleanup is unproven and the session's shell tools (`exec_command`,
 `exec_unavailable`; its message names the command, its session id and the
 pid still running, and says what to do. A call from a code-mode script ends
 the turn the same way, even when the script catches the error or runs on
-after `exec` yielded. A Stop hook that asks for more work does not override
+after `exec` yielded. That stop outranks the iteration limit and the task
+budget: a refusal that lands while a subagent's step-limit summary is written,
+or while the answer that reaches the task allocation is sampled, ends the turn
+with `exec_unavailable` instead of `max_turns` or `task_budget`, after any
+summary already written. A user stop or an expired run deadline still comes
+first. A Stop hook that asks for more work does not override
 that stop. Before the next shell command AgenC
 runs the same cleanup proof again; once every recorded process is gone,
 commands run again and the transcript says so. It never resumes while a

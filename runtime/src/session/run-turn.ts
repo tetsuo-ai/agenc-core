@@ -3421,6 +3421,30 @@ async function* runTurnKernelInner(
       },
     };
   };
+  // A shell refusal that a yielded code-mode script met (see nested-stop.ts)
+  // ends the turn as the bounded `exec_unavailable` stop, with the reason as
+  // its last words. Each exit the loop can reach after its top check (the
+  // iteration limit and its summary, the task budget) takes it first, or that
+  // exit would end the turn its own way and the next turn would drop it. A
+  // user stop or an expired deadline comes first: nothing is taken then, and
+  // the caller ends the turn as it would have.
+  const finishPendingExecStop = async (): Promise<{
+    readonly terminal: Terminal;
+    readonly event: PhaseEvent;
+  } | null> => {
+    if (signal.aborted) return null;
+    const explanation = takeCodeModeNestedStop(session);
+    if (explanation === undefined) return null;
+    await drainInFlight(state, ctx, session);
+    recordBoundedStopExplanation(state, session, "exec_unavailable", explanation);
+    lastContent = explanation;
+    await syncSessionState();
+    emitTurnComplete(lastContent, "exec_unavailable");
+    return {
+      terminal: { reason: "exec_unavailable" },
+      event: { type: "turn_complete", content: lastContent, usage, stopReason: "exec_unavailable" },
+    };
+  };
 
   yield { type: "turn_start", turnIndex: 0 };
 
@@ -3458,15 +3482,10 @@ async function* runTurnKernelInner(
     // another way (the iteration limit, a budget, a step-limit summary) and
     // the next turn would start without it. A user stop or an expired
     // deadline above still comes first.
-    const reenteredExecStop = takeCodeModeNestedStop(session);
-    if (reenteredExecStop !== undefined) {
-      await drainInFlight(state, ctx, session);
-      recordBoundedStopExplanation(state, session, "exec_unavailable", reenteredExecStop);
-      lastContent = reenteredExecStop;
-      await syncSessionState();
-      emitTurnComplete(lastContent, "exec_unavailable");
-      yield { type: "turn_complete", content: lastContent, usage, stopReason: "exec_unavailable" };
-      return { reason: "exec_unavailable" };
+    const reenteredExecStop = await finishPendingExecStop();
+    if (reenteredExecStop !== null) {
+      yield reenteredExecStop.event;
+      return reenteredExecStop.terminal;
     }
 
     // Bound all verification samples, including tool continuations and recovery.
@@ -3596,6 +3615,16 @@ async function* runTurnKernelInner(
         yield { type: "assistant_text", content: lastContent };
       }
       await syncSessionState();
+      // A refusal that lands after the top check, while the step-limit
+      // summary is written or this exit waits, ends the turn as that stop: as
+      // max_turns, a subagent's receipt would say it completed and the next
+      // turn would drop the refusal. A summary already written stays in the
+      // transcript, before the reason.
+      const execStopAtLimit = await finishPendingExecStop();
+      if (execStopAtLimit !== null) {
+        yield execStopAtLimit.event;
+        return execStopAtLimit.terminal;
+      }
       emitTurnComplete(lastContent, "max_turns");
       yield { type: "turn_complete", content: lastContent, usage, stopReason: "max_turns" };
       return { reason: "max_turns" };
@@ -4068,9 +4097,25 @@ async function* runTurnKernelInner(
 
     // Finish only after tool blocks from the admitted response are dispatched.
     // Pending blocks are handled below, before the post-tool budget check.
-    if (taskBudget?.reached && state.toolUseBlocks.length === 0 && !await continueInteractiveTaskBudget(session, 0, signal)) {
-      yield await finishTaskBudget();
-      return { reason: "task_budget" };
+    if (taskBudget?.reached && state.toolUseBlocks.length === 0) {
+      // A refusal that a yielded script met while this answer was written
+      // ends the turn as that stop, before the checkpoint asks whether to go
+      // on (moot when the turn ends anyway), as one that lands while the
+      // checkpoint waits does. The budget's ending would drop it.
+      const execStopAtBudget = await finishPendingExecStop();
+      if (execStopAtBudget !== null) {
+        yield execStopAtBudget.event;
+        return execStopAtBudget.terminal;
+      }
+      if (!await continueInteractiveTaskBudget(session, 0, signal)) {
+        const execStopAtCheckpoint = await finishPendingExecStop();
+        if (execStopAtCheckpoint !== null) {
+          yield execStopAtCheckpoint.event;
+          return execStopAtCheckpoint.terminal;
+        }
+        yield await finishTaskBudget();
+        return { reason: "task_budget" };
+      }
     }
 
     // Recovery re-entry? postSampleRecovery or continuationNudge may
