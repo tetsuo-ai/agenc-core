@@ -3021,6 +3021,18 @@ async function createDeferredDaemonPromptTuiSession(params: {
         }
         return;
       }
+      if (opts?.skillInvocation !== undefined) {
+        // `agent.create` cannot carry a skill's settings. Start the session
+        // without its first turn and send the prompt on it: a daemon that
+        // takes the settings gets them, an older one shows the notice.
+        if ((await ensureLiveSession("", undefined, true)) === null) return;
+        await submitToDeferredFirstTurn(
+          firstMessage.content,
+          opts,
+          activatesAgentStartup,
+        );
+        return;
+      }
       await ensureLiveSession(firstMessage.content, opts);
     },
     enqueueIdleInput: (input, ownership) => {

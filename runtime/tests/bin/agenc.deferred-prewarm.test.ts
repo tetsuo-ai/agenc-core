@@ -15,7 +15,7 @@ import { createEmptyToolPermissionContext } from "../permissions/types.js";
 // unavailable falls back to the cold path the prompt took before.
 
 type PrewarmSession = {
-  submit(message: string): Promise<void>;
+  submit(message: string, opts?: Record<string, unknown>): Promise<void>;
   subscribeToEvents(cb: (event: unknown) => void): () => void;
   setPendingProviderSwitch(pending: { provider: string; model: string } | null): void;
   executeShellCommand(params: {
@@ -54,7 +54,7 @@ function runtimeSettings() {
 
 type ConnectionListener = (state: { status: string; message?: string }) => void;
 
-function harness() {
+function harness(options: { readonly skillInvocationCapability?: boolean } = {}) {
   const requests: Array<{ readonly method: string; readonly params: Record<string, unknown> | undefined }> = [];
   let attachAttempts = 0;
   const connectionListeners: ConnectionListener[] = [];
@@ -85,6 +85,9 @@ function harness() {
       return {};
     }),
     subscribeToSessionEvents: vi.fn(() => () => undefined),
+    supportsCapability: (capability: string) =>
+      options.skillInvocationCapability === true &&
+      capability === "message.stream.skillInvocation",
     subscribeToConnectionState: vi.fn((listener: ConnectionListener) => {
       connectionListeners.push(listener);
       return () => {
@@ -443,5 +446,94 @@ describe("speculative TUI session provisioning", () => {
 
     expect(h.deps.stopPromptAgent).not.toHaveBeenCalled();
     expect(stops(h)).toHaveLength(0);
+  });
+
+  describe("a cold first prompt that invokes a skill", () => {
+    const DEEP_REVIEW = {
+      name: "deep-review",
+      source: "userSettings",
+      model: "deepseek-v4-pro",
+      effort: "low",
+      allowedTools: ["Write"],
+    };
+    const submitSkill = (session: PrewarmSession) =>
+      session.submit("review the diff", {
+        source: "user",
+        displayUserMessage: "$deep-review",
+        skillInvocation: DEEP_REVIEW,
+      });
+
+    /** Cold paths: provisioning failed, or the provisioned session was retired. */
+    const coldPaths = {
+      "provisioning failed": async (h: ReturnType<typeof harness>) => {
+        h.startPromptAgent.mockRejectedValueOnce(new Error("provider not ready"));
+        const { deferred, session } = await deferredSession(h);
+        deferred.prewarm();
+        await vi.waitFor(() => expect(h.startPromptAgent).toHaveBeenCalledOnce());
+        return session;
+      },
+      "the provisioned session was retired": async (h: ReturnType<typeof harness>) => {
+        const { deferred, session } = await deferredSession(h);
+        deferred.prewarm();
+        await vi.waitFor(() => expect(h.requests.some(({ method }) => method === "agent.attach")).toBe(true));
+        session.setPendingProviderSwitch({ provider: "deepseek", model: "deepseek-pro" });
+        return session;
+      },
+    } as const;
+
+    it.each(Object.keys(coldPaths) as Array<keyof typeof coldPaths>)(
+      "starts a turn-deferred session and sends the skill's settings on the stream (%s)",
+      async (path) => {
+        const h = harness({ skillInvocationCapability: true });
+        const session = await coldPaths[path](h);
+        const seen: unknown[] = [];
+        session.subscribeToEvents((event) => seen.push(event));
+
+        await submitSkill(session);
+
+        expect(h.startPromptAgent).toHaveBeenCalledTimes(2);
+        const coldStart = h.startPromptAgent.mock.calls[1]![0];
+        expect(coldStart).toMatchObject({ deferInitialTurn: true });
+        expect(coldStart).not.toHaveProperty("initialContent");
+        expect(messageStreams(h)).toHaveLength(1);
+        expect(messageStreams(h)[0]!.params).toMatchObject({
+          content: "review the diff",
+          skillInvocation: DEEP_REVIEW,
+        });
+        expect(seen.filter((event) =>
+          (event as { payload?: { cause?: unknown } }).payload?.cause === "skill_settings_need_daemon_restart",
+        )).toEqual([]);
+      },
+    );
+
+    it("against a daemon without the capability, sends the prompt as before and shows the notice", async () => {
+      const h = harness();
+      const session = await coldPaths["provisioning failed"](h);
+      const seen: unknown[] = [];
+      session.subscribeToEvents((event) => seen.push(event));
+
+      await submitSkill(session);
+
+      expect(h.startPromptAgent.mock.calls[1]![0]).toMatchObject({ deferInitialTurn: true });
+      expect(messageStreams(h)).toHaveLength(1);
+      expect(messageStreams(h)[0]!.params).not.toHaveProperty("skillInvocation");
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: "warning",
+        payload: expect.objectContaining({
+          cause: "skill_settings_need_daemon_restart",
+          message: expect.stringContaining("deep-review runs without its model, effort and allowed-tools"),
+        }),
+      }));
+    });
+
+    it("a cold first prompt without a skill still starts the session with it", async () => {
+      const h = harness({ skillInvocationCapability: true });
+      const session = await coldPaths["provisioning failed"](h);
+
+      await session.submit("first prompt");
+
+      expect(h.startPromptAgent.mock.calls[1]![0]).toMatchObject({ initialContent: "first prompt" });
+      expect(messageStreams(h)).toHaveLength(0);
+    });
   });
 });
