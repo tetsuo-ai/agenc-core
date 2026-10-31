@@ -2,7 +2,7 @@
  * A daemon-style session on DeepSeek Flash at high effort, for tests of the
  * turn a user starts by invoking a skill.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,16 +27,55 @@ import type {
 import { AsyncQueue } from "../../src/utils/async-queue.js";
 
 const homes: string[] = [];
+const managedPolicies = new WeakMap<Session, string>();
 
 /** Remove the config homes the sessions of a test created. */
 export function removeSkillTurnHomes(): void {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 }
 
-function configStore(): ConfigStore {
+function configStore(managedPolicy: boolean): {
+  readonly store: ConfigStore;
+  readonly managedConfigPath?: string;
+} {
   const home = mkdtempSync(join(tmpdir(), "agenc-skill-turn-"));
   homes.push(home);
-  return new ConfigStore({ home, env: { AGENC_HOME: home }, cwd: "/tmp" });
+  if (!managedPolicy) {
+    return { store: new ConfigStore({ home, env: { AGENC_HOME: home }, cwd: "/tmp" }) };
+  }
+  const managedRoot = join(home, "managed");
+  mkdirSync(managedRoot, { recursive: true });
+  const managedConfigPath = join(managedRoot, "config.toml");
+  writeManagedPolicy(managedConfigPath, []);
+  return {
+    managedConfigPath,
+    store: new ConfigStore({
+      home,
+      env: { AGENC_HOME: home },
+      cwd: "/tmp",
+      managedConfigPath,
+      managedDropInDir: join(managedRoot, "config.d"),
+    }),
+  };
+}
+
+function writeManagedPolicy(path: string, lines: readonly string[]): void {
+  writeFileSync(path, ["config_version = 2", ...lines, ""].join("\n"), { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+/**
+ * Replace the managed policy of a session made with `managedPolicy: true` and
+ * reload its config store, as a policy change the daemon picks up does.
+ */
+export async function reloadManagedPolicy(
+  session: Session,
+  lines: readonly string[],
+): Promise<void> {
+  const path = managedPolicies.get(session);
+  if (path === undefined) throw new Error("session has no managed policy file");
+  writeManagedPolicy(path, lines);
+  await session.services.configStore!.reload();
 }
 
 function provider(): LLMProvider {
@@ -58,8 +97,12 @@ function provider(): LLMProvider {
 export function deepSeekSkillTurnSession(options: {
   readonly permissionContext?: ToolPermissionContext;
   readonly skillsManager?: unknown;
+  /** Read managed policy from a file `reloadManagedPolicy` can change. */
+  readonly managedPolicy?: boolean;
+  readonly registry?: unknown;
+  readonly codeModeService?: unknown;
 } = {}): Session {
-  const store = configStore();
+  const { store, managedConfigPath } = configStore(options.managedPolicy === true);
   const sessionConfiguration: SessionConfiguration = {
     cwd: "/tmp",
     approvalPolicy: { value: "on_request" },
@@ -97,11 +140,14 @@ export function deepSeekSkillTurnSession(options: {
     mcpStartupCancellationToken: { cancel: () => {}, isCancelled: () => false },
     provider: provider(),
     providerEnvironment: { DEEPSEEK_API_KEY: "test-key" },
-    registry: {
+    registry: options.registry ?? {
       tools: [],
       toLLMTools: () => [],
       dispatch: async () => ({ content: "", isError: false }),
     },
+    ...(options.codeModeService !== undefined
+      ? { codeModeService: options.codeModeService }
+      : {}),
     hooks: { executeStop: async () => ({}) },
     ...(options.skillsManager !== undefined
       ? { skillsManager: options.skillsManager }
@@ -110,7 +156,7 @@ export function deepSeekSkillTurnSession(options: {
       options.permissionContext ?? createEmptyToolPermissionContext(),
     ),
   } as unknown as SessionServices;
-  return new Session({
+  const session = new Session({
     conversationId: "conv-skill-turn",
     services,
     initialState: {
@@ -132,5 +178,7 @@ export function deepSeekSkillTurnSession(options: {
     },
     eventQueue: new AsyncQueue(),
   });
+  if (managedConfigPath !== undefined) managedPolicies.set(session, managedConfigPath);
+  return session;
 }
 

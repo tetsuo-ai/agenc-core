@@ -1,3 +1,8 @@
+import type { ConfigStoreAuthority } from "../../config/store.js";
+import {
+  turnPermissionContext,
+  type TurnPermissionContext,
+} from "../../permissions/turn-grants.js";
 import type { Session } from "../../session/session.js";
 import type { ToolRegistry } from "../../tool-registry.js";
 import { clearCodeModeNestedStop, recordCodeModeNestedStop } from "./nested-stop.js";
@@ -15,6 +20,8 @@ type CodeModeWorkerServices = {
     "dispatch" | "dispatchCodeModeNestedTool"
   >;
   readonly codeModeService?: CodeModeService;
+  /** The managed policy a skill turn's grants are checked against. */
+  readonly configStore?: ConfigStoreAuthority;
 };
 
 export interface CodeModeWorkerSession {
@@ -27,6 +34,7 @@ async function invokeNestedCodeModeTool(
   session: CodeModeWorkerSession,
   call: CodeModeNestedToolCall,
   signal: AbortSignal,
+  permissionContext: TurnPermissionContext | undefined,
 ): Promise<unknown> {
   if (
     call.toolName === CODE_MODE_EXEC_TOOL_NAME ||
@@ -46,6 +54,7 @@ async function invokeNestedCodeModeTool(
     name: call.toolName,
     input: call.input,
     abortSignal: signal,
+    ...(permissionContext !== undefined ? { permissionContext } : {}),
   });
   if (Array.isArray(result.metadata?.displayAttachments) && result.metadata.displayAttachments.length > 0) {
     session.emit({
@@ -113,8 +122,14 @@ function emitMissingCodeModeServiceWarning(session: CodeModeWorkerSession): void
   });
 }
 
+/**
+ * Start the code-mode worker of one turn. Its nested tool calls are evaluated
+ * the way the turn's own calls are: with the turn's grants (a skill turn's
+ * `allowed-tools`) while the current policy allows them.
+ */
 export function startCodeModeTurnWorker(
   session: CodeModeWorkerSession,
+  turn: Parameters<typeof turnPermissionContext>[1] = {},
 ): CodeModeTurnWorker {
   clearCodeModeNestedStop(session);
   const codeModeService = session.services.codeModeService;
@@ -123,9 +138,10 @@ export function startCodeModeTurnWorker(
     return { dispose: () => undefined };
   }
 
+  const permissionContext = turnPermissionContext(session, turn);
   return codeModeService.startTurnWorker({
     invokeTool: (call: CodeModeNestedToolCall, signal: AbortSignal) =>
-      invokeNestedCodeModeTool(session, call, signal),
+      invokeNestedCodeModeTool(session, call, signal, permissionContext),
     notify: ({ callId, text }) => {
       emitCodeModeNotify(session, callId, text);
     },

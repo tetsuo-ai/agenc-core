@@ -2381,7 +2381,9 @@ export async function* runTurnKernel(
     startedAtMs: turnStartedAt,
     ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
   });
-  const codeModeTurnWorker = startCodeModeTurnWorker(session);
+  // Nested code-mode calls are evaluated with this turn's grants, as its own
+  // tool calls are.
+  const codeModeTurnWorker = startCodeModeTurnWorker(session, ctx);
   const signalCleanups: Array<() => void> = [];
   // Turn-scoped durability: between this turn's steps, records are written
   // in order but not fsynced; its end (complete, aborted, failed) and the

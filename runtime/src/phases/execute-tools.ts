@@ -66,7 +66,6 @@ import {
 } from "./repeat-tool-advisory.js";
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
-import type { ToolPermissionContext } from "../permissions/types.js";
 import type { PermissionAuditEventInput } from "../permissions/permission-audit-log.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
@@ -83,7 +82,7 @@ import {
   type ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
-import { withTurnCommandAllowRules } from "../permissions/permission-updates.js";
+import { turnPermissionContext } from "../permissions/turn-grants.js";
 import { recoverableFailureKind } from "../tools/result-metadata.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
 import { takeCodeModeNestedStop } from "../tools/code-mode/nested-stop.js";
@@ -529,19 +528,8 @@ export function buildLiveToolDispatchOptions(
     session.services.registry.getDiscoveredToolNames?.();
   // A skill turn's `allowed-tools` grants join each evaluation's snapshot of
   // the live registry, never the registry itself, so they end with the turn.
-  const turnGrants = ctx.skillInvocation?.allowedTools;
-  let grantedBase: ToolPermissionContext | undefined;
-  let grantedContext: ToolPermissionContext | undefined;
-  const turnPermissionContext = (
-    current: ToolPermissionContext,
-  ): ToolPermissionContext => {
-    if (turnGrants === undefined || turnGrants.length === 0) return current;
-    if (grantedBase !== current || grantedContext === undefined) {
-      grantedBase = current;
-      grantedContext = withTurnCommandAllowRules(current, turnGrants);
-    }
-    return grantedContext;
-  };
+  // Composing the snapshot reads the managed-only policy again every time.
+  const composeTurnPermissions = turnPermissionContext(session, ctx);
   const permissionContext: ToolEvaluatorContext | null = permissionModeRegistry
     ? attachContextDefaults({
         session,
@@ -550,7 +538,8 @@ export function buildLiveToolDispatchOptions(
         // The same mode the dispatch options below hand the orchestrator.
         sandboxMode: orchestratorPolicy.sandboxMode,
         getAppState: (): AppStateSnapshot => {
-          const current = turnPermissionContext(permissionModeRegistry.current());
+          const live = permissionModeRegistry.current();
+          const current = composeTurnPermissions?.(live) ?? live;
           return {
             toolPermissionContext: current,
             denialTracking: resolvedDenialTracking,
