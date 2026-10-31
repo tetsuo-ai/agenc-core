@@ -6,8 +6,9 @@
  * 24 training threads on one CPU. Linux states the real limits in cgroup v2
  * (`cpu.max`, `memory.max`) on the process's own cgroup and its ancestors, or
  * in the cgroup v1 controllers on the process's path in each controller
- * hierarchy and its ancestors (the controller root itself when a container
- * mounts its own cgroup there). The environment note carries them, and a
+ * hierarchy and its ancestors, each path read as the hierarchy's mount shows
+ * it (/proc/self/mountinfo: a container without its own cgroup namespace
+ * sees its cgroup mounted as the root). The environment note carries them, and a
  * session's end notice uses the cgroup `oom_kill` counter to tell an
  * out-of-memory kill from another SIGKILL.
  *
@@ -28,10 +29,16 @@ const DEFAULT_CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_V1_UNLIMITED_BYTES = 2 ** 60;
 
 export interface CgroupReadOptions {
-  /** Root of the cgroup filesystem; tests point it at a fixture tree. */
+  /**
+   * Root of the cgroup filesystem, each hierarchy mounted at its root; tests
+   * point it at a fixture tree. Without it, /proc/self/mountinfo says where
+   * each hierarchy is mounted and which of its directories the mount shows.
+   */
   readonly cgroupRoot?: string;
   /** Contents of /proc/self/cgroup; read from the process when absent. */
   readonly procSelfCgroup?: string;
+  /** Contents of /proc/self/mountinfo; read from the process when absent and no cgroupRoot is given. */
+  readonly mountInfo?: string;
   readonly platform?: NodeJS.Platform;
   /** CPUs the OS reports (what nproc shows); `os.cpus().length` when absent. */
   readonly hostCpus?: number;
@@ -56,10 +63,82 @@ function readText(path: string): string | undefined {
   }
 }
 
+/** A mounted cgroup hierarchy: where it is mounted and which of its directories the mount shows. */
+interface CgroupMount {
+  /** The hierarchy directory shown at the mount point ("/" unless a container mounts its own cgroup). */
+  readonly root: string;
+  readonly mountPoint: string;
+  readonly version: 1 | 2;
+  /** v1 controllers of the hierarchy (cpu, cpuacct, memory, ...). */
+  readonly controllers: ReadonlySet<string>;
+}
+
+/** mountinfo escapes space, tab, newline and backslash as octal (`\040`). */
+function unescapeMountField(field: string): string {
+  return field.replace(/\\([0-7]{3})/gu, (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
+}
+
+/** The cgroup and cgroup2 mounts of /proc/self/mountinfo. */
+function parseCgroupMounts(text: string): CgroupMount[] {
+  const mounts: CgroupMount[] = [];
+  for (const line of text.split(/\r?\n/u)) {
+    const separator = line.indexOf(" - ");
+    if (separator < 0) continue;
+    const fields = line.slice(0, separator).split(" ");
+    const [fstype, , superOptions] = line.slice(separator + 3).split(" ");
+    if ((fstype !== "cgroup" && fstype !== "cgroup2") || fields.length < 5) continue;
+    mounts.push({
+      root: unescapeMountField(fields[3]!),
+      mountPoint: unescapeMountField(fields[4]!),
+      version: fstype === "cgroup2" ? 2 : 1,
+      controllers: new Set(fstype === "cgroup" ? (superOptions ?? "").split(",") : []),
+    });
+  }
+  return mounts;
+}
+
+/** Hierarchies mounted at their roots under `root`: the v2 tree itself and the usual v1 controller folders. */
+function rootedCgroupMounts(root: string, options: CgroupReadOptions): CgroupMount[] {
+  const text = options.procSelfCgroup ?? readText("/proc/self/cgroup") ?? "";
+  const listed = /^\d+:([^:]*\bcpu\b[^:]*):/mu.exec(text)?.[1];
+  const names = [...new Set([...(listed !== undefined ? [listed] : []), "cpu,cpuacct", "cpuacct,cpu", "cpu", "memory"])];
+  return [
+    { root: "/", mountPoint: root, version: 2, controllers: new Set<string>() },
+    ...names.filter((name) => existsSync(join(root, name)))
+      .map((name): CgroupMount => ({ root: "/", mountPoint: join(root, name), version: 1, controllers: new Set(name.split(",")) })),
+  ];
+}
+
+function cgroupMounts(options: CgroupReadOptions): CgroupMount[] {
+  if (options.mountInfo === undefined && options.cgroupRoot !== undefined) {
+    return rootedCgroupMounts(resolve(options.cgroupRoot), options);
+  }
+  const mounts = parseCgroupMounts(options.mountInfo ?? readText("/proc/self/mountinfo") ?? "");
+  return mounts.length > 0 ? mounts : rootedCgroupMounts(resolve(options.cgroupRoot ?? DEFAULT_CGROUP_ROOT), options);
+}
+
 /**
- * The directory of this process's cgroup v2 membership (`0::/path`) under
- * `root`, or undefined on cgroup v1, outside Linux, or for a path that would
- * leave the root.
+ * The directory of the cgroup `membership` (a path in the whole hierarchy)
+ * as `mount` shows it, or undefined when it would leave the mount. A path the
+ * mount does not show leaves only the mount point itself.
+ */
+function membershipDirectory(mount: CgroupMount, membership: string): string | undefined {
+  if (!membership.startsWith("/") || membership.includes("\0")) return undefined;
+  const base = resolve(mount.mountPoint);
+  const shown = mount.root === "/" ? "" : mount.root.replace(/\/+$/u, "");
+  let relative = membership;
+  if (shown !== "") {
+    if (membership !== shown && !membership.startsWith(`${shown}/`)) return base;
+    relative = membership.slice(shown.length) || "/";
+  }
+  const directory = resolve(base, `.${relative}`);
+  return directory === base || directory.startsWith(`${base}/`) ? directory : undefined;
+}
+
+/**
+ * The directory of this process's cgroup v2 membership (`0::/path`) as the
+ * cgroup2 mount shows it, or undefined on cgroup v1, outside Linux, or for a
+ * path that would leave the mount.
  */
 export function ownCgroupV2Directory(options: CgroupReadOptions = {}): string | undefined {
   if ((options.platform ?? process.platform) !== "linux") return undefined;
@@ -67,12 +146,8 @@ export function ownCgroupV2Directory(options: CgroupReadOptions = {}): string | 
     ?.split(/\r?\n/u)
     .find((line) => line.startsWith("0::"));
   if (membership === undefined) return undefined;
-  const relative = membership.slice(3).trim();
-  if (!relative.startsWith("/") || relative.includes("\0")) return undefined;
-  const root = resolve(options.cgroupRoot ?? DEFAULT_CGROUP_ROOT);
-  const directory = resolve(root, `.${relative}`);
-  if (directory !== root && !directory.startsWith(`${root}/`)) return undefined;
-  return directory;
+  const mount = cgroupMounts(options).find((candidate) => candidate.version === 2);
+  return mount === undefined ? undefined : membershipDirectory(mount, membership.slice(3).trim());
 }
 
 /** `directory` and each ancestor up to and including `root`. */
@@ -127,32 +202,20 @@ function cgroupV1Memberships(options: CgroupReadOptions): Map<string, string> {
 
 /**
  * The v1 directories whose limits apply to this process for `controller`,
- * leaf first: its path in the first mounted hierarchy among `mounts`, then
- * each ancestor up to that hierarchy's root. A container that mounts its own
- * cgroup as the root has no such path inside; the root is still on the list.
+ * leaf first: its path as the hierarchy's mount shows it, then each ancestor
+ * up to the mount point.
  */
 function cgroupV1Directories(
-  root: string,
   controller: string,
-  mounts: readonly string[],
+  mounts: readonly CgroupMount[],
   memberships: ReadonlyMap<string, string>,
 ): string[] {
+  const mount = mounts.find((candidate) => candidate.version === 1 && candidate.controllers.has(controller));
+  if (mount === undefined) return [];
+  const base = resolve(mount.mountPoint);
   const membership = memberships.get(controller);
-  for (const mount of mounts) {
-    const base = resolve(root, mount);
-    if (!existsSync(base)) continue;
-    const leaf = membership === undefined ? base : resolve(base, `.${membership}`);
-    if (leaf !== base && !leaf.startsWith(`${base}/`)) return [base];
-    return selfAndAncestors(leaf, base);
-  }
-  return [];
-}
-
-/** The v1 CPU hierarchy as mounted: the membership's own controller list first, then the usual names. */
-function cgroupV1CpuMounts(memberships: ReadonlyMap<string, string>, options: CgroupReadOptions): string[] {
-  const text = options.procSelfCgroup ?? readText("/proc/self/cgroup") ?? "";
-  const listed = /^\d+:([^:]*\bcpu\b[^:]*):/mu.exec(text)?.[1];
-  return [...new Set([...(listed !== undefined && memberships.has("cpu") ? [listed] : []), "cpu,cpuacct", "cpuacct,cpu", "cpu"])];
+  const leaf = membership === undefined ? base : membershipDirectory(mount, membership) ?? base;
+  return selfAndAncestors(leaf, base);
 }
 
 /**
@@ -160,15 +223,16 @@ function cgroupV1CpuMounts(memberships: ReadonlyMap<string, string>, options: Cg
  * each controller hierarchy and its ancestors. A quota of -1 or an unlimited
  * memory value means no limit.
  */
-function cgroupV1Limits(root: string, options: CgroupReadOptions): { readonly cpu?: number; readonly memory?: number } {
+function cgroupV1Limits(options: CgroupReadOptions): { readonly cpu?: number; readonly memory?: number } {
   const memberships = cgroupV1Memberships(options);
-  const cpu = minDefined(cgroupV1Directories(root, "cpu", cgroupV1CpuMounts(memberships, options), memberships)
+  const mounts = cgroupMounts(options);
+  const cpu = minDefined(cgroupV1Directories("cpu", mounts, memberships)
     .map((directory) => {
       const quota = Number(readText(join(directory, "cpu.cfs_quota_us"))?.trim());
       const period = Number(readText(join(directory, "cpu.cfs_period_us"))?.trim());
       return Number.isFinite(quota) && quota > 0 && Number.isFinite(period) && period > 0 ? quota / period : undefined;
     }));
-  const memory = minDefined(cgroupV1Directories(root, "memory", ["memory"], memberships)
+  const memory = minDefined(cgroupV1Directories("memory", mounts, memberships)
     .map((directory) => parseMemoryMax(readText(join(directory, "memory.limit_in_bytes")))));
   return { ...(cpu !== undefined ? { cpu } : {}), ...(memory !== undefined ? { memory } : {}) };
 }
@@ -183,18 +247,18 @@ export function readResourceLimits(options: CgroupReadOptions = {}): ResourceLim
   const hostMemoryBytes = options.hostMemoryBytes ?? totalmem();
   const unlimited: ResourceLimits = { hostCpus, hostMemoryBytes };
   if ((options.platform ?? process.platform) !== "linux") return unlimited;
-  const root = resolve(options.cgroupRoot ?? DEFAULT_CGROUP_ROOT);
   const own = ownCgroupV2Directory(options);
+  const v2Mount = cgroupMounts(options).find((candidate) => candidate.version === 2);
   let cpu: number | undefined;
   let memory: number | undefined;
-  if (own !== undefined) {
-    const chain = selfAndAncestors(own, root);
+  if (own !== undefined && v2Mount !== undefined) {
+    const chain = selfAndAncestors(own, resolve(v2Mount.mountPoint));
     cpu = minDefined(chain.map((directory) => parseCpuMax(readText(join(directory, "cpu.max")))));
     memory = minDefined(chain.map((directory) => parseMemoryMax(readText(join(directory, "memory.max")))));
   }
   // cgroup v1, or a hybrid hierarchy whose v2 part has no CPU or memory controller.
   if (cpu === undefined || memory === undefined) {
-    const v1 = cgroupV1Limits(root, options);
+    const v1 = cgroupV1Limits(options);
     cpu ??= v1.cpu;
     memory ??= v1.memory;
   }
@@ -262,13 +326,12 @@ export function setResourceLimitsLineForTesting(line: string | null): void {
  * cgroup v2 `memory.events` (hierarchical, so it covers every command's
  * private leaf below this process's cgroup), or in cgroup v1
  * `memory.oom_control` of the process's own memory cgroup (the nearest
- * directory on its path that exists, up to the hierarchy root). Undefined
+ * directory on its path that exists, up to the mount point). Undefined
  * when unknown (outside Linux, at the cgroup v2 root, which has no
  * memory.events, or on an older kernel).
  */
 export function readOomKillCount(options: CgroupReadOptions = {}): number | undefined {
   if ((options.platform ?? process.platform) !== "linux") return undefined;
-  const root = resolve(options.cgroupRoot ?? DEFAULT_CGROUP_ROOT);
   const parse = (text: string | undefined): number | undefined => {
     const match = /(?:^|\n)oom_kill (\d+)(?:\n|$)/u.exec(text ?? "");
     return match === null ? undefined : Number(match[1]);
@@ -278,7 +341,7 @@ export function readOomKillCount(options: CgroupReadOptions = {}): number | unde
     const count = parse(readText(join(own, "memory.events")));
     if (count !== undefined) return count;
   }
-  for (const directory of cgroupV1Directories(root, "memory", ["memory"], cgroupV1Memberships(options))) {
+  for (const directory of cgroupV1Directories("memory", cgroupMounts(options), cgroupV1Memberships(options))) {
     const count = parse(readText(join(directory, "memory.oom_control")));
     if (count !== undefined) return count;
   }

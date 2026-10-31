@@ -139,6 +139,44 @@ describe("cgroup v1 and other platforms", () => {
       .toEqual({ hostCpus: 24, hostMemoryBytes: 32 * GIB });
   });
 
+  // A container without its own cgroup namespace sees its cgroup mounted as the
+  // hierarchy root: /proc/self/mountinfo names that root (/docker/container),
+  // and the membership /docker/container/worker is memory/worker below it.
+  test("resolves v1 membership against each mount's root from mountinfo", () => {
+    write("memory/memory.limit_in_bytes", "9223372036854771712\n");
+    write("memory/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 0\n");
+    write("memory/worker/memory.limit_in_bytes", `${GIB}\n`);
+    write("memory/worker/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 3\n");
+    write("cpu,cpuacct/cpu.cfs_quota_us", "-1\n");
+    write("cpu,cpuacct/cpu.cfs_period_us", "100000\n");
+    write("cpu,cpuacct/worker/cpu.cfs_quota_us", "50000\n");
+    write("cpu,cpuacct/worker/cpu.cfs_period_us", "100000\n");
+    const mountInfo = [
+      `30 25 0:26 /docker/container ${root}/memory rw,nosuid,nodev,noexec,relatime master:11 - cgroup cgroup rw,memory`,
+      `31 25 0:27 /docker/container ${root}/cpu,cpuacct rw,nosuid,nodev,noexec,relatime master:12 - cgroup cgroup rw,cpu,cpuacct`,
+      `32 25 0:28 /docker/container ${root}/systemd rw,nosuid,nodev,noexec,relatime master:13 - cgroup cgroup rw,xattr,name=systemd`,
+      "33 25 8:1 / /etc/hosts rw,relatime - ext4 /dev/sda1 rw",
+    ].join("\n");
+    const options = {
+      ...host, mountInfo,
+      procSelfCgroup: "12:memory:/docker/container/worker\n4:cpu,cpuacct:/docker/container/worker\n1:name=systemd:/docker/container/worker\n",
+    };
+    expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 0.5, memoryLimitBytes: GIB });
+    expect(readOomKillCount(options)).toBe(3);
+  });
+
+  test("resolves v2 membership against the cgroup2 mount's root, and decodes mountinfo escapes", () => {
+    write("c 1/cpu.max", "max 100000\n");
+    write("c 1/app/cpu.max", "100000 100000\n");
+    write("c 1/app/memory.max", `${2 * GIB}\n`);
+    write("c 1/app/memory.events", "low 0\nhigh 0\nmax 1\noom 4\noom_kill 4\n");
+    const mountInfo = `40 25 0:30 /lxc/c1 ${root.replaceAll(" ", "\\040")}/c\\0401 rw,nosuid,nodev,noexec,relatime - cgroup2 cgroup2 rw`;
+    const options = { ...host, mountInfo, procSelfCgroup: "0::/lxc/c1/app\n" };
+    expect(ownCgroupV2Directory(options)).toBe(join(root, "c 1/app"));
+    expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 1, memoryLimitBytes: 2 * GIB });
+    expect(readOomKillCount(options)).toBe(4);
+  });
+
   test.each(["darwin", "win32"] as const)("reports nothing on %s", (platform) => {
     write("cpu.max", "100000 100000\n");
     const options = { ...host, platform, cgroupRoot: root, procSelfCgroup: "0::/\n" };
