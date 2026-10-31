@@ -77,8 +77,40 @@ describe("dollar skill trust authority", () => {
       model: undefined,
       effort: undefined,
     });
+    expect(loaded.skillInvocation).toBeUndefined();
     expect(authorityMocks.registerSkillHooks).not.toHaveBeenCalled();
     expect(authorityMocks.addInvokedSkill).toHaveBeenCalledOnce();
+  });
+
+  test("a user skill carries its model, effort and grants to the turn it starts", async () => {
+    const loaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      command("userSettings") as never,
+      context(),
+    );
+
+    expect(loaded.skillInvocation).toEqual({
+      name: "authority-skill",
+      model: "grok-4.5",
+      effort: "high",
+      allowedTools: ["Bash(git status)", "Read"],
+    });
+  });
+
+  test("a skill without settings starts an ordinary turn", async () => {
+    const plain = {
+      ...command("userSettings"),
+      allowedTools: [],
+      model: undefined,
+      effort: undefined,
+    };
+    const loaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      plain as never,
+      context(),
+    );
+
+    expect(loaded.skillInvocation).toBeUndefined();
   });
 
   test("plugin-only policy rejects user hooks but admits plugin authority", async () => {

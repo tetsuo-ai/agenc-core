@@ -99,6 +99,7 @@ import {
 } from "../session/runtime-options.js";
 import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
+import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
 import { PermissionRuleMutationPrecommitError } from "../permissions/permission-updates.js";
 import {
   TOOL_POLICY_METADATA_KEY,
@@ -2674,6 +2675,9 @@ export class AgenCDaemonJsonRpcDispatcher {
           sessionId: streamParams.sessionId,
           content: streamParams.content,
           ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
+          ...(streamParams.skillInvocation !== undefined
+            ? { skillInvocation: streamParams.skillInvocation }
+            : {}),
           ...displayUserMessageFromMetadata(
             "message.stream",
             streamParams.metadata,
@@ -4810,7 +4814,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   const validated = validateObjectShape(params, {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
-    objectFields: ["metadata"],
+    objectFields: ["metadata", "skillInvocation"],
     valueFields: ["content", "exactOutput"],
   });
   if (
@@ -4826,7 +4830,76 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   if (validated.exactOutput !== undefined && typeof validated.exactOutput !== "boolean") {
     throw invalidParams("message.stream param exactOutput must be a boolean");
   }
+  if (validated.skillInvocation !== undefined) {
+    validateMessageSkillInvocation(validated.skillInvocation as JsonObject);
+  }
   return validated as MessageStreamParams;
+}
+
+const MAX_SKILL_INVOCATION_NAME_LENGTH = 256;
+const MAX_SKILL_INVOCATION_MODEL_LENGTH = 256;
+const MAX_SKILL_INVOCATION_GRANTS = 64;
+
+/**
+ * Shape check for `message.stream` `skillInvocation`. The runner checks the
+ * values against the session (model catalog, effort support, grant syntax
+ * and managed policy) before the message is admitted.
+ */
+function validateMessageSkillInvocation(value: JsonObject): void {
+  const prefix = "message.stream param skillInvocation";
+  validateObjectShape(value, {
+    methodName: prefix,
+    stringFields: ["name", "model", "effort"],
+    stringArrayFields: ["allowedTools"],
+  });
+  if (
+    typeof value.name !== "string" ||
+    value.name.trim().length === 0 ||
+    value.name.length > MAX_SKILL_INVOCATION_NAME_LENGTH
+  ) {
+    throw invalidParams(
+      `${prefix}.name must be a skill name of 1 to ${MAX_SKILL_INVOCATION_NAME_LENGTH} characters`,
+    );
+  }
+  if (
+    value.model !== undefined &&
+    (typeof value.model !== "string" ||
+      value.model.trim().length === 0 ||
+      value.model.length > MAX_SKILL_INVOCATION_MODEL_LENGTH)
+  ) {
+    throw invalidParams(
+      `${prefix}.model must be a model name of 1 to ${MAX_SKILL_INVOCATION_MODEL_LENGTH} characters`,
+    );
+  }
+  if (
+    value.effort !== undefined &&
+    !(RUN_RUNTIME_REASONING_EFFORTS as readonly unknown[]).includes(value.effort)
+  ) {
+    throw invalidParams(
+      `Skill ${value.name} sets effort ${String(value.effort)}; a skill's effort must be one of ${RUN_RUNTIME_REASONING_EFFORTS.join(", ")}`,
+    );
+  }
+  const grants = value.allowedTools as readonly string[] | undefined;
+  if (
+    grants !== undefined &&
+    (grants.length > MAX_SKILL_INVOCATION_GRANTS ||
+      grants.some(
+        (grant) =>
+          grant.trim().length === 0 ||
+          Buffer.byteLength(grant, "utf8") > MAX_SESSION_PERMISSION_RULE_UTF8_BYTES,
+      ))
+  ) {
+    throw invalidParams(
+      `${prefix}.allowedTools must hold at most ${MAX_SKILL_INVOCATION_GRANTS} non-empty permission rules of at most ${MAX_SESSION_PERMISSION_RULE_UTF8_BYTES} bytes`,
+    );
+  }
+  if (
+    value.model === undefined &&
+    value.effort === undefined &&
+    (grants === undefined || grants.length === 0)
+  ) {
+    throw invalidParams(`${prefix} must set model, effort or allowedTools`);
+  }
 }
 
 function validateMessageContent(

@@ -107,18 +107,70 @@ Parsed fields include:
 | `description` | Listing / model-facing blurb |
 | `when_to_use` | Guidance for auto-invocation |
 | `argument-hint` / `arguments` | Argument names / hint |
-| `allowed-tools` | Tool allowlist for the skill run |
-| `model` | Optional model override |
+| `allowed-tools` | Permission rules the skill's turn may use without a prompt ([below](#skill-settings-for-the-turn-you-start)) |
+| `model` | Model for the skill's turn, on the session's provider ([below](#skill-settings-for-the-turn-you-start)) |
+| `effort` | Reasoning effort for the skill's turn ([below](#skill-settings-for-the-turn-you-start)) |
 | `user-invocable` | Default true |
 | `disable-model-invocation` | Hide from model-driven invoke |
 | `context` | `inline` \| `fork` |
-| `agent` / `effort` / `shell` | Execution hints |
+| `agent` / `shell` | Execution hints |
 | `paths` | Path filters |
 | `hooks` | Optional hook map (validated when present) |
 | `version` | Optional |
 
 Author under e.g. `.agenc/skills/my-skill/SKILL.md` in the project or
 `$AGENC_HOME/skills/my-skill/SKILL.md` for user-global skills.
+
+### Skill settings for the turn you start
+
+When you start a turn by invoking a skill by name in the TUI (`$name` or
+`/name`), that turn runs with the skill's `model`, `effort` and
+`allowed-tools`. The next turn runs on the session's own settings again:
+nothing is written to the session's model, effort or permission rules.
+
+```yaml
+---
+name: deep-review
+description: Review the current diff carefully.
+model: deepseek-v4-pro
+effort: max
+allowed-tools: Write, Edit(./docs/**)
+---
+```
+
+- `model` must be a model the session's provider serves; it is checked like
+  `/model` (provider catalog, managed model allowlist, conversation history).
+  A model id two providers share is read as the session provider's. A turn
+  cannot change providers, so a model only another provider serves refuses
+  the invocation and names that provider. `inherit` or no value keeps the
+  session's model. Without `effort`, the session's effort carries over when
+  the skill's model accepts it; otherwise the model runs at its own default.
+- `effort` must be a level the turn's model accepts, as for `/effort`
+  (`minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `none`, whichever
+  the model takes).
+- `allowed-tools` lists permission rules in the `/permissions` syntax (comma
+  or space separated), such as `Write` or `Edit(./docs/**)`. They are allow
+  rules of the `command` source for that turn's tool calls only, and they
+  match exactly as the same rules in config would (`Write`, for example, also
+  covers the other file-editing tools, and a whole-tool `exec_command` grant
+  covers every shell command). Deny and ask rules, plan mode, protected paths
+  and the OS sandbox still apply first, and in auto mode the rules auto mode
+  strips from every source (broad shell grants) are left out. Use canonical
+  tool names: legacy `Bash` allow rules grant nothing. Subagents the turn
+  starts do not receive the grants. Under a managed policy that allows only
+  managed permission rules, the skill runs without its grants and the session
+  log records a `skill_tool_grants_withheld` warning.
+
+A setting the session cannot honor refuses the invocation before anything is
+sent: the TUI shows the reason and gives your input back. Project skills
+(and skills from project- or local-scope plugin installs) are
+repository-controlled: their `model`, `effort` and `allowed-tools` are
+stripped, so they run on the session's settings. MCP-served skills never
+carry these fields. When the model loads a skill through the `Skill` tool, it
+asks for approval if the skill sets any of these fields and then loads only
+the instructions; the settings apply when you invoke the skill by name. In the
+turn you started with a skill, the model may load that same skill again
+without asking (`Skill(<name>)` joins the turn's allow rules).
 
 ### `agenc skills list` CLI
 

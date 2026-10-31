@@ -14,6 +14,7 @@ import { getInitialEffortSetting } from "../utils/effort.js";
 import { isHaiku55, anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
 import type { Session } from "./session.js";
 import type { ReasoningEffort, TurnContext } from "./turn-context.js";
+import { skillInvocationRequestModel } from "./skill-invocation.js";
 
 type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 
@@ -169,7 +170,7 @@ export function resolveSessionReasoningEffort(
  */
 export function resolveMainLoopReasoningEffort(
   session: Session,
-  turn: Pick<TurnContext, "reasoningEffort" | "modelInfo" | "providerBinding">,
+  turn: Pick<TurnContext, "reasoningEffort" | "modelInfo" | "providerBinding" | "skillInvocation">,
 ): WireReasoningEffort | undefined {
   const configuration = (
     session as Session & {
@@ -191,7 +192,8 @@ export function resolveMainLoopReasoningEffort(
     turn.modelInfo.supportedReasoningLevels,
     {
       provider: session.services.provider.name,
-      model: session.config?.model ?? turn.modelInfo.slug,
+      model: skillInvocationRequestModel(session, turn) ??
+        session.config?.model ?? turn.modelInfo.slug,
       effortSource: session.services.configStore
         ?.provenance?.("reasoning_effort")?.scope,
       followsModelDefault: configuration?.reasoningEffortCleared === true,

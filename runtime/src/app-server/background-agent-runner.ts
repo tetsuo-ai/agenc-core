@@ -22,7 +22,8 @@ import {
   completedEventReplayRequired,
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
-import { modelContextWindow } from "../session/turn-context.js";
+import { modelContextWindow, type TurnContext } from "../session/turn-context.js";
+import type { SkillInvocationSettings } from "../session/skill-invocation.js";
 import { readPreparedContextPressure, clearPreparedContextPressure } from "../session/prepared-context-pressure.js";
 import { readCompactionProgress, subscribeToCompactionProgress } from "../services/compact/progress.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
@@ -326,6 +327,10 @@ import {
   submitStructuredAgentInput,
   messageContentDisplayText,
 } from "./background-agent-runner/turn-lifecycle.js";
+import {
+  admitSkillInvocation,
+  SkillInvocationRejectedError,
+} from "./background-agent-runner/skill-invocation.js";
 import {
   replayRecoveredToolCalls,
   hydrateRecoveredSessionHistory,
@@ -2907,6 +2912,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // user_message or the durable idempotency marker. A refusal leaves the
     // client's existing draft/attachment rollback path intact.
     await consumeDaemonPendingProviderSwitches(active.bootstrap.session, active.bootstrap.configStore);
+    if (params.skillInvocation !== undefined) {
+      // A skill setting the session cannot honor refuses the message before
+      // anything is published, so the user's draft comes back.
+      await admitDaemonSkillInvocation(
+        active.bootstrap.session,
+        active.bootstrap.configStore,
+        params.skillInvocation,
+      );
+    }
     await active.bootstrap.session.assertUserPromptFits?.(input);
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
@@ -2951,6 +2965,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const submitOptions: DaemonHumanSessionSubmitOptions = {
       clientMessageId: params.messageId,
       ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
+      ...(params.skillInvocation !== undefined
+        ? { skillInvocation: params.skillInvocation }
+        : {}),
       [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
       [DAEMON_USER_PROMPT_PREPARED]: true as const,
@@ -6196,6 +6213,54 @@ function prepareDaemonUserPrompt(params: {
   );
 }
 
+function admitDaemonSkillInvocation(
+  session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  settings: SkillInvocationSettings,
+): ReturnType<typeof admitSkillInvocation> {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(configStore, async () => {
+      try {
+        return await admitSkillInvocation(session, configStore, settings);
+      } catch (error) {
+        if (error instanceof SkillInvocationRejectedError) {
+          throw new AgenCBackgroundAgentMessageError(
+            "INVALID_ARGUMENT",
+            error.message,
+          );
+        }
+        throw error;
+      }
+    }),
+  );
+}
+
+/**
+ * The context of a turn started by invoking a skill. Admission ran when the
+ * message arrived; it runs again here because a provider switch may have been
+ * applied since, and a grant the managed-only policy withholds is reported.
+ */
+async function skillInvocationTurn(
+  session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  settings: SkillInvocationSettings,
+): Promise<TurnContext> {
+  const admitted = await admitDaemonSkillInvocation(session, configStore, settings);
+  if (admitted.withheldGrants.length > 0) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "skill_tool_grants_withheld",
+          message: `Managed policy allows only managed permission rules, so skill ${admitted.overrides.invocation.name} runs without its allowed-tools grants (${admitted.withheldGrants.join(", ")}).`,
+        },
+      },
+    });
+  }
+  return session.newSkillInvocationTurn(admitted.overrides);
+}
+
 async function consumeDaemonPendingProviderSwitches(
   session: LocalRuntimeBootstrap["session"],
   configStore: LocalRuntimeBootstrap["configStore"],
@@ -6352,10 +6417,13 @@ function installDaemonTurnDriverHooks(
       // mid-turn switches, so omitting this boundary would make the kernel see
       // the staged switch and close this user turn without sampling.
       await consumeDaemonPendingProviderSwitches(session, configStore);
-      const baseCtx = (
-        session as unknown as { newDefaultTurn: () => unknown }
-      ).newDefaultTurn();
-      const ctx = baseCtx;
+      // A turn the user started with a skill runs on the skill's settings;
+      // every other turn, including the next one, on the session's.
+      const ctx = opts?.skillInvocation !== undefined
+        ? await skillInvocationTurn(session, configStore, opts.skillInvocation)
+        : (
+            session as unknown as { newDefaultTurn: () => unknown }
+          ).newDefaultTurn();
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.userPromptText ?? opts?.displayUserMessage ?? promptDisplayText)

@@ -3670,6 +3670,34 @@ describe("AgenC TUI daemon session adapter", () => {
     }) })]);
   });
 
+  it("sends a skill's turn settings with that submission only", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+    await session.submit("review the diff", {
+      displayUserMessage: "$deep-review",
+      skillInvocation: {
+        name: "deep-review",
+        model: "deepseek-v4-pro",
+        effort: "low",
+        allowedTools: ["Write", "exec_command(git status:*)"],
+      },
+    });
+    await session.submit("plain follow-up");
+    expect(client.requests).toEqual([
+      expect.objectContaining({ method: "message.stream", params: expect.objectContaining({
+        skillInvocation: {
+          name: "deep-review",
+          model: "deepseek-v4-pro",
+          effort: "low",
+          allowedTools: ["Write", "exec_command(git status:*)"],
+        },
+      }) }),
+      expect.objectContaining({ method: "message.stream", params: expect.not.objectContaining({
+        skillInvocation: expect.anything(),
+      }) }),
+    ]);
+  });
+
   it("combines queued idle input with explicit attached submit text", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({

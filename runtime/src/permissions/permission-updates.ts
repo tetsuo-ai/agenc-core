@@ -64,6 +64,42 @@ export function applyPermissionUpdates(
 }
 
 /**
+ * A permission context that also allows `rules` under the `command` source,
+ * for one turn's tool calls (a skill's `allowed-tools`). The registry is not
+ * changed: callers evaluate a call against the returned snapshot only. Deny
+ * and ask rules, plan mode and the bypass-immune checks still come first.
+ * In auto mode the same dangerous rules auto mode strips from every other
+ * source are left out, so a grant cannot skip the classifier.
+ */
+export function withTurnCommandAllowRules(
+  context: ToolPermissionContext,
+  rules: readonly string[] | undefined,
+): ToolPermissionContext {
+  if (rules === undefined || rules.length === 0) return context;
+  const autoActive =
+    context.mode === "auto" ||
+    (context.mode === "plan" && context.autoModeActive === true);
+  const granted = autoActive
+    ? (stripDangerousPermissionsForAutoMode(
+        immutableToolPermissionContext({
+          ...context,
+          alwaysAllowRules: { command: [...rules] },
+          strippedDangerousRules: undefined,
+        }),
+      ).alwaysAllowRules.command ?? [])
+    : rules;
+  if (granted.length === 0) return context;
+  const existing = context.alwaysAllowRules.command ?? [];
+  return immutableToolPermissionContext({
+    ...context,
+    alwaysAllowRules: {
+      ...context.alwaysAllowRules,
+      command: [...new Set([...existing, ...granted])],
+    },
+  });
+}
+
+/**
  * Replace one source's complete logical allow/deny/ask buckets without
  * leaking auto-mode's stripped-rule storage into the projection. Both the
  * daemon authority and its TUI mirror use this exact transformation.

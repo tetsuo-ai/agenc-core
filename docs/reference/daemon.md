@@ -822,6 +822,16 @@ Hidden-user submissions persist a non-rendering `message_submission` marker
 with a SHA-256 content fingerprint, so their idempotency identity also survives
 a process crash without duplicating the hidden prompt in that marker.
 
+`message.stream` also takes `skillInvocation` (`name`, plus at least one of
+`model`, `effort` and `allowedTools`): the frontmatter settings of a skill the
+user invoked by name, which the TUI sends with that turn. The daemon checks
+them against the session before it publishes the message (the model against
+the session provider's catalog, the managed model allowlist and the history;
+the effort against that model; the grants as permission rules, withheld under
+managed-only policy) and refuses the message with `INVALID_ARGUMENT` when one
+cannot apply. The turn then runs on them, and the next turn on the session's
+own settings. See [skills-plugins.md](skills-plugins.md#skill-settings-for-the-turn-you-start).
+
 When `clientMessageId` is omitted, the daemon assigns a collision-resistant
 ID with a random UUID suffix. Concurrent requests remain separate submissions
 even if they have identical content or arrive in the same millisecond. Treat

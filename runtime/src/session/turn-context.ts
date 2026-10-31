@@ -32,6 +32,7 @@ import type {
   NetworkPolicyDecider,
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
+import type { TurnSkillInvocation } from "./skill-invocation.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
 import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig } from "../config/schema.js";
 
@@ -763,6 +764,13 @@ export interface TurnContext {
    * the live registry value.
    */
   readonly permissionMode: PermissionMode;
+
+  /**
+   * Settings of the skill the user started this turn with (`$name` or
+   * `/name`): the model its requests name and the allow rules its tool calls
+   * get. Absent on every other turn.
+   */
+  readonly skillInvocation?: TurnSkillInvocation;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1493,6 +1501,82 @@ export function newDefaultTurnWithSubId(
     ...(session.jsRepl !== undefined ? { jsRepl: session.jsRepl } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
   });
+}
+
+/** What a skill turn changes relative to the session's defaults. */
+export interface SkillInvocationTurnOverrides {
+  readonly invocation: TurnSkillInvocation;
+  /** Metadata of `invocation.model`; required with it. */
+  readonly modelInfo?: ModelInfo;
+  /**
+   * Effort for this turn. `undefined` keeps the session's; `null` runs the
+   * turn with no level, so the model uses its own default.
+   */
+  readonly reasoningEffort?: ReasoningEffort | null;
+}
+
+/**
+ * Build the context of a turn the user started by invoking a skill.
+ *
+ * It is the session's default turn with the skill's model and effort in the
+ * per-turn configuration snapshot, and the skill's admitted settings on
+ * `skillInvocation`. The session itself is only read: its configuration,
+ * provider binding and permission rules stay as they are, so the next turn
+ * runs on them again.
+ */
+export function newSkillInvocationTurnWithSubId(
+  session: SessionForTurn,
+  subId: string,
+  overrides: SkillInvocationTurnOverrides,
+): TurnContext {
+  const model = overrides.invocation.model;
+  if (model !== undefined && overrides.modelInfo === undefined) {
+    throw new Error("a skill turn on another model requires that model's metadata");
+  }
+  const configuration = session.sessionConfiguration;
+  const { reasoningEffort: sessionEffort, ...collaborationMode } =
+    configuration.collaborationMode;
+  const reasoningEffort =
+    overrides.reasoningEffort === undefined
+      ? sessionEffort
+      : (overrides.reasoningEffort ?? undefined);
+  const sessionConfiguration: SessionConfiguration = {
+    ...configuration,
+    collaborationMode: {
+      ...collaborationMode,
+      ...(model !== undefined ? { model } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    },
+  };
+  const view: SessionForTurn = {
+    conversationId: session.conversationId,
+    sessionConfiguration,
+    config: session.config,
+    modelInfo: overrides.modelInfo ?? session.modelInfo,
+    provider: session.provider,
+    ...(session.providerBinding !== undefined
+      ? { providerBinding: session.providerBinding }
+      : {}),
+    ...(session.authManager !== undefined
+      ? { authManager: session.authManager }
+      : {}),
+    ...(session.environment !== undefined
+      ? { environment: session.environment }
+      : {}),
+    ...(session.network !== undefined ? { network: session.network } : {}),
+    ...(session.jsRepl !== undefined ? { jsRepl: session.jsRepl } : {}),
+    ...(session.pendingWorktreeState !== undefined
+      ? { pendingWorktreeState: session.pendingWorktreeState }
+      : {}),
+    ...(session.permissionModeRegistry !== undefined
+      ? { permissionModeRegistry: session.permissionModeRegistry }
+      : {}),
+    nextInternalSubId: () => session.nextInternalSubId(),
+  };
+  return {
+    ...newDefaultTurnWithSubId(view, subId),
+    skillInvocation: overrides.invocation,
+  };
 }
 
 /**

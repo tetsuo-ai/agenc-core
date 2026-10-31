@@ -11,6 +11,7 @@ import { AdmissionDeniedError } from "../../budget/admission-client.js";
 import { parseToolRuleStringsFromCLI } from "../../permissions/settings.js";
 import { runWithCurrentRuntimeSession } from "../../session/current-session.js";
 import type { Session } from "../../session/session.js";
+import type { SkillInvocationSettings } from "../../session/skill-invocation.js";
 import { isRepositoryControlledSkillSource } from "../../skills/repository-skill-boundary.js";
 import { registerSkillHooks } from "../../utils/hooks/registerSkillHooks.js";
 import {
@@ -32,6 +33,11 @@ interface LoadedDollarSkillCommand {
   readonly allowedTools?: string[];
   readonly model?: string;
   readonly effort?: Extract<Command, { type: "prompt" }>["effort"];
+  /**
+   * The settings above as the turn carries them to the daemon, absent when the
+   * skill sets none (always for repository-controlled skills).
+   */
+  readonly skillInvocation?: SkillInvocationSettings;
 }
 
 export function parseDollarSkillCommand(
@@ -109,16 +115,47 @@ export async function loadDollarSkillCommandForTurn(
     );
   }
 
+  const allowedTools = repositoryControlled
+    ? []
+    : parseToolRuleStringsFromCLI(command.allowedTools ?? []);
+  const model = repositoryControlled ? undefined : command.model;
+  const effort = repositoryControlled ? undefined : command.effort;
+  const skillInvocation = skillInvocationSettings(
+    command.name,
+    allowedTools,
+    model,
+    effort,
+  );
   return {
     metadata: formatDollarSkillInputTags(command.name, parsed.args),
     blocks,
     skillContent,
-    allowedTools: repositoryControlled
-      ? []
-      : parseToolRuleStringsFromCLI(command.allowedTools ?? []),
-    model: repositoryControlled ? undefined : command.model,
-    effort: repositoryControlled ? undefined : command.effort,
+    allowedTools,
+    model,
+    effort,
+    ...(skillInvocation !== undefined ? { skillInvocation } : {}),
   };
+}
+
+/** A skill's frontmatter settings for the turn it starts, if it sets any. */
+function skillInvocationSettings(
+  name: string,
+  allowedTools: readonly string[],
+  model: string | undefined,
+  effort: Extract<Command, { type: "prompt" }>["effort"],
+): SkillInvocationSettings | undefined {
+  const turnModel = model?.trim();
+  const level =
+    effort === undefined ? undefined : String(effort).trim().toLowerCase();
+  if (!turnModel && !level && allowedTools.length === 0) return undefined;
+  return Object.freeze({
+    name,
+    ...(turnModel ? { model: turnModel } : {}),
+    ...(level ? { effort: level } : {}),
+    ...(allowedTools.length > 0
+      ? { allowedTools: Object.freeze([...allowedTools]) }
+      : {}),
+  });
 }
 
 function formatDollarSkillInputTags(commandName: string, args: string): string {

@@ -192,6 +192,7 @@ import {
   buildPerTurnConfig,
   buildTurnContext,
   newDefaultTurnWithSubId as buildDefaultTurnWithSubId,
+  newSkillInvocationTurnWithSubId as buildSkillInvocationTurnWithSubId,
   newTurnWithSubId as buildTurnWithSubId,
   type Config,
   AuthManager,
@@ -203,6 +204,7 @@ import {
   SessionConfiguration,
   SkillLoadOutcome,
   type Personality,
+  type SkillInvocationTurnOverrides,
   type TurnContext,
 } from "./turn-context.js";
 import type { ExternalInstructionApprovalStore } from "../prompts/secure-instruction-file.js";
@@ -3158,6 +3160,37 @@ export class Session {
 
   newDefaultTurn(): TurnContext {
     return this.newDefaultTurnWithSubId(this.nextInternalSubId());
+  }
+
+  /**
+   * The context of a turn the user started by invoking a skill: the default
+   * turn with the skill's admitted model, effort and tool grants. The session
+   * keeps its own settings; the next default turn runs on them.
+   */
+  newSkillInvocationTurn(overrides: SkillInvocationTurnOverrides): TurnContext {
+    this.assertProviderSwitchTransactionHealthy();
+    this.adoptCompletedModelMetadata();
+    return buildSkillInvocationTurnWithSubId(
+      this,
+      this.nextInternalSubId(),
+      overrides,
+    );
+  }
+
+  /**
+   * Metadata of `model` as the live provider binding would serve it, derived
+   * as a provider switch derives it, without switching anything.
+   */
+  async modelInfoForLiveProvider(model: string): Promise<ModelInfo> {
+    const binding = this.providerService.current();
+    return withoutXaiSignInFastTier(
+      await deriveNextModelInfo(
+        this.services.modelsManager,
+        model,
+        binding.provider,
+      ),
+      binding,
+    );
   }
 
   /** Validate daemon input before its transcript and submission identity are committed. */

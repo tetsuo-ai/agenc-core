@@ -305,6 +305,7 @@ import {
   type StructuralCompactionDecline,
 } from "./run-turn-compaction.js";
 import { fitToolResultsToBudget, type ContextFitResult } from "./request-context-fit.js";
+import { skillInvocationRequestModel } from "./skill-invocation.js";
 import { permissionInstructionsStateAutonomy } from "./permission-instructions.js";
 import { LIGHT_MEMORY_RULES_MARKER, MEMORY_RULES_MARKER } from "../memory/memdir.js";
 import { resolveMemoryOnRequest } from "../prompts/system-prompt.js";
@@ -764,6 +765,7 @@ function modelImagePolicy(
   const provider = session.services.provider.name;
   const requested =
     state.pendingAdmissionFallback?.toModel ??
+    skillInvocationRequestModel(session, ctx) ??
     session.config?.model ??
     ctx.config.model ??
     ctx.modelInfo.slug;
@@ -1329,14 +1331,16 @@ async function runSamplingRequest(
   }
   const samplingContext = prepared.samplingContext;
   const previousSample = state.reasoningCapPolicy?.sample;
+  const samplingModel = skillInvocationRequestModel(session, samplingContext) ??
+    session.config?.model ?? samplingContext.modelInfo.slug;
   const reasoningCapSample = admitReasoningCapSample(state, {
     policy: session.config?.reasoningCapPolicy,
     provider: session.services.provider.name,
-    model: session.config?.model ?? samplingContext.modelInfo.slug,
+    model: samplingModel,
   });
   const request = reasoningCapSample
     ? { ...prepared.request, reasoningCapSample, reasoningCapTarget: {
-        provider: session.services.provider.name, model: session.config?.model ?? samplingContext.modelInfo.slug,
+        provider: session.services.provider.name, model: samplingModel,
       } }
     : prepared.request;
   if (reasoningCapSample) {
@@ -1348,7 +1352,7 @@ async function runSamplingRequest(
         cause: "reasoning_cap_policy",
         message: "Reasoning hit the limit twice. Continuing for one step without extended thinking.",
         details: { policy: "streak2", provider: session.services.provider.name,
-          model: session.config?.model ?? samplingContext.modelInfo.slug,
+          model: samplingModel,
           sampleId: reasoningCapSample.id, remainingExtension: 1,
           configuredEffort: resolveMainLoopReasoningEffort(session, samplingContext) ?? "default" },
       } } });
@@ -2571,7 +2575,8 @@ async function assertSeedUserPromptFits(
   ));
   state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
   const request = buildSamplingRequestContract(state, session, ctx);
-  const model = session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug;
+  const model = skillInvocationRequestModel(session, ctx) ??
+    session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug;
   let pressure: PreparedRequestContextPressure;
   let baseline: PreparedRequestContextPressure;
   try {
@@ -2776,7 +2781,8 @@ async function* runTurnKernelInner(
         session, provider: session.services.provider, messages, options,
         stepId: admittedModelStepId(ctx, state, "primary"),
         sessionId: session.conversationId,
-        model: session.config?.model ?? samplingContext.config.model,
+        model: skillInvocationRequestModel(session, samplingContext) ??
+          session.config?.model ?? samplingContext.config.model,
         providerName: session.services.provider.name, signal,
         invoke: admittedOptions => session.services.provider.chatStream(messages, () => {}, admittedOptions),
       }),
@@ -3771,6 +3777,7 @@ async function* runTurnKernelInner(
         opts.assistantOutputSink,
         async (request) => {
           const requestedModel = state.pendingAdmissionFallback?.toModel ??
+            skillInvocationRequestModel(session, ctx) ??
             session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug;
           // A final refusal no compaction tier can overcome: the candidate
           // cannot fit, or only the live request and newest results remain.

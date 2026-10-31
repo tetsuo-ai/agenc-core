@@ -1187,9 +1187,29 @@ export interface MessageSendParams extends JsonObject {
     readonly metadata?: JsonObject;
 }
 
+/**
+ * Frontmatter settings of a skill the user invoked by name, for the one turn
+ * the message starts. The daemon checks each against the session (the model
+ * against the session provider's catalog and the managed model allowlist, the
+ * effort against that model, the grants against managed policy) and refuses
+ * the message when one does not apply. Nothing is kept for later turns.
+ */
+export interface MessageSkillInvocation extends JsonObject {
+    /** Invoked skill name, used in errors and warnings. */
+    readonly name: string;
+    /** Model on the session's provider for this turn. */
+    readonly model?: string;
+    /** Reasoning effort for this turn. */
+    readonly effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "none";
+    /** Permission allow rules (`/permissions` syntax) for this turn's tool calls. */
+    readonly allowedTools?: readonly string[];
+}
+
 export interface MessageStreamParams extends MessageSendParams {
     /** Explicit output contract for this turn, including headless continuation. */
     readonly exactOutput?: boolean;
+    /** Settings of the skill the user started this turn with. */
+    readonly skillInvocation?: MessageSkillInvocation;
     readonly streamId?: string;
 }
 

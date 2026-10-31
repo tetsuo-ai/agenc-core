@@ -90,6 +90,7 @@ import { resolveMainLoopReasoningEffort, supportsThinkingOffRecovery } from "../
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
+import { skillInvocationRequestModel } from "../session/skill-invocation.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import type {
   AssistantMessage,
@@ -303,6 +304,10 @@ export function buildProviderOptions(
   transferToolOwnership = false,
 ): LLMChatOptions {
   const allowedToolNames = request.tools.map((spec) => spec.function.name);
+  // A skill turn names the skill's model on every request; the session's
+  // provider binding and its constructor model are unchanged.
+  const skillModel = skillInvocationRequestModel(session, ctx);
+  const model = skillModel ?? session.config?.model ?? ctx.modelInfo.slug;
   // Plan mode restricts tool execution; it does not require a tool for answers.
   // Text cannot exit plan mode or grant approval to mutate the workspace.
   const systemPrompt = request.baseInstructions.trim();
@@ -311,6 +316,7 @@ export function buildProviderOptions(
   const traceSink = resolveProviderTraceSink(session);
   return {
     signal,
+    ...(skillModel !== undefined ? { model: skillModel } : {}),
     ...(request.managedRequestId !== undefined
       ? { managedRequestId: request.managedRequestId }
       : {}),
@@ -339,9 +345,9 @@ export function buildProviderOptions(
     ...((request.reasoningOnlyRecovery === true ||
       (request.reasoningCapSample?.kind === "extra" && session.config?.reasoningCapPolicy === "streak2" &&
         request.reasoningCapTarget?.provider === session.services.provider.name &&
-        request.reasoningCapTarget.model === (session.config?.model ?? ctx.modelInfo.slug))) && supportsThinkingOffRecovery(
+        request.reasoningCapTarget.model === model)) && supportsThinkingOffRecovery(
       session.services.provider.name,
-      session.config?.model ?? ctx.modelInfo.slug,
+      model,
     ) ? { disableThinkingForRecovery: true as const } : {}),
     reasoningSummary: ctx.reasoningSummary,
     ...(ctx.reasoningSummaryIsDefault === true ? { reasoningSummaryIsDefault: true as const } : {}),
@@ -1401,7 +1407,8 @@ export async function streamModel(
       }
     };
     const model =
-      recoveryFallback?.toModel ?? session.config?.model ?? ctx.config.model;
+      recoveryFallback?.toModel ?? skillInvocationRequestModel(session, ctx) ??
+        session.config?.model ?? ctx.config.model;
     const response = await runAdmittedModelCall({
       session,
       provider: session.services.provider,
@@ -1856,7 +1863,8 @@ export async function streamModel(
       (response.finishReason === "stop" && Boolean(assistant.text?.trim())));
   completeReasoningCapSample(state, request.reasoningCapSample, productiveRecoveryOutput, maxOutputTruncated);
   if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
-      providerName, session.config?.model ?? ctx.modelInfo.slug,
+      providerName,
+      skillInvocationRequestModel(session, ctx) ?? session.config?.model ?? ctx.modelInfo.slug,
     ) && productiveRecoveryOutput) {
     state.reasoningOnlyRecoveryCount = 0;
   }

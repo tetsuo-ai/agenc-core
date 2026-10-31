@@ -30,6 +30,7 @@ import type {
   JsonObject,
   JsonValue,
   MessageContentBlock,
+  MessageSkillInvocation,
   MessageStreamParams,
   MessageStreamResult,
   RequestId,
@@ -1395,10 +1396,27 @@ export function createDaemonTuiSession<
             : {}),
         };
         submission.dispatched = true;
+        const skillInvocation = opts?.skillInvocation;
         const result = await client.request("message.stream", {
           sessionId,
           content,
           ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          ...(skillInvocation !== undefined
+            ? {
+                skillInvocation: {
+                  name: skillInvocation.name,
+                  ...(skillInvocation.model !== undefined
+                    ? { model: skillInvocation.model }
+                    : {}),
+                  ...(skillInvocation.effort !== undefined
+                    ? { effort: skillInvocation.effort as NonNullable<MessageSkillInvocation["effort"]> }
+                    : {}),
+                  ...(skillInvocation.allowedTools !== undefined
+                    ? { allowedTools: [...skillInvocation.allowedTools] }
+                    : {}),
+                },
+              }
+            : {}),
           clientMessageId,
           streamId,
         } satisfies MessageStreamParams);
