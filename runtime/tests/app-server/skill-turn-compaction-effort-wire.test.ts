@@ -20,7 +20,7 @@ import { compactConversation } from "../../src/services/compact/compact.js";
 import type { CompactContext, RuntimeMessage } from "../../src/services/compact/types.js";
 import { maybeRunPreviousModelInlineCompact } from "../../src/session/run-turn-compaction.js";
 import type { Session } from "../../src/session/session.js";
-import type { TurnContext } from "../../src/session/turn-context.js";
+import type { ReasoningEffort, TurnContext } from "../../src/session/turn-context.js";
 import { buildInitialTurnState } from "../../src/session/turn-state.js";
 import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import {
@@ -131,7 +131,25 @@ async function downshiftCompactContext(
 }
 
 /** A Gemma 4 session on Gemini at `minimal`, one of the two levels Gemma takes. */
-async function gemmaSession(): Promise<{
+function gemmaSession(): Promise<{
+  readonly session: Session;
+  readonly fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>;
+}> {
+  return geminiSession({
+    model: "gemma-4-31b-it",
+    reasoningEffort: "minimal",
+    supportedReasoningLevels: ["minimal", "high"],
+    contextWindow: 262_144,
+  });
+}
+
+/** A session on the Gemini provider whose summary calls answer with a summary. */
+async function geminiSession(route: {
+  readonly model: string;
+  readonly reasoningEffort: "minimal" | "low" | "medium" | "high";
+  readonly supportedReasoningLevels: readonly ("minimal" | "low" | "medium" | "high")[];
+  readonly contextWindow: number;
+}): Promise<{
   readonly session: Session;
   readonly fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>;
 }> {
@@ -143,16 +161,16 @@ async function gemmaSession(): Promise<{
   const provider = new GeminiProvider({
     credentialPlan: { kind: "api-key", credential: "gemini-test", source: "factory" },
     endpointPlan: createGeminiEndpointPlan(),
-    model: "gemma-4-31b-it",
+    model: route.model,
     fetchImpl,
   });
   const session = deepSeekSkillTurnSession({
     route: {
       provider,
-      model: "gemma-4-31b-it",
-      reasoningEffort: "minimal",
-      supportedReasoningLevels: ["minimal", "high"],
-      contextWindow: 262_144,
+      model: route.model,
+      reasoningEffort: route.reasoningEffort,
+      supportedReasoningLevels: [...route.supportedReasoningLevels],
+      contextWindow: route.contextWindow,
       providerEnvironment: { GEMINI_API_KEY: "gemini-test" },
     },
   });
@@ -342,6 +360,44 @@ describe("model-downshift compaction before a skill turn, on the wire", () => {
     for (const body of bodies) {
       expect((body.generationConfig as { thinkingConfig?: unknown } | undefined)?.thinkingConfig)
         .toEqual({ thinkingLevel: "low" });
+    }
+  });
+
+  test("after a Gemini 2.5 Pro turn, a model-only Gemma skill in a Gemini 3.1 Pro session at low summarizes on Gemini 2.5 Pro with no level", async () => {
+    // Gemini 2.5 Pro thinks by budget and names no levels, so it takes none.
+    const { session, fetchImpl } = await geminiSession({
+      model: "gemini-3.1-pro-preview",
+      reasoningEffort: "low",
+      supportedReasoningLevels: ["low", "medium", "high"],
+      contextWindow: 1_048_576,
+    });
+    const admittedTurn = await skillTurn(session, { name: "gemma-review", model: "gemma-4-31b-it" });
+    expect(admittedTurn.modelInfo.slug).toBe("gemma-4-31b-it");
+    // This session has no models manager, so the skill model's metadata
+    // lacks the window and the levels a live session reads for it.
+    const turn = {
+      ...admittedTurn,
+      modelInfo: {
+        ...admittedTurn.modelInfo,
+        contextWindow: 262_144,
+        supportedReasoningLevels: ["minimal", "high"] as ReasoningEffort[],
+      },
+    };
+
+    const context = await downshiftCompactContext(session, turn, {
+      model: "gemini-2.5-pro",
+      contextWindow: 1_048_576,
+    });
+    expect(context.options?.mainLoopModel).toBe("gemini-2.5-pro");
+    const before = fetchImpl.mock.calls.length;
+    const bodies = await compactInTurn(session, context.turn!, fetchImpl, "gemini-2.5-pro");
+
+    for (const call of fetchImpl.mock.calls.slice(before)) {
+      expect(String(call[0])).toContain("gemini-2.5-pro");
+    }
+    for (const body of bodies) {
+      expect((body.generationConfig as { thinkingConfig?: unknown } | undefined)?.thinkingConfig)
+        .toBeUndefined();
     }
   });
 });

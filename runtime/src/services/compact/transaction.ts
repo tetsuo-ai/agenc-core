@@ -831,8 +831,9 @@ function readCompactionPermissionMode(
  *    selects as it always has: the session's level, which automatic summaries
  *    cap without changing session settings.
  * 3. When that selection fails or names a level the summaries' model does not
- *    take (`none` included), the summaries send `low` if that model takes it,
- *    otherwise no level at all (the model's default).
+ *    take (`none` included, and any level for a model that names none), the
+ *    summaries send `low` if that model takes it, otherwise no level at all
+ *    (the model's default).
  */
 function resolveSummaryReasoningEffort(
   session: NonNullable<CompactContext["admissionSession"]>,
@@ -923,7 +924,8 @@ function skillTurnSummaryEffort(
 /**
  * Whether the summaries' model takes `effort`: no level always; `none` when
  * its provider sends the opt-out to that model literally; any other level
- * when the model lists it (or lists nothing to check against).
+ * only when the model names it, so a model that names no levels (a thinking
+ * budget model) gets none.
  */
 function modelTakesEffort(
   effort: LLMChatOptions["reasoningEffort"],
@@ -943,7 +945,7 @@ function modelTakesEffort(
       return false;
     }
   }
-  return levels.length === 0 || levels.includes(effort);
+  return levels.includes(effort);
 }
 
 function mergeCompactionFocus(
