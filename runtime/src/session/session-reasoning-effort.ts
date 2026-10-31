@@ -125,11 +125,11 @@ export function resolveSessionReasoningEffort(
         contract?.levels.includes("none") === true) {
       return "none";
     }
-    // QwenCloud Qwen3.8 Max and Flash think at xhigh when the field is
-    // omitted and turn thinking off only with a literal `none` (live on the
-    // Token Plan, 2026-10-31, round 4 job qtp).
+    // QwenCloud deployments that list `none` (Qwen3.8 Max and Flash, GLM-5.2)
+    // think at their own default when the field is omitted and turn thinking
+    // off only with a literal `none` (live on the Token Plan, 2026-10-31,
+    // round 4 job qtp: no reasoning tokens with none on all three).
     if ((selection?.provider === "qwen" || selection?.provider === "qwen-token-plan") &&
-        /^qwen3\.8-(?:max|flash)(?:$|-)/u.test(selection.model.trim().toLowerCase()) &&
         (supportedReasoningLevels !== undefined
           ? supportedReasoningLevels.includes("none")
           : contract?.levels.includes("none") === true)) {

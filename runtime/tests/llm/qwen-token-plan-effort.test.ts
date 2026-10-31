@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { QwenTokenPlanProvider } from "../../src/llm/providers/qwen/index.js";
+import { QwenProvider, QwenTokenPlanProvider } from "../../src/llm/providers/qwen/index.js";
 import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
 import { resolveRegisteredModelCatalogEntry } from "../../src/llm/registry/model-catalog.js";
 import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
@@ -49,6 +49,28 @@ describe("Qwen3.8 thinking off through the none effort", () => {
   ] as const)("a %s %s session set to none sends none", (provider, model) => {
     const levels = resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels;
     expect(resolveSessionReasoningEffort("none", levels, { provider, model })).toBe("none");
+  });
+
+  // GLM-5.2 on QwenCloud lists none too (live on the Token Plan, 2026-10-31: none = no reasoning tokens): a
+  // session set to none reaches the wire as reasoning_effort none on either route.
+  it.each([
+    ["qwen-token-plan", "glm-5.2"], ["qwen", "glm-5.2"], ["qwen-token-plan", "qwen3.8-max"],
+  ] as const)("a %s %s session set to none sends reasoning_effort none on the wire", async (provider, model) => {
+    const levels = resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels;
+    const effort = resolveSessionReasoningEffort("none", levels, { provider, model });
+    expect(effort).toBe("none");
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
+      id: "chatcmpl-none", model,
+      choices: [{ message: { role: "assistant", content: "OK" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const Provider = provider === "qwen" ? QwenProvider : QwenTokenPlanProvider;
+    const instance = new Provider({
+      apiKey: "placeholder", model, baseURL: "http://127.0.0.1:1/compatible-mode/v1", fetchImpl,
+    });
+    await instance.chat([{ role: "user", content: "Reply OK" }], { reasoningEffort: effort });
+    const sent = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(sent.reasoning_effort).toBe("none");
   });
 
   it("keeps none as no effort field where the Qwen deployment does not list it", () => {
