@@ -109,9 +109,15 @@ const QWEN_RETIRED_MODELS: ReadonlySet<string> = new Set([
   "qwen-coder-plus", "qwen3-8b", "qwen3-14b", "qwen3-30b-a3b", "qwen3-235b-a22b", "qwen-turbo",
 ]);
 
-export const QWEN_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = Object.freeze(
-  QWEN_CURRENT_MODELS.map((entry, priority) => Object.freeze({
-    provider: "qwen", model: entry.model, displayName: entry.displayName,
+/** One catalog row for a QwenCloud deployment contract on the given billing route. */
+export function qwenCurrentCatalogEntry(
+  provider: "qwen" | "qwen-token-plan",
+  entry: QwenCurrentModel,
+  priority: number,
+  visibility: "list" | "none",
+): RegisteredModelCatalogEntry {
+  return Object.freeze({
+    provider, model: entry.model, displayName: entry.displayName,
     ...(entry.contextWindow === undefined ? {} : {contextWindow: entry.contextWindow, maxContextWindow: entry.contextWindow}),
     ...(entry.maxOutputTokens === undefined ? {} : {maxOutputTokens: entry.maxOutputTokens}),
     ...(entry.maxOutputTokensUpperLimit === undefined ? {} : {maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit, maxOutputTokensCappedDefault: true}),
@@ -123,9 +129,16 @@ export const QWEN_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] 
     supportsReasoningSummaries: false, defaultReasoningSummary: "none" as const,
     supportedReasoningLevels: entry.reasoningLevels ?? [],
     ...(entry.defaultReasoningLevel ? {defaultReasoningLevel: entry.defaultReasoningLevel} : {}),
-    additionalSpeedTiers: [], priority: priority + 12,
-    visibility: entry.model === "kimi/kimi-k3" || QWEN_RETIRED_MODELS.has(entry.model) ? "none" as const : "list" as const,
-  })),
+    additionalSpeedTiers: [], priority,
+    visibility,
+  });
+}
+
+export const QWEN_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = Object.freeze(
+  QWEN_CURRENT_MODELS.map((entry, priority) => qwenCurrentCatalogEntry(
+    "qwen", entry, priority + 12,
+    entry.model === "kimi/kimi-k3" || QWEN_RETIRED_MODELS.has(entry.model) ? "none" : "list",
+  )),
 );
 
 /** Existing picker models with newly verified Singapore prices. */

@@ -913,7 +913,8 @@ export function buildChatCompletionsRequest(
 /**
  * Mark the request for prompt caching where the provider caches only on
  * request. A top-level marker follows the conversation on its own; otherwise
- * the leading system prompt gets the one marker.
+ * the leading system prompt gets the one marker. `rolling` also marks the
+ * newest message, so the next call reads this call's whole prefix.
  */
 function applyPromptCacheControl(
   body: Record<string, unknown>,
@@ -923,9 +924,12 @@ function applyPromptCacheControl(
     body.cache_control = { type: "ephemeral" };
     return;
   }
-  if (mode !== "system_prompt" || !Array.isArray(body.messages)) return;
-  const first = (body.messages as Array<Record<string, unknown>>)[0];
+  if ((mode !== "system_prompt" && mode !== "rolling") || !Array.isArray(body.messages)) return;
+  const messages = body.messages as Array<Record<string, unknown>>;
+  const first = messages[0];
   if (first?.role === "system") markLastTextPartForCache(first);
+  const last = messages[messages.length - 1];
+  if (mode === "rolling" && last !== undefined && last !== first) markLastTextPartForCache(last);
 }
 
 function markLastTextPartForCache(message: Record<string, unknown>): void {

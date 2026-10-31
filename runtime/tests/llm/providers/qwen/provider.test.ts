@@ -285,7 +285,11 @@ describe.each([
           ],
         },
         { role: "tool", content: "ok", tool_call_id: "call_echo" },
-        { role: "user", content: "continue" },
+        // Token Plan Qwen3.6 caches only with explicit markers: the newest
+        // message carries the rolling cache_control marker.
+        id === "qwen-token-plan" && model === "qwen3.6-flash"
+          ? { role: "user", content: [{ type: "text", text: "continue", cache_control: { type: "ephemeral" } }] }
+          : { role: "user", content: "continue" },
       ]);
     },
   );
@@ -917,7 +921,7 @@ describe("QwenCloud registration and fail-closed routing", () => {
           apiKey: "sk-sp-test",
           model: "some-third-party-model",
         }),
-    ).toThrow(/not in the current Token Plan Qwen chat allowlist/i);
+    ).toThrow(/not in the current Token Plan chat allowlist/i);
   });
 
   test("resolves independent canonical environment authority", () => {

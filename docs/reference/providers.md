@@ -259,6 +259,19 @@ both an access-key ID and secret access key. The optional session token is used
 when present. AgenC's one-field BYOK paste/store path does not accept or persist
 a partial Bedrock credential set.
 
+`qwen-token-plan` serves the plan's Qwen chat models (`qwen3.8-max`,
+`qwen3.8-flash`, `qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-flash`) and the
+DeepSeek and GLM deployments the plan hosts (`deepseek-v4.1-flash`,
+`deepseek-v4.1-flash-1017`, `deepseek-v4-pro`, `deepseek-v4-pro-0813`,
+`deepseek-v4-flash-0731`, `glm-5.3`, `glm-5.2`), each with the same limits and
+controls as that deployment on Pay-As-You-Go. The plan's `auto` router and its
+image, audio and video models are not chat models here. An exhausted plan quota
+(HTTP 429 `insufficient_quota`) ends the turn with a quota message instead of
+being retried as a rate limit; ordinary throttling is still retried.
+`qwen3.6-flash` caches only with explicit `cache_control` markers, so its
+requests mark the system prompt and the newest message. Inventory and sources:
+[Qwen Token Plan, 2026-10-31](../models/qwen-token-plan-2026-10-31.md).
+
 ## Auth model
 
 Provider credential values are owned by the **auth backend** or transient BYOK

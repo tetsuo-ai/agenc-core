@@ -6,6 +6,7 @@ import { isKimiK3Model } from "./registry/kimi-models.js";
  * model id names another vendor.
  */
 import { resolveNvidiaCurrentModel } from "./registry/nvidia-current-models.js";
+import { resolveQwenTokenPlanHostedModel } from "./registry/qwen-token-plan-models.js";
 import { supportsXaiReasoningEffortParam } from "./structured-output.js";
 import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
@@ -147,7 +148,7 @@ export function resolveReasoningEffort(input: {
     const entry = resolveRegisteredModelCatalogEntry(input);
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
-  } else if (slug === "qwen") {
+  } else if (slug === "qwen" || (slug === "qwen-token-plan" && resolveQwenTokenPlanHostedModel(model) !== undefined)) {
     reasoningEffortAllowedValues = new Set(resolveRegisteredModelCatalogEntry(input)?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "openai") {

@@ -43,7 +43,8 @@ import {
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
 import { transportFailureOf } from "../../transport-failure.js";
-import { resolveQwenCurrentModel } from "../../registry/qwen-current-models.js";
+import { resolveQwenCurrentModel, type QwenCurrentModel } from "../../registry/qwen-current-models.js";
+import { resolveQwenTokenPlanHostedModel } from "../../registry/qwen-token-plan-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -451,6 +452,20 @@ function withPromptCacheKeyHeaders(
   return { ...headers, ...Object.fromEntries(names.map(name => [name, key])) };
 }
 
+/**
+ * The QwenCloud Token Plan quota refusal (HTTP 429 insufficient_quota) blocks
+ * every call until the plan's quota returns (token-plan-faq). Say so instead of
+ * the generic billing sentence, and never retry it as throttling.
+ */
+function fundsErrorMessage(providerName: string, status: number | undefined): string | undefined {
+  if (providerName !== "qwen-token-plan" || status !== 429) return undefined;
+  return [
+    "QwenCloud Token Plan reports that the plan quota is used up (HTTP 429 insufficient_quota).",
+    "This is not a transient rate limit, so it is not retried.",
+    "It clears at the monthly quota reset, or after a quota pack, more seats or a plan upgrade.",
+  ].join(" ");
+}
+
 function zaiInsufficientBalanceErrorMessage(): string {
   return [
     "Z.AI code 1113 reports insufficient balance or plan entitlement.",
@@ -737,7 +752,7 @@ function mapOpenAIHttpFailureToError(args: {
   if (isProviderFundsFailure(args.providerName, {
     status: args.status, body: args.body, message: args.message,
   })) {
-    const error = new LLMFundsError(args.providerName, args.status);
+    const error = new LLMFundsError(args.providerName, args.status, fundsErrorMessage(args.providerName, args.status));
     const retryAfterMs = args.retryAfterMs ?? readRetryAfterMs(args.body);
     if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
     return error;
@@ -848,7 +863,7 @@ function mapOpenAIStreamError(args: {
   if (isProviderFundsFailure(args.providerName, {
     status, body: args.errorBody, message,
   })) {
-    const error = new LLMFundsError(args.providerName, status);
+    const error = new LLMFundsError(args.providerName, status, fundsErrorMessage(args.providerName, status));
     const retryAfterMs = readRetryAfterMs(args.errorBody);
     if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
     return error;
@@ -1095,7 +1110,7 @@ export class OpenAIProvider implements LLMProvider {
     // Qwen's older open-source thinking deployments and Omni routes require
     // SSE. Preserve the public chat() contract by buffering our existing
     // stream parser, including tool arguments, reasoning provenance and usage.
-    if (this.name === "qwen" && resolveQwenCurrentModel(model)?.bufferedChat === true) {
+    if (this.qwenDeploymentContract(model)?.bufferedChat === true) {
       return this.chatStream(messages, () => {}, options);
     }
     const requestTools = options?.tools
@@ -1350,7 +1365,7 @@ export class OpenAIProvider implements LLMProvider {
 
   async getExecutionProfile(options?: LLMChatOptions) {
     const model = options?.model?.trim() || this.config.model;
-    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    const qwenModel = this.qwenDeploymentContract(model);
     // An answer-only cap plus an independent thinking budget can produce more
     // billable output than the single reservation. Keep uncapped sessions
     // usable, but do not promise a total ceiling to hard-budget admission.
@@ -1443,8 +1458,19 @@ export class OpenAIProvider implements LLMProvider {
     };
   }
 
+  /**
+   * The registered QwenCloud deployment contract for this model: the PAYG
+   * catalog on `qwen`, the hosted DeepSeek and GLM deployments on the Token
+   * Plan (the same contracts under the plan's ids), nothing elsewhere.
+   */
+  private qwenDeploymentContract(model: string): QwenCurrentModel | undefined {
+    if (this.name === "qwen") return resolveQwenCurrentModel(model);
+    if (this.name === "qwen-token-plan") return resolveQwenTokenPlanHostedModel(model);
+    return undefined;
+  }
+
   private resolveChatCompletionsMaxTokenField(model: string): ChatCompletionsMaxTokenField {
-    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    const qwenModel = this.qwenDeploymentContract(model);
     if (qwenModel !== undefined && !qwenModel.totalOutputCap) return "max_tokens";
     if (
       this.name === "meta" ||
@@ -1645,7 +1671,7 @@ export class OpenAIProvider implements LLMProvider {
     for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
       request[key] = value;
     }
-    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(args.model) : undefined;
+    const qwenModel = this.qwenDeploymentContract(args.model);
     if (qwenModel?.model.startsWith("qwen") && !qwenModel.totalOutputCap &&
       qwenModel.thinking !== "none" && request.enable_thinking !== false &&
       request.thinking_budget === undefined && typeof request.max_tokens === "number") {
