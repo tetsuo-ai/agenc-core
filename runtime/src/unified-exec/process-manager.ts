@@ -80,6 +80,7 @@ import {
 import { withChildTempAuthority } from "../utils/subprocessEnv.js";
 import { withWritableGoBuildCache } from "./go-build-cache.js";
 import { withNetworkRetryDefaults } from "./network-retry-defaults.js";
+import { withNpmUpdateCheckWhereRecordable } from "./npm-update-check.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
@@ -2330,11 +2331,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           args: params.args,
           cwd: params.cwd,
           env: withWritableGoBuildCache(
-            sandbox === "none" ? params.env : withNetworkRetryDefaults(
-              params.env,
+            sandbox === "none" ? params.env : withNpmUpdateCheckWhereRecordable(
+              withNetworkRetryDefaults(
+                params.env,
+                permissions,
+                params.runtimeSandbox.additionalPermissions,
+                params.runtimeSandbox.network !== undefined || params.runtimeSandbox.enforceManagedNetwork === true,
+              ),
               permissions,
               params.runtimeSandbox.additionalPermissions,
-              params.runtimeSandbox.network !== undefined || params.runtimeSandbox.enforceManagedNetwork === true,
+              params.runtimeSandbox.sandboxPolicyCwd,
+              sessionTempRoot,
             ),
             permissions,
             params.runtimeSandbox.additionalPermissions,
