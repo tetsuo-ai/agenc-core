@@ -6,8 +6,8 @@
  * snapshot of the live permission registry, never the registry itself, so
  * they end with the turn. The managed-only policy is read again every time
  * the snapshot is composed: a policy reload during the turn revokes the grants
- * from the next evaluation on. Both dispatch paths, ordinary tool calls and
- * code-mode nested calls, compose the snapshot here.
+ * from the next evaluation on. Only the turn's own tool dispatch composes it;
+ * code-mode nested calls never get these grants (see run-turn.ts).
  *
  * @module
  */

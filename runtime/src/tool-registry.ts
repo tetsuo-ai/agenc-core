@@ -129,7 +129,6 @@ import { runAdmittedToolCall } from "./budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "./budget/admission-client.js";
 import type { ToolEffectDispositionEvidence } from "./contracts/run-contracts.js";
 import { freshDenialTracking } from "./permissions/denial-tracking.js";
-import type { TurnPermissionContext } from "./permissions/turn-grants.js";
 import {
   attachContextDefaults,
   hasPermissionsToUseTool,
@@ -157,12 +156,6 @@ export interface CodeModeNestedToolDispatch {
   readonly name: string;
   readonly input?: unknown;
   readonly abortSignal?: AbortSignal;
-  /**
-   * How the calling turn sees the live permission context (a skill turn's
-   * grants, composed with the current managed-only policy). Applied to every
-   * evaluation of this call; absent, the registry's context applies as is.
-   */
-  readonly permissionContext?: TurnPermissionContext;
 }
 
 export interface ToolRegistryDispatchOptions {
@@ -1716,9 +1709,7 @@ export function buildToolRegistry(
                 ? { signal: toolCall.abortSignal }
                 : {}),
               getAppState() {
-                const live = permissionRegistry.current();
-                const toolPermissionContext =
-                  toolCall.permissionContext?.(live) ?? live;
+                const toolPermissionContext = permissionRegistry.current();
                 return {
                   toolPermissionContext,
                   denialTracking,

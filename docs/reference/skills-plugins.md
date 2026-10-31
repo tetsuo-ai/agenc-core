@@ -157,17 +157,16 @@ allowed-tools: Write, Edit(./docs/**)
   rules of the `command` source for that turn's tool calls only, and they
   match exactly as the same rules in config would (`Write`, for example, also
   covers the other file-editing tools, and a whole-tool `exec_command` grant
-  covers every shell command). They apply to the turn's tool calls whether
-  the model calls a tool directly or from a code-mode script. Deny and ask
-  rules, plan mode, protected paths and the OS sandbox still apply first, and
-  in auto mode the rules auto mode strips from every source (broad shell
-  grants) are left out. Use canonical tool names: legacy `Bash` allow rules
-  grant nothing. Subagents the turn starts do not receive the grants. Under a
-  managed policy that allows only managed permission rules, the skill runs
-  without its grants and the TUI shows a `skill_tool_grants_withheld`
-  warning. The policy is read again for every
-  tool call, so a managed-only policy that arrives during the turn ends the
-  grants from the next call on.
+  covers every shell command). Inside code mode, nested tool calls do not
+  use a skill's allowed-tools. Deny and ask rules, plan mode, protected paths
+  and the OS sandbox still apply first, and in auto mode the rules auto mode
+  strips from every source (broad shell grants) are left out. Use canonical
+  tool names: legacy `Bash` allow rules grant nothing. Subagents the turn
+  starts do not receive the grants. Under a managed policy that allows only
+  managed permission rules, the skill runs without its grants and the TUI
+  shows a `skill_tool_grants_withheld` warning. The policy is read again for
+  every tool call, so a managed-only policy that arrives during the turn ends
+  the grants from the next call on.
 - Built-in skills pre-approve only built-in tools on an allowlist: `FileRead`,
   `Grep`, `Glob`, `Write`, `Edit`, `MultiEdit`, `ledger_wallet_cli_status` and
   `install_ledger_wallet_cli`. Any other entry in a built-in skill's

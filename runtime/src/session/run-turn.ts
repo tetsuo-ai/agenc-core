@@ -2381,9 +2381,10 @@ export async function* runTurnKernel(
     startedAtMs: turnStartedAt,
     ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
   });
-  // Nested code-mode calls are evaluated with this turn's grants, as its own
-  // tool calls are.
-  const codeModeTurnWorker = startCodeModeTurnWorker(session, ctx);
+  // Nested code-mode calls never get a skill turn's grants: the code-mode
+  // service is shared with child sessions and routes a cell's calls to the
+  // most recent turn host, so a grant there could outlive its turn.
+  const codeModeTurnWorker = startCodeModeTurnWorker(session);
   const signalCleanups: Array<() => void> = [];
   // Turn-scoped durability: between this turn's steps, records are written
   // in order but not fsynced; its end (complete, aborted, failed) and the

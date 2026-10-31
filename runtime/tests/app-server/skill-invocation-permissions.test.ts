@@ -1,9 +1,10 @@
 /**
- * A skill turn's `allowed-tools` grants reach every tool call of that turn,
- * through the ordinary dispatch path and through code-mode nested calls, and
+ * A skill turn's `allowed-tools` grants reach the turn's own tool calls, and
  * only while the current permission policy allows rules from outside managed
  * settings: a policy reload during the turn revokes them from the next
- * evaluation on.
+ * evaluation on. Code-mode nested calls never receive them: the code-mode
+ * service is shared with child sessions and routes a cell's calls to the
+ * most recent turn host, so a grant there could outlive its turn.
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -14,6 +15,7 @@ import { buildLiveToolDispatchOptions } from "../../src/phases/execute-tools.js"
 import type { Session } from "../../src/session/session.js";
 import type { TurnContext } from "../../src/session/turn-context.js";
 import { buildToolRegistry, type ToolRegistry } from "../../src/tool-registry.js";
+import { QuickJsCodeModeService } from "../../src/tools/code-mode/service.js";
 import { startCodeModeTurnWorker } from "../../src/tools/code-mode/turn-host.js";
 import type {
   CodeModeService,
@@ -26,7 +28,14 @@ import {
   removeSkillTurnHomes,
 } from "../helpers/skill-turn-session.js";
 
-afterEach(() => {
+const services: QuickJsCodeModeService[] = [];
+
+afterEach(async () => {
+  for (const service of services.splice(0)) {
+    for (const cellId of ["1", "2", "3", "4"]) {
+      await service.wait({ cellId, terminate: true }).catch(() => {});
+    }
+  }
   removeSkillTurnHomes();
 });
 
@@ -71,7 +80,7 @@ function capturingCodeModeService(): {
  * A daemon-style session whose registry dispatches `custom.lookup`, with a
  * code-mode service and a managed policy file a test can change.
  */
-function lookupSession(): {
+function lookupSession(codeModeService?: CodeModeService): {
   readonly session: Session;
   readonly tool: Tool;
   readonly execute: ReturnType<typeof vi.fn>;
@@ -83,7 +92,7 @@ function lookupSession(): {
   let registry: ToolRegistry | undefined;
   const session = deepSeekSkillTurnSession({
     managedPolicy: true,
-    codeModeService: codeMode.service,
+    codeModeService: codeModeService ?? codeMode.service,
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -110,35 +119,61 @@ async function skillTurn(session: Session): Promise<TurnContext> {
   return session.newSkillInvocationTurn(admitted.overrides);
 }
 
-describe("skill turn grants on every dispatch path", () => {
-  test("the same grant allows the call through tool dispatch and code-mode nested dispatch", async () => {
-    const { session, tool, execute, codeMode } = lookupSession();
+/**
+ * Start the code-mode worker for a turn the way run-turn does. The turn is
+ * passed along on purpose: an earlier version took it to hand the turn's
+ * grants to nested calls, which let them outlive the turn.
+ */
+function startWorkerForTurn(session: Session, turn: TurnContext) {
+  const start = startCodeModeTurnWorker as (
+    session: Session,
+    turn?: TurnContext,
+  ) => ReturnType<typeof startCodeModeTurnWorker>;
+  return start(session, turn);
+}
+
+async function decision(tool: Tool, ctx: TurnContext, session: Session): Promise<string> {
+  return (await hasPermissionsToUseTool(
+    tool,
+    {},
+    buildLiveToolDispatchOptions(ctx, session).permissionContext!,
+  )).behavior;
+}
+
+/** A code-mode cell that calls `custom.lookup` and reports what happened. */
+async function runLookupCell(service: QuickJsCodeModeService): Promise<string> {
+  const response = await service.execute({
+    cellId: service.allocateCellId(),
+    toolCallId: "exec-1",
+    enabledTools: [{
+      name: "custom.lookup",
+      globalName: "custom_lookup",
+      description: "Look a value up.",
+      kind: "function",
+      inputSchema: { type: "object" },
+    }],
+    source: [
+      "try {",
+      "  const result = await tools.custom_lookup({});",
+      "  text('ALLOWED ' + JSON.stringify(result));",
+      "} catch (error) {",
+      "  text('REFUSED ' + String(error));",
+      "}",
+    ].join("\n"),
+    storedValues: await service.storedValues(),
+    yieldTimeMs: 5_000,
+  });
+  return response.contentItems
+    .map((item) => (item.type === "input_text" ? item.text : ""))
+    .join("\n");
+}
+
+describe("skill turn grants", () => {
+  test("the grant allows the skill turn's own tool call; another turn asks", async () => {
+    const { session, tool } = lookupSession();
     const turn = await skillTurn(session);
-    const signal = new AbortController().signal;
-    const nested = { cellId: "1", runtimeToolCallId: "n1", toolName: "custom.lookup", input: {} };
-
-    const dispatch = buildLiveToolDispatchOptions(turn, session);
-    expect(
-      (await hasPermissionsToUseTool(tool, {}, dispatch.permissionContext!)).behavior,
-    ).toBe("allow");
-    startCodeModeTurnWorker(session, turn);
-    await expect(codeMode.host().invokeTool(nested, signal)).resolves.toBe("looked up");
-    expect(execute).toHaveBeenCalledOnce();
-
-    // Another turn of the session, code-mode included, asks as before.
-    const plain = session.newDefaultTurn();
-    expect(
-      (await hasPermissionsToUseTool(
-        tool,
-        {},
-        buildLiveToolDispatchOptions(plain, session).permissionContext!,
-      )).behavior,
-    ).toBe("ask");
-    startCodeModeTurnWorker(session, plain);
-    await expect(codeMode.host().invokeTool(nested, signal)).rejects.toThrow(
-      "custom.lookup needs approval",
-    );
-    expect(execute).toHaveBeenCalledOnce();
+    expect(await decision(tool, turn, session)).toBe("allow");
+    expect(await decision(tool, session.newDefaultTurn(), session)).toBe("ask");
   });
 
   test("a managed-only policy reload during the skill turn revokes its grants from the next tool call", async () => {
@@ -169,20 +204,55 @@ describe("skill turn grants on every dispatch path", () => {
     ).toBeUndefined();
   });
 
-  test("the same reload revokes them from code-mode nested calls of the turn", async () => {
-    const { session, execute, codeMode } = lookupSession();
+  test("a code-mode nested call of the skill turn does not receive its grants", async () => {
+    const { session, tool, execute, codeMode } = lookupSession();
     const turn = await skillTurn(session);
-    const signal = new AbortController().signal;
-    const nested = { cellId: "1", runtimeToolCallId: "n2", toolName: "custom.lookup", input: {} };
-    // One code-mode worker serves the whole turn.
-    startCodeModeTurnWorker(session, turn);
-    await expect(codeMode.host().invokeTool(nested, signal)).resolves.toBe("looked up");
+    expect(await decision(tool, turn, session)).toBe("allow");
 
-    await reloadManagedPolicy(session, ["allowManagedPermissionRulesOnly = true"]);
+    startWorkerForTurn(session, turn);
+    await expect(codeMode.host().invokeTool(
+      { cellId: "1", runtimeToolCallId: "n1", toolName: "custom.lookup", input: {} },
+      new AbortController().signal,
+    )).rejects.toThrow("custom.lookup needs approval");
+    expect(execute).not.toHaveBeenCalled();
+  });
 
-    await expect(codeMode.host().invokeTool(nested, signal)).rejects.toThrow(
-      "custom.lookup needs approval",
-    );
-    expect(execute).toHaveBeenCalledOnce();
+  test("nor does a cell on the real code-mode service during the skill turn", async () => {
+    const service = new QuickJsCodeModeService({ enabled: true });
+    services.push(service);
+    expect(service.enabled()).toBe(true);
+    const parent = lookupSession(service);
+    const turn = await skillTurn(parent.session);
+    expect(await decision(parent.tool, turn, parent.session)).toBe("allow");
+
+    const worker = startWorkerForTurn(parent.session, turn);
+    const during = await runLookupCell(service);
+    worker.dispose();
+
+    expect(during).toContain("REFUSED");
+    expect(during).toContain("custom.lookup needs approval");
+    expect(parent.execute).not.toHaveBeenCalled();
+  });
+
+  test("nor after an overlapping parent and child worker are both disposed (the parent first)", async () => {
+    const service = new QuickJsCodeModeService({ enabled: true });
+    services.push(service);
+    // A parent session in a skill turn and a child session share the service.
+    const parent = lookupSession(service);
+    const child = lookupSession(service);
+    const turn = await skillTurn(parent.session);
+
+    const parentWorker = startWorkerForTurn(parent.session, turn);
+    const childWorker = startWorkerForTurn(child.session, child.session.newDefaultTurn());
+    // The parent ends first; disposing the child then puts the ended parent's
+    // host back as the service's host.
+    parentWorker.dispose();
+    childWorker.dispose();
+    const after = await runLookupCell(service);
+
+    expect(after).toContain("REFUSED");
+    expect(after).toContain("custom.lookup needs approval");
+    expect(parent.execute).not.toHaveBeenCalled();
+    expect(child.execute).not.toHaveBeenCalled();
   });
 });
