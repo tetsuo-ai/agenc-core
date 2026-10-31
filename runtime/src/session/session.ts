@@ -235,6 +235,7 @@ import type {
 import type { LifecycleHookRegistry } from "../llm/hooks/registry.js";
 import type { HookResultMessage } from "../types/message.js";
 import type {
+  ElicitationClosedEvent,
   McpElicitationRequestEvent,
   McpElicitationRequest,
   McpElicitationResponse,
@@ -1023,6 +1024,31 @@ function waitForAbortSignal(signals: readonly (AbortSignal | undefined)[]): {
     }
   });
   return { aborted: false, promise, cleanup };
+}
+
+/**
+ * Waits for a client's answer or the abort waiter, and says whether the abort
+ * came first. The value cannot tell: an answer can be null, and a resolver
+ * told about the abort (`onAbort`) settles because of it.
+ */
+async function answerOrWithdrawal<T>(
+  answer: Promise<T>,
+  abort: Promise<null>,
+  onAbort?: () => void,
+): Promise<{ readonly withdrawn: boolean; readonly value: T | null }> {
+  let first: "answer" | "abort" | undefined;
+  const value = await Promise.race([
+    answer.then((answered) => {
+      first ??= "answer";
+      return answered;
+    }),
+    abort.then(() => {
+      first ??= "abort";
+      onAbort?.();
+      return null;
+    }),
+  ]);
+  return { withdrawn: first === "abort", value };
 }
 
 function mcpElicitationPendingKey(
@@ -6156,10 +6182,6 @@ export class Session {
         return null;
       }
       const resolverAbort = new AbortController();
-      const abortPromise = abortWaiter.promise.then((result) => {
-        resolverAbort.abort("elicitation_cancelled");
-        return result;
-      });
       this.emit({
         id: this.nextInternalSubId(),
         msg: {
@@ -6167,14 +6189,24 @@ export class Session {
           payload: event,
         },
       });
+      let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
       try {
-        return await Promise.race([
+        const settled = await answerOrWithdrawal(
           directResolver.request(event, resolverAbort.signal),
-          abortPromise,
-        ]);
+          abortWaiter.promise,
+          () => resolverAbort.abort("elicitation_cancelled"),
+        );
+        if (!settled.withdrawn) outcome = "answered";
+        return settled.value;
       } finally {
         resolverAbort.abort("elicitation_settled");
         abortWaiter.cleanup();
+        this.emitElicitationClosed({
+          kind: "request_user_input",
+          requestId,
+          turnId,
+          outcome,
+        });
       }
     }
     let resolveResponse:
@@ -6211,10 +6243,22 @@ export class Session {
         payload: event,
       },
     });
+    let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
-      return await Promise.race([responsePromise, abortWaiter.promise]);
+      const settled = await answerOrWithdrawal(
+        responsePromise,
+        abortWaiter.promise,
+      );
+      if (!settled.withdrawn) outcome = "answered";
+      return settled.value;
     } finally {
       await cleanup();
+      this.emitElicitationClosed({
+        kind: "request_user_input",
+        requestId,
+        turnId,
+        outcome,
+      });
     }
   }
 
@@ -6264,10 +6308,6 @@ export class Session {
         return null;
       }
       const resolverAbort = new AbortController();
-      const abortPromise = abortWaiter.promise.then((result) => {
-        resolverAbort.abort("elicitation_cancelled");
-        return result;
-      });
       this.emit({
         id: this.nextInternalSubId(),
         msg: {
@@ -6275,15 +6315,26 @@ export class Session {
           payload: event,
         },
       });
+      let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
       try {
-        return await Promise.race([
+        const settled = await answerOrWithdrawal(
           directResolver.request(event, resolverAbort.signal),
-          abortPromise,
-        ]);
+          abortWaiter.promise,
+          () => resolverAbort.abort("elicitation_cancelled"),
+        );
+        if (!settled.withdrawn) outcome = "answered";
+        return settled.value;
       } finally {
         resolverAbort.abort("elicitation_settled");
         abortWaiter.cleanup();
         releasePause();
+        this.emitElicitationClosed({
+          kind: "mcp",
+          requestId,
+          serverName,
+          turnId,
+          outcome,
+        });
       }
     }
     let resolveResponse:
@@ -6320,10 +6371,23 @@ export class Session {
         payload: event,
       },
     });
+    let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
-      return await Promise.race([responsePromise, abortWaiter.promise]);
+      const settled = await answerOrWithdrawal(
+        responsePromise,
+        abortWaiter.promise,
+      );
+      if (!settled.withdrawn) outcome = "answered";
+      return settled.value;
     } finally {
       await cleanup();
+      this.emitElicitationClosed({
+        kind: "mcp",
+        requestId,
+        serverName,
+        turnId,
+        outcome,
+      });
     }
   }
 
@@ -6343,6 +6407,23 @@ export class Session {
     if (resolver === undefined) return false;
     resolver(response);
     return true;
+  }
+
+  /**
+   * Tells clients that a request this session published is no longer
+   * pending, so one that still shows it can close it. A daemon client has no
+   * other way to learn that the session stopped waiting.
+   */
+  private emitElicitationClosed(payload: ElicitationClosedEvent): void {
+    // Nothing can be appended after the session closed its journal.
+    if (this.canonicalJournalSealed) return;
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "elicitation_closed",
+        payload,
+      },
+    });
   }
 
   private beginOutOfBandElicitationPause(): () => void {

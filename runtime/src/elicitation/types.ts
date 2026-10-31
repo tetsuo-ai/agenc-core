@@ -204,3 +204,22 @@ export interface McpElicitationCompleteEvent {
   readonly serverName: string;
   readonly elicitationId: string;
 }
+
+/**
+ * A `request_user_input` or `mcp_elicitation_request` the session published
+ * is no longer pending. It is addressed the way `elicitation.respond` is, so a
+ * client that still shows the request can close it.
+ */
+export interface ElicitationClosedEvent {
+  readonly kind: "request_user_input" | "mcp";
+  readonly requestId: McpRequestId;
+  /** Set for MCP requests. */
+  readonly serverName?: string;
+  readonly turnId: string;
+  /**
+   * `answered`: a client answered it. `withdrawn`: the session stopped
+   * waiting first, because the MCP server cancelled the request, the tool
+   * call or turn stopped, or the session ended.
+   */
+  readonly outcome: "answered" | "withdrawn";
+}

@@ -1009,6 +1009,15 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     serverName: isString,
     elicitationId: isString,
   }),
+  elicitation_closed: objectShape(
+    {
+      kind: oneOf("request_user_input", "mcp"),
+      requestId: either(isString, isNumber),
+      turnId: isString,
+      outcome: oneOf("answered", "withdrawn"),
+    },
+    { serverName: isString },
+  ),
   context_compacted: objectShape(
     {},
     {

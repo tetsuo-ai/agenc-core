@@ -6258,6 +6258,83 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("bridges elicitation_closed so clients can close a request that is no longer pending", () => {
+    const daemonEvent = daemonEventFromUnboundSessionEvent({
+      id: "closed-1",
+      seq: 41,
+      msg: {
+        type: "elicitation_closed",
+        payload: {
+          kind: "mcp",
+          requestId: 7,
+          serverName: "profile",
+          turnId: "turn-1",
+          outcome: "withdrawn",
+        },
+      },
+    });
+
+    expect(daemonEvent).toEqual({
+      id: "closed-1",
+      eventId: "legacy-event:41:closed-1",
+      sequence: 41,
+      type: "elicitation_closed",
+      payload: {
+        kind: "mcp",
+        requestId: 7,
+        serverName: "profile",
+        turnId: "turn-1",
+        outcome: "withdrawn",
+      },
+    });
+    expect(
+      notificationFromDaemonEvent("session-1", "agent-1", daemonEvent!),
+    ).toMatchObject({
+      method: "event.session_event",
+      params: {
+        sessionId: "session-1",
+        event: {
+          type: "elicitation_closed",
+          payload: { kind: "mcp", requestId: 7, outcome: "withdrawn" },
+        },
+      },
+    });
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        id: "closed-2",
+        msg: {
+          type: "elicitation_closed",
+          payload: {
+            kind: "request_user_input",
+            requestId: "call-1",
+            turnId: "turn-1",
+            outcome: "answered",
+          },
+        },
+      }),
+    ).toEqual({
+      id: "closed-2",
+      eventId: "closed-2",
+      type: "elicitation_closed",
+      payload: {
+        kind: "request_user_input",
+        requestId: "call-1",
+        turnId: "turn-1",
+        outcome: "answered",
+      },
+    });
+    // A malformed close is not forwarded.
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        id: "closed-3",
+        msg: {
+          type: "elicitation_closed",
+          payload: { kind: "mcp", requestId: 7, turnId: "turn-1", outcome: "gone" },
+        },
+      }),
+    ).toBeNull();
+  });
+
   it("bridges collab subagent lifecycle session events into daemon session notifications", () => {
     expect(
       daemonEventFromUnboundSessionEvent({

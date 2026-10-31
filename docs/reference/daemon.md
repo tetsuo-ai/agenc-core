@@ -1248,6 +1248,17 @@ disable bypass entirely. See
 current Ledger action is documented in
 [`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
 
+When a user-input or MCP elicitation request stops being pending,
+`event.session_event` carries an `elicitation_closed` event. Its payload
+addresses the request the way `elicitation.respond` does (`kind`, `requestId`,
+and `serverName` for `kind: "mcp"`) and adds `turnId` and `outcome`:
+`answered` when a client answered it, `withdrawn` when the session stopped
+waiting first (the MCP server cancelled the request, for example on its own
+timeout, the tool call or turn stopped, or the session ended). A client that
+still shows the request closes it and sends no answer: `elicitation.respond`
+for a closed request fails with `INVALID_ARGUMENT` because nothing is pending.
+The TUI closes the form or question at whatever field it shows.
+
 ## Startup and restored sessions
 
 Before it listens, the daemon reads the ids of the runs that were open at

@@ -669,7 +669,9 @@ function toolRequestInputFromPayload(
  * notification fan-out can deliver. Currently:
  *
  *   - elicitation/user-input requests (`request_user_input`,
- *     `mcp_elicitation_request`, `mcp_elicitation_complete`)
+ *     `mcp_elicitation_request`, `mcp_elicitation_complete`) and
+ *     `elicitation_closed`, which tells clients to close a request the
+ *     session answered or stopped waiting for
  *   - durable user transcript messages emitted by runtime turns
  *   - collab-agent lifecycle events emitted by `spawn_agent`,
  *     `wait_agent`, `send_message`, and `close_agent`
@@ -832,6 +834,31 @@ export function daemonEventFromUnboundSessionEvent(event: {
       payload: {
         serverName: payload.serverName,
         elicitationId: payload.elicitationId,
+      },
+    };
+  }
+  if (
+    type === "elicitation_closed" &&
+    isJsonObject(payload) &&
+    (payload.kind === "request_user_input" || payload.kind === "mcp") &&
+    (typeof payload.requestId === "string" ||
+      typeof payload.requestId === "number") &&
+    typeof payload.turnId === "string" &&
+    (payload.outcome === "answered" || payload.outcome === "withdrawn")
+  ) {
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload: {
+        kind: payload.kind,
+        requestId: payload.requestId,
+        ...(typeof payload.serverName === "string"
+          ? { serverName: payload.serverName }
+          : {}),
+        turnId: payload.turnId,
+        outcome: payload.outcome,
       },
     };
   }

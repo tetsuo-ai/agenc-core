@@ -108,6 +108,7 @@ import {
 } from "../helpers/daemon-tui-session.js";
 import {
   installElicitationResolvers,
+  type PendingElicitation,
   subscribeToMcpUrlCompletions,
 } from "./components/App.js";
 import { installCompactProgressControls } from "./session-types.js";
@@ -4403,6 +4404,201 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(client.requests).toEqual([]);
     unsubscribe();
     controller.cleanup();
+  });
+
+  /** A daemon TUI session with the TUI's resolvers and the shown request. */
+  function daemonElicitationHarness(): {
+    readonly client: ReturnType<typeof createClient>;
+    readonly controller: ReturnType<typeof installElicitationResolvers>;
+    readonly shown: () => PendingElicitation | null;
+    readonly emitClosed: (payload: JsonObject) => void;
+    readonly responses: () => readonly unknown[];
+    readonly dispose: () => void;
+  } {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const state: { shown: PendingElicitation | null } = { shown: null };
+    const controller = installElicitationResolvers(session, (pending) => {
+      state.shown = pending;
+    });
+    const unsubscribe = subscribeToMcpUrlCompletions(session, controller);
+    return {
+      client,
+      controller,
+      shown: () => state.shown,
+      emitClosed: (payload) => {
+        client.emit("session_1", {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.session_event",
+          params: {
+            sessionId: "session_1",
+            event: { id: `closed_${String(payload.requestId)}`, type: "elicitation_closed", payload },
+          },
+        });
+      },
+      responses: () =>
+        client.requests
+          .filter((request) => request.method === "elicitation.respond")
+          .map((request) => request.params),
+      dispose: () => {
+        unsubscribe();
+        controller.cleanup();
+      },
+    };
+  }
+
+  function emitProfileForm(
+    client: ReturnType<typeof createClient>,
+    turnId = "turn_1",
+  ): void {
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_elicitation_request",
+      params: {
+        sessionId: "session_1",
+        eventId: `form_7_${turnId}`,
+        requestId: 7,
+        serverName: "profile",
+        turnId,
+        request: {
+          mode: "form",
+          message: "Create a profile",
+          requestedSchema: {
+            type: "object",
+            required: ["name", "age"],
+            properties: {
+              name: { type: "string", description: "Your name" },
+              age: { type: "integer", description: "Your age" },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  it("closes a daemon form the daemon withdrew after a field change and a validation error", async () => {
+    const harness = daemonElicitationHarness();
+    try {
+      emitProfileForm(harness.client);
+      await flush();
+      expect(harness.shown()).toMatchObject({ kind: "mcp-form", index: 0 });
+      expect(harness.controller.submitPending(harness.shown()!, "Ada")).toBe(true);
+      expect(harness.controller.submitPending(harness.shown()!, "abc")).toBe(true);
+      expect(harness.shown()).toMatchObject({
+        kind: "mcp-form",
+        index: 1,
+        error: "age must be a number",
+      });
+
+      harness.emitClosed({
+        kind: "mcp",
+        requestId: 7,
+        serverName: "profile",
+        turnId: "turn_1",
+        outcome: "withdrawn",
+      });
+      await flush();
+
+      expect(harness.shown()).toBeNull();
+      // Nothing is pending on the daemon any more, so no answer is sent.
+      expect(harness.responses()).toEqual([]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  it("closes a daemon question another client answered", async () => {
+    const harness = daemonElicitationHarness();
+    try {
+      harness.client.emit("session_1", {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.user_input_request",
+        params: {
+          sessionId: "session_1",
+          eventId: "input_1",
+          requestId: "call_1",
+          callId: "call_1",
+          turnId: "turn_1",
+          questions: [
+            { id: "first", header: "First", question: "First?", isOther: true, isSecret: false },
+            { id: "second", header: "Second", question: "Second?", isOther: true, isSecret: false },
+          ],
+        },
+      });
+      await flush();
+      expect(harness.controller.submitPending(harness.shown()!, "one")).toBe(true);
+      expect(harness.shown()).toMatchObject({ kind: "user", index: 1 });
+
+      harness.emitClosed({
+        kind: "request_user_input",
+        requestId: "call_1",
+        turnId: "turn_1",
+        outcome: "answered",
+      });
+      await flush();
+
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toEqual([]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  it("keeps a daemon form when a close names the same request id from another turn", async () => {
+    const harness = daemonElicitationHarness();
+    try {
+      emitProfileForm(harness.client, "turn_2");
+      await flush();
+
+      harness.emitClosed({
+        kind: "mcp",
+        requestId: 7,
+        serverName: "profile",
+        turnId: "turn_1",
+        outcome: "withdrawn",
+      });
+      await flush();
+      expect(harness.shown()).toMatchObject({ kind: "mcp-form", index: 0 });
+
+      expect(harness.controller.submitPending(harness.shown()!, "Ada")).toBe(true);
+      expect(harness.controller.submitPending(harness.shown()!, "36")).toBe(true);
+      await flush();
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toEqual([
+        {
+          sessionId: "session_1",
+          requestId: 7,
+          kind: "mcp",
+          serverName: "profile",
+          response: { action: "accept", content: { name: "Ada", age: 36 } },
+        },
+      ]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  it("shows a daemon request delivered twice once", async () => {
+    const harness = daemonElicitationHarness();
+    try {
+      emitProfileForm(harness.client);
+      emitProfileForm(harness.client);
+      await flush();
+
+      expect(harness.controller.submitPending(harness.shown()!, "Ada")).toBe(true);
+      expect(harness.controller.submitPending(harness.shown()!, "36")).toBe(true);
+      await flush();
+
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toHaveLength(1);
+    } finally {
+      harness.dispose();
+    }
   });
 
   it("sends daemon-backed MCP URL responses for explicit TUI submissions", async () => {

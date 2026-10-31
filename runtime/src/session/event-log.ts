@@ -46,6 +46,7 @@ import type {
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
 import type { SkillInvocationRecord } from "./skill-invocation.js";
 import type {
+  ElicitationClosedEvent,
   McpElicitationCompleteEvent,
   McpElicitationRequestEvent,
   RequestUserInputEvent,
@@ -1294,6 +1295,10 @@ export type EventMsg =
       readonly payload: McpElicitationCompleteEvent;
     }
   | {
+      readonly type: "elicitation_closed";
+      readonly payload: ElicitationClosedEvent;
+    }
+  | {
       readonly type: "context_compacted";
       readonly payload: ContextCompactedEvent;
     }
@@ -1569,6 +1574,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "request_user_input",
     "mcp_elicitation_request",
     "mcp_elicitation_complete",
+    "elicitation_closed",
     "context_compacted",
     "subagent_task_admitted",
     "subagent_turn_outcome",

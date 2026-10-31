@@ -120,6 +120,10 @@ import { takePlanApprovalChoice } from "./plan-approval-choice.js";
 import { createWorkflowApprovalControls, type WorkflowApprovalControls } from "./workflow-approval-controls.js";
 import { buildDaemonApprovalCtx, daemonFileWritePreview } from "./daemon-approval-context.js";
 import { DaemonApprovalRequests } from "./daemon-approval-requests.js";
+import {
+  type DaemonElicitationAddress,
+  DaemonElicitationRequests,
+} from "./daemon-elicitation-requests.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import {
   createRealtimeTuiControls,
@@ -2943,6 +2947,7 @@ function subscribeToDaemonEvents(
   let closed = false;
   let lostTurnProbe: Promise<void> | null = null;
   const pendingApprovals = new DaemonApprovalRequests(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
+  const pendingElicitations = new DaemonElicitationRequests();
   const emit = (event: unknown): void => {
     if (!closed) cb(event);
   };
@@ -2963,6 +2968,7 @@ function subscribeToDaemonEvents(
       session,
       event,
       emit,
+      pendingElicitations,
     );
   };
   const unsubscribeSession = client.subscribeToSessionEvents(
@@ -3057,6 +3063,7 @@ function subscribeToDaemonEvents(
   return () => {
     closed = true;
     pendingApprovals.close();
+    pendingElicitations.closeAll();
     unsubscribeSession();
     unsubscribeRealtime?.();
     unsubscribeConnection?.();
@@ -3182,10 +3189,15 @@ async function maybeBridgeDaemonElicitation(
   session: AgenCTuiBridgeSession,
   event: unknown,
   cb: (event: unknown) => void,
+  pendingElicitations: DaemonElicitationRequests,
 ): Promise<void> {
   if (!isJsonObject(event) || typeof event.type !== "string") return;
   const payload = event.payload;
   if (!isJsonObject(payload)) return;
+  if (event.type === "elicitation_closed") {
+    pendingElicitations.close(payload);
+    return;
+  }
   if (
     event.type === "request_user_input" &&
     typeof payload.callId === "string" &&
@@ -3194,33 +3206,42 @@ async function maybeBridgeDaemonElicitation(
   ) {
     const resolver = session.services.requestUserInputResolver;
     if (resolver === undefined) return;
-    let response: RequestUserInputResponse | null;
-    try {
-      response = await resolver.request({
-        requestId:
-          typeof payload.requestId === "string"
-            ? payload.requestId
-            : payload.callId,
-        callId: payload.callId,
-        turnId: payload.turnId,
-        questions: jsonObjectArray(
-          payload.questions,
-        ) as unknown as RequestUserInputEvent["questions"],
-        ...(isJsonObject(payload.clientAction)
-          ? {
-              clientAction: payload.clientAction as unknown as NonNullable<
-                RequestUserInputEvent["clientAction"]
-              >,
-            }
-          : {}),
-      });
-    } catch {
-      response = null;
-    }
     const requestId =
       typeof payload.requestId === "string"
         ? payload.requestId
         : payload.callId;
+    const address: DaemonElicitationAddress = {
+      kind: "request_user_input",
+      requestId,
+    };
+    const prompt = pendingElicitations.begin(address, payload.turnId);
+    if (prompt === undefined) return;
+    let response: RequestUserInputResponse | null;
+    try {
+      response = await resolver.request(
+        {
+          requestId,
+          callId: payload.callId,
+          turnId: payload.turnId,
+          questions: jsonObjectArray(
+            payload.questions,
+          ) as unknown as RequestUserInputEvent["questions"],
+          ...(isJsonObject(payload.clientAction)
+            ? {
+                clientAction: payload.clientAction as unknown as NonNullable<
+                  RequestUserInputEvent["clientAction"]
+                >,
+              }
+            : {}),
+        },
+        prompt.signal,
+      );
+    } catch {
+      response = null;
+    }
+    pendingElicitations.finish(address, prompt);
+    // The daemon closed it: an answer would find nothing pending.
+    if (prompt.signal.aborted) return;
     try {
       await client.request("elicitation.respond", {
         sessionId,
@@ -3248,15 +3269,28 @@ async function maybeBridgeDaemonElicitation(
   ) {
     const resolver = session.services.mcpElicitationResolver;
     if (resolver === undefined) return;
+    const address: DaemonElicitationAddress = {
+      kind: "mcp",
+      serverName: payload.serverName,
+      requestId: payload.requestId,
+    };
+    const prompt = pendingElicitations.begin(address, payload.turnId);
+    if (prompt === undefined) return;
     const response = await resolver
-      .request({
-        serverName: payload.serverName,
-        requestId: payload.requestId,
-        turnId: payload.turnId,
-        request:
-          payload.request as unknown as McpElicitationRequestEvent["request"],
-      })
+      .request(
+        {
+          serverName: payload.serverName,
+          requestId: payload.requestId,
+          turnId: payload.turnId,
+          request:
+            payload.request as unknown as McpElicitationRequestEvent["request"],
+        },
+        prompt.signal,
+      )
       .catch((): McpElicitationResponse => ({ action: "cancel" }));
+    pendingElicitations.finish(address, prompt);
+    // The daemon closed it: an answer would find nothing pending.
+    if (prompt.signal.aborted) return;
     if (isMcpUrlCompletionResponse(response)) return;
     try {
       await client.request("elicitation.respond", {
