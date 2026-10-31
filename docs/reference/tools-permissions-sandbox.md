@@ -342,7 +342,7 @@ works from the sub-agent's own session, and one session's authority covers
 the whole call: endpoint, credential, auth mode (API key or sign-in),
 credential home and connection settings resolve together.
 
-- A tool that calls the session's own provider (Grok's native search,
+- A tool on the session's own provider route (Grok's native search,
   `web_fetch`'s `prompt` extraction, `XSearch` in a Grok session, the
   session's own media route) uses the key or sign-in, base URL and auth
   selection that session's model calls use. An explicit API-key selection
@@ -354,12 +354,16 @@ credential home and connection settings resolve together.
   provider key) resolves from that session's own environment and credential
   home, honoring its `GROK_AUTH_MODE`, with each key and its URL taken as one
   pair.
-- Every request the tool sends itself (fetches, searches, media requests and
-  their downloads, model lists, and the requests of a provider it rebuilds
-  for native search) goes through that session's own proxy (`HTTPS_PROXY`,
-  `NO_PROXY`), client certificate and key (`AGENC_CLIENT_CERT`,
-  `AGENC_CLIENT_KEY`) and CA trust, from the same environment its endpoint and
-  key come from.
+- Requests a tool sends itself, or through a provider instance it builds or
+  rebuilds for the call, use the calling session's transport, including that
+  provider's sign-in refresh and discovery. Requests a tool makes through the
+  session's own provider instance (`web_fetch` prompt extraction, token
+  counting) use exactly the connection that session's model calls use.
+  The transport is the session's own proxy (`HTTPS_PROXY`, `NO_PROXY`), client
+  certificate and key (`AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`) and CA trust,
+  from the same environment its endpoint and key come from; it carries the
+  tool's fetches, searches, media requests and their downloads, model lists,
+  and the requests of a provider rebuilt for native search or `XSearch`.
 
 A session gets its provider environment and credential home when it is
 created: the root session from its client's environment and AgenC home, and
