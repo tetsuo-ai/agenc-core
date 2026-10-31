@@ -47,6 +47,7 @@ import {
   parseSkillFrontmatterFields as parseCanonicalSkillFrontmatterFields,
 } from "./loadSkillsDir.js";
 import { isRepositoryControlledSkillSource } from "./repository-skill-boundary.js";
+import { bundledSkillAllowedTools } from "./bundled-skill-grants.js";
 
 export type LocalSkillScope =
   | "user"
@@ -1298,7 +1299,7 @@ function bundledSkillMetadata(definition: BundledSkillDefinition): LocalSkillMet
     source: "bundled",
     loadedFrom: "bundled",
     ...(definition.aliases ? { aliases: definition.aliases } : {}),
-    allowedTools: definition.allowedTools ?? [],
+    allowedTools: bundledSkillAllowedTools(definition.name, definition.allowedTools),
     ...(definition.argumentHint ? { argumentHint: definition.argumentHint } : {}),
     ...(definition.whenToUse ? { whenToUse: definition.whenToUse } : {}),
     ...(definition.model ? { model: definition.model } : {}),
@@ -2785,10 +2786,10 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
     whenToUse:
       "Use whenever the user means a Ledger hardware wallet, wallet-cli, Ledger device accounts, balances, receive/send, swaps, earn, genuine-check, or Ledger Key Ring.",
     argumentHint: "[Ledger wallet task]",
+    // Never exec_command: built-in skills do not pre-approve shell commands.
     allowedTools: [
       "ledger_wallet_cli_status",
       "install_ledger_wallet_cli",
-      "exec_command",
     ],
     getPrompt: (args) => buildLedgerWalletCliPrompt(args),
   },

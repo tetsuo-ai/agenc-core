@@ -16,6 +16,7 @@
 
 import type { Command } from '../types/command.js'
 import type { BundledSkillDefinition } from '../skills/bundledSkills.js'
+import { bundledSkillAllowedTools } from '../skills/bundled-skill-grants.js'
 import type {
   BuiltinPluginDefinition,
   LoadedPlugin,
@@ -143,7 +144,7 @@ function skillDefinitionToCommand(definition: BundledSkillDefinition): Command {
     name: definition.name,
     description: definition.description,
     hasUserSpecifiedDescription: true,
-    allowedTools: definition.allowedTools ?? [],
+    allowedTools: bundledSkillAllowedTools(definition.name, definition.allowedTools),
     argumentHint: definition.argumentHint,
     whenToUse: definition.whenToUse,
     model: definition.model,

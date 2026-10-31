@@ -113,6 +113,34 @@ describe("dollar skill trust authority", () => {
     expect(loaded.skillInvocation).toBeUndefined();
   });
 
+  test("a built-in skill never carries a shell or process grant; a user skill keeps its own", async () => {
+    const shellHeavy = ["FileRead, exec_command(git status:*)", "PowerShell", "write_stdin"];
+    const builtIn = {
+      ...command("bundled"),
+      loadedFrom: "bundled" as const,
+      allowedTools: shellHeavy,
+    };
+    const builtInLoaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      builtIn as never,
+      context(),
+    );
+    expect(builtInLoaded.allowedTools).toEqual(["FileRead"]);
+    expect(builtInLoaded.skillInvocation?.allowedTools).toEqual(["FileRead"]);
+
+    const userLoaded = await loadDollarSkillCommandForTurn(
+      { commandName: "authority-skill", args: "" },
+      { ...command("userSettings"), allowedTools: shellHeavy } as never,
+      context(),
+    );
+    expect(userLoaded.allowedTools).toEqual([
+      "FileRead",
+      "exec_command(git status:*)",
+      "PowerShell",
+      "write_stdin",
+    ]);
+  });
+
   test("plugin-only policy rejects user hooks but admits plugin authority", async () => {
     authorityMocks.restrictedToPluginOnly.mockReturnValue(true);
     authorityMocks.sourceAdminTrusted.mockImplementation(

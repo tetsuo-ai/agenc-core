@@ -13,6 +13,7 @@ import { runWithCurrentRuntimeSession } from "../../session/current-session.js";
 import type { Session } from "../../session/session.js";
 import type { SkillInvocationSettings } from "../../session/skill-invocation.js";
 import { isRepositoryControlledSkillSource } from "../../skills/repository-skill-boundary.js";
+import { bundledSkillAllowedTools } from "../../skills/bundled-skill-grants.js";
 import { registerSkillHooks } from "../../utils/hooks/registerSkillHooks.js";
 import {
   isRestrictedToPluginOnly,
@@ -115,9 +116,13 @@ export async function loadDollarSkillCommandForTurn(
     );
   }
 
+  // Built-in skills never pre-approve shell or process tools, whichever
+  // registry produced the command.
   const allowedTools = repositoryControlled
     ? []
-    : parseToolRuleStringsFromCLI(command.allowedTools ?? []);
+    : command.source === "bundled" || command.loadedFrom === "bundled"
+      ? bundledSkillAllowedTools(command.name, command.allowedTools)
+      : parseToolRuleStringsFromCLI(command.allowedTools ?? []);
   const model = repositoryControlled ? undefined : command.model;
   const effort = repositoryControlled ? undefined : command.effort;
   const skillInvocation = skillInvocationSettings(

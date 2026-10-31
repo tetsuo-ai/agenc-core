@@ -71,7 +71,9 @@ literal placeholder was not rendered from a plugin root.
 
 The local loader defines eleven built-in skills: `update-config`,
 `keybindings`, `debug`, `simplify`, `batch`, `loop`, `agenc-in-browser`,
-`schedule-agents`, `agenc-api`, `ledger-wallet-cli`, and `verify`.
+`schedule-agents`, `agenc-api`, `ledger-wallet-cli`, and `verify`. No built-in
+skill pre-approves a shell or process tool
+([details](#skill-settings-for-the-turn-you-start)).
 
 Separately, `registerBundledSkill` in `bundledSkills.ts` registers these two
 commands. They are compiled into the runtime and appear as
@@ -160,6 +162,15 @@ allowed-tools: Write, Edit(./docs/**)
   starts do not receive the grants. Under a managed policy that allows only
   managed permission rules, the skill runs without its grants and the session
   log records a `skill_tool_grants_withheld` warning.
+- Built-in skills never pre-approve shell or process tools (`exec_command`,
+  `system.bash`, `PowerShell`, `write_stdin`, `kill_process`, `Monitor`, the
+  `js_repl` tools): such an entry in a built-in skill's `allowed-tools` is
+  ignored with a debug-log warning, so the shell commands of that turn ask as
+  in any other turn. Their other grants apply: `/update-config` and
+  `/keybindings` read and edit files without asking, `/debug` reads, and
+  `/ledger-wallet-cli` runs its own status and installer tools (the installer
+  still asks for its own confirmation). User and plugin skills keep the shell
+  grants their author declares.
 
 A setting the session cannot honor refuses the invocation before anything is
 sent: the TUI shows the reason and gives your input back. Project skills
