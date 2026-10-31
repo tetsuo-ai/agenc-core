@@ -1098,6 +1098,12 @@ interface XaiToolBackend {
   /** Which credential `apiKey` is, so the rebuilt provider keeps that selection. */
   readonly authMode: "oauth" | "api_key";
   readonly timeoutMs?: number;
+  /**
+   * The caller's transport for the rebuilt provider: a Grok session's own
+   * provider fetch (a pinned child transport, for example), or plain fetch,
+   * with the session's proxy, client certificate and CA trust.
+   */
+  readonly fetchImpl: typeof fetch;
 }
 
 /** A session provider's own fetch, when its factory options name one. */
@@ -1148,6 +1154,7 @@ function resolveXaiToolBackend(
       authMode: route.authMode,
       ...(route.credentialHome !== undefined ? { credentialHome: route.credentialHome } : {}),
       ...(factory.timeoutMs !== undefined ? { timeoutMs: factory.timeoutMs } : {}),
+      fetchImpl: withToolCallTransport(providerFetch(currentProvider) ?? fetch, authority),
     };
   }
   const environment = authority.environment;
@@ -1167,6 +1174,8 @@ function resolveXaiToolBackend(
     model: BUILT_IN_PROVIDER_DEFAULT_MODELS.grok,
     credentialHome,
     authMode: isXaiOauthBearer(credentialHome, apiKey) ? "oauth" : "api_key",
+    // A separate backend: plain fetch on the calling session's transport.
+    fetchImpl: withToolCallTransport(fetch, authority),
   };
 }
 
@@ -1933,6 +1942,8 @@ function buildGrokNativeXSearchProvider(
     // would swap it for a stored sign-in. A sign-in needs no flag, since the
     // factory reads the same grant from the same credential home.
     ...(backend.authMode === "api_key" ? { authMode: "api_key" as const } : {}),
+    // Every request the rebuilt provider sends uses the caller's transport.
+    fetchImpl: backend.fetchImpl,
     // One-shot only: native x_search, no dual continuous web search spam.
     webSearch: false,
     xSearch: true,

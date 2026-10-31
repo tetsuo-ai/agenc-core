@@ -316,6 +316,68 @@ describe("media transport", () => {
   });
 });
 
+describe("XSearch transport", () => {
+  /** XSearch from a registry built before its session attaches, as bootstrap builds it. */
+  function xSearchFor(getSession: () => Session | null) {
+    return createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession,
+      env: PARENT,
+      grokCapabilities: { x_search: true },
+    }).find((entry) => entry.name === "XSearch")!;
+  }
+
+  it("rebuilds a Grok sub-agent's provider on the sub-agent's own fetch and transport", async () => {
+    const globalFetch = recordingFetch();
+    vi.stubGlobal("fetch", globalFetch.fetchImpl);
+    // The sub-agent's own provider transport (a pinned child fetch, for example).
+    const own = recordingFetch();
+    const childProvider = createProvider("grok", {
+      apiKey: "xai-child", model: "grok-4.6", extra: { fetchImpl: own.fetchImpl as unknown as typeof fetch },
+    });
+    const parent = sessionOn(openAi());
+    const child = sessionOn(childProvider, CHILD);
+    let current: Session | null = null;
+    const xSearch = xSearchFor(() => current);
+    current = parent;
+
+    await xSearch.execute(dispatchedArgs({ query: "xAI" }, child, "child-x", "XSearch"));
+
+    expect(globalFetch.requests()).toEqual([]);
+    expect(own.requests().length).toBeGreaterThan(0);
+    for (const request of own.requests()) {
+      expect(request.url.startsWith("https://api.x.ai/v1/")).toBe(true);
+      expect(request.transport).toEqual(recorded.transport(CHILD));
+    }
+  });
+
+  it("sends a non-Grok sub-agent's independent XSearch through its own transport", async () => {
+    const root = await mkdtemp(join(tmpdir(), "xsearch-transport-"));
+    try {
+      const globalFetch = recordingFetch();
+      vi.stubGlobal("fetch", globalFetch.fetchImpl);
+      const parent = sessionOn(openAi());
+      const childEnvironment = Object.freeze({ ...CHILD, XAI_API_KEY: "xai-child-key" });
+      const child = sessionOn(
+        chatProvider("deepseek", { apiKey: "sk-child", baseURL: "https://api.deepseek.com/v1", model: "deepseek-flash" }),
+        childEnvironment, mediaTestHome(root));
+      let current: Session | null = null;
+      const xSearch = xSearchFor(() => current);
+      current = parent;
+
+      await xSearch.execute(dispatchedArgs({ query: "xAI" }, child, "child-x", "XSearch"));
+
+      expect(globalFetch.requests().length).toBeGreaterThan(0);
+      for (const request of globalFetch.requests()) {
+        expect(request.url.startsWith("https://api.x.ai/v1/")).toBe(true);
+        expect(request.transport).toEqual(recorded.transport(childEnvironment));
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("a sub-agent without its own provider state", () => {
   it.each([
     ["web_fetch", { url: "https://example.com/page" }],
