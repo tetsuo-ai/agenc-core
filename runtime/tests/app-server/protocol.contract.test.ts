@@ -142,6 +142,7 @@ const expectedMethods = [
   "tool.deny",
   "tool.cancel",
   "elicitation.respond",
+  "elicitation.pending",
   "permission.list",
   "project.trustStatus",
   "project.trust",

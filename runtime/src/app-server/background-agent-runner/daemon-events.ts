@@ -840,6 +840,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   if (
     type === "elicitation_closed" &&
     isJsonObject(payload) &&
+    typeof payload.requestEventId === "string" &&
+    payload.requestEventId.length > 0 &&
     (payload.kind === "request_user_input" || payload.kind === "mcp") &&
     (typeof payload.requestId === "string" ||
       typeof payload.requestId === "number") &&
@@ -852,6 +854,13 @@ export function daemonEventFromUnboundSessionEvent(event: {
       ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
+        // The closed request's own event id: the occurrence a client matches.
+        requestEventId: payload.requestEventId,
+        ...(typeof payload.requestEventSeq === "number" &&
+        Number.isSafeInteger(payload.requestEventSeq) &&
+        payload.requestEventSeq >= 0
+          ? { requestEventSeq: payload.requestEventSeq }
+          : {}),
         kind: payload.kind,
         requestId: payload.requestId,
         ...(typeof payload.serverName === "string"

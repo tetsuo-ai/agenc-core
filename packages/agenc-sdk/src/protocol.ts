@@ -141,6 +141,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "tool.deny",
   "tool.cancel",
   "elicitation.respond",
+  "elicitation.pending",
   "permission.list",
   "project.trustStatus",
   "project.trust",

@@ -101,6 +101,8 @@ import type {
   AgentStatus,
   AgentSummary,
   AgentToolOutputLog,
+  ElicitationPendingParams,
+  ElicitationPendingResult,
   ElicitationRespondParams,
   ElicitationRespondResult,
   ExitPlanApprovalPayload,
@@ -3498,6 +3500,27 @@ export class AgenCDaemonAgentManager {
       );
     }
     return { requestId: params.requestId, resolved };
+  }
+
+  async pendingElicitations(
+    params: ElicitationPendingParams,
+  ): Promise<ElicitationPendingResult> {
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowElicitationResponse: true },
+    );
+    const snapshot = await this.#runner!.pendingElicitations?.(agentId);
+    if (snapshot === undefined || snapshot === null) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon session has no live runtime: ${params.sessionId}`,
+      );
+    }
+    return {
+      sessionId: params.sessionId,
+      asOfSequence: snapshot.asOfSequence,
+      pending: snapshot.pending,
+    };
   }
 
   async clearSessionHistory(

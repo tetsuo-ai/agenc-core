@@ -206,11 +206,30 @@ export interface McpElicitationCompleteEvent {
 }
 
 /**
- * A `request_user_input` or `mcp_elicitation_request` the session published
- * is no longer pending. It is addressed the way `elicitation.respond` is, so a
- * client that still shows the request can close it.
+ * One published `request_user_input` or `mcp_elicitation_request`. Its
+ * `eventId` is the request event's own id, the same in live delivery and in
+ * replay, so a client can tell this request from any other at the same
+ * `elicitation.respond` address.
+ */
+export interface ElicitationOccurrence {
+  readonly eventId: string;
+  /** The request event's sequence; absent when the session did not journal it. */
+  readonly sequence?: number;
+  readonly kind: "request_user_input" | "mcp";
+  readonly requestId: McpRequestId;
+  /** Set for MCP requests. */
+  readonly serverName?: string;
+  readonly turnId: string;
+}
+
+/**
+ * A request the session published is no longer pending, so a client that
+ * still shows it can close it. `requestEventId` and `requestEventSeq` name
+ * the request's occurrence, as `permission_decision` names its request.
  */
 export interface ElicitationClosedEvent {
+  readonly requestEventId: string;
+  readonly requestEventSeq?: number;
   readonly kind: "request_user_input" | "mcp";
   readonly requestId: McpRequestId;
   /** Set for MCP requests. */

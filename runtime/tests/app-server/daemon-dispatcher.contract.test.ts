@@ -1361,6 +1361,112 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     expect(currentNotifications).toEqual([invalidation]);
   });
 
+  it("keeps elicitation.pending and elicitation_closed from clients older than 1.35", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: () => "session_elicitation_compat",
+    });
+    await sessions.createSession({
+      agentId: "agent_elicitation_compat",
+      cwd: await workspaces.create(),
+    });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({ sessionManager: sessions }),
+      clientMultiplexer,
+      sessionManager: sessions,
+    });
+    const oldNotifications: JsonObject[] = [];
+    const currentNotifications: JsonObject[] = [];
+    const oldConnection = dispatcher.createConnection({
+      sendNotification: (message) => oldNotifications.push(message),
+    });
+    const currentConnection = dispatcher.createConnection({
+      sendNotification: (message) => currentNotifications.push(message),
+    });
+
+    const oldInitialize = await oldConnection.dispatch(
+      request("old-init", "initialize", { protocol: { version: "1.34.0" } }),
+    );
+    const currentInitialize = await currentConnection.dispatch(
+      request("current-init", "initialize", { protocol: { version: "1.35.0" } }),
+    );
+    expect(daemonMethodCapabilities(oldInitialize)["elicitation.pending"]).toBe(false);
+    expect(daemonMethodCapabilities(currentInitialize)["elicitation.pending"]).toBe(true);
+
+    for (const [connection, clientId] of [
+      [oldConnection, "old-client"],
+      [currentConnection, "current-client"],
+    ] as const) {
+      await connection.dispatch(
+        request(`${clientId}-attach`, "session.attach", {
+          sessionId: "session_elicitation_compat",
+          clientId,
+        }),
+      );
+    }
+    await expect(
+      oldConnection.dispatch(
+        request("old-pending", "elicitation.pending", {
+          sessionId: "session_elicitation_compat",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      id: "old-pending",
+      error: {
+        code: -32601,
+        message: expect.stringContaining("elicitation.pending"),
+      },
+    });
+
+    // Both clients see the request; only the one that negotiated 1.35 knows
+    // the close, so only it receives one.
+    const formRequest = {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_elicitation_request",
+      params: {
+        sessionId: "session_elicitation_compat",
+        eventId: "event:12",
+        sequence: 12,
+        requestId: 7,
+        serverName: "profile",
+        turnId: "turn_1",
+        request: { mode: "form", message: "Profile", requestedSchema: { type: "object", properties: {} } },
+      },
+    };
+    const close = {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.session_event",
+      params: {
+        sessionId: "session_elicitation_compat",
+        eventId: "closed_1",
+        event: {
+          type: "elicitation_closed",
+          payload: {
+            requestEventId: "event:12",
+            requestEventSeq: 12,
+            kind: "mcp",
+            requestId: 7,
+            serverName: "profile",
+            turnId: "turn_1",
+            outcome: "withdrawn",
+          },
+        },
+      },
+    };
+    await expect(
+      clientMultiplexer.broadcastSessionEvent("session_elicitation_compat", formRequest),
+    ).resolves.toMatchObject({
+      deliveredClientIds: expect.arrayContaining(["old-client", "current-client"]),
+    });
+    await expect(
+      clientMultiplexer.broadcastSessionEvent("session_elicitation_compat", close),
+    ).resolves.toMatchObject({ deliveredClientIds: ["current-client"] });
+    expect(oldNotifications).toEqual([formRequest]);
+    expect(currentNotifications).toEqual([formRequest, close]);
+  });
+
   it("rejects session.mcp.status params beyond the session identity", async () => {
     const sessions = new AgenCDaemonSessionManager();
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({

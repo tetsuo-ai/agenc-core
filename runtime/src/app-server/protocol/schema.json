@@ -98,6 +98,7 @@
     "tool.deny",
     "tool.cancel",
     "elicitation.respond",
+    "elicitation.pending",
     "permission.list",
     "project.trustStatus",
     "project.trust",
@@ -4006,6 +4007,81 @@
         "response"
       ]
     },
+    "ElicitationPendingParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "ElicitationPendingEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "request_user_input",
+            "mcp"
+          ]
+        },
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "serverName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventId",
+        "kind",
+        "requestId",
+        "turnId"
+      ]
+    },
+    "ElicitationPendingResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "asOfSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ElicitationPendingEntry"
+          }
+        }
+      },
+      "required": [
+        "sessionId",
+        "asOfSequence",
+        "pending"
+      ]
+    },
     "PermissionListParams": {
       "type": "object",
       "additionalProperties": false,
@@ -5130,6 +5206,9 @@
         },
         {
           "$ref": "#/definitions/ElicitationRespondRequest"
+        },
+        {
+          "$ref": "#/definitions/ElicitationPendingRequest"
         },
         {
           "$ref": "#/definitions/PermissionListRequest"
@@ -6728,6 +6807,30 @@
         },
         "params": {
           "$ref": "#/definitions/ElicitationRespondParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "ElicitationPendingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "elicitation.pending"
+        },
+        "params": {
+          "$ref": "#/definitions/ElicitationPendingParams"
         }
       },
       "required": [

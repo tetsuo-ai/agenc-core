@@ -236,6 +236,7 @@ import type { LifecycleHookRegistry } from "../llm/hooks/registry.js";
 import type { HookResultMessage } from "../types/message.js";
 import type {
   ElicitationClosedEvent,
+  ElicitationOccurrence,
   McpElicitationRequestEvent,
   McpElicitationRequest,
   McpElicitationResponse,
@@ -6182,13 +6183,10 @@ export class Session {
         return null;
       }
       const resolverAbort = new AbortController();
-      this.emit({
-        id: this.nextInternalSubId(),
-        msg: {
-          type: "request_user_input",
-          payload: event,
-        },
-      });
+      const occurrence = this.publishElicitationRequest(
+        { type: "request_user_input", payload: event },
+        { kind: "request_user_input", requestId, turnId },
+      );
       let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
       try {
         const settled = await answerOrWithdrawal(
@@ -6201,12 +6199,8 @@ export class Session {
       } finally {
         resolverAbort.abort("elicitation_settled");
         abortWaiter.cleanup();
-        this.emitElicitationClosed({
-          kind: "request_user_input",
-          requestId,
-          turnId,
-          outcome,
-        });
+        this.pendingElicitationOccurrences.delete(occurrence.eventId);
+        this.emitElicitationClosed(occurrence, outcome);
       }
     }
     let resolveResponse:
@@ -6236,13 +6230,10 @@ export class Session {
       await cleanup();
       return null;
     }
-    this.emit({
-      id: this.nextInternalSubId(),
-      msg: {
-        type: "request_user_input",
-        payload: event,
-      },
-    });
+    const occurrence = this.publishElicitationRequest(
+      { type: "request_user_input", payload: event },
+      { kind: "request_user_input", requestId, turnId },
+    );
     let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
       const settled = await answerOrWithdrawal(
@@ -6252,13 +6243,9 @@ export class Session {
       if (!settled.withdrawn) outcome = "answered";
       return settled.value;
     } finally {
+      this.pendingElicitationOccurrences.delete(occurrence.eventId);
       await cleanup();
-      this.emitElicitationClosed({
-        kind: "request_user_input",
-        requestId,
-        turnId,
-        outcome,
-      });
+      this.emitElicitationClosed(occurrence, outcome);
     }
   }
 
@@ -6308,13 +6295,10 @@ export class Session {
         return null;
       }
       const resolverAbort = new AbortController();
-      this.emit({
-        id: this.nextInternalSubId(),
-        msg: {
-          type: "mcp_elicitation_request",
-          payload: event,
-        },
-      });
+      const occurrence = this.publishElicitationRequest(
+        { type: "mcp_elicitation_request", payload: event },
+        { kind: "mcp", requestId, serverName, turnId },
+      );
       let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
       try {
         const settled = await answerOrWithdrawal(
@@ -6328,13 +6312,8 @@ export class Session {
         resolverAbort.abort("elicitation_settled");
         abortWaiter.cleanup();
         releasePause();
-        this.emitElicitationClosed({
-          kind: "mcp",
-          requestId,
-          serverName,
-          turnId,
-          outcome,
-        });
+        this.pendingElicitationOccurrences.delete(occurrence.eventId);
+        this.emitElicitationClosed(occurrence, outcome);
       }
     }
     let resolveResponse:
@@ -6364,13 +6343,10 @@ export class Session {
       await cleanup();
       return null;
     }
-    this.emit({
-      id: this.nextInternalSubId(),
-      msg: {
-        type: "mcp_elicitation_request",
-        payload: event,
-      },
-    });
+    const occurrence = this.publishElicitationRequest(
+      { type: "mcp_elicitation_request", payload: event },
+      { kind: "mcp", requestId, serverName, turnId },
+    );
     let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
       const settled = await answerOrWithdrawal(
@@ -6380,14 +6356,9 @@ export class Session {
       if (!settled.withdrawn) outcome = "answered";
       return settled.value;
     } finally {
+      this.pendingElicitationOccurrences.delete(occurrence.eventId);
       await cleanup();
-      this.emitElicitationClosed({
-        kind: "mcp",
-        requestId,
-        serverName,
-        turnId,
-        outcome,
-      });
+      this.emitElicitationClosed(occurrence, outcome);
     }
   }
 
@@ -6410,6 +6381,47 @@ export class Session {
   }
 
   /**
+   * Requests this session published that still wait for an answer, by
+   * occurrence. `elicitation.pending` reports them, so a client that missed a
+   * close (it was detached, or the daemon restarted) can reconcile.
+   */
+  private readonly pendingElicitationOccurrences = new Map<string, ElicitationOccurrence>();
+
+  /**
+   * The requests still pending and the event sequence the set is current at:
+   * a request event at or below `asOfSequence` that is not listed is no
+   * longer pending.
+   */
+  pendingElicitationSnapshot(): {
+    readonly asOfSequence: number;
+    readonly pending: readonly ElicitationOccurrence[];
+  } {
+    return {
+      asOfSequence: this.eventLog.lastSeq,
+      pending: [...this.pendingElicitationOccurrences.values()],
+    };
+  }
+
+  /**
+   * Publishes a request event and records it as pending under its
+   * occurrence: the event's own id, or its envelope id when the journal is
+   * suspended and the event gets no id or sequence.
+   */
+  private publishElicitationRequest(
+    msg: Extract<EventMsg, { type: "request_user_input" | "mcp_elicitation_request" }>,
+    address: Omit<ElicitationOccurrence, "eventId" | "sequence">,
+  ): ElicitationOccurrence {
+    const published = this.emit({ id: this.nextInternalSubId(), msg });
+    const occurrence: ElicitationOccurrence = {
+      eventId: published.eventId ?? published.id,
+      ...(published.seq !== undefined ? { sequence: published.seq } : {}),
+      ...address,
+    };
+    this.pendingElicitationOccurrences.set(occurrence.eventId, occurrence);
+    return occurrence;
+  }
+
+  /**
    * Tells clients that a request this session published is no longer
    * pending, so one that still shows it can close it. A daemon client has no
    * other way to learn that the session stopped waiting.
@@ -6419,10 +6431,19 @@ export class Session {
    * would break a rollback. Readers already accept it (KNOWN_EVENT_TYPES and
    * the journal schema), so a later release can start storing it.
    */
-  private emitElicitationClosed(payload: ElicitationClosedEvent): void {
+  private emitElicitationClosed(
+    occurrence: ElicitationOccurrence,
+    outcome: ElicitationClosedEvent["outcome"],
+  ): void {
+    const { eventId, sequence, ...address } = occurrence;
     this.publishLiveOnly({
       type: "elicitation_closed",
-      payload,
+      payload: {
+        requestEventId: eventId,
+        ...(sequence !== undefined ? { requestEventSeq: sequence } : {}),
+        ...address,
+        outcome,
+      },
     });
   }
 

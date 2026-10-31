@@ -72,6 +72,10 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * only. A daemon that accepts it advertises the
  * `message.stream.skillInvocation` capability; a client sends it only to
  * such a daemon.
+ * 1.36 adds `elicitation.pending` and the live `elicitation_closed` session
+ * event, which names the closed request by its event id. Both are sent only to
+ * clients that negotiated 1.36, which use them to close elicitation prompts
+ * that are no longer pending.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
@@ -227,6 +231,7 @@ export const AGENC_DAEMON_METHODS = [
   "tool.deny",
   "tool.cancel",
   "elicitation.respond",
+  "elicitation.pending",
   "permission.list",
   "project.trustStatus",
   "project.trust",
@@ -1022,6 +1027,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Resolve a pending user-input or MCP elicitation request.",
+  },
+  "elicitation.pending": {
+    method: "elicitation.pending",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "List a session's pending user-input and MCP elicitation requests and the event sequence the list is current at.",
   },
   "permission.list": {
     method: "permission.list",
@@ -2533,6 +2546,10 @@ export interface ElicitationRespondParams extends JsonObject {
   readonly response: JsonObject;
 }
 
+export interface ElicitationPendingParams extends JsonObject {
+  readonly sessionId: string;
+}
+
 export interface PermissionListParams extends JsonObject {
   readonly agentId?: string;
   readonly sessionId?: string;
@@ -3023,6 +3040,10 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<
       "elicitation.respond",
       ElicitationRespondParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "elicitation.pending",
+      ElicitationPendingParams
     >
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
   | AgenCDaemonRequestWithParams<"project.trustStatus", ProjectTrustStatusParams>
@@ -4331,6 +4352,30 @@ export interface ElicitationRespondResult extends JsonObject {
   readonly resolved: boolean;
 }
 
+/**
+ * One request still waiting for an answer. `eventId` and `sequence` are the
+ * request event's own (`event.user_input_request` or
+ * `event.mcp_elicitation_request` params `eventId` and `sequence`).
+ */
+export interface ElicitationPendingEntry extends JsonObject {
+  readonly eventId: string;
+  readonly sequence?: number;
+  readonly kind: "request_user_input" | "mcp";
+  readonly requestId: RequestId;
+  readonly serverName?: string;
+  readonly turnId: string;
+}
+
+export interface ElicitationPendingResult extends JsonObject {
+  readonly sessionId: string;
+  /**
+   * The session event sequence the list is current at: a request event at or
+   * below it that is not listed is no longer pending.
+   */
+  readonly asOfSequence: number;
+  readonly pending: readonly ElicitationPendingEntry[];
+}
+
 export interface PermissionGrant extends JsonObject {
   readonly permissionId: string;
   readonly subject: string;
@@ -4660,6 +4705,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "tool.deny": ToolDecisionResult;
   readonly "tool.cancel": ToolDecisionResult;
   readonly "elicitation.respond": ElicitationRespondResult;
+  readonly "elicitation.pending": ElicitationPendingResult;
   readonly "permission.list": PermissionListResult;
   readonly "project.trustStatus": ProjectTrustStatusResult;
   readonly "project.trust": ProjectTrustResult;

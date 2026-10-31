@@ -538,7 +538,8 @@ cancels its request first (`notifications/cancelled`, which the MCP
 TypeScript SDK sends on its own after its default 60 second request timeout),
 or the turn stops, the TUI closes the form at whatever field it shows and the
 prompt takes input again. Attached daemon clients learn this from the
-`elicitation_closed` session event ([daemon.md](daemon.md)).
+`elicitation_closed` session event, and a client that was away asks
+`elicitation.pending` when it reconnects ([daemon.md](daemon.md)).
 
 ## Inbound server
 

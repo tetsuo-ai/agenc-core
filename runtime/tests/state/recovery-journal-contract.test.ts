@@ -1055,6 +1055,8 @@ describe("strict canonical journal contract", () => {
   it("accepts elicitation_closed payloads, so a later release can journal them", () => {
     expect(
       isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "event:40",
+        requestEventSeq: 40,
         kind: "mcp",
         requestId: 7,
         serverName: "profile",
@@ -1064,6 +1066,7 @@ describe("strict canonical journal contract", () => {
     ).toBe(true);
     expect(
       isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "sub-9",
         kind: "request_user_input",
         requestId: "call-1",
         turnId: "turn-1",
@@ -1072,10 +1075,30 @@ describe("strict canonical journal contract", () => {
     ).toBe(true);
     expect(
       isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "event:40",
         kind: "mcp",
         requestId: 7,
         turnId: "turn-1",
         outcome: "closed",
+      }),
+    ).toBe(false);
+    // A close names the request event it closes.
+    expect(
+      isCanonicalEventPayload("elicitation_closed", {
+        kind: "mcp",
+        requestId: 7,
+        turnId: "turn-1",
+        outcome: "withdrawn",
+      }),
+    ).toBe(false);
+    expect(
+      isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "event:40",
+        requestEventSeq: -1,
+        kind: "mcp",
+        requestId: 7,
+        turnId: "turn-1",
+        outcome: "withdrawn",
       }),
     ).toBe(false);
   });

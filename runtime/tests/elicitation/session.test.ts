@@ -657,6 +657,18 @@ describe("Session elicitation close notices", () => {
       .map((event) => event.msg.payload);
   }
 
+  /** The identity of the nth request event of this type: what a close names. */
+  function occurrenceOf(
+    events: readonly Event[],
+    type: "mcp_elicitation_request" | "request_user_input",
+    nth = 0,
+  ): { readonly requestEventId: string; readonly requestEventSeq: number } {
+    const request = events.filter((event) => event.msg.type === type)[nth];
+    expect(request?.seq).toEqual(expect.any(Number));
+    expect(request?.eventId).toBe(`event:${request?.seq}`);
+    return { requestEventId: request!.eventId!, requestEventSeq: request!.seq! };
+  }
+
   async function startedSession(): Promise<{
     readonly session: Session;
     readonly events: Event[];
@@ -686,6 +698,7 @@ describe("Session elicitation close notices", () => {
     await expect(pending).resolves.toBeNull();
     expect(closedEvents(events)).toEqual([
       {
+        ...occurrenceOf(events, "mcp_elicitation_request"),
         kind: "mcp",
         requestId: 7,
         serverName: "srv",
@@ -711,6 +724,7 @@ describe("Session elicitation close notices", () => {
     await expect(pending).resolves.toEqual({ action: "decline" });
     expect(closedEvents(events)).toEqual([
       {
+        ...occurrenceOf(events, "mcp_elicitation_request"),
         kind: "mcp",
         requestId: "mcp-1",
         serverName: "srv",
@@ -736,6 +750,7 @@ describe("Session elicitation close notices", () => {
     await expect(pending).resolves.toBeNull();
     expect(closedEvents(events)).toEqual([
       {
+        ...occurrenceOf(events, "request_user_input"),
         kind: "request_user_input",
         requestId: "call-1",
         turnId: "turn-1",
@@ -755,6 +770,7 @@ describe("Session elicitation close notices", () => {
     await expect(pending).resolves.toBeNull();
     expect(closedEvents(events)).toEqual([
       {
+        ...occurrenceOf(events, "request_user_input"),
         kind: "request_user_input",
         requestId: "call-1",
         turnId: "turn-1",
@@ -788,12 +804,14 @@ describe("Session elicitation close notices", () => {
 
       expect(closedEvents(events)).toEqual([
         {
+          ...occurrenceOf(events, "request_user_input"),
           kind: "request_user_input",
           requestId: "call-1",
           turnId: "turn-1",
           outcome: "answered",
         },
         {
+          ...occurrenceOf(events, "mcp_elicitation_request"),
           kind: "mcp",
           requestId: "mcp-2",
           serverName: "srv",
@@ -826,6 +844,87 @@ describe("Session elicitation close notices", () => {
         event.msg.type === "elicitation_closed",
       ),
     ).toEqual([]);
+    unsubscribe();
+  });
+
+  it("names each occurrence of a request id reused in the same turn", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const first = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    await session.notifyMcpElicitationResponse("srv", 7, { action: "decline" });
+    await expect(first).resolves.toEqual({ action: "decline" });
+    const second = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+
+    const firstOccurrence = occurrenceOf(events, "mcp_elicitation_request", 0);
+    const secondOccurrence = occurrenceOf(events, "mcp_elicitation_request", 1);
+    expect(secondOccurrence.requestEventId).not.toBe(firstOccurrence.requestEventId);
+    expect(session.pendingElicitationSnapshot().pending).toEqual([
+      {
+        eventId: secondOccurrence.requestEventId,
+        sequence: secondOccurrence.requestEventSeq,
+        kind: "mcp",
+        requestId: 7,
+        serverName: "srv",
+        turnId: "turn-1",
+      },
+    ]);
+
+    await session.notifyMcpElicitationResponse("srv", 7, { action: "accept", content: { name: "x" } });
+    await expect(second).resolves.toMatchObject({ action: "accept" });
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({ ...firstOccurrence, outcome: "answered" }),
+      expect.objectContaining({ ...secondOccurrence, outcome: "answered" }),
+    ]);
+    unsubscribe();
+  });
+
+  it("lists the pending occurrences with the sequence the set was taken at", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    expect(session.pendingElicitationSnapshot()).toEqual({
+      asOfSequence: session.eventLog.lastSeq,
+      pending: [],
+    });
+    const toolCall = new AbortController();
+    const question = session.requestUserInput("call-1", USER_INPUT_ARGS, toolCall.signal);
+    const form = session.requestMcpElicitation("srv", "mcp-1", FORM_REQUEST);
+    await flush();
+    const questionOccurrence = occurrenceOf(events, "request_user_input");
+    const formOccurrence = occurrenceOf(events, "mcp_elicitation_request");
+
+    const both = session.pendingElicitationSnapshot();
+    expect(both.asOfSequence).toBe(session.eventLog.lastSeq);
+    expect(both.asOfSequence).toBeGreaterThanOrEqual(formOccurrence.requestEventSeq);
+    expect(both.pending).toEqual([
+      {
+        eventId: questionOccurrence.requestEventId,
+        sequence: questionOccurrence.requestEventSeq,
+        kind: "request_user_input",
+        requestId: "call-1",
+        turnId: "turn-1",
+      },
+      {
+        eventId: formOccurrence.requestEventId,
+        sequence: formOccurrence.requestEventSeq,
+        kind: "mcp",
+        requestId: "mcp-1",
+        serverName: "srv",
+        turnId: "turn-1",
+      },
+    ]);
+
+    await session.notifyMcpElicitationResponse("srv", "mcp-1", { action: "decline" });
+    await form;
+    expect(session.pendingElicitationSnapshot().pending.map((entry) => entry.eventId)).toEqual([
+      questionOccurrence.requestEventId,
+    ]);
+
+    toolCall.abort("interrupted");
+    await expect(question).resolves.toBeNull();
+    const none = session.pendingElicitationSnapshot();
+    expect(none.pending).toEqual([]);
+    // The set is taken after each close: a client compares requests to it.
+    expect(none.asOfSequence).toBe(session.eventLog.lastSeq);
     unsubscribe();
   });
 });

@@ -1011,12 +1011,13 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   }),
   elicitation_closed: objectShape(
     {
+      requestEventId: isString,
       kind: oneOf("request_user_input", "mcp"),
       requestId: either(isString, isNumber),
       turnId: isString,
       outcome: oneOf("answered", "withdrawn"),
     },
-    { serverName: isString },
+    { requestEventSeq: isNonNegativeInteger, serverName: isString },
   ),
   context_compacted: objectShape(
     {},

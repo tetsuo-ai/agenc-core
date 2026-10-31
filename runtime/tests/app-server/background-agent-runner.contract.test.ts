@@ -6259,12 +6259,15 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("bridges elicitation_closed so clients can close a request that is no longer pending", () => {
+    // Published live only, so it has no sequence of its own; it names the
+    // closed request by that request's event id and sequence.
     const daemonEvent = daemonEventFromUnboundSessionEvent({
       id: "closed-1",
-      seq: 41,
       msg: {
         type: "elicitation_closed",
         payload: {
+          requestEventId: "event:40",
+          requestEventSeq: 40,
           kind: "mcp",
           requestId: 7,
           serverName: "profile",
@@ -6276,10 +6279,11 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(daemonEvent).toEqual({
       id: "closed-1",
-      eventId: "legacy-event:41:closed-1",
-      sequence: 41,
+      eventId: "closed-1",
       type: "elicitation_closed",
       payload: {
+        requestEventId: "event:40",
+        requestEventSeq: 40,
         kind: "mcp",
         requestId: 7,
         serverName: "profile",
@@ -6295,16 +6299,25 @@ describe("AgenC delegate background-agent runner", () => {
         sessionId: "session-1",
         event: {
           type: "elicitation_closed",
-          payload: { kind: "mcp", requestId: 7, outcome: "withdrawn" },
+          payload: {
+            requestEventId: "event:40",
+            requestEventSeq: 40,
+            kind: "mcp",
+            requestId: 7,
+            outcome: "withdrawn",
+          },
         },
       },
     });
+    // A request the session did not journal has an id but no sequence.
     expect(
       daemonEventFromUnboundSessionEvent({
         id: "closed-2",
         msg: {
           type: "elicitation_closed",
           payload: {
+            requestEventId: "sub-9",
+            requestEventSeq: -1,
             kind: "request_user_input",
             requestId: "call-1",
             turnId: "turn-1",
@@ -6317,22 +6330,26 @@ describe("AgenC delegate background-agent runner", () => {
       eventId: "closed-2",
       type: "elicitation_closed",
       payload: {
+        requestEventId: "sub-9",
         kind: "request_user_input",
         requestId: "call-1",
         turnId: "turn-1",
         outcome: "answered",
       },
     });
-    // A malformed close is not forwarded.
-    expect(
-      daemonEventFromUnboundSessionEvent({
-        id: "closed-3",
-        msg: {
-          type: "elicitation_closed",
-          payload: { kind: "mcp", requestId: 7, turnId: "turn-1", outcome: "gone" },
-        },
-      }),
-    ).toBeNull();
+    // A malformed close, or one that names no request event, is not forwarded.
+    for (const payload of [
+      { requestEventId: "event:40", kind: "mcp", requestId: 7, turnId: "turn-1", outcome: "gone" },
+      { kind: "mcp", requestId: 7, serverName: "profile", turnId: "turn-1", outcome: "withdrawn" },
+      { requestEventId: "", kind: "mcp", requestId: 7, turnId: "turn-1", outcome: "withdrawn" },
+    ]) {
+      expect(
+        daemonEventFromUnboundSessionEvent({
+          id: "closed-3",
+          msg: { type: "elicitation_closed", payload },
+        }),
+      ).toBeNull();
+    }
   });
 
   it("bridges collab subagent lifecycle session events into daemon session notifications", () => {

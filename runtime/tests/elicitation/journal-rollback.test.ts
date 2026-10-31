@@ -174,17 +174,22 @@ describe("elicitation journal rollback compatibility", () => {
       await expect(withdrawnForm).resolves.toBeNull();
       await expect(withdrawnQuestion).resolves.toBeNull();
 
-      // Clients were told about every settlement...
-      expect(
-        live
-          .filter((event) => event.msg.type === "elicitation_closed")
-          .map((event) => event.msg.payload),
-      ).toEqual([
-        { kind: "mcp", requestId: "form-1", serverName: "srv", turnId: "turn-1", outcome: "answered" },
-        { kind: "request_user_input", requestId: "call-1", turnId: "turn-1", outcome: "answered" },
-        { kind: "mcp", requestId: 7, serverName: "srv", turnId: "turn-1", outcome: "withdrawn" },
-        { kind: "request_user_input", requestId: "call-2", turnId: "turn-1", outcome: "withdrawn" },
+      // Clients were told about every settlement, by the request's event id...
+      const requests = live.filter((event) =>
+        event.msg.type === "mcp_elicitation_request" || event.msg.type === "request_user_input");
+      const closes = live.filter((event) => event.msg.type === "elicitation_closed");
+      const named = (index: number) => ({
+        requestEventId: requests[index]!.eventId,
+        requestEventSeq: requests[index]!.seq,
+      });
+      expect(closes.map((event) => event.msg.payload)).toEqual([
+        { ...named(0), kind: "mcp", requestId: "form-1", serverName: "srv", turnId: "turn-1", outcome: "answered" },
+        { ...named(1), kind: "request_user_input", requestId: "call-1", turnId: "turn-1", outcome: "answered" },
+        { ...named(2), kind: "mcp", requestId: 7, serverName: "srv", turnId: "turn-1", outcome: "withdrawn" },
+        { ...named(3), kind: "request_user_input", requestId: "call-2", turnId: "turn-1", outcome: "withdrawn" },
       ]);
+      // ...and the close itself takes no journal sequence.
+      expect(closes.map((event) => event.seq)).toEqual([undefined, undefined, undefined, undefined]);
 
       // ...but the journal keeps only types a 0.19.25 runtime can read.
       store.flushDurable();
@@ -198,6 +203,20 @@ describe("elicitation journal rollback compatibility", () => {
           "request_user_input",
         ]);
       expect(journaled.filter((type) => !EVENT_TYPES_READABLE_BY_0_19_25.has(type))).toEqual([]);
+      // The journaled requests carry the fields 0.19.25 wrote and nothing new:
+      // a client names them by their event id, which the journal already has.
+      const journaledRequests = store.readAll().flatMap((item) =>
+        item.type === "event_msg" &&
+        (item.payload.msg.type === "mcp_elicitation_request" ||
+          item.payload.msg.type === "request_user_input")
+          ? [item.payload.msg]
+          : []);
+      expect(journaledRequests.map((msg) => [msg.type, Object.keys(msg.payload).sort()])).toEqual([
+        ["mcp_elicitation_request", ["request", "requestId", "serverName", "turnId"]],
+        ["request_user_input", ["callId", "questions", "requestId", "turnId"]],
+        ["mcp_elicitation_request", ["request", "requestId", "serverName", "turnId"]],
+        ["request_user_input", ["callId", "questions", "requestId", "turnId"]],
+      ]);
       // And this runtime's strict validator accepts the same bytes.
       expect(() => validateCanonicalJournalBytes(readFileSync(store.rolloutPath))).not.toThrow();
     } finally {
