@@ -226,8 +226,11 @@ capability option must remain opt-in and bind delivery to a concrete handler.
 
 Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
 `tokenUsage` on the result (`includeUsage: false` to skip). That aggregate is
-the live session total. Historical per-turn duration and usage after attach
-or restore come from `session.transcript.v2` `turnResults` (see
+the live session total; its `costUsd` includes what the session's own tool
+calls were charged (see
+[daemon.md](reference/daemon.md#public-methods-agenc_daemon_methods)).
+Historical per-turn duration and usage after attach or restore come from
+`session.transcript.v2` `turnResults` (see
 [daemon.md](reference/daemon.md#closed-turn-results)). Raw daemon snapshot
 responses may carry an additive `contextBreakdown` object, but the current
 public SDK type does not expose a named field. `SessionTranscriptV2Result`
