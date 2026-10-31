@@ -1285,11 +1285,8 @@ export async function publishAgenCDaemonRestartResult(
     } catch {
       existing = null;
     }
-    writeDurableAtomicFileSync(
-      path,
-      `${path}.${process.pid}.${randomUUID()}.tmp`,
-      addAgenCDaemonRestartResult(existing, result),
-    );
+    const next = addAgenCDaemonRestartResult(existing, result);
+    if (next !== null) writeDurableAtomicFileSync(path, `${path}.${process.pid}.${randomUUID()}.tmp`, next);
   } catch (error) {
     logLine(daemonHome, `the end of request ${result.requestId} could not be recorded (${formatCleanupError(error)})`, new Date());
   } finally {

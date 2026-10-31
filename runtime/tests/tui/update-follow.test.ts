@@ -197,15 +197,33 @@ describe("following the daemon after the update stopped waiting for its restart"
     expect(notices[0]?.text).toContain("the daemon stopped but did not start again");
   });
 
-  it("keeps the last results of 8 requests, one per request", async () => {
-    const ids = Array.from({ length: AGENC_DAEMON_RESTART_RESULTS_KEPT + 1 }, (_, n) => `4a1b2c3d-0000-4000-8000-${String(n).padStart(12, "0")}`);
+  it("keeps the last results of 8 requests, one per request, and the first end of each", async () => {
+    const ids = Array.from({ length: AGENC_DAEMON_RESTART_RESULTS_KEPT + 1 }, (_, n) => `4a1b2c3d-0000-4000-a000-${String(n).padStart(12, "0")}`);
     for (const id of ids) await publishAgenCDaemonRestartResult(home, ended(id, failed()));
-    // A second end of the same request replaces its first.
-    await publishAgenCDaemonRestartResult(home, ended(ids[3]!, { status: "restarted", toVersion: "0.19.26", pid: 9 }));
+    // A later end of the same request never replaces its first.
+    await publishAgenCDaemonRestartResult(home, ended(ids[3]!, { status: "skipped", reason: "a newer update replaced this restart", toVersion: "0.19.26" }));
     const kept = readDaemonRestartResults(home);
     expect(kept).toHaveLength(AGENC_DAEMON_RESTART_RESULTS_KEPT);
-    expect(kept.map((result) => result.requestId)).toEqual([...ids.slice(1, 3), ...ids.slice(4), ids[3]]);
-    expect(kept.at(-1)?.outcome.status).toBe("restarted");
+    expect(kept.map((result) => result.requestId)).toEqual(ids.slice(1));
+    expect(kept.find((result) => result.requestId === ids[3])?.outcome.status).toBe("failed");
+    // A hand-over is not an end: the request's end still lands.
+    await publishAgenCDaemonRestartResult(home, ended(MINE, { status: "deferred", toVersion: "0.19.27" }, { continuedBy: OTHER }));
+    await publishAgenCDaemonRestartResult(home, ended(MINE, { status: "restarted", toVersion: "0.19.26", pid: 9 }));
+    expect(readDaemonRestartResults(home).find((result) => result.requestId === MINE)).toMatchObject({ outcome: { status: "restarted" } });
+    expect(readDaemonRestartResults(home).find((result) => result.requestId === MINE)?.continuedBy).toBeUndefined();
+  });
+
+  it("known limit: eight newer ends before the next poll evict an unread one, and the follow falls back to its deadline", async () => {
+    await updateWhoseRestartStillRuns();
+    rmSync(join(home, "daemon-runtime.json"), { force: true });
+    pending(false);
+    await publishAgenCDaemonRestartResult(home, ended(MINE, failed()));
+    for (let n = 0; n < AGENC_DAEMON_RESTART_RESULTS_KEPT; n += 1) {
+      await publishAgenCDaemonRestartResult(home, ended(`4a1b2c3d-0000-4000-9000-${String(n).padStart(12, "0")}`, failed("0.19.27")));
+    }
+    expect(check(SINCE + 60_000)).toBe("wait");
+    expect(check(SINCE + DEADLINE)).toBe("stop");
+    expect(notices.at(-1)?.text).toContain("within 13 hours");
   });
 
   it("does not relaunch between a restart's stop and its end: no daemon and nothing pending is not enough", async () => {

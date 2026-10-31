@@ -1938,6 +1938,25 @@ describe("two restart requests for the same version, each followed by a TUI", ()
     expect(resultOf(home, REQ)).toBeUndefined();
   });
 
+  it("a replaced waiting process that wakes after its successor failed under the same request leaves the failure", async () => {
+    const tokens: string[] = [];
+    // A TUI's request waits; then an agenc update (no id) replaces its record and carries the id on.
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, stepDeps(REQ, tokens, false));
+    const { requestId: _none, ...anonymous } = stepDeps(REQ, tokens, false);
+    await restartAgenCDaemonWhenIdle(testHost(home), {}, anonymous);
+    // The successor's waiting process runs first: its restart fails and its record is cleared.
+    await runAgenCDaemonRestartWaiter(testHost(home), tokens[1]!, {}, stepDeps(REQ, tokens, true));
+    expect(resultOf(home, REQ)?.outcome.status).toBe("failed");
+    expect(readAgenCDaemonPendingRestart(home)).toBeNull();
+    // The original waiting process wakes late, finds no record and stands down: the failure stays.
+    await expect(runAgenCDaemonRestartWaiter(testHost(home), tokens[0]!, {}, stepDeps(REQ, tokens, false)))
+      .resolves.toMatchObject({ status: "skipped", reason: "a newer update replaced this restart" });
+    expect(resultOf(home, REQ)?.outcome).toMatchObject({ status: "failed" });
+    expect(resultOf(home, REQ)?.outcome.reason).toContain("the daemon stopped but did not start again");
+    expect(decideUpdateFollow(follow(REQ), { daemonVersion: null, restartPending: false, results: readResults(home), now: 2 }, deadline))
+      .toMatchObject({ kind: "stop", notice: { kind: "error" } });
+  });
+
   it("a deferral that joins another request's pending restart follows that request", async () => {
     const tokens: string[] = [];
     // A newer build's restart already waits, from another TUI.

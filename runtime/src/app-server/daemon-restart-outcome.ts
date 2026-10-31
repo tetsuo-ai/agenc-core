@@ -197,13 +197,19 @@ export function parseAgenCDaemonRestartResults(text: string): AgenCDaemonRestart
   return results;
 }
 
-/** The file text with `result` added: one entry per request, the newest last. */
+/**
+ * The file text with `result` added: one entry per request, the newest last;
+ * null when nothing changes. For a request the first end wins: a later one,
+ * such as a replaced waiting process that woke after its successor ended under
+ * the same id, never replaces it. A hand-over (`continuedBy`) is not an end.
+ */
 export function addAgenCDaemonRestartResult(
   existing: string | null,
   result: AgenCDaemonRestartResult,
-): string {
-  const kept = parseAgenCDaemonRestartResults(existing ?? "")
-    .filter((entry) => entry.requestId !== result.requestId);
+): string | null {
+  const entries = parseAgenCDaemonRestartResults(existing ?? "");
+  if (entries.some((entry) => entry.requestId === result.requestId && entry.continuedBy === undefined)) return null;
+  const kept = entries.filter((entry) => entry.requestId !== result.requestId);
   const results = [...kept, result].slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT);
   return `${JSON.stringify({ schemaVersion: 2, results }, null, 2)}\n`;
 }
