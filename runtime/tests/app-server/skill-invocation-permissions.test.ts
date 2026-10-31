@@ -251,7 +251,9 @@ describe("skill turn grants", () => {
     const after = await runLookupCell(service);
 
     expect(after).toContain("REFUSED");
-    expect(after).toContain("custom.lookup needs approval");
+    // Refused by the permission check, or earlier, where nested calls are
+    // bound to their turn and no turn's host is attached any more.
+    expect(after).toMatch(/custom\.lookup needs approval|host is not attached/);
     expect(parent.execute).not.toHaveBeenCalled();
     expect(child.execute).not.toHaveBeenCalled();
   });
