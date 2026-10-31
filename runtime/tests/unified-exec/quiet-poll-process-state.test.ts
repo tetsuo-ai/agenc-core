@@ -56,6 +56,8 @@ describe("quiet polls", () => {
     const result = await processes.execCommand({ cmd: "sleep 0.5; echo final-line", yield_time_ms: 200 });
     expect(result.output).toContain("final-line");
     expect(result.exit_code).toBe(0);
+    // The wait ended with the exit, not at the yield: no timed_out on a clean exit.
+    expect(result.timedOut).toBe(false);
     expect(result.session_id).toBeUndefined();
     expect(result.process_state).toBeUndefined();
   }, 20_000);

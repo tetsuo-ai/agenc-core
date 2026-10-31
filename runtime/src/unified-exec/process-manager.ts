@@ -2623,6 +2623,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const sample = entry.exitState === null && entry.hardTimeoutExpired !== true && !entry.stopRequested
       ? await this.sampleQuietProcessState(entry)
       : undefined;
+    // An exit during the sample ended the wait as an exit, not at the yield.
+    if (entry.exitState !== null) timedOut = false;
     const chunks = entry.output.drain();
     for (const chunk of chunks) {
       options.onProgress?.({
