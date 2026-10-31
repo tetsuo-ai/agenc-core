@@ -1104,6 +1104,12 @@ interface XaiToolBackend {
    * with the session's proxy, client certificate and CA trust.
    */
   readonly fetchImpl: typeof fetch;
+  /**
+   * The same transport for the rebuilt provider's sign-in refresh and
+   * discovery, on plain fetch: a provider's pinned fetch only reaches its
+   * inference endpoint.
+   */
+  readonly authFetchImpl: typeof fetch;
 }
 
 /** A session provider's own fetch, when its factory options name one. */
@@ -1155,6 +1161,7 @@ function resolveXaiToolBackend(
       ...(route.credentialHome !== undefined ? { credentialHome: route.credentialHome } : {}),
       ...(factory.timeoutMs !== undefined ? { timeoutMs: factory.timeoutMs } : {}),
       fetchImpl: withToolCallTransport(providerFetch(currentProvider) ?? fetch, authority),
+      authFetchImpl: withToolCallTransport(fetch, authority),
     };
   }
   const environment = authority.environment;
@@ -1176,6 +1183,7 @@ function resolveXaiToolBackend(
     authMode: isXaiOauthBearer(credentialHome, apiKey) ? "oauth" : "api_key",
     // A separate backend: plain fetch on the calling session's transport.
     fetchImpl: withToolCallTransport(fetch, authority),
+    authFetchImpl: withToolCallTransport(fetch, authority),
   };
 }
 
@@ -1245,8 +1253,10 @@ function buildGrokNativeWebSearchProvider(
   );
   const extra: ProviderFactoryOptions["extra"] = {
     ...(factoryOptions.extra ?? {}),
-    // The session's own provider fetch, on the session's transport.
+    // The session's own provider fetch, on the session's transport, and the
+    // same transport for a sign-in refresh and its discovery.
     fetchImpl: withToolCallTransport(providerFetch(currentProvider) ?? fetch, authority),
+    authFetchImpl: withToolCallTransport(fetch, authority),
     webSearch: true,
     searchMode: "on",
     ...(webSearchOptions !== undefined ? { webSearchOptions } : {}),
@@ -1942,8 +1952,10 @@ function buildGrokNativeXSearchProvider(
     // would swap it for a stored sign-in. A sign-in needs no flag, since the
     // factory reads the same grant from the same credential home.
     ...(backend.authMode === "api_key" ? { authMode: "api_key" as const } : {}),
-    // Every request the rebuilt provider sends uses the caller's transport.
+    // Every request the rebuilt provider sends uses the caller's transport,
+    // its sign-in refresh and discovery included.
     fetchImpl: backend.fetchImpl,
+    authFetchImpl: backend.authFetchImpl,
     // One-shot only: native x_search, no dual continuous web search spam.
     webSearch: false,
     xSearch: true,

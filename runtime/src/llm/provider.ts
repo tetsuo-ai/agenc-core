@@ -158,6 +158,12 @@ export type ProviderRuntimeExtra = Partial<
   };
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Grok: what the provider's sign-in refresh and discovery send through (a
+   * provider a tool rebuilds for a call gets the calling session's
+   * transport). The process fetch when absent.
+   */
+  readonly authFetchImpl?: typeof fetch;
   readonly canonicalEndpointRequired?: boolean;
   readonly accessKeyId?: string;
   readonly secretAccessKey?: string;
@@ -212,6 +218,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "grokAcp",
   "defaultHeaders",
   "fetchImpl",
+  "authFetchImpl",
   "canonicalEndpointRequired",
   "accessKeyId",
   "secretAccessKey",
@@ -708,6 +715,9 @@ function readRuntimeExtra(
       ? { defaultHeaders: readStringRecord(extra, "defaultHeaders") }
       : {}),
     ...(extra?.fetchImpl ? { fetchImpl: extra.fetchImpl as typeof fetch } : {}),
+    ...(typeof extra?.authFetchImpl === "function"
+      ? { authFetchImpl: extra.authFetchImpl as typeof fetch }
+      : {}),
     ...(readBoolean(extra, "canonicalEndpointRequired") === true
       ? { canonicalEndpointRequired: true }
       : {}),
@@ -1142,10 +1152,18 @@ export function createProvider(
             if (extra.canonicalEndpointRequired === true && attempt > 1) {
               return { kind: "exhausted", reason: "xAI sign-in retry was already used" };
             }
-            const refreshed = await forceRefreshXaiOauthCredentials(
-              opts.credentialHome!,
-              activeBearer,
-            );
+            // A provider a tool rebuilds for a call refreshes on the calling
+            // session's transport; a session's own provider as before.
+            const refreshed = extra.authFetchImpl !== undefined
+              ? await forceRefreshXaiOauthCredentials(
+                opts.credentialHome!,
+                activeBearer,
+                extra.authFetchImpl,
+              )
+              : await forceRefreshXaiOauthCredentials(
+                opts.credentialHome!,
+                activeBearer,
+              );
             if (refreshed === undefined) {
               // Honesty split: only claim the user is logged out when the
               // stored grant is genuinely dead (quarantined terminal
@@ -1179,6 +1197,8 @@ export function createProvider(
         ...(cfg as unknown as Record<string, unknown>),
         ...(extra.canonicalEndpointRequired === true
           ? { canonicalEndpointRequired: true } : {}),
+        ...(extra.authFetchImpl !== undefined
+          ? { authFetchImpl: extra.authFetchImpl } : {}),
         ...(usesXaiOauth
           ? { authMode: "oauth" }
           : extra.authMode !== undefined

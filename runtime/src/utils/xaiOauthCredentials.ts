@@ -267,8 +267,19 @@ const inflightRefreshByHome = new Map<
  * Force a refresh of the stored grant, regardless of expiry. Returns the
  * updated blob, or `undefined` when no refresh is possible (missing/
  * quarantined credentials, or terminal invalid_grant — which quarantines).
+ *
+ * `fetchImpl` sends the discovery and token requests (a provider a tool
+ * rebuilds for a call passes the calling session's transport); the process
+ * fetch otherwise. A refresh already in flight for the same stored grant is
+ * shared with every caller, whichever started it, so a concurrent caller
+ * sends no request of its own: a rotating refresh token is never exchanged
+ * twice.
  */
-export function forceRefreshXaiOauthCredentials(home: HomeContext, rejectedAccessToken?: string): Promise<
+export function forceRefreshXaiOauthCredentials(
+  home: HomeContext,
+  rejectedAccessToken?: string,
+  fetchImpl?: typeof fetch,
+): Promise<
   XaiOauthCredentialBlob | undefined
 > {
   const storageIdentity = secureStorageIdentityKey(home)
@@ -279,7 +290,7 @@ export function forceRefreshXaiOauthCredentials(home: HomeContext, rejectedAcces
       current.accessToken !== rejectedAccessToken && current.quarantinedAt === undefined) {
     return Promise.resolve(current)
   }
-  const pending = doRefresh(home).finally(() => {
+  const pending = doRefresh(home, fetchImpl).finally(() => {
     if (inflightRefreshByHome.get(storageIdentity) === pending) {
       inflightRefreshByHome.delete(storageIdentity)
     }
@@ -332,6 +343,7 @@ async function acquireRefreshLock(
 
 async function doRefresh(
   home: HomeContext,
+  fetchImpl: typeof fetch | undefined,
 ): Promise<XaiOauthCredentialBlob | undefined> {
   // Fresh read: another process may have already rotated the grant, and a
   // refresh with a stale (consumed) refresh token would burn it.
@@ -361,7 +373,7 @@ async function doRefresh(
       !isTrustedXaiOauthEndpoint(tokenEndpoint)
     ) {
       try {
-        tokenEndpoint = (await discoverXaiOauthEndpoints()).tokenEndpoint
+        tokenEndpoint = (await discoverXaiOauthEndpoints(fetchImpl)).tokenEndpoint
       } catch {
         return undefined
       }
@@ -371,6 +383,7 @@ async function doRefresh(
       const tokens = await refreshXaiOauthTokens({
         tokenEndpoint,
         refreshToken: currentRefresh,
+        ...(fetchImpl !== undefined ? { fetchImpl } : {}),
       })
       const next = xaiOauthTokensToBlob(tokens, {
         tokenEndpoint,
