@@ -269,7 +269,8 @@ image, audio and video models are not chat models here. An exhausted plan quota
 (HTTP 429 `insufficient_quota`) ends the turn with a quota message instead of
 being retried as a rate limit; ordinary throttling is still retried.
 `qwen3.6-flash` caches only with explicit `cache_control` markers, so its
-requests mark the system prompt and the newest message. In Light, Qwen3.8 Max
+requests mark the system prompt and the newest message. Qwen3.8 Max and Flash
+take the `none` effort (thinking off) besides `low`, `medium` and `xhigh`. In Light, Qwen3.8 Max
 and Flash (on either QwenCloud route) get the task limits and batch Edit that
 DeepSeek uses, with the rule to compute numeric answers with a command kept
 (`AGENC_LIGHT_TASK_LIMITS=0` turns the limits off). Inventory and sources:

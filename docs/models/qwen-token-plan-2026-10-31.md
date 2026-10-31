@@ -7,7 +7,7 @@ surfaces (`qwen-image-3.0-pro`, `wan2.7-image`, `wan2.7-image-pro`, `wan3.0-vide
 
 | Chat id | Core on `qwen-token-plan` | Contract |
 | --- | --- | --- |
-| `qwen3.8-max`, `qwen3.8-flash` | Listed (before) | Qwen3.8: low, medium, xhigh effort (default xhigh); images |
+| `qwen3.8-max`, `qwen3.8-flash` | Listed (before) | Qwen3.8: none (thinking off, new), low, medium, xhigh effort (default xhigh); images |
 | `qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-flash` | Listed (before) | Hybrid thinking with `preserve_thinking` |
 | `deepseek-v4.1-flash`, `deepseek-v4-pro`, `deepseek-v4-pro-0813`, `deepseek-v4-flash-0731`, `glm-5.3`, `glm-5.2` | Listed (new) | The Pay-As-You-Go deployment of the same id ([Qwen current chat catalog](qwen-current-2026-09-29.md)) |
 | `deepseek-v4.1-flash-1017` | Listed (new) | The `deepseek-v4.1-flash` contract (dated deployment of that model) |

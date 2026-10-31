@@ -1,0 +1,42 @@
+import { describe, expect, it, vi } from "vitest";
+import { QwenTokenPlanProvider } from "../../src/llm/providers/qwen/index.js";
+import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
+import { resolveRegisteredModelCatalogEntry } from "../../src/llm/registry/model-catalog.js";
+
+// Qwen3.8 Max and Flash accept reasoning_effort none, which turns thinking off
+// (alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions;
+// live on the Token Plan 2026-10-31: no reasoning tokens, tools still work).
+describe("Qwen3.8 thinking off through the none effort", () => {
+  it.each([
+    ["qwen-token-plan", "qwen3.8-max"], ["qwen-token-plan", "qwen3.8-flash"],
+    ["qwen", "qwen3.8-max"], ["qwen", "qwen3.8-flash"],
+  ] as const)("%s %s offers none before low, medium and xhigh", (provider, model) => {
+    expect(resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels)
+      .toEqual(["none", "low", "medium", "xhigh"]);
+    expect(resolveReasoningEffort({ provider, model })).toMatchObject({
+      acceptsChatEffort: true, levels: ["none", "low", "medium", "xhigh"], defaultLevel: "xhigh",
+    });
+  });
+
+  it("keeps the thinking-only and 27B deployments on three levels", () => {
+    for (const model of ["qwen3.8-2.4t-a95b", "qwen3.8-27b"]) {
+      expect(resolveRegisteredModelCatalogEntry({ provider: "qwen", model })?.supportedReasoningLevels)
+        .toEqual(["low", "medium", "xhigh"]);
+    }
+  });
+
+  it("sends reasoning_effort none on the Token Plan", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
+      id: "chatcmpl-plan", model: "qwen3.8-flash",
+      choices: [{ message: { role: "assistant", content: "OK" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const provider = new QwenTokenPlanProvider({
+      apiKey: "placeholder", model: "qwen3.8-flash", baseURL: "http://127.0.0.1:1/compatible-mode/v1", fetchImpl,
+    });
+    await provider.chat([{ role: "user", content: "Reply OK" }], { reasoningEffort: "none" });
+    const sent = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(sent.reasoning_effort).toBe("none");
+    expect(sent.enable_thinking).toBeUndefined();
+  });
+});

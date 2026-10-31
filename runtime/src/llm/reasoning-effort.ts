@@ -82,10 +82,12 @@ const META_REASONING_EFFORT_VALUES = new Set([
   "xhigh",
 ]);
 
-// Qwen3.8 exposes these values on both QwenCloud billing routes. Older
-// families use different thinking controls, so they stay fail-closed rather
-// than inheriting a field that their endpoint may reject.
+// Qwen3.8 Max and Flash expose these values on both QwenCloud billing routes
+// (`none` turns thinking off). Older families use different thinking controls,
+// so they stay fail-closed rather than inheriting a field that their endpoint
+// may reject.
 const QWEN_38_REASONING_EFFORT_VALUES = new Set([
+  "none",
   "low",
   "medium",
   "xhigh",

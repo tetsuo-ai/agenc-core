@@ -815,7 +815,7 @@ describe("QwenCloud registration and fail-closed routing", () => {
         supportsToolUse: true,
         supportsParallelToolCalls: true,
         supportsStructuredOutput: false,
-        supportedReasoningLevels: ["low", "medium", "xhigh"],
+        supportedReasoningLevels: ["none", "low", "medium", "xhigh"],
         defaultReasoningLevel: "xhigh",
       });
       expect(

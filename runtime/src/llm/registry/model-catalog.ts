@@ -149,6 +149,13 @@ const QWEN_38_REASONING_LEVELS = Object.freeze([
   "medium",
   "xhigh",
 ] as const satisfies readonly ReasoningEffort[]);
+// Qwen3.8 Max and Flash also take `none`, which turns thinking off
+// (reasoning_effort none = enable_thinking false; live on the Token Plan,
+// 2026-10-31). The thinking-only 2.4T and the 27B keep the three levels.
+const QWEN_38_MAX_FLASH_REASONING_LEVELS = Object.freeze([
+  "none",
+  ...QWEN_38_REASONING_LEVELS,
+] as const satisfies readonly ReasoningEffort[]);
 const CEREBRAS_QWEN_GEMMA_REASONING_LEVELS = Object.freeze([
   "none",
   "low",
@@ -548,6 +555,8 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
           defaultReasoningSummary: "none" as const,
           supportedReasoningLevels: model.model === "qwen3.8-omni-flash"
             ? Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const)
+            : model.model === "qwen3.8-max" || model.model === "qwen3.8-flash"
+            ? QWEN_38_MAX_FLASH_REASONING_LEVELS
             : supportsReasoningEffort
             ? QWEN_38_REASONING_LEVELS
             : NO_REASONING_LEVELS,
