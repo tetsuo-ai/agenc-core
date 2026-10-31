@@ -15,6 +15,7 @@ import { STEP_LIMIT_WRAPUP_INSTRUCTION } from "../../src/session/step-limit-wrap
 import { taskBudgetOf } from "../../src/session/task-budget.js";
 import type { Event } from "../../src/session/session.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
+import { recordCodeModeNestedStop } from "../../src/tools/code-mode/nested-stop.js";
 import { QuickJsCodeModeService } from "../../src/tools/code-mode/service.js";
 import { createCodeModeTools } from "../../src/tools/code-mode/tools.js";
 import type { CodeModeService, CodeModeTurnHost } from "../../src/tools/code-mode/types.js";
@@ -1229,4 +1230,86 @@ describe("the terminal gate decides after each exit's finalization", () => {
       expect(String(made.state.history.at(-1)?.content)).toContain(PAUSED);
     });
   }, 20_000);
+});
+
+/**
+ * Codex review of 46779ee44 (item 1): the gate's last look and the terminal's
+ * publication are one synchronous step. A refusal (a nested result's
+ * continuation) or a user stop that lands at any microtask after an exit's
+ * last save either reaches that look or finds the terminal already published.
+ */
+describe("the terminal gate's last look and the publication are one synchronous step", () => {
+  const ANSWER = "The check keeps running in the background.";
+  const STOP = { execUnavailableStop: { explanation: "Shell commands are disabled for the rest of this session." } };
+  const SWEEP = 30;
+
+  /**
+   * One tool-free answer. `lands` happens `afterTicks` microtasks after the
+   * answer's save number `atSave`, without holding that save; for "stop", a
+   * refusal is pending from that save on. Without `atSave`, the run only
+   * counts the answer's saves before the terminal is published.
+   */
+  async function race(lands: "refusal" | "stop", atSave?: number, afterTicks = 0) {
+    const provider = mkProvider();
+    provider.chatStream = async (): Promise<LLMResponse> => textResponse(ANSWER);
+    const made = bypassSession(provider, {
+      tools: [], toLLMTools: () => [], dispatch: async () => ({ content: "", isError: false }),
+    } as unknown as ToolRegistry);
+    const stop = new AbortController();
+    let published = false;
+    const emit = made.session.emit.bind(made.session);
+    vi.spyOn(made.session, "emit").mockImplementation(((event: Event) => {
+      if (["turn_complete", "turn_failed", "turn_aborted"].includes(event.msg.type)) published = true;
+      return emit(event);
+    }) as never);
+    let answerSaves = 0;
+    let landedBeforeTerminal: boolean | undefined;
+    const lock = made.session.state;
+    const write = lock.with.bind(lock) as (fn: (value: unknown) => unknown) => Promise<unknown>;
+    vi.spyOn(lock, "with").mockImplementation((async (fn: (value: unknown) => unknown) => {
+      const written = await write(fn);
+      if (!published && JSON.stringify(made.state.history).includes(ANSWER)) {
+        answerSaves += 1;
+        if (answerSaves === atSave) {
+          if (lands === "stop") recordCodeModeNestedStop(made.session, STOP);
+          void (async () => {
+            for (let tick = 0; tick < afterTicks; tick += 1) await undefined;
+            landedBeforeTerminal = !published;
+            if (lands === "stop") stop.abort("user stop");
+            else recordCodeModeNestedStop(made.session, STOP);
+          })();
+        }
+      }
+      return written;
+    }) as never);
+    const phases: PhaseEvent[] = [];
+    for await (const phase of runTurn(made.session, made.ctx, "Start the background check.", { signal: stop.signal })) {
+      phases.push(phase);
+    }
+    await delay(1);
+    const last = phases.at(-1);
+    return {
+      answerSaves,
+      landedBeforeTerminal,
+      stopReason: last?.type === "turn_complete" ? last.stopReason : undefined,
+    };
+  }
+
+  test.each([
+    ["a refusal", "refusal", "exec_unavailable", "completed"],
+    ["a user stop, with a refusal pending,", "stop", "cancelled", "exec_unavailable"],
+  ] as const)("%s that lands at any microtask after the answer's last save outranks the answer or finds it published", async (_label, lands, before, after) => {
+    const { answerSaves } = await race(lands);
+    expect(answerSaves).toBeGreaterThan(0);
+    const landed: boolean[] = [];
+    for (let ticks = 0; ticks <= SWEEP; ticks += 1) {
+      const run = await race(lands, answerSaves, ticks);
+      expect(run.landedBeforeTerminal, `${lands} after ${ticks} microtasks`).toBeDefined();
+      expect(run.stopReason, `${lands} after ${ticks} microtasks`).toBe(run.landedBeforeTerminal ? before : after);
+      landed.push(run.landedBeforeTerminal!);
+    }
+    // The sweep crosses the publication.
+    expect(landed).toContain(true);
+    expect(landed).toContain(false);
+  }, 60_000);
 });
