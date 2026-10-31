@@ -38,10 +38,7 @@ import { join, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
-import {
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../../llm/provider.js";
+import { readProviderIdentity } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
   tryResolveXaiBearerTokenForBaseUrl,
@@ -52,6 +49,13 @@ import {
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
+import {
+  isManagedProviderRoute,
+  sessionApiKeyRoute,
+  sessionCredentialHome,
+  sessionXaiRoute,
+  toolCallEnvironment,
+} from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
@@ -390,17 +394,20 @@ type VideoBackendResolution =
   | { readonly backend: VideoBackend }
   | { readonly error: string };
 
+/**
+ * A canonical media key with its own URL (or the provider's default), one
+ * pair from one environment; never paired with a session's endpoint.
+ */
 function environmentVideoBackend(
   kind: "openai" | "minimax",
   env: NodeJS.ProcessEnv,
-  sessionBaseURL?: string,
 ): VideoBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment(kind, env);
   if (credential === undefined) return undefined;
   const environmentBaseURL = resolveProviderBaseURLEnvironment(kind, env)?.value;
   const baseURL = kind === "openai"
-    ? environmentBaseURL ?? sessionBaseURL ?? DEFAULT_OPENAI_BASE_URL
-    : environmentBaseURL ?? sessionBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
+    ? environmentBaseURL ?? DEFAULT_OPENAI_BASE_URL
+    : environmentBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
   try {
     new URL(baseURL);
   } catch {
@@ -424,47 +431,48 @@ function environmentVideoBackend(
  * only their canonical API-key ingress.
  */
 /**
- * An OpenRouter or Venice session's own video route: its own key (factory
- * or canonical environment) and base URL. The managed AgenC route lends no
- * credential to media.
+ * An OpenRouter or Venice session's own video route: its own factory key
+ * with its own base URL, or, for a session without a factory key, that
+ * provider's canonical key with its canonical URL from the session's
+ * environment. The managed AgenC route lends no credential to media.
  */
 function gatewayVideoBackend(
   kind: "openrouter" | "venice",
   provider: unknown,
   env: NodeJS.ProcessEnv,
 ): VideoBackend | undefined {
-  const factory = readProviderFactoryOptions(provider as never);
-  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
-    return undefined;
-  }
-  const bearer =
-    typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-      ? factory.apiKey.trim()
-      : resolveProviderApiKeyEnvironment(kind, env)?.value;
-  if (bearer === undefined) return undefined;
-  const baseURL =
-    factory.baseURL ??
-    resolveProviderBaseURLEnvironment(kind, env)?.value ??
-    (kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL);
+  if (isManagedProviderRoute(provider)) return undefined;
+  const defaultBaseURL = kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL;
+  const own = sessionApiKeyRoute(provider, defaultBaseURL);
+  if (own !== undefined) return { kind, ...own };
+  const credential = resolveProviderApiKeyEnvironment(kind, env);
+  if (credential === undefined) return undefined;
+  const baseURL = resolveProviderBaseURLEnvironment(kind, env)?.value ?? defaultBaseURL;
   try {
     new URL(baseURL);
   } catch {
     return undefined;
   }
-  return { kind, baseURL: baseURL.replace(/\/$/, ""), bearer };
+  return { kind, baseURL: baseURL.replace(/\/$/, ""), bearer: credential.value };
 }
 
 /**
- * The backend for a call from the session that made it (`args`): a sub-agent
- * runs its parent's tool, and must never spend the parent's session key.
+ * The backend for a call, all of it from the session that made it (`args`;
+ * a sub-agent runs its parent's tool): its own provider's key and endpoint
+ * as its model calls use them, or a separate backend's key and URL from its
+ * own environment and credential home (session-provider-authority.ts). It
+ * never pairs that session's endpoint with another session's credential and
+ * never falls back to the parent's.
  */
 function resolveVideoBackend(
   opts: ImagineVideoToolOptions,
   args?: Readonly<Record<string, unknown>>,
 ): VideoBackendResolution {
-  const env = opts.env ?? process.env;
-  const provider = (readInvokingSession(args) ?? opts.getSession())?.services?.provider;
+  const session = readInvokingSession(args) ?? opts.getSession();
+  const env = toolCallEnvironment(session, opts.env);
+  const provider = session?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
+  const home = sessionCredentialHome(provider) ?? opts.home;
   let oauthBaseUrlError: string | undefined;
 
   // An OpenRouter or Venice session generates with its own key and nobody
@@ -477,45 +485,41 @@ function resolveVideoBackend(
     if (backend !== undefined) return { backend };
   }
 
-  if (providerIdentity === "openai" || providerIdentity === "minimax") {
-    const backend = environmentVideoBackend(
-      providerIdentity,
-      env,
-      provider === undefined
-        ? undefined
-        : readProviderFactoryOptions(provider as never).baseURL,
+  // An OpenAI or MiniMax session generates with its own API key and URL. A
+  // ChatGPT sign-in does not authorize /videos, so a session on that grant
+  // uses the canonical key with its canonical URL instead.
+  if ((providerIdentity === "openai" || providerIdentity === "minimax") && provider !== undefined) {
+    const own = sessionApiKeyRoute(
+      provider,
+      providerIdentity === "openai" ? DEFAULT_OPENAI_BASE_URL : DEFAULT_MINIMAX_BASE_URL,
     );
+    const backend: VideoBackend | undefined = own !== undefined
+      ? { kind: providerIdentity, ...own }
+      : environmentVideoBackend(providerIdentity, env);
     if (backend !== undefined) return { backend };
   }
 
-  if (providerIdentity === "grok" && provider !== undefined) {
-    const factory = readProviderFactoryOptions(provider as never);
-    const sessionKey =
-      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-    const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
-      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
-    );
-    oauthBaseUrlError = xaiResolution.oauthBaseUrlError;
-    const bearer = xaiResolution.bearer;
-    if (bearer !== undefined) {
-      return {
-        backend: {
-          kind: "xai",
-          baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
-            /\/$/,
-            "",
-          ),
-          bearer,
-        },
-      };
+  // A Grok session's xAI authority is its own (the sign-in or key its model
+  // calls use, with its own URL and selection); it never takes the
+  // independent xAI backend below.
+  const grokSession = providerIdentity === "grok" && provider !== undefined;
+  if (grokSession) {
+    const own = sessionXaiRoute(provider, DEFAULT_XAI_BASE_URL);
+    if (own !== undefined && "error" in own) {
+      oauthBaseUrlError = own.error;
+    } else if (own !== undefined) {
+      return { backend: { kind: "xai", baseURL: own.baseURL, bearer: own.bearer } };
     }
   }
 
-  // Without a usable Grok session key, use only independent xAI authority.
-  const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
-    opts.home, env,
-    resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
-  );
+  // Another provider's session uses only independent xAI authority, resolved
+  // from its own environment and credential home.
+  const xaiResolution: { readonly bearer?: string; readonly oauthBaseUrlError?: string } = grokSession
+    ? {}
+    : tryResolveXaiBearerTokenForBaseUrl(
+      home, env,
+      resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
+    );
   oauthBaseUrlError ??= xaiResolution.oauthBaseUrlError;
   const bearer = xaiResolution.bearer;
   if (bearer !== undefined) {

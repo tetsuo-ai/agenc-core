@@ -63,7 +63,12 @@ import {
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
-import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
+import { isXaiOauthBearer } from "../utils/xaiOauthCredentials.js";
+import {
+  sessionCredentialHome,
+  sessionXaiRoute,
+  toolCallEnvironment,
+} from "../tools/system/session-provider-authority.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -1084,7 +1089,9 @@ interface XaiToolBackend {
   readonly apiKey: string;
   readonly baseURL: string;
   readonly model: string;
-  readonly credentialHome: ReturnType<typeof resolveSecureStorageHome>;
+  readonly credentialHome?: ReturnType<typeof resolveSecureStorageHome>;
+  /** Which credential `apiKey` is, so the rebuilt provider keeps that selection. */
+  readonly authMode: "oauth" | "api_key";
   readonly timeoutMs?: number;
 }
 
@@ -1092,58 +1099,55 @@ interface XaiToolBackend {
  * Resolve the xAI service used by xAI-backed client tools independently from
  * the model that is running the main turn. A Meta/OpenAI/Anthropic session may
  * call XSearch or Imagine without its own credential ever crossing into xAI.
- * `session` is the session making the call (see invokingSession): a Grok
- * session's own key, host and model come only from that session.
+ * Everything comes from `session`, the session making the call (see
+ * invokingSession): a Grok session uses its own xAI authority exactly as its
+ * model calls do (key or sign-in, URL, selection and credential home, model);
+ * any other session gets a separate xAI backend resolved as that session
+ * would, from its own environment (GROK_AUTH_MODE included) and credential
+ * home, on a direct xAI host.
  */
 function resolveXaiToolBackend(
   opts: ModelFacingToolOptions,
   session: Session | null,
 ): XaiToolBackend | undefined {
-  const environment = requireModelFacingRequestEnvironment(opts);
-  const credentialHome = resolveSecureStorageHome(
-    environment,
-    opts.agencHome,
-  );
   const currentProvider = sessionLLMProvider(session);
-  const currentIsGrok = readProviderIdentity(currentProvider) === "grok";
-  const currentFactory = currentIsGrok && currentProvider
-    ? readProviderFactoryOptions(currentProvider)
-    : undefined;
-  const sessionApiKey =
-    typeof currentFactory?.apiKey === "string"
-      ? currentFactory.apiKey
-      : undefined;
-  const configuredBaseURL = resolveProviderBaseURLEnvironment(
-    "grok",
-    environment,
-  )?.value;
-  const baseURL = currentFactory !== undefined
-    ? (currentFactory?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok)
-    : (configuredBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok);
-  if (currentFactory === undefined && !isDirectXaiInferenceHost(baseURL)) {
-    return undefined;
+  if (currentProvider !== undefined && readProviderIdentity(currentProvider) === "grok") {
+    const route = sessionXaiRoute(currentProvider, BUILT_IN_PROVIDER_BASE_URLS.grok);
+    if (route === undefined || "error" in route) return undefined;
+    const factory = readProviderFactoryOptions(currentProvider);
+    const model = supportsProviderNativeXSearch({
+      provider: "grok",
+      model: factory.model,
+      xSearch: true,
+    })
+      ? factory.model!
+      : BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
+    return {
+      apiKey: route.bearer,
+      baseURL: route.baseURL,
+      model,
+      authMode: route.authMode,
+      ...(route.credentialHome !== undefined ? { credentialHome: route.credentialHome } : {}),
+      ...(factory.timeoutMs !== undefined ? { timeoutMs: factory.timeoutMs } : {}),
+    };
   }
+  const registryEnvironment = requireModelFacingRequestEnvironment(opts);
+  const environment = toolCallEnvironment(session, registryEnvironment as NodeJS.ProcessEnv);
+  const credentialHome = sessionCredentialHome(currentProvider) ??
+    resolveSecureStorageHome(registryEnvironment, opts.agencHome);
+  const baseURL = resolveProviderBaseURLEnvironment("grok", environment)?.value ??
+    BUILT_IN_PROVIDER_BASE_URLS.grok;
+  if (!isDirectXaiInferenceHost(baseURL)) return undefined;
   const apiKey = tryResolveXaiBearerTokenForBaseUrl(
-    credentialHome, environment, baseURL, sessionApiKey,
+    credentialHome, environment, baseURL,
   ).bearer;
   if (apiKey === undefined) return undefined;
-
-  const currentModel = currentFactory?.model;
-  const model = supportsProviderNativeXSearch({
-    provider: "grok",
-    model: currentModel,
-    xSearch: true,
-  })
-    ? currentModel!
-    : BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
   return {
     apiKey,
     baseURL,
-    model,
+    model: BUILT_IN_PROVIDER_DEFAULT_MODELS.grok,
     credentialHome,
-    ...(currentFactory?.timeoutMs !== undefined
-      ? { timeoutMs: currentFactory.timeoutMs }
-      : {}),
+    authMode: isXaiOauthBearer(credentialHome, apiKey) ? "oauth" : "api_key",
   };
 }
 
@@ -1319,11 +1323,25 @@ async function runGrokNativeWebSearch(
 
 function configuredWebSearchEndpoint(
   opts: ModelFacingToolOptions,
+  environment: ProviderEnvironment,
 ): string | undefined {
   return (
-    stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT) ??
+    stringValue(environment.AGENC_WEB_SEARCH_ENDPOINT) ??
     stringValue(opts.toolsConfig?.web_search_endpoint)
   );
+}
+
+/**
+ * The environment a WebSearch call's separate search backends resolve from:
+ * the invoking session's (session-provider-authority.ts toolCallEnvironment),
+ * so a configured endpoint with its key, the keyed search providers and the
+ * search chain all come from that one session.
+ */
+function webSearchEnvironment(
+  opts: ModelFacingToolOptions,
+  session: Session | null,
+): ProviderEnvironment {
+  return toolCallEnvironment(session, requireModelFacingRequestEnvironment(opts) as NodeJS.ProcessEnv);
 }
 
 /**
@@ -1377,7 +1395,7 @@ function resolveDeepSeekWebSearchBackend(
   if (
     setting === "auto" &&
     (!isOfficialDeepSeekApiHost(baseURL) ||
-      configuredWebSearchEndpoint(opts) !== undefined)
+      configuredWebSearchEndpoint(opts, webSearchEnvironment(opts, session)) !== undefined)
   ) {
     return undefined;
   }
@@ -1651,8 +1669,9 @@ function resolveGatewayWebSearchBackend(
   if (provider === undefined) return undefined;
   const identity = readProviderIdentity(provider);
   if (identity !== "ollama-cloud" && identity !== "openrouter" && identity !== "venice") return undefined;
-  if (configuredWebSearchEndpoint(opts) !== undefined) return undefined;
-  const mode = configuredSearchChain(requireModelFacingRequestEnvironment(opts), opts.toolsConfig).mode;
+  const environment = webSearchEnvironment(opts, session);
+  if (configuredWebSearchEndpoint(opts, environment) !== undefined) return undefined;
+  const mode = configuredSearchChain(environment, opts.toolsConfig).mode;
   if (mode !== "auto" && mode !== "native") return undefined;
   const factoryOptions = readProviderFactoryOptions(provider);
   if (factoryOptions.extra?.managedGateway === true || factoryOptions.extra?.managedCredential === true) return undefined;
@@ -1736,9 +1755,11 @@ function webSearchResultLimit(args: Record<string, unknown>): number {
  * chain is free. The Grok native path reserves its own model call.
  */
 function webSearchMaxCostUsd(opts: ModelFacingToolOptions, args: Record<string, unknown>): number | null {
-  if (configuredWebSearchEndpoint(opts) !== undefined ||
-      configuredSearchChain(requireModelFacingRequestEnvironment(opts), opts.toolsConfig).providers.length > 0) return null;
-  const gateway = resolveGatewayWebSearchBackend(opts, invokingSession(opts, args));
+  const session = invokingSession(opts, args);
+  const environment = webSearchEnvironment(opts, session);
+  if (configuredWebSearchEndpoint(opts, environment) !== undefined ||
+      configuredSearchChain(environment, opts.toolsConfig).providers.length > 0) return null;
+  const gateway = resolveGatewayWebSearchBackend(opts, session);
   if (gateway !== undefined) {
     const filters = webSearchFilters(args);
     const filtered = filters.allowedDomains.length > 0 || filters.blockedDomains.length > 0;
@@ -1845,10 +1866,11 @@ function buildGrokNativeXSearchProvider(
     };
   })();
   const extra: ProviderFactoryOptions["extra"] = {
+    // The resolved API key stays the credential: without this the factory
+    // would swap it for a stored sign-in. A sign-in needs no flag, since the
+    // factory reads the same grant from the same credential home.
+    ...(backend.authMode === "api_key" ? { authMode: "api_key" as const } : {}),
     // One-shot only: native x_search, no dual continuous web search spam.
-    ...(!isTrustedXaiOauthInferenceBaseUrl(backend.baseURL)
-      ? { authMode: "api_key" as const }
-      : {}),
     webSearch: false,
     xSearch: true,
     ...(mergedXSearchOptions !== undefined
@@ -1858,7 +1880,7 @@ function buildGrokNativeXSearchProvider(
   const providerFactory = opts.providerFactory ?? createProvider;
   try {
     return providerFactory("grok", {
-      credentialHome: backend.credentialHome,
+      ...(backend.credentialHome !== undefined ? { credentialHome: backend.credentialHome } : {}),
       apiKey: backend.apiKey,
       baseURL: backend.baseURL,
       model: backend.model,
@@ -4416,9 +4438,10 @@ type WebSearchEndpointKind = "duckduckgo" | "searxng" | "brave" | "json";
 
 function webSearchEndpointKind(
   opts: ModelFacingToolOptions,
+  environment: ProviderEnvironment,
 ): WebSearchEndpointKind {
   const raw = (
-    stringValue(opts.env?.AGENC_WEB_SEARCH_KIND) ??
+    stringValue(environment.AGENC_WEB_SEARCH_KIND) ??
     stringValue(opts.toolsConfig?.web_search_endpoint_kind)
   )?.toLowerCase();
   if (raw === "searxng" || raw === "brave" || raw === "json") return raw;
@@ -4637,7 +4660,6 @@ async function runDuckDuckGoHtmlSearch(
 }
 
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
-  const requestEnvironment = requireModelFacingRequestEnvironment(opts);
   // Bootstrap keeps this registry across provider switches. Resolve optional
   // xAI credentials only when its deferred tool is actually requested.
   const deferXSearch = opts.getSession() === null;
@@ -4677,7 +4699,10 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const query = stringValue(args.query);
         if (!query) return json({ error: "query is required" }, true);
         const filters = webSearchFilters(args);
-        const endpoint = configuredWebSearchEndpoint(opts);
+        // Every separate search backend resolves from the session making
+        // the call, never the session this registry was built for.
+        const requestEnvironment = webSearchEnvironment(opts, invokingSession(opts, args));
+        const endpoint = configuredWebSearchEndpoint(opts, requestEnvironment);
         const chain = configuredSearchChain(requestEnvironment, opts.toolsConfig);
         const maxResults = webSearchResultLimit(args);
         const nativeResult = await runGrokNativeWebSearch(
@@ -4789,7 +4814,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           }));
         // 1. Explicitly configured endpoint (env or config-bridged).
         if (endpoint !== undefined && chain.mode === "auto") {
-          const kind = webSearchEndpointKind(opts);
+          const kind = webSearchEndpointKind(opts, requestEnvironment);
           const configured = await runConfiguredEndpointSearch(
             endpoint,
             kind,

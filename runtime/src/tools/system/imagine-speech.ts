@@ -19,16 +19,18 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import {
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../../llm/provider.js";
+import { readProviderIdentity } from "../../llm/provider.js";
 import {
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
+import {
+  isManagedProviderRoute,
+  sessionApiKeyRoute,
+  toolCallEnvironment,
+} from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
@@ -108,28 +110,30 @@ function stringValue(value: unknown): string | undefined {
 }
 
 /**
- * The speech route of the session making the call (`args`): a sub-agent runs
- * its parent's tool, and speaks only with its own session's key.
+ * The speech route of the session making the call (`args`; a sub-agent runs
+ * its parent's tool): its own key with its own URL, or, without a factory
+ * key, its provider's canonical key with the canonical URL from its own
+ * environment. Never one session's URL with another's key.
  */
 function resolveSpeechBackend(
   opts: ImagineSpeechToolOptions,
   args?: Readonly<Record<string, unknown>>,
 ): SpeechBackend | { readonly error: string } {
-  const env = opts.env ?? process.env;
-  const provider = (readInvokingSession(args) ?? opts.getSession())?.services?.provider;
+  const session = readInvokingSession(args) ?? opts.getSession();
+  const env = toolCallEnvironment(session, opts.env);
+  const provider = session?.services?.provider;
   const identity = readProviderIdentity(provider as never);
   if ((identity !== "openrouter" && identity !== "venice") || provider === undefined) {
     return { error: "ImagineSpeech speaks only in an OpenRouter or Venice session, with that session's own key." };
   }
-  const factory = readProviderFactoryOptions(provider as never);
-  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
+  if (isManagedProviderRoute(provider)) {
     return { error: "ImagineSpeech is not available on the managed AgenC route." };
   }
-  const bearer = typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-    ? factory.apiKey.trim()
-    : resolveProviderApiKeyEnvironment(identity, env)?.value;
+  const own = sessionApiKeyRoute(provider, DEFAULT_BASE_URL[identity]);
+  if (own !== undefined) return { kind: identity, ...own };
+  const bearer = resolveProviderApiKeyEnvironment(identity, env)?.value;
   if (bearer === undefined) return { error: `ImagineSpeech needs this ${identity} session's API key.` };
-  const baseURL = factory.baseURL ?? resolveProviderBaseURLEnvironment(identity, env)?.value ?? DEFAULT_BASE_URL[identity];
+  const baseURL = resolveProviderBaseURLEnvironment(identity, env)?.value ?? DEFAULT_BASE_URL[identity];
   try {
     new URL(baseURL);
   } catch {

@@ -121,16 +121,15 @@ function firstRequest(fetchImpl: typeof fetch): {
   };
 }
 
-/** An OpenAI session whose only media authority is the API-key ingress. */
+/** An OpenAI session on an API key, which is also its media key. */
 function openaiImagineTool(root: string, fetchImpl?: typeof fetch) {
   return createSessionImagineImageTool({
     workspaceRoot: root,
     provider: createProvider("openai", {
-      apiKey: "unused",
+      apiKey: "openai-session-key",
       model: "gpt-6-astra",
       baseURL: "https://api.openai.com/v1",
     }),
-    env: { OPENAI_API_KEY: "isolated-openai-key" },
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
 }
@@ -139,11 +138,34 @@ function minimaxImagineTool(root: string, fetchImpl?: typeof fetch) {
   return createSessionImagineImageTool({
     workspaceRoot: root,
     provider: createProvider("minimax", {
-      apiKey: "unused",
+      apiKey: "minimax-session-key",
       model: "MiniMax-M2.5",
     }),
-    env: { MINIMAX_API_KEY: "isolated-minimax-key" },
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
+  });
+}
+
+/** An OpenAI session on a ChatGPT sign-in: its grant never authorizes media. */
+function chatGptSignInProvider() {
+  return createProvider("openai", {
+    model: "gpt-6-astra",
+    baseURL: "https://chatgpt.com/backend-api/codex",
+    extra: {
+      authMode: "oauth",
+      chatgptBackend: true,
+      store: false,
+      useResponsesApi: true,
+      oauth: { accessToken: "chatgpt-oauth-bearer-must-not-leak" },
+    },
+  });
+}
+
+/** A session whose provider has no media route of its own. */
+function deepSeekProvider(apiKey: string) {
+  return createProvider("deepseek", {
+    apiKey,
+    model: "deepseek-v4-pro",
+    baseURL: "https://api.deepseek.com",
   });
 }
 
@@ -695,10 +717,7 @@ describe("ImagineImage tool", () => {
 
   it("honors ZAI_BASE_URL without borrowing another provider session key", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-zai-fallback-"));
-    const provider = createProvider("openai", {
-      apiKey: "openai-key-must-not-leak",
-      model: "gpt-5",
-    });
+    const provider = deepSeekProvider("deepseek-key-must-not-leak");
     const fetchImpl = vi.fn(async (url: string | URL | Request) =>
       String(url).includes("/images/generations")
         ? new Response(JSON.stringify({
@@ -739,7 +758,7 @@ describe("ImagineImage tool", () => {
     const authorization = (init?.headers as Record<string, string>)
       .authorization;
     expect(authorization).toBe("Bearer zai-only-media-key");
-    expect(authorization).not.toContain("openai-key-must-not-leak");
+    expect(authorization).not.toContain("deepseek-key-must-not-leak");
     expect(JSON.parse(String(init?.body))).toMatchObject({
       model: "cogview-4-250304",
       size: "864x1152",
@@ -1056,10 +1075,7 @@ describe("ImagineImage tool", () => {
 
   it("falls back to Meta when the configured xAI media host is unusable", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-invalid-xai-meta-"));
-    const provider = createProvider("openai", {
-      apiKey: "openai-session-key-must-not-leak",
-      model: "gpt-5",
-    });
+    const provider = deepSeekProvider("deepseek-session-key-must-not-leak");
     const b64 = Buffer.from("RIFF0000WEBP", "ascii").toString("base64");
     const fetchImpl = vi.fn(async () => ({
       ok: true,
@@ -1124,11 +1140,7 @@ describe("ImagineImage tool", () => {
   });
 
   it("fails closed instead of using a non-Grok reasoning session key for xAI", async () => {
-    const provider = createProvider("openai", {
-      apiKey: "openai-session-key-must-not-leak",
-      model: "gpt-5",
-      baseURL: "https://api.openai.com/v1",
-    });
+    const provider = deepSeekProvider("deepseek-session-key-must-not-leak");
     const fetchImpl = vi.fn();
     const tool = createImagineImageTool({
       workspaceRoot: process.cwd(),
@@ -1379,7 +1391,7 @@ describe("ImagineImage tool", () => {
   it("generates with GPT Image for an OpenAI session holding an API key", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-openai-"));
     const provider = createProvider("openai", {
-      apiKey: "chatgpt-oauth-bearer-must-not-leak",
+      apiKey: "openai-session-key",
       model: "gpt-6-astra",
       baseURL: "https://api.openai.com/v1",
     });
@@ -1393,7 +1405,7 @@ describe("ImagineImage tool", () => {
       workspaceRoot: root,
       provider,
       env: {
-        OPENAI_API_KEY: "isolated-openai-key",
+        OPENAI_API_KEY: "canonical-openai-key",
         XAI_API_KEY: "must-not-win-for-openai-session",
       },
       fetchImpl,
@@ -1417,9 +1429,8 @@ describe("ImagineImage tool", () => {
 
     const sent = firstRequest(fetchImpl);
     expect(sent.url).toBe("https://api.openai.com/v1/images/generations");
-    // The session bearer is a ChatGPT OAuth grant, which cannot call this
-    // endpoint at all. Only the API-key ingress may authorize it.
-    expect(sent.authorization).toBe("Bearer isolated-openai-key");
+    // The session's own key at its own URL, as its model calls use them.
+    expect(sent.authorization).toBe("Bearer openai-session-key");
     expect(sent.body).toEqual({
       model: "gpt-image-2",
       prompt: "a grey square",
@@ -1429,7 +1440,7 @@ describe("ImagineImage tool", () => {
     });
   });
 
-  it("sends the OpenAI image key to the session's configured URL", async () => {
+  it("sends an OpenAI session's own key to its own configured URL, never the canonical key", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-openai-custom-"));
     const fetchImpl = backendAwareImageFetch();
     const tool = createSessionImagineImageTool({
@@ -1439,7 +1450,10 @@ describe("ImagineImage tool", () => {
         model: "gpt-6-astra",
         baseURL: "https://custom.example/v1",
       }),
-      env: { OPENAI_API_KEY: "custom-key" },
+      env: {
+        OPENAI_API_KEY: "custom-key",
+        OPENAI_BASE_URL: "https://env-openai.example/v1",
+      },
       fetchImpl,
     });
 
@@ -1447,20 +1461,35 @@ describe("ImagineImage tool", () => {
     expect(result.isError).toBeUndefined();
     expect(firstRequest(fetchImpl)).toMatchObject({
       url: "https://custom.example/v1/images/generations",
-      authorization: "Bearer custom-key",
+      authorization: "Bearer session-key",
     });
   });
 
-  it("uses OPENAI_BASE_URL before the OpenAI session's default factory URL", async () => {
+  it("never sends a ChatGPT sign-in to GPT Image; the canonical key goes to OpenAI's URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-sign-in-"));
+    const fetchImpl = backendAwareImageFetch();
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: chatGptSignInProvider(),
+      env: { OPENAI_API_KEY: "canonical-openai-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a grey square" });
+    expect(result.isError).toBeUndefined();
+    // Not the sign-in's ChatGPT endpoint, and not the grant.
+    expect(firstRequest(fetchImpl)).toMatchObject({
+      url: "https://api.openai.com/v1/images/generations",
+      authorization: "Bearer canonical-openai-key",
+    });
+  });
+
+  it("pairs OPENAI_API_KEY only with OPENAI_BASE_URL for a session without an API key", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-openai-env-"));
     const fetchImpl = backendAwareImageFetch();
     const tool = createSessionImagineImageTool({
       workspaceRoot: root,
-      provider: createProvider("openai", {
-        apiKey: "session-key",
-        model: "gpt-6-astra",
-        baseURL: "https://api.openai.com/v1",
-      }),
+      provider: chatGptSignInProvider(),
       env: {
         OPENAI_API_KEY: "env-key",
         OPENAI_BASE_URL: "https://env-openai.example/v1",
@@ -1474,6 +1503,20 @@ describe("ImagineImage tool", () => {
       url: "https://env-openai.example/v1/images/generations",
       authorization: "Bearer env-key",
     });
+  });
+
+  it("generates nothing for a ChatGPT sign-in session without a canonical media key", async () => {
+    const fetchImpl = vi.fn();
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: process.cwd(),
+      provider: chatGptSignInProvider(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const result = await tool.execute({ prompt: "must not run" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/media backend credential/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("saves the format GPT Image reports rather than assuming PNG", async () => {
@@ -1510,7 +1553,7 @@ describe("ImagineImage tool", () => {
         apiKey: "minimax-session-key",
         model: "MiniMax-M2.5",
       }),
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      env: { MINIMAX_API_KEY: "canonical-minimax-key" },
       fetchImpl,
     });
 
@@ -1533,7 +1576,8 @@ describe("ImagineImage tool", () => {
     const sent = firstRequest(fetchImpl);
     // MiniMax names this route differently from every OpenAI-shaped backend.
     expect(sent.url).toBe("https://api.minimax.io/v1/image_generation");
-    expect(sent.authorization).toBe("Bearer isolated-minimax-key");
+    // The session's own key, as its model calls use it.
+    expect(sent.authorization).toBe("Bearer minimax-session-key");
     expect(sent.body).toEqual({
       model: "image-01",
       prompt: "a grey square",

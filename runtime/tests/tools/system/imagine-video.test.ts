@@ -441,14 +441,14 @@ describe("ImagineVideo execute", () => {
         ({
           services: {
             provider: createProvider("openai", {
-              apiKey: "chatgpt-oauth-bearer-must-not-leak",
+              apiKey: "openai-session-key",
               model: "gpt-6-astra",
               baseURL: "https://api.openai.com/v1",
             }),
           },
         }) as unknown as Session,
       env: {
-        OPENAI_API_KEY: "isolated-openai-key",
+        OPENAI_API_KEY: "canonical-openai-key",
         XAI_API_KEY: "must-not-win-for-openai-session",
       },
       fetchImpl,
@@ -480,7 +480,8 @@ describe("ImagineVideo execute", () => {
       headers: Record<string, string>;
       body: string;
     };
-    expect(submit.headers.authorization).toBe("Bearer isolated-openai-key");
+    // The session's own key at its own URL, as its model calls use them.
+    expect(submit.headers.authorization).toBe("Bearer openai-session-key");
     // Sora rejects unknown parameters, so the body carries exactly four.
     expect(JSON.parse(submit.body)).toEqual({
       model: "sora-2",
@@ -521,36 +522,65 @@ describe("ImagineVideo execute", () => {
     );
   }
 
-  it("sends the OpenAI video key to the session's configured URL", async () => {
+  /** An OpenAI session on a ChatGPT sign-in: its grant never authorizes media. */
+  const chatGptSignIn = () => createProvider("openai", {
+    model: "gpt-6-astra",
+    baseURL: "https://chatgpt.com/backend-api/codex",
+    extra: {
+      authMode: "oauth",
+      chatgptBackend: true,
+      store: false,
+      useResponsesApi: true,
+      oauth: { accessToken: "chatgpt-oauth-bearer-must-not-leak" },
+    },
+  });
+
+  it("sends an OpenAI session's own key to its own configured URL, never the canonical key", async () => {
     const provider = createProvider("openai", {
       apiKey: "session-key",
       model: "gpt-6-astra",
       baseURL: "https://custom.example/v1",
     });
     await expectVideoRequestUses(
-      provider, { OPENAI_API_KEY: "custom-key" },
-      "https://custom.example/v1/videos", "custom-key",
+      provider,
+      { OPENAI_API_KEY: "custom-key", OPENAI_BASE_URL: "https://env-openai.example/v1" },
+      "https://custom.example/v1/videos", "session-key",
     );
   });
 
-  it("uses OPENAI_BASE_URL before the OpenAI session's default factory URL", async () => {
-    const provider = createProvider("openai", {
-      apiKey: "session-key",
-      model: "gpt-6-astra",
-      baseURL: "https://api.openai.com/v1",
-    });
+  it("never sends a ChatGPT sign-in to Sora; the canonical key goes to OpenAI's URL", async () => {
     await expectVideoRequestUses(
-      provider,
+      chatGptSignIn(), { OPENAI_API_KEY: "canonical-openai-key" },
+      "https://api.openai.com/v1/videos", "canonical-openai-key",
+    );
+  });
+
+  it("pairs OPENAI_API_KEY only with OPENAI_BASE_URL for a session without an API key", async () => {
+    await expectVideoRequestUses(
+      chatGptSignIn(),
       { OPENAI_API_KEY: "env-key", OPENAI_BASE_URL: "https://env-openai.example/v1" },
       "https://env-openai.example/v1/videos", "env-key",
     );
   });
 
-  it("uses MINIMAX_BASE_URL before the MiniMax session's default factory URL", async () => {
+  it("sends a MiniMax session's own key to its own URL, never the canonical pair", async () => {
     const provider = createProvider("minimax", {
       apiKey: "session-key",
       model: "MiniMax-M2.5",
       baseURL: "https://api.minimax.io/v1",
+    });
+    await expectVideoRequestUses(
+      provider,
+      { MINIMAX_API_KEY: "env-key", MINIMAX_BASE_URL: "https://env-minimax.example/v1" },
+      "https://api.minimax.io/v1/video_generation", "session-key",
+    );
+  });
+
+  it("pairs MINIMAX_API_KEY only with MINIMAX_BASE_URL for a session on another provider", async () => {
+    const provider = createProvider("deepseek", {
+      apiKey: "deepseek-key-must-not-leak",
+      model: "deepseek-v4-pro",
+      baseURL: "https://api.deepseek.com",
     });
     await expectVideoRequestUses(
       provider,
@@ -694,7 +724,7 @@ describe("ImagineVideo execute", () => {
             }),
           },
         }) as unknown as Session,
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      env: { MINIMAX_API_KEY: "canonical-minimax-key" },
       fetchImpl,
       pollIntervalMs: 1,
       pollTimeoutMs: 5_000,
@@ -721,7 +751,7 @@ describe("ImagineVideo execute", () => {
     expect((await readFile(parsed.path)).length).toBeGreaterThan(0);
     const submit = (fetchImpl as unknown as { mock: { calls: unknown[][] } })
       .mock.calls[0]?.[1] as { headers: Record<string, string>; body: string };
-    expect(submit.headers.authorization).toBe("Bearer isolated-minimax-key");
+    expect(submit.headers.authorization).toBe("Bearer minimax-session-key");
     expect(JSON.parse(submit.body)).toEqual({
       model: "MiniMax-Hailuo-02",
       prompt: "a rotating cube",
@@ -781,7 +811,7 @@ describe("ImagineVideo execute", () => {
             }),
           },
         }) as unknown as Session,
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      env: { MINIMAX_API_KEY: "canonical-minimax-key" },
       fetchImpl,
       pollIntervalMs: 1,
       pollTimeoutMs: 5_000,
@@ -809,7 +839,7 @@ describe("ImagineVideo execute", () => {
       .mock.calls[0]!;
     const init = submit[1] as RequestInit;
     expect((init.headers as Record<string, string>).authorization).toBe(
-      "Bearer isolated-minimax-key",
+      "Bearer minimax-session-key",
     );
     expect(JSON.parse(String(init.body))).toEqual({
       model: "MiniMax-H3",

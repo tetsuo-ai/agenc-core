@@ -81,8 +81,12 @@ interface FakeSession {
   readonly admission: FakeAdmission;
 }
 
-/** A session with its own provider, admission client and internal ids. */
-function sessionOn(id: string, provider: LLMProvider): FakeSession {
+/** A session with its own provider, admission client, internal ids and environment. */
+function sessionOn(
+  id: string,
+  provider: LLMProvider,
+  providerEnvironment?: Readonly<Record<string, string>>,
+): FakeSession {
   const admission = fakeAdmission(id);
   let sub = 0;
   const session = {
@@ -90,7 +94,12 @@ function sessionOn(id: string, provider: LLMProvider): FakeSession {
     abortController: new AbortController(),
     nextInternalSubId: () => `${id}-sub-${++sub}`,
     modelInfo: { slug: readModel(provider) },
-    services: { provider, executionAdmission: admission, admissionRequired: true },
+    services: {
+      provider,
+      executionAdmission: admission,
+      admissionRequired: true,
+      ...(providerEnvironment !== undefined ? { providerEnvironment } : {}),
+    },
     emit: () => {},
   } as unknown as Session;
   return { session, admission };
@@ -301,6 +310,38 @@ describe("WebSearch through Grok's native search", () => {
   });
 });
 
+describe("WebSearch with a configured search endpoint", () => {
+  const search = (prefix: string) => ({
+    AGENC_WEB_SEARCH_ENDPOINT: `https://${prefix}-search.example/search`,
+    AGENC_WEB_SEARCH_KIND: "brave",
+    AGENC_WEB_SEARCH_API_KEY: `${prefix}-search-key`,
+  });
+
+  it("searches with each session's own endpoint and key", async () => {
+    const fetch = vi.fn(async () => ({
+      json: async () => ({ web: { results: [{ title: "AgenC", url: "https://agenc.tech/", description: "Docs" }] } }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const openai = (key: string) => chatProvider("openai",
+      { apiKey: key, baseURL: "https://api.openai.com/v1", model: "gpt-5.5" });
+    const parent = sessionOn("parent-session", openai("sk-parent"));
+    const child = sessionOn("child-agent", openai("sk-child"), search("child"));
+    const tool = modelFacingTools(parent.session, { env: { AGENC_HOME: home, ...search("parent") } })
+      .find((entry) => entry.name === "WebSearch")!;
+
+    await tool.execute(dispatchedArgs({ query: "agenc" }, child.session, "child-search", "WebSearch"));
+    await tool.execute(dispatchedArgs({ query: "agenc" }, parent.session, "parent-search", "WebSearch"));
+
+    expect(fetch.mock.calls.map(([url, init]) => ({
+      url: String(url),
+      key: (init as { headers?: Record<string, string> } | undefined)?.headers?.["X-Subscription-Token"],
+    }))).toEqual([
+      { url: "https://child-search.example/search?q=agenc", key: "child-search-key" },
+      { url: "https://parent-search.example/search?q=agenc", key: "parent-search-key" },
+    ]);
+  });
+});
+
 describe("XSearch", () => {
   const xAnswer: LLMResponse = {
     content: "Found a post https://x.com/xai/status/1",
@@ -384,13 +425,95 @@ describe("media tools", () => {
     { apiKey: "xai-parent", model: "grok-4.5", baseURL: "https://api.x.ai/v1" });
   const grokChild = () => createProvider("grok",
     { apiKey: "xai-child", model: "grok-4.5", baseURL: "https://api.x.ai/v1" });
-  const openAiSession = (apiKey: string) => createProvider("openai",
-    { apiKey, model: "gpt-5", baseURL: "https://api.openai.com/v1" });
+  const openAiSession = (apiKey: string, baseURL?: string) => createProvider("openai",
+    { apiKey, model: "gpt-5", ...(baseURL !== undefined ? { baseURL } : {}) });
+  // A provider with no media route of its own.
+  const deepSeekSession = (apiKey: string) => createProvider("deepseek",
+    { apiKey, model: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" });
+
+  /** Every request the media fetch saw, as URL and bearer. */
+  const requests = (fetchImpl: ReturnType<typeof vi.fn>) => fetchImpl.mock.calls.map(([url, init]) => ({
+    url: String(url),
+    authorization: (init as { headers?: Record<string, string> } | undefined)?.headers?.authorization,
+  }));
+
+  const mediaRoute = { image: "images/generations", video: "videos" } as const;
+
+  function mediaTool(kind: "image" | "video", root: string, parent: Session, env: NodeJS.ProcessEnv,
+    fetchImpl: ReturnType<typeof vi.fn>) {
+    const options = {
+      workspaceRoot: root,
+      home: mediaTestHome(root),
+      getSession: () => parent,
+      env,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    };
+    return kind === "image" ? createImagineImageTool(options) : createImagineVideoTool(options);
+  }
+
+  it.each(["image", "video"] as const)(
+    "Imagine %s sends an OpenAI sub-agent's own key to its own endpoint, never the parent's OPENAI_API_KEY",
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), `imagine-${kind}-openai-child-`));
+      try {
+        const { parent, child } = sessions(
+          openAiSession("parent-key", "https://api.openai.com/v1"),
+          openAiSession("child-key", "https://child-openai.example/v1"),
+        );
+        const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
+        const tool = mediaTool(kind, root, parent, { OPENAI_API_KEY: "parent-key" }, fetchImpl);
+
+        await tool.execute(dispatchedArgs({ prompt: "a cat" }, child, `${kind}-child`,
+          kind === "image" ? "ImagineImage" : "ImagineVideo"));
+
+        expect(requests(fetchImpl)).toEqual([{
+          url: `https://child-openai.example/v1/${mediaRoute[kind]}`,
+          authorization: "Bearer child-key",
+        }]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["image", "video"] as const)(
+    "Imagine %s never sends an OpenAI sub-agent's key to the parent's endpoint, nor the parent's key to the sub-agent's",
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), `imagine-${kind}-openai-reverse-`));
+      try {
+        // The parent's endpoint is also the registry environment's
+        // OPENAI_BASE_URL; the sub-agent runs on OpenAI's default endpoint.
+        const { parent, child } = sessions(
+          openAiSession("parent-key", "https://parent-openai.example/v1"),
+          openAiSession("child-key"),
+        );
+        const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
+        const tool = mediaTool(kind, root, parent, {
+          OPENAI_API_KEY: "parent-key",
+          OPENAI_BASE_URL: "https://parent-openai.example/v1",
+        }, fetchImpl);
+        const toolName = kind === "image" ? "ImagineImage" : "ImagineVideo";
+
+        await tool.execute(dispatchedArgs({ prompt: "a cat" }, child, `${kind}-child`, toolName));
+        await tool.execute(dispatchedArgs({ prompt: "a cat" }, parent, `${kind}-parent`, toolName));
+        await tool.execute(dispatchedArgs({ prompt: "a cat" }, child, `${kind}-child-again`, toolName));
+
+        const childRequest = { url: `https://api.openai.com/v1/${mediaRoute[kind]}`, authorization: "Bearer child-key" };
+        expect(requests(fetchImpl)).toEqual([
+          childRequest,
+          { url: `https://parent-openai.example/v1/${mediaRoute[kind]}`, authorization: "Bearer parent-key" },
+          childRequest,
+        ]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("ImagineImage never spends a Grok parent's key for a sub-agent, and uses a Grok sub-agent's own", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-invoking-"));
     try {
-      const refused = sessions(grokParent(), openAiSession("sk-child"));
+      const refused = sessions(grokParent(), deepSeekSession("sk-child"));
       const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
       const tool = createImagineImageTool({
         workspaceRoot: root,
@@ -425,7 +548,7 @@ describe("media tools", () => {
   it("ImagineVideo never spends a Grok parent's key for a sub-agent, and uses a Grok sub-agent's own", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-video-invoking-"));
     try {
-      const refused = sessions(grokParent(), openAiSession("sk-child"));
+      const refused = sessions(grokParent(), deepSeekSession("sk-child"));
       const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
       const tool = createImagineVideoTool({
         workspaceRoot: root,

@@ -338,11 +338,27 @@ disabled for the rest of the session; start a new session then.
 
 When a sub-agent calls `WebSearch`, `XSearch`, `web_fetch` or a media tool
 (`ImagineImage`, `ImagineVideo`, `ImagineSpeech`, `ImagineEdit`), the tool
-works from the sub-agent's own session: its provider, model and key for
-Grok's native search, `web_fetch`'s `prompt` extraction and a session-bound
-media backend, its session's permission mode and rules for a provider fetch,
-and its own budget and run for the model calls the tool makes. A parent's key
-or model is never used for a sub-agent's call.
+works from the sub-agent's own session, and one session's authority covers
+the whole call: endpoint, credential, auth mode (API key or sign-in) and
+credential home resolve together.
+
+- A tool that calls the session's own provider (Grok's native search,
+  `web_fetch`'s `prompt` extraction, `XSearch` in a Grok session, the
+  session's own media route) uses the key or sign-in, base URL and auth
+  selection that session's model calls use. An explicit API-key selection
+  stays on its key even while a sign-in is stored. A ChatGPT sign-in does not
+  authorize OpenAI's image or video APIs, so an OpenAI session on one uses
+  `OPENAI_API_KEY` with `OPENAI_BASE_URL` (or OpenAI's URL) instead.
+- A separate backend (`XSearch` or xAI media from another provider's
+  session, a canonical media key, a configured search endpoint or search
+  provider key) resolves from that session's own environment and credential
+  home, honoring its `GROK_AUTH_MODE`, with each key and its URL taken as one
+  pair.
+
+The session's permission mode and rules govern a provider fetch, and the
+model calls a tool makes are admitted on its own budget and run. A parent's
+key, sign-in, endpoint or model is never used for a sub-agent's call, and a
+call with no usable credential fails with an error.
 
 There is **no** separate LIVE tool named `web_search`; that string is only a
 provider-native server-side tool id used internally by the Grok web-search

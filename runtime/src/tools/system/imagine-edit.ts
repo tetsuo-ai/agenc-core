@@ -19,16 +19,18 @@ import { mkdir, open, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import {
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../../llm/provider.js";
+import { readProviderIdentity } from "../../llm/provider.js";
 import {
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
+import {
+  isManagedProviderRoute,
+  sessionApiKeyRoute,
+  toolCallEnvironment,
+} from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
@@ -82,27 +84,29 @@ function stringValue(value: unknown): string | undefined {
 }
 
 /**
- * The edit route of the session making the call (`args`): a sub-agent runs
- * its parent's tool, and edits only with its own session's key.
+ * The edit route of the session making the call (`args`; a sub-agent runs
+ * its parent's tool): its own Venice key with its own URL, or, without a
+ * factory key, the canonical Venice key with the canonical URL from its own
+ * environment. Never one session's URL with another's key.
  */
 function resolveEditBackend(
   opts: ImagineEditToolOptions,
   args?: Readonly<Record<string, unknown>>,
 ): EditBackend | { readonly error: string } {
-  const env = opts.env ?? process.env;
-  const provider = (readInvokingSession(args) ?? opts.getSession())?.services?.provider;
+  const session = readInvokingSession(args) ?? opts.getSession();
+  const env = toolCallEnvironment(session, opts.env);
+  const provider = session?.services?.provider;
   if (readProviderIdentity(provider as never) !== "venice" || provider === undefined) {
     return { error: "ImagineEdit edits images only in a Venice session, with that session's own key." };
   }
-  const factory = readProviderFactoryOptions(provider as never);
-  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
+  if (isManagedProviderRoute(provider)) {
     return { error: "ImagineEdit is not available on the managed AgenC route." };
   }
-  const bearer = typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-    ? factory.apiKey.trim()
-    : resolveProviderApiKeyEnvironment("venice", env)?.value;
+  const own = sessionApiKeyRoute(provider, DEFAULT_BASE_URL);
+  if (own !== undefined) return own;
+  const bearer = resolveProviderApiKeyEnvironment("venice", env)?.value;
   if (bearer === undefined) return { error: "ImagineEdit needs this Venice session's API key." };
-  const baseURL = factory.baseURL ?? resolveProviderBaseURLEnvironment("venice", env)?.value ?? DEFAULT_BASE_URL;
+  const baseURL = resolveProviderBaseURLEnvironment("venice", env)?.value ?? DEFAULT_BASE_URL;
   try {
     new URL(baseURL);
   } catch {
