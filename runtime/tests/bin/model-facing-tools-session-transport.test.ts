@@ -246,6 +246,42 @@ describe("WebSearch transport", () => {
     expect(requests().map((request) => request.url)).toContain(endpoint);
     for (const request of requests()) expect(request.transport).toEqual(recorded.transport(CHILD));
   });
+
+  it("rebuilds a Grok sub-agent's native search provider on the sub-agent's own fetch and transport", async () => {
+    const globalFetch = recordingFetch();
+    vi.stubGlobal("fetch", globalFetch.fetchImpl);
+    // The sub-agent's own provider transport (a pinned child fetch, for example).
+    const own = recordingFetch();
+    const childProvider = createProvider("grok", {
+      apiKey: "xai-child", model: "grok-4.6", extra: { fetchImpl: own.fetchImpl as unknown as typeof fetch },
+    });
+    const parent = sessionOn(openAi());
+    const child = sessionOn(childProvider, CHILD);
+
+    await tool(parent, "WebSearch").execute(dispatchedArgs({ query: "agenc" }, child, "child-native", "WebSearch"));
+
+    expect(own.requests().length).toBeGreaterThan(0);
+    for (const request of own.requests()) {
+      expect(request.url.startsWith("https://api.x.ai/v1/")).toBe(true);
+      expect(request.transport).toEqual(recorded.transport(CHILD));
+    }
+    // What falls through to the search chain stays on the sub-agent's transport too.
+    for (const request of globalFetch.requests()) {
+      expect(request.url.startsWith("https://api.x.ai/")).toBe(false);
+      expect(request.transport).toEqual(recorded.transport(CHILD));
+    }
+  });
+
+  it("sends a Grok session's native search through its own transport when its provider has no fetch of its own", async () => {
+    const globalFetch = recordingFetch();
+    vi.stubGlobal("fetch", globalFetch.fetchImpl);
+    const session = sessionOn(createProvider("grok", { apiKey: "xai-parent", model: "grok-4.6" }), PARENT);
+
+    await tool(session, "WebSearch").execute(dispatchedArgs({ query: "agenc" }, session, "native", "WebSearch"));
+
+    expect(globalFetch.requests().some((request) => request.url.startsWith("https://api.x.ai/v1/"))).toBe(true);
+    for (const request of globalFetch.requests()) expect(request.transport).toEqual(recorded.transport(PARENT));
+  });
 });
 
 describe("media transport", () => {

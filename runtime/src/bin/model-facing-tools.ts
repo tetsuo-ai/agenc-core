@@ -67,10 +67,12 @@ import { isXaiOauthBearer } from "../utils/xaiOauthCredentials.js";
 import {
   resolveToolCallAuthority,
   sessionXaiRoute,
+  type ToolCallAuthority,
   toolCallFetchOptions,
   type ToolCallAuthorityResolution,
   toolCallSession,
   type ToolCallSessionRef,
+  withToolCallTransport,
 } from "../tools/system/session-provider-authority.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -1098,6 +1100,12 @@ interface XaiToolBackend {
   readonly timeoutMs?: number;
 }
 
+/** A session provider's own fetch, when its factory options name one. */
+function providerFetch(provider: LLMProvider): typeof fetch | undefined {
+  const candidate = readProviderFactoryOptions(provider).extra?.fetchImpl;
+  return typeof candidate === "function" ? candidate as typeof fetch : undefined;
+}
+
 /**
  * Resolve the xAI service used by xAI-backed client tools independently from
  * the model that is running the main turn. A Meta/OpenAI/Anthropic session may
@@ -1205,6 +1213,7 @@ function buildGrokNativeWebSearchProvider(
   opts: ModelFacingToolOptions,
   session: Session | null,
   filters: WebSearchFilters,
+  authority: ToolCallAuthority,
 ): LLMProvider | undefined {
   const currentProvider = sessionLLMProvider(session);
   if (readProviderIdentity(currentProvider) !== "grok" || !currentProvider) {
@@ -1227,6 +1236,8 @@ function buildGrokNativeWebSearchProvider(
   );
   const extra: ProviderFactoryOptions["extra"] = {
     ...(factoryOptions.extra ?? {}),
+    // The session's own provider fetch, on the session's transport.
+    fetchImpl: withToolCallTransport(providerFetch(currentProvider) ?? fetch, authority),
     webSearch: true,
     searchMode: "on",
     ...(webSearchOptions !== undefined ? { webSearchOptions } : {}),
@@ -1279,11 +1290,12 @@ async function runGrokNativeWebSearch(
   query: string,
   maxResults: number,
   filters: WebSearchFilters,
+  authority: ToolCallAuthority,
 ): Promise<ToolResult | undefined> {
   // A Grok session searches with its own key, and a child of a Grok parent
   // never with the parent's.
   const session = invokingSession(opts, args);
-  const provider = buildGrokNativeWebSearchProvider(opts, session, filters);
+  const provider = buildGrokNativeWebSearchProvider(opts, session, filters, authority);
   if (!provider) return undefined;
   try {
     const response = await runAdmittedModelFacingCall(
@@ -4786,6 +4798,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           query,
           maxResults,
           filters,
+          authority,
         );
         if (nativeResult !== undefined) {
           return nativeResult;
