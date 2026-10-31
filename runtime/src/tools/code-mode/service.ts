@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import {
+  CODE_MODE_TURN_ENDED_ERROR,
   DEFAULT_EXEC_YIELD_TIME_MS,
   DEFAULT_WAIT_YIELD_TIME_MS,
   type CodeModeExecuteRequest,
@@ -44,6 +45,8 @@ interface PendingResponse {
 interface CodeModeCell {
   readonly cellId: string;
   readonly toolCallId: string;
+  /** The turn host of the session that started the cell, bound at exec. */
+  readonly host: CodeModeTurnHost | undefined;
   readonly worker: Worker;
   readonly startedAtMs: number;
   readonly abortController: AbortController;
@@ -57,12 +60,17 @@ export interface QuickJsCodeModeServiceOptions {
   readonly enabled?: boolean;
 }
 
-function quickJsAvailable(): boolean {
+/**
+ * The package entry, resolved from this module, so from the runtime's own
+ * install. A cell runs in an eval worker, which resolves a bare `require` from
+ * the process working directory; the daemon runs in AGENC_HOME, outside the
+ * install, so the worker loads the package by this absolute path instead.
+ */
+function quickJsModulePath(): string | undefined {
   try {
-    require.resolve("quickjs-emscripten");
-    return true;
+    return require.resolve("quickjs-emscripten");
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -101,15 +109,24 @@ function missingCellResponse(cellId: string): CodeModeRuntimeResponse {
 }
 
 export class QuickJsCodeModeService implements CodeModeService {
+  private readonly quickJsModule: string | undefined;
   private readonly available: boolean;
   private readonly active: boolean;
   private readonly cells = new Map<string, CodeModeCell>();
   private stored: Record<string, unknown> = {};
   private nextCell = 1;
-  private host: CodeModeTurnHost | null = null;
+  /**
+   * Attached turn hosts, oldest first; a host leaves when its turn ends. A
+   * parent and its sub-agents share this service, so a cell never follows
+   * whichever turn started last: it belongs to the turn host of the session
+   * that started it (`request.owner`), and its nested calls are refused once
+   * that turn has ended.
+   */
+  private readonly hosts: CodeModeTurnHost[] = [];
 
   constructor(opts: QuickJsCodeModeServiceOptions = {}) {
-    this.available = quickJsAvailable();
+    this.quickJsModule = quickJsModulePath();
+    this.available = this.quickJsModule !== undefined;
     this.active = shouldEnableCodeMode(opts) && this.available;
   }
 
@@ -134,13 +151,35 @@ export class QuickJsCodeModeService implements CodeModeService {
   }
 
   startTurnWorker(host: CodeModeTurnHost): CodeModeTurnWorker {
-    const previous = this.host;
-    this.host = host;
+    this.hosts.push(host);
     return {
       dispose: () => {
-        if (this.host === host) this.host = previous;
+        const index = this.hosts.lastIndexOf(host);
+        if (index >= 0) this.hosts.splice(index, 1);
+        // The turn ended: revoke its cells' dispatch authority, including
+        // nested calls still running or waiting on a permission check.
+        for (const cell of this.cells.values()) {
+          if (cell.host === host) cell.abortController.abort("code-mode turn ended");
+        }
       },
     };
+  }
+
+  /**
+   * The latest attached host of the session that starts a cell. A caller with
+   * no runtime context names no owner and gets the latest attached host.
+   */
+  private hostFor(owner: object | undefined): CodeModeTurnHost | undefined {
+    for (let index = this.hosts.length - 1; index >= 0; index -= 1) {
+      const host = this.hosts[index];
+      if (host !== undefined && (owner === undefined || host.owner === owner)) return host;
+    }
+    return undefined;
+  }
+
+  /** The cell's own host while its turn lasts; undefined once that turn ended. */
+  private attachedHost(cell: CodeModeCell): CodeModeTurnHost | undefined {
+    return cell.host !== undefined && this.hosts.includes(cell.host) ? cell.host : undefined;
   }
 
   async execute(
@@ -202,6 +241,7 @@ export class QuickJsCodeModeService implements CodeModeService {
     const worker = new Worker(QUICKJS_CODE_MODE_WORKER_SOURCE, {
       eval: true,
       workerData: {
+        quickJsModule: this.quickJsModule,
         cellId: request.cellId,
         toolCallId: request.toolCallId,
         enabledTools: request.enabledTools,
@@ -212,6 +252,7 @@ export class QuickJsCodeModeService implements CodeModeService {
     const cell: CodeModeCell = {
       cellId: request.cellId,
       toolCallId: request.toolCallId,
+      host: this.hostFor(request.owner),
       worker,
       startedAtMs: Date.now(),
       abortController: new AbortController(),
@@ -261,7 +302,7 @@ export class QuickJsCodeModeService implements CodeModeService {
         this.resolvePendingAsYielded(cell);
         return;
       case "notify":
-        void this.host?.notify?.({
+        void this.attachedHost(cell)?.notify?.({
           cellId: cell.cellId,
           callId: message.callId,
           text: message.text,
@@ -296,12 +337,12 @@ export class QuickJsCodeModeService implements CodeModeService {
     cell: CodeModeCell,
     call: CodeModeNestedToolCall,
   ): void {
-    const host = this.host;
+    const host = this.attachedHost(cell);
     if (!host) {
       cell.worker.postMessage({
         type: "tool_error",
         id: call.runtimeToolCallId,
-        error: "code mode nested tool host is not attached for this turn",
+        error: CODE_MODE_TURN_ENDED_ERROR,
       });
       return;
     }
