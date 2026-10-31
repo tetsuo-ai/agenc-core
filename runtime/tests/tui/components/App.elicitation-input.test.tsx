@@ -601,6 +601,46 @@ describe("elicitation controller", () => {
     }
   });
 
+  test("submitPending refuses an entry replaced by a field change or a validation error", async () => {
+    const { session, controller, shown } = installController();
+    try {
+      const form = track(
+        session.services.mcpElicitationResolver!.request(mcpProfileRequest()),
+      );
+      const nameField = shown()!;
+      expect(controller.submitPending(nameField, "Ada")).toBe(true);
+      const ageField = shown()!;
+      expect(ageField).toMatchObject({ kind: "mcp-form", index: 1 });
+      // A key bound to the name field must not answer the age field.
+      expect(controller.submitPending(nameField, "36")).toBe(false);
+      expect(shown()).toBe(ageField);
+
+      expect(controller.submitPending(ageField, "abc")).toBe(true);
+      const invalid = shown()!;
+      expect(invalid).toMatchObject({
+        kind: "mcp-form",
+        index: 1,
+        error: "age must be a number",
+      });
+      // Nor may the entry shown before the validation error.
+      expect(controller.submitPending(ageField, "36")).toBe(false);
+      expect(shown()).toBe(invalid);
+      await sleep(10);
+      expect(form.settled()).toBe(false);
+
+      expect(controller.submitPending(invalid, "36")).toBe(true);
+      await waitFor(() =>
+        expect(form.value()).toEqual({
+          action: "accept",
+          content: { name: "Ada", age: 36 },
+        }),
+      );
+      expect(shown()).toBeNull();
+    } finally {
+      controller.cleanup();
+    }
+  });
+
   test("a withdrawal after the first answer removes a multi-question request", async () => {
     const { session, controller, shown } = installController();
     try {
