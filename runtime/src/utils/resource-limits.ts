@@ -5,7 +5,9 @@
  * a Terminal-Bench task with a one-CPU cgroup quota saw 24 CPUs and ran 12 to
  * 24 training threads on one CPU. Linux states the real limits in cgroup v2
  * (`cpu.max`, `memory.max`) on the process's own cgroup and its ancestors, or
- * in the cgroup v1 controllers. The environment note carries them, and a
+ * in the cgroup v1 controllers on the process's path in each controller
+ * hierarchy and its ancestors (the controller root itself when a container
+ * mounts its own cgroup there). The environment note carries them, and a
  * session's end notice uses the cgroup `oom_kill` counter to tell an
  * out-of-memory kill from another SIGKILL.
  *
@@ -17,7 +19,7 @@
  * @module
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cpus, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -108,20 +110,66 @@ function minDefined(values: readonly (number | undefined)[]): number | undefined
   return defined.length === 0 ? undefined : Math.min(...defined);
 }
 
-/** cgroup v1: a quota of -1 or an unlimited memory value means no limit. */
-function cgroupV1Limits(root: string): { readonly cpu?: number; readonly memory?: number } {
-  const cpuDirectory = ["cpu,cpuacct", "cpu"]
-    .map((name) => join(root, name))
-    .find((path) => readText(join(path, "cpu.cfs_quota_us")) !== undefined);
-  let cpu: number | undefined;
-  if (cpuDirectory !== undefined) {
-    const quota = Number(readText(join(cpuDirectory, "cpu.cfs_quota_us"))?.trim());
-    const period = Number(readText(join(cpuDirectory, "cpu.cfs_period_us"))?.trim());
-    if (Number.isFinite(quota) && quota > 0 && Number.isFinite(period) && period > 0) {
-      cpu = quota / period;
-    }
+/** cgroup v1 memberships from /proc/self/cgroup (`id:controllers:path`): controller name to path. */
+function cgroupV1Memberships(options: CgroupReadOptions): Map<string, string> {
+  const memberships = new Map<string, string>();
+  const text = options.procSelfCgroup ?? readText("/proc/self/cgroup");
+  for (const line of text?.split(/\r?\n/u) ?? []) {
+    const match = /^\d+:([^:]*):(.*)$/u.exec(line.trim());
+    // The v2 line has no controllers; a named hierarchy (name=systemd) holds no limits.
+    if (match === null || match[1]!.length === 0) continue;
+    const path = match[2]!.trim();
+    if (!path.startsWith("/") || path.includes("\0")) continue;
+    for (const controller of match[1]!.split(",")) memberships.set(controller, path);
   }
-  const memory = parseMemoryMax(readText(join(root, "memory", "memory.limit_in_bytes")));
+  return memberships;
+}
+
+/**
+ * The v1 directories whose limits apply to this process for `controller`,
+ * leaf first: its path in the first mounted hierarchy among `mounts`, then
+ * each ancestor up to that hierarchy's root. A container that mounts its own
+ * cgroup as the root has no such path inside; the root is still on the list.
+ */
+function cgroupV1Directories(
+  root: string,
+  controller: string,
+  mounts: readonly string[],
+  memberships: ReadonlyMap<string, string>,
+): string[] {
+  const membership = memberships.get(controller);
+  for (const mount of mounts) {
+    const base = resolve(root, mount);
+    if (!existsSync(base)) continue;
+    const leaf = membership === undefined ? base : resolve(base, `.${membership}`);
+    if (leaf !== base && !leaf.startsWith(`${base}/`)) return [base];
+    return selfAndAncestors(leaf, base);
+  }
+  return [];
+}
+
+/** The v1 CPU hierarchy as mounted: the membership's own controller list first, then the usual names. */
+function cgroupV1CpuMounts(memberships: ReadonlyMap<string, string>, options: CgroupReadOptions): string[] {
+  const text = options.procSelfCgroup ?? readText("/proc/self/cgroup") ?? "";
+  const listed = /^\d+:([^:]*\bcpu\b[^:]*):/mu.exec(text)?.[1];
+  return [...new Set([...(listed !== undefined && memberships.has("cpu") ? [listed] : []), "cpu,cpuacct", "cpuacct,cpu", "cpu"])];
+}
+
+/**
+ * cgroup v1: the smallest CPU quota and memory limit on the process's path in
+ * each controller hierarchy and its ancestors. A quota of -1 or an unlimited
+ * memory value means no limit.
+ */
+function cgroupV1Limits(root: string, options: CgroupReadOptions): { readonly cpu?: number; readonly memory?: number } {
+  const memberships = cgroupV1Memberships(options);
+  const cpu = minDefined(cgroupV1Directories(root, "cpu", cgroupV1CpuMounts(memberships, options), memberships)
+    .map((directory) => {
+      const quota = Number(readText(join(directory, "cpu.cfs_quota_us"))?.trim());
+      const period = Number(readText(join(directory, "cpu.cfs_period_us"))?.trim());
+      return Number.isFinite(quota) && quota > 0 && Number.isFinite(period) && period > 0 ? quota / period : undefined;
+    }));
+  const memory = minDefined(cgroupV1Directories(root, "memory", ["memory"], memberships)
+    .map((directory) => parseMemoryMax(readText(join(directory, "memory.limit_in_bytes")))));
   return { ...(cpu !== undefined ? { cpu } : {}), ...(memory !== undefined ? { memory } : {}) };
 }
 
@@ -143,10 +191,12 @@ export function readResourceLimits(options: CgroupReadOptions = {}): ResourceLim
     const chain = selfAndAncestors(own, root);
     cpu = minDefined(chain.map((directory) => parseCpuMax(readText(join(directory, "cpu.max")))));
     memory = minDefined(chain.map((directory) => parseMemoryMax(readText(join(directory, "memory.max")))));
-  } else {
-    const v1 = cgroupV1Limits(root);
-    cpu = v1.cpu;
-    memory = v1.memory;
+  }
+  // cgroup v1, or a hybrid hierarchy whose v2 part has no CPU or memory controller.
+  if (cpu === undefined || memory === undefined) {
+    const v1 = cgroupV1Limits(root, options);
+    cpu ??= v1.cpu;
+    memory ??= v1.memory;
   }
   return {
     ...unlimited,
@@ -211,16 +261,26 @@ export function setResourceLimitsLineForTesting(line: string | null): void {
  * The cgroup's count of processes killed by the OOM killer: `oom_kill` in
  * cgroup v2 `memory.events` (hierarchical, so it covers every command's
  * private leaf below this process's cgroup), or in cgroup v1
- * `memory.oom_control`. Undefined when unknown (outside Linux, at the cgroup
- * v2 root, which has no memory.events, or on an older kernel).
+ * `memory.oom_control` of the process's own memory cgroup (the nearest
+ * directory on its path that exists, up to the hierarchy root). Undefined
+ * when unknown (outside Linux, at the cgroup v2 root, which has no
+ * memory.events, or on an older kernel).
  */
 export function readOomKillCount(options: CgroupReadOptions = {}): number | undefined {
   if ((options.platform ?? process.platform) !== "linux") return undefined;
   const root = resolve(options.cgroupRoot ?? DEFAULT_CGROUP_ROOT);
+  const parse = (text: string | undefined): number | undefined => {
+    const match = /(?:^|\n)oom_kill (\d+)(?:\n|$)/u.exec(text ?? "");
+    return match === null ? undefined : Number(match[1]);
+  };
   const own = ownCgroupV2Directory(options);
-  const text = own !== undefined
-    ? readText(join(own, "memory.events"))
-    : readText(join(root, "memory", "memory.oom_control"));
-  const match = /(?:^|\n)oom_kill (\d+)(?:\n|$)/u.exec(text ?? "");
-  return match === null ? undefined : Number(match[1]);
+  if (own !== undefined) {
+    const count = parse(readText(join(own, "memory.events")));
+    if (count !== undefined) return count;
+  }
+  for (const directory of cgroupV1Directories(root, "memory", ["memory"], cgroupV1Memberships(options))) {
+    const count = parse(readText(join(directory, "memory.oom_control")));
+    if (count !== undefined) return count;
+  }
+  return undefined;
 }

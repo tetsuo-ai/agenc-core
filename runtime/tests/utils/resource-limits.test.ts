@@ -86,14 +86,49 @@ describe("cgroup v2", () => {
 });
 
 describe("cgroup v1 and other platforms", () => {
-  test("reads the v1 CPU and memory controllers", () => {
+  const v1Membership = "12:memory:/docker/x\n4:cpu,cpuacct:/docker/x\n1:name=systemd:/docker/x\n";
+
+  test("reads the v1 controllers on the process's own path: the host view, limits on the leaf", () => {
+    write("cpu,cpuacct/cpu.cfs_quota_us", "-1\n");
+    write("cpu,cpuacct/cpu.cfs_period_us", "100000\n");
+    write("cpu,cpuacct/docker/x/cpu.cfs_quota_us", "100000\n");
+    write("cpu,cpuacct/docker/x/cpu.cfs_period_us", "100000\n");
+    write("memory/memory.limit_in_bytes", "9223372036854771712\n");
+    write("memory/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 0\n");
+    write("memory/docker/x/memory.limit_in_bytes", `${2 * GIB}\n`);
+    write("memory/docker/x/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 7\n");
+    const options = { ...host, cgroupRoot: root, procSelfCgroup: v1Membership };
+    expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 1, memoryLimitBytes: 2 * GIB });
+    expect(readOomKillCount(options)).toBe(7);
+  });
+
+  test("takes the strictest v1 limit on the path and its ancestors", () => {
+    write("cpu,cpuacct/docker/cpu.cfs_quota_us", "200000\n");
+    write("cpu,cpuacct/docker/cpu.cfs_period_us", "100000\n");
+    write("cpu,cpuacct/docker/x/cpu.cfs_quota_us", "-1\n");
+    write("cpu,cpuacct/docker/x/cpu.cfs_period_us", "100000\n");
+    write("memory/docker/memory.limit_in_bytes", `${8 * GIB}\n`);
+    write("memory/docker/x/memory.limit_in_bytes", `${3 * GIB}\n`);
+    expect(readResourceLimits({ ...host, cgroupRoot: root, procSelfCgroup: v1Membership }))
+      .toMatchObject({ cpuLimit: 2, memoryLimitBytes: 3 * GIB });
+  });
+
+  test("reads the controller root when it is the container's own cgroup (the path does not exist inside)", () => {
     write("cpu,cpuacct/cpu.cfs_quota_us", "200000\n");
     write("cpu,cpuacct/cpu.cfs_period_us", "100000\n");
     write("memory/memory.limit_in_bytes", `${2 * GIB}\n`);
     write("memory/memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 7\n");
-    const options = { ...host, cgroupRoot: root, procSelfCgroup: "4:memory:/docker/x\n" };
+    const options = { ...host, cgroupRoot: root, procSelfCgroup: v1Membership };
     expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 2, memoryLimitBytes: 2 * GIB });
     expect(readOomKillCount(options)).toBe(7);
+  });
+
+  test("falls back to the v1 controllers when the v2 path holds no limit (hybrid hierarchy)", () => {
+    write("cpu/docker/x/cpu.cfs_quota_us", "50000\n");
+    write("cpu/docker/x/cpu.cfs_period_us", "100000\n");
+    write("memory/docker/x/memory.limit_in_bytes", `${GIB}\n`);
+    const options = { ...host, cgroupRoot: root, procSelfCgroup: `${v1Membership.replace("cpu,cpuacct", "cpu")}0::/docker/x\n` };
+    expect(readResourceLimits(options)).toMatchObject({ cpuLimit: 0.5, memoryLimitBytes: GIB });
   });
 
   test("treats v1 unlimited values as no limit", () => {
