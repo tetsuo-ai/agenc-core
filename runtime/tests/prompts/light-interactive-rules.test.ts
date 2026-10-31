@@ -3,9 +3,9 @@
  * work the request did not need: a call before the change on tool versions, git status or history, one long patch
  * planned in full before anything was written, more general code than the request needed, and new edits and checks
  * after the requested checks had passed. Interactive Light heads now say to check those only when a step depends on
- * them, to write a large change as a few patches when they edit with apply_patch, to write the simplest code that
- * meets the request, and to stop reworking and rechecking once the checks pass. Unattended Light, standard mode and
- * the other providers' editing rules stay as they were.
+ * them, to write the simplest code that meets the request, and to stop reworking and rechecking once the checks
+ * pass; GPT sessions, which edit with apply_patch, write a large change as a few patches. DeepSeek keeps one patch per
+ * change. Unattended Light, standard mode and the other providers' editing rules stay as they were.
  */
 import { describe, expect, test } from "vitest";
 import type { Session } from "../../src/session/session.js";
@@ -42,19 +42,20 @@ async function head(
 
 describe("interactive Light working rules", () => {
   test.each([
-    ["deepseek", "deepseek-flash", true],
-    ["openai", "gpt-6-luna", true],
-    ["openrouter", "openai/gpt-6-luna", true],
-    ["anthropic", "claude-haiku-5-5", false],
-    ["openrouter", "z-ai/glm-5.3", false],
-  ])("the %s (%s) head checks versions and git state only when needed; apply_patch=%s", async (provider, model, applyPatch) => {
+    ["deepseek", "deepseek-flash", "one"],
+    ["openai", "gpt-6-luna", "few"],
+    ["openrouter", "openai/gpt-6-luna", "few"],
+    ["anthropic", "claude-haiku-5-5", "none"],
+    ["openrouter", "z-ai/glm-5.3", "none"],
+  ])("the %s (%s) head checks versions and git state only when needed; apply_patch patches: %s", async (provider, model, patches) => {
     const prompt = await head(provider, model);
     expect(count(prompt, LIGHT_DIRECT_START)).toBe(1);
     // The rule follows the instruction to search only for context the change needs.
     expect(prompt).toContain(`Search only for missing context needed for the change. ${LIGHT_DIRECT_START}`);
-    expect(count(prompt, LIGHT_PATCH_SIZE)).toBe(applyPatch ? 1 : 0);
-    expect(prompt).not.toContain(ONE_PATCH);
-    expect(prompt).not.toContain(SAME_PATCH);
+    // GPT writes a large change as a few patches; DeepSeek keeps one patch per change with source, tests and docs.
+    expect(count(prompt, LIGHT_PATCH_SIZE)).toBe(patches === "few" ? 1 : 0);
+    expect(count(prompt, ONE_PATCH)).toBe(patches === "one" ? 1 : 0);
+    expect(count(prompt, SAME_PATCH)).toBe(patches === "one" ? 1 : 0);
   });
 
   test("a custom output style keeps the head rules and replaces only the finish paragraph", async () => {

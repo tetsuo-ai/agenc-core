@@ -40,7 +40,10 @@ export const LIGHT_MISSING_CHECK_TOOLS =
  * versions, git status or git history; one long patch planned in full before anything was written; more general code
  * than the request needed; and new edits and checks after the requested checks had passed. The two finish
  * paragraphs carry the last two (LIGHT_FINISH, LIGHT_LIMITED_FINISH). General working principles, not task hints.
- * Unattended Light keeps its own rules: environment checks, one patch per change and the acceptance review.
+ * LIGHT_PATCH_SIZE goes to sessions without the task limits (GPT): DeepSeek sessions keep one patch per change,
+ * since on DeepSeek the other harnesses also wrote the whole change in one call and a split patch still began with
+ * the same long plan. Unattended Light keeps its own rules: environment checks, one patch per change and the
+ * acceptance review.
  */
 export const LIGHT_DIRECT_START = "Check tool versions, git status or history only when a step depends on them.";
 export const LIGHT_PATCH_SIZE =
@@ -99,7 +102,7 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * Edit and Write the editing rules live in those tools' descriptions ("Keep oldText short and
  * unique", "Create/replace complete files"); apply_patch's description has no batching rule, so
  * sessions that edit with apply_patch keep theirs here: a few patches for a large change in
- * interactive sessions (LIGHT_PATCH_SIZE), one patch per change in unattended ones. Greetings and
+ * interactive sessions without the task limits (LIGHT_PATCH_SIZE), one patch per change otherwise. Greetings and
  * questions about AgenC are answered without tools; the undo paths arrive with a message that asks
  * about them (prompts/attachments/product-help.ts).
  */
@@ -107,7 +110,7 @@ export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = 
   const start = nonInteractive ? "" : ` ${LIGHT_DIRECT_START}`;
   const editing = !editsWithApplyPatch
     ? ""
-    : !nonInteractive
+    : !nonInteractive && !statesTaskLimits
       ? ` ${LIGHT_PATCH_SIZE}`
       : " Edit and create files with apply_patch; put all hunks of one change in one patch." +
         (statesTaskLimits ? " When their contents are known, include the task's source, tests and requested documentation in the same patch." : "");
