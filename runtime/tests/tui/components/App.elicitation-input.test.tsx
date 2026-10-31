@@ -255,6 +255,39 @@ function mcpUrlRequest(): McpElicitationRequestEvent {
   } as McpElicitationRequestEvent;
 }
 
+/** A two-field form: a field change, then a validation error on `age`. */
+function mcpProfileRequest(requestId = "profile-request"): McpElicitationRequestEvent {
+  return {
+    turnId: "turn-1",
+    serverName: "profile",
+    requestId,
+    request: {
+      mode: "form",
+      message: "Create a profile",
+      requestedSchema: {
+        type: "object",
+        required: ["name", "age"],
+        properties: {
+          name: { type: "string", description: "Your name" },
+          age: { type: "integer", description: "Your age" },
+        },
+      },
+    },
+  };
+}
+
+function twoQuestions(): RequestUserInputEvent {
+  return {
+    turnId: "turn-1",
+    requestId: "two-request",
+    callId: "two-call",
+    questions: [
+      { id: "first", header: "First", question: "First question" },
+      { id: "second", header: "Second", question: "Second question" },
+    ],
+  };
+}
+
 function mcpOptionalFieldsRequest(): McpElicitationRequestEvent {
   return {
     turnId: "turn-1",
@@ -439,6 +472,39 @@ describe("elicitation request overlay input", () => {
       content: { second: "kept" },
     });
   });
+
+  test("a form withdrawn after a field change and a validation error leaves the screen", async () => {
+    const overlay = await mountOverlay();
+    const withdraw = new AbortController();
+    const form = overlay.session.services.mcpElicitationResolver!.request(
+      mcpProfileRequest(),
+      withdraw.signal,
+    );
+    await waitFor(() => expect(overlay.text()).toContain("Create a profile (name)"));
+    await overlay.send("Ada\r");
+    await waitFor(() => expect(overlay.text()).toContain("Create a profile (age)"));
+    await overlay.send("abc\r");
+    await waitFor(() =>
+      expect(overlay.text()).toContain("Invalid input: age must be a number"),
+    );
+
+    withdraw.abort("withdrawn");
+
+    await expect(form).resolves.toBeNull();
+    await waitFor(() => expect(overlay.text()).not.toContain("Create a profile"));
+    expect(overlay.submits).toEqual(["Ada", "abc"]);
+
+    // The next request shows and takes its answer as usual.
+    const next = overlay.session.services.mcpElicitationResolver!.request(
+      mcpNameRequest("after-withdrawal"),
+    );
+    await waitFor(() => expect(overlay.text()).toContain("Who is asking (name)"));
+    await overlay.send("Bo\r");
+    await expect(next).resolves.toEqual({
+      action: "accept",
+      content: { name: "Bo" },
+    });
+  });
 });
 
 describe("elicitation controller", () => {
@@ -462,6 +528,125 @@ describe("elicitation controller", () => {
       await sleep(10);
       expect(second.settled()).toBe(false);
       expect((pending as unknown as PendingElicitation).kind).toBe("mcp-url");
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  /** A controller and a reader for the request it shows. */
+  function installController(): {
+    readonly session: TestSession;
+    readonly controller: ReturnType<typeof installElicitationResolvers>;
+    readonly shown: () => PendingElicitation | null;
+  } {
+    const session: TestSession = { services: {}, subscribeToEvents: () => () => {} };
+    const state: { pending: PendingElicitation | null } = { pending: null };
+    const controller = installElicitationResolvers(session as never, (next) => {
+      state.pending = next;
+    });
+    return { session, controller, shown: () => state.pending };
+  }
+
+  test("a withdrawal after a field change removes the form and shows the next request", async () => {
+    const { session, controller, shown } = installController();
+    try {
+      const withdraw = new AbortController();
+      const form = session.services.mcpElicitationResolver!.request(
+        mcpProfileRequest(),
+        withdraw.signal,
+      );
+      const next = track(
+        session.services.mcpElicitationResolver!.request(mcpNameRequest("queued")),
+      );
+      expect(controller.submitPending(shown()!, "Ada")).toBe(true);
+      expect(shown()).toMatchObject({ kind: "mcp-form", index: 1 });
+
+      withdraw.abort("withdrawn");
+
+      await expect(form).resolves.toBeNull();
+      expect(shown()).toMatchObject({
+        kind: "mcp-form",
+        index: 0,
+        request: { requestId: "queued" },
+      });
+      await sleep(10);
+      expect(next.settled()).toBe(false);
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  test("a withdrawal after a validation error removes the form", async () => {
+    const { session, controller, shown } = installController();
+    try {
+      const withdraw = new AbortController();
+      const form = session.services.mcpElicitationResolver!.request(
+        mcpProfileRequest(),
+        withdraw.signal,
+      );
+      expect(controller.submitPending(shown()!, "Ada")).toBe(true);
+      expect(controller.submitPending(shown()!, "abc")).toBe(true);
+      expect(shown()).toMatchObject({
+        kind: "mcp-form",
+        index: 1,
+        error: "age must be a number",
+      });
+
+      withdraw.abort("withdrawn");
+
+      await expect(form).resolves.toBeNull();
+      expect(shown()).toBeNull();
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  test("a withdrawal after the first answer removes a multi-question request", async () => {
+    const { session, controller, shown } = installController();
+    try {
+      const withdraw = new AbortController();
+      const question = session.services.requestUserInputResolver!.request(
+        twoQuestions(),
+        withdraw.signal,
+      );
+      expect(controller.submitPending(shown()!, "first answer")).toBe(true);
+      expect(shown()).toMatchObject({ kind: "user", index: 1 });
+
+      withdraw.abort("withdrawn");
+
+      await expect(question).resolves.toBeNull();
+      expect(shown()).toBeNull();
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  test("a queued request withdrawn before it shows leaves the shown request alone", async () => {
+    const { session, controller, shown } = installController();
+    try {
+      const first = track(
+        session.services.mcpElicitationResolver!.request(mcpProfileRequest()),
+      );
+      const withdraw = new AbortController();
+      const queued = session.services.mcpElicitationResolver!.request(
+        mcpNameRequest("queued"),
+        withdraw.signal,
+      );
+      expect(controller.submitPending(shown()!, "Ada")).toBe(true);
+      const showing = shown();
+
+      withdraw.abort("withdrawn");
+
+      await expect(queued).resolves.toBeNull();
+      expect(shown()).toBe(showing);
+      expect(controller.submitPending(shown()!, "36")).toBe(true);
+      await waitFor(() =>
+        expect(first.value()).toEqual({
+          action: "accept",
+          content: { name: "Ada", age: 36 },
+        }),
+      );
+      expect(shown()).toBeNull();
     } finally {
       controller.cleanup();
     }

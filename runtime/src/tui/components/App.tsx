@@ -530,6 +530,7 @@ export interface ElicitationQueue {
   current(): PendingElicitation | null;
   enqueue(next: PendingElicitation): PendingElicitation;
   advance(next: PendingElicitation | null): PendingElicitation | null;
+  /** Removes `target`'s request, whichever question or field it shows now. */
   cancel(target: PendingElicitation): {
     readonly handled: boolean;
     readonly current: PendingElicitation | null;
@@ -802,6 +803,18 @@ export function parseMcpField(
     }
   }
 }
+/**
+ * Whether two queue entries are the same request. A field change or a
+ * validation error replaces the shown entry with a copy, so an entry kept from
+ * when the request arrived is not the shown object. Every copy keeps the
+ * `resolve` that the resolver made once for the request, so match on that.
+ */
+function isSameRequest(
+  entry: PendingElicitation,
+  target: PendingElicitation,
+): boolean {
+  return entry.kind === target.kind && entry.resolve === target.resolve;
+}
 export function createElicitationQueue(): ElicitationQueue {
   let active: PendingElicitation | null = null;
   const queued: PendingElicitation[] = [];
@@ -830,14 +843,16 @@ export function createElicitationQueue(): ElicitationQueue {
       return active;
     },
     cancel(target) {
-      if (active === target) {
+      if (active !== null && isSameRequest(active, target)) {
         active = queued.shift() ?? null;
         return {
           handled: true,
           current: active,
         };
       }
-      const queuedIndex = queued.indexOf(target);
+      const queuedIndex = queued.findIndex((pending) =>
+        isSameRequest(pending, target),
+      );
       if (queuedIndex === -1) {
         return {
           handled: false,

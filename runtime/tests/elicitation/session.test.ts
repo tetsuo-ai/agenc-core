@@ -515,6 +515,78 @@ describe("Session elicitation pending responders", () => {
     renderer.cleanup();
   });
 
+  it("closes a direct TUI MCP form aborted after a field change and a validation error", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
+    const prompts: Array<{ readonly kind?: unknown; readonly index?: unknown; readonly error?: unknown } | null> = [];
+    const renderer = installElicitationResolvers(session, (pending) => {
+      prompts.push(pending as (typeof prompts)[number]);
+    });
+    const serverCancel = new AbortController();
+    const pending = session.requestMcpElicitation(
+      "srv",
+      "mcp-1",
+      {
+        mode: "form",
+        message: "Create a profile",
+        requestedSchema: {
+          type: "object",
+          required: ["name", "age"],
+          properties: {
+            name: { type: "string" },
+            age: { type: "integer" },
+          },
+        },
+      },
+      serverCancel.signal,
+    );
+    await flush();
+    expect(renderer.submit("Ada")).toBe(true);
+    expect(renderer.submit("abc")).toBe(true);
+    expect(prompts.at(-1)).toMatchObject({ kind: "mcp-form", index: 1, error: "age must be a number" });
+
+    serverCancel.abort("server cancelled");
+
+    await expect(pending).resolves.toBeNull();
+    expect(prompts.at(-1)).toBeNull();
+    // The next request shows at once instead of waiting behind the dead form.
+    const next = session.requestMcpElicitation("srv", "mcp-2", FORM_REQUEST);
+    await flush();
+    expect(prompts.at(-1)).toMatchObject({ kind: "mcp-form", index: 0 });
+    expect(renderer.submit("AgenC")).toBe(true);
+    await expect(next).resolves.toEqual({ action: "accept", content: { name: "AgenC" } });
+    renderer.cleanup();
+  });
+
+  it("closes a direct TUI question aborted after its first answer", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
+    const prompts: Array<{ readonly kind?: unknown; readonly index?: unknown } | null> = [];
+    const renderer = installElicitationResolvers(session, (pending) => {
+      prompts.push(pending as (typeof prompts)[number]);
+    });
+    const toolCall = new AbortController();
+    const pending = session.requestUserInput(
+      "call-1",
+      {
+        questions: [
+          { id: "first", header: "First", question: "First?", isOther: true, isSecret: false },
+          { id: "second", header: "Second", question: "Second?", isOther: true, isSecret: false },
+        ],
+      },
+      toolCall.signal,
+    );
+    await flush();
+    expect(renderer.submit("one")).toBe(true);
+    expect(prompts.at(-1)).toMatchObject({ kind: "user", index: 1 });
+
+    toolCall.abort("interrupted");
+
+    await expect(pending).resolves.toBeNull();
+    expect(prompts.at(-1)).toBeNull();
+    renderer.cleanup();
+  });
+
   it("cleans up user-input waits on abort", async () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
