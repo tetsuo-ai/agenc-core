@@ -1,6 +1,7 @@
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { validationErrorToolResult } from "../results.js";
+import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   buildExecToolDescription,
   buildWaitToolDescription,
@@ -178,6 +179,8 @@ async function executeCodeMode(
       error instanceof Error ? error.message : String(error),
     );
   }
+  // The session whose tool call runs exec owns the cell (see service.ts).
+  const owner = readToolRuntimeContext(args)?.invocation.session;
   const response = await service.execute({
     cellId: service.allocateCellId(),
     toolCallId: callId(args),
@@ -188,6 +191,7 @@ async function executeCodeMode(
     storedValues: await service.storedValues(),
     yieldTimeMs: parsed.yieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS,
     maxOutputTokens: parsed.maxOutputTokens,
+    ...(owner !== undefined ? { owner } : {}),
   });
   return codeModeRuntimeResponseToToolResult(response, {
     maxOutputTokens: parsed.maxOutputTokens,

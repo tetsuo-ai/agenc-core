@@ -497,7 +497,7 @@ prefix once instead of the tool catalog of every request.
 | Name | Notes |
 | --- | --- |
 | `StructuredOutput` | Schema-bound when session has `outputSchema`; otherwise deferred passthrough |
-| `exec` | Code-mode JS exec. Registered only when `AGENC_CODE_MODE` is `1`/`true`/`on` **and** `quickjs-emscripten` loads. Then advertised. Not deferred-discoverable when off. REPL is gone. |
+| `exec` | Code-mode JS exec. Registered only when `AGENC_CODE_MODE` is `1`/`true`/`on` **and** `quickjs-emscripten` loads (from the runtime install, whatever the daemon's working directory). Then advertised. Not deferred-discoverable when off. REPL is gone. A script's nested tool calls run in the session and turn that started it, never in another session's turn (a parent and its sub-agents share the code-mode runtime), and are refused once that turn has ended. Sub-agent scripts cannot run nested tools yet. |
 | `wait` | Code-mode wait (same enablement as `exec`) |
 
 ### Default-visible vs deferred (high level)

@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { QuickJsCodeModeService } from "./service.js";
 import { codeModeRuntimeResponseToToolResult } from "./tools.js";
-import type { CodeModeExecuteRequest } from "./types.js";
+import { startCodeModeTurnWorker, type CodeModeWorkerSession } from "./turn-host.js";
+import type { CodeModeExecuteRequest, CodeModeTurnHost } from "./types.js";
 
 let services: QuickJsCodeModeService[] = [];
 
@@ -162,5 +163,115 @@ describe("QuickJsCodeModeService outside the runtime install", () => {
       process.chdir(previous);
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Fxu-6 (job xu): a parent and its sub-agents share one service. Each nested
+ * call went to the turn that started last, so a script's call could run in
+ * another session, and ending turns in a different order brought back a host
+ * whose turn had ended. A cell now belongs to the turn host of the session that
+ * started it and is refused once that turn has ended.
+ */
+describe("QuickJsCodeModeService turn hosts", () => {
+  const PROBE = [{ name: "probe", globalName: "probe", description: "Probe.", kind: "function" as const, inputSchema: { type: "object" } }];
+  const PROBE_LATER =
+    "await new Promise((resolve) => setTimeout(resolve, 100));\n" +
+    'try { text(await tools.probe({})); } catch (error) { text("refused: " + String(error)); }';
+
+  function recordingHost(name: string, owner: object, seen: string[]): CodeModeTurnHost {
+    return { owner, invokeTool: async (call) => { seen.push(`${name}:${call.toolName}`); return `${name} served`; } } as CodeModeTurnHost;
+  }
+
+  async function startCell(service: QuickJsCodeModeService, owner: object, source = PROBE_LATER) {
+    const started = await service.execute({
+      ...(await request(service, source, { enabledTools: PROBE, yieldTimeMs: 10 })),
+      owner,
+    } as CodeModeExecuteRequest);
+    expect(started.type).toBe("yielded");
+    return started;
+  }
+
+  test("serves a cell's nested call from the turn of the session that started it, though another session's turn started later", async () => {
+    const service = makeService();
+    const parent = {};
+    const child = {};
+    const seen: string[] = [];
+    const parentTurn = service.startTurnWorker(recordingHost("parent", parent, seen));
+    const started = await startCell(service, parent);
+    const childTurn = service.startTurnWorker(recordingHost("child", child, seen));
+    const done = await service.wait({ cellId: started.cellId, yieldTimeMs: 5_000 });
+    childTurn.dispose();
+    parentTurn.dispose();
+
+    expect(seen).toEqual(["parent:probe"]);
+    expect(done.contentItems).toEqual([{ type: "input_text", text: "parent served" }]);
+  });
+
+  test.each([["the same session's next turn", true], ["another session's turn", false]] as const)(
+    "refuses a cell's nested call once the turn that started it has ended, with %s attached",
+    async (_label, sameSession) => {
+      const service = makeService();
+      const owner = {};
+      const seen: string[] = [];
+      const firstTurn = service.startTurnWorker(recordingHost("first", owner, seen));
+      const started = await startCell(service, owner);
+      firstTurn.dispose();
+      const otherTurn = service.startTurnWorker(recordingHost("other", sameSession ? owner : {}, seen));
+      const done = await service.wait({ cellId: started.cellId, yieldTimeMs: 5_000 });
+      otherTurn.dispose();
+
+      expect(seen).toEqual([]);
+      expect(done.contentItems).toEqual([{ type: "input_text", text: expect.stringContaining("refused") }]);
+    },
+  );
+
+  test("does not bring back a turn host after the turns end in another order", async () => {
+    const service = makeService();
+    const seen: string[] = [];
+    const turnA = service.startTurnWorker(recordingHost("A", {}, seen));
+    const turnB = service.startTurnWorker(recordingHost("B", {}, seen));
+    turnA.dispose();
+    turnB.dispose();
+    const response = await service.execute(await request(service,
+      'try { text(await tools.probe({})); } catch (error) { text("refused: " + String(error)); }',
+      { enabledTools: PROBE, yieldTimeMs: 5_000 }));
+
+    expect(seen).toEqual([]);
+    expect(response.contentItems).toEqual([{ type: "input_text", text: expect.stringContaining("refused") }]);
+  });
+
+  test("a parent's script keeps its nested calls in the parent while a sub-agent's turn runs", async () => {
+    const service = makeService();
+    const dispatched: string[] = [];
+    const session = (name: string, nestedDispatch: boolean): CodeModeWorkerSession => ({
+      services: {
+        codeModeService: service,
+        registry: {
+          dispatch: async () => ({ content: "", isError: false }),
+          // A sub-agent's filtered registry has no nested dispatch (Fxu-5).
+          ...(nestedDispatch ? {
+            dispatchCodeModeNestedTool: async (call: { readonly name: string }) => {
+              dispatched.push(`${name}:${call.name}`);
+              return { content: JSON.stringify(`${name} served`), isError: false };
+            },
+          } : {}),
+        },
+      },
+      nextInternalSubId: () => "sub",
+      emit: () => {},
+    }) as unknown as CodeModeWorkerSession;
+    const parent = session("parent", true);
+    const child = session("child", false);
+    const parentTurn = startCodeModeTurnWorker(parent);
+    // The exec tool names the session whose tool call starts the cell.
+    const started = await startCell(service, parent);
+    const childTurn = startCodeModeTurnWorker(child);
+    const done = await service.wait({ cellId: started.cellId, yieldTimeMs: 5_000 });
+    childTurn.dispose();
+    parentTurn.dispose();
+
+    expect(dispatched).toEqual(["parent:probe"]);
+    expect(done.contentItems).toEqual([{ type: "input_text", text: "parent served" }]);
   });
 });

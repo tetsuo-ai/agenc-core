@@ -26,6 +26,11 @@ export interface CodeModeExecuteRequest {
   readonly storedValues: Readonly<Record<string, unknown>>;
   readonly yieldTimeMs?: number;
   readonly maxOutputTokens?: number;
+  /**
+   * The session whose tool call starts the cell. Its nested calls go only to
+   * that session's turn host, and are refused once that turn has ended.
+   */
+  readonly owner?: object;
 }
 
 export interface CodeModeWaitRequest {
@@ -65,6 +70,8 @@ export interface CodeModeNestedToolCall {
 }
 
 export interface CodeModeTurnHost {
+  /** The session whose turn this host serves. */
+  readonly owner?: object;
   readonly invokeTool: (
     call: CodeModeNestedToolCall,
     signal: AbortSignal,

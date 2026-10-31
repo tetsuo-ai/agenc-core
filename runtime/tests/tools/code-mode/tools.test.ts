@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { createCodeModeTools } from "./tools.js";
 import { QuickJsCodeModeService } from "./service.js";
+import type { CodeModeExecuteRequest, CodeModeService } from "./types.js";
+import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
 import type { Tool } from "../types.js";
 
 describe("code-mode tools", () => {
@@ -79,5 +81,34 @@ describe("code-mode tools", () => {
       expect(String(result.content)).toContain("code must be a string");
       expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
     }
+  });
+});
+
+describe("code-mode exec ownership", () => {
+  test("exec names the session whose tool call starts the cell (Fxu-6)", async () => {
+    const requests: CodeModeExecuteRequest[] = [];
+    const service: CodeModeService = {
+      enabled: () => true,
+      storedValues: async () => ({}),
+      replaceStoredValues: async () => {},
+      allocateCellId: () => "1",
+      execute: async (request) => {
+        requests.push(request);
+        return { type: "result", cellId: request.cellId, contentItems: [], storedValues: {}, durationMs: 0 };
+      },
+      wait: async (request) => ({ type: "terminated", cellId: request.cellId, contentItems: [], durationMs: 0 }),
+      startTurnWorker: () => ({ dispose: () => {} }),
+    };
+    const [exec] = createCodeModeTools({ service, getEnabledTools: () => [] });
+    const session = { conversationId: "session-that-called-exec" };
+    const args: Record<string, unknown> = { code: 'text("x")' };
+    attachToolRuntimeContext(args, {
+      callId: "call-1", toolName: "exec", sandboxMode: "danger-full-access",
+      invocation: { session },
+    } as never);
+    await exec!.execute(args);
+
+    expect(requests).toHaveLength(1);
+    expect((requests[0] as { readonly owner?: unknown }).owner).toBe(session);
   });
 });

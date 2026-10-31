@@ -44,6 +44,8 @@ interface PendingResponse {
 interface CodeModeCell {
   readonly cellId: string;
   readonly toolCallId: string;
+  /** The turn host of the session that started the cell, bound at exec. */
+  readonly host: CodeModeTurnHost | undefined;
   readonly worker: Worker;
   readonly startedAtMs: number;
   readonly abortController: AbortController;
@@ -112,7 +114,14 @@ export class QuickJsCodeModeService implements CodeModeService {
   private readonly cells = new Map<string, CodeModeCell>();
   private stored: Record<string, unknown> = {};
   private nextCell = 1;
-  private host: CodeModeTurnHost | null = null;
+  /**
+   * Attached turn hosts, oldest first; a host leaves when its turn ends. A
+   * parent and its sub-agents share this service, so a cell never follows
+   * whichever turn started last: it belongs to the turn host of the session
+   * that started it (`request.owner`), and its nested calls are refused once
+   * that turn has ended.
+   */
+  private readonly hosts: CodeModeTurnHost[] = [];
 
   constructor(opts: QuickJsCodeModeServiceOptions = {}) {
     this.quickJsModule = quickJsModulePath();
@@ -141,13 +150,30 @@ export class QuickJsCodeModeService implements CodeModeService {
   }
 
   startTurnWorker(host: CodeModeTurnHost): CodeModeTurnWorker {
-    const previous = this.host;
-    this.host = host;
+    this.hosts.push(host);
     return {
       dispose: () => {
-        if (this.host === host) this.host = previous;
+        const index = this.hosts.lastIndexOf(host);
+        if (index >= 0) this.hosts.splice(index, 1);
       },
     };
+  }
+
+  /**
+   * The latest attached host of the session that starts a cell. A caller with
+   * no runtime context names no owner and gets the latest attached host.
+   */
+  private hostFor(owner: object | undefined): CodeModeTurnHost | undefined {
+    for (let index = this.hosts.length - 1; index >= 0; index -= 1) {
+      const host = this.hosts[index];
+      if (host !== undefined && (owner === undefined || host.owner === owner)) return host;
+    }
+    return undefined;
+  }
+
+  /** The cell's own host while its turn lasts; undefined once that turn ended. */
+  private attachedHost(cell: CodeModeCell): CodeModeTurnHost | undefined {
+    return cell.host !== undefined && this.hosts.includes(cell.host) ? cell.host : undefined;
   }
 
   async execute(
@@ -220,6 +246,7 @@ export class QuickJsCodeModeService implements CodeModeService {
     const cell: CodeModeCell = {
       cellId: request.cellId,
       toolCallId: request.toolCallId,
+      host: this.hostFor(request.owner),
       worker,
       startedAtMs: Date.now(),
       abortController: new AbortController(),
@@ -269,7 +296,7 @@ export class QuickJsCodeModeService implements CodeModeService {
         this.resolvePendingAsYielded(cell);
         return;
       case "notify":
-        void this.host?.notify?.({
+        void this.attachedHost(cell)?.notify?.({
           cellId: cell.cellId,
           callId: message.callId,
           text: message.text,
@@ -304,7 +331,7 @@ export class QuickJsCodeModeService implements CodeModeService {
     cell: CodeModeCell,
     call: CodeModeNestedToolCall,
   ): void {
-    const host = this.host;
+    const host = this.attachedHost(cell);
     if (!host) {
       cell.worker.postMessage({
         type: "tool_error",

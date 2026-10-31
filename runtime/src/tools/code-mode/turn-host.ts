@@ -124,6 +124,9 @@ export function startCodeModeTurnWorker(
   }
 
   return codeModeService.startTurnWorker({
+    // A parent and its sub-agents share the service; a cell's nested calls
+    // stay in the session that started it.
+    owner: session,
     invokeTool: (call: CodeModeNestedToolCall, signal: AbortSignal) =>
       invokeNestedCodeModeTool(session, call, signal),
     notify: ({ callId, text }) => {
