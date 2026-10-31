@@ -385,4 +385,27 @@ describe("unified exec after a killed command whose process exits late", () => {
       await manager.closeAll().catch(() => {});
     }
   }, 30_000);
+
+  it("stops the background sessions when it pauses, and none of them gets an end notice", async () => {
+    // The pause asked for those stops, as kill_process or session end does;
+    // an end notice is only for a session that ended on its own.
+    const manager = pausingManager();
+    try {
+      const yielded = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250 });
+      const started = await manager.execCommand({ cmd: "sleep 30", yield_time_ms: 250, startInBackground: true });
+      const passedLimit = await manager.execCommand({
+        cmd: "sleep 30", yield_time_ms: 5_000, timeoutMs: 300, onTimeout: "background",
+      });
+      expect(passedLimit.timeout_backgrounded_ms).toBe(300);
+      const sessions = [yielded.session_id!, started.session_id!, passedLimit.session_id!];
+      expect(sessions).toEqual([expect.any(Number), expect.any(Number), expect.any(Number)]);
+      await pauseWithStuckCommand(manager);
+      for (const sessionId of sessions) {
+        await waitUntil(() => settled(manager, sessionId), `background session ${sessionId} to stop`);
+      }
+      expect(manager.takeSessionEndNotices({})).toEqual([]);
+    } finally {
+      await manager.closeAll().catch(() => {});
+    }
+  }, 30_000);
 });
