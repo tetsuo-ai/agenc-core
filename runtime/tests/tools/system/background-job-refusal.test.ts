@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   findUnwaitedBackgroundJob,
   isPosixShell,
-  maskShellStructure,
+  parseShellStructure,
   unwaitedBackgroundJobMessage,
 } from "../../../src/tools/system/background-job-refusal.js";
 
@@ -65,6 +65,47 @@ describe("allowed", () => {
   });
 });
 
+// A job can outlive the exec_command call from a subshell or a brace group
+// too; one inside a process or command substitution whose output still feeds
+// that substitution is waited for (the reader needs its end of file).
+describe("nested jobs", () => {
+  test.each([
+    ["(sleep 30 &)", "trailing"],
+    ["{ sleep 30 & }", "trailing"],
+    ["(sleep 30 &); echo started", "trailing"],
+    ["( nohup ./server > log 2>&1 & )", "nohup"],
+    ["{ nohup ./server > log 2>&1 & }; sleep 1; echo up", "nohup"],
+    ["cd /app && (setsid python3 app.py > app.log 2>&1 &) ; sleep 0.2; echo started", "setsid"],
+    // A job in a substitution whose output goes elsewhere outlives the call.
+    ["pid=$(nohup python3 app.py > app.log 2>&1 & echo $!); echo $pid", "nohup"],
+    ["PID=\"$(sleep 30 > /dev/null 2>&1 & echo $!)\"; echo started", "trailing"],
+  ] as const)("refused: %s", (cmd, kind) => {
+    expect(findUnwaitedBackgroundJob(cmd)?.kind).toBe(kind);
+  });
+
+  test.each([
+    "cat <(nohup printf hello &)",
+    "diff <(sort a.txt &) <(sort b.txt)",
+    "x=$(sleep 1 & echo hi); echo $x",
+    "out=\"$(make 2>&1 & wait)\"",
+    "(server & sleep 1; curl -sf localhost:8000; kill $!)",
+    "(a & b & wait)",
+    "{ a & b & wait; }",
+    "{ sleep 30 & }; wait",
+    "(server &); sleep 1; curl -sf localhost:8000",
+  ])("allowed: %s", (cmd) => {
+    expect(findUnwaitedBackgroundJob(cmd)).toBeUndefined();
+  });
+
+  test.each([
+    "(sleep 30 &",
+    "{ sleep 30 &",
+    "echo $(sleep 30 &",
+  ])("never refuses an unbalanced group: %s", (cmd) => {
+    expect(findUnwaitedBackgroundJob(cmd)).toBeUndefined();
+  });
+});
+
 describe("here-strings", () => {
   test.each([
     ["cat <<< \"hello\"; sleep 30 &", "trailing"],
@@ -84,13 +125,29 @@ describe("here-strings", () => {
   });
 });
 
-test("masks quoted text, substitutions and here-document bodies at the same length", () => {
+describe("shell forms with parentheses or braces that hold no job", () => {
+  test.each([
+    "f() { echo hi; }; f",
+    "arr=(a b c); echo ${arr[@]}",
+    "find . -name x -exec rm {} \\;",
+    "case \"$1\" in start) echo s ;; *) echo d ;; esac",
+    "( case $x in a) echo a ;; (b) echo b ;; esac )",
+    "for ((i=0; i<3; i++)); do echo $i; done",
+    "echo {a,b}.txt && ls",
+  ])("%s", (cmd) => {
+    expect(findUnwaitedBackgroundJob(cmd)).toBeUndefined();
+  });
+});
+
+test("masks quoted text, comments and here-document bodies at the same length and records the groups", () => {
   const cmd = "cat > e.py <<'EOF'\nx & y\nEOF\necho \"a&b\" $(c &) # d &\nnohup p &";
-  const masked = maskShellStructure(cmd)!;
-  expect(masked).toHaveLength(cmd.length);
-  expect(masked.slice(masked.lastIndexOf("\n") + 1)).toBe("nohup p &");
-  expect(masked.split("\n")[1]).toBe("xxxxx");
-  expect(masked).not.toMatch(/a&b|c &|d &/u);
+  const parsed = parseShellStructure(cmd)!;
+  expect(parsed.masked).toHaveLength(cmd.length);
+  expect(parsed.masked.slice(parsed.masked.lastIndexOf("\n") + 1)).toBe("nohup p &");
+  expect(parsed.masked.split("\n")[1]).toBe("xxxxx");
+  expect(parsed.masked).not.toMatch(/a&b|d &/u);
+  expect(parsed.groups.map((group) => [group.kind, cmd.slice(group.start, group.end)]))
+    .toEqual([["command-substitution", "c &"]]);
 });
 
 test("scans POSIX shells only", () => {

@@ -12,17 +12,24 @@
  * tracked session (polled with write_stdin, stopped with kill_process,
  * reported when it ends, stopped at session end).
  *
- * Only these explicit forms are refused. A job the command waits for
- * (`a & b & wait`) or stops itself (`server & ...; kill $!`), and the
- * server-check pattern `server & sleep 1; curl ...` that relies on the
- * automatic cleanup, still run. Helper processes a command forks (browsers,
- * worker pools, daemons) are not visible here; the containment stops them
- * when the command returns and the result says so, as before.
+ * Only these explicit forms are refused, wherever the job sits: at the top
+ * level, in a subshell `( ... )` or in a brace group `{ ...; }`, which can
+ * all leave a job behind when the command returns. A job inside a command or
+ * process substitution whose output still feeds that substitution is waited
+ * for (its reader needs the end of file) and runs; one that sends its output
+ * elsewhere (`$(nohup srv > log 2>&1 & echo $!)`) can outlive the command
+ * and is judged like any other. A job the command waits for (`a & b & wait`)
+ * or stops itself (`server & ...; kill $!`), and the server-check pattern
+ * `server & sleep 1; curl ...` that relies on the automatic cleanup, still
+ * run. Helper processes a command forks (browsers, worker pools, daemons) are
+ * not visible here; the containment stops them when the command returns and
+ * the result says so, as before.
  *
- * The scan is conservative: quotes, `$(...)`, backticks, comments and
- * here-document bodies are masked first, here-strings (`<<<`) are read as
- * one operator, and anything it cannot parse (an unterminated quote or
- * here-document) is never refused.
+ * The scan is conservative: quotes, comments, here-document bodies, `${...}`
+ * and arithmetic are masked first, here-strings (`<<<`) are read as one
+ * operator, and anything it cannot parse (an unterminated quote, group or
+ * here-document) is never refused. When a form is unclear, the job runs and
+ * the cleanup stops it, as before.
  *
  * @module
  */
@@ -45,76 +52,142 @@ export interface UnwaitedBackgroundJob {
   readonly job: string;
 }
 
+export type ShellGroupKind = "subshell" | "brace" | "command-substitution" | "process-substitution" | "other";
+
+/** A parenthesized, braced or substituted region of a command. */
+export interface ShellGroup {
+  readonly kind: ShellGroupKind;
+  /** Index of the opening delimiter: `(`, `{`, the `$` of `$(`, the `<` or `>` of `<(`/`>(`, or a backtick. */
+  readonly open: number;
+  /** First character of the content. */
+  readonly start: number;
+  /** End (exclusive) of the content: the index of the closing delimiter. */
+  end: number;
+  /** The innermost group around this one; undefined at the top level. */
+  readonly parent: ShellGroup | undefined;
+}
+
+export interface ShellStructure {
+  /**
+   * The command with every region that cannot hold shell structure (quoted
+   * text, comments, here-document bodies, `${...}`, arithmetic) replaced by
+   * `x` (comments by spaces), same length as the input. Group delimiters stay.
+   */
+  readonly masked: string;
+  /** Every group, in the order it opens. */
+  readonly groups: readonly ShellGroup[];
+}
+
+type Frame =
+  | { readonly kind: "double" }
+  | { readonly kind: "group"; readonly group: ShellGroup; readonly closer: ")" | "}" | "`" }
+  | { readonly kind: "case"; sawIn: boolean; expectPattern: boolean };
+
+/** Words after which the next word is in command position. */
+const COMMAND_PREFIX_WORDS: ReadonlySet<string> = new Set(["then", "do", "else", "elif", "if", "while", "until", "time"]);
+
 /**
- * The command with every region that cannot hold shell structure (quoted
- * text, substitutions, comments, here-document bodies) replaced by `x`,
- * same length as the input; undefined when a region never closes.
+ * The command's structure, or undefined when a quote, group or here-document
+ * never closes (the command is then never refused).
  */
-export function maskShellStructure(cmd: string): string | undefined {
+export function parseShellStructure(cmd: string): ShellStructure | undefined {
   const out = cmd.split("");
   const mask = (from: number, to: number, fill = "x"): void => {
-    for (let index = from; index < to; index += 1) out[index] = fill;
+    for (let index = from; index < to && index < out.length; index += 1) out[index] = fill;
   };
+  const groups: ShellGroup[] = [];
+  const stack: Frame[] = [];
   const pendingHeredocs: { readonly delimiter: string; readonly stripTabs: boolean }[] = [];
-  let index = 0;
-  const atWordStart = (at: number): boolean => at === 0 || /[\s;&|()<>]/u.test(cmd[at - 1]!);
 
-  /** End (exclusive) of a balanced `$(`/`(` region starting at `open`, skipping quotes inside. */
+  const innermostGroup = (): ShellGroup | undefined => {
+    for (let index = stack.length - 1; index >= 0; index -= 1) {
+      const frame = stack[index]!;
+      if (frame.kind === "group") return frame.group;
+    }
+    return undefined;
+  };
+  const openGroup = (kind: ShellGroupKind, open: number, start: number, closer: ")" | "}" | "`"): void => {
+    const group: ShellGroup = { kind, open, start, end: -1, parent: innermostGroup() };
+    groups.push(group);
+    stack.push({ kind: "group", group, closer });
+  };
+  /** At the start of a command: after a separator, an opener, a reserved word, or at the start of its group. */
+  const atCommandPosition = (at: number): boolean => {
+    const floor = innermostGroup()?.start ?? 0;
+    let before = at - 1;
+    while (before >= floor && (out[before] === " " || out[before] === "\t")) before -= 1;
+    if (before < floor) return true;
+    if (";&|(){}\n!".includes(out[before]!)) return true;
+    let wordStart = before;
+    while (wordStart >= floor && /[a-z]/u.test(out[wordStart]!)) wordStart -= 1;
+    if (wordStart >= floor && !/[\s;&|(){}]/u.test(out[wordStart]!)) return false;
+    return COMMAND_PREFIX_WORDS.has(out.slice(wordStart + 1, before + 1).join(""));
+  };
+  const atWordStart = (at: number): boolean => at === 0 || /[\s;&|()<>{}]/u.test(cmd[at - 1]!);
+  const previousWord = (at: number): string => {
+    let end = at - 1;
+    while (end >= 0 && (cmd[end] === " " || cmd[end] === "\t")) end -= 1;
+    let start = end;
+    while (start >= 0 && /[a-z]/u.test(cmd[start]!)) start -= 1;
+    return cmd.slice(start + 1, end + 1);
+  };
+  /** End (exclusive) of the balanced parentheses opening at `open`. */
   const skipParens = (open: number): number | undefined => {
     let depth = 0;
     for (let at = open; at < cmd.length; at += 1) {
-      const ch = cmd[at]!;
-      if (ch === "\\") { at += 1; continue; }
-      if (ch === "'") {
-        const close = cmd.indexOf("'", at + 1);
-        if (close < 0) return undefined;
-        at = close;
-        continue;
-      }
-      if (ch === "\"") {
-        const close = skipDoubleQuoted(at);
-        if (close === undefined) return undefined;
-        at = close - 1;
-        continue;
-      }
-      if (ch === "(") depth += 1;
-      else if (ch === ")") {
+      if (cmd[at] === "\\") { at += 1; continue; }
+      if (cmd[at] === "(") depth += 1;
+      else if (cmd[at] === ")") {
         depth -= 1;
         if (depth === 0) return at + 1;
       }
     }
     return undefined;
   };
-  /** End (exclusive) of a double-quoted string starting at `open`. */
-  const skipDoubleQuoted = (open: number): number | undefined => {
-    for (let at = open + 1; at < cmd.length; at += 1) {
-      const ch = cmd[at]!;
-      if (ch === "\\") { at += 1; continue; }
-      if (ch === "\"") return at + 1;
-      if (ch === "$" && cmd[at + 1] === "(") {
-        const end = skipParens(at + 1);
-        if (end === undefined) return undefined;
-        at = end - 1;
-        continue;
-      }
-      if (ch === "`") {
-        const end = skipBacktick(at);
-        if (end === undefined) return undefined;
-        at = end - 1;
-      }
-    }
-    return undefined;
-  };
-  const skipBacktick = (open: number): number | undefined => {
-    for (let at = open + 1; at < cmd.length; at += 1) {
+  /** End (exclusive) of the balanced braces opening at `open`. */
+  const skipBraces = (open: number): number | undefined => {
+    let depth = 0;
+    for (let at = open; at < cmd.length; at += 1) {
       if (cmd[at] === "\\") { at += 1; continue; }
-      if (cmd[at] === "`") return at + 1;
+      if (cmd[at] === "{") depth += 1;
+      else if (cmd[at] === "}") {
+        depth -= 1;
+        if (depth === 0) return at + 1;
+      }
     }
     return undefined;
   };
 
+  let index = 0;
   while (index < cmd.length) {
     const ch = cmd[index]!;
+    const frame = stack[stack.length - 1];
+
+    if (frame?.kind === "double") {
+      // Inside double quotes only substitutions are structure.
+      if (ch === "\\") { mask(index, index + 2); index += 2; continue; }
+      if (ch === "\"") { mask(index, index + 1); stack.pop(); index += 1; continue; }
+      if (ch === "$" && cmd[index + 1] === "(" && cmd[index + 2] === "(") {
+        const end = skipParens(index + 1);
+        if (end === undefined) return undefined;
+        mask(index, end);
+        index = end;
+        continue;
+      }
+      if (ch === "$" && cmd[index + 1] === "(") { openGroup("command-substitution", index, index + 2, ")"); index += 2; continue; }
+      if (ch === "$" && cmd[index + 1] === "{") {
+        const end = skipBraces(index + 1);
+        if (end === undefined) return undefined;
+        mask(index, end);
+        index = end;
+        continue;
+      }
+      if (ch === "`") { openGroup("command-substitution", index, index + 1, "`"); index += 1; continue; }
+      mask(index, index + 1);
+      index += 1;
+      continue;
+    }
+
     if (ch === "\\") {
       mask(index, Math.min(index + 2, cmd.length));
       index += 2;
@@ -131,41 +204,36 @@ export function maskShellStructure(cmd: string): string | undefined {
       index = close + 1;
       continue;
     }
-    if (ch === "\"") {
-      const end = skipDoubleQuoted(index);
-      if (end === undefined) return undefined;
-      mask(index, end);
-      index = end;
-      continue;
-    }
-    if ((ch === "$" && cmd[index + 1] === "(") || (ch === "(" && cmd[index + 1] === "(" && atWordStart(index))) {
-      // $(...), $((...)) and an arithmetic ((...)) command: `&` inside is no job.
-      const end = skipParens(ch === "$" ? index + 1 : index);
-      if (end === undefined) return undefined;
-      mask(index, end);
-      index = end;
-      continue;
-    }
-    if (ch === "$" && cmd[index + 1] === "{") {
-      const close = cmd.indexOf("}", index + 2);
-      if (close < 0) return undefined;
-      mask(index, close + 1);
-      index = close + 1;
-      continue;
-    }
+    if (ch === "\"") { mask(index, index + 1); stack.push({ kind: "double" }); index += 1; continue; }
     if (ch === "`") {
-      const end = skipBacktick(index);
+      if (frame?.kind === "group" && frame.closer === "`") {
+        frame.group.end = index;
+        stack.pop();
+      } else {
+        openGroup("command-substitution", index, index + 1, "`");
+      }
+      index += 1;
+      continue;
+    }
+    if (ch === "$" && cmd[index + 1] === "(" && cmd[index + 2] === "(") {
+      // $((...)): arithmetic, `&` inside is no job.
+      const end = skipParens(index + 1);
       if (end === undefined) return undefined;
       mask(index, end);
       index = end;
       continue;
     }
-    if (ch === "#" && atWordStart(index)) {
-      // A comment is no command: blank it, so `job & # note` still ends the list.
-      const end = cmd.indexOf("\n", index);
-      const stop = end < 0 ? cmd.length : end;
-      mask(index, stop, " ");
-      index = stop;
+    if (ch === "$" && cmd[index + 1] === "(") { openGroup("command-substitution", index, index + 2, ")"); index += 2; continue; }
+    if (ch === "$" && cmd[index + 1] === "{") {
+      const end = skipBraces(index + 1);
+      if (end === undefined) return undefined;
+      mask(index, end);
+      index = end;
+      continue;
+    }
+    if ((ch === "<" || ch === ">") && cmd[index + 1] === "(") {
+      openGroup("process-substitution", index, index + 2, ")");
+      index += 2;
       continue;
     }
     if (ch === "<" && cmd[index + 1] === "<" && cmd[index + 2] === "<") {
@@ -187,6 +255,14 @@ export function maskShellStructure(cmd: string): string | undefined {
       index = at + word[0].length;
       continue;
     }
+    if (ch === "#" && atWordStart(index)) {
+      // A comment is no command: blank it, so `job & # note` still ends the list.
+      const end = cmd.indexOf("\n", index);
+      const stop = end < 0 ? cmd.length : end;
+      mask(index, stop, " ");
+      index = stop;
+      continue;
+    }
     if (ch === "\n" && pendingHeredocs.length > 0) {
       let at = index + 1;
       for (const heredoc of pendingHeredocs.splice(0)) {
@@ -205,9 +281,74 @@ export function maskShellStructure(cmd: string): string | undefined {
       if (index < cmd.length && cmd[index] === "\n") index += 1;
       continue;
     }
+    if (ch === "(") {
+      if (frame?.kind === "case" && frame.expectPattern) { index += 1; continue; } // `(pattern)`
+      if (cmd[index + 1] === "(" && (atCommandPosition(index) || previousWord(index) === "for")) {
+        // An arithmetic command or C-style for: `&` inside is no job.
+        const end = skipParens(index);
+        if (end === undefined) return undefined;
+        mask(index, end);
+        index = end;
+        continue;
+      }
+      if (cmd[index - 1] === "=") { openGroup("other", index, index + 1, ")"); index += 1; continue; } // array
+      if (atCommandPosition(index)) { openGroup("subshell", index, index + 1, ")"); index += 1; continue; }
+      let next = index + 1;
+      while (cmd[next] === " " || cmd[next] === "\t") next += 1;
+      if (cmd[next] === ")") { index = next + 1; continue; } // a function definition's ()
+      openGroup("other", index, index + 1, ")");
+      index += 1;
+      continue;
+    }
+    if (ch === ")") {
+      if (frame?.kind === "case" && frame.expectPattern) { frame.expectPattern = false; index += 1; continue; }
+      if (frame?.kind === "group" && frame.closer === ")") {
+        frame.group.end = index;
+        stack.pop();
+        index += 1;
+        continue;
+      }
+      return undefined;
+    }
+    if (ch === "{" && /\s/u.test(cmd[index + 1] ?? "") && atCommandPosition(index)) {
+      openGroup("brace", index, index + 1, "}");
+      index += 1;
+      continue;
+    }
+    if (ch === "}" && frame?.kind === "group" && frame.closer === "}" && atCommandPosition(index)) {
+      frame.group.end = index;
+      stack.pop();
+      index += 1;
+      continue;
+    }
+    if (ch === ";" && frame?.kind === "case" && (cmd[index + 1] === ";" || cmd[index + 1] === "&")) {
+      // `;;`, `;&` and `;;&` end a case arm; a pattern follows.
+      frame.expectPattern = true;
+      index += cmd[index + 1] === ";" && cmd[index + 2] === "&" ? 3 : 2;
+      continue;
+    }
+    if (/[a-z]/u.test(ch) && atWordStart(index)) {
+      const word = /^[a-z]+/u.exec(cmd.slice(index, index + 8))![0];
+      const after = cmd[index + word.length];
+      if (after === undefined || /[\s;&|()<>]/u.test(after)) {
+        if (word === "case" && atCommandPosition(index)) {
+          stack.push({ kind: "case", sawIn: false, expectPattern: false });
+        } else if (frame?.kind === "case") {
+          if (word === "in" && !frame.sawIn) {
+            frame.sawIn = true;
+            frame.expectPattern = true;
+          } else if (word === "esac" && (frame.expectPattern || atCommandPosition(index))) {
+            stack.pop();
+          }
+        }
+      }
+      index += word.length;
+      continue;
+    }
     index += 1;
   }
-  return pendingHeredocs.length > 0 ? undefined : out.join("");
+  if (stack.length > 0 || pendingHeredocs.length > 0) return undefined;
+  return { masked: out.join(""), groups };
 }
 
 interface ListItem {
@@ -217,15 +358,28 @@ interface ListItem {
   readonly terminator: "&" | ";";
 }
 
-/** Top-level list items of a masked command, split at `;`, newlines and lone `&`. */
-function listItems(masked: string): ListItem[] {
+/**
+ * The list items of one scope (the top level or a group's content), split at
+ * its own `;`, newlines and lone `&`; groups inside it are skipped whole.
+ */
+function scopeItems(masked: string, scope: ShellGroup | undefined, children: readonly ShellGroup[]): ListItem[] {
+  const from = scope?.start ?? 0;
+  const to = scope?.end ?? masked.length;
+  const childAt = new Map(children.map((child) => [child.open, child]));
   const items: ListItem[] = [];
-  let start = 0;
-  for (let at = 0; at < masked.length; at += 1) {
+  let start = from;
+  for (let at = from; at < to; at += 1) {
+    const child = childAt.get(at);
+    if (child !== undefined) {
+      at = child.end;
+      continue;
+    }
     const ch = masked[at]!;
     if (ch === ";" || ch === "\n") {
-      if (masked[at + 1] === ";") at += 1; // `;;` in a case arm
-      items.push({ start, end: at, terminator: ";" });
+      const end = at;
+      if (masked[at + 1] === ";") at += masked[at + 2] === "&" ? 2 : 1; // `;;` and `;;&` in a case arm
+      else if (ch === ";" && masked[at + 1] === "&") at += 1; // `;&`
+      items.push({ start, end, terminator: ";" });
       start = at + 1;
       continue;
     }
@@ -237,8 +391,29 @@ function listItems(masked: string): ListItem[] {
     items.push({ start, end: at, terminator: "&" });
     start = at + 1;
   }
-  items.push({ start, end: masked.length, terminator: ";" });
-  return items.filter((item) => masked.slice(item.start, item.end).trim().length > 0 || item.terminator === "&");
+  items.push({ start, end: to, terminator: ";" });
+  return items;
+}
+
+/**
+ * Whether a job's own redirections send its standard output away from where
+ * it would go (a file, /dev/null, another descriptor). `2>&1` and `2>file`
+ * leave it in place.
+ */
+function redirectsStdout(job: string): boolean {
+  for (let at = 0; at < job.length; at += 1) {
+    if (job[at] !== ">") continue;
+    if (job[at - 1] === ">" || job[at - 1] === "<" || job[at + 1] === "(") continue; // `>>`, `<>`, `>(`
+    let digits = at;
+    while (digits > 0 && /[0-9]/u.test(job[digits - 1]!)) digits -= 1;
+    const before = job[digits - 1];
+    if (digits === at && before === "&") return true; // `&>`, `&>>`
+    const explicitFd = digits < at && (before === undefined || /[\s;&|(){}]/u.test(before));
+    if (explicitFd && job.slice(digits, at) !== "1") continue;
+    if (job[at + 1] === "&" && job[at + 2] === "1") continue; // `>&1`
+    return true;
+  }
+  return false;
 }
 
 /** A command word at command position: start of a list item or after `&&`, `||`, `|`, `!`, `(`, `{`, `then`, `do`, `else`, `time`, or env assignments. */
@@ -256,28 +431,80 @@ const WAIT_OR_KILL_WORD = commandWordPattern("wait|kill|pkill");
 const INERT_ITEM = /^\s*(?:(?:echo|printf|true|:)(?:\s.*)?)?$/u;
 
 /**
- * The first background job in `cmd` that the command neither waits for nor
- * stops and that is meant to outlive it, or undefined. See the module note
- * for what counts.
+ * The first background job in `cmd`, in the order it is written, that the
+ * command neither waits for nor stops and that can outlive it, or undefined.
+ * See the module note for what counts.
  */
 export function findUnwaitedBackgroundJob(cmd: string): UnwaitedBackgroundJob | undefined {
   if (!cmd.includes("&")) return undefined;
-  const masked = maskShellStructure(cmd);
-  if (masked === undefined) return undefined;
-  const items = listItems(masked);
-  for (const [position, item] of items.entries()) {
-    if (item.terminator !== "&") continue;
-    const later = items.slice(position + 1);
-    const laterText = later.map((next) => masked.slice(next.start, next.end)).join(";");
+  const structure = parseShellStructure(cmd);
+  if (structure === undefined) return undefined;
+  const { masked, groups } = structure;
+  const childrenOf = new Map<ShellGroup | undefined, ShellGroup[]>();
+  for (const group of groups) {
+    const siblings = childrenOf.get(group.parent);
+    if (siblings === undefined) childrenOf.set(group.parent, [group]);
+    else siblings.push(group);
+  }
+  const itemsCache = new Map<ShellGroup | undefined, ListItem[]>();
+  const itemsOf = (scope: ShellGroup | undefined): ListItem[] => {
+    let items = itemsCache.get(scope);
+    if (items === undefined) {
+      items = scopeItems(masked, scope, childrenOf.get(scope) ?? []);
+      itemsCache.set(scope, items);
+    }
+    return items;
+  };
+  const ancestry = (scope: ShellGroup | undefined): ShellGroup[] => {
+    const chain: ShellGroup[] = [];
+    for (let group = scope; group !== undefined; group = group.parent) chain.push(group);
+    return chain;
+  };
+  /** What runs after the job: the rest of its scope, then the rest of each enclosing scope. */
+  const laterItems = (scope: ShellGroup | undefined, position: number): { text: string; terminator: "&" | ";" }[] => {
+    const later: { text: string; terminator: "&" | ";" }[] = [];
+    let current = scope;
+    let at = position;
+    for (;;) {
+      for (const next of itemsOf(current).slice(at + 1)) {
+        later.push({ text: masked.slice(next.start, next.end), terminator: next.terminator });
+      }
+      if (current === undefined) return later;
+      const group = current;
+      current = group.parent;
+      at = itemsOf(current).findIndex((item) => item.start <= group.open && group.open < item.end);
+      if (at < 0) return later;
+    }
+  };
+
+  const jobs: { scope: ShellGroup | undefined; position: number; item: ListItem }[] = [];
+  for (const scope of [undefined, ...groups]) {
+    const chain = ancestry(scope);
+    // An array literal or another region that holds no commands.
+    if (chain.some((group) => group.kind === "other")) continue;
+    for (const [position, item] of itemsOf(scope).entries()) {
+      if (item.terminator === "&" && masked.slice(item.start, item.end).trim().length > 0) {
+        jobs.push({ scope, position, item });
+      }
+    }
+  }
+  jobs.sort((left, right) => left.item.start - right.item.start);
+  for (const { scope, position, item } of jobs) {
+    const later = laterItems(scope, position);
+    const laterText = later.map((next) => next.text).join(";");
     if (WAIT_OR_KILL_WORD.test(laterText)) continue;
     const jobMasked = masked.slice(item.start, item.end);
+    // Its output still feeds a substitution, whose reader waits for it.
+    const substituted = ancestry(scope).some((group) =>
+      group.kind === "command-substitution" || group.kind === "process-substitution");
+    if (substituted && !redirectsStdout(jobMasked)) continue;
     const job = cmd.slice(item.start, item.end).trim();
     const detached = DETACH_WORD.exec(jobMasked);
     if (detached !== null) {
       return { kind: /setsid/u.test(detached[0]) ? "setsid" : "nohup", job };
     }
     if (DISOWN_WORD.test(laterText)) return { kind: "disown", job };
-    if (later.every((next) => next.terminator !== "&" && INERT_ITEM.test(masked.slice(next.start, next.end)))) {
+    if (later.every((next) => next.terminator !== "&" && INERT_ITEM.test(next.text))) {
       return { kind: "trailing", job };
     }
   }
