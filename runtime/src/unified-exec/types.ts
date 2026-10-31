@@ -113,9 +113,12 @@ export interface UnifiedExecManagerOptions {
    */
   readonly prepareContainedLaunches?: boolean;
   /**
-   * Live background sessions one owner may hold (default 8). At the limit a
-   * `startInBackground` request is refused before it spawns, and a command
-   * whose `onTimeout: "background"` limit passes is stopped as before.
+   * Live background sessions one owner may hold (default 8). Every live
+   * session counts, ordinary yields included, but the limit acts at two
+   * points only: a `startInBackground` request is refused before it spawns,
+   * and a command whose `onTimeout: "background"` limit passes is stopped as
+   * before. An ordinary yield is never refused or stopped by it; `maxProcesses`
+   * bounds those, as before.
    */
   readonly maxBackgroundSessions?: number;
   /**

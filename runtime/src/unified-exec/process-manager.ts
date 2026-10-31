@@ -148,7 +148,9 @@ const QUIET_PROCESS_STATE_AFTER_MS = 60_000;
 /**
  * Live background sessions one owner may hold. Past it a timeout stops the
  * command again and a background start is refused: on a one-CPU container
- * every extra job slows the agent's own commands.
+ * every extra job slows the agent's own commands. Ordinary yields count
+ * toward it but are never refused or stopped by it; `maxProcesses` bounds
+ * them, as before.
  */
 const DEFAULT_MAX_BACKGROUND_SESSIONS = 8;
 /** End notices no result has carried yet, across owners; the oldest go first. */

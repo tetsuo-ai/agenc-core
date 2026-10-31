@@ -155,6 +155,30 @@ describe("onTimeout: background", () => {
     expect(job.session_id).toEqual(expect.any(Number));
   });
 
+  it("never refuses or stops ordinary yields at the ceiling; they count toward it", async () => {
+    // As on main, a command that is still running at its yield stays a live
+    // session (bounded only by the manager's live-process cap). The ceiling
+    // acts at a background start and at a passed timeoutMs.
+    const processes = manager({ maxBackgroundSessions: 8 });
+    const yielded: number[] = [];
+    for (let index = 0; index < 9; index += 1) {
+      const result = await processes.execCommand({ cmd: "sleep 30", yield_time_ms: 250, ownerId: "owner-g" });
+      expect(result.session_id).toEqual(expect.any(Number));
+      yielded.push(result.session_id!);
+    }
+    expect(processes.listOwnedProcesses({ ownerId: "owner-g" }).filter((view) => view.status === "running"))
+      .toHaveLength(9);
+    await expect(processes.execCommand({ cmd: "sleep 30", startInBackground: true, yield_time_ms: 250, ownerId: "owner-g" }))
+      .rejects.toMatchObject({ code: "process_limit", message: expect.stringContaining("9 background sessions") });
+    const timed = await processes.execCommand({
+      cmd: "sleep 30", timeoutMs: 300, onTimeout: "background", yield_time_ms: 10_000, ownerId: "owner-g",
+    });
+    expect(timed.session_id).toBeUndefined();
+    expect(timed.timeout_stopped_at_session_limit).toBe(9);
+    expect(processes.listOwnedProcesses({ ownerId: "owner-g" }).filter((view) => view.status === "running"))
+      .toHaveLength(9);
+  }, 20_000);
+
   it("keeps the default: without onTimeout the time limit still stops the command", async () => {
     const processes = manager();
     const result = await processes.execCommand({

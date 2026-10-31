@@ -233,9 +233,13 @@ skipped, and a command the scan cannot parse runs as before.
 `background: true` starts the command as a tracked session: the call returns
 after about a second with its `session_id`, `write_stdin` polls it,
 `kill_process` stops it, and session end stops it. It works inside the
-sandbox and cannot be combined with `detach`. A conversation holds at most 8
-live background sessions; past that a `background: true` start is refused
-before it spawns. When a command reaches its `timeoutMs` it is not stopped:
+sandbox and cannot be combined with `detach`. Every live session of a
+conversation counts toward a ceiling of 8, ordinary yields included, and the
+ceiling acts at two points only: a `background: true` start is refused before
+it spawns, and a command that reaches its `timeoutMs` is stopped as before.
+An ordinary yield is never refused or stopped by it; as before, the manager's
+cap of 64 live processes bounds those. When a command reaches its `timeoutMs`
+it is not stopped:
 the call (or a `write_stdin` poll in progress) returns with its `session_id`
 and the note `[note: timeoutMs=N passed and the command is still running ...]`,
 and it stays a tracked session. Only an interrupt, a run deadline,
