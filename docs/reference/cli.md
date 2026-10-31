@@ -83,6 +83,13 @@ keep the mode they started with. The status line shows `standard` for a
 standard session and no label for Light. Swarm teammates are started with the
 leader's mode.
 
+Interactive Light sessions (the TUI) ask the model to check tool versions and
+git state only when a step needs them, to write a large change as a few
+patches when it edits with apply_patch, to write the simplest code that meets
+the request, and to stop reworking and rechecking once the requested checks
+pass. Print-mode runs keep their own guidance: environment checks, one patch
+per change and an acceptance review.
+
 ### Status line
 
 The line under the prompt shows the folder, model, effort, permission mode and

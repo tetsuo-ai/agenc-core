@@ -1596,7 +1596,7 @@ describe("Light finish rules per provider", () => {
       "Do what was asked and no more",
       "every requested file, export and stated error case",
       "no handling for cases that cannot happen",
-      "do not re-verify what already passed",
+      "do not rework or re-verify what already passed",
       "Install or build tools a check needs if allowed",
       "report the check unavailable only after that fails or is denied",
       "report the outcome and the check that passed in one or two sentences",
