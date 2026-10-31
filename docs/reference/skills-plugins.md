@@ -164,8 +164,8 @@ allowed-tools: Write, Edit(./docs/**)
   grants) are left out. Use canonical tool names: legacy `Bash` allow rules
   grant nothing. Subagents the turn starts do not receive the grants. Under a
   managed policy that allows only managed permission rules, the skill runs
-  without its grants and the session log records a
-  `skill_tool_grants_withheld` warning. The policy is read again for every
+  without its grants and the TUI shows a `skill_tool_grants_withheld`
+  warning. The policy is read again for every
   tool call, so a managed-only policy that arrives during the turn ends the
   grants from the next call on.
 - Built-in skills pre-approve only built-in tools on an allowlist: `FileRead`,
@@ -204,8 +204,8 @@ If the daemon stops during a skill turn and the turn is resumed
 grants when the skill is still installed from the same place with the same
 settings and the current policy still allows them; it never gets more grants
 than the turn had. Otherwise it continues on the session's settings, and the
-session log records a `durable_resume_skill_settings_dropped` warning with the
-reason. The journal keeps this in the turn's `turn_context` record
+TUI shows a `durable_resume_skill_settings_dropped` warning with the reason.
+The journal keeps this in the turn's `turn_context` record
 (`skillInvocation`), which older runtimes ignore.
 
 ### `agenc skills list` CLI

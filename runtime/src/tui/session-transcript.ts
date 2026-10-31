@@ -350,6 +350,11 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "permission_mode_unconfirmed",
   "permission_mode_sync_failed",
   "resumed_with_different_model",
+  // A skill started by name runs without some of its settings: an older
+  // daemon, managed-only policy, or a resume after the skill changed.
+  "skill_settings_need_daemon_restart",
+  "skill_tool_grants_withheld",
+  "durable_resume_skill_settings_dropped",
   // Input mutation
   "file_mention_attachment_dropped",
   "image_error",
