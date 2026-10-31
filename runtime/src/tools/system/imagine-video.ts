@@ -798,6 +798,8 @@ async function saveVideoBytes(
 interface VideoRunContext {
   readonly opts: ImagineVideoToolOptions;
   readonly backend: VideoBackend;
+  /** The calling session's authority; `fetchImpl` sends through its transport. */
+  readonly authority: ToolCallAuthority;
   readonly fetchImpl: typeof fetch;
   readonly signal: AbortSignal | undefined;
   readonly args: Record<string, unknown>;
@@ -1532,7 +1534,9 @@ async function runVeniceVideo(ctx: VideoRunContext): Promise<ToolResult> {
   }
   const listed = VENICE_VIDEO_MODELS.has(stringValue(args.model) ?? VENICE_DEFAULT_VIDEO_MODEL)
     ? undefined
-    : await loadVeniceMediaModels(backend.baseURL, backend.bearer, fetchImpl, signal);
+    : await loadVeniceMediaModels(
+      { baseURL: backend.baseURL, bearer: backend.bearer, transport: ctx.authority.transportEnvironment },
+      fetchImpl, signal);
   const plan = planGatewayVideo("venice", args, listed);
   if ("error" in plan) return refusal({ error: plan.error });
   const shape = {
@@ -1860,7 +1864,11 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       const resolution = resolveVideoBackend(opts, args);
       const kind = "backend" in resolution ? resolution.backend.kind : undefined;
       const listed = "backend" in resolution && kind === "venice"
-        ? cachedVeniceMediaModels(resolution.backend.baseURL)
+        ? cachedVeniceMediaModels({
+          baseURL: resolution.backend.baseURL,
+          bearer: resolution.backend.bearer,
+          transport: resolution.authority.transportEnvironment,
+        })
         : undefined;
       const plan = kind === "openrouter" || kind === "venice" ? planGatewayVideo(kind, args, listed) : undefined;
       // A Venice model AgenC has not reviewed is bounded by the call's max_usd
@@ -1917,6 +1925,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       const ctx: VideoRunContext = {
         opts,
         backend,
+        authority: backendResolution.authority,
         // Every request goes out through the calling session's own proxy,
         // client certificate and CA trust.
         fetchImpl: withToolCallTransport(opts.fetchImpl ?? fetch, backendResolution.authority),

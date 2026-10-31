@@ -40,6 +40,7 @@ import { redactSensitiveAPIText } from "../../errors/api.js";
 import {
   cachedVeniceMediaModels,
   loadVeniceMediaModels,
+  type VeniceListAuthority,
   veniceEditPrice,
   veniceUpscalePrice,
   type VeniceMediaModel,
@@ -123,6 +124,11 @@ function resolveEditBackend(
     return { error: "ImagineEdit endpoint is invalid." };
   }
   return { baseURL: baseURL.replace(/\/+$/, ""), bearer, authority };
+}
+
+/** Whose Venice list a call reads: the session's endpoint, key and transport. */
+function veniceList(backend: EditBackend): VeniceListAuthority {
+  return { baseURL: backend.baseURL, bearer: backend.bearer, transport: backend.authority.transportEnvironment };
 }
 
 /** Whether this session has its own image edit route. */
@@ -213,8 +219,8 @@ const EXTENSIONS: Readonly<Record<string, string>> = { "image/png": "png", "imag
 
 export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
   const advertised = opts.getSession() === null ? undefined : resolveEditBackend(opts);
-  if (advertised !== undefined && !("error" in advertised) && cachedVeniceMediaModels(advertised.baseURL) === undefined) {
-    void loadVeniceMediaModels(advertised.baseURL, advertised.bearer,
+  if (advertised !== undefined && !("error" in advertised) && cachedVeniceMediaModels(veniceList(advertised)) === undefined) {
+    void loadVeniceMediaModels(veniceList(advertised),
       withToolCallTransport(opts.fetchImpl ?? fetch, advertised.authority)).catch(() => undefined);
   }
   return {
@@ -242,9 +248,9 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
       const backend = resolveEditBackend(opts, args);
       const scale = upscaleFactor(args.upscale);
       if ("error" in backend || scale === "invalid") return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: null };
-      const listed = cachedVeniceMediaModels(backend.baseURL);
+      const listed = cachedVeniceMediaModels(veniceList(backend));
       if (listed === undefined) {
-        void loadVeniceMediaModels(backend.baseURL, backend.bearer,
+        void loadVeniceMediaModels(veniceList(backend),
           withToolCallTransport(opts.fetchImpl ?? fetch, backend.authority)).catch(() => undefined);
       }
       const price = callPrice(listed, stringValue(args.model) ?? DEFAULT_EDIT_MODEL, scale);
@@ -280,7 +286,7 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
       const model = scale === undefined ? stringValue(args.model) ?? DEFAULT_EDIT_MODEL : UPSCALE_MODEL;
       // The calling session's own proxy, client certificate and CA trust.
       const fetchImpl = withToolCallTransport(opts.fetchImpl ?? fetch, backend.authority);
-      const listed = await loadVeniceMediaModels(backend.baseURL, backend.bearer, fetchImpl, signal);
+      const listed = await loadVeniceMediaModels(veniceList(backend), fetchImpl, signal);
       const price = callPrice(listed, model, scale);
       if (price === undefined) {
         const names = listed === undefined

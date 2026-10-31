@@ -46,6 +46,7 @@ import { redactSensitiveAPIText } from "../../errors/api.js";
 import {
   cachedVeniceMediaModels,
   loadVeniceMediaModels,
+  type VeniceListAuthority,
   veniceDefaultTier,
   veniceImagePrice,
   veniceImageTier,
@@ -1128,18 +1129,28 @@ function veniceRequestTier(model: VeniceMediaModel, aspectRatio: string | undefi
   return Array.isArray(tiers) && tiers.length > 0 && !tiers.includes(tier) ? veniceDefaultTier(model) : tier;
 }
 
+/** Whose Venice list a session's call reads: its endpoint, key and transport. */
+function veniceList(
+  backend: { readonly baseURL: string; readonly bearer: string },
+  authority: ToolCallAuthority,
+): VeniceListAuthority {
+  return { baseURL: backend.baseURL, bearer: backend.bearer, transport: authority.transportEnvironment };
+}
+
 /**
  * The per-image price of an OpenRouter model (reviewed ceiling) or a Venice
- * model (Venice's live list first, the reviewed table while it is unread).
+ * model (the session's own Venice list first, the reviewed table while it
+ * is unread).
  */
 function gatewayImagePrice(
   backend: ImageBackend,
+  authority: ToolCallAuthority,
   model: string,
   aspectRatio?: string,
 ): number | undefined {
   if (backend.kind === "openrouter") return OPENROUTER_IMAGE_MODELS.get(model);
   if (backend.kind === "venice") {
-    const listed = cachedVeniceMediaModels(backend.baseURL);
+    const listed = cachedVeniceMediaModels(veniceList(backend, authority));
     const live = listed?.get(model);
     if (live !== undefined) {
       return live.type === "image" ? veniceImagePrice(live, veniceRequestTier(live, aspectRatio)) : undefined;
@@ -1414,9 +1425,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
   // admission finds the price.
   if (
     advertisedResolution !== undefined && "backend" in advertisedResolution &&
-    advertisedBackend?.kind === "venice" && cachedVeniceMediaModels(advertisedBackend.baseURL) === undefined
+    advertisedBackend?.kind === "venice" &&
+    cachedVeniceMediaModels(veniceList(advertisedBackend, advertisedResolution.authority)) === undefined
   ) {
-    void loadVeniceMediaModels(advertisedBackend.baseURL, advertisedBackend.bearer,
+    void loadVeniceMediaModels(veniceList(advertisedBackend, advertisedResolution.authority),
       withToolCallTransport(opts.fetchImpl ?? fetch, advertisedResolution.authority))
       .catch(() => undefined);
   }
@@ -1455,14 +1467,14 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         ? Math.max(1, Math.floor(args.n)) : 1;
       if (
         "backend" in resolution && gateway?.kind === "venice" &&
-        cachedVeniceMediaModels(gateway.baseURL) === undefined
+        cachedVeniceMediaModels(veniceList(gateway, resolution.authority)) === undefined
       ) {
-        void loadVeniceMediaModels(gateway.baseURL, gateway.bearer,
+        void loadVeniceMediaModels(veniceList(gateway, resolution.authority),
           withToolCallTransport(opts.fetchImpl ?? fetch, resolution.authority)).catch(() => undefined);
       }
-      const gatewayPrice = gateway === undefined
+      const gatewayPrice = gateway === undefined || !("backend" in resolution)
         ? undefined
-        : gatewayImagePrice(gateway, model, stringValue(args.aspect_ratio));
+        : gatewayImagePrice(gateway, resolution.authority, model, stringValue(args.aspect_ratio));
       const maxCostUsd =
         gateway !== undefined
           ? gatewayPrice === undefined
@@ -1546,10 +1558,11 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       } else if (backend.kind === "venice") {
         // Venice's own list decides; the reviewed table answers only while
         // the list cannot be read.
-        const listed = await loadVeniceMediaModels(backend.baseURL, backend.bearer, sessionFetch, admittedSignal);
+        const listed = await loadVeniceMediaModels(
+          veniceList(backend, backendResolution.authority), sessionFetch, admittedSignal);
         const live = listed?.get(model);
         const known = listed === undefined ? VENICE_IMAGE_MODELS.has(model) : live?.type === "image";
-        if (!known || gatewayImagePrice(backend, model, stringValue(args.aspect_ratio)) === undefined) {
+        if (!known || gatewayImagePrice(backend, backendResolution.authority, model, stringValue(args.aspect_ratio)) === undefined) {
           const names = listed === undefined
             ? [...VENICE_IMAGE_MODELS.keys()]
             : [...listed.values()].filter(entry => entry.type === "image").map(entry => entry.id);
@@ -1886,7 +1899,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         }
         // OpenRouter charges what its response reports; Venice charges its
         // published per-image price. Both are recorded with the call.
-        const price = gatewayImagePrice(backend, model, aspect_ratio);
+        const price = gatewayImagePrice(backend, backendResolution.authority, model, aspect_ratio);
         const reportedCost = typeof payload.usage?.cost === "number" &&
           Number.isFinite(payload.usage.cost) && payload.usage.cost >= 0
           ? payload.usage.cost : undefined;

@@ -24,7 +24,11 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 const veniceSession = () =>
   () => ({ services: { provider: createProvider("venice", { apiKey: "venice-session", model: "zai-org-glm-5-2" }) } }) as unknown as Session;
 const workspace = () => mkdtemp(join(tmpdir(), "pv-venice-edit-"));
-const seed = () => recordVeniceMediaModels(VENICE, parseVeniceMediaModels(VENICE_MEDIA_LIST));
+/** The environment these tools are built with, and so their sessions' transport. */
+const ENV: NodeJS.ProcessEnv = Object.freeze({}) as NodeJS.ProcessEnv;
+/** A Venice list for the session the tools run for: its endpoint, key and transport. */
+const seed = () => recordVeniceMediaModels(
+  { baseURL: VENICE, bearer: "venice-session", transport: ENV }, parseVeniceMediaModels(VENICE_MEDIA_LIST));
 const bodyOf = (mock: ReturnType<typeof vi.fn>, index: number) =>
   JSON.parse(String((mock.mock.calls[index]?.[1] as RequestInit | undefined)?.body ?? "{}"));
 
@@ -37,7 +41,7 @@ describe("ImagineEdit: Venice edits and upscales a workspace image", () => {
     await mkdir(join(root, "art"));
     await writeFile(join(root, "art", "in.png"), PNG);
     const fetchImpl = vi.fn(async () => new Response(PNG, { headers: { "content-type": "image/png" } }));
-    const opts = { workspaceRoot: root, env: {}, fetchImpl, getSession: veniceSession() };
+    const opts = { workspaceRoot: root, env: ENV, fetchImpl, getSession: veniceSession() };
     expect(hasImagineEditBackend(opts)).toBe(true);
     const tool = createImagineEditTool(opts);
     expect(tool.metadata?.deferred).toBe(true);
@@ -61,7 +65,7 @@ describe("ImagineEdit: Venice edits and upscales a workspace image", () => {
     const root = await workspace();
     await writeFile(join(root, "in.png"), PNG);
     const fetchImpl = vi.fn(async () => new Response(PNG, { headers: { "content-type": "image/png" } }));
-    const result = await createImagineEditTool({ workspaceRoot: root, env: {}, fetchImpl, getSession: veniceSession() })
+    const result = await createImagineEditTool({ workspaceRoot: root, env: ENV, fetchImpl, getSession: veniceSession() })
       .execute({ image: "in.png", upscale: 2 });
     expect(result.isError).toBeFalsy();
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${VENICE}/image/upscale`);
@@ -77,7 +81,7 @@ describe("ImagineEdit: Venice edits and upscales a workspace image", () => {
     await writeFile(join(root, "notes.txt"), "not an image");
     await writeFile(join(root, "in.png"), PNG);
     const fetchImpl = vi.fn();
-    const tool = createImagineEditTool({ workspaceRoot: root, env: {}, fetchImpl: fetchImpl as unknown as typeof fetch, getSession: veniceSession() });
+    const tool = createImagineEditTool({ workspaceRoot: root, env: ENV, fetchImpl: fetchImpl as unknown as typeof fetch, getSession: veniceSession() });
     expect((await tool.execute({ image: join(outside, "secret.png"), prompt: "x" })).content).toContain("inside the workspace");
     expect((await tool.execute({ image: "../" + join(outside, "secret.png").split("/").slice(-2).join("/"), prompt: "x" })).isError).toBe(true);
     expect((await tool.execute({ image: "notes.txt", prompt: "x" })).content).toContain("PNG, JPEG or WebP");

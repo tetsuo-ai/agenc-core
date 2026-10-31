@@ -40,6 +40,7 @@ import { redactSensitiveAPIText } from "../../errors/api.js";
 import {
   cachedVeniceMediaModels,
   loadVeniceMediaModels,
+  type VeniceListAuthority,
   veniceSpeechFormat,
   veniceSpeechUsdPerCharacter,
   type VeniceMediaModel,
@@ -152,6 +153,11 @@ function resolveSpeechBackend(
   return { kind: identity, baseURL: baseURL.replace(/\/+$/, ""), bearer, authority };
 }
 
+/** Whose Venice list a call reads: the session's endpoint, key and transport. */
+function veniceList(backend: SpeechBackend): VeniceListAuthority {
+  return { baseURL: backend.baseURL, bearer: backend.bearer, transport: backend.authority.transportEnvironment };
+}
+
 /** Whether this session has its own speech route. */
 export function hasImagineSpeechBackend(opts: ImagineSpeechToolOptions): boolean {
   return !("error" in resolveSpeechBackend(opts));
@@ -250,8 +256,8 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
   const advertised = opts.getSession() === null ? undefined : resolveSpeechBackend(opts);
   const advertisedKind = advertised !== undefined && !("error" in advertised) ? advertised.kind : undefined;
   if (advertised !== undefined && !("error" in advertised) && advertised.kind === "venice" &&
-      cachedVeniceMediaModels(advertised.baseURL) === undefined) {
-    void loadVeniceMediaModels(advertised.baseURL, advertised.bearer,
+      cachedVeniceMediaModels(veniceList(advertised)) === undefined) {
+    void loadVeniceMediaModels(veniceList(advertised),
       withToolCallTransport(opts.fetchImpl ?? fetch, advertised.authority)).catch(() => undefined);
   }
   return {
@@ -279,7 +285,7 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
       const backend = resolveSpeechBackend(opts, args);
       if ("error" in backend) return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: null };
       const model = stringValue(args.model) ?? DEFAULT_SPEECH_MODEL[backend.kind];
-      const live = backend.kind === "venice" ? cachedVeniceMediaModels(backend.baseURL) : undefined;
+      const live = backend.kind === "venice" ? cachedVeniceMediaModels(veniceList(backend)) : undefined;
       const plan = speechPlan(backend, model, live);
       const text = typeof args.text === "string" ? args.text : "";
       return {
@@ -303,7 +309,7 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
       // The calling session's own proxy, client certificate and CA trust.
       const fetchImpl = withToolCallTransport(opts.fetchImpl ?? fetch, backend.authority);
       const live = backend.kind === "venice"
-        ? await loadVeniceMediaModels(backend.baseURL, backend.bearer, fetchImpl, signal)
+        ? await loadVeniceMediaModels(veniceList(backend), fetchImpl, signal)
         : undefined;
       const plan = speechPlan(backend, model, live);
       if (plan === undefined) {

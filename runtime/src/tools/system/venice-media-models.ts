@@ -7,12 +7,16 @@
  * name is refused before any request (Venice substitutes its default model
  * for an unknown name).
  *
- * One read per base URL is reused for ten minutes. The tools start the read
- * when they are built, so a call's admission (which cannot wait) usually
- * finds the prices; a call that comes first waits for the read in `execute`.
+ * One read per authority (endpoint, credential and the transport it goes
+ * through) is reused for ten minutes, never shared with another session or
+ * key at the same URL. The tools start the read when they are built, so a
+ * call's admission (which cannot wait) usually finds the prices; a call
+ * that comes first waits for the read in `execute`.
  *
  * @module
  */
+
+import { createHash } from "node:crypto";
 
 export type VeniceMediaType = "image" | "inpaint" | "upscale" | "tts" | "video";
 
@@ -83,50 +87,89 @@ interface CachedList {
   readonly models: ReadonlyMap<string, VeniceMediaModel>;
 }
 
-const lists = new Map<string, CachedList>();
-const reads = new Map<string, Promise<ReadonlyMap<string, VeniceMediaModel> | undefined>>();
-
-function key(baseURL: string): string {
-  return baseURL.replace(/\/+$/, "");
+/**
+ * Whose list a read is: the endpoint, the credential (kept only as a
+ * fingerprint) and the transport it goes through, the calling session's own
+ * environment object (session-provider-authority.ts transportEnvironment).
+ * Cached lists and reads in flight are scoped by all three, so a session
+ * never validates or prices a call from another session's list.
+ */
+export interface VeniceListAuthority {
+  readonly baseURL: string;
+  readonly bearer: string;
+  readonly transport: object;
 }
 
-/** What the last read of this base URL found, without reading again. */
-export function cachedVeniceMediaModels(baseURL: string): ReadonlyMap<string, VeniceMediaModel> | undefined {
-  return lists.get(key(baseURL))?.models;
+type PendingList = Promise<ReadonlyMap<string, VeniceMediaModel> | undefined>;
+
+// Per transport object, so entries go away with the session that owns them.
+let lists = new WeakMap<object, Map<string, CachedList>>();
+let reads = new WeakMap<object, Map<string, PendingList>>();
+
+function baseOf(authority: VeniceListAuthority): string {
+  return authority.baseURL.replace(/\/+$/, "");
 }
 
-/** Record a list (tests and callers that already hold one). */
-export function recordVeniceMediaModels(baseURL: string, models: readonly VeniceMediaModel[]): void {
-  lists.set(key(baseURL), { at: Date.now(), models: new Map(models.map(model => [model.id, model])) });
+function key(authority: VeniceListAuthority): string {
+  const credential = createHash("sha256").update(authority.bearer).digest("hex").slice(0, 32);
+  return `${baseOf(authority)}\u0000${credential}`;
+}
+
+function scoped<T>(maps: WeakMap<object, Map<string, T>>, transport: object): Map<string, T> {
+  let map = maps.get(transport);
+  if (map === undefined) {
+    map = new Map();
+    maps.set(transport, map);
+  }
+  return map;
+}
+
+/** What the last read for this authority found, without reading again. */
+export function cachedVeniceMediaModels(
+  authority: VeniceListAuthority,
+): ReadonlyMap<string, VeniceMediaModel> | undefined {
+  return lists.get(authority.transport)?.get(key(authority))?.models;
+}
+
+/** Record a list for one authority (tests and callers that already hold one). */
+export function recordVeniceMediaModels(
+  authority: VeniceListAuthority,
+  models: readonly VeniceMediaModel[],
+): void {
+  scoped(lists, authority.transport).set(key(authority), {
+    at: Date.now(),
+    models: new Map(models.map(model => [model.id, model])),
+  });
 }
 
 /** Test seam. */
 export function clearVeniceMediaModels(): void {
-  lists.clear();
-  reads.clear();
+  lists = new WeakMap();
+  reads = new WeakMap();
 }
 
 /**
- * Read Venice's media models with the session's own key. Best effort:
- * undefined when the list cannot be read, and the caller refuses any model
- * it cannot price.
+ * Read Venice's media models with the session's own key through `fetchImpl`,
+ * the session's own transport. Best effort: undefined when the list cannot
+ * be read, and the caller refuses any model it cannot price.
  */
 export async function loadVeniceMediaModels(
-  baseURL: string,
-  bearer: string,
+  authority: VeniceListAuthority,
   fetchImpl: typeof fetch,
   signal?: AbortSignal,
 ): Promise<ReadonlyMap<string, VeniceMediaModel> | undefined> {
-  const id = key(baseURL);
-  const cached = lists.get(id);
+  const id = key(authority);
+  const cachedLists = scoped(lists, authority.transport);
+  const pendingReads = scoped(reads, authority.transport);
+  const cached = cachedLists.get(id);
   if (cached !== undefined && Date.now() - cached.at < REUSE_MS) return cached.models;
-  const pending = reads.get(id);
+  const pending = pendingReads.get(id);
   if (pending !== undefined) return await pending;
   const read = (async () => {
     const timeout = AbortSignal.timeout(LIST_TIMEOUT_MS);
     try {
-      const response = await fetchImpl(`${id}/models?type=all`, {
-        headers: { authorization: `Bearer ${bearer}` },
+      const response = await fetchImpl(`${baseOf(authority)}/models?type=all`, {
+        headers: { authorization: `Bearer ${authority.bearer}` },
         redirect: "error",
         signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
       });
@@ -135,15 +178,15 @@ export async function loadVeniceMediaModels(
       if (length > MAX_LIST_BYTES) return cached?.models;
       const models = parseVeniceMediaModels(await response.json());
       if (models.length === 0) return cached?.models;
-      recordVeniceMediaModels(id, models);
-      return lists.get(id)?.models;
+      recordVeniceMediaModels(authority, models);
+      return cachedLists.get(id)?.models;
     } catch {
       return cached?.models;
     } finally {
-      reads.delete(id);
+      pendingReads.delete(id);
     }
   })();
-  reads.set(id, read);
+  pendingReads.set(id, read);
   return await read;
 }
 
