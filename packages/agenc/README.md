@@ -8,7 +8,7 @@ AgenC Core is a coding agent for your terminal. It works with any model
 provider: 25 are built in, including OpenAI, Anthropic, xAI Grok, Gemini,
 DeepSeek, Venice and local models through Ollama or LM Studio.
 
-With DeepSeek V4.1 Flash it scored 76.2% on Terminal-Bench 2.1 for $34.
+With DeepSeek V4.1 Flash it scored 84.5% on Terminal-Bench 2.1 for $27.
 [Results](https://get.agenc.ag/terminal-bench/)
 
 ## Install
