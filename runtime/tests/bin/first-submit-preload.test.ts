@@ -75,6 +75,17 @@ vi.mock("../../src/prompts/attachments/product-help.js", async (importOriginal) 
   };
 });
 
+vi.mock("marked", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("marked")>();
+  class CountingLexer extends actual.Lexer {
+    static override lex(src: string, options?: Parameters<typeof actual.Lexer.lex>[1]) {
+      evaluated.patternTests.push(`markdown:${src.length > 0 ? "sample" : ""}`);
+      return actual.Lexer.lex(src, options);
+    }
+  }
+  return { ...actual, Lexer: CountingLexer };
+});
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("first-submit preload", () => {
@@ -93,12 +104,15 @@ describe("first-submit preload", () => {
     expect(tools.resumeInterruptedAgentJobs).not.toHaveBeenCalled();
     expect(tools.startCronSchedulerRunner).not.toHaveBeenCalled();
     // The first request's attachment patterns are compiled (two tests each, so
-    // V8 also tiers them up), on an empty string only.
+    // V8 also tiers them up), on an empty string only; the Markdown lexer lexes
+    // a sample twice.
     const tested = evaluated.patternTests.slice(before.patternTests.length);
     expect(tested.filter((entry) => entry === "memory:")).toHaveLength(2);
     expect(tested.filter((entry) => entry === "undo:")).toHaveLength(2);
     expect(tested.filter((entry) => entry === "instructions:")).toHaveLength(2);
-    expect(tested.every((entry) => entry.endsWith(":"))).toBe(true);
+    // The Markdown lexer needs real content to compile its rules.
+    expect(tested.filter((entry) => entry === "markdown:sample")).toHaveLength(2);
+    expect(tested.filter((entry) => !entry.startsWith("markdown:")).every((entry) => entry.endsWith(":"))).toBe(true);
     // A second call neither loads nor parses again.
     await preloadOrdinarySubmitModules();
     expect(evaluated.mcpParses.length).toBe(before.mcpParses.length + 1);
