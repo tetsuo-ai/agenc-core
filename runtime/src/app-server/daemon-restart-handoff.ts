@@ -2,9 +2,10 @@
  * What `agenc update` shares with the step it hands the daemon to,
  * `agenc daemon restart --when-idle`, which can be a different build: the
  * daemon restart lock, how long a restart waits for another one and for the
- * daemon to start, the updater's handoff timeout derived from those, and the
- * line a waiting restart prints. The updater must not load daemon code, so
- * this module imports nothing but `node:path`.
+ * daemon to start, the updater's handoff timeout derived from those, how long
+ * a TUI that follows the update may wait for the restart to end, and the line
+ * a waiting restart prints. The updater must not load daemon code, so this
+ * module imports nothing but `node:path`.
  */
 
 import { basename } from "node:path";
@@ -147,6 +148,22 @@ export function resolveAgenCDaemonRestartHandoffTimeoutMs(
     AGENC_DAEMON_RESTART_LOCK_WAIT_MS +
     agenCDaemonStartWaitBoundMs(env, platform) +
     AGENC_DAEMON_RESTART_WORK_ALLOWANCE_MS;
+}
+
+/** A deferred restart gives up after this long and changes nothing. */
+export const AGENC_DAEMON_RESTART_MAX_WAIT_MS = 12 * 60 * 60 * 1_000;
+
+/**
+ * The latest a restart handed over by an update can still end, counted from
+ * the handoff: the step itself (bounded like the handoff), a waiting process
+ * for a busy daemon, then that process's own restart (bounded like the
+ * handoff again). A TUI that follows the update stops waiting after this.
+ */
+export function resolveAgenCDaemonRestartFollowDeadlineMs(
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform,
+): number {
+  return AGENC_DAEMON_RESTART_MAX_WAIT_MS + 2 * resolveAgenCDaemonRestartHandoffTimeoutMs(env, platform);
 }
 
 /**

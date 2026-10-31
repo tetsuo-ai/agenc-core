@@ -138,3 +138,46 @@ export function agenCDaemonRestartIsNews(outcome: AgenCDaemonRestartOutcome): bo
     // A stale daemon that only a manual restart moves.
     (outcome.status === "skipped" && outcome.code === "daemon-too-old");
 }
+
+/**
+ * `<AGENC_HOME>/daemon-restart-result.json`: how the last restart step that
+ * finished ended. A client that stopped waiting for a restart (a TUI that
+ * follows an update after `still-running` or `deferred`) reads it to learn
+ * the end it no longer sees. Written by the restart step and the waiting
+ * process; a deferral is not an end, so it is not written for one.
+ */
+export const AGENC_DAEMON_RESTART_RESULT_FILENAME = "daemon-restart-result.json";
+
+export interface AgenCDaemonRestartResult {
+  /** ISO time the restart step finished. */
+  readonly finishedAt: string;
+  readonly outcome: AgenCDaemonRestartOutcome;
+}
+
+export function formatAgenCDaemonRestartResult(
+  outcome: AgenCDaemonRestartOutcome,
+  finishedAt: Date,
+): string {
+  return `${JSON.stringify({ schemaVersion: 1, finishedAt: finishedAt.toISOString(), outcome }, null, 2)}\n`;
+}
+
+/** Parse the result file; null when it is not one. */
+export function parseAgenCDaemonRestartResult(text: string): AgenCDaemonRestartResult | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as { readonly schemaVersion?: unknown; readonly finishedAt?: unknown; readonly outcome?: unknown };
+  if (
+    record.schemaVersion !== 1 ||
+    typeof record.finishedAt !== "string" ||
+    !Number.isFinite(Date.parse(record.finishedAt))
+  ) {
+    return null;
+  }
+  const outcome = parseAgenCDaemonRestartOutcome(JSON.stringify(record.outcome ?? null));
+  return outcome === null ? null : { finishedAt: record.finishedAt, outcome };
+}

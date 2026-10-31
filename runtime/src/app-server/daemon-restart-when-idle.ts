@@ -38,7 +38,9 @@
  * check. A waiter also leaves when the daemon stopped, was replaced (for
  * example by a newer client's build check) or already runs this build.
  * Giving up stops nothing. Outcomes are written to
- * `<AGENC_HOME>/daemon-restart.log`.
+ * `<AGENC_HOME>/daemon-restart.log`, and how the last step or waiter ended
+ * to `<AGENC_HOME>/daemon-restart-result.json` for a TUI that stopped waiting
+ * for it.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -93,6 +95,7 @@ import {
   AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS,
   AGENC_DAEMON_RESTART_LOCK_LABEL,
   AGENC_DAEMON_RESTART_LOCK_WAIT_MS,
+  AGENC_DAEMON_RESTART_MAX_WAIT_MS,
   describeAgenCDaemonRestartLockFailure,
   formatAgenCDaemonRestartWait,
   formatAgenCDaemonRestartWaitingLine,
@@ -119,7 +122,9 @@ import {
 import { canConnectToUnixSocket } from "./transport/unix-socket.js";
 import { countedAttachments, runningNativeWorkerCount } from "./daemon-idle-check.js";
 import {
+  AGENC_DAEMON_RESTART_RESULT_FILENAME,
   formatAgenCDaemonRestartOutcome,
+  formatAgenCDaemonRestartResult,
   type AgenCDaemonRestartOutcome,
 } from "./daemon-restart-outcome.js";
 
@@ -128,7 +133,7 @@ export type { AgenCDaemonRestartOutcome } from "./daemon-restart-outcome.js";
 /** How often a deferred restart checks the daemon again. */
 export const AGENC_DAEMON_RESTART_POLL_MS = 15_000;
 /** A deferred restart gives up after this long and changes nothing. */
-export const AGENC_DAEMON_RESTART_MAX_WAIT_MS = 12 * 60 * 60 * 1_000;
+export { AGENC_DAEMON_RESTART_MAX_WAIT_MS };
 /** An agent active more recently than this may still be finishing work. */
 export const AGENC_DAEMON_RESTART_QUIET_MS = 15_000;
 /** Consecutive idle checks a deferred restart needs before it restarts. */
@@ -1241,6 +1246,27 @@ function logLine(daemonHome: string, message: string, now: Date): void {
   }
 }
 
+/**
+ * Record how this restart step ended, for a client that stopped waiting for
+ * it (see AGENC_DAEMON_RESTART_RESULT_FILENAME). Best effort.
+ */
+export function recordAgenCDaemonRestartResult(
+  daemonHome: string,
+  outcome: AgenCDaemonRestartOutcome,
+  now: Date,
+): void {
+  try {
+    const path = join(daemonHome, AGENC_DAEMON_RESTART_RESULT_FILENAME);
+    writeDurableAtomicFileSync(
+      path,
+      `${path}.${process.pid}.${randomUUID()}.tmp`,
+      formatAgenCDaemonRestartResult(outcome, now),
+    );
+  } catch {
+    // The daemon and the log are the state; this file only informs.
+  }
+}
+
 /** Start a fresh log for a new pending restart, so it never grows unbounded. */
 function startLog(daemonHome: string, message: string, now: Date): void {
   try {
@@ -1964,6 +1990,20 @@ export async function restartAgenCDaemonWhenIdle(
   }
   const ctx = restartContext(host, options, deps);
   if (!("host" in ctx)) return ctx;
+  return restartWhenIdleSerialized(ctx);
+}
+
+/**
+ * Record an outcome that ends this restart step. A deferral is not an end:
+ * the waiting process records the end it reaches.
+ */
+function ended(ctx: RestartContext, outcome: AgenCDaemonRestartOutcome): AgenCDaemonRestartOutcome {
+  if (outcome.status !== "deferred") recordAgenCDaemonRestartResult(ctx.daemonHome, outcome, ctx.now());
+  return outcome;
+}
+
+async function restartWhenIdleSerialized(ctx: RestartContext): Promise<AgenCDaemonRestartOutcome> {
+  const { host, deps } = ctx;
   // One restart at a time. Another one may have stopped the daemon and not
   // spawned the next yet, which would read as no daemon at all.
   const acquire = deps.acquireRestartLock ?? acquireAgenCDaemonRestartLock;
@@ -1972,7 +2012,7 @@ export async function restartAgenCDaemonWhenIdle(
     release = await acquire(host, AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS);
   } catch (busy) {
     if (!isLocalSqliteLockBusyTimeout(busy, RESTART_LOCK)) {
-      return { status: "failed", reason: describeAgenCDaemonRestartLockFailure(busy), toVersion: ctx.build.runtimeVersion };
+      return ended(ctx, { status: "failed", reason: describeAgenCDaemonRestartLockFailure(busy), toVersion: ctx.build.runtimeVersion });
     }
     // Another restart runs: say so once, so the update does not look stuck.
     try {
@@ -1983,11 +2023,12 @@ export async function restartAgenCDaemonWhenIdle(
     try {
       release = await acquire(host, AGENC_DAEMON_RESTART_LOCK_WAIT_MS);
     } catch (error) {
-      return { status: "failed", reason: describeAgenCDaemonRestartLockFailure(error), toVersion: ctx.build.runtimeVersion };
+      return ended(ctx, { status: "failed", reason: describeAgenCDaemonRestartLockFailure(error), toVersion: ctx.build.runtimeVersion });
     }
   }
   try {
-    return await restartWhenIdleLocked(ctx);
+    // Recorded before the lock goes, so results land in the order restarts end.
+    return ended(ctx, await restartWhenIdleLocked(ctx));
   } finally {
     // The lock goes with this process at the latest.
     await release().catch(() => undefined);
@@ -2056,6 +2097,7 @@ export async function runAgenCDaemonRestartWaiter(
       `${outcome.status}: ${outcome.reason ?? formatAgenCDaemonRestartOutcome(outcome)}`,
       ctx.now(),
     );
+    recordAgenCDaemonRestartResult(ctx.daemonHome, outcome, ctx.now());
     return outcome;
   };
   const superseded = (): string | undefined =>
@@ -2156,6 +2198,16 @@ export async function runAgenCDaemonRestartWaiter(
 
 // --- CLI ---------------------------------------------------------------------------------
 
+/** This runtime's version for an outcome after an unexpected error, when known. */
+function ownVersion(deps: AgenCDaemonRestartWhenIdleDeps): { readonly toVersion?: string } {
+  try {
+    const build = (deps.ownBuild ?? defaultOwnBuild)();
+    return build === null ? {} : { toVersion: build.runtimeVersion };
+  } catch {
+    return {};
+  }
+}
+
 export async function runAgenCDaemonRestartWhenIdleCli(
   command: Extract<AgenCDaemonCliCommand, { kind: "restart-when-idle" }>,
   host: AgenCDaemonCliHost,
@@ -2171,7 +2223,9 @@ export async function runAgenCDaemonRestartWhenIdleCli(
       return outcome.status === "failed" ? 1 : 0;
     } catch (error) {
       await removeAgenCDaemonPendingRestart(host, command.waitToken).catch(() => undefined);
-      logLine(daemonHome, `failed: the waiting process stopped: ${formatCleanupError(error)}`, new Date());
+      const reason = `the waiting process stopped: ${formatCleanupError(error)}`;
+      logLine(daemonHome, `failed: ${reason}`, new Date());
+      recordAgenCDaemonRestartResult(daemonHome, { status: "failed", reason, ...ownVersion(deps) }, new Date());
       return 1;
     }
   }
@@ -2193,7 +2247,8 @@ export async function runAgenCDaemonRestartWhenIdleCli(
       ...(command.downgrade === true ? { downgrade: true } : {}),
     });
   } catch (error) {
-    outcome = { status: "failed", reason: formatCleanupError(error) };
+    outcome = { status: "failed", reason: formatCleanupError(error), ...ownVersion(deps) };
+    recordAgenCDaemonRestartResult(resolveAgenCDaemonHome(host.env, host.userHome), outcome, new Date());
   }
   if (command.json) {
     io.stdout.write(`${JSON.stringify(outcome)}\n`);

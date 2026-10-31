@@ -41,6 +41,12 @@ export interface UpdateNotice {
 export interface UpdateFollow {
   readonly request: UpdateRelaunchRequest;
   readonly when: "idle" | "daemon";
+  /**
+   * When the daemon step began (ms since the epoch), for `daemon`: restart
+   * results that ended before it are not this update's, and the follow gives
+   * up once the restart can no longer end.
+   */
+  readonly since?: number;
 }
 
 export const AGENC_UPDATE_RELAUNCH_ENV = "AGENC_UPDATE_RELAUNCH";

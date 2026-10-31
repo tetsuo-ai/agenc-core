@@ -133,6 +133,8 @@ export interface UpdateRelaunchDeps {
   readonly markerName: string;
   readonly encodeMarker: (version: string) => string;
   readonly write: (line: string) => void;
+  /** Milliseconds since the epoch; Date.now by default. */
+  readonly now?: () => number;
 }
 
 export async function runUpdateRelaunch(
@@ -146,6 +148,8 @@ export async function runUpdateRelaunch(
     }, null);
   }
   deps.write(`agenc: moving to AgenC ${request.targetVersion}`);
+  // A follow reads only the restart results that end after this.
+  const since = (deps.now ?? Date.now)();
   let outcome: AgenCDaemonRestartOutcome;
   try {
     outcome = await deps.runDaemonStep(request, updateDaemonStepArgs(request, deps.pid));
@@ -160,7 +164,7 @@ export async function runUpdateRelaunch(
     return deps.reopen(
       request,
       decision.notice,
-      decision.follow === undefined ? null : { request: followRequest, when: decision.follow },
+      decision.follow === undefined ? null : { request: followRequest, when: decision.follow, since },
     );
   }
   const args = updateRelaunchArgs(request);

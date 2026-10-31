@@ -71,6 +71,7 @@ function harness(outcome: AgenCDaemonRestartOutcome | Error, options: {
     markerName: AGENC_UPDATE_RELAUNCH_ENV,
     encodeMarker: encodeUpdateRelaunchMarker,
     write: () => {},
+    now: () => 1_000,
   };
   return { calls, deps, reopened, exec: () => exec, stepArgs: () => stepArgs };
 }
@@ -147,7 +148,23 @@ describe("runUpdateRelaunch", () => {
     const h = harness({ status: "deferred", reason: "1 client attached", toVersion: "0.19.26" });
     await runUpdateRelaunch(request, h.deps);
     expect(h.calls).toEqual(["daemon-step", "reopen"]);
-    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon" });
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 1_000 });
+  });
+
+  it("stamps the follow with when the daemon step began, before the step runs", async () => {
+    let clock = 5_000;
+    const h = harness({ status: "deferred", code: "still-running", reason: "no result after 36 minutes", toVersion: "0.19.26" });
+    const step = h.deps.runDaemonStep;
+    await runUpdateRelaunch(request, {
+      ...h.deps,
+      now: () => clock,
+      // The step takes a while: results that end during it are this update's.
+      runDaemonStep: async (r, args) => {
+        clock = 5_000 + 36 * 60_000;
+        return step(r, args);
+      },
+    });
+    expect(h.reopened[0]?.follow).toEqual({ request, when: "daemon", since: 5_000 });
   });
 
   it("reopens this version with the reason when the new one cannot start", async () => {
