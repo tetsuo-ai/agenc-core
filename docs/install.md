@@ -278,12 +278,33 @@ leaves that record in place and reports the newer target, because that
 restart goes further. A pinned downgrade (`agenc update --pin` to an older
 version) ends such a record instead, so its waiting process cannot move the
 daemon back up later. `agenc update` ends it itself before it hands the
-restart to the older runtime, which may not know how. A waiting process
+restart to the older runtime, which may not know how. When the record cannot
+be ended (the daemon lifecycle lock stays busy for 2 minutes, or the record
+cannot be removed), the update leaves the daemon as it is, because a restart
+now would only be undone by the pending one, and says so: `Daemon restart
+failed: a restart onto 0.19.27 is still pending and could not be cancelled
+(the daemon lifecycle lock stayed busy for 120 s). The daemon was left as it
+is, and that restart can still move it to 0.19.27. To cancel it, delete
+<AGENC_HOME>/daemon-restart-pending.json.` The log then says `cancel failed`,
+never `cancelled`. A waiting process
 also ends when the daemon stopped, or was replaced by a daemon at least as new
 as its own version (for example by a newer `agenc` whose build check
 restarted it). A replacement that is still older, such as an earlier waiting
 process that finished first, is restarted in turn. Outcomes go to `<AGENC_HOME>/daemon-restart.log`.
 Deleting the record cancels a pending restart.
+
+One restart runs at a time in a home, so two updates at the same moment never
+see the daemon between one restart's stop and its start. Each `agenc daemon
+restart --when-idle` holds the restart lock
+`<AGENC_HOME>/daemon-restart.lock.sqlite` from its first look at the daemon
+until the new daemon reports its version, and a waiting process holds it for
+each check. A second update waits for the first restart to finish, up to 15
+minutes, and then decides on the daemon that one left: it restarts a daemon on
+an older version and leaves one that already runs its version or a newer one.
+Only a pinned downgrade moves a daemon to an older version. A waiting process
+that finds the lock taken checks again 15 s later. Only these restart steps
+take the lock: the daemon and clients going about their work never wait for
+it.
 
 Only a daemon started from `<AGENC_HOME>/runtime/` is restarted. The Desktop
 app runs its own bundled runtime in its own home, so its daemon is never

@@ -3821,7 +3821,9 @@ export interface UpdateCliDeps {
   /**
    * A pinned downgrade: end a pending restart onto a version above the
    * target, here, before the older runtime (which may not know
-   * `--downgrade`) gets the restart step.
+   * `--downgrade`) gets the restart step. Rejects, with a reason a person
+   * can read, when such a restart exists and could not be ended: the update
+   * then reports it and leaves the daemon as it is.
    */
   readonly cancelPendingRestartAbove?: (
     request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
@@ -3864,6 +3866,7 @@ const DAEMON_RESTART_HANDOFF_OUTPUT_MAX_CHARS = 64 * 1_024;
  */
 export interface UpdateDaemonHooks {
   readonly restartStaleDaemon: () => Promise<AgenCDaemonRestartOutcome>;
+  /** Rejects when a pending restart above the target could not be ended. */
   readonly cancelPendingRestartAbove: (
     request: Pick<UpdateDaemonRestartRequest, "agencHome" | "env" | "targetVersion">,
   ) => Promise<void>;
@@ -4402,8 +4405,15 @@ export async function runAgenCUpdateCli(
           env,
           targetVersion: latestVersion,
         });
-      } catch {
-        // The older runtime's own --downgrade, when it has one, tries again.
+      } catch (error) {
+        // That restart is still pending. Moving the daemon down now would
+        // only be undone by it later, so leave the daemon as it is and say
+        // so, also with --no-restart: that restart still moves it.
+        return {
+          status: "failed",
+          reason: error instanceof Error ? error.message : String(error),
+          toVersion: latestVersion,
+        };
       }
     }
     if (command.noRestart === true) {

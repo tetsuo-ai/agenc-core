@@ -71,6 +71,7 @@ import {
   type UpdateDaemonRestartRequest,
 } from "../../src/bin/update-cli.js";
 import type { AgenCDaemonRestartOutcome } from "../../src/app-server/daemon-restart-outcome.js";
+import { acquireAgenCDaemonLifecycleLock } from "../../src/app-server/daemon-lifecycle-lock.js";
 import {
   cancelAgenCDaemonPendingRestartAbove,
   readAgenCDaemonPendingRestart,
@@ -2728,6 +2729,101 @@ describe("agenc update CLI", () => {
         targetVersion: NEW_VERSION,
         downgrade: true,
       }]);
+    });
+
+    describe("a pinned downgrade that cannot end a pending restart onto a newer build", () => {
+      const currentVersion = "99.0.0";
+      const reason =
+        "a restart onto 98.0.0 is still pending and could not be cancelled (the daemon lifecycle lock stayed busy for 120 s). " +
+        "The daemon was left as it is, and that restart can still move it to 98.0.0. To cancel it, delete /home/u/.agenc/daemon-restart-pending.json";
+
+      async function downgrade(
+        flags: { readonly json?: boolean; readonly noRestart?: boolean },
+        cancelPendingRestartAbove: NonNullable<Parameters<typeof runAgenCUpdateCli>[1]>["cancelPendingRestartAbove"],
+      ): Promise<number> {
+        const artifact = makeSyntheticArtifact(work);
+        const manifestPath = writeManifest(work, artifact);
+        writeInstallShWrapper(
+          binDir,
+          agencHome,
+          join(agencHome, "runtime", currentVersion, LINUX_ARTIFACT_KEY, BIN_REL),
+        );
+        return runAgenCUpdateCli({
+          kind: "update",
+          check: false,
+          json: flags.json === true,
+          pinVersion: NEW_VERSION,
+          manifestUrl: `file://${manifestPath}`,
+          ...(flags.noRestart === true ? { noRestart: true } : {}),
+        }, { ...deps!, currentVersion, cancelPendingRestartAbove });
+      }
+
+      test("says so, hands no restart to the older runtime and still installs", async () => {
+        expect(await downgrade({}, async () => { throw new Error(reason); })).toBe(0);
+        // Restarting now would let that newer restart move the daemon back up later.
+        expect(restartRequests).toEqual([]);
+        expect(out[0]).toBe(`Updated agenc ${currentVersion} -> ${NEW_VERSION} (downloaded, sha256 verified).`);
+        expect(out.slice(-2)).toEqual([
+          `Daemon restart failed: ${reason}.`,
+          "Restart the daemon to pick it up: agenc daemon restart",
+        ]);
+      });
+
+      test("reports it in --json, and also with --no-restart", async () => {
+        expect(await downgrade({ json: true }, async () => { throw new Error(reason); })).toBe(0);
+        expect(restartRequests).toEqual([]);
+        expect(JSON.parse(out[0]!)).toMatchObject({
+          activated: true,
+          daemonRestart: { status: "failed", reason, toVersion: NEW_VERSION },
+        });
+        out.length = 0;
+        // --no-restart leaves the daemon alone, but the newer restart would still move it.
+        expect(await downgrade({ json: true, noRestart: true }, async () => { throw new Error(reason); })).toBe(0);
+        expect(JSON.parse(out[0]!).daemonRestart).toEqual({ status: "failed", reason, toVersion: NEW_VERSION });
+      });
+
+      test.skipIf(process.getuid?.() === 0)(
+        "a record the real cancel cannot remove is reported and kept, never logged as cancelled",
+        async () => {
+          writeAgenCDaemonPendingRestart(agencHome, {
+            schemaVersion: 1,
+            token: "1b8f5f3c-2b1a-4d6e-9f00-0123456789ab",
+            createdAt: "2026-10-30T00:00:00.000Z",
+            notAfter: "2099-01-01T00:00:00.000Z",
+            daemon: { pid: 4242, instanceId: "instance-4242" },
+            target: { runtimeVersion: "98.0.0", commit: "newer", buildTime: "2026-10-30T00:00:00.000Z" },
+          });
+          // The lock database and the log exist; the home itself cannot be written.
+          const release = await acquireAgenCDaemonLifecycleLock({ env: { AGENC_HOME: agencHome }, userHome: agencHome });
+          await release();
+          writeFileSync(join(agencHome, "daemon-restart.log"), "");
+          const recordPath = join(agencHome, "daemon-restart-pending.json");
+          expect(await downgrade({}, async (request) => {
+            chmodSync(agencHome, 0o500);
+            try {
+              // The step the CLI entry registers (registerUpdateDaemonHooks).
+              await cancelAgenCDaemonPendingRestartAbove(
+                { env: { ...request.env, AGENC_HOME: request.agencHome }, userHome: agencHome },
+                request.targetVersion,
+              );
+            } finally {
+              chmodSync(agencHome, 0o700);
+            }
+          })).toBe(0);
+          expect(restartRequests).toEqual([]);
+          expect(readAgenCDaemonPendingRestart(agencHome)?.target.runtimeVersion).toBe("98.0.0");
+          const failed = out.find((line) => line.startsWith("Daemon restart failed: "));
+          expect(failed).toContain(
+            `Daemon restart failed: a restart onto 98.0.0 is still pending and could not be cancelled (the record could not be removed: `,
+          );
+          expect(failed).toContain(
+            `The daemon was left as it is, and that restart can still move it to 98.0.0. To cancel it, delete ${recordPath}.`,
+          );
+          const log = readFileSync(join(agencHome, "daemon-restart.log"), "utf8");
+          expect(log).not.toContain("cancelled:");
+          expect(log).toContain(`cancel failed: the restart onto 98.0.0, for a downgrade to ${NEW_VERSION}, is still pending`);
+        },
+      );
     });
 
     test("--json reports what happened to the daemon", async () => {

@@ -74,3 +74,31 @@ export async function acquireAgenCDaemonLifecycleLock(
   };
 }
 
+
+export const AGENC_DAEMON_RESTART_LOCK_FILENAME = "daemon-restart.lock.sqlite";
+
+
+/**
+ * The daemon restart lock: one `daemon restart --when-idle` step at a time
+ * for a home. A restart holds it from its first look at the daemon until the
+ * replacement reported its build, through the stop and the spawn, so another
+ * restart never sees the daemon between them. It is a separate lock because
+ * the lifecycle lock cannot be held that long: the daemon's own shutdown
+ * cleanup takes it. Released by the operating system when a process dies.
+ * Never take it while holding the lifecycle lock.
+ */
+export async function acquireAgenCDaemonRestartLock(
+  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+  timeoutMs: number,
+): Promise<() => Promise<void>> {
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  await mkdir(daemonHome, { recursive: true, mode: 0o700 });
+  const release = await acquireLocalSqliteLock(
+    join(daemonHome, AGENC_DAEMON_RESTART_LOCK_FILENAME),
+    { label: "AgenC daemon restart", timeoutMs },
+  );
+  return async () => {
+    release();
+  };
+}
+
