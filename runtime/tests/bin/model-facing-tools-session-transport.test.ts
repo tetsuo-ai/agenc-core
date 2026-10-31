@@ -54,6 +54,7 @@ import {
   __setLiveWebFetchDnsAllLookupForTests,
   createModelFacingTools,
 } from "../../src/bin/model-facing-tools.js";
+import type { HomeContext } from "../../src/config/home.js";
 import { createProvider } from "../../src/llm/provider.js";
 import type { LLMProvider } from "../../src/llm/types.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
@@ -63,7 +64,7 @@ import {
   type ToolRuntimeAttemptContext,
 } from "../../src/tools/runtimes/context.js";
 import { createImagineImageTool } from "../../src/tools/system/imagine-image.js";
-import { mediaTestHome } from "../tools/system/media-test-helpers.js";
+import { mediaTestHome, ownProviderState } from "../tools/system/media-test-helpers.js";
 
 /** The "never asks" session with no web_fetch rules: the only one that uses a provider fetch. */
 const NEVER_ASKS = createEmptyToolPermissionContext({ mode: "bypassPermissions" });
@@ -85,8 +86,12 @@ function chatProvider(name: string, config: Record<string, unknown>): LLMProvide
   return { name, config, chat: vi.fn(), chatStream: vi.fn(), healthCheck: vi.fn() } as unknown as LLMProvider;
 }
 
-/** A session; a sub-agent carries the environment it was given at creation. */
-function sessionOn(provider: LLMProvider, providerEnvironment?: Environment): Session {
+/**
+ * A session; a sub-agent has its own live provider state, seeded with the
+ * environment it was given at creation (a registry's own test session may
+ * leave it out: the tool was built with its).
+ */
+function sessionOn(provider: LLMProvider, providerEnvironment?: Environment, credentialHome?: HomeContext): Session {
   return {
     conversationId: `session-${Math.random()}`,
     abortController: new AbortController(),
@@ -94,7 +99,14 @@ function sessionOn(provider: LLMProvider, providerEnvironment?: Environment): Se
     services: {
       provider,
       admissionRequired: false,
-      ...(providerEnvironment !== undefined ? { providerEnvironment } : {}),
+      // A runtime session's shape: what it was created with, and its live state.
+      ...(providerEnvironment !== undefined
+        ? {
+            providerEnvironment,
+            ...(credentialHome !== undefined ? { credentialHome } : {}),
+            providerService: ownProviderState(provider, providerEnvironment, credentialHome),
+          }
+        : {}),
     },
     permissionModeRegistry: { current: () => NEVER_ASKS },
   } as unknown as Session;
@@ -245,7 +257,7 @@ describe("media transport", () => {
       const parentProvider = createProvider("openai", { apiKey: "parent-key", model: "gpt-5" });
       const parent = { services: { provider: parentProvider } } as unknown as Session;
       const child = {
-        services: { provider: childProvider, providerEnvironment: CHILD, credentialHome: mediaTestHome(root) },
+        services: { provider: childProvider, providerService: ownProviderState(childProvider, CHILD, mediaTestHome(root)) },
       } as unknown as Session;
       const image = createImagineImageTool({
         workspaceRoot: root,
@@ -268,7 +280,7 @@ describe("media transport", () => {
   });
 });
 
-describe("a sub-agent without its own environment", () => {
+describe("a sub-agent without its own provider state", () => {
   it.each([
     ["web_fetch", { url: "https://example.com/page" }],
     ["WebSearch", { query: "agenc" }],
@@ -281,7 +293,7 @@ describe("a sub-agent without its own environment", () => {
     const result = await tool(parent, name).execute(dispatchedArgs(args, child, "child-call", name));
 
     expect(result.isError).toBe(true);
-    expect(result.content).toMatch(/no provider environment of its own/u);
+    expect(result.content).toMatch(/no provider state of its own/u);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

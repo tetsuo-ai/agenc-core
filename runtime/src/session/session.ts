@@ -1452,19 +1452,18 @@ export interface SessionServices {
    */
   readonly providerService?: SessionProviderService;
   /**
-   * Immutable provider-only environment captured for this session. Tools
-   * resolve a call's separate backends, canonical keys and HTTP transport
-   * (proxy, client certificate and key, CA trust) from it. Every session a
-   * tool can run under sets it when it is created; a sub-agent gets its own
-   * copy of its parent's. A tool call from a session without one fails
-   * closed rather than borrowing another session's.
+   * Immutable provider-only environment captured when this session was
+   * created. It seeds the session's own provider service, whose live
+   * environment (with any key added since) is what model calls and tools
+   * read. Every session a tool can run under sets it when it is created; a
+   * sub-agent gets its own copy of its parent's current one.
    */
   readonly providerEnvironment?: ProviderEnvironment;
   /**
-   * Where this session's tools read stored sign-ins (for example an xAI
-   * sign-in for XSearch or xAI media from a non-Grok session). Set with
-   * `providerEnvironment` when the session is created; a sub-agent gets its
-   * parent's. Never substituted at call time.
+   * Where this session's stored sign-ins live (for example an xAI sign-in
+   * for XSearch or xAI media from a non-Grok session). Set with
+   * `providerEnvironment` when the session is created and handed to its own
+   * provider service; a sub-agent gets its parent's.
    */
   readonly credentialHome?: import("../config/home.js").HomeContext;
   /** Read-only projection of `providerService.current().instance`. */
@@ -2802,6 +2801,9 @@ export class Session {
           ? { initialModel: initialSelection.collaborationMode.model }
           : {}),
         environment: opts.services.providerEnvironment ?? {},
+        ...(opts.services.credentialHome !== undefined
+          ? { credentialHome: opts.services.credentialHome }
+          : {}),
       });
     const services = {
       ...opts.services,

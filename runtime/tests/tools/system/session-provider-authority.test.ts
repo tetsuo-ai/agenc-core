@@ -87,34 +87,55 @@ async function signedInHome(name: string, accessToken: string): Promise<HomeCont
 async function harness() {
   const [{ createProvider, readProviderFactoryOptions }, { createModelFacingTools },
     { attachToolRuntimeContext }, { createImagineImageTool }, { createImagineVideoTool },
-    { runWithStartupProviderSelection }] = await Promise.all([
+    { runWithStartupProviderSelection }, { SessionProviderService }] = await Promise.all([
     import("../../../src/llm/provider.js"),
     import("../../../src/bin/model-facing-tools.js"),
     import("../../../src/tools/runtimes/context.js"),
     import("../../../src/tools/system/imagine-image.js"),
     import("../../../src/tools/system/imagine-video.js"),
     import("../../../src/utils/model/providers.js"),
+    import("../../../src/session/provider-service.js"),
   ]);
   let sub = 0;
+  type ProviderState = InstanceType<typeof SessionProviderService>;
+  /** A session's own live provider state, as the runtime gives every session. */
+  const providerState = (provider: unknown, environment: Record<string, string>, credentialHome?: HomeContext) =>
+    new SessionProviderService({
+      initialProvider: provider as never,
+      environment,
+      ...(credentialHome !== undefined ? { credentialHome } : {}),
+    });
   /**
-   * A session; `authority` is what a sub-agent carries from creation (a
-   * registry's own session may leave it out: the tool was built with its).
+   * A session over `provider`. `authority` gives it its own live provider
+   * state (what the runtime gives every session; a registry's own test
+   * session may leave it out: the tool was built with its), or `state` is
+   * one already made (a parent's fork, for example).
    */
   const sessionOf = (id: string, provider: unknown, authority: {
     readonly providerEnvironment?: Record<string, string>;
     readonly credentialHome?: HomeContext;
-  } = {}) => ({
-    conversationId: id,
-    nextInternalSubId: () => `${id}-sub-${++sub}`,
-    services: {
-      admissionRequired: false,
-      provider,
-      ...(authority.providerEnvironment !== undefined
-        ? { providerEnvironment: Object.freeze({ ...authority.providerEnvironment }) }
-        : {}),
-      ...(authority.credentialHome !== undefined ? { credentialHome: authority.credentialHome } : {}),
-    },
-  });
+    readonly state?: ProviderState;
+  } = {}) => {
+    const state = authority.state ?? (authority.providerEnvironment !== undefined
+      ? providerState(provider, authority.providerEnvironment, authority.credentialHome)
+      : undefined);
+    return {
+      conversationId: id,
+      nextInternalSubId: () => `${id}-sub-${++sub}`,
+      services: {
+        admissionRequired: false,
+        provider,
+        // A runtime session's shape: what it was created with, and its live state.
+        ...(state !== undefined
+          ? {
+              providerEnvironment: state.environment(),
+              ...(authority.credentialHome !== undefined ? { credentialHome: authority.credentialHome } : {}),
+              providerService: state,
+            }
+          : {}),
+      },
+    };
+  };
   const dispatched = (args: Record<string, unknown>, session: unknown, toolName: string) => {
     const value = { ...args };
     attachToolRuntimeContext(value, {
@@ -143,7 +164,11 @@ async function harness() {
   const factory = vi.fn((...args: Parameters<typeof createProvider>) =>
     Object.assign(createProvider(...args), { chat }));
   type ModelFacingTool = ReturnType<typeof createModelFacingTools>[number];
-  /** XSearch from a registry built for `parent`, inside its startup scope. */
+  /**
+   * XSearch from a registry built for `parent` (or for whatever session the
+   * getter returns: a registry built before its session is attached keeps
+   * XSearch deferred), inside its startup scope.
+   */
   const withXSearch = (home: HomeContext, parent: unknown, run: (xSearch: ModelFacingTool) => Promise<void>) =>
     runWithStartupProviderSelection({
       provider: "grok",
@@ -152,7 +177,7 @@ async function harness() {
     }, async () => run(createModelFacingTools({
       workspaceRoot: process.cwd(),
       agencHome: home.path,
-      getSession: () => parent as never,
+      getSession: (typeof parent === "function" ? parent : () => parent) as never,
       env: { AGENC_HOME: home.path },
       grokCapabilities: { x_search: true },
       providerFactory: factory,
@@ -179,7 +204,7 @@ async function harness() {
     }));
     return { tool, requests };
   };
-  return { createProvider, sessionOf, dispatched, withXSearch, xSearchCredentials, media };
+  return { createProvider, sessionOf, providerState, dispatched, withXSearch, xSearchCredentials, media };
 }
 
 describe("tool calls from a sub-agent with its own xAI authority", () => {
@@ -274,6 +299,78 @@ describe("tool calls from a sub-agent with its own xAI authority", () => {
   });
 });
 
+describe("keys added or rotated after a session is created", () => {
+  const xaiRequests = (requests: () => ReadonlyArray<{ url: string; authorization?: string }>) =>
+    requests().filter((request) => request.url.startsWith("https://api.x.ai/")).map((request) => request.authorization);
+
+  it("reach XSearch and xAI media from the registry's own session at once", async () => {
+    const home = await createHome("rotate-registry");
+    const tools = await harness();
+    const root = tools.sessionOf("deepseek-root", tools.createProvider("deepseek", {
+      apiKey: "deepseek-key", model: "deepseek-v4-pro",
+    }), { providerEnvironment: {}, credentialHome: home });
+    const state = root.services.providerService!;
+    // Built before the session is attached, as bootstrap does, so XSearch is offered.
+    let current: unknown = null;
+    const { tool: image, requests } = tools.media("image", home, await mkdtemp(join(testRoot, "media-")), root);
+
+    await tools.withXSearch(home, () => current, async (xSearch) => {
+      current = root;
+      const missing = await xSearch.execute({ query: "xAI" });
+      expect(missing.isError).toBe(true);
+      await state.useSessionApiKey("grok", "xai-added");
+      expect((await xSearch.execute({ query: "xAI" })).isError).toBeUndefined();
+      await state.useSessionApiKey("grok", "xai-rotated");
+      expect((await xSearch.execute({ query: "xAI" })).isError).toBeUndefined();
+    });
+    expect(tools.xSearchCredentials().map((built) => built.bearer)).toEqual(["xai-added", "xai-rotated"]);
+
+    await state.useSessionApiKey("grok", "xai-media");
+    await image.execute({ prompt: "a cat" });
+    await state.useSessionApiKey("grok", "xai-media-rotated");
+    await image.execute({ prompt: "a cat" });
+    expect(xaiRequests(requests)).toEqual(["Bearer xai-media", "Bearer xai-media-rotated"]);
+  });
+
+  it("stay in the sub-agent that added them, and the parent's never reach it", async () => {
+    const home = await createHome("rotate-child");
+    const tools = await harness();
+    const parent = tools.sessionOf("deepseek-parent", tools.createProvider("deepseek", {
+      apiKey: "deepseek-key", model: "deepseek-v4-pro",
+    }), { providerEnvironment: {}, credentialHome: home });
+    const parentState = parent.services.providerService!;
+    // The child's own provider state, seeded from the parent's current one at creation.
+    const childProvider = tools.createProvider("deepseek", { apiKey: "deepseek-child", model: "deepseek-v4-pro" });
+    const childState = parentState.forkForChild(childProvider, { provider: "deepseek", model: "deepseek-v4-pro" });
+    const child = tools.sessionOf("deepseek-child", childProvider, { state: childState, credentialHome: home });
+    let current: unknown = null;
+    const { tool: image, requests } = tools.media("image", home, await mkdtemp(join(testRoot, "media-")), parent);
+
+    await tools.withXSearch(home, () => current, async (xSearch) => {
+      current = parent;
+      await childState.useSessionApiKey("grok", "xai-child");
+      expect((await xSearch.execute(tools.dispatched({ query: "xAI" }, child, "XSearch"))).isError).toBeUndefined();
+      // The child's key is not the parent's.
+      expect((await xSearch.execute({ query: "xAI" })).isError).toBe(true);
+      await parentState.useSessionApiKey("grok", "xai-parent");
+      expect((await xSearch.execute({ query: "xAI" })).isError).toBeUndefined();
+      // Nor does the parent's later key reach the child.
+      expect((await xSearch.execute(tools.dispatched({ query: "xAI" }, child, "XSearch"))).isError).toBeUndefined();
+      await childState.useSessionApiKey("grok", "xai-child-rotated");
+      expect((await xSearch.execute(tools.dispatched({ query: "xAI" }, child, "XSearch"))).isError).toBeUndefined();
+    });
+    expect(tools.xSearchCredentials().map((built) => built.bearer))
+      .toEqual(["xai-child", "xai-parent", "xai-child", "xai-child-rotated"]);
+
+    await image.execute(tools.dispatched({ prompt: "a cat" }, child, "ImagineImage"));
+    await image.execute(tools.dispatched({ prompt: "a cat" }, parent, "ImagineImage"));
+    expect(xaiRequests(requests)).toEqual(["Bearer xai-child-rotated", "Bearer xai-parent"]);
+    // A child created now starts from the parent's current state.
+    const laterState = parentState.forkForChild(childProvider, { provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(laterState.environment().XAI_API_KEY).toBe("xai-parent");
+  });
+});
+
 describe("a sub-agent without its own authority", () => {
   type Harness = Awaited<ReturnType<typeof harness>>;
   const deepSeekChild = (tools: Harness, authority: Parameters<Harness["sessionOf"]>[2]) =>
@@ -290,7 +387,7 @@ describe("a sub-agent without its own authority", () => {
       const tools = await harness();
       const parent = tools.sessionOf("openai-parent",
         tools.createProvider("openai", { apiKey: "parent-key", model: "gpt-5" }));
-      // A credential home, but no provider environment of its own.
+      // No provider state of its own at all.
       const child = deepSeekChild(tools, { credentialHome: home });
       const { tool, requests } = tools.media(kind, home, await mkdtemp(join(testRoot, "media-")), parent,
         { OPENAI_API_KEY: "parent-key" });
@@ -298,7 +395,7 @@ describe("a sub-agent without its own authority", () => {
       const result = await tool.execute(tools.dispatched({ prompt: "a cat" }, child, toolName));
 
       expect(result.isError).toBe(true);
-      expect(result.content).toMatch(/no provider environment of its own/u);
+      expect(result.content).toMatch(/no provider state of its own/u);
       expect(requests()).toEqual([]);
     });
 
@@ -327,13 +424,14 @@ describe("a sub-agent without its own authority", () => {
     const tools = await harness();
     const parent = tools.sessionOf("grok-parent",
       tools.createProvider("grok", { credentialHome: home, model: "grok-4.6" }));
+    // No provider state at all, and a provider state without a credential home.
     const noEnvironment = deepSeekChild(tools, { credentialHome: home });
     const noHome = deepSeekChild(tools, { providerEnvironment: {} });
 
     await tools.withXSearch(home, parent, async (xSearch) => {
       const first = await xSearch.execute(tools.dispatched({ query: "xAI" }, noEnvironment, "XSearch"));
       expect(first.isError).toBe(true);
-      expect(first.content).toMatch(/no provider environment of its own/u);
+      expect(first.content).toMatch(/no provider state of its own/u);
       const second = await xSearch.execute(tools.dispatched({ query: "xAI" }, noHome, "XSearch"));
       expect(second.isError).toBe(true);
       expect(second.content).toMatch(/no credential home of its own/u);
@@ -345,11 +443,12 @@ describe("a sub-agent without its own authority", () => {
 
 describe("session provider authority", () => {
   async function authority() {
-    const [{ createProvider }, routes] = await Promise.all([
+    const [{ createProvider }, routes, { SessionProviderService }] = await Promise.all([
       import("../../../src/llm/provider.js"),
       import("../../../src/tools/system/session-provider-authority.js"),
+      import("../../../src/session/provider-service.js"),
     ]);
-    return { createProvider, ...routes };
+    return { createProvider, SessionProviderService, ...routes };
   }
 
   it("lends a session's API key only with its own endpoint", async () => {
@@ -390,36 +489,57 @@ describe("session provider authority", () => {
     }), xai)).toEqual({ bearer: "gateway-key", baseURL: "https://xai-gateway.example/v1", authMode: "api_key" });
   });
 
-  it("gives the registry's own session the tool's captured authority, and no other session", async () => {
-    const { resolveToolCallAuthority, toolCallSession } = await authority();
-    const home = await createHome("captured-authority");
+  it("reads every session's own live provider state, the registry's own included", async () => {
+    const { resolveToolCallAuthority, toolCallSession, createProvider, SessionProviderService } = await authority();
+    const home = await createHome("live-authority");
     const captured = { env: Object.freeze({ XAI_API_KEY: "registry-key" }), home };
-    const registry = { services: {} };
-    const other = { services: {} };
-    const own = resolveToolCallAuthority("XSearch", toolCallSession(registry, () => registry), captured, true);
-    expect(own).toMatchObject({ environment: { XAI_API_KEY: "registry-key" }, credentialHome: home });
-    // A call with no session at all is the registry owner's own as well.
+    const state = new SessionProviderService({
+      initialProvider: createProvider("deepseek", { apiKey: "sk", model: "deepseek-v4-pro" }),
+      environment: { XAI_API_KEY: "live-key" },
+      credentialHome: home,
+    });
+    const registry = { services: { providerService: state } };
+    // The registry's own runtime session: its live state, not the tool's captured copy.
+    expect(resolveToolCallAuthority("XSearch", toolCallSession(registry, () => registry), captured, true))
+      .toMatchObject({ environment: { XAI_API_KEY: "live-key" }, credentialHome: home });
+    await state.useSessionApiKey("grok", "rotated-key");
+    expect(resolveToolCallAuthority("XSearch", toolCallSession(registry, () => registry), captured, true))
+      .toMatchObject({ environment: { XAI_API_KEY: "rotated-key" } });
+    // A call with no session at all has only the tool's own.
     expect(resolveToolCallAuthority("XSearch", toolCallSession(undefined, () => null), captured, true))
       .toMatchObject({ environment: { XAI_API_KEY: "registry-key" }, credentialHome: home });
-    expect(resolveToolCallAuthority("XSearch", toolCallSession(other, () => registry), captured, true))
-      .toEqual({ error: expect.stringMatching(/no provider environment of its own/u) });
+    // A stand-in object without a provider service for the registry's own session (test and
+    // embedding doubles) gets what the tool was built with; any other session gets an error.
+    const standIn = { services: {} };
+    expect(resolveToolCallAuthority("XSearch", toolCallSession(standIn, () => standIn), captured, true))
+      .toMatchObject({ environment: { XAI_API_KEY: "registry-key" }, credentialHome: home });
+    expect(resolveToolCallAuthority("XSearch", toolCallSession({ services: {} }, () => registry), captured, true))
+      .toEqual({ error: expect.stringMatching(/no provider state of its own/u) });
   });
 
   it("fills a session's configured provider auth choice into its environment, an exported value first", async () => {
-    const { resolveToolCallAuthority, toolCallSession } = await authority();
+    const { resolveToolCallAuthority, toolCallSession, createProvider, SessionProviderService } = await authority();
     const home = await createHome("configured-auth");
     const configStore = { current: () => ({ providers: { grok: { auth: "api-key" } } }) };
     const child = (providerEnvironment: Record<string, string>) => ({
-      services: { providerEnvironment: Object.freeze(providerEnvironment), credentialHome: home, configStore },
+      services: {
+        providerService: new SessionProviderService({
+          initialProvider: createProvider("deepseek", { apiKey: "sk", model: "deepseek-v4-pro" }),
+          environment: providerEnvironment,
+          credentialHome: home,
+        }),
+        configStore,
+      },
     });
     const filled = resolveToolCallAuthority("XSearch",
       toolCallSession(child({ XAI_API_KEY: "child-key" }), () => null), {}, true);
     expect(filled).toMatchObject({ environment: { XAI_API_KEY: "child-key", GROK_AUTH_MODE: "api-key" } });
-    // The transport environment stays the session's own object.
+    // The transport environment stays the session's own live object.
     const exported = child({ XAI_API_KEY: "child-key", GROK_AUTH_MODE: "oauth" });
     const kept = resolveToolCallAuthority("XSearch", toolCallSession(exported, () => null), {}, true);
     expect(kept).toMatchObject({ environment: { GROK_AUTH_MODE: "oauth" } });
-    expect("transportEnvironment" in kept && kept.transportEnvironment).toBe(exported.services.providerEnvironment);
+    expect("transportEnvironment" in kept && kept.transportEnvironment)
+      .toBe(exported.services.providerService.environment());
   });
 
   it("never pairs a sign-in with a custom endpoint", async () => {

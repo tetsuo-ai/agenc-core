@@ -3609,6 +3609,16 @@ describe("runAgent", () => {
     expect(child!.services.providerEnvironment).not.toBe(parentEnvironment);
     expect(Object.isFrozen(child!.services.providerEnvironment)).toBe(true);
     expect(child!.services.credentialHome).toBe(credentialHome);
+    // Its own live provider state, seeded from the parent's: keys added in
+    // either session afterwards stay in that session.
+    const childState = child!.services.providerService!;
+    expect(childState).not.toBe(session.services.providerService);
+    expect(childState.environment()).toEqual(parentEnvironment);
+    expect(childState.credentialHome()).toBe(credentialHome);
+    await session.providerService.useSessionApiKey("grok", "parent-xai-key");
+    expect(childState.environment().XAI_API_KEY).toBeUndefined();
+    await childState.useSessionApiKey("grok", "child-xai-key");
+    expect(session.providerService.environment().XAI_API_KEY).toBe("parent-xai-key");
   });
 
   it("stops a funds-exhausted child once and projects one typed outcome to journal, mailbox, status, and user notice", async () => {

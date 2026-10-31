@@ -334,6 +334,16 @@ describe('turn compatibility catalog boundary', () => {
     expect(turn.session.services.providerEnvironment).not.toBe(parentEnvironment)
     expect(Object.isFrozen(turn.session.services.providerEnvironment)).toBe(true)
     expect(turn.session.services.credentialHome).toBe(credentialHome)
+    // Its own live provider state, seeded from the parent's: keys added in
+    // either session afterwards stay in that session.
+    const childState = turn.session.providerService
+    expect(childState).not.toBe(parent.providerService)
+    expect(childState.environment()).toEqual(parentEnvironment)
+    expect(childState.credentialHome()).toBe(credentialHome)
+    await parent.providerService.useSessionApiKey('grok', 'parent-xai-key')
+    expect(childState.environment().XAI_API_KEY).toBeUndefined()
+    await childState.useSessionApiKey('grok', 'child-xai-key')
+    expect(parent.providerService.environment().XAI_API_KEY).toBe('parent-xai-key')
     await turn.session.shutdown()
     await turn.disposeOwnedProvider()
   })

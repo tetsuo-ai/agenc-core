@@ -12,6 +12,7 @@ import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
 import { withExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ownProviderState } from "../tools/system/media-test-helpers.js";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import { defaultConfig } from "../config/schema.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
@@ -201,9 +202,6 @@ function fakeSession(cwd = process.cwd()): Session {
     },
     services: {
       admissionRequired: false,
-      // Every session carries its own tool authority from creation; a
-      // fixture that runs as a sub-agent has an empty one of its own.
-      providerEnvironment: Object.freeze({}),
       modelsManager: {
         tryListModels: () => [modelInfo],
         listModels: async () => [modelInfo],
@@ -296,6 +294,18 @@ async function writeTestSkill(
 
 function withProvider(session: Session, provider: LLMProvider): Session {
   (session.services as { provider?: LLMProvider }).provider = provider;
+  return session;
+}
+
+/**
+ * A session calling as a sub-agent: its own live provider state over its
+ * provider, with an empty environment of its own, as the runtime gives every
+ * session (a registry's own fixture keeps the environment the tools were
+ * built with).
+ */
+function asSubAgent(session: Session): Session {
+  (session.services as { providerService?: unknown }).providerService =
+    ownProviderState(session.services.provider);
   return session;
 }
 
@@ -6983,7 +6993,7 @@ describe("WebSearch through DeepSeek's Search API", () => {
       healthCheck: vi.fn(),
     } as unknown as LLMProvider);
     const tool = webSearch({ session: ollamaParent });
-    const child = deepseekSession({ apiKey: "sk-child-deepseek" });
+    const child = asSubAgent(deepseekSession({ apiKey: "sk-child-deepseek" }));
     const args: Record<string, unknown> = { query: "release notes", allowed_domains: ["github.com"] };
     attachToolRuntimeContext(args, {
       callId: "child-search-gateway",
@@ -7035,7 +7045,7 @@ describe("WebSearch through DeepSeek's Search API", () => {
 
     // An OpenAI child of a DeepSeek parent: no DeepSeek search, no parent key.
     const parentTool = webSearch({ session: deepseekSession() });
-    const childArgs = dispatched(openAi(), "child-search-1");
+    const childArgs = dispatched(asSubAgent(openAi()), "child-search-1");
     expect(parentTool.admissionEstimate?.(childArgs)?.maxCostUsd).toBe(0);
     const keyless = routedFetch([["https://html.duckduckgo.com/html/", ddgHtml]]);
     const childResult = await withFetch(keyless, () => parentTool.execute(childArgs));
@@ -7044,7 +7054,7 @@ describe("WebSearch through DeepSeek's Search API", () => {
 
     // A DeepSeek child of an OpenAI parent searches with its own key.
     const openAiParentTool = webSearch({ session: openAi() });
-    const deepseekChildArgs = dispatched(deepseekSession({ apiKey: "sk-child-deepseek" }), "child-search-2");
+    const deepseekChildArgs = dispatched(asSubAgent(deepseekSession({ apiKey: "sk-child-deepseek" })), "child-search-2");
     expect(openAiParentTool.admissionEstimate?.(deepseekChildArgs)?.maxCostUsd).toBe(0.00075);
     const viaDeepSeek = routedFetch([[OFFICIAL_SEARCH_URL, json200(searchBody)]]);
     const deepseekResult = await withFetch(viaDeepSeek, () => openAiParentTool.execute(deepseekChildArgs));
@@ -7731,7 +7741,7 @@ describe("web_fetch through DeepSeek's Fetch API", () => {
     // An OpenAI child of a "never asks" DeepSeek parent: the parent's tool
     // object, the child's call. No DeepSeek, and never the parent's key.
     const parent = deepseekSession();
-    const child = openAiSession();
+    const child = asSubAgent(openAiSession());
     const parentTool = webFetch({ session: parent });
     const childArgs = dispatchedArgs({ url: "https://example.com/" }, child, "child-call-1");
     expect(parentTool.admissionEstimate?.(childArgs)?.maxCostUsd).toBe(0);
@@ -7746,7 +7756,7 @@ describe("web_fetch through DeepSeek's Fetch API", () => {
     // A "never asks" DeepSeek child under an OpenAI parent fetches through
     // DeepSeek with its own key.
     const openAiParentTool = webFetch({ session: openAiSession() });
-    const deepseekChild = deepseekSession({ apiKey: "sk-child-deepseek" });
+    const deepseekChild = asSubAgent(deepseekSession({ apiKey: "sk-child-deepseek" }));
     const deepseekChildArgs = dispatchedArgs({ url: "https://example.com/" }, deepseekChild, "child-call-2");
     expect(openAiParentTool.admissionEstimate?.(deepseekChildArgs)?.maxCostUsd).toBe(0.00075);
     const viaDeepSeek = routedFetch([[OFFICIAL_FETCH_URL, json200(PAGE)]]);

@@ -1112,6 +1112,14 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     expect(thread.childSession.services.providerEnvironment).not.toBe(parentEnvironment);
     expect(Object.isFrozen(thread.childSession.services.providerEnvironment)).toBe(true);
     expect(thread.childSession.services.credentialHome).toBe(credentialHome);
+    // Its own live provider state, seeded from the parent's: keys added in
+    // either session afterwards stay in that session.
+    const childState = thread.childSession.providerService;
+    expect(childState).not.toBe(session.providerService);
+    expect(childState.environment()).toEqual(parentEnvironment);
+    expect(childState.credentialHome()).toBe(credentialHome);
+    await session.providerService.useSessionApiKey("grok", "parent-xai-key");
+    expect(childState.environment().XAI_API_KEY).toBeUndefined();
 
     await thread.shutdown("test complete");
   });

@@ -1454,6 +1454,12 @@ describe("buildBootstrapSessionServices tool authority", () => {
       });
       expect(Object.isFrozen(handle.services.providerEnvironment)).toBe(true);
       expect(handle.services.credentialHome).toBe(homeContext);
+      // The live state its model calls and tools read starts from the same.
+      expect(handle.services.providerService?.environment()).toMatchObject({
+        OPENAI_API_KEY: "root-key",
+        HTTPS_PROXY: "http://root-proxy.test:8080",
+      });
+      expect(handle.services.providerService?.credentialHome()).toBe(homeContext);
     } finally {
       await handle.shutdown();
       rmSync(home, { recursive: true, force: true });

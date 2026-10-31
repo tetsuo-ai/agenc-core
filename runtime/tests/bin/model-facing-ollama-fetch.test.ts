@@ -3,21 +3,25 @@ import { createModelFacingTools, __setLiveWebFetchDnsAllLookupForTests } from ".
 import { createEmptyToolPermissionContext, type ToolPermissionContext } from "../../src/permissions/types.js";
 import type { Session } from "../../src/session/session.js";
 import { attachToolRuntimeContext, type ToolRuntimeAttemptContext } from "../../src/tools/runtimes/context.js";
+import type { LLMProvider } from "../../src/llm/types.js";
+import { ownProviderState } from "../tools/system/media-test-helpers.js";
 
 /** The "never asks" session with no web_fetch rules: the only one that uses Ollama's fetch. */
 const NEVER_ASKS = createEmptyToolPermissionContext({ mode: "bypassPermissions" });
 const OLLAMA_FETCH_URL = "https://ollama.com/api/web_fetch";
+
+/** An Ollama Cloud session's services, with its own live provider state as every session has. */
+function ollamaServices(overrides: Record<string, unknown>) {
+  const provider = { name: "ollama-cloud", config: { apiKey: "session-key", model: "gemma4:31b", ...overrides } };
+  return { provider, providerService: ownProviderState(provider as unknown as LLMProvider) };
+}
 
 function ollamaSession(
   overrides: Record<string, unknown> = {},
   permissions: ToolPermissionContext | null | (() => ToolPermissionContext) = NEVER_ASKS,
 ): Session {
   return {
-    services: {
-      provider: { name: "ollama-cloud", config: { apiKey: "session-key", model: "gemma4:31b", ...overrides } },
-      // Its own tool authority, as every session carries from creation.
-      providerEnvironment: Object.freeze({}),
-    },
+    services: ollamaServices(overrides),
     ...(permissions === null ? {} : {
       permissionModeRegistry: { current: typeof permissions === "function" ? permissions : () => permissions },
     }),
@@ -176,11 +180,9 @@ describe("Ollama Cloud web fetch gate (follows redirects on Ollama's servers)", 
   });
 
   it("chooses Ollama from the invoking sub-agent session, with its own key", async () => {
+    const openAiProvider = { name: "openai", config: { apiKey: "sk-openai", model: "gpt-5.5" } } as unknown as LLMProvider;
     const openAiSession = {
-      services: {
-        provider: { name: "openai", config: { apiKey: "sk-openai", model: "gpt-5.5" } },
-        providerEnvironment: Object.freeze({}),
-      },
+      services: { provider: openAiProvider, providerService: ownProviderState(openAiProvider) },
       permissionModeRegistry: { current: () => NEVER_ASKS },
     } as unknown as Session;
     // An OpenAI child of a "never asks" Ollama parent fetches locally.

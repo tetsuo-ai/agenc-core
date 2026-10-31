@@ -26,7 +26,7 @@ import { createImagineEditTool } from "../../src/tools/system/imagine-edit.js";
 import { createImagineImageTool } from "../../src/tools/system/imagine-image.js";
 import { createImagineSpeechTool } from "../../src/tools/system/imagine-speech.js";
 import { createImagineVideoTool } from "../../src/tools/system/imagine-video.js";
-import { mediaTestHome } from "../tools/system/media-test-helpers.js";
+import { mediaTestHome, ownProviderState } from "../tools/system/media-test-helpers.js";
 
 type FakeAdmission = ReturnType<typeof fakeAdmission>;
 
@@ -88,9 +88,9 @@ function testCredentialHome(): HomeContext {
 }
 
 /**
- * A session with its own provider, admission client, internal ids and tool
- * authority (an empty environment and the test home unless given), as every
- * session carries from creation.
+ * A session with its own provider, admission client, internal ids and live
+ * provider state (an empty environment and the test home unless given), as
+ * the runtime gives every session.
  */
 function sessionOn(
   id: string,
@@ -108,8 +108,7 @@ function sessionOn(
       provider,
       executionAdmission: admission,
       admissionRequired: true,
-      providerEnvironment: Object.freeze({ ...(authority.providerEnvironment ?? {}) }),
-      credentialHome: testCredentialHome(),
+      providerService: ownProviderState(provider, authority.providerEnvironment ?? {}, testCredentialHome()),
     },
     emit: () => {},
   } as unknown as Session;
@@ -337,7 +336,7 @@ describe("WebSearch with a configured search endpoint", () => {
     vi.stubGlobal("fetch", fetch);
     const openai = (key: string) => chatProvider("openai",
       { apiKey: key, baseURL: "https://api.openai.com/v1", model: "gpt-5.5" });
-    const parent = sessionOn("parent-session", openai("sk-parent"));
+    const parent = sessionOn("parent-session", openai("sk-parent"), { providerEnvironment: search("parent") });
     const child = sessionOn("child-agent", openai("sk-child"), { providerEnvironment: search("child") });
     const tool = modelFacingTools(parent.session, { env: { AGENC_HOME: home, ...search("parent") } })
       .find((entry) => entry.name === "WebSearch")!;
@@ -400,8 +399,10 @@ describe("XSearch", () => {
 
   it("uses a Grok sub-agent's own key and model, admitted on its own run", async () => {
     const { built, providerFactory } = xFactory();
+    // The parent's own environment holds an independent xAI key.
     const parent = sessionOn("openai-parent", chatProvider("openai",
-      { apiKey: "sk-parent", baseURL: "https://api.openai.com/v1", model: "gpt-5.5" }));
+      { apiKey: "sk-parent", baseURL: "https://api.openai.com/v1", model: "gpt-5.5" }),
+      { providerEnvironment: { XAI_API_KEY: "xai-independent" } });
     const child = sessionOn("grok-child", chatProvider("grok",
       { apiKey: "xai-child", baseURL: "https://api.x.ai/v1", model: "grok-4.6" }));
     const tool = modelFacingTools(parent.session, {
@@ -428,14 +429,13 @@ describe("media tools", () => {
   const authorization = (fetchImpl: ReturnType<typeof vi.fn>) =>
     (fetchImpl.mock.calls[0]?.[1] as { headers?: Record<string, string> } | undefined)?.headers?.authorization;
 
-  /** A parent session and a sub-agent carrying its own (empty) environment and the test home. */
+  /** A parent session and a sub-agent with its own live provider state (empty environment, test home). */
   function sessions(parentProvider: LLMProvider, childProvider: LLMProvider) {
     const parent = { services: { provider: parentProvider } } as unknown as Session;
     const child = {
       services: {
         provider: childProvider,
-        providerEnvironment: Object.freeze({}),
-        credentialHome: testCredentialHome(),
+        providerService: ownProviderState(childProvider, {}, testCredentialHome()),
       },
     } as unknown as Session;
     return { parent, child };

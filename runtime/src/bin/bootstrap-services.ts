@@ -843,7 +843,12 @@ export function buildBootstrapSessionServices(
           initialModel: opts.model,
         }
       : {}),
+    // The root session's own provider state: its environment and the home
+    // its providers read stored sign-ins from (bootstrap.ts credentialHome).
     environment: providerEnvironment,
+    ...(opts.configStore.homeContext !== undefined
+      ? { credentialHome: opts.configStore.homeContext }
+      : {}),
     ...(opts.readSavedApiKey !== undefined
       ? { readSavedApiKey: opts.readSavedApiKey }
       : {}),
@@ -962,9 +967,8 @@ export function buildBootstrapSessionServices(
     modelClient,
     codeModeService,
     providerService,
-    // The root session's tool authority, set here explicitly: tools resolve
-    // separate backends, canonical keys and transport from this environment
-    // and stored sign-ins from the home its providers use.
+    // The root session's authority, set here explicitly (its provider
+    // service above holds the live copy tools read).
     providerEnvironment,
     credentialHome: opts.configStore.homeContext,
     provider: opts.provider,

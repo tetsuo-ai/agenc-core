@@ -39,12 +39,22 @@ import {
 
 type EnvironmentRecord = Readonly<Record<string, string | undefined>>;
 
+/**
+ * A session's live provider state: its own provider service, the one its
+ * model calls use (session/provider-service.ts). Read at call time, so a key
+ * the user added or rotated in the session applies to its tools at once.
+ */
+export interface LiveProviderState {
+  environment(): EnvironmentRecord;
+  credentialHome?(): HomeContext | undefined;
+}
+
 /** The parts of a session a tool reads its authority from. */
 export interface ToolCallSession {
   readonly services?: {
     readonly provider?: unknown;
+    readonly providerService?: LiveProviderState;
     readonly providerEnvironment?: EnvironmentRecord;
-    readonly credentialHome?: HomeContext;
     readonly configStore?: { current(): unknown };
   };
 }
@@ -99,12 +109,16 @@ export function toolCallSession<S extends ToolCallSession>(
 }
 
 /**
- * The authority for one call. The tool's own captured environment and home
- * were given to it for the session its registry was built for (bootstrap
- * passes that session's), so they serve that same session and a call with
- * no session at all, and nothing else. Any other session must carry its own
- * environment, and its own credential home when `needsCredentialHome`;
- * otherwise the call fails closed with a clear error.
+ * The authority for one call, read from the calling session's own live
+ * provider state at call time: its environment (keys added or rotated in the
+ * session included) and its credential home. Every runtime Session owns a
+ * provider service, the registry's own session included, so no frozen copy
+ * and no other session's state is consulted. The tool's captured environment
+ * and home serve only a call with no session at all, or a session object
+ * without a provider service that stands in for the registry's own (test
+ * and embedding doubles, never a runtime Session). Any other session without
+ * its own state, or without a credential home when `needsCredentialHome`,
+ * fails closed with a clear error.
  */
 export function resolveToolCallAuthority(
   toolName: string,
@@ -121,24 +135,22 @@ export function resolveToolCallAuthority(
       ...(captured.home !== undefined ? { credentialHome: captured.home } : {}),
     };
   }
-  // The registry's own session keeps what the tool was built with for it
-  // (the same environment and home bootstrap gave the session); any other
-  // session has only what it carries itself.
-  const ownSession = call.registrySession;
   const services = session.services;
-  const transportEnvironment = ownSession
-    ? captured.env ?? services?.providerEnvironment
-    : services?.providerEnvironment;
+  const live = services?.providerService;
+  const standIn = live === undefined && call.registrySession;
+  const transportEnvironment = live !== undefined
+    ? live.environment()
+    : standIn ? captured.env ?? services?.providerEnvironment : undefined;
   if (transportEnvironment === undefined) {
     return {
       error:
-        `${toolName} cannot run: this session has no provider environment of its own, ` +
+        `${toolName} cannot run: this session has no provider state of its own, ` +
         "and a tool never borrows another session's credentials or connection settings.",
     };
   }
-  const credentialHome = ownSession
-    ? captured.home ?? services?.credentialHome
-    : services?.credentialHome;
+  const credentialHome = live !== undefined
+    ? live.credentialHome?.()
+    : standIn ? captured.home : undefined;
   if (needsCredentialHome && credentialHome === undefined) {
     return {
       error:

@@ -222,6 +222,11 @@ export class SessionProviderService {
     readonly initialProviderName?: string;
     readonly initialModel?: string;
     readonly environment?: ProviderEnvironment;
+    /**
+     * Where this session's stored sign-ins live, set when the session is
+     * created; otherwise the initial provider's own credential home.
+     */
+    readonly credentialHome?: ProviderFactoryOptions["credentialHome"];
     readonly readSavedApiKey?: ReadSavedProviderApiKey;
     readonly authBackend?: AuthBackend;
     readonly sessionId?: string;
@@ -246,7 +251,7 @@ export class SessionProviderService {
       initialBinding.factoryOptions.extra?.canonicalEndpointRequired === true;
     this.#destinationLock = params.destinationLock === undefined
       ? undefined : Object.freeze({ ...params.destinationLock });
-    this.#credentialHome = initialBinding.factoryOptions.credentialHome;
+    this.#credentialHome = params.credentialHome ?? initialBinding.factoryOptions.credentialHome;
     this.#readSavedApiKey = params.readSavedApiKey;
     this.#authBackend = params.authBackend;
     this.#sessionId = params.sessionId;
@@ -258,8 +263,18 @@ export class SessionProviderService {
     return this.#binding;
   }
 
+  /**
+   * This session's live provider environment: what it was created with plus
+   * any key the user added since (useSessionApiKey). Tools read it at call
+   * time, so an added or rotated key applies to them at once.
+   */
   environment(): ProviderEnvironment {
     return this.#environment;
+  }
+
+  /** Where this session's stored sign-ins live. */
+  credentialHome(): ProviderFactoryOptions["credentialHome"] {
+    return this.#credentialHome;
   }
 
   /** Explicit user ingress. Memory only; never changes process or shell environment. */
@@ -296,7 +311,11 @@ export class SessionProviderService {
       initialProvider: provider,
       initialProviderName: selection.provider,
       initialModel: selection.model,
+      // The child's own state, seeded from this session's current one: the
+      // constructor snapshots the environment, so later changes to either
+      // session's keys never reach the other.
       environment: this.#environment,
+      ...(this.#credentialHome !== undefined ? { credentialHome: this.#credentialHome } : {}),
       ...(this.#readSavedApiKey !== undefined ? { readSavedApiKey: this.#readSavedApiKey } : {}),
       ...(this.#authBackend !== undefined ? { authBackend: this.#authBackend } : {}),
       ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
