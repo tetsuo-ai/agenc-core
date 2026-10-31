@@ -455,6 +455,13 @@ interface ProcessEntry {
   oomKillsWhenBackgrounded?: number;
   /** The last quiet-poll process check, for CPU deltas and exited members. */
   processCheck?: SessionProcessCheck;
+  /** The slot this background start holds until it is a live session. */
+  backgroundReservation?: BackgroundStartReservation;
+}
+
+/** A background start's slot, held from admission until it is a live session or has failed. */
+interface BackgroundStartReservation {
+  readonly ownerId: string | undefined;
 }
 
 /** An ended background session whose notice no result has carried yet. */
@@ -778,6 +785,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly sessionSandboxesInUse = new Set<SessionSandbox>();
   private readonly maxBackgroundSessions: number;
   private readonly quietProcessStateAfterMs: number;
+  /** Background starts admitted and not yet live sessions (see execCommand). */
+  private readonly backgroundStartReservations = new Set<BackgroundStartReservation>();
   private pendingEndNotices: PendingEndNotice[] = [];
   /**
    * Run in an idle warm namespace of the slot: the first pool member that is
@@ -976,8 +985,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         `too many live unified exec processes (${this.processes.size}/${this.maxProcesses})`,
       );
     }
+    let reservation: BackgroundStartReservation | undefined;
     if (request.startInBackground === true) {
-      const live = this.liveBackgroundSessionCount(normalizeOwnerId(request.ownerId));
+      const ownerId = normalizeOwnerId(request.ownerId);
+      const live = this.liveBackgroundSessionCount(ownerId);
       if (live >= this.maxBackgroundSessions) {
         throw new UnifiedExecError(
           "process_limit",
@@ -985,7 +996,29 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             "the limit. Stop one with kill_process (list_processes shows them) or wait for one to end.",
         );
       }
+      // Admission is synchronous, but a start becomes a session only after it
+      // has spawned and waited: its slot is held from here, so a concurrent
+      // start cannot take the same last slot.
+      reservation = { ownerId };
+      this.backgroundStartReservations.add(reservation);
     }
+    try {
+      return await this.launchCommand(request, sandboxAuthorityGeneration, reservation);
+    } finally {
+      if (reservation !== undefined) this.backgroundStartReservations.delete(reservation);
+    }
+  }
+
+  /**
+   * execCommand after admission: spawn, wait up to the yield, and return the
+   * result or a live session. A held background-start slot passes to the
+   * session when the command is still running at the end of the wait.
+   */
+  private async launchCommand(
+    request: ExecCommandRequest,
+    sandboxAuthorityGeneration: number,
+    reservation: BackgroundStartReservation | undefined,
+  ): Promise<ExecCommandToolOutput> {
     const tty = request.tty === true;
     if (tty && hasCurrentWorkspaceOperationLifetime()) {
       throw new UnifiedExecError(
@@ -1068,6 +1101,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       signal: request.__abortSignal,
       sandboxAuthorityGeneration,
     });
+    if (reservation !== undefined) entry.backgroundReservation = reservation;
     const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
     void entry.exitPromise.then(
       releaseWorkspaceOperation,
@@ -1138,6 +1172,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       return collected;
     }
     entry.backgrounded = true;
+    // A live session now, counted as one: its held start slot is released.
+    if (reservation !== undefined) this.backgroundStartReservations.delete(reservation);
     // The baseline for the end notice's out-of-memory flag (Linux cgroups).
     entry.oomKillsWhenBackgrounded = readOomKillCount();
     return {
@@ -2660,12 +2696,19 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
   }
 
-  /** Live background sessions of `ownerId`, other than `except`. */
+  /**
+   * Live background sessions of `ownerId`, other than `except`, including
+   * background starts admitted but not yet running as sessions.
+   */
   private liveBackgroundSessionCount(ownerId: string | undefined, except?: ProcessEntry): number {
     let live = 0;
     for (const entry of this.processes.values()) {
       if (entry === except || !entry.backgrounded || entry.exitState !== null || entry.stopRequested) continue;
       if (isProcessOwnedBy({ entryOwnerId: entry.ownerId, requestOwnerId: ownerId })) live += 1;
+    }
+    for (const reservation of this.backgroundStartReservations) {
+      if (reservation === except?.backgroundReservation) continue;
+      if (isProcessOwnedBy({ entryOwnerId: reservation.ownerId, requestOwnerId: ownerId })) live += 1;
     }
     return live;
   }

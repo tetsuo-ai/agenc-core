@@ -127,6 +127,34 @@ describe("onTimeout: background", () => {
     expect(existsSync(join(cwd, "started-anyway"))).toBe(false);
   });
 
+  it("admits one of two concurrent background starts at the last free slot", async () => {
+    // Admission is synchronous; a start becomes a session only after it has
+    // spawned and waited, so the slot is held from admission on.
+    const cwd = workdir();
+    const processes = manager({ cwd, maxBackgroundSessions: 1 });
+    const starts = await Promise.allSettled([
+      processes.execCommand({ cmd: "touch first; sleep 30", startInBackground: true, yield_time_ms: 250, ownerId: "owner-e" }),
+      processes.execCommand({ cmd: "touch second; sleep 30", startInBackground: true, yield_time_ms: 250, ownerId: "owner-e" }),
+    ]);
+    expect(starts.map((start) => start.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const refusal = starts.find((start) => start.status === "rejected") as PromiseRejectedResult;
+    expect(refusal.reason).toMatchObject({ code: "process_limit", message: expect.stringContaining("has not started") });
+    expect(processes.listOwnedProcesses({ ownerId: "owner-e" }).filter((view) => view.status === "running")).toHaveLength(1);
+    await delay(300);
+    expect([existsSync(join(cwd, "first")), existsSync(join(cwd, "second"))].filter(Boolean)).toHaveLength(1);
+  });
+
+  it("frees a held slot when the start fails or the job ends inside its start window", async () => {
+    const processes = manager({ maxBackgroundSessions: 1 });
+    await expect(processes.execCommand({
+      cmd: "sleep 30", workdir: "/nonexistent-agenc-workdir", startInBackground: true, yield_time_ms: 250, ownerId: "owner-f",
+    })).rejects.toBeDefined();
+    const quick = await processes.execCommand({ cmd: "true", startInBackground: true, yield_time_ms: 250, ownerId: "owner-f" });
+    expect(quick.exit_code).toBe(0);
+    const job = await processes.execCommand({ cmd: "sleep 30", startInBackground: true, yield_time_ms: 250, ownerId: "owner-f" });
+    expect(job.session_id).toEqual(expect.any(Number));
+  });
+
   it("keeps the default: without onTimeout the time limit still stops the command", async () => {
     const processes = manager();
     const result = await processes.execCommand({
