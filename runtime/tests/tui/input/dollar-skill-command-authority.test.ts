@@ -113,8 +113,13 @@ describe("dollar skill trust authority", () => {
     expect(loaded.skillInvocation).toBeUndefined();
   });
 
-  test("a built-in skill never carries a shell or process grant; a user skill keeps its own", async () => {
-    const shellHeavy = ["FileRead, exec_command(git status:*)", "PowerShell", "write_stdin"];
+  test("a built-in skill carries only allowlisted grants; a user skill keeps its own", async () => {
+    const shellHeavy = [
+      "FileRead, exec_command(git status:*)",
+      "PowerShell",
+      "write_stdin",
+      "mcp__terminal__exec_command mcp__terminal__*",
+    ];
     const builtIn = {
       ...command("bundled"),
       loadedFrom: "bundled" as const,
@@ -138,6 +143,8 @@ describe("dollar skill trust authority", () => {
       "exec_command(git status:*)",
       "PowerShell",
       "write_stdin",
+      "mcp__terminal__exec_command",
+      "mcp__terminal__*",
     ]);
   });
 
