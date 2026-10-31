@@ -13,14 +13,6 @@ import { basename } from "node:path";
 export const AGENC_DAEMON_RESTART_LOCK_FILENAME = "daemon-restart.lock.sqlite";
 export const AGENC_DAEMON_RESTART_LOCK_LABEL = "AgenC daemon restart";
 
-/**
- * The capability a runtime build lists in its `dist/VERSION` when its
- * `daemon restart --when-idle` takes the restart lock itself. For a runtime
- * without it (built before the lock existed), `agenc update` holds the lock
- * for the restart it hands over.
- */
-export const AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK = "daemon-restart-lock";
-
 /** How long a restart waits for another restart of the same daemon. */
 export const AGENC_DAEMON_RESTART_LOCK_WAIT_MS = 15 * 60 * 1_000;
 

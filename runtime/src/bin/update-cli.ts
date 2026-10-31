@@ -72,16 +72,8 @@ import {
   type AgenCDaemonRestartOutcome,
 } from "../app-server/daemon-restart-outcome.js";
 import {
-  AGENC_DAEMON_RESTART_LOCK_FILENAME,
-  AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS,
-  AGENC_DAEMON_RESTART_LOCK_LABEL,
-  AGENC_DAEMON_RESTART_LOCK_WAIT_MS,
   AGENC_DAEMON_RESTART_WAITING_PREFIX,
-  AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK,
-  describeAgenCDaemonRestartLockFailure,
   formatAgenCDaemonRestartWait,
-  formatAgenCDaemonRestartWaitingLine,
-  isLocalSqliteLockBusyTimeout,
   resolveAgenCDaemonRestartHandoffTimeoutMs,
 } from "../app-server/daemon-restart-handoff.js";
 import {
@@ -3864,10 +3856,6 @@ export interface UpdateDaemonRestartRequest {
 }
 
 const DAEMON_RESTART_HANDOFF_OUTPUT_MAX_CHARS = 64 * 1_024;
-const RESTART_LOCK = {
-  label: AGENC_DAEMON_RESTART_LOCK_LABEL,
-  filename: AGENC_DAEMON_RESTART_LOCK_FILENAME,
-} as const;
 
 /**
  * The in-process daemon steps `agenc update` needs: restart a daemon still
@@ -3936,54 +3924,6 @@ function defaultRestartDaemon(
         { ...request, wrapperPath: request.wrapperPath },
         onProgress === undefined ? {} : { onProgress },
       );
-}
-
-/**
- * Whether the runtime at `runtimeBin` takes the daemon restart lock in its
- * own restart step: its build lists the capability in `dist/VERSION`. A
- * runtime from before the lock (0.19.25 and older) lists none.
- */
-export function runtimeTakesDaemonRestartLock(runtimeBin: string): boolean {
-  try {
-    const path = join(dirname(dirname(runtimeBin)), "dist", "VERSION");
-    if (lstatSync(path).size > 64 * 1_024) return false;
-    const info = JSON.parse(readFileSync(path, "utf8")) as { readonly capabilities?: unknown };
-    return Array.isArray(info.capabilities) &&
-      info.capabilities.includes(AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The daemon restart lock, held here for a restart handed to a runtime that
- * does not take it. Waits like a restart step: one try, the waiting line,
- * then up to the queue wait. Returns the reason when it cannot be had.
- */
-export async function holdDaemonRestartLockForHandoff(
-  agencHome: string,
-  onProgress: (line: string) => void,
-  acquire: typeof acquireLocalSqliteLock = acquireLocalSqliteLock,
-): Promise<{ readonly release: () => void } | { readonly reason: string }> {
-  const path = join(agencHome, AGENC_DAEMON_RESTART_LOCK_FILENAME);
-  const take = (timeoutMs: number) => acquire(path, { label: AGENC_DAEMON_RESTART_LOCK_LABEL, timeoutMs });
-  try {
-    return { release: await take(AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS) };
-  } catch (busy) {
-    if (!isLocalSqliteLockBusyTimeout(busy, RESTART_LOCK)) {
-      return { reason: describeAgenCDaemonRestartLockFailure(busy) };
-    }
-  }
-  try {
-    onProgress(formatAgenCDaemonRestartWaitingLine());
-  } catch {
-    // Progress is best effort.
-  }
-  try {
-    return { release: await take(AGENC_DAEMON_RESTART_LOCK_WAIT_MS) };
-  } catch (error) {
-    return { reason: describeAgenCDaemonRestartLockFailure(error) };
-  }
 }
 
 /** Run the activated runtime's `daemon restart --when-idle --json`. */
@@ -4554,15 +4494,6 @@ export async function runAgenCUpdateCli(
       };
     }
     deps.onProgress?.("Checking whether the daemon can restart on the new runtime.");
-    // A runtime from before the restart lock does not take it in its restart
-    // step: hold it here until that restart reports back, so no other
-    // restart sees the daemon between its stop and its start.
-    let held: { readonly release: () => void } | undefined;
-    if (!runtimeTakesDaemonRestartLock(result.binPath)) {
-      const lock = await holdDaemonRestartLockForHandoff(agencHome, restartProgress);
-      if ("reason" in lock) return { status: "failed", reason: lock.reason, toVersion: latestVersion };
-      held = lock;
-    }
     try {
       const request: UpdateDaemonRestartRequest = {
         wrapperPath: wrappers[0]!.path,
@@ -4580,8 +4511,6 @@ export async function runAgenCUpdateCli(
         reason: error instanceof Error ? error.message : String(error),
         toVersion: latestVersion,
       };
-    } finally {
-      held?.release();
     }
   };
 

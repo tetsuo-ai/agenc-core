@@ -310,10 +310,9 @@ prints `Waiting for another daemon restart to finish (up to 15 minutes).` once
 again 15 s later. Only these restart steps take the lock: the daemon and
 clients going about their work never wait for it. A lock that fails for
 another reason than a running restart, such as a lock directory macOS cannot
-check in time, is reported with that reason. When `agenc update` activates a
-runtime from before the lock (0.19.25 and older, whose build does not list the
-`daemon-restart-lock` capability in its `dist/VERSION`), it takes the lock
-itself and holds it until that runtime's restart reports back.
+check in time, is reported with that reason. Downgrading to a version older
+than 0.19.26 hands the restart to a runtime that does not take the restart
+lock, so do not run two updates at once while you do that.
 
 `agenc update` waits for the restart step as long as the step's own limits
 allow: its 15 minutes for another restart, the daemon start (14 readiness

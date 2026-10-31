@@ -196,8 +196,8 @@ function makeSyntheticArtifact(
     readonly platform?: "linux" | "win";
     /** Incompressible filler that makes the archive about this much larger. */
     readonly paddingBytes?: number;
-    /** `dist/VERSION` capabilities; none means a runtime from before them. */
-    readonly capabilities?: readonly string[];
+    /** The runtime's `bin/agenc` program; by default it echoes its arguments. */
+    readonly runtimeScript?: string;
   } = {},
 ): { tarball: string; sha: string } {
   const tree = join(dir, "tree");
@@ -211,21 +211,12 @@ function makeSyntheticArtifact(
   chmodSync(binDir, 0o700);
   writeFileSync(
     join(binDir, "agenc"),
-    'console.log("ok " + process.argv.slice(2).join(" "));\n',
+    options.runtimeScript ?? 'console.log("ok " + process.argv.slice(2).join(" "));\n',
   );
   if (options.paddingBytes !== undefined) {
     writeFileSync(join(dirname(binDir), "padding.bin"), randomBytes(options.paddingBytes));
   }
-  if (options.capabilities !== undefined) {
-    mkdirSync(join(dirname(binDir), "dist"), { recursive: true });
-    writeFileSync(join(dirname(binDir), "dist", "VERSION"), `${JSON.stringify({
-      commit: "synthetic",
-      shortCommit: "synthetic",
-      buildTime: "2026-10-31T00:00:00.000Z",
-      runtimeVersion: NEW_VERSION,
-      capabilities: options.capabilities,
-    })}\n`);
-  }
+
   const nodeShim = options.nodeBehavior === "wrong-identity"
     ? [
         "#!/bin/sh",
@@ -756,13 +747,6 @@ function betweenStopAndSpawn() {
   const gate = new Promise<void>((resolve) => { open = resolve; });
   const entered = new Promise<void>((resolve) => { reached = resolve; });
   return { gate, entered, open: () => open(), reached: () => reached() };
-}
-
-async function settledWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
-  let done = false;
-  void promise.then(() => { done = true; }, () => { done = true; });
-  await realDelay(ms);
-  return done;
 }
 
 /**
@@ -2843,8 +2827,7 @@ describe("agenc update CLI", () => {
 
     test("an explicit pin moves a newer daemon to the pinned version, whatever version this updater runs", async () => {
       // Three versions: this updater 9.9.8, the pinned target 9.9.9, the daemon 9.9.10.
-      // A modern target: its own restart step takes the restart lock.
-      const artifact = makeSyntheticArtifact(work, { capabilities: ["daemon-restart-lock"] });
+      const artifact = makeSyntheticArtifact(work);
       const manifestPath = writeManifest(work, artifact);
       writeInstallShWrapper(binDir, agencHome, join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL));
       const target = { runtimeVersion: NEW_VERSION, commit: "target", buildTime: "2026-10-29T00:00:00.000Z" };
@@ -2899,99 +2882,64 @@ describe("agenc update CLI", () => {
       expect(restartRequests).toMatchObject([{ targetVersion: NEW_VERSION, pinned: true }]);
     });
 
-    test("holds the restart lock for a restart handed to a runtime from before it, and leaves it to one that takes it", async () => {
-      const lockHeld = async (): Promise<boolean> => {
-        try {
-          const release = await acquireLocalSqliteLock(join(agencHome, "daemon-restart.lock.sqlite"), {
-            label: "probe", timeoutMs: 50,
-          });
-          release();
-          return false;
-        } catch {
-          return true;
-        }
+    test("takes no restart lock of its own for the handoff: the activated runtime's step does", async () => {
+      // A runtime from before 0.19.26 takes none either; the docs say not to
+      // run two updates at once while downgrading to one.
+      let heldDuringHandoff: boolean | undefined;
+      const { code } = await updateTo();
+      expect(code).toBe(0);
+      deps = {
+        ...deps!,
+        restartDaemon: async () => {
+          try {
+            const release = await acquireLocalSqliteLock(join(agencHome, "daemon-restart.lock.sqlite"), {
+              label: "probe", timeoutMs: 50,
+            });
+            release();
+            heldDuringHandoff = false;
+          } catch {
+            heldDuringHandoff = true;
+          }
+          return restartOutcome;
+        },
       };
-      const seen: boolean[] = [];
-      const update = async (capabilities?: readonly string[]): Promise<number> => {
-        const artifact = makeSyntheticArtifact(work, capabilities === undefined ? {} : { capabilities });
-        const manifestPath = writeManifest(work, artifact);
-        writeInstallShWrapper(binDir, agencHome, join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL));
-        return runAgenCUpdateCli({ kind: "update", check: false, json: false, manifestUrl: `file://${manifestPath}` }, {
-          ...deps!,
-          restartDaemon: async () => {
-            seen.push(await lockHeld());
-            return restartOutcome;
-          },
-        });
-      };
-      // A runtime from before the lock (0.19.25 and older lists no capabilities).
-      expect(await update()).toBe(0);
-      expect(await lockHeld()).toBe(false);
       rmSync(join(work, "tree"), { recursive: true, force: true });
-      expect(await update(["daemon-restart-lock"])).toBe(0);
-      expect(seen).toEqual([true, false]);
+      expect((await updateTo()).code).toBe(0);
+      expect(heldDuringHandoff).toBe(false);
     });
 
-    test("keeps a restart handed to a runtime from before the lock and a concurrent newer restart apart", async () => {
-      // Mixed versions: this updater (99.0.0) pins 9.9.9, an old runtime whose
-      // restart step takes no lock; meanwhile a newer update's step (100.0.0,
-      // which takes it) looks while the old step is between stop and spawn.
-      const artifact = makeSyntheticArtifact(work);
-      const manifestPath = writeManifest(work, artifact);
-      writeInstallShWrapper(binDir, agencHome, join(agencHome, "runtime", "99.0.0", LINUX_ARTIFACT_KEY, BIN_REL));
-      const world = daemonWorld(agencHome, { runtimeVersion: "99.0.0", commit: "current", buildTime: "2026-10-30T00:00:00.000Z" });
-      const oldTarget = { runtimeVersion: NEW_VERSION, commit: "old-runtime", buildTime: "2026-09-01T00:00:00.000Z" };
-      const newer = { runtimeVersion: "100.0.0", commit: "newer", buildTime: "2026-10-31T00:00:00.000Z" };
-      const gap = betweenStopAndSpawn();
-      const downgrade = runAgenCUpdateCli({
-        kind: "update",
-        check: false,
-        json: false,
-        pinVersion: NEW_VERSION,
-        manifestUrl: `file://${manifestPath}`,
-      }, {
-        ...deps!,
-        currentVersion: "99.0.0",
-        cancelPendingRestartAbove: async () => {},
-        // The old runtime's restart step: the same stop and start, no lock.
-        restartDaemon: async () => restartAgenCDaemonWhenIdle(world.host, {}, {
-          ...world.stepDeps(oldTarget, gap),
-          downgrade: true,
-          acquireRestartLock: async () => async () => {},
-        }),
-      });
-      await gap.entered;
-      const concurrent = restartAgenCDaemonWhenIdle(world.host, {}, world.stepDeps(newer));
-      // It decides nothing while the old step is between stop and spawn.
-      expect(await settledWithin(concurrent, 100)).toBe(false);
-      gap.open();
-      expect(await downgrade).toBe(0);
-      expect(out.at(-1)).toBe(`Restarted the daemon on ${NEW_VERSION} (pid 5000).`);
-      await expect(concurrent).resolves.toMatchObject({ status: "restarted", fromVersion: NEW_VERSION, toVersion: "100.0.0" });
-      expect(world.daemon()?.runtimeVersion).toBe("100.0.0");
-      expect(world.spawned).toEqual([NEW_VERSION, "100.0.0"]);
-    }, 15_000);
-
-    test("says once that it waits when another restart holds the restart lock", async () => {
-      const lockPath = join(agencHome, "daemon-restart.lock.sqlite");
-      const holdFor = async (ms: number): Promise<void> => {
-        const release = await acquireLocalSqliteLock(lockPath, { label: "AgenC daemon restart", timeoutMs: 1_000 });
-        setTimeout(release, ms);
+    test("shows the restart step's waiting line once, on stdout, or on stderr with --json", async () => {
+      // The activated runtime's own `daemon restart --when-idle` waits for another restart.
+      const runtimeScript = [
+        "const args = process.argv.slice(2);",
+        "if (args.slice(0, 3).join(' ') === 'daemon restart --when-idle') {",
+        "  process.stderr.write('agenc: Waiting for another daemon restart to finish (up to 15 minutes).\\n');",
+        `  console.log(JSON.stringify({ status: 'restarted', fromVersion: '${OLD_VERSION}', toVersion: '${NEW_VERSION}', pid: 4242 }));`,
+        "} else {",
+        "  console.log('ok ' + args.join(' '));",
+        "}",
+        "",
+      ].join("\n");
+      const { restartDaemon: _injected, ...plainDeps } = deps!;
+      const update = async (json: boolean): Promise<number> => {
+        const artifact = makeSyntheticArtifact(work, { runtimeScript });
+        const manifestPath = writeManifest(work, artifact);
+        writeInstallShWrapper(binDir, agencHome, join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL));
+        return runAgenCUpdateCli({ kind: "update", check: false, json, manifestUrl: `file://${manifestPath}` }, plainDeps);
       };
-      await holdFor(1_500);
-      expect((await updateTo()).code).toBe(0);
+      expect(await update(false)).toBe(0);
       const tail = out.slice(out.findIndex((entry) => entry.startsWith("  wrapper repointed")) + 1);
       expect(tail).toEqual([
         "Waiting for another daemon restart to finish (up to 15 minutes).",
-        `No daemon is running. The next one starts on ${NEW_VERSION}.`,
+        `Restarted the daemon on ${NEW_VERSION} (pid 4242).`,
       ]);
-      // --json: stdout stays one JSON line; the waiting line goes to stderr.
       out.length = 0;
       err.length = 0;
-      rmSync(join(work, "tree"), { recursive: true, force: true });
-      await holdFor(1_500);
-      expect((await updateTo({ json: true })).code).toBe(0);
+      expect(await update(true)).toBe(0);
       expect(out).toHaveLength(1);
+      expect(JSON.parse(out[0]!).daemonRestart).toEqual({
+        status: "restarted", fromVersion: OLD_VERSION, toVersion: NEW_VERSION, pid: 4242,
+      });
       expect(err).toEqual(["Waiting for another daemon restart to finish (up to 15 minutes)."]);
     }, 15_000);
 

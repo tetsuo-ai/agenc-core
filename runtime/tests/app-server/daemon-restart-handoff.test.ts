@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,7 +8,6 @@ import {
   AGENC_DAEMON_RESTART_LOCK_FIRST_TRY_MS,
   AGENC_DAEMON_RESTART_LOCK_LABEL,
   AGENC_DAEMON_RESTART_LOCK_WAIT_MS,
-  AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK,
   agenCDaemonStartWaitBoundMs,
   describeAgenCDaemonRestartLockFailure,
   formatAgenCDaemonRestartWaitingLine,
@@ -118,13 +117,5 @@ describe("a restart lock that times out", () => {
     expect(isLocalSqliteLockBusyTimeout(lifecycle, RESTART_LOCK)).toBe(false);
     expect(isLocalSqliteLockBusyTimeout(new Error("EACCES"), RESTART_LOCK)).toBe(false);
     expect(isLocalSqliteLockBusyTimeout(undefined, RESTART_LOCK)).toBe(false);
-  });
-});
-
-describe("the runtime capability that tells the updater who takes the lock", () => {
-  it("is what the build writes into dist/VERSION", () => {
-    const script = readFileSync(join(import.meta.dirname, "../../scripts/write-build-version.mjs"), "utf8");
-    expect(AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK).toBe("daemon-restart-lock");
-    expect(script).toContain(`capabilities: ["${AGENC_RUNTIME_CAPABILITY_DAEMON_RESTART_LOCK}"]`);
   });
 });
