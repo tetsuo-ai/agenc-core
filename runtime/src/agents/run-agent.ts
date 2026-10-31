@@ -1,4 +1,5 @@
 import { runtimeOptionsForChildSession } from "../one-shot-fast-mode.js";
+import { childSessionAuthority } from "../session/session-authority.js";
 import { isEffectReviewRequired, waitForEffectReview } from "../session/effect-review-gate.js";
 /**
  * runAgent — drive one subagent's run-turn loop.
@@ -3675,7 +3676,9 @@ async function buildChildSession(
             params.parent.providerService.current().provider,
           model: sessionConfiguration.collaborationMode.model,
         }, params.plan?.crossProvider ? params.plan.route : undefined),
-        providerEnvironment: params.parent.providerService.environment(),
+        // The child's own copy of its parent's tool authority, taken here at
+        // creation: its tools never fall back to the parent's at call time.
+        ...childSessionAuthority(params.parent),
         registry,
         // Explicitly shadow the inherited service even for admission-free embeds.
         executionAdmission,

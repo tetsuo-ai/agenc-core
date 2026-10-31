@@ -19,21 +19,28 @@ import { mkdir, open, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import {
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../../llm/provider.js";
+import { readProviderIdentity } from "../../llm/provider.js";
 import {
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
+import {
+  isManagedProviderRoute,
+  resolveToolCallAuthority,
+  sessionApiKeyRoute,
+  type ToolCallAuthority,
+  toolCallSession,
+  withToolCallTransport,
+} from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
 import {
   cachedVeniceMediaModels,
   loadVeniceMediaModels,
+  type VeniceListAuthority,
   veniceEditPrice,
   veniceUpscalePrice,
   type VeniceMediaModel,
@@ -51,6 +58,8 @@ export interface ImagineEditToolOptions {
 interface EditBackend {
   readonly baseURL: string;
   readonly bearer: string;
+  /** The calling session's authority; its requests use this transport. */
+  readonly authority: ToolCallAuthority;
 }
 
 const DEFAULT_BASE_URL = "https://api.venice.ai/api/v1";
@@ -80,27 +89,46 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function resolveEditBackend(opts: ImagineEditToolOptions): EditBackend | { readonly error: string } {
-  const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+/**
+ * The edit route of the session making the call (`args`; a sub-agent runs
+ * its parent's tool): its own Venice key with its own URL, or, without a
+ * factory key, the canonical Venice key with the canonical URL from its own
+ * environment. Never one session's URL with another's key.
+ */
+function resolveEditBackend(
+  opts: ImagineEditToolOptions,
+  args?: Readonly<Record<string, unknown>>,
+): EditBackend | { readonly error: string } {
+  const call = toolCallSession(readInvokingSession(args), opts.getSession);
+  const session = call.session;
+  const provider = session?.services?.provider;
   if (readProviderIdentity(provider as never) !== "venice" || provider === undefined) {
     return { error: "ImagineEdit edits images only in a Venice session, with that session's own key." };
   }
-  const factory = readProviderFactoryOptions(provider as never);
-  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
+  if (isManagedProviderRoute(provider)) {
     return { error: "ImagineEdit is not available on the managed AgenC route." };
   }
-  const bearer = typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-    ? factory.apiKey.trim()
-    : resolveProviderApiKeyEnvironment("venice", env)?.value;
+  const authority = resolveToolCallAuthority("ImagineEdit", call, {
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+  });
+  if ("error" in authority) return authority;
+  const own = sessionApiKeyRoute(provider, DEFAULT_BASE_URL);
+  if (own !== undefined) return { ...own, authority };
+  const env = authority.environment;
+  const bearer = resolveProviderApiKeyEnvironment("venice", env)?.value;
   if (bearer === undefined) return { error: "ImagineEdit needs this Venice session's API key." };
-  const baseURL = factory.baseURL ?? resolveProviderBaseURLEnvironment("venice", env)?.value ?? DEFAULT_BASE_URL;
+  const baseURL = resolveProviderBaseURLEnvironment("venice", env)?.value ?? DEFAULT_BASE_URL;
   try {
     new URL(baseURL);
   } catch {
     return { error: "ImagineEdit endpoint is invalid." };
   }
-  return { baseURL: baseURL.replace(/\/+$/, ""), bearer };
+  return { baseURL: baseURL.replace(/\/+$/, ""), bearer, authority };
+}
+
+/** Whose Venice list a call reads: the session's endpoint, key and transport. */
+function veniceList(backend: EditBackend): VeniceListAuthority {
+  return { baseURL: backend.baseURL, bearer: backend.bearer, transport: backend.authority.transportEnvironment };
 }
 
 /** Whether this session has its own image edit route. */
@@ -191,8 +219,9 @@ const EXTENSIONS: Readonly<Record<string, string>> = { "image/png": "png", "imag
 
 export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
   const advertised = opts.getSession() === null ? undefined : resolveEditBackend(opts);
-  if (advertised !== undefined && !("error" in advertised) && cachedVeniceMediaModels(advertised.baseURL) === undefined) {
-    void loadVeniceMediaModels(advertised.baseURL, advertised.bearer, opts.fetchImpl ?? fetch).catch(() => undefined);
+  if (advertised !== undefined && !("error" in advertised) && cachedVeniceMediaModels(veniceList(advertised)) === undefined) {
+    void loadVeniceMediaModels(veniceList(advertised),
+      withToolCallTransport(opts.fetchImpl ?? fetch, advertised.authority)).catch(() => undefined);
   }
   return {
     name: "ImagineEdit",
@@ -216,12 +245,13 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
     timeoutMs: 200_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
-      const backend = resolveEditBackend(opts);
+      const backend = resolveEditBackend(opts, args);
       const scale = upscaleFactor(args.upscale);
       if ("error" in backend || scale === "invalid") return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: null };
-      const listed = cachedVeniceMediaModels(backend.baseURL);
+      const listed = cachedVeniceMediaModels(veniceList(backend));
       if (listed === undefined) {
-        void loadVeniceMediaModels(backend.baseURL, backend.bearer, opts.fetchImpl ?? fetch).catch(() => undefined);
+        void loadVeniceMediaModels(veniceList(backend),
+          withToolCallTransport(opts.fetchImpl ?? fetch, backend.authority)).catch(() => undefined);
       }
       const price = callPrice(listed, stringValue(args.model) ?? DEFAULT_EDIT_MODEL, scale);
       return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: price ?? null };
@@ -245,7 +275,7 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
     execute: async (args) => {
       const signal = args.__abortSignal instanceof AbortSignal ? args.__abortSignal : undefined;
       signal?.throwIfAborted();
-      const backend = resolveEditBackend(opts);
+      const backend = resolveEditBackend(opts, args);
       if ("error" in backend) return refusal(backend.error);
       const ref = stringValue(args.image);
       if (ref === undefined) return refusal("image is required");
@@ -254,8 +284,9 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
       const prompt = stringValue(args.prompt);
       if (scale === undefined && prompt === undefined) return refusal("prompt is required to edit an image");
       const model = scale === undefined ? stringValue(args.model) ?? DEFAULT_EDIT_MODEL : UPSCALE_MODEL;
-      const fetchImpl = opts.fetchImpl ?? fetch;
-      const listed = await loadVeniceMediaModels(backend.baseURL, backend.bearer, fetchImpl, signal);
+      // The calling session's own proxy, client certificate and CA trust.
+      const fetchImpl = withToolCallTransport(opts.fetchImpl ?? fetch, backend.authority);
+      const listed = await loadVeniceMediaModels(veniceList(backend), fetchImpl, signal);
       const price = callPrice(listed, model, scale);
       if (price === undefined) {
         const names = listed === undefined

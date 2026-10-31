@@ -18,9 +18,8 @@
  * @module
  */
 
-import { isIP } from "node:net";
-
 import { sleep } from "../../../utils/sleep.js";
+import { providerFetchSkipReason } from "../shared/provider-fetch-url.js";
 import {
   clip,
   deepSeekHttpFailureReason,
@@ -80,26 +79,6 @@ const DEEPSEEK_FETCH_MAX_RESPONSE_BYTES = 8_000_000;
 const DEEPSEEK_FETCH_MAX_ERROR_BYTES = 64_000;
 
 /**
- * Name suffixes that never name a public site: mDNS, private-use and
- * reserved namespaces. Their URLs stay with the local fetcher.
- */
-const NON_PUBLIC_NAME_SUFFIXES = Object.freeze([
-  "local",
-  "localhost",
-  "localdomain",
-  "internal",
-  "intranet",
-  "lan",
-  "home",
-  "corp",
-  "private",
-  "test",
-  "invalid",
-  "onion",
-  "arpa",
-]);
-
-/**
  * `auto`: on for a deepseek session on DeepSeek's own API host; `on`: on for
  * every deepseek session, including a proxy base URL; `off`: never.
  */
@@ -130,23 +109,11 @@ export function deepSeekFetchEndpoint(baseURL: string): string | undefined {
  * caller still resolves the name itself before sending it.
  */
 export function deepSeekFetchSkipReason(url: string): string | undefined {
-  const parsed = parseHttpUrl(url);
-  if (parsed === undefined) return "not an http or https URL";
+  if (parseHttpUrl(url) === undefined) return "not an http or https URL";
   if (url.length > DEEPSEEK_FETCH_MAX_URL_CHARS) {
     return `URL longer than ${DEEPSEEK_FETCH_MAX_URL_CHARS} characters`;
   }
-  if (parsed.username !== "" || parsed.password !== "") return "URL with credentials";
-  const host = parsed.hostname
-    .toLowerCase()
-    .replace(/^\[(.*)\]$/u, "$1")
-    .replace(/\.$/u, "");
-  if (host.length === 0) return "URL without a host";
-  if (isIP(host) !== 0) return "IP address host";
-  const suffix = NON_PUBLIC_NAME_SUFFIXES.find(
-    (name) => host === name || host.endsWith(`.${name}`),
-  );
-  if (suffix !== undefined) return `.${suffix} host`;
-  return host.includes(".") ? undefined : "single-label host";
+  return providerFetchSkipReason(url);
 }
 
 export type DeepSeekFetchOutcome =

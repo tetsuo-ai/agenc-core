@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentRoleWorkspace } from '../../src/agents/role.js'
+import { resolveHomeContext } from '../../src/config/home.js'
 import {
   createProvider,
   preserveProviderFactoryState,
@@ -304,6 +305,47 @@ describe('turn compatibility catalog boundary', () => {
     expect(turn.session.fileReadScope).toBe(parent.fileReadScope)
     expect(turn.session.services.sandboxExecutionBroker).not.toBe(parentBroker)
     expect(parentBroker.cwd).toBe(authority)
+  })
+
+  it('gives the compatibility child its own copy of the parent tool authority at creation', async () => {
+    const cwd = tempRoot('compat-authority')
+    const parentEnvironment = Object.freeze({
+      OPENAI_API_KEY: 'parent-key',
+      HTTPS_PROXY: 'http://parent-proxy.test:8080',
+    })
+    const credentialHome = resolveHomeContext({ AGENC_HOME: join(cwd, 'home') })
+    const parent = mkRuntimeSession({
+      cwd,
+      services: { providerEnvironment: parentEnvironment, credentialHome },
+    }).session
+
+    const turn = await createTurnCompatSession(parent, {
+      messages: [],
+      systemPrompt: asSystemPrompt(['system']),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow' }),
+      toolUseContext: foregroundToolContext(cwd, [], undefined),
+      querySource: 'repl_main_thread',
+    })
+
+    // Explicit at creation: the parent's values in an object of the child's own.
+    expect(turn.session.services.providerEnvironment).toEqual(parentEnvironment)
+    expect(turn.session.services.providerEnvironment).not.toBe(parentEnvironment)
+    expect(Object.isFrozen(turn.session.services.providerEnvironment)).toBe(true)
+    expect(turn.session.services.credentialHome).toBe(credentialHome)
+    // Its own live provider state, seeded from the parent's: keys added in
+    // either session afterwards stay in that session.
+    const childState = turn.session.providerService
+    expect(childState).not.toBe(parent.providerService)
+    expect(childState.environment()).toEqual(parentEnvironment)
+    expect(childState.credentialHome()).toBe(credentialHome)
+    await parent.providerService.useSessionApiKey('grok', 'parent-xai-key')
+    expect(childState.environment().XAI_API_KEY).toBeUndefined()
+    await childState.useSessionApiKey('grok', 'child-xai-key')
+    expect(parent.providerService.environment().XAI_API_KEY).toBe('parent-xai-key')
+    await turn.session.shutdown()
+    await turn.disposeOwnedProvider()
   })
 
   it('copies model tool input as own data, never through an inherited setter', async () => {

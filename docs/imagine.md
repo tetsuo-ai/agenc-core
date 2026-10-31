@@ -13,16 +13,24 @@ Coding-Plan-only session fails closed without making HTTP.
 
 | Tool | Backend availability |
 | --- | --- |
-| `ImagineImage` | Meta Muse Image (`MODEL_API_KEY`), QwenCloud image APIs (`DASHSCOPE_API_KEY` / `QWEN_API_KEY` or `QWEN_TOKEN_PLAN_API_KEY`), Z.AI GLM-Image (`ZAI_API_KEY`), OpenAI GPT Image (`OPENAI_API_KEY`), or xAI Imagine (`XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth) |
+| `ImagineImage` | Meta Muse Image (`MODEL_API_KEY`), QwenCloud image APIs (`DASHSCOPE_API_KEY` / `QWEN_API_KEY` or `QWEN_TOKEN_PLAN_API_KEY`), Z.AI GLM-Image (`ZAI_API_KEY`), OpenAI GPT Image (an OpenAI session's API key, or `OPENAI_API_KEY`), or xAI Imagine (`XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth) |
 | `ImagineVideo` | xAI Imagine with `XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth |
 
-Backend authority is credential-isolated. A provider session key is reused
-only for that same provider's native media route. A direct Grok session may
-reuse its own xAI bearer; QwenCloud and Z.AI Pay-As-You-Go sessions likewise
-prefer their matching image service. A Z.AI Coding Plan credential is chat-only
-and is never reused for images. Other reasoning providers reach those services only
-through independently configured media credentials. No OpenAI, Meta,
-QwenCloud, Z.AI, xAI, or gateway key is forwarded to a different backend.
+Backend authority is credential-isolated and comes from the session that
+makes the call (a sub-agent's own session, never its parent's). A provider
+session key is reused only for that same provider's native media route, with
+that session's own base URL. A Grok session uses its own xAI sign-in or key
+exactly as its model calls do, so an explicit API-key selection keeps its key
+even while a sign-in is stored. OpenAI, MiniMax, QwenCloud and Z.AI
+Pay-As-You-Go sessions on an API key likewise prefer their matching media
+service. A ChatGPT sign-in does not authorize OpenAI's image or video APIs: an
+OpenAI session on one uses `OPENAI_API_KEY` with `OPENAI_BASE_URL` (or
+OpenAI's URL), never the ChatGPT endpoint. A Z.AI Coding Plan credential is
+chat-only and is never reused for images. Other reasoning providers reach
+those services only through independently configured media credentials from
+the session's environment, each key with its own base URL. No OpenAI, Meta,
+QwenCloud, Z.AI, xAI, or gateway key is forwarded to a different backend or
+paired with another session's endpoint.
 
 Both tools require approval (`requiresApproval: true`) and run exclusive
 (no parallel sibling Imagine calls). Files land under

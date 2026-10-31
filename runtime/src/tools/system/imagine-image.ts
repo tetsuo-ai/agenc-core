@@ -18,10 +18,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import {
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../../llm/provider.js";
+import { readProviderIdentity } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
   tryResolveXaiBearerTokenForBaseUrl,
@@ -31,6 +28,16 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
+import {
+  isManagedProviderRoute,
+  resolveToolCallAuthority,
+  sessionApiKeyRoute,
+  sessionXaiRoute,
+  type ToolCallAuthority,
+  toolCallSession,
+  withToolCallTransport,
+} from "./session-provider-authority.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
@@ -39,6 +46,7 @@ import { redactSensitiveAPIText } from "../../errors/api.js";
 import {
   cachedVeniceMediaModels,
   loadVeniceMediaModels,
+  type VeniceListAuthority,
   veniceDefaultTier,
   veniceImagePrice,
   veniceImageTier,
@@ -270,7 +278,7 @@ type ImageBackend =
     };
 
 type BackendResolution =
-  | { readonly backend: ImageBackend }
+  | { readonly backend: ImageBackend; readonly authority: ToolCallAuthority }
   | { readonly error: string };
 
 function withoutTrailingSlash(value: string): string {
@@ -451,20 +459,20 @@ function zaiEnvironmentBackend(
 }
 
 /**
- * OpenAI images are reachable only with an API key. The ChatGPT OAuth grant
+ * OpenAI images are reachable only with an API key; the ChatGPT OAuth grant
  * this app can hold authorizes the Responses backend and not
- * `/images/generations`, so the session credential is never consulted here:
- * the canonical OPENAI_API_KEY ingress is the only authority for this route.
+ * `/images/generations`. This is the canonical OPENAI_API_KEY with its own
+ * OPENAI_BASE_URL (or OpenAI's default), one pair from one environment; an
+ * OpenAI session on an API key uses its own key and URL instead
+ * (resolveImageBackend).
  */
 function openaiEnvironmentBackend(
   env: NodeJS.ProcessEnv,
-  sessionBaseURL?: string,
 ): ImageBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment("openai", env);
   if (credential === undefined) return undefined;
   const baseURL =
     resolveProviderBaseURLEnvironment("openai", env)?.value ??
-    sessionBaseURL ??
     DEFAULT_OPENAI_BASE_URL;
   try {
     new URL(baseURL);
@@ -499,45 +507,68 @@ function minimaxEnvironmentBackend(
 }
 
 /**
- * An OpenRouter or Venice session's own image route: its own factory key or
- * that provider's canonical environment key, and its own base URL. The
- * managed AgenC route (an OpenRouter-shaped gateway on AgenC's credential)
- * is not a user key and gets no media backend here.
+ * An OpenRouter or Venice session's own image route: its own factory key
+ * with its own base URL, or, for a session without a factory key, that
+ * provider's canonical key with its canonical URL from the session's
+ * environment. The managed AgenC route (an OpenRouter-shaped gateway on
+ * AgenC's credential) is not a user key and gets no media backend here.
  */
 function gatewayImageBackend(
   kind: "openrouter" | "venice",
   provider: unknown,
   env: NodeJS.ProcessEnv,
 ): ImageBackend | undefined {
-  const factory = readProviderFactoryOptions(provider as never);
-  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
-    return undefined;
-  }
-  const bearer =
-    typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-      ? factory.apiKey.trim()
-      : resolveProviderApiKeyEnvironment(kind, env)?.value;
-  if (bearer === undefined) return undefined;
-  const baseURL =
-    factory.baseURL ??
-    resolveProviderBaseURLEnvironment(kind, env)?.value ??
-    (kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL);
+  if (isManagedProviderRoute(provider)) return undefined;
+  const defaultBaseURL = kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL;
+  const own = sessionApiKeyRoute(provider, defaultBaseURL);
+  if (own !== undefined) return { kind, ...own };
+  const credential = resolveProviderApiKeyEnvironment(kind, env);
+  if (credential === undefined) return undefined;
+  const baseURL = resolveProviderBaseURLEnvironment(kind, env)?.value ?? defaultBaseURL;
   try {
     new URL(baseURL);
   } catch {
     return undefined;
   }
-  return { kind, baseURL: withoutTrailingSlash(baseURL), bearer };
+  return { kind, baseURL: withoutTrailingSlash(baseURL), bearer: credential.value };
 }
 
 /**
  * Media credentials are intentionally independent from the reasoning
  * provider. A Meta/OpenAI/etc session key must never become an xAI bearer.
- * Direct Grok sessions retain their existing session-bearer compatibility.
+ * Every route comes from one session, the one making the call (`args`; a
+ * sub-agent runs its parent's tool): its own provider's credential and
+ * endpoint as its model calls use them, or a separate backend's key and URL
+ * from its own environment and credential home
+ * (session-provider-authority.ts). Nothing pairs its endpoint with another
+ * session's credential or falls back to the parent's.
  */
-function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
-  const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+function resolveImageBackend(
+  opts: ImagineImageToolOptions,
+  args?: Readonly<Record<string, unknown>>,
+): BackendResolution {
+  const call = toolCallSession(readInvokingSession(args), opts.getSession);
+  const session = call.session;
+  const authority = resolveToolCallAuthority(
+    "ImagineImage", call, { env: opts.env, home: opts.home }, true,
+  );
+  if ("error" in authority) return authority;
+  // Present whenever the authority resolved (it was required above).
+  if (authority.credentialHome === undefined) {
+    return { error: "ImagineImage cannot run: this session has no credential home of its own." };
+  }
+  const resolution = resolveImageBackendWith(
+    authority, session?.services?.provider, authority.credentialHome,
+  );
+  return "backend" in resolution ? { backend: resolution.backend, authority } : resolution;
+}
+
+function resolveImageBackendWith(
+  authority: ToolCallAuthority,
+  provider: unknown,
+  home: HomeContext,
+): { readonly backend: ImageBackend } | { readonly error: string } {
+  const env = authority.environment;
   const providerIdentity = readProviderIdentity(provider as never);
   let oauthBaseUrlError: string | undefined;
   const metaCredential = resolveProviderApiKeyEnvironment("meta", env);
@@ -553,53 +584,34 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
     };
   };
 
+  // A QwenCloud session uses its own key with its own URL; one without a
+  // factory key uses the canonical key with its canonical URL.
   if (
     (providerIdentity === "qwen" || providerIdentity === "qwen-token-plan") &&
     provider !== undefined
   ) {
-    const factory = readProviderFactoryOptions(provider as never);
-    const environmentBackend = qwenEnvironmentBackend(providerIdentity, env);
-    const bearer =
-      typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-        ? factory.apiKey.trim()
-        : environmentBackend?.bearer;
-    const baseURL = factory.baseURL ?? environmentBackend?.baseURL;
-    if (
-      bearer !== undefined &&
-      baseURL !== undefined &&
-      qwenApiOrigin(baseURL) !== undefined
-    ) {
-      return {
-        backend: {
-          kind: "qwen",
-          provider: providerIdentity,
-          baseURL: withoutTrailingSlash(baseURL),
-          bearer,
-        },
-      };
+    const own = sessionApiKeyRoute(
+      provider,
+      providerIdentity === "qwen" ? DEFAULT_QWEN_BASE_URL : DEFAULT_QWEN_TOKEN_PLAN_BASE_URL,
+    );
+    const backend: ImageBackend | undefined = own !== undefined
+      ? { kind: "qwen", provider: providerIdentity, ...own }
+      : qwenEnvironmentBackend(providerIdentity, env);
+    if (backend !== undefined && qwenApiOrigin(backend.baseURL) !== undefined) {
+      return { backend };
     }
   }
 
-  // A Z.AI reasoning session may reuse only its own factory credential (or
-  // canonical ZAI_API_KEY fallback). Never borrow a different provider's
-  // session bearer for the native image route.
+  // A Z.AI reasoning session may use only its own key with its own URL (or
+  // the canonical ZAI_API_KEY with its canonical URL). Never borrow a
+  // different provider's session bearer for the native image route.
   if (providerIdentity === "zai" && provider !== undefined) {
-    const factory = readProviderFactoryOptions(provider as never);
-    const environmentBackend = zaiEnvironmentBackend(env);
-    const bearer =
-      typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-        ? factory.apiKey.trim()
-        : environmentBackend?.bearer;
-    const baseURL =
-      factory.baseURL ?? environmentBackend?.baseURL ?? DEFAULT_ZAI_BASE_URL;
-    if (bearer !== undefined && !isZaiCodingPlanBaseURL(baseURL)) {
-      return {
-        backend: {
-          kind: "zai",
-          baseURL: withoutTrailingSlash(baseURL),
-          bearer,
-        },
-      };
+    const own = sessionApiKeyRoute(provider, DEFAULT_ZAI_BASE_URL);
+    const backend: ImageBackend | undefined = own !== undefined
+      ? { kind: "zai", ...own }
+      : zaiEnvironmentBackend(env);
+    if (backend !== undefined && !isZaiCodingPlanBaseURL(backend.baseURL)) {
+      return { backend };
     }
   }
 
@@ -612,21 +624,24 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
   }
 
   // An OpenAI session generates with OpenAI, the same way a Qwen, Z.AI or
-  // Meta session uses its own native route. Only the API-key ingress can
-  // authorize it, so a session running on the ChatGPT OAuth grant alone
-  // falls through to the independent backends below.
+  // Meta session uses its own native route: with its own API key and URL.
+  // A ChatGPT sign-in does not authorize images, so a session on that grant
+  // uses the canonical OPENAI_API_KEY with OPENAI_BASE_URL (or OpenAI's
+  // default), never with the sign-in's URL, or falls through to the
+  // independent backends below.
   if (providerIdentity === "openai") {
-    const backend = openaiEnvironmentBackend(
-      env,
-      provider === undefined
-        ? undefined
-        : readProviderFactoryOptions(provider as never).baseURL,
-    );
+    const own = sessionApiKeyRoute(provider, DEFAULT_OPENAI_BASE_URL);
+    const backend: ImageBackend | undefined = own !== undefined
+      ? { kind: "openai", ...own }
+      : openaiEnvironmentBackend(env);
     if (backend !== undefined) return { backend };
   }
 
   if (providerIdentity === "minimax") {
-    const backend = minimaxEnvironmentBackend(env);
+    const own = sessionApiKeyRoute(provider, DEFAULT_MINIMAX_BASE_URL);
+    const backend: ImageBackend | undefined = own !== undefined
+      ? { kind: "minimax", ...own }
+      : minimaxEnvironmentBackend(env);
     if (backend !== undefined) return { backend };
   }
 
@@ -640,33 +655,28 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
     if (backend !== undefined) return { backend };
   }
 
-  if (providerIdentity === "grok" && provider !== undefined) {
-    const factory = readProviderFactoryOptions(provider as never);
-    const sessionKey =
-      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-    const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
-      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
-    );
-    oauthBaseUrlError = xaiResolution.oauthBaseUrlError;
-    const bearer = xaiResolution.bearer;
-    if (bearer !== undefined) {
-      return {
-        backend: {
-          kind: "xai",
-          baseURL: withoutTrailingSlash(
-            factory.baseURL ?? DEFAULT_XAI_BASE_URL,
-          ),
-          bearer,
-        },
-      };
+  // A Grok session's xAI authority is its own: the sign-in or key its model
+  // calls use, with its own URL and selection. It never takes the
+  // independent xAI backend below, whose credential could be a different
+  // one (for example a stored sign-in when the session chose API-key billing).
+  const grokSession = providerIdentity === "grok" && provider !== undefined;
+  if (grokSession) {
+    const own = sessionXaiRoute(provider, DEFAULT_XAI_BASE_URL);
+    if (own !== undefined && "error" in own) {
+      oauthBaseUrlError = own.error;
+    } else if (own !== undefined) {
+      return { backend: { kind: "xai", baseURL: own.baseURL, bearer: own.bearer } };
     }
   }
 
-  // Without a usable Grok session key, use only independent xAI authority.
-  const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
-    opts.home, env,
-    resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
-  );
+  // Another provider's session uses only independent xAI authority, resolved
+  // from its own environment and credential home.
+  const xaiResolution: { readonly bearer?: string; readonly oauthBaseUrlError?: string } = grokSession
+    ? {}
+    : tryResolveXaiBearerTokenForBaseUrl(
+      home, env,
+      resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
+    );
   oauthBaseUrlError ??= xaiResolution.oauthBaseUrlError;
   const xaiBearer = xaiResolution.bearer;
   if (xaiBearer !== undefined) {
@@ -1119,18 +1129,28 @@ function veniceRequestTier(model: VeniceMediaModel, aspectRatio: string | undefi
   return Array.isArray(tiers) && tiers.length > 0 && !tiers.includes(tier) ? veniceDefaultTier(model) : tier;
 }
 
+/** Whose Venice list a session's call reads: its endpoint, key and transport. */
+function veniceList(
+  backend: { readonly baseURL: string; readonly bearer: string },
+  authority: ToolCallAuthority,
+): VeniceListAuthority {
+  return { baseURL: backend.baseURL, bearer: backend.bearer, transport: authority.transportEnvironment };
+}
+
 /**
  * The per-image price of an OpenRouter model (reviewed ceiling) or a Venice
- * model (Venice's live list first, the reviewed table while it is unread).
+ * model (the session's own Venice list first, the reviewed table while it
+ * is unread).
  */
 function gatewayImagePrice(
   backend: ImageBackend,
+  authority: ToolCallAuthority,
   model: string,
   aspectRatio?: string,
 ): number | undefined {
   if (backend.kind === "openrouter") return OPENROUTER_IMAGE_MODELS.get(model);
   if (backend.kind === "venice") {
-    const listed = cachedVeniceMediaModels(backend.baseURL);
+    const listed = cachedVeniceMediaModels(veniceList(backend, authority));
     const live = listed?.get(model);
     if (live !== undefined) {
       return live.type === "image" ? veniceImagePrice(live, veniceRequestTier(live, aspectRatio)) : undefined;
@@ -1403,8 +1423,13 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     opts.getSession() === null;
   // Venice prices any model from its live list; read it now so a call's
   // admission finds the price.
-  if (advertisedBackend?.kind === "venice" && cachedVeniceMediaModels(advertisedBackend.baseURL) === undefined) {
-    void loadVeniceMediaModels(advertisedBackend.baseURL, advertisedBackend.bearer, opts.fetchImpl ?? fetch)
+  if (
+    advertisedResolution !== undefined && "backend" in advertisedResolution &&
+    advertisedBackend?.kind === "venice" &&
+    cachedVeniceMediaModels(veniceList(advertisedBackend, advertisedResolution.authority)) === undefined
+  ) {
+    void loadVeniceMediaModels(veniceList(advertisedBackend, advertisedResolution.authority),
+      withToolCallTransport(opts.fetchImpl ?? fetch, advertisedResolution.authority))
       .catch(() => undefined);
   }
   return {
@@ -1431,7 +1456,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     timeoutMs: 210_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
-      const resolution = resolveImageBackend(opts);
+      const resolution = resolveImageBackend(opts, args);
       const gateway = "backend" in resolution &&
         (resolution.backend.kind === "openrouter" || resolution.backend.kind === "venice")
         ? resolution.backend
@@ -1440,12 +1465,16 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         (gateway !== undefined ? defaultImageModel(gateway) : "glm-image");
       const requestedImages = typeof args.n === "number" && Number.isFinite(args.n)
         ? Math.max(1, Math.floor(args.n)) : 1;
-      if (gateway?.kind === "venice" && cachedVeniceMediaModels(gateway.baseURL) === undefined) {
-        void loadVeniceMediaModels(gateway.baseURL, gateway.bearer, opts.fetchImpl ?? fetch).catch(() => undefined);
+      if (
+        "backend" in resolution && gateway?.kind === "venice" &&
+        cachedVeniceMediaModels(veniceList(gateway, resolution.authority)) === undefined
+      ) {
+        void loadVeniceMediaModels(veniceList(gateway, resolution.authority),
+          withToolCallTransport(opts.fetchImpl ?? fetch, resolution.authority)).catch(() => undefined);
       }
-      const gatewayPrice = gateway === undefined
+      const gatewayPrice = gateway === undefined || !("backend" in resolution)
         ? undefined
-        : gatewayImagePrice(gateway, model, stringValue(args.aspect_ratio));
+        : gatewayImagePrice(gateway, resolution.authority, model, stringValue(args.aspect_ratio));
       const maxCostUsd =
         gateway !== undefined
           ? gatewayPrice === undefined
@@ -1468,11 +1497,14 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
-      const backendResolution = resolveImageBackend(opts);
+      const backendResolution = resolveImageBackend(opts, args);
       if ("error" in backendResolution) {
         return refusal({ error: backendResolution.error });
       }
       const { backend } = backendResolution;
+      // Every request below goes out through the calling session's own
+      // proxy, client certificate and CA trust.
+      const sessionFetch = withToolCallTransport(opts.fetchImpl ?? fetch, backendResolution.authority);
 
       const prompt = stringValue(args.prompt);
       if (!prompt) return refusal({ error: "prompt is required" });
@@ -1526,10 +1558,11 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       } else if (backend.kind === "venice") {
         // Venice's own list decides; the reviewed table answers only while
         // the list cannot be read.
-        const listed = await loadVeniceMediaModels(backend.baseURL, backend.bearer, opts.fetchImpl ?? fetch, admittedSignal);
+        const listed = await loadVeniceMediaModels(
+          veniceList(backend, backendResolution.authority), sessionFetch, admittedSignal);
         const live = listed?.get(model);
         const known = listed === undefined ? VENICE_IMAGE_MODELS.has(model) : live?.type === "image";
-        if (!known || gatewayImagePrice(backend, model, stringValue(args.aspect_ratio)) === undefined) {
+        if (!known || gatewayImagePrice(backend, backendResolution.authority, model, stringValue(args.aspect_ratio)) === undefined) {
           const names = listed === undefined
             ? [...VENICE_IMAGE_MODELS.keys()]
             : [...listed.values()].filter(entry => entry.type === "image").map(entry => entry.id);
@@ -1624,7 +1657,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         body.resolution = resolution.toUpperCase();
       }
 
-      const fetchImpl = opts.fetchImpl ?? fetch;
+      const fetchImpl = sessionFetch;
       const timeoutSignal = AbortSignal.timeout(180_000);
       const requestSignal = admittedSignal
         ? AbortSignal.any([admittedSignal, timeoutSignal])
@@ -1866,7 +1899,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         }
         // OpenRouter charges what its response reports; Venice charges its
         // published per-image price. Both are recorded with the call.
-        const price = gatewayImagePrice(backend, model, aspect_ratio);
+        const price = gatewayImagePrice(backend, backendResolution.authority, model, aspect_ratio);
         const reportedCost = typeof payload.usage?.cost === "number" &&
           Number.isFinite(payload.usage.cost) && payload.usage.cost >= 0
           ? payload.usage.cost : undefined;

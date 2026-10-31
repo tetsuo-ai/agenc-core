@@ -1,6 +1,13 @@
 import { join } from "node:path";
 
-import { resolveHomeContext } from "../../../src/config/home.js";
+import { resolveHomeContext, type HomeContext } from "../../../src/config/home.js";
+import {
+  isFactoryProvider,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../../../src/llm/provider.js";
+import type { LLMProvider } from "../../../src/llm/types.js";
+import { SessionProviderService } from "../../../src/session/provider-service.js";
 import {
   createModelFacingTools,
   type ModelFacingToolOptions,
@@ -14,6 +21,33 @@ export function mediaTestHome(workspaceRoot: string) {
     },
     { platformHome: workspaceRoot },
   );
+}
+
+/**
+ * A session's own live provider state, as the runtime gives every session:
+ * a real provider service over `provider`, seeded with `environment` and
+ * `credentialHome`. Tools read it at call time, so `useSessionApiKey` on it
+ * reaches them at once.
+ */
+export function ownProviderState(
+  provider: LLMProvider,
+  environment: Readonly<Record<string, string | undefined>> = {},
+  credentialHome?: HomeContext,
+): SessionProviderService {
+  const config = (provider as unknown as { readonly config?: { readonly model?: unknown } }).config;
+  const model = readProviderFactoryOptions(provider).model ??
+    (typeof config?.model === "string" ? config.model : undefined);
+  return new SessionProviderService({
+    initialProvider: provider,
+    ...(isFactoryProvider(provider)
+      ? {}
+      : {
+          initialProviderName: readProviderIdentity(provider) ?? provider.name,
+          ...(model !== undefined ? { initialModel: model } : {}),
+        }),
+    environment,
+    ...(credentialHome !== undefined ? { credentialHome } : {}),
+  });
 }
 
 export function isModelFacingToolRegistered(

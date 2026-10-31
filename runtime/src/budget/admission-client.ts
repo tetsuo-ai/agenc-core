@@ -5,6 +5,7 @@ import type {
   AdmissionJournalEvent,
   AdmissionLease,
   AdmissionReconcileResult,
+  AdmissionToolCharges,
   AdmissionUsage,
   AdmissionUsageSummary,
   AdmissionUsageSnapshot,
@@ -162,6 +163,11 @@ export interface ExecutionAdmissionClient {
   getTaskBudgetUsage?(): { readonly tokens: number; readonly calls: number };
   /** This bound run/task's usage only, excluding delegated descendants. */
   getDirectUsageSummary?(): AdmissionUsageSummary;
+  /**
+   * What this bound run/task's own tool calls were charged, excluding
+   * delegated descendants: tool fees plus the model calls tools made.
+   */
+  getDirectToolCharges?(): AdmissionToolCharges;
   /** Snapshot only. Minimum remaining dollars across durable task, ancestor
    * and current calendar caps, including held reservations. Undefined means
    * no monetary cap. Dispatch still needs an atomic admission lease. */

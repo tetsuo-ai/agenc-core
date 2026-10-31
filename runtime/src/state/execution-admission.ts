@@ -9,6 +9,7 @@ import type {
   AdmissionReconcileInput,
   AdmissionReconcileResult,
   AdmissionRecoveryReport,
+  AdmissionToolCharges,
   AdmissionUsage,
   AdmissionUsageSummary,
   AdmissionUsageSnapshot,
@@ -20,6 +21,8 @@ import type {
 import {
   admissionPeriodScopeKey,
   admissionRecordKey,
+  isToolModelCallStep,
+  TOOL_MODEL_CALL_PURPOSES,
 } from "../budget/admission-types.js";
 import type { BudgetReservation } from "../contracts/run-contracts.js";
 import {
@@ -1814,6 +1817,43 @@ export class ExecutionAdmissionRepository {
          WHERE allocation.scope_key = ? AND reservation.kind = 'model_turn'
            AND reservation.status IN ('dispatched', 'held_unknown', 'reconciled', 'provider_overrun')`,
       ).get(root.scope_key)!;
+    });
+  }
+
+  /**
+   * What `runId`'s own tool calls were charged (AdmissionToolCharges) within
+   * the allocation `allocationKey`: the settled cost of its tool_exec
+   * reservations plus the model calls its tools made (isToolModelCallStep),
+   * whichever of the run's clients admitted them, so a run's total includes
+   * its task-bound clients' calls and a task's total only its own. Each
+   * reservation counts once. Delegated runs, unsettled reservations and
+   * charges without a price add nothing.
+   */
+  getToolCharges(runId: string, allocationKey: string): AdmissionToolCharges {
+    requireNonEmpty(runId, "runId");
+    requireNonEmpty(allocationKey, "allocationKey");
+    return this.#driver.transaction(() => {
+      const settled = `FROM execution_admission_reservations AS reservation
+         JOIN execution_admission_reservation_allocations AS allocation
+           ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
+         WHERE reservation.run_id = ? AND reservation.status IN ('reconciled', 'provider_overrun')
+           AND reservation.actual_cost_nanos IS NOT NULL`;
+      const tools = this.#driver.prepareState<[string, string], { cost_nanos: number }>(
+        `SELECT COALESCE(SUM(reservation.actual_cost_nanos), 0) AS cost_nanos ${settled}
+           AND reservation.kind = 'tool_exec'`,
+      ).get(allocationKey, runId)?.cost_nanos ?? 0;
+      // Narrowed by the purposes' text here; isToolModelCallStep decides.
+      const purposes = TOOL_MODEL_CALL_PURPOSES.map((purpose) => `${purpose}:`);
+      const candidates = this.#driver.prepareState<string[], { step_id: string; cost_nanos: number }>(
+        `SELECT reservation.step_id AS step_id, reservation.actual_cost_nanos AS cost_nanos ${settled}
+           AND reservation.kind = 'model_turn'
+           AND (${purposes.map(() => "instr(reservation.step_id, ?) > 0").join(" OR ")})`,
+      ).all(allocationKey, runId, ...purposes);
+      const models = candidates.reduce(
+        (sum, row) => isToolModelCallStep(row.step_id) ? sum + row.cost_nanos : sum,
+        0,
+      );
+      return { costUsd: nanosToUsd(tools + models) };
     });
   }
 

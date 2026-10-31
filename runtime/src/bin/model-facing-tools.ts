@@ -1,4 +1,9 @@
-import { runOllamaWebFetch, OLLAMA_WEB_FETCH_USD_PER_REQUEST } from "../llm/providers/ollama-cloud/web-fetch.js";
+import {
+  ollamaFetchBudgetMs,
+  runOllamaWebFetch,
+  OLLAMA_WEB_FETCH_USD_PER_REQUEST,
+} from "../llm/providers/ollama-cloud/web-fetch.js";
+import { providerFetchSkipReason } from "../llm/providers/shared/provider-fetch-url.js";
 import { configuredSearchChain, runConfiguredSearchProviders } from "../tools/WebSearchTool/providers/live.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -48,6 +53,7 @@ import type {
 } from "../llm/types.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
+import type { ToolModelCallPurpose } from "../budget/admission-types.js";
 import { TaskBudgetReachedError } from "../session/task-budget.js";
 import type { GrokCapabilityConfig } from "../config/schema.js";
 import {
@@ -57,7 +63,17 @@ import {
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
-import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
+import { isXaiOauthBearer } from "../utils/xaiOauthCredentials.js";
+import {
+  resolveToolCallAuthority,
+  sessionXaiRoute,
+  type ToolCallAuthority,
+  toolCallFetchOptions,
+  type ToolCallAuthorityResolution,
+  toolCallSession,
+  type ToolCallSessionRef,
+  withToolCallTransport,
+} from "../tools/system/session-provider-authority.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -215,7 +231,7 @@ import {
   sessionToolPolicyAllowsBundledSkill,
   type SessionToolPolicy,
 } from "../permissions/session-tool-policy.js";
-import { readToolRuntimeContext } from "../tools/runtimes/context.js";
+import { readInvokingSession, readToolRuntimeContext } from "../tools/runtimes/context.js";
 import { registerSessionCronMutation } from "../tools/runtimes/session-cron.js";
 import { openStateDatabases, resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 import { WORKFLOW_HANDOFF_STORE_DIRNAME } from "../state/database-paths.js";
@@ -1074,86 +1090,121 @@ function extractGrokNativeSourceResults(
   return [...results.values()];
 }
 
-function currentSessionProvider(
-  opts: ModelFacingToolOptions,
-): LLMProvider | undefined {
-  const session = opts.getSession();
-  return (session?.services as { provider?: LLMProvider } | undefined)
-    ?.provider;
-}
-
 interface XaiToolBackend {
   readonly apiKey: string;
   readonly baseURL: string;
   readonly model: string;
-  readonly credentialHome: ReturnType<typeof resolveSecureStorageHome>;
+  readonly credentialHome?: ReturnType<typeof resolveSecureStorageHome>;
+  /** Which credential `apiKey` is, so the rebuilt provider keeps that selection. */
+  readonly authMode: "oauth" | "api_key";
   readonly timeoutMs?: number;
+  /**
+   * The caller's transport for the rebuilt provider: a Grok session's own
+   * provider fetch (a pinned child transport, for example), or plain fetch,
+   * with the session's proxy, client certificate and CA trust.
+   */
+  readonly fetchImpl: typeof fetch;
+  /**
+   * The same transport for the rebuilt provider's sign-in refresh and
+   * discovery, on plain fetch: a provider's pinned fetch only reaches its
+   * inference endpoint.
+   */
+  readonly authFetchImpl: typeof fetch;
+}
+
+/** A session provider's own fetch, when its factory options name one. */
+function providerFetch(provider: LLMProvider): typeof fetch | undefined {
+  const candidate = readProviderFactoryOptions(provider).extra?.fetchImpl;
+  return typeof candidate === "function" ? candidate as typeof fetch : undefined;
 }
 
 /**
  * Resolve the xAI service used by xAI-backed client tools independently from
  * the model that is running the main turn. A Meta/OpenAI/Anthropic session may
  * call XSearch or Imagine without its own credential ever crossing into xAI.
+ * Everything comes from `session`, the session making the call (see
+ * invokingSession): a Grok session uses its own xAI authority exactly as its
+ * model calls do (key or sign-in, URL, selection and credential home, model);
+ * any other session gets a separate xAI backend resolved as that session
+ * would, from its own environment (GROK_AUTH_MODE included) and credential
+ * home, on a direct xAI host. A session without its own authority gets an
+ * error, never the registry's (session-provider-authority.ts).
  */
 function resolveXaiToolBackend(
   opts: ModelFacingToolOptions,
-): XaiToolBackend | undefined {
-  const environment = requireModelFacingRequestEnvironment(opts);
-  const credentialHome = resolveSecureStorageHome(
-    environment,
-    opts.agencHome,
-  );
-  const currentProvider = currentSessionProvider(opts);
-  const currentIsGrok = readProviderIdentity(currentProvider) === "grok";
-  const currentFactory = currentIsGrok && currentProvider
-    ? readProviderFactoryOptions(currentProvider)
-    : undefined;
-  const sessionApiKey =
-    typeof currentFactory?.apiKey === "string"
-      ? currentFactory.apiKey
-      : undefined;
-  const configuredBaseURL = resolveProviderBaseURLEnvironment(
-    "grok",
-    environment,
-  )?.value;
-  const baseURL = currentFactory !== undefined
-    ? (currentFactory?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok)
-    : (configuredBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok);
-  if (currentFactory === undefined && !isDirectXaiInferenceHost(baseURL)) {
-    return undefined;
+  call: ToolCallSessionRef<Session>,
+): XaiToolBackend | { readonly error: string } | undefined {
+  const currentProvider = sessionLLMProvider(call.session);
+  const grokSession = currentProvider !== undefined && readProviderIdentity(currentProvider) === "grok";
+  const registryEnvironment = requireModelFacingRequestEnvironment(opts);
+  const authority = resolveToolCallAuthority("XSearch", call, {
+    env: registryEnvironment,
+    home: resolveSecureStorageHome(registryEnvironment, opts.agencHome),
+  }, !grokSession);
+  if ("error" in authority) return authority;
+  if (grokSession && currentProvider !== undefined) {
+    const route = sessionXaiRoute(currentProvider, BUILT_IN_PROVIDER_BASE_URLS.grok);
+    if (route === undefined || "error" in route) return undefined;
+    const factory = readProviderFactoryOptions(currentProvider);
+    const model = supportsProviderNativeXSearch({
+      provider: "grok",
+      model: factory.model,
+      xSearch: true,
+    })
+      ? factory.model!
+      : BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
+    return {
+      apiKey: route.bearer,
+      baseURL: route.baseURL,
+      model,
+      authMode: route.authMode,
+      ...(route.credentialHome !== undefined ? { credentialHome: route.credentialHome } : {}),
+      ...(factory.timeoutMs !== undefined ? { timeoutMs: factory.timeoutMs } : {}),
+      fetchImpl: withToolCallTransport(providerFetch(currentProvider) ?? fetch, authority),
+      authFetchImpl: withToolCallTransport(fetch, authority),
+    };
   }
+  const environment = authority.environment;
+  // Present whenever the authority resolved (it was required above).
+  const credentialHome = authority.credentialHome;
+  if (credentialHome === undefined) return undefined;
+  const baseURL = resolveProviderBaseURLEnvironment("grok", environment)?.value ??
+    BUILT_IN_PROVIDER_BASE_URLS.grok;
+  if (!isDirectXaiInferenceHost(baseURL)) return undefined;
   const apiKey = tryResolveXaiBearerTokenForBaseUrl(
-    credentialHome, environment, baseURL, sessionApiKey,
+    credentialHome, environment, baseURL,
   ).bearer;
   if (apiKey === undefined) return undefined;
-
-  const currentModel = currentFactory?.model;
-  const model = supportsProviderNativeXSearch({
-    provider: "grok",
-    model: currentModel,
-    xSearch: true,
-  })
-    ? currentModel!
-    : BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
   return {
     apiKey,
     baseURL,
-    model,
+    model: BUILT_IN_PROVIDER_DEFAULT_MODELS.grok,
     credentialHome,
-    ...(currentFactory?.timeoutMs !== undefined
-      ? { timeoutMs: currentFactory.timeoutMs }
-      : {}),
+    authMode: isXaiOauthBearer(credentialHome, apiKey) ? "oauth" : "api_key",
+    // A separate backend: plain fetch on the calling session's transport.
+    fetchImpl: withToolCallTransport(fetch, authority),
+    authFetchImpl: withToolCallTransport(fetch, authority),
   };
 }
 
+function isXaiToolBackend(
+  value: XaiToolBackend | { readonly error: string } | undefined,
+): value is XaiToolBackend {
+  return value !== undefined && !("error" in value);
+}
+
+/**
+ * A model call a tool makes for the session that called it, admitted on that
+ * session: its budget, its run in the admission ledger and its step ids. A
+ * sub-agent's call is the sub-agent's, never the parent's (invokingSession).
+ */
 async function runAdmittedModelFacingCall(
-  opts: ModelFacingToolOptions,
+  session: Session | null,
   provider: LLMProvider,
   messages: LLMMessage[],
   options: LLMChatOptions,
-  purpose: "web_search" | "x_search" | "web_fetch_extraction",
+  purpose: ToolModelCallPurpose,
 ): Promise<LLMResponse> {
-  const session = opts.getSession();
   if (session === null) {
     throw new AdmissionDeniedError("model_facing_session_unavailable");
   }
@@ -1177,9 +1228,11 @@ async function runAdmittedModelFacingCall(
 
 function buildGrokNativeWebSearchProvider(
   opts: ModelFacingToolOptions,
+  session: Session | null,
   filters: WebSearchFilters,
+  authority: ToolCallAuthority,
 ): LLMProvider | undefined {
-  const currentProvider = currentSessionProvider(opts);
+  const currentProvider = sessionLLMProvider(session);
   if (readProviderIdentity(currentProvider) !== "grok" || !currentProvider) {
     return undefined;
   }
@@ -1200,6 +1253,10 @@ function buildGrokNativeWebSearchProvider(
   );
   const extra: ProviderFactoryOptions["extra"] = {
     ...(factoryOptions.extra ?? {}),
+    // The session's own provider fetch, on the session's transport, and the
+    // same transport for a sign-in refresh and its discovery.
+    fetchImpl: withToolCallTransport(providerFetch(currentProvider) ?? fetch, authority),
+    authFetchImpl: withToolCallTransport(fetch, authority),
     webSearch: true,
     searchMode: "on",
     ...(webSearchOptions !== undefined ? { webSearchOptions } : {}),
@@ -1252,12 +1309,16 @@ async function runGrokNativeWebSearch(
   query: string,
   maxResults: number,
   filters: WebSearchFilters,
+  authority: ToolCallAuthority,
 ): Promise<ToolResult | undefined> {
-  const provider = buildGrokNativeWebSearchProvider(opts, filters);
+  // A Grok session searches with its own key, and a child of a Grok parent
+  // never with the parent's.
+  const session = invokingSession(opts, args);
+  const provider = buildGrokNativeWebSearchProvider(opts, session, filters, authority);
   if (!provider) return undefined;
   try {
     const response = await runAdmittedModelFacingCall(
-      opts,
+      session,
       provider,
       [
         {
@@ -1310,11 +1371,38 @@ async function runGrokNativeWebSearch(
 
 function configuredWebSearchEndpoint(
   opts: ModelFacingToolOptions,
+  environment: ProviderEnvironment,
 ): string | undefined {
   return (
-    stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT) ??
+    stringValue(environment.AGENC_WEB_SEARCH_ENDPOINT) ??
     stringValue(opts.toolsConfig?.web_search_endpoint)
   );
+}
+
+/**
+ * The authority a WebSearch call's separate search backends and requests use:
+ * the invoking session's (session-provider-authority.ts), so a configured
+ * endpoint with its key, the keyed search providers, the search chain and
+ * the transport (proxy, client certificate, CA trust) all come from that one
+ * session. A sub-agent without its own gets an error, never the registry's.
+ */
+function webSearchAuthority(
+  opts: ModelFacingToolOptions,
+  call: ToolCallSessionRef<Session>,
+): ToolCallAuthorityResolution {
+  return resolveToolCallAuthority("WebSearch", call, {
+    env: requireModelFacingRequestEnvironment(opts),
+  });
+}
+
+/** The same for web_fetch: its provider fetches and every request it sends. */
+function webFetchAuthority(
+  opts: ModelFacingToolOptions,
+  call: ToolCallSessionRef<Session>,
+): ToolCallAuthorityResolution {
+  return resolveToolCallAuthority(WEB_FETCH_TOOL_NAME, call, {
+    env: requireModelFacingRequestEnvironment(opts),
+  });
 }
 
 /**
@@ -1329,10 +1417,19 @@ function invokingSession(
   opts: ModelFacingToolOptions,
   args: Readonly<Record<string, unknown>> | undefined,
 ): Session | null {
-  const attached = args === undefined
-    ? undefined
-    : readToolRuntimeContext(args as Record<string, unknown>)?.invocation?.session;
-  return attached ?? opts.getSession();
+  return readInvokingSession(args) ?? opts.getSession();
+}
+
+/**
+ * The same session with whether it is the one this registry was built for:
+ * only that session may use the registry's captured environment and home
+ * (session-provider-authority.ts).
+ */
+function invokingCall(
+  opts: ModelFacingToolOptions,
+  args: Readonly<Record<string, unknown>> | undefined,
+): ToolCallSessionRef<Session> {
+  return toolCallSession(readInvokingSession(args) as Session | undefined, opts.getSession);
 }
 
 function sessionLLMProvider(session: Session | null): LLMProvider | undefined {
@@ -1353,6 +1450,7 @@ interface DeepSeekWebSearchBackend {
 function resolveDeepSeekWebSearchBackend(
   opts: ModelFacingToolOptions,
   session: Session | null,
+  environment: ProviderEnvironment,
 ): DeepSeekWebSearchBackend | undefined {
   const setting = resolveDeepSeekWebSearchSetting(
     opts.env?.[DEEPSEEK_WEB_SEARCH_ENV],
@@ -1371,7 +1469,7 @@ function resolveDeepSeekWebSearchBackend(
   if (
     setting === "auto" &&
     (!isOfficialDeepSeekApiHost(baseURL) ||
-      configuredWebSearchEndpoint(opts) !== undefined)
+      configuredWebSearchEndpoint(opts, environment) !== undefined)
   ) {
     return undefined;
   }
@@ -1452,43 +1550,57 @@ function hasWebFetchPermissionRule(context: ToolPermissionContext): boolean {
 }
 
 /**
- * Whether this session lets web_fetch hand pages to DeepSeek at all.
- * DeepSeek follows redirects on its own servers and does not report them, so
- * only the starting URL can be checked: a redirect to another host, to a
- * host a rule denies or asks about, or down to plain http is followed there,
- * where the local fetcher refuses each of them. DeepSeek is therefore used
- * only where no per-domain decision exists to bypass: the session never asks
+ * Whether this session lets web_fetch hand pages to a provider's own fetch
+ * (DeepSeek's Fetch API, Ollama Cloud's web fetch) at all. Both follow
+ * redirects on the provider's servers and do not report them, so only the
+ * starting URL can be checked: a redirect to another host, to a host a rule
+ * denies or asks about, or down to plain http is followed there, where the
+ * local fetcher refuses each of them. A provider fetch is therefore used only
+ * where no per-domain decision exists to bypass: the session never asks
  * (`bypassPermissions`), so no domain needs an approval, and no web_fetch rule
  * is in effect (the session's rules after settings loading; a rule loading
  * discards governs neither fetcher). Every other session keeps the local
  * fetcher, which checks each redirect.
  */
-function deepSeekFetchPolicyAllows(session: Session | null): boolean {
+function providerFetchPolicyAllows(session: Session | null): boolean {
   const context = sessionToolPermissionContext(session);
   if (context === undefined || context.mode !== "bypassPermissions") return false;
   return !hasWebFetchPermissionRule(context);
 }
 
-type DeepSeekUrlCheck = "send" | "local" | "timed_out";
+type ProviderFetchKind = "deepseek" | "ollama";
 
 /**
- * Whether web_fetch may hand `url` to DeepSeek. The URL has already passed
- * the permission check and normalizeUrl (https, no credentials, no private
- * or loopback literal). DeepSeek then gets it only when the local fetcher
- * would dial it too: a public DNS name (deepSeekFetchSkipReason) that
- * resolves to no private, loopback or link-local address here. A URL on the
- * built-in preapproved list stays local, because only the local fetcher can
- * keep its redirects inside the preapproved scope. Anything refused here
- * takes the local path, which applies its own rules and reports them.
- * `budget` is the fetch's own timer, already running, so a stalled resolver
- * uses up the fetch's time instead of holding the call.
+ * The provider's own rule for a URL it may get: a public DNS name with no
+ * credentials (providerFetchSkipReason); DeepSeek also refuses URLs over
+ * 8,192 characters.
  */
-async function checkDeepSeekFetchUrl(
+function providerFetchUrlSkipReason(kind: ProviderFetchKind, url: string): string | undefined {
+  return kind === "deepseek" ? deepSeekFetchSkipReason(url) : providerFetchSkipReason(url);
+}
+
+type ProviderFetchUrlCheck = "send" | "local" | "timed_out";
+
+/**
+ * Whether web_fetch may hand `url` to the session's provider fetch. The URL
+ * has already passed the permission check and normalizeUrl (https, no
+ * credentials, no private or loopback literal). The provider then gets it
+ * only when the local fetcher would dial it too: a public DNS name
+ * (providerFetchUrlSkipReason) that resolves to no private, loopback or
+ * link-local address here. A URL on the built-in preapproved list stays
+ * local, because only the local fetcher can keep its redirects inside the
+ * preapproved scope. Anything refused here takes the local path, which
+ * applies its own rules and reports them. `budget` is the fetch's own timer,
+ * already running, so a stalled resolver uses up the fetch's time instead of
+ * holding the call.
+ */
+async function checkProviderFetchUrl(
+  kind: ProviderFetchKind,
   url: string,
   budget: AbortSignal,
   effectSignal: AbortSignal | undefined,
-): Promise<DeepSeekUrlCheck> {
-  if (deepSeekFetchSkipReason(url) !== undefined) return "local";
+): Promise<ProviderFetchUrlCheck> {
+  if (providerFetchUrlSkipReason(kind, url) !== undefined) return "local";
   const parsed = new URL(url);
   if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return "local";
   try {
@@ -1503,18 +1615,22 @@ async function checkDeepSeekFetchUrl(
   return "send";
 }
 
-type WebFetchBackend =
+type ProviderWebFetchBackend =
   | { readonly kind: "ollama"; readonly apiKey: string }
-  | { readonly kind: "deepseek"; readonly endpoint: string; readonly apiKey: string }
-  | { readonly kind: "local" };
+  | { readonly kind: "deepseek"; readonly endpoint: string; readonly apiKey: string };
+
+type WebFetchBackend = ProviderWebFetchBackend | { readonly kind: "local" };
+
+const LOCAL_WEB_FETCH: WebFetchBackend = Object.freeze({ kind: "local" });
 
 /**
  * The fetcher a web_fetch call uses, decided from the invoking session and
  * the URL the same way for admission and for execution, so the reservation
- * matches the call: Ollama Cloud's own fetch for a direct Ollama Cloud
- * session; DeepSeek's fetch for a DeepSeek session when the permission gate
- * allows it and the URL is one DeepSeek may get (the DNS check still runs at
- * execution); otherwise the local fetcher, which is free.
+ * matches the call: the session's provider fetch (Ollama Cloud's for a
+ * direct Ollama Cloud session, DeepSeek's for a DeepSeek session) when the
+ * permission gate allows it and the URL is one the provider may get (the
+ * DNS check still runs at execution); otherwise the local fetcher, which is
+ * free.
  */
 function webFetchBackend(
   opts: ModelFacingToolOptions,
@@ -1522,21 +1638,27 @@ function webFetchBackend(
   rawUrl: unknown,
 ): WebFetchBackend {
   const ollamaKey = ollamaWebFetchKey(sessionLLMProvider(session));
-  if (ollamaKey !== undefined) return { kind: "ollama", apiKey: ollamaKey };
-  const deepseek = resolveDeepSeekWebFetchBackend(opts, session);
-  if (deepseek === undefined || !deepSeekFetchPolicyAllows(session)) return { kind: "local" };
+  const deepseek = ollamaKey === undefined
+    ? resolveDeepSeekWebFetchBackend(opts, session)
+    : undefined;
+  const provider: ProviderWebFetchBackend | undefined = ollamaKey !== undefined
+    ? { kind: "ollama", apiKey: ollamaKey }
+    : deepseek !== undefined
+      ? { kind: "deepseek", ...deepseek }
+      : undefined;
+  if (provider === undefined || !providerFetchPolicyAllows(session)) return LOCAL_WEB_FETCH;
   const url = stringValue(rawUrl);
-  if (url === undefined) return { kind: "local" };
+  if (url === undefined) return LOCAL_WEB_FETCH;
   let normalized: string;
   try {
     normalized = normalizeUrl(url);
   } catch {
-    return { kind: "local" };
+    return LOCAL_WEB_FETCH;
   }
-  if (deepSeekFetchSkipReason(normalized) !== undefined) return { kind: "local" };
+  if (providerFetchUrlSkipReason(provider.kind, normalized) !== undefined) return LOCAL_WEB_FETCH;
   const parsed = new URL(normalized);
-  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return { kind: "local" };
-  return { kind: "deepseek", ...deepseek };
+  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return LOCAL_WEB_FETCH;
+  return provider;
 }
 
 function webFetchBackendMaxCostUsd(backend: WebFetchBackend): number {
@@ -1550,18 +1672,18 @@ function webFetchBackendMaxCostUsd(backend: WebFetchBackend): number {
 }
 
 /**
- * Whether admission priced each web_fetch call for DeepSeek, by invoking
- * session and call id. Execution uses DeepSeek only when admission reserved
- * its fee for that call, so a call admitted as free is never billed, and the
- * live permission gate still has the last word.
+ * Which fetcher admission priced each web_fetch call for, by invoking
+ * session and call id. Execution uses a provider fetch only when admission
+ * reserved that provider's fee for that call, so a call admitted as free is
+ * never billed, and the live permission gate still has the last word.
  */
-const webFetchAdmissions = new WeakMap<object, Map<string, boolean>>();
+const webFetchAdmissions = new WeakMap<object, Map<string, WebFetchBackend["kind"]>>();
 const WEB_FETCH_ADMISSIONS_PER_SESSION = 256;
 
 function noteWebFetchAdmission(
   session: Session | null,
   args: Readonly<Record<string, unknown>>,
-  priced: boolean,
+  priced: WebFetchBackend["kind"],
 ): void {
   const callId = readToolRuntimeContext(args as Record<string, unknown>)?.callId;
   if (session === null || callId === undefined) return;
@@ -1581,7 +1703,7 @@ function noteWebFetchAdmission(
 function takeWebFetchAdmission(
   session: Session | null,
   args: Readonly<Record<string, unknown>>,
-): boolean | undefined {
+): WebFetchBackend["kind"] | undefined {
   const callId = readToolRuntimeContext(args as Record<string, unknown>)?.callId;
   if (session === null || callId === undefined) return undefined;
   const calls = webFetchAdmissions.get(session);
@@ -1616,13 +1738,14 @@ const GATEWAY_SEARCH_BASE_URLS: Readonly<Record<GatewayWebSearchBackend["provide
 function resolveGatewayWebSearchBackend(
   opts: ModelFacingToolOptions,
   session: Session | null,
+  environment: ProviderEnvironment,
 ): GatewayWebSearchBackend | undefined {
   const provider = sessionLLMProvider(session);
   if (provider === undefined) return undefined;
   const identity = readProviderIdentity(provider);
   if (identity !== "ollama-cloud" && identity !== "openrouter" && identity !== "venice") return undefined;
-  if (configuredWebSearchEndpoint(opts) !== undefined) return undefined;
-  const mode = configuredSearchChain(requireModelFacingRequestEnvironment(opts), opts.toolsConfig).mode;
+  if (configuredWebSearchEndpoint(opts, environment) !== undefined) return undefined;
+  const mode = configuredSearchChain(environment, opts.toolsConfig).mode;
   if (mode !== "auto" && mode !== "native") return undefined;
   const factoryOptions = readProviderFactoryOptions(provider);
   if (factoryOptions.extra?.managedGateway === true || factoryOptions.extra?.managedCredential === true) return undefined;
@@ -1668,12 +1791,15 @@ async function runGatewayWebSearch(
     readonly maxResults: number;
     readonly filters: WebSearchFilters;
     readonly signal?: AbortSignal;
+    /** The calling session's transport: proxy, client certificate and key, CA trust. */
+    readonly fetchOptions: Readonly<Record<string, unknown>>;
   },
 ): Promise<GatewaySearchOutcome> {
   const common = {
     apiKey: backend.apiKey,
     query: input.query,
     maxResults: input.maxResults,
+    fetchOptions: input.fetchOptions,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
   if (backend.provider === "ollama-cloud") return await runOllamaWebSearch(common);
@@ -1706,15 +1832,21 @@ function webSearchResultLimit(args: Record<string, unknown>): number {
  * chain is free. The Grok native path reserves its own model call.
  */
 function webSearchMaxCostUsd(opts: ModelFacingToolOptions, args: Record<string, unknown>): number | null {
-  if (configuredWebSearchEndpoint(opts) !== undefined ||
-      configuredSearchChain(requireModelFacingRequestEnvironment(opts), opts.toolsConfig).providers.length > 0) return null;
-  const gateway = resolveGatewayWebSearchBackend(opts, invokingSession(opts, args));
+  const call = invokingCall(opts, args);
+  const session = call.session;
+  const authority = webSearchAuthority(opts, call);
+  // The call fails closed and spends nothing.
+  if ("error" in authority) return 0;
+  const environment = authority.transportEnvironment;
+  if (configuredWebSearchEndpoint(opts, environment) !== undefined ||
+      configuredSearchChain(environment, opts.toolsConfig).providers.length > 0) return null;
+  const gateway = resolveGatewayWebSearchBackend(opts, session, environment);
   if (gateway !== undefined) {
     const filters = webSearchFilters(args);
     const filtered = filters.allowedDomains.length > 0 || filters.blockedDomains.length > 0;
     return gatewaySearchCeilingUsd(gateway, filtered ? 10 : webSearchResultLimit(args));
   }
-  return resolveDeepSeekWebSearchBackend(opts, invokingSession(opts, args)) !== undefined
+  return resolveDeepSeekWebSearchBackend(opts, session, environment) !== undefined
     ? DEEPSEEK_SEARCH_USD_PER_REQUEST
     : 0;
 }
@@ -1766,13 +1898,16 @@ function xSearchOptionsFromArgs(
   };
 }
 
-function isXSearchBackendEnabled(opts: ModelFacingToolOptions): boolean {
+function isXSearchBackendEnabled(
+  opts: ModelFacingToolOptions,
+  session: Session | null,
+): boolean {
   if (
     isXaiLiveXSearchEnabled(opts.grokCapabilities)
   ) {
     return true;
   }
-  const currentProvider = currentSessionProvider(opts);
+  const currentProvider = sessionLLMProvider(session);
   if (!currentProvider) return false;
   const factoryOptions = readProviderFactoryOptions(currentProvider);
   return factoryOptions.extra?.xSearch === true;
@@ -1780,10 +1915,12 @@ function isXSearchBackendEnabled(opts: ModelFacingToolOptions): boolean {
 
 function buildGrokNativeXSearchProvider(
   opts: ModelFacingToolOptions,
+  call: ToolCallSessionRef<Session>,
   xSearchOptions: LLMXSearchConfig | undefined,
 ): LLMProvider | undefined {
-  const backend = resolveXaiToolBackend(opts);
-  if (backend === undefined || !isXSearchBackendEnabled(opts)) {
+  const session = call.session;
+  const backend = resolveXaiToolBackend(opts, call);
+  if (backend === undefined || "error" in backend || !isXSearchBackendEnabled(opts, session)) {
     return undefined;
   }
   if (
@@ -1811,10 +1948,15 @@ function buildGrokNativeXSearchProvider(
     };
   })();
   const extra: ProviderFactoryOptions["extra"] = {
+    // The resolved API key stays the credential: without this the factory
+    // would swap it for a stored sign-in. A sign-in needs no flag, since the
+    // factory reads the same grant from the same credential home.
+    ...(backend.authMode === "api_key" ? { authMode: "api_key" as const } : {}),
+    // Every request the rebuilt provider sends uses the caller's transport,
+    // its sign-in refresh and discovery included.
+    fetchImpl: backend.fetchImpl,
+    authFetchImpl: backend.authFetchImpl,
     // One-shot only: native x_search, no dual continuous web search spam.
-    ...(!isTrustedXaiOauthInferenceBaseUrl(backend.baseURL)
-      ? { authMode: "api_key" as const }
-      : {}),
     webSearch: false,
     xSearch: true,
     ...(mergedXSearchOptions !== undefined
@@ -1824,7 +1966,7 @@ function buildGrokNativeXSearchProvider(
   const providerFactory = opts.providerFactory ?? createProvider;
   try {
     return providerFactory("grok", {
-      credentialHome: backend.credentialHome,
+      ...(backend.credentialHome !== undefined ? { credentialHome: backend.credentialHome } : {}),
       apiKey: backend.apiKey,
       baseURL: backend.baseURL,
       model: backend.model,
@@ -1874,7 +2016,13 @@ async function runGrokNativeXSearch(
   args: Record<string, unknown>,
   query: string,
 ): Promise<ToolResult> {
-  if (resolveXaiToolBackend(opts) === undefined) {
+  const call = invokingCall(opts, args);
+  const session = call.session;
+  const backend = resolveXaiToolBackend(opts, call);
+  if (backend !== undefined && "error" in backend) {
+    return json({ error: backend.error }, true);
+  }
+  if (backend === undefined) {
     return json(
       {
         error:
@@ -1883,7 +2031,7 @@ async function runGrokNativeXSearch(
       true,
     );
   }
-  if (!isXSearchBackendEnabled(opts)) {
+  if (!isXSearchBackendEnabled(opts, session)) {
     return json(
       {
         error:
@@ -1893,7 +2041,7 @@ async function runGrokNativeXSearch(
     );
   }
   const xSearchOptions = xSearchOptionsFromArgs(args);
-  const provider = buildGrokNativeXSearchProvider(opts, xSearchOptions);
+  const provider = buildGrokNativeXSearchProvider(opts, call, xSearchOptions);
   if (!provider) {
     return json(
       {
@@ -1905,7 +2053,7 @@ async function runGrokNativeXSearch(
   }
   try {
     const response = await runAdmittedModelFacingCall(
-      opts,
+      session,
       provider,
       [
         {
@@ -3976,12 +4124,13 @@ const WEB_FETCH_EXTRACTION_PREVIEW_CHARS = 2_000;
 
 /**
  * Run the caller's `prompt` against fetched page content through the
- * session provider and return the extraction, or undefined when no
- * provider is available or the call fails (callers fall back to raw
- * content — never worse than the old echo behavior).
+ * provider of the session that called web_fetch (a sub-agent's own, never
+ * its parent's) and return the extraction, or undefined when no provider is
+ * available or the call fails (callers fall back to raw content, never
+ * worse than the old echo behavior).
  */
 async function runWebFetchExtraction(
-  opts: ModelFacingToolOptions,
+  session: Session | null,
   input: {
     readonly url: string;
     readonly content: string;
@@ -3989,7 +4138,7 @@ async function runWebFetchExtraction(
     readonly signal?: AbortSignal;
   },
 ): Promise<string | undefined> {
-  const provider = currentSessionProvider(opts);
+  const provider = sessionLLMProvider(session);
   if (!provider) return undefined;
   try {
     const cappedContent =
@@ -3997,7 +4146,7 @@ async function runWebFetchExtraction(
         ? `${input.content.slice(0, WEB_FETCH_EXTRACTION_INPUT_CHARS)}\n\n[content truncated for extraction]`
         : input.content;
     const response = await runAdmittedModelFacingCall(
-      opts,
+      session,
       provider,
       [
         {
@@ -4051,10 +4200,11 @@ interface FetchedWebPage {
 /**
  * What web_fetch returns for a fetched page, whichever backend fetched it:
  * the character cap with its truncation marker, then the optional `prompt`
- * extraction with the full text saved to disk.
+ * extraction with the full text saved to disk, run on `session` (the session
+ * that called web_fetch).
  */
 async function webFetchPagePayload(
-  opts: ModelFacingToolOptions,
+  session: Session | null,
   page: FetchedWebPage,
   input: {
     readonly maxChars: number;
@@ -4094,7 +4244,7 @@ async function webFetchPagePayload(
     prompt.trim().length > 0 &&
     textBody.length >= WEB_FETCH_EXTRACTION_MIN_CHARS
   ) {
-    const extracted = await runWebFetchExtraction(opts, {
+    const extracted = await runWebFetchExtraction(session, {
       url: page.finalUrl ?? page.url,
       content: textBody,
       prompt,
@@ -4150,9 +4300,14 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
     // the default unpriced estimate held every successful fetch as
     // missing_tool_usage and marked the whole session's cost unknown.
     admissionEstimate: (args) => {
-      const session = invokingSession(opts, args);
+      const call = invokingCall(opts, args);
+      // A call without its session's own authority fails closed and spends nothing.
+      if ("error" in webFetchAuthority(opts, call)) {
+        return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 };
+      }
+      const session = call.session;
       const backend = webFetchBackend(opts, session, args.url);
-      noteWebFetchAdmission(session, args, backend.kind === "deepseek");
+      noteWebFetchAdmission(session, args, backend.kind);
       return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: webFetchBackendMaxCostUsd(backend) };
     },
     inputSchema: {
@@ -4204,28 +4359,37 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
             : { deepseek_fetch_fallback: deepseekFetchFallback, ...payload },
           isError,
         ));
+      // The session that called web_fetch: a sub-agent's own, never the
+      // parent's whose tool object this is. Its environment is also every
+      // request's transport (proxy, client certificate and key, CA trust);
+      // a sub-agent without its own fails closed.
+      const call = invokingCall(opts, args);
+      const session = call.session;
+      const authority = webFetchAuthority(opts, call);
+      if ("error" in authority) return resultWithCharge(json({ error: authority.error }, true));
       try {
-        // DeepSeek's Fetch API for a deepseek session that never asks and has
-        // no web_fetch rules. A failure or an empty page falls through to the
-        // local fetcher, which says why.
-        const session = invokingSession(opts, args);
-        const admittedDeepSeek = takeWebFetchAdmission(session, args);
+        // The session's provider fetch (DeepSeek's Fetch API, Ollama Cloud's
+        // web fetch) only in a session that never asks and has no web_fetch
+        // rules. A failure or an empty page falls through to the local
+        // fetcher, which says why.
+        const admitted = takeWebFetchAdmission(session, args);
         const backend = webFetchBackend(opts, session, normalized);
-        // A dispatched call needs admission's affirmative record (one evicted
-        // or never written means no fee was reserved); a call without runtime
-        // context (direct use) follows the live decision.
+        // A dispatched call needs admission's record for this same provider
+        // fetch (one evicted or never written means no fee was reserved); a
+        // call without runtime context (direct use) follows the live decision.
         const dispatched = readToolRuntimeContext(args)?.callId !== undefined;
-        const deepseek = backend.kind === "deepseek" &&
-          (dispatched ? admittedDeepSeek === true : admittedDeepSeek !== false)
+        const providerFetch = backend.kind !== "local" &&
+          (dispatched ? admitted === backend.kind : admitted === undefined || admitted === backend.kind)
           ? backend
           : undefined;
+        const deepseek = providerFetch?.kind === "deepseek" ? providerFetch : undefined;
         if (deepseek !== undefined) {
           // The fetch's own time budget starts before the URL checks, so a
           // stalled resolver cannot hold the call past timeout_ms.
           const budgetMs = deepSeekFetchBudgetMs(numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS);
           const budgetStartedAt = Date.now();
           const budget = AbortSignal.timeout(budgetMs);
-          const check = await checkDeepSeekFetchUrl(normalized, budget, effectSignal);
+          const check = await checkProviderFetchUrl("deepseek", normalized, budget, effectSignal);
           const outcome = check === "send"
             ? await runDeepSeekFetch({
                 endpoint: deepseek.endpoint,
@@ -4234,16 +4398,14 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
                 timeoutMs: budgetMs,
                 budgetStartedAt,
                 ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
-                fetchOptions: getProxyFetchOptions({
-                  environment: requireModelFacingRequestEnvironment(opts),
-                }),
+                fetchOptions: toolCallFetchOptions(authority),
               })
             : check === "timed_out"
               ? { kind: "failed" as const, reason: deepSeekTimeoutReason(budgetMs), billed: false as const, attempts: 0 }
               : undefined;
           if (outcome?.billed === true) providerFetchCost += DEEPSEEK_FETCH_USD_PER_REQUEST;
           if (outcome?.kind === "content") {
-            return finish(await webFetchPagePayload(opts, {
+            return finish(await webFetchPagePayload(session, {
               head: {
                 source: "deepseek_fetch",
                 provider: "deepseek",
@@ -4268,23 +4430,33 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
             }
           }
         }
-        const apiKey = backend.kind === "ollama" ? backend.apiKey : undefined;
-        if (apiKey !== undefined) {
-          await assertLiveWebFetchHostAllowed(new URL(normalized).hostname, effectSignal);
-          const page = await runOllamaWebFetch({ apiKey, url: normalized, signal: effectSignal,
-            timeoutMs: numberValue(args.timeout_ms) });
-          providerFetchCost = page.costUsd;
-          if (page.kind === "content") {
-            const content = page.content.slice(0, maxChars);
-            const extracted = prompt && content.length >= WEB_FETCH_EXTRACTION_MIN_CHARS
-              ? await runWebFetchExtraction(opts, { url: normalized, content, prompt, signal: effectSignal }) : undefined;
-            // Ollama does not report the final URL or origin HTTP status. Do not
-            // invent either from its successful API response, or trust links as fetches.
-            return resultWithCharge(json({ source: "ollama-cloud_web_fetch", provider: "ollama-cloud",
-              url: normalized, title: page.title, content, links: page.links,
-              truncated: page.content.length > maxChars, ...(extracted ? { extracted, prompt } : {}) }));
+        if (providerFetch?.kind === "ollama") {
+          // Ollama follows redirects on its servers too: the same gate and
+          // URL checks as DeepSeek, inside the fetch's own time budget.
+          const budgetMs = ollamaFetchBudgetMs(numberValue(args.timeout_ms));
+          const budgetStartedAt = Date.now();
+          const check = await checkProviderFetchUrl(
+            "ollama", normalized, AbortSignal.timeout(budgetMs), effectSignal);
+          if (check === "send") {
+            const page = await runOllamaWebFetch({ apiKey: providerFetch.apiKey, url: normalized, signal: effectSignal,
+              timeoutMs: Math.max(1, budgetMs - (Date.now() - budgetStartedAt)),
+              fetchOptions: toolCallFetchOptions(authority) });
+            providerFetchCost = page.costUsd;
+            if (page.kind === "content") {
+              const content = page.content.slice(0, maxChars);
+              const extracted = prompt && content.length >= WEB_FETCH_EXTRACTION_MIN_CHARS
+                ? await runWebFetchExtraction(session, { url: normalized, content, prompt, signal: effectSignal }) : undefined;
+              // Ollama does not report the final URL or origin HTTP status. Do not
+              // invent either from its successful API response, or trust links as fetches.
+              return resultWithCharge(json({ source: "ollama-cloud_web_fetch", provider: "ollama-cloud",
+                url: normalized, title: page.title, content, links: page.links,
+                truncated: page.content.length > maxChars, ...(extracted ? { extracted, prompt } : {}) }));
+            }
+            providerFetchFallback = page.reason;
+          } else if (check === "timed_out") {
+            // The same duration wording as DeepSeek's fallback reasons.
+            providerFetchFallback = deepSeekTimeoutReason(budgetMs);
           }
-          providerFetchFallback = page.reason;
         }
         const initialParsed = new URL(normalized);
         const initialPreapproved = isPreapprovedHost(
@@ -4295,7 +4467,7 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
           normalized,
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
           {
-            environment: requireModelFacingRequestEnvironment(opts),
+            environment: authority.transportEnvironment,
             ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
             validateWebFetchUrls: true,
             allowWebFetchRedirect: (nextUrl) => {
@@ -4340,7 +4512,7 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
           body = raw.text;
           renderedAs = "passthrough";
         }
-        const payload = await webFetchPagePayload(opts, {
+        const payload = await webFetchPagePayload(session, {
           ...(providerFetchFallback ? { head: { provider_fetch_fallback: providerFetchFallback } } : {}),
           status: response.status,
           ok: response.ok,
@@ -4366,9 +4538,10 @@ type WebSearchEndpointKind = "duckduckgo" | "searxng" | "brave" | "json";
 
 function webSearchEndpointKind(
   opts: ModelFacingToolOptions,
+  environment: ProviderEnvironment,
 ): WebSearchEndpointKind {
   const raw = (
-    stringValue(opts.env?.AGENC_WEB_SEARCH_KIND) ??
+    stringValue(environment.AGENC_WEB_SEARCH_KIND) ??
     stringValue(opts.toolsConfig?.web_search_endpoint_kind)
   )?.toLowerCase();
   if (raw === "searxng" || raw === "brave" || raw === "json") return raw;
@@ -4587,7 +4760,6 @@ async function runDuckDuckGoHtmlSearch(
 }
 
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
-  const requestEnvironment = requireModelFacingRequestEnvironment(opts);
   // Bootstrap keeps this registry across provider switches. Resolve optional
   // xAI credentials only when its deferred tool is actually requested.
   const deferXSearch = opts.getSession() === null;
@@ -4627,7 +4799,20 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const query = stringValue(args.query);
         if (!query) return json({ error: "query is required" }, true);
         const filters = webSearchFilters(args);
-        const endpoint = configuredWebSearchEndpoint(opts);
+        // Every separate search backend and every request resolves from the
+        // session making the call, never the session this registry was built
+        // for; a sub-agent without its own authority fails closed.
+        const call = invokingCall(opts, args);
+        const session = call.session;
+        const authority = webSearchAuthority(opts, call);
+        if ("error" in authority) {
+          return {
+            ...json({ error: authority.error }, true),
+            admissionUsage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+          };
+        }
+        const requestEnvironment = authority.transportEnvironment;
+        const endpoint = configuredWebSearchEndpoint(opts, requestEnvironment);
         const chain = configuredSearchChain(requestEnvironment, opts.toolsConfig);
         const maxResults = webSearchResultLimit(args);
         const nativeResult = await runGrokNativeWebSearch(
@@ -4636,15 +4821,16 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           query,
           maxResults,
           filters,
+          authority,
         );
         if (nativeResult !== undefined) {
           return nativeResult;
         }
         // DeepSeek's Search API for a deepseek session. A failure or an empty
         // answer falls through to the chain below, which says why.
-        const deepseek = resolveDeepSeekWebSearchBackend(opts, invokingSession(opts, args));
+        const deepseek = resolveDeepSeekWebSearchBackend(opts, session, requestEnvironment);
         // A paid fallback is unpriced. An early DeepSeek success still has an exact receipt.
-        const gateway = resolveGatewayWebSearchBackend(opts, invokingSession(opts, args));
+        const gateway = resolveGatewayWebSearchBackend(opts, session, requestEnvironment);
         const reportsDeepSeekCharge = (deepseek !== undefined || gateway !== undefined) &&
           endpoint === undefined && chain.providers.length === 0;
         let deepseekBilled = false;
@@ -4672,7 +4858,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
             query: shaped.query,
             count: filtered ? 10 : maxResults,
             ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
-            fetchOptions: getProxyFetchOptions({ environment: requestEnvironment }),
+            fetchOptions: toolCallFetchOptions(authority),
           });
           deepseekBilled = outcome.billed;
           const results = outcome.kind === "results"
@@ -4710,6 +4896,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
             query,
             maxResults: filtered ? 10 : maxResults,
             filters,
+            fetchOptions: toolCallFetchOptions(authority),
             ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
           });
           gatewayCharge = outcome.costUsd ?? 0;
@@ -4739,7 +4926,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           }));
         // 1. Explicitly configured endpoint (env or config-bridged).
         if (endpoint !== undefined && chain.mode === "auto") {
-          const kind = webSearchEndpointKind(opts);
+          const kind = webSearchEndpointKind(opts, requestEnvironment);
           const configured = await runConfiguredEndpointSearch(
             endpoint,
             kind,
@@ -4877,7 +5064,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   // native x_search is an xAI wire capability.
   const includeXSearch =
     isXaiLiveXSearchEnabled(opts.grokCapabilities) &&
-    (deferXSearch || resolveXaiToolBackend(opts) !== undefined);
+    (deferXSearch || isXaiToolBackend(resolveXaiToolBackend(opts, toolCallSession(undefined, opts.getSession))));
   if (!includeXSearch) {
     return tools.filter((t) => t.name !== "XSearch");
   }

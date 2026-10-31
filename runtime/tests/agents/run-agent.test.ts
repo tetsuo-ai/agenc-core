@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { CompletedTaskResults } from "../../src/agents/completed-task-results.js";
 import { AgentControl } from "./control.js";
+import { resolveHomeContext } from "../config/home.js";
 import { toListedAgentJson } from "./v2/common.js";
 import { delegate } from "./delegate.js";
 import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
@@ -3583,6 +3584,41 @@ describe("runAgent", () => {
     expect(outcomes).toEqual([expect.objectContaining({ terminal: expect.objectContaining({ reason: "model_loop" }) })]);
     expect(session.mailbox.drain().some(message =>
       typeof message.content === "string" && message.content.includes('"reason":"model_loop"'))).toBe(true);
+  });
+
+  it("gives the child its own copy of the parent's tool authority when it is created", async () => {
+    const provider = makeProvider([{ content: "done" }]);
+    const parentEnvironment = Object.freeze({
+      OPENAI_API_KEY: "parent-key",
+      HTTPS_PROXY: "http://parent-proxy.test:8080",
+    });
+    const credentialHome = resolveHomeContext({ AGENC_HOME: join(tmpdir(), "agenc-run-agent-authority") });
+    const session = makeStubSession({ services: { provider, providerEnvironment: parentEnvironment, credentialHome } });
+    const { live } = await spawnLive(session);
+    let child: Session | undefined;
+    await collectRun(runAgent({
+      live, parent: session, initialMessages: [{ role: "user", content: "check the docs" }],
+      taskPrompt: "check the docs",
+      onCacheSafeParams: captured => {
+        child = (captured as unknown as { toolUseContext: { admissionSession: Session } }).toolUseContext.admissionSession;
+      },
+    }));
+    expect(child).toBeDefined();
+    // Explicit at creation: the parent's values in an object of the child's own.
+    expect(child!.services.providerEnvironment).toEqual(parentEnvironment);
+    expect(child!.services.providerEnvironment).not.toBe(parentEnvironment);
+    expect(Object.isFrozen(child!.services.providerEnvironment)).toBe(true);
+    expect(child!.services.credentialHome).toBe(credentialHome);
+    // Its own live provider state, seeded from the parent's: keys added in
+    // either session afterwards stay in that session.
+    const childState = child!.services.providerService!;
+    expect(childState).not.toBe(session.services.providerService);
+    expect(childState.environment()).toEqual(parentEnvironment);
+    expect(childState.credentialHome()).toBe(credentialHome);
+    await session.providerService.useSessionApiKey("grok", "parent-xai-key");
+    expect(childState.environment().XAI_API_KEY).toBeUndefined();
+    await childState.useSessionApiKey("grok", "child-xai-key");
+    expect(session.providerService.environment().XAI_API_KEY).toBe("parent-xai-key");
   });
 
   it("stops a funds-exhausted child once and projects one typed outcome to journal, mailbox, status, and user notice", async () => {

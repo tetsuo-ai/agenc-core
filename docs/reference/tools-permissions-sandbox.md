@@ -334,7 +334,51 @@ disabled for the rest of the session; start a new session then.
 | `LSP` | Language-server diagnostics / definition / references / symbols |
 | `WebSearch` | Web search (provider-native Grok path when available; in a DeepSeek session DeepSeek's Search API, see [deepseek-direct.md](../providers/deepseek-direct.md#web-search); else configured endpoint / DuckDuckGo) |
 | `XSearch` | Live X/Twitter search through an independent direct-xAI backend. Any tool-capable reasoning provider may invoke it when xAI credentials exist and `[providers.grok] x_search = true` |
-| `web_fetch` | Fetch URL → text/markdown (in a DeepSeek session that never asks and has no `web_fetch` rule in effect, DeepSeek's Fetch API fetches public pages after the same checks on the starting URL; DeepSeek follows redirects on its servers, see [deepseek-direct.md](../providers/deepseek-direct.md#web-fetch); else a direct fetch that checks each redirect) |
+| `web_fetch` | Fetch URL → text/markdown (in a DeepSeek or direct Ollama Cloud session that never asks and has no `web_fetch` rule in effect, the provider's own fetch gets public pages after the same checks on the starting URL; both follow redirects on their servers, see [deepseek-direct.md](../providers/deepseek-direct.md#web-fetch) and [providers.md](providers.md#ollama-cloud); else a direct fetch that checks each redirect) |
+
+When a sub-agent calls `WebSearch`, `XSearch`, `web_fetch` or a media tool
+(`ImagineImage`, `ImagineVideo`, `ImagineSpeech`, `ImagineEdit`), the tool
+works from the sub-agent's own session, and one session's authority covers
+the whole call: endpoint, credential, auth mode (API key or sign-in),
+credential home and connection settings resolve together.
+
+- A tool on the session's own provider route (Grok's native search,
+  `web_fetch`'s `prompt` extraction, `XSearch` in a Grok session, the
+  session's own media route) uses the key or sign-in, base URL and auth
+  selection that session's model calls use. An explicit API-key selection
+  stays on its key even while a sign-in is stored. A ChatGPT sign-in does not
+  authorize OpenAI's image or video APIs, so an OpenAI session on one uses
+  `OPENAI_API_KEY` with `OPENAI_BASE_URL` (or OpenAI's URL) instead.
+- A separate backend (`XSearch` or xAI media from another provider's
+  session, a canonical media key, a configured search endpoint or search
+  provider key) resolves from that session's own environment and credential
+  home, honoring its `GROK_AUTH_MODE`, with each key and its URL taken as one
+  pair.
+- Requests a tool sends itself, or through a provider instance it builds or
+  rebuilds for the call, use the calling session's transport, including that
+  provider's sign-in refresh and discovery. Requests a tool makes through the
+  session's own provider instance (`web_fetch` prompt extraction, token
+  counting) use exactly the connection that session's model calls use.
+  The transport is the session's own proxy (`HTTPS_PROXY`, `NO_PROXY`), client
+  certificate and key (`AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`) and CA trust,
+  from the same environment its endpoint and key come from; it carries the
+  tool's fetches, searches, media requests and their downloads, model lists,
+  and the requests of a provider rebuilt for native search or `XSearch`.
+
+A session gets its provider environment and credential home when it is
+created: the root session from its client's environment and AgenC home, and
+each sub-agent (one `spawn_agent` starts, a task worker, an in-process
+teammate, a review delegate) its own copy of its parent's current ones. They
+seed the session's own provider state, the state its model calls use, and
+its tools read that state when they run: a key added or rotated in the
+session applies to its next tool call, and after creation a change in one
+session never reaches another. A sub-agent without its own provider state
+fails the call with an error rather than using its parent's.
+The session's permission mode and rules govern a provider fetch,
+and the model calls a tool makes are admitted on its own budget and run. A
+parent's key, sign-in, endpoint, connection settings or model is never used
+for a sub-agent's call, and a call with no usable credential fails with an
+error.
 
 There is **no** separate LIVE tool named `web_search`; that string is only a
 provider-native server-side tool id used internally by the Grok web-search

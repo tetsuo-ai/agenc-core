@@ -1451,8 +1451,21 @@ export interface SessionServices {
    * support live switching bind the preparation resolver at environment ingress.
    */
   readonly providerService?: SessionProviderService;
-  /** Immutable provider-only environment captured for this session. */
+  /**
+   * Immutable provider-only environment captured when this session was
+   * created. It seeds the session's own provider service, whose live
+   * environment (with any key added since) is what model calls and tools
+   * read. Every session a tool can run under sets it when it is created; a
+   * sub-agent gets its own copy of its parent's current one.
+   */
   readonly providerEnvironment?: ProviderEnvironment;
+  /**
+   * Where this session's stored sign-ins live (for example an xAI sign-in
+   * for XSearch or xAI media from a non-Grok session). Set with
+   * `providerEnvironment` when the session is created and handed to its own
+   * provider service; a sub-agent gets its parent's.
+   */
+  readonly credentialHome?: import("../config/home.js").HomeContext;
   /** Read-only projection of `providerService.current().instance`. */
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
@@ -2788,6 +2801,9 @@ export class Session {
           ? { initialModel: initialSelection.collaborationMode.model }
           : {}),
         environment: opts.services.providerEnvironment ?? {},
+        ...(opts.services.credentialHome !== undefined
+          ? { credentialHome: opts.services.credentialHome }
+          : {}),
       });
     const services = {
       ...opts.services,

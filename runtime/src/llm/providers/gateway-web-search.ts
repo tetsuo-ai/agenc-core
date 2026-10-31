@@ -75,6 +75,8 @@ interface CallOptions {
   readonly maxResults: number;
   readonly signal?: AbortSignal;
   readonly fetchImpl?: typeof fetch;
+  /** The calling session's transport: proxy, client certificate and key, CA trust. */
+  readonly fetchOptions?: Readonly<Record<string, unknown>>;
 }
 
 function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
@@ -124,11 +126,12 @@ async function postJson(
   url: string,
   apiKey: string,
   body: Readonly<Record<string, unknown>>,
-  options: Pick<CallOptions, "signal" | "fetchImpl">,
+  options: Pick<CallOptions, "signal" | "fetchImpl" | "fetchOptions">,
 ): Promise<{ readonly status: number; readonly json?: unknown; readonly reason?: string }> {
   const timeout = AbortSignal.timeout(TIMEOUT_MS);
   try {
     const response = await (options.fetchImpl ?? fetch)(url, {
+      ...(options.fetchOptions ?? {}),
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify(body),

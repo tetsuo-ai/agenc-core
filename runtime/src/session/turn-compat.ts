@@ -1,4 +1,5 @@
 import { runtimeOptionsForChildSession } from "../one-shot-fast-mode.js";
+import { childSessionAuthority } from "./session-authority.js";
 import { legacyCacheCreationUsage } from "../llm/usage.js";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
 import { attachExecOwnerBinding, execOwnerBindingFromToolArgs } from "../unified-exec/process-ownership.js";
@@ -330,6 +331,9 @@ export async function createTurnCompatSession(
       services: {
         ...parent.services,
         runtimeOptions: runtimeOptionsForChildSession(parent.services.runtimeOptions),
+        // The compat child's own copy of the parent's tool authority, taken
+        // at creation: its tools never fall back to the parent's at call time.
+        ...childSessionAuthority(parent),
         // The compat child owns its selected model/provider revision. Sharing
         // the parent's provider service would silently retain the parent model.
         providerService: undefined,

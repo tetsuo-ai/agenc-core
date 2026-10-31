@@ -19,21 +19,28 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import {
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../../llm/provider.js";
+import { readProviderIdentity } from "../../llm/provider.js";
 import {
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
+import {
+  isManagedProviderRoute,
+  resolveToolCallAuthority,
+  sessionApiKeyRoute,
+  type ToolCallAuthority,
+  toolCallSession,
+  withToolCallTransport,
+} from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
 import {
   cachedVeniceMediaModels,
   loadVeniceMediaModels,
+  type VeniceListAuthority,
   veniceSpeechFormat,
   veniceSpeechUsdPerCharacter,
   type VeniceMediaModel,
@@ -54,6 +61,8 @@ interface SpeechBackend {
   readonly kind: SpeechBackendKind;
   readonly baseURL: string;
   readonly bearer: string;
+  /** The calling session's authority; its requests use this transport. */
+  readonly authority: ToolCallAuthority;
 }
 
 interface ReviewedSpeechModel {
@@ -106,28 +115,47 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function resolveSpeechBackend(opts: ImagineSpeechToolOptions): SpeechBackend | { readonly error: string } {
-  const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+/**
+ * The speech route of the session making the call (`args`; a sub-agent runs
+ * its parent's tool): its own key with its own URL, or, without a factory
+ * key, its provider's canonical key with the canonical URL from its own
+ * environment. Never one session's URL with another's key.
+ */
+function resolveSpeechBackend(
+  opts: ImagineSpeechToolOptions,
+  args?: Readonly<Record<string, unknown>>,
+): SpeechBackend | { readonly error: string } {
+  const call = toolCallSession(readInvokingSession(args), opts.getSession);
+  const session = call.session;
+  const provider = session?.services?.provider;
   const identity = readProviderIdentity(provider as never);
   if ((identity !== "openrouter" && identity !== "venice") || provider === undefined) {
     return { error: "ImagineSpeech speaks only in an OpenRouter or Venice session, with that session's own key." };
   }
-  const factory = readProviderFactoryOptions(provider as never);
-  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
+  if (isManagedProviderRoute(provider)) {
     return { error: "ImagineSpeech is not available on the managed AgenC route." };
   }
-  const bearer = typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-    ? factory.apiKey.trim()
-    : resolveProviderApiKeyEnvironment(identity, env)?.value;
+  const authority = resolveToolCallAuthority("ImagineSpeech", call, {
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+  });
+  if ("error" in authority) return authority;
+  const own = sessionApiKeyRoute(provider, DEFAULT_BASE_URL[identity]);
+  if (own !== undefined) return { kind: identity, ...own, authority };
+  const env = authority.environment;
+  const bearer = resolveProviderApiKeyEnvironment(identity, env)?.value;
   if (bearer === undefined) return { error: `ImagineSpeech needs this ${identity} session's API key.` };
-  const baseURL = factory.baseURL ?? resolveProviderBaseURLEnvironment(identity, env)?.value ?? DEFAULT_BASE_URL[identity];
+  const baseURL = resolveProviderBaseURLEnvironment(identity, env)?.value ?? DEFAULT_BASE_URL[identity];
   try {
     new URL(baseURL);
   } catch {
     return { error: "ImagineSpeech endpoint is invalid." };
   }
-  return { kind: identity, baseURL: baseURL.replace(/\/+$/, ""), bearer };
+  return { kind: identity, baseURL: baseURL.replace(/\/+$/, ""), bearer, authority };
+}
+
+/** Whose Venice list a call reads: the session's endpoint, key and transport. */
+function veniceList(backend: SpeechBackend): VeniceListAuthority {
+  return { baseURL: backend.baseURL, bearer: backend.bearer, transport: backend.authority.transportEnvironment };
 }
 
 /** Whether this session has its own speech route. */
@@ -228,8 +256,9 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
   const advertised = opts.getSession() === null ? undefined : resolveSpeechBackend(opts);
   const advertisedKind = advertised !== undefined && !("error" in advertised) ? advertised.kind : undefined;
   if (advertised !== undefined && !("error" in advertised) && advertised.kind === "venice" &&
-      cachedVeniceMediaModels(advertised.baseURL) === undefined) {
-    void loadVeniceMediaModels(advertised.baseURL, advertised.bearer, opts.fetchImpl ?? fetch).catch(() => undefined);
+      cachedVeniceMediaModels(veniceList(advertised)) === undefined) {
+    void loadVeniceMediaModels(veniceList(advertised),
+      withToolCallTransport(opts.fetchImpl ?? fetch, advertised.authority)).catch(() => undefined);
   }
   return {
     name: "ImagineSpeech",
@@ -253,10 +282,10 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
     timeoutMs: 120_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
-      const backend = resolveSpeechBackend(opts);
+      const backend = resolveSpeechBackend(opts, args);
       if ("error" in backend) return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: null };
       const model = stringValue(args.model) ?? DEFAULT_SPEECH_MODEL[backend.kind];
-      const live = backend.kind === "venice" ? cachedVeniceMediaModels(backend.baseURL) : undefined;
+      const live = backend.kind === "venice" ? cachedVeniceMediaModels(veniceList(backend)) : undefined;
       const plan = speechPlan(backend, model, live);
       const text = typeof args.text === "string" ? args.text : "";
       return {
@@ -269,7 +298,7 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
     execute: async (args) => {
       const signal = args.__abortSignal instanceof AbortSignal ? args.__abortSignal : undefined;
       signal?.throwIfAborted();
-      const backend = resolveSpeechBackend(opts);
+      const backend = resolveSpeechBackend(opts, args);
       if ("error" in backend) return refusal(backend.error);
       const text = typeof args.text === "string" ? args.text.trim() : "";
       if (text.length === 0) return refusal("text is required");
@@ -277,9 +306,10 @@ export function createImagineSpeechTool(opts: ImagineSpeechToolOptions): Tool {
         return refusal(`text is ${text.length} characters; the limit is ${MAX_SPEECH_CHARACTERS}`);
       }
       const model = stringValue(args.model) ?? DEFAULT_SPEECH_MODEL[backend.kind];
-      const fetchImpl = opts.fetchImpl ?? fetch;
+      // The calling session's own proxy, client certificate and CA trust.
+      const fetchImpl = withToolCallTransport(opts.fetchImpl ?? fetch, backend.authority);
       const live = backend.kind === "venice"
-        ? await loadVeniceMediaModels(backend.baseURL, backend.bearer, fetchImpl, signal)
+        ? await loadVeniceMediaModels(veniceList(backend), fetchImpl, signal)
         : undefined;
       const plan = speechPlan(backend, model, live);
       if (plan === undefined) {

@@ -130,6 +130,72 @@ export interface AdmissionUsageSummary extends AdmissionUsageTotals {
   })[];
 }
 
+/**
+ * The model calls a tool makes for the session that called it, by the purpose
+ * that leads their admission step id (`<purpose>:<session sub id>`):
+ * WebSearch's Grok native search, XSearch, and web_fetch's prompt extraction.
+ * Their spend belongs to the tool call, not to a turn.
+ */
+export const TOOL_MODEL_CALL_PURPOSES = Object.freeze([
+  "web_search",
+  "x_search",
+  "web_fetch_extraction",
+] as const);
+
+export type ToolModelCallPurpose = (typeof TOOL_MODEL_CALL_PURPOSES)[number];
+
+/**
+ * The index just past the JSON string literal that opens at `start` in
+ * `text` (escapes included), or undefined when it does not close.
+ */
+function endOfJsonString(text: string, start: number): number | undefined {
+  let index = start + 1;
+  while (index < text.length && text[index] !== '"') {
+    index += text[index] === "\\" ? 2 : 1;
+  }
+  return index < text.length ? index + 1 : undefined;
+}
+
+/**
+ * Whether a stored admission step id is a tool's model call. The kernel
+ * stores a client's step as `[task:<JSON task id>:][session:<JSON session
+ * id>:]...<step>` (execution-admission-kernel.ts stepIdFor and forSession),
+ * so a call a task-bound client admitted reads
+ * `task:"call_1":web_fetch_extraction:sub-7`. Each prefix is removed as a
+ * whole (an id is one JSON string, so quotes or colons in it cannot end it
+ * early) before the purpose is read. Session prefixes written before ids
+ * were encoded (`session:<id>:`, never written by a production caller) get a
+ * best-effort read: the id ends at its first colon.
+ */
+export function isToolModelCallStep(stepId: string): boolean {
+  let rest = stepId;
+  if (rest.startsWith('task:"')) {
+    const end = endOfJsonString(rest, "task:".length);
+    if (end === undefined || rest[end] !== ":") return false;
+    rest = rest.slice(end + 1);
+  }
+  while (rest.startsWith("session:")) {
+    const idStart = "session:".length;
+    const end = rest[idStart] === '"'
+      ? endOfJsonString(rest, idStart)
+      : rest.indexOf(":", idStart);
+    if (end === undefined || end < 0 || rest[end] !== ":") return false;
+    rest = rest.slice(end + 1);
+  }
+  return TOOL_MODEL_CALL_PURPOSES.some((purpose) => rest.startsWith(`${purpose}:`));
+}
+
+/**
+ * What one run's own tool calls were charged: the fees tools report on their
+ * tool_exec reservations (web search and fetch, media generation) plus the
+ * model calls tools make ({@link isToolModelCallStep}), including those its
+ * task-bound clients admitted. Settled, priced reservations only; delegated
+ * runs are not included.
+ */
+export interface AdmissionToolCharges {
+  readonly costUsd: number;
+}
+
 /** Immutable observation at one admission revision, materialized at publication. */
 export interface AdmissionUsageSnapshot {
   readonly runId: string;

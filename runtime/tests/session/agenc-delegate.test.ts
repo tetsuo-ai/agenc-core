@@ -36,6 +36,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
 import { createTestConfigStore } from "../fixtures.js";
+import { resolveHomeContext } from "../config/home.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
@@ -1085,6 +1086,42 @@ describe("runAgenCReviewOneShot happy-path review", () => {
       await session.shutdown();
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("gives the review child its own copy of the parent's tool authority at creation", async () => {
+    const parentEnvironment = Object.freeze({
+      OPENAI_API_KEY: "parent-key",
+      HTTPS_PROXY: "http://parent-proxy.test:8080",
+    });
+    const credentialHome = resolveHomeContext({ AGENC_HOME: join(tmpdir(), "agenc-delegate-authority") });
+    const session = mkSession(mkScriptedProvider({ content: "ok" }), {
+      providerEnvironment: parentEnvironment,
+      credentialHome,
+    });
+    const req = mkOneShotRequest(session);
+    const thread = await spawnAgenCDelegateThread(
+      session,
+      req,
+      req.parentContext.modelInfo.slug,
+      req.parentContext.modelInfo,
+      new AbortController(),
+    );
+
+    // Explicit at creation: the parent's values in an object of the child's own.
+    expect(thread.childSession.services.providerEnvironment).toEqual(parentEnvironment);
+    expect(thread.childSession.services.providerEnvironment).not.toBe(parentEnvironment);
+    expect(Object.isFrozen(thread.childSession.services.providerEnvironment)).toBe(true);
+    expect(thread.childSession.services.credentialHome).toBe(credentialHome);
+    // Its own live provider state, seeded from the parent's: keys added in
+    // either session afterwards stay in that session.
+    const childState = thread.childSession.providerService;
+    expect(childState).not.toBe(session.providerService);
+    expect(childState.environment()).toEqual(parentEnvironment);
+    expect(childState.credentialHome()).toBe(credentialHome);
+    await session.providerService.useSessionApiKey("grok", "parent-xai-key");
+    expect(childState.environment().XAI_API_KEY).toBeUndefined();
+
+    await thread.shutdown("test complete");
   });
 
   it("uses an inert child MCP manager and never refreshes the parent transport", async () => {

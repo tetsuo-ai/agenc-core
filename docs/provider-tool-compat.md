@@ -26,10 +26,13 @@ For example, a Meta Muse Spark or OpenAI model can invoke `XSearch`,
 through an independently authenticated direct-xAI Grok backend;
 `ImagineVideo` similarly uses xAI Imagine. `ImagineImage` can use Meta Muse
 Image, QwenCloud image models, Z.AI GLM-Image, or xAI Imagine with each
-backend's separate credential. A matching Meta, QwenCloud, Z.AI Pay-As-You-Go, or direct
-Grok session may reuse only its own native authority. The reasoning session's
-API key and base URL are never borrowed for a different provider's backend;
-Z.AI Coding Plan credentials remain chat-only.
+backend's separate credential. A matching Meta, QwenCloud, Z.AI Pay-As-You-Go,
+OpenAI or MiniMax session on an API key, or a direct Grok session, may reuse
+only its own native authority: its own key or sign-in with its own base URL
+and auth selection. The reasoning session's API key and base URL are never
+borrowed for a different provider's backend, and a sub-agent's tool call uses
+the sub-agent's authority, never its parent's; Z.AI Coding Plan credentials
+remain chat-only.
 
 This does not turn provider-native server tools into generic wire features.
 Native `x_search`, for example, is still sent only on the internal compatible

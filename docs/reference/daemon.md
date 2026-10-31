@@ -416,6 +416,14 @@ Never retry after admission may have arrived.
 | `daemon.shutdownIfIdle`                                                                                     | Exit only when no work runs; new requests wait while it checks (`agenc daemon restart --when-idle`)                |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
+`session.snapshot.tokenUsage.costUsd` is the cost of the session's own model
+turns plus the charges of its own tool calls as the admission ledger settled
+them (web search and fetch fees, media generation, and the model calls tools
+make such as `web_fetch` prompt extraction). A tool call without a price adds
+nothing, and sub-agents are not included. `costKnown` is also `false` when the
+ledger cannot be read. `agenc -p --output-format json` reports this object as
+`tokenUsage`.
+
 `session.snapshot` may include `contextBreakdown`, a rough estimate for
 resident, MCP, and deferred tools, readable memory files, history, the system
 prompt, and the session's effective window. The field is omitted when a

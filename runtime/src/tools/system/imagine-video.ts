@@ -38,10 +38,7 @@ import { join, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
-import {
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../../llm/provider.js";
+import { readProviderIdentity } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
   tryResolveXaiBearerTokenForBaseUrl,
@@ -51,6 +48,16 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { readInvokingSession } from "../runtimes/context.js";
+import {
+  isManagedProviderRoute,
+  resolveToolCallAuthority,
+  sessionApiKeyRoute,
+  sessionXaiRoute,
+  type ToolCallAuthority,
+  toolCallSession,
+  withToolCallTransport,
+} from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
@@ -386,20 +393,23 @@ const VIDEO_DOWNLOAD_POLICY: Readonly<
 });
 
 type VideoBackendResolution =
-  | { readonly backend: VideoBackend }
+  | { readonly backend: VideoBackend; readonly authority: ToolCallAuthority }
   | { readonly error: string };
 
+/**
+ * A canonical media key with its own URL (or the provider's default), one
+ * pair from one environment; never paired with a session's endpoint.
+ */
 function environmentVideoBackend(
   kind: "openai" | "minimax",
   env: NodeJS.ProcessEnv,
-  sessionBaseURL?: string,
 ): VideoBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment(kind, env);
   if (credential === undefined) return undefined;
   const environmentBaseURL = resolveProviderBaseURLEnvironment(kind, env)?.value;
   const baseURL = kind === "openai"
-    ? environmentBaseURL ?? sessionBaseURL ?? DEFAULT_OPENAI_BASE_URL
-    : environmentBaseURL ?? sessionBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
+    ? environmentBaseURL ?? DEFAULT_OPENAI_BASE_URL
+    : environmentBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
   try {
     new URL(baseURL);
   } catch {
@@ -423,41 +433,65 @@ function environmentVideoBackend(
  * only their canonical API-key ingress.
  */
 /**
- * An OpenRouter or Venice session's own video route: its own key (factory
- * or canonical environment) and base URL. The managed AgenC route lends no
- * credential to media.
+ * An OpenRouter or Venice session's own video route: its own factory key
+ * with its own base URL, or, for a session without a factory key, that
+ * provider's canonical key with its canonical URL from the session's
+ * environment. The managed AgenC route lends no credential to media.
  */
 function gatewayVideoBackend(
   kind: "openrouter" | "venice",
   provider: unknown,
   env: NodeJS.ProcessEnv,
 ): VideoBackend | undefined {
-  const factory = readProviderFactoryOptions(provider as never);
-  if (factory.extra?.managedGateway === true || factory.extra?.managedCredential === true) {
-    return undefined;
-  }
-  const bearer =
-    typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
-      ? factory.apiKey.trim()
-      : resolveProviderApiKeyEnvironment(kind, env)?.value;
-  if (bearer === undefined) return undefined;
-  const baseURL =
-    factory.baseURL ??
-    resolveProviderBaseURLEnvironment(kind, env)?.value ??
-    (kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL);
+  if (isManagedProviderRoute(provider)) return undefined;
+  const defaultBaseURL = kind === "openrouter" ? DEFAULT_OPENROUTER_BASE_URL : DEFAULT_VENICE_BASE_URL;
+  const own = sessionApiKeyRoute(provider, defaultBaseURL);
+  if (own !== undefined) return { kind, ...own };
+  const credential = resolveProviderApiKeyEnvironment(kind, env);
+  if (credential === undefined) return undefined;
+  const baseURL = resolveProviderBaseURLEnvironment(kind, env)?.value ?? defaultBaseURL;
   try {
     new URL(baseURL);
   } catch {
     return undefined;
   }
-  return { kind, baseURL: baseURL.replace(/\/$/, ""), bearer };
+  return { kind, baseURL: baseURL.replace(/\/$/, ""), bearer: credential.value };
 }
 
+/**
+ * The backend for a call, all of it from the session that made it (`args`;
+ * a sub-agent runs its parent's tool): its own provider's key and endpoint
+ * as its model calls use them, or a separate backend's key and URL from its
+ * own environment and credential home (session-provider-authority.ts). It
+ * never pairs that session's endpoint with another session's credential and
+ * never falls back to the parent's.
+ */
 function resolveVideoBackend(
   opts: ImagineVideoToolOptions,
+  args?: Readonly<Record<string, unknown>>,
 ): VideoBackendResolution {
-  const env = opts.env ?? process.env;
-  const provider = opts.getSession()?.services?.provider;
+  const call = toolCallSession(readInvokingSession(args), opts.getSession);
+  const session = call.session;
+  const authority = resolveToolCallAuthority(
+    "ImagineVideo", call, { env: opts.env, home: opts.home }, true,
+  );
+  if ("error" in authority) return authority;
+  // Present whenever the authority resolved (it was required above).
+  if (authority.credentialHome === undefined) {
+    return { error: "ImagineVideo cannot run: this session has no credential home of its own." };
+  }
+  const resolution = resolveVideoBackendWith(
+    authority, session?.services?.provider, authority.credentialHome,
+  );
+  return "backend" in resolution ? { backend: resolution.backend, authority } : resolution;
+}
+
+function resolveVideoBackendWith(
+  authority: ToolCallAuthority,
+  provider: unknown,
+  home: HomeContext,
+): { readonly backend: VideoBackend } | { readonly error: string } {
+  const env = authority.environment;
   const providerIdentity = readProviderIdentity(provider as never);
   let oauthBaseUrlError: string | undefined;
 
@@ -471,45 +505,41 @@ function resolveVideoBackend(
     if (backend !== undefined) return { backend };
   }
 
-  if (providerIdentity === "openai" || providerIdentity === "minimax") {
-    const backend = environmentVideoBackend(
-      providerIdentity,
-      env,
-      provider === undefined
-        ? undefined
-        : readProviderFactoryOptions(provider as never).baseURL,
+  // An OpenAI or MiniMax session generates with its own API key and URL. A
+  // ChatGPT sign-in does not authorize /videos, so a session on that grant
+  // uses the canonical key with its canonical URL instead.
+  if ((providerIdentity === "openai" || providerIdentity === "minimax") && provider !== undefined) {
+    const own = sessionApiKeyRoute(
+      provider,
+      providerIdentity === "openai" ? DEFAULT_OPENAI_BASE_URL : DEFAULT_MINIMAX_BASE_URL,
     );
+    const backend: VideoBackend | undefined = own !== undefined
+      ? { kind: providerIdentity, ...own }
+      : environmentVideoBackend(providerIdentity, env);
     if (backend !== undefined) return { backend };
   }
 
-  if (providerIdentity === "grok" && provider !== undefined) {
-    const factory = readProviderFactoryOptions(provider as never);
-    const sessionKey =
-      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-    const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
-      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
-    );
-    oauthBaseUrlError = xaiResolution.oauthBaseUrlError;
-    const bearer = xaiResolution.bearer;
-    if (bearer !== undefined) {
-      return {
-        backend: {
-          kind: "xai",
-          baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
-            /\/$/,
-            "",
-          ),
-          bearer,
-        },
-      };
+  // A Grok session's xAI authority is its own (the sign-in or key its model
+  // calls use, with its own URL and selection); it never takes the
+  // independent xAI backend below.
+  const grokSession = providerIdentity === "grok" && provider !== undefined;
+  if (grokSession) {
+    const own = sessionXaiRoute(provider, DEFAULT_XAI_BASE_URL);
+    if (own !== undefined && "error" in own) {
+      oauthBaseUrlError = own.error;
+    } else if (own !== undefined) {
+      return { backend: { kind: "xai", baseURL: own.baseURL, bearer: own.bearer } };
     }
   }
 
-  // Without a usable Grok session key, use only independent xAI authority.
-  const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
-    opts.home, env,
-    resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
-  );
+  // Another provider's session uses only independent xAI authority, resolved
+  // from its own environment and credential home.
+  const xaiResolution: { readonly bearer?: string; readonly oauthBaseUrlError?: string } = grokSession
+    ? {}
+    : tryResolveXaiBearerTokenForBaseUrl(
+      home, env,
+      resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
+    );
   oauthBaseUrlError ??= xaiResolution.oauthBaseUrlError;
   const bearer = xaiResolution.bearer;
   if (bearer !== undefined) {
@@ -768,6 +798,8 @@ async function saveVideoBytes(
 interface VideoRunContext {
   readonly opts: ImagineVideoToolOptions;
   readonly backend: VideoBackend;
+  /** The calling session's authority; `fetchImpl` sends through its transport. */
+  readonly authority: ToolCallAuthority;
   readonly fetchImpl: typeof fetch;
   readonly signal: AbortSignal | undefined;
   readonly args: Record<string, unknown>;
@@ -1502,7 +1534,9 @@ async function runVeniceVideo(ctx: VideoRunContext): Promise<ToolResult> {
   }
   const listed = VENICE_VIDEO_MODELS.has(stringValue(args.model) ?? VENICE_DEFAULT_VIDEO_MODEL)
     ? undefined
-    : await loadVeniceMediaModels(backend.baseURL, backend.bearer, fetchImpl, signal);
+    : await loadVeniceMediaModels(
+      { baseURL: backend.baseURL, bearer: backend.bearer, transport: ctx.authority.transportEnvironment },
+      fetchImpl, signal);
   const plan = planGatewayVideo("venice", args, listed);
   if ("error" in plan) return refusal({ error: plan.error });
   const shape = {
@@ -1827,10 +1861,14 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
       // OpenRouter and Venice clips have a reviewed per-second ceiling.
-      const resolution = resolveVideoBackend(opts);
+      const resolution = resolveVideoBackend(opts, args);
       const kind = "backend" in resolution ? resolution.backend.kind : undefined;
       const listed = "backend" in resolution && kind === "venice"
-        ? cachedVeniceMediaModels(resolution.backend.baseURL)
+        ? cachedVeniceMediaModels({
+          baseURL: resolution.backend.baseURL,
+          bearer: resolution.backend.bearer,
+          transport: resolution.authority.transportEnvironment,
+        })
         : undefined;
       const plan = kind === "openrouter" || kind === "venice" ? planGatewayVideo(kind, args, listed) : undefined;
       // A Venice model AgenC has not reviewed is bounded by the call's max_usd
@@ -1849,7 +1887,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
-      const backendResolution = resolveVideoBackend(opts);
+      const backendResolution = resolveVideoBackend(opts, args);
       if ("error" in backendResolution) {
         return refusal({ error: backendResolution.error });
       }
@@ -1887,7 +1925,10 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       const ctx: VideoRunContext = {
         opts,
         backend,
-        fetchImpl: opts.fetchImpl ?? fetch,
+        authority: backendResolution.authority,
+        // Every request goes out through the calling session's own proxy,
+        // client certificate and CA trust.
+        fetchImpl: withToolCallTransport(opts.fetchImpl ?? fetch, backendResolution.authority),
         signal: admittedSignal,
         args,
         prompt,

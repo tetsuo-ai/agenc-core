@@ -10,6 +10,7 @@ import type {
   AdmissionJournalEvent,
   AdmissionLease,
   AdmissionReconcileResult,
+  AdmissionToolCharges,
   AdmissionUsage,
   AdmissionUsageSummary,
   AdmissionUsageSnapshot,
@@ -909,11 +910,15 @@ export class ExecutionAdmissionKernel {
       const budget: ClientBudgetState = { ...baseBudget, scopes, runAllocationKey,
         ...(taskAllocationKey !== undefined ? { taskAllocationKey } : {}),
       };
+      // A same-run client for another session scopes its steps by that
+      // session id, written as one JSON string like a task id
+      // (stepIdFor), so a colon in the id cannot shift where the step it
+      // scopes begins (admission-types.ts isToolModelCallStep).
       const stepPrefix = createsChildRun
         ? undefined
         : options.sessionId === binding.scope.sessionId
           ? binding.stepPrefix
-          : `${binding.stepPrefix ?? ""}session:${options.sessionId}:`;
+          : `${binding.stepPrefix ?? ""}session:${JSON.stringify(options.sessionId)}:`;
       return new KernelAdmissionClient(this, {
         workspace: binding.workspace,
         scope,
@@ -960,6 +965,13 @@ export class ExecutionAdmissionKernel {
     this.#flushCaptured(binding.workspace);
     return binding.workspace.repository.getUsageSummary(binding.scope.runId,
       binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey, true);
+  }
+
+  getDirectToolCharges(binding: ClientBinding): AdmissionToolCharges {
+    this.#assertOpen();
+    this.#flushCaptured(binding.workspace);
+    return binding.workspace.repository.getToolCharges(binding.scope.runId,
+      binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey);
   }
 
   subscribeUsage(
@@ -2013,6 +2025,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   getDirectUsageSummary(): AdmissionUsageSummary {
     return this.kernel.getDirectUsageSummary(this.binding);
+  }
+
+  getDirectToolCharges(): AdmissionToolCharges {
+    return this.kernel.getDirectToolCharges(this.binding);
   }
 
   subscribeUsage(listener: (summary: AdmissionUsageSummary) => void): () => void {

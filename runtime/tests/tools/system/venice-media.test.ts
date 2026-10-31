@@ -19,7 +19,11 @@ import {
 } from "../../../src/tools/system/venice-media-models.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
-import { mediaTestHome as testHome, VENICE_MEDIA_LIST } from "./media-test-helpers.js";
+import { mediaTestHome as testHome, ownProviderState, VENICE_MEDIA_LIST } from "./media-test-helpers.js";
+import {
+  attachToolRuntimeContext,
+  type ToolRuntimeAttemptContext,
+} from "../../../src/tools/runtimes/context.js";
 
 const VENICE = "https://api.venice.ai/api/v1";
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
@@ -28,7 +32,11 @@ const json = (payload: unknown, status = 200) =>
 const veniceSession = () =>
   () => ({ services: { provider: createProvider("venice", { apiKey: "venice-session", model: "zai-org-glm-5-2" }) } }) as unknown as Session;
 const workspace = () => mkdtemp(join(tmpdir(), "pv-venice-media-"));
-const seed = () => recordVeniceMediaModels(VENICE, parseVeniceMediaModels(VENICE_MEDIA_LIST));
+/** The environment these tools are built with, and so their sessions' transport. */
+const ENV: NodeJS.ProcessEnv = Object.freeze({}) as NodeJS.ProcessEnv;
+/** A Venice list for the session the tools run for: its endpoint, key and transport. */
+const seed = () => recordVeniceMediaModels(
+  { baseURL: VENICE, bearer: "venice-session", transport: ENV }, parseVeniceMediaModels(VENICE_MEDIA_LIST));
 const bodyOf = (mock: ReturnType<typeof vi.fn>, index: number) =>
   JSON.parse(String((mock.mock.calls[index]?.[1] as RequestInit | undefined)?.body ?? "{}"));
 
@@ -39,7 +47,7 @@ describe("ImagineImage: any Venice image model at its listed price", () => {
     seed();
     const root = await workspace();
     const fetchImpl = vi.fn(async () => json({ data: [{ b64_json: PNG.toString("base64") }] }));
-    const tool = createImagineImageTool({ workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, getSession: veniceSession() });
+    const tool = createImagineImageTool({ workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, getSession: veniceSession() });
     expect(tool.admissionEstimate?.({ prompt: "x", model: "grok-imagine-image-quality" })).toMatchObject({ maxCostUsd: 0.06 });
     const result = await tool.execute({ prompt: "a red circle", model: "grok-imagine-image-quality" });
     expect(result.isError).toBeFalsy();
@@ -55,7 +63,7 @@ describe("ImagineImage: any Venice image model at its listed price", () => {
     const root = await workspace();
     const fetchImpl = vi.fn();
     const tool = createImagineImageTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl: fetchImpl as unknown as typeof fetch, getSession: veniceSession(),
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl: fetchImpl as unknown as typeof fetch, getSession: veniceSession(),
     });
     const result = await tool.execute({ prompt: "x", model: "acme-unlisted-image" });
     expect(result.isError).toBe(true);
@@ -67,7 +75,7 @@ describe("ImagineImage: any Venice image model at its listed price", () => {
     const root = await workspace();
     const fetchImpl = vi.fn(async (input: string | URL | Request) =>
       String(input).endsWith("/models?type=all") ? json(VENICE_MEDIA_LIST) : json({ data: [{ b64_json: PNG.toString("base64") }] }));
-    const tool = createImagineImageTool({ workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, getSession: veniceSession() });
+    const tool = createImagineImageTool({ workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, getSession: veniceSession() });
     const result = await tool.execute({ prompt: "a red circle", model: "grok-imagine-image-quality" });
     expect(result.isError).toBeFalsy();
     const urls = fetchImpl.mock.calls.map(entry => String(entry[0]));
@@ -84,7 +92,7 @@ describe("ImagineSpeech: any Venice voice model at its listed price", () => {
     const root = await workspace();
     const audio = Buffer.from("ID3-fake-mp3");
     const fetchImpl = vi.fn(async () => new Response(audio, { headers: { "content-type": "audio/mpeg" } }));
-    const tool = createImagineSpeechTool({ workspaceRoot: root, env: {}, fetchImpl, getSession: veniceSession() });
+    const tool = createImagineSpeechTool({ workspaceRoot: root, env: ENV, fetchImpl, getSession: veniceSession() });
     const text = "AgenC speech check";
     expect(tool.admissionEstimate?.({ text, model: "tts-elevenlabs-turbo-v2-5" })?.maxCostUsd).toBeCloseTo(62.5e-6 * text.length, 12);
     const result = await tool.execute({ text, model: "tts-elevenlabs-turbo-v2-5" });
@@ -98,6 +106,53 @@ describe("ImagineSpeech: any Venice voice model at its listed price", () => {
   });
 });
 
+describe("ImagineSpeech: each session reads its own Venice list", () => {
+  it("never hands a sub-agent the parent's list, even read at the same time from the same URL", async () => {
+    const root = await workspace();
+    const parentProvider = createProvider("venice", { apiKey: "venice-parent", model: "zai-org-glm-5-2" });
+    const childProvider = createProvider("venice", { apiKey: "venice-child", model: "zai-org-glm-5-2" });
+    const parent = { services: { provider: parentProvider } } as unknown as Session;
+    // The sub-agent's own live provider state, as the runtime gives it.
+    const childState = ownProviderState(childProvider);
+    const child = {
+      services: { provider: childProvider, providerEnvironment: childState.environment(), providerService: childState },
+    } as unknown as Session;
+    // Each key's account lists its own voice model; both lists are in flight at once.
+    let releaseLists!: () => void;
+    const listsReleased = new Promise<void>((resolve) => { releaseLists = resolve; });
+    const catalog = (id: string) => ({ data: [{ id, type: "tts", model_spec: { pricing: { input: { usd: 3.5 } }, voices: ["v1"] } }] });
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const bearer = new Headers(init?.headers).get("authorization");
+      if (String(input).endsWith("/models?type=all")) {
+        await listsReleased;
+        return json(catalog(bearer === "Bearer venice-child" ? "tts-child-only" : "tts-parent-only"));
+      }
+      return new Response(Buffer.from("ID3-fake-mp3"), { headers: { "content-type": "audio/mpeg" } });
+    });
+    const tool = createImagineSpeechTool({ workspaceRoot: root, env: ENV, fetchImpl, getSession: () => parent });
+    const childArgs: Record<string, unknown> = { text: "hello", model: "tts-child-only" };
+    attachToolRuntimeContext(childArgs, {
+      callId: "child-speech", toolName: "ImagineSpeech", approvalPolicy: "on_request",
+      requestedSandboxMode: "workspace_write", sandboxMode: "workspace_write", approvalResolved: false,
+      rawArgs: JSON.stringify(childArgs), invocation: { session: child },
+    } as unknown as ToolRuntimeAttemptContext);
+
+    const parentCall = tool.execute({ text: "hello", model: "tts-parent-only" });
+    const childCall = tool.execute(childArgs);
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2));
+    releaseLists();
+    const [parentResult, childResult] = await Promise.all([parentCall, childCall]);
+
+    const lists = fetchImpl.mock.calls
+      .filter(([input]) => String(input).endsWith("/models?type=all"))
+      .map(([, init]) => new Headers(init?.headers).get("authorization"));
+    expect(lists.sort()).toEqual(["Bearer venice-child", "Bearer venice-parent"]);
+    expect(parentResult.isError).toBeFalsy();
+    expect(childResult.isError).toBeFalsy();
+    expect(JSON.parse(childResult.content)).toMatchObject({ model: "tts-child-only" });
+  });
+});
+
 describe("ImagineSpeech: a Venice model that returns only WAV", () => {
   it("asks for the model's own format and saves a .wav", async () => {
     // Seen live: tts-orpheus, tts-inworld-1-5-max, tts-chatterbox-hd and
@@ -106,7 +161,7 @@ describe("ImagineSpeech: a Venice model that returns only WAV", () => {
     const root = await workspace();
     const audio = Buffer.from("RIFF-fake-wav");
     const fetchImpl = vi.fn(async () => new Response(audio, { headers: { "content-type": "audio/wav" } }));
-    const result = await createImagineSpeechTool({ workspaceRoot: root, env: {}, fetchImpl, getSession: veniceSession() })
+    const result = await createImagineSpeechTool({ workspaceRoot: root, env: ENV, fetchImpl, getSession: veniceSession() })
       .execute({ text: "AgenC speech check", model: "tts-orpheus" });
     expect(result.isError).toBeFalsy();
     expect(bodyOf(fetchImpl, 0)).toMatchObject({ model: "tts-orpheus", voice: "dan", response_format: "wav" });
@@ -120,7 +175,7 @@ describe("Venice media seen in the TUI (jobs/pv F5-ven-media, 2026-10-20)", () =
     const root = await workspace();
     let current: Session | null = null;
     const fetchImpl = vi.fn(async () => new Response(Buffer.from("RIFF-fake-wav"), { headers: { "content-type": "audio/wav" } }));
-    const tool = createImagineSpeechTool({ workspaceRoot: root, env: {}, fetchImpl, getSession: () => current });
+    const tool = createImagineSpeechTool({ workspaceRoot: root, env: ENV, fetchImpl, getSession: () => current });
     // Base: an enum of the reviewed models, so the TUI refused tts-orpheus ("value not in enum").
     const model = (tool.inputSchema as { properties: Record<string, { enum?: unknown }> }).properties.model;
     expect(model?.enum).toBeUndefined();
@@ -135,14 +190,14 @@ describe("Venice media seen in the TUI (jobs/pv F5-ven-media, 2026-10-20)", () =
     const root = await workspace();
     const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
     const fetchImpl = vi.fn(async () => json({ data: [{ b64_json: jpeg.toString("base64") }] }));
-    const tool = createImagineImageTool({ workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, getSession: veniceSession() });
+    const tool = createImagineImageTool({ workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, getSession: veniceSession() });
     const result = await tool.execute({ prompt: "a bicycle", model: "grok-imagine-image-quality" });
     expect(JSON.parse(result.content).path).toMatch(/imagine-.*\.jpg$/);
   });
 
   it("the video schema advertised before the session attaches takes max_usd and any tier", () => {
     const root = "/nonexistent-workspace";
-    const tool = createImagineVideoTool({ workspaceRoot: root, home: testHome(root), env: {}, fetchImpl: vi.fn() as unknown as typeof fetch, getSession: () => null });
+    const tool = createImagineVideoTool({ workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl: vi.fn() as unknown as typeof fetch, getSession: () => null });
     const properties = (tool.inputSchema as { properties: Record<string, { enum?: unknown; type?: string }> }).properties;
     expect(properties.max_usd?.type).toBe("number");
     expect(properties.resolution?.enum).toBeUndefined();
@@ -168,7 +223,7 @@ describe("Venice media seen in the TUI (jobs/pv F5-ven-media, 2026-10-20)", () =
     });
     // Base: the 5 ms poll gave up while Venice was still at work (paid, no video).
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 5, getSession: veniceSession(),
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 5, getSession: veniceSession(),
     });
     const result = await tool.execute({ prompt: "waves", model: "seedance-2-0-text-to-video" });
     expect(result.isError).toBeFalsy();
@@ -191,7 +246,7 @@ describe("ImagineVideo: any Venice text-to-video model under the call's max_usd"
       throw new Error(`unexpected ${url}`);
     });
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000, getSession: veniceSession(),
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000, getSession: veniceSession(),
     });
     expect(tool.admissionEstimate?.({ prompt: "x", model: "seedance-2-0-text-to-video" })).toMatchObject({ maxCostUsd: 1 });
     const result = await tool.execute({ prompt: "waves", model: "seedance-2-0-text-to-video" });
@@ -205,7 +260,7 @@ describe("ImagineVideo: any Venice text-to-video model under the call's max_usd"
     const root = await workspace();
     const fetchImpl = vi.fn(async () => json({ quote: 9 }));
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1, getSession: veniceSession(),
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1, getSession: veniceSession(),
     });
     await tool.execute({ prompt: "waves", model: "minimax-h3-max-turbo-text-to-video" });
     expect(bodyOf(fetchImpl, 0)).toEqual({ model: "minimax-h3-max-turbo-text-to-video", duration: "6s", resolution: "480P", aspect_ratio: "16:9" });
@@ -216,7 +271,7 @@ describe("ImagineVideo: any Venice text-to-video model under the call's max_usd"
     const root = await workspace();
     const fetchImpl = vi.fn(async () => json({ quote: 0.6 }));
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1, getSession: veniceSession(),
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1, getSession: veniceSession(),
     });
     const over = await tool.execute({ prompt: "waves", model: "seedance-2-0-text-to-video", max_usd: 0.5 });
     expect(over.isError).toBe(true);

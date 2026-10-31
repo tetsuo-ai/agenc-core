@@ -5,6 +5,7 @@
  */
 
 import type { ManagedThread } from "../../agents/thread-manager.js";
+import type { AdmissionToolCharges } from "../../budget/admission-types.js";
 import { EVENT_GAP_EVENT } from "../../contracts/run-contracts.js";
 
 import {
@@ -144,6 +145,35 @@ function terminalUsageForActiveAgent(
   };
 }
 
+/**
+ * What the session's own tool calls were charged, read from the admission
+ * ledger: tool fees (web search and fetch, media generation) and the model
+ * calls tools make for it (web_fetch's prompt extraction, Grok's native web
+ * search, XSearch). The cost sidecar prices only the session's turn
+ * `token_count` events, so it never sees them. Undefined without a ledger;
+ * null when the ledger could not be read.
+ */
+function sessionToolCharges(
+  session: ActiveBackgroundAgent["bootstrap"]["session"],
+): AdmissionToolCharges | undefined | null {
+  const admission = session.services.executionAdmission;
+  if (admission?.getDirectToolCharges === undefined) return undefined;
+  try {
+    const charges = admission.getDirectToolCharges();
+    return Number.isFinite(charges.costUsd) && charges.costUsd >= 0 ? charges : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The session's cost: its model calls (cost sidecar) plus what its own tool
+ * calls were charged (sessionToolCharges). Sub-agents run their own
+ * accounting and are not included. `costKnown` keeps describing the model
+ * part (history coverage and prices) and is also false when the tool charges
+ * could not be read. A tool that reports no price (a free local tool, or a
+ * configured search endpoint) adds nothing and does not change it.
+ */
 function agentCostSnapshot(
   active: ActiveBackgroundAgent,
   live: ManagedTokenUsageShape,
@@ -153,8 +183,8 @@ function agentCostSnapshot(
     return { costUsd: 0, costKnown: false };
   }
   try {
-    const costUsd = sidecar.getTotalCostUsd();
-    if (!Number.isFinite(costUsd) || costUsd < 0) {
+    const modelCostUsd = sidecar.getTotalCostUsd();
+    if (!Number.isFinite(modelCostUsd) || modelCostUsd < 0) {
       return { costUsd: 0, costKnown: false };
     }
     const sidecarUsage = sidecar.getSessionTotals();
@@ -166,11 +196,13 @@ function agentCostSnapshot(
       sidecarUsage.inputTokens === live.inputTokens &&
       sidecarUsage.outputTokens === live.outputTokens &&
       sidecarUsage.totalTokens === live.totalTokens;
+    const tools = sessionToolCharges(active.bootstrap.session);
     return {
-      costUsd,
+      costUsd: modelCostUsd + (tools?.costUsd ?? 0),
       costKnown:
         !resumedWithHistoricalUsage &&
-        coversLiveUsage,
+        coversLiveUsage &&
+        tools !== null,
       ...(sidecar.hasUnknownModelCost() ? { costEstimated: true } : {}),
     };
   } catch {

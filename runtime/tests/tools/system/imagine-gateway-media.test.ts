@@ -17,7 +17,12 @@ import {
 } from "../../../src/tools/system/venice-media-models.js";
 
 // Venice prices media from its live list; these cases start with it read.
-beforeEach(() => recordVeniceMediaModels("https://api.venice.ai/api/v1", parseVeniceMediaModels(VENICE_MEDIA_LIST)));
+/** The environment these tools are built with, and so their sessions' transport. */
+const ENV: NodeJS.ProcessEnv = Object.freeze({}) as NodeJS.ProcessEnv;
+/** A Venice list for the session the tools run for: its endpoint, key and transport. */
+beforeEach(() => recordVeniceMediaModels(
+  { baseURL: "https://api.venice.ai/api/v1", bearer: "venice-session", transport: ENV },
+  parseVeniceMediaModels(VENICE_MEDIA_LIST)));
 afterEach(() => clearVeniceMediaModels());
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
@@ -61,7 +66,7 @@ describe("ImagineImage on an OpenRouter or Venice session", () => {
     const root = await workspace();
     const fetchImpl = vi.fn(async () => json({ data: [{ b64_json: PNG.toString("base64") }] }));
     const tool = createImagineImageTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl,
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl,
       getSession: session(createProvider("venice", { apiKey: "venice-session", model: "zai-org-glm-5-2" })),
     });
     const result = await tool.execute({ prompt: "a cat", n: 3, aspect_ratio: "16:9" });
@@ -77,7 +82,7 @@ describe("ImagineImage on an OpenRouter or Venice session", () => {
     const root = await workspace();
     const fetchImpl = vi.fn();
     const tool = createImagineImageTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl: fetchImpl as unknown as typeof fetch,
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl: fetchImpl as unknown as typeof fetch,
       getSession: session(createProvider("openrouter", { apiKey: "sk-or-session", model: "z-ai/glm-5.3-flash" })),
     });
     const refused = await tool.execute({ prompt: "x", model: "acme/unreviewed-image" });
@@ -110,7 +115,7 @@ describe("ImagineVideo on an OpenRouter or Venice session", () => {
       throw new Error(`unexpected ${url}`);
     });
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000,
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000,
       getSession: session(createProvider("openrouter", { apiKey: "sk-or-session", model: "z-ai/glm-5.3-flash" })),
     });
     expect(tool.admissionEstimate?.({ prompt: "waves" })).toMatchObject({ maxCostUsd: 0.08 });
@@ -140,7 +145,7 @@ describe("ImagineVideo on an OpenRouter or Venice session", () => {
       throw new Error(`unexpected ${url}`);
     });
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000,
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000,
       getSession: session(createProvider("venice", { apiKey: "venice-session", model: "zai-org-glm-5-2" })),
     });
     const result = await tool.execute({ prompt: "gondola" });
@@ -169,7 +174,7 @@ describe("ImagineVideo on an OpenRouter or Venice session", () => {
       throw new Error(`unexpected ${url}`);
     });
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000,
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 1000,
       getSession: session(createProvider("venice", { apiKey: "venice-session", model: "zai-org-glm-5-2" })),
     });
     const result = await tool.execute({ prompt: "waves" });
@@ -189,7 +194,7 @@ describe("ImagineVideo on an OpenRouter or Venice session", () => {
       throw new Error(`unexpected ${url}`);
     });
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1,
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1,
       getSession: session(createProvider("venice", { apiKey: "venice-session", model: "zai-org-glm-5-2" })),
     });
     const result = await tool.execute({ prompt: "waves" });
@@ -202,7 +207,7 @@ describe("ImagineVideo on an OpenRouter or Venice session", () => {
     const root = await workspace();
     const fetchImpl = vi.fn(async () => json({ quote: 5 }));
     const tool = createImagineVideoTool({
-      workspaceRoot: root, home: testHome(root), env: {}, fetchImpl, pollIntervalMs: 1,
+      workspaceRoot: root, home: testHome(root), env: ENV, fetchImpl, pollIntervalMs: 1,
       getSession: session(createProvider("venice", { apiKey: "venice-session", model: "zai-org-glm-5-2" })),
     });
     const result = await tool.execute({ prompt: "gondola" });
@@ -223,7 +228,7 @@ describe("ImagineSpeech", () => {
     ] as const) {
       fetchImpl.mockClear();
       const tool = createImagineSpeechTool({
-        workspaceRoot: root, env: {}, fetchImpl,
+        workspaceRoot: root, env: ENV, fetchImpl,
         getSession: session(createProvider(provider, { apiKey: key, model: provider === "venice" ? "zai-org-glm-5-2" : "z-ai/glm-5.3-flash" })),
       });
       expect(tool.metadata?.deferred).toBe(true);

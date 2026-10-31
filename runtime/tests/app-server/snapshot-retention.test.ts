@@ -329,3 +329,38 @@ describe("estimated snapshot cost", () => {
     expect(terminalUsageForActiveAgent(active)).toEqual({...live, costUsd: 0.045, costKnown: true});
   });
 });
+
+describe("snapshot cost includes the session's tool charges", () => {
+  const live = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
+  function activeWith(services: Record<string, unknown>) {
+    return {
+      thread: { totalTokenUsage: () => live },
+      bootstrap: { session: { services } },
+    } as unknown as Parameters<typeof terminalUsageForActiveAgent>[0];
+  }
+  const sidecar = {
+    getTotalCostUsd: () => 0.003,
+    getSessionTotals: () => live,
+    hasUnknownModelCost: () => false,
+  };
+
+  it("adds web search and fetch fees and tool-made model calls to the model cost", () => {
+    const usage = terminalUsageForActiveAgent(activeWith({
+      costSidecar: sidecar,
+      executionAdmission: { getDirectToolCharges: () => ({ costUsd: 0.00225 }) },
+    }));
+    expect(usage).toEqual({ ...live, costUsd: expect.closeTo(0.00525, 12), costKnown: true });
+  });
+
+  it("marks the cost unknown when the tool charges cannot be read", () => {
+    expect(terminalUsageForActiveAgent(activeWith({
+      costSidecar: sidecar,
+      executionAdmission: { getDirectToolCharges: () => { throw new Error("kernel closed"); } },
+    }))).toEqual({ ...live, costUsd: 0.003, costKnown: false });
+  });
+
+  it("keeps the model cost alone without an admission ledger", () => {
+    expect(terminalUsageForActiveAgent(activeWith({ costSidecar: sidecar })))
+      .toEqual({ ...live, costUsd: 0.003, costKnown: true });
+  });
+});
