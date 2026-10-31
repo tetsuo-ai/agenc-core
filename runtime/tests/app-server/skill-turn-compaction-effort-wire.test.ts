@@ -5,13 +5,16 @@
  * no level either, not the session's `minimal`, which Astra does not accept.
  * A model downshift before a skill turn summarizes on the previous, larger
  * model at the session's level resolved for that model, never at the skill's
- * level, which that model may not accept. Checked on the request bodies the
- * OpenAI provider sends.
+ * level, which that model may not accept; when the session's level does not
+ * resolve for that model, the summary keeps the turn's selection. Checked on
+ * the requests the OpenAI and Gemini providers send.
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { admitSkillInvocation } from "../../src/app-server/background-agent-runner/skill-invocation.js";
+import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
+import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
 import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
 import * as autoCompact from "../../src/services/compact/autoCompact.js";
 import { compactConversation } from "../../src/services/compact/compact.js";
@@ -100,16 +103,20 @@ async function astraSession(): Promise<{
 
 /**
  * The compaction context a model downshift builds before `turn`: the
- * session's previous turn ran on Astra, whose window is larger than the
+ * session's previous turn ran on `previous`, whose window is larger than the
  * turn's model's, and the history no longer fits the turn's model.
  */
 async function downshiftCompactContext(
   session: Session,
   turn: TurnContext,
+  previous: { readonly model: string; readonly contextWindow: number } = {
+    model: "gpt-6-astra",
+    contextWindow: 4_000_000,
+  },
 ): Promise<CompactContext> {
   Object.assign(
     (session.state as unknown as { unsafePeek(): object }).unsafePeek(),
-    { previousTurnSettings: { model: "gpt-6-astra", contextWindow: 4_000_000 } },
+    { previousTurnSettings: previous },
   );
   const compact = vi.spyOn(autoCompact, "autoCompactIfNeeded")
     .mockResolvedValue({ wasCompacted: false });
@@ -124,9 +131,39 @@ async function downshiftCompactContext(
   }
 }
 
+/** A Gemma 4 session on Gemini at `minimal`, one of the two levels Gemma takes. */
+async function gemmaSession(): Promise<{
+  readonly session: Session;
+  readonly fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>;
+}> {
+  const summary = JSON.stringify({ narrative: "Bounded summary.", facts: [], open_actions: [] });
+  const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({
+    candidates: [{ content: { parts: [{ text: summary }] }, finishReason: "STOP" }],
+    usageMetadata: { promptTokenCount: 128, candidatesTokenCount: 128, totalTokenCount: 256 },
+  }));
+  const provider = new GeminiProvider({
+    credentialPlan: { kind: "api-key", credential: "gemini-test", source: "factory" },
+    endpointPlan: createGeminiEndpointPlan(),
+    model: "gemma-4-31b-it",
+    fetchImpl,
+  });
+  const session = deepSeekSkillTurnSession({
+    route: {
+      provider,
+      model: "gemma-4-31b-it",
+      reasoningEffort: "minimal",
+      supportedReasoningLevels: ["minimal", "high"],
+      contextWindow: 262_144,
+      providerEnvironment: { GEMINI_API_KEY: "gemini-test" },
+    },
+  });
+  await session.services.configStore!.reload();
+  return { session, fetchImpl };
+}
+
 async function skillTurn(
   session: Session,
-  skill: { readonly name: string; readonly model: string; readonly effort?: string },
+  skill: { readonly name: string; readonly model?: string; readonly effort?: string },
 ): Promise<TurnContext> {
   const store = session.services.configStore!;
   const admitted = await runWithCanonicalSettingsAuthority(store, () =>
@@ -267,4 +304,29 @@ describe("model-downshift compaction before a skill turn, on the wire", () => {
       }
     },
   );
+
+  test("after a Gemini Pro skill turn, a Gemma skill at high in a Gemma session at minimal summarizes on Gemini Pro at the turn's high", async () => {
+    // Gemini Pro takes low, medium and high, not the session's minimal, and
+    // Gemini's resolver refuses a level a model lacks rather than dropping it.
+    const { session, fetchImpl } = await gemmaSession();
+    const turn = await skillTurn(session, { name: "gemma-deep", effort: "high" });
+    expect(turn.modelInfo.slug).toBe("gemma-4-31b-it");
+    expect(turn.reasoningEffort).toBe("high");
+
+    const context = await downshiftCompactContext(session, turn, {
+      model: "gemini-3.1-pro-preview",
+      contextWindow: 1_048_576,
+    });
+    expect(context.options?.mainLoopModel).toBe("gemini-3.1-pro-preview");
+    const before = fetchImpl.mock.calls.length;
+    const bodies = await compactInTurn(session, context.turn!, fetchImpl, "gemini-3.1-pro-preview");
+
+    for (const call of fetchImpl.mock.calls.slice(before)) {
+      expect(String(call[0])).toContain("gemini-3.1-pro-preview");
+    }
+    for (const body of bodies) {
+      expect((body.generationConfig as { thinkingConfig?: unknown } | undefined)?.thinkingConfig)
+        .toEqual({ thinkingLevel: "high" });
+    }
+  });
 });

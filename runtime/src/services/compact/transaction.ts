@@ -820,19 +820,20 @@ function readCompactionPermissionMode(
 
 /**
  * The effort summary calls send: the one the main loop sends, so a summary
- * does not reason more than the agent whose history it compacts, resolved
- * and checked for the model the summaries go to. It is resolved under the
- * session's own settings authority, which Session.runTurn binds; a
- * compaction can run outside a turn with no authority bound (the daemon's
- * manual compaction), so it binds the session's here. Automatic summaries
- * cap that level without changing session settings.
+ * does not reason more than the agent whose history it compacts. It is
+ * resolved under the session's own settings authority, which Session.runTurn
+ * binds; a compaction can run outside a turn with no authority bound (the
+ * daemon's manual compaction), so it binds the session's here. Automatic
+ * summaries cap that level without changing session settings.
  *
- * Outside a turn it is the session's level. Inside a turn whose requests go
- * to the summaries' model, it is the turn's own effort (a skill turn's level
- * or its model's default). A summary on another model, the previous, larger
- * one a model downshift compacts on, takes the session's level resolved for
- * that model: the turn's effort and level metadata describe the turn's
- * model, not that one.
+ * Outside a turn it is the session's level. Inside a turn it is the turn's
+ * own effort (a skill turn's level or its model's default), checked against
+ * the turn's level metadata. A summary on another model than the turn's,
+ * the previous, larger one a model downshift compacts on, takes the
+ * session's level resolved for that model instead, since the turn's effort
+ * belongs to the turn's model; when that level does not resolve for that
+ * model or that model does not take it, the summary keeps the turn's
+ * selection.
  */
 function resolveSummaryReasoningEffort(
   session: NonNullable<CompactContext["admissionSession"]>,
@@ -862,35 +863,65 @@ function resolveSummaryReasoningEffort(
     const levels = session.modelInfo.supportedReasoningLevels ?? contract.levels;
     return boundedSummaryEffort(effort, levels);
   }
+  const turnSelection = () =>
+    summaryEffortWithin(
+      withSettings(() => resolveMainLoopReasoningEffort(session, turn)),
+      knownLevels(turn.modelInfo.supportedReasoningLevels, provider, model),
+      automatic,
+    );
   const turnModel = skillInvocationRequestModel(session, turn) ??
     session.config?.model ?? turn.modelInfo.slug;
-  const ownModel = turnModel === model;
-  // The summaries' model's own levels: an empty list says nothing, and the
-  // model's effort contract does, as it did when a skill turn was admitted.
-  const listed = ownModel
-    ? turn.modelInfo.supportedReasoningLevels
-    : session.modelInfo.slug === model
-      ? session.modelInfo.supportedReasoningLevels
-      : undefined;
-  const levels: ReadonlyArray<string> = listed !== undefined && listed.length > 0
+  if (turnModel === model) return turnSelection();
+  const levels = knownLevels(
+    session.modelInfo.slug === model ? session.modelInfo.supportedReasoningLevels : undefined,
+    provider,
+    model,
+  );
+  let effort: LLMChatOptions["reasoningEffort"];
+  try {
+    // Resolved for the summaries' model, so its own handling of `none` applies.
+    effort = withSettings(() =>
+      resolveSessionReasoningEffort(
+        sessionEffort,
+        levels as ReadonlyArray<ReasoningEffort>,
+        {
+          provider,
+          model,
+          effortSource: configStore?.provenance?.("reasoning_effort")?.scope,
+          followsModelDefault:
+            session.sessionConfiguration?.reasoningEffortCleared === true,
+        },
+      ));
+  } catch {
+    // A strict resolver (Gemini's) refuses a level that model lacks.
+    return turnSelection();
+  }
+  if (effort !== undefined && effort !== "none" && levels.length > 0 &&
+      !levels.includes(effort)) return turnSelection();
+  return summaryEffortWithin(effort, levels, automatic);
+}
+
+/** A model's levels: the listed ones, or its effort contract's when none are listed. */
+function knownLevels(
+  listed: ReadonlyArray<string> | undefined,
+  provider: string,
+  model: string,
+): ReadonlyArray<string> {
+  return listed !== undefined && listed.length > 0
     ? listed
     : resolveReasoningEffort({ provider, model }).levels;
-  const effort = withSettings(() =>
-    ownModel
-      ? resolveMainLoopReasoningEffort(session, turn)
-      : resolveSessionReasoningEffort(
-          sessionEffort,
-          levels as ReadonlyArray<ReasoningEffort>,
-          {
-            provider,
-            model,
-            effortSource: configStore?.provenance?.("reasoning_effort")?.scope,
-            followsModelDefault:
-              session.sessionConfiguration?.reasoningEffortCleared === true,
-          },
-        ));
-  // `none` comes out of either resolution only where the summaries' model
-  // takes it literally.
+}
+
+/**
+ * The level a summary call sends: `effort` when the model's levels take it
+ * (`none` comes out of a resolution only for a model that takes it), and for
+ * an automatic summary at most a low accepted level.
+ */
+function summaryEffortWithin(
+  effort: LLMChatOptions["reasoningEffort"],
+  levels: ReadonlyArray<string>,
+  automatic: boolean,
+): LLMChatOptions["reasoningEffort"] {
   const accepted = effort === undefined || effort === "none" ||
     levels.length === 0 || levels.includes(effort);
   if (!automatic) return accepted ? effort : undefined;
