@@ -45,6 +45,18 @@ describe("a run's own tool charges", () => {
     expect(child.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.00075 + 0.0625, 12);
   });
 
+  it("finds a task-scoped client's tool model calls under its own step prefix", async () => {
+    const parent = root(kernel(), 5);
+    const worker = parent.forSession({ runId: "worker", sessionId: "worker" });
+    const task = worker.forSession({ sessionId: "worker", taskId: "task-a" });
+    // Stored as task:"task-a":<step id>.
+    reconcile(task, await acquire(task, "web_fetch_extraction:worker-sub-1", 0.5), 0.004);
+    reconcile(task, await acquire(task, "model:worker-sub-2:1:0:primary", 0.5), 0.25);
+    settleTool(task, await acquireTool(task, "tool:worker-turn:call-1", 0.001), 0.001);
+    expect(task.getDirectToolCharges?.()?.costUsd).toBeCloseTo(0.005, 12);
+    expect(parent.getDirectToolCharges?.()?.costUsd).toBe(0);
+  });
+
   it("adds nothing for a call still running or a charge the tool never priced", async () => {
     // Uncapped: a hard cost cap refuses an unpriced call before it runs.
     const parent = root(kernel());

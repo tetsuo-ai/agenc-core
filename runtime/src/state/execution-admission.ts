@@ -21,7 +21,6 @@ import type {
 import {
   admissionPeriodScopeKey,
   admissionRecordKey,
-  TOOL_MODEL_CALL_PURPOSES,
 } from "../budget/admission-types.js";
 import type { BudgetReservation } from "../contracts/run-contracts.js";
 import {
@@ -1822,14 +1821,21 @@ export class ExecutionAdmissionRepository {
   /**
    * What `runId`'s own tool calls were charged (AdmissionToolCharges): the
    * settled cost of its tool_exec reservations plus the model calls its
-   * tools made, whose step ids lead with a TOOL_MODEL_CALL_PURPOSES entry.
+   * tools made, whose step ids start with one of `toolModelStepPrefixes`
+   * (the binding's own step prefix plus a TOOL_MODEL_CALL_PURPOSES entry).
    * Delegated runs, unsettled reservations and charges without a price add
    * nothing.
    */
-  getToolCharges(runId: string, allocationKey: string): AdmissionToolCharges {
+  getToolCharges(
+    runId: string,
+    allocationKey: string,
+    toolModelStepPrefixes: readonly string[],
+  ): AdmissionToolCharges {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
-    const patterns = TOOL_MODEL_CALL_PURPOSES.map((purpose) => `${purpose}:*`);
+    const prefixMatch = toolModelStepPrefixes.length === 0
+      ? "0"
+      : toolModelStepPrefixes.map(() => "substr(reservation.step_id, 1, length(?)) = ?").join(" OR ");
     const row = this.#driver.prepareState<string[], { cost_nanos: number }>(
       `SELECT COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun')
            THEN COALESCE(reservation.actual_cost_nanos, 0) ELSE 0 END), 0) AS cost_nanos
@@ -1837,9 +1843,8 @@ export class ExecutionAdmissionRepository {
        JOIN execution_admission_reservation_allocations AS allocation
          ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
        WHERE reservation.run_id = ? AND reservation.status != 'voided'
-         AND (reservation.kind = 'tool_exec' OR (reservation.kind = 'model_turn' AND
-           (${patterns.map(() => "reservation.step_id GLOB ?").join(" OR ")})))`,
-    ).get(allocationKey, runId, ...patterns);
+         AND (reservation.kind = 'tool_exec' OR (reservation.kind = 'model_turn' AND (${prefixMatch})))`,
+    ).get(allocationKey, runId, ...toolModelStepPrefixes.flatMap((prefix) => [prefix, prefix]));
     return { costUsd: nanosToUsd(row?.cost_nanos ?? 0) };
   }
 

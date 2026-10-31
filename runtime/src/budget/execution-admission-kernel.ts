@@ -20,6 +20,7 @@ import type {
 import {
   admissionPeriodScopeKey,
   admissionRecordKey,
+  TOOL_MODEL_CALL_PURPOSES,
 } from "./admission-types.js";
 import type {
   AdmissionAcquireInput,
@@ -966,8 +967,11 @@ export class ExecutionAdmissionKernel {
   getDirectToolCharges(binding: ClientBinding): AdmissionToolCharges {
     this.#assertOpen();
     this.#flushCaptured(binding.workspace);
+    // A tool's model call is admitted as `<purpose>:<sub id>` under this
+    // binding's own step prefix (task and session scopes).
     return binding.workspace.repository.getToolCharges(binding.scope.runId,
-      binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey);
+      binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey,
+      TOOL_MODEL_CALL_PURPOSES.map((purpose) => stepIdFor(binding, `${purpose}:`)));
   }
 
   subscribeUsage(
