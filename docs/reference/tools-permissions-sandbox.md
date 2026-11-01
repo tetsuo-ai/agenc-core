@@ -235,6 +235,13 @@ and keeps that session on the per-command launcher without repeated retries.
 Set `sandbox.persistent_session = false` to use
 it for every command.
 
+Two tool defaults change for sandboxed commands that cannot write their usual
+cache directories. Go's build cache moves to the session temp root when
+`GOCACHE` (or its default) is not writable. npm's update check is turned off
+(`npm_config_update_notifier=false`) when npm cannot record it in its cache
+directory, because otherwise every `npm` and `npx` run would repeat it. An
+explicit `GOCACHE` or update-notifier setting in the environment is kept.
+
 #### Recovering background work
 
 With bubblewrap, Linux sandbox commands have a private PID namespace. `ps`, `pgrep`, and `pidof`

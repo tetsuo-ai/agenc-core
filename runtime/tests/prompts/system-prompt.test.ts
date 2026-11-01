@@ -66,7 +66,7 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
-import { LIGHT_ACCEPTANCE_REVIEW, LIGHT_COMPUTE_FROM_DATA, LIGHT_FINISH, LIGHT_LIMITED_FINISH, LIGHT_MISSING_CHECK_TOOLS } from "./light-budget-prompt.js";
+import { LIGHT_ACCEPTANCE_REVIEW, LIGHT_COMPUTE_FROM_DATA, LIGHT_DEEPSEEK_FINISH, LIGHT_FINISH, LIGHT_LIMITED_FINISH, LIGHT_MISSING_CHECK_TOOLS } from "./light-budget-prompt.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_GUIDANCE, AGENC_UNDO_PATHS } from "./product-help.js";
 import { LIGHT_LOADED_INSTRUCTIONS_NOTE } from "./live-instructions.js";
 import { LIGHT_TASK_LIMITS_ENV } from "../tools/light-profile.js";
@@ -1615,7 +1615,7 @@ describe("Light finish rules per provider", () => {
   });
 
   test("the session environment switch overrides the provider default both ways", async () => {
-    expect(await head("deepseek", { [LIGHT_TASK_LIMITS_ENV]: "0" })).toContain(LIGHT_FINISH);
+    expect(await head("deepseek", { [LIGHT_TASK_LIMITS_ENV]: "0" })).toContain(LIGHT_DEEPSEEK_FINISH);
     expect(await head("openai", { [LIGHT_TASK_LIMITS_ENV]: "1" })).toContain(LIGHT_LIMITED_FINISH);
   });
 

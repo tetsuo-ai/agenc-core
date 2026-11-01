@@ -156,6 +156,16 @@ export interface ProductHelpAttachment {
 }
 
 /**
+ * The workspace's file names, sent once with the first message of an interactive DeepSeek Light
+ * session (prompts/attachments/workspace-files.ts). Names only; folders end in "/".
+ */
+export interface WorkspaceFilesAttachment {
+  readonly kind: "workspace_files";
+  readonly entries: readonly string[];
+  readonly truncated: boolean;
+}
+
+/**
  * Interactive Light's memory rules and directories, sent with a user message
  * about memory or durable facts when the session's fixed prefix left them out
  * (prompts/attachments/memory-on-request.ts).
@@ -394,6 +404,7 @@ export type Attachment =
   | DateChangeAttachment
   | CriticalSystemReminderAttachment
   | ProductHelpAttachment
+  | WorkspaceFilesAttachment
   | MemoryOnRequestAttachment
   | OutputStyleAttachment
   | TokenUsageAttachment

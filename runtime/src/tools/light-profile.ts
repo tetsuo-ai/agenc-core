@@ -77,6 +77,28 @@ export function lightStatesTaskLimits(
   return modelFamilyFor(providerName, model) === "deepseek" || lightUsesQwenTuning(providerName, model);
 }
 
+/**
+ * DeepSeek models through any route (DeepSeek's own API or a gateway serving a DeepSeek model by its id). Their
+ * Light prompt stays the 0.19.26 one (prompts/light-budget-prompt.ts lightBudgetWorkflow, job spd's decision A/B),
+ * plus, in interactive sessions, one sentence on probes (LIGHT_DEEPSEEK_PROBES, job dsw; lightUsesDeepSeekWorkRules).
+ */
+export function lightUsesDeepSeekPrompt(providerName: string | undefined, model?: string): boolean {
+  return modelFamilyFor(providerName, model) === "deepseek";
+}
+
+/**
+ * Interactive Light on a DeepSeek model (DeepSeek's own API or a gateway serving a DeepSeek model by its id), round 4
+ * job dsw: the workspace's file names come with the first message of the conversation
+ * (prompts/attachments/workspace-files.ts), since DeepSeek Flash otherwise spent its first call of most race tasks on
+ * a listing, and the head asks it to run checks instead of probing first (prompts/light-budget-prompt.ts
+ * LIGHT_DEEPSEEK_PROBES). abliteration.ai's abliterated models keep their prompt and session start: they have their
+ * own measured lane. Other models keep what they were measured with.
+ */
+export function lightUsesDeepSeekWorkRules(providerName: string | undefined, model?: string): boolean {
+  return modelFamilyFor(providerName, model) === "deepseek" &&
+    providerName?.trim().toLowerCase() !== "abliteration";
+}
+
 /** DeepSeek, abliteration.ai Large V2 and QwenCloud Qwen3.8 Light sessions use batch Edit (#3163). */
 export function lightUsesBatchEdit(providerName: string | undefined, model?: string): boolean {
   return modelFamilyFor(providerName, model) === "deepseek" || lightUsesGlmTuning(providerName, model) ||

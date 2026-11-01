@@ -101,7 +101,9 @@ export type SqliteDatabase = BetterSqlite3.Database;
  *   a process death keeps it; a power loss before the next FULL commit can
  *   drop it. An idempotent call can disappear from the observer index;
  *   output-only progress rolls back to earlier output while preserving the
- *   durable call identity, arguments, status and recovery category.
+ *   durable call identity, arguments, status and recovery category. On the
+ *   logs database the error-log index (state/logs.ts) commits this way: it
+ *   copies the JSONL error log for diagnostics and no recovery reads it.
  */
 export type StateCommitDurability = "full" | "rebuildable" | "observational";
 
@@ -230,6 +232,8 @@ export class StateSqliteDriver {
   readonly #eagerAdmissionState: boolean;
   /** The state connection runs in WAL mode (see {@link StateCommitDurability}). */
   readonly #stateWal: boolean;
+  /** The logs connection, once open, runs in WAL mode. */
+  #logsWal = false;
   readonly projectDir: string;
   readonly #writeBehindBarrier: () => void;
   readonly stateDbPath: string;
@@ -262,7 +266,7 @@ export class StateSqliteDriver {
       // header, and auto_vacuum can only be chosen while there is none.
       configureFreshDatabaseVacuum(state);
       this.#stateWal = configureDatabase(state);
-      if (logs !== undefined) configureDatabase(logs);
+      if (logs !== undefined) this.#logsWal = configureDatabase(logs);
       applyStateMigrations(state, paths);
       if (logs !== undefined) applyLogsMigrations(logs);
       replayAtomicSessionSnapshotWrites(state, this.projectDir);
@@ -286,7 +290,7 @@ export class StateSqliteDriver {
     if (!this.state.open) throw new Error("cannot open logs on a closed state driver");
     const logs = new Database(toNamespacedPath(this.logsDbPath));
     try {
-      configureDatabase(logs);
+      this.#logsWal = configureDatabase(logs);
       applyLogsMigrations(logs);
       this.#logsTransaction = logs.transaction(runTransactionOperation);
     } catch (error) {
@@ -343,9 +347,18 @@ export class StateSqliteDriver {
     );
   }
 
-  logsTransaction<T>(fn: () => T): T {
+  /**
+   * A logs-database transaction. `observational` (WAL only) commits at
+   * NORMAL: the error-log index (state/logs.ts) copies the JSONL error log
+   * for diagnostics, and nothing on a recovery or decision path reads it.
+   */
+  logsTransaction<T>(fn: () => T, durability: StateCommitDurability = "full"): T {
     const logs = this.logs;
-    return this.withTransactionDurability(logs, () => this.#logsTransaction!(fn) as T);
+    return this.withTransactionDurability(
+      logs,
+      () => this.#logsTransaction!(fn) as T,
+      durability !== "full" && this.#logsWal,
+    );
   }
 
   /**

@@ -207,11 +207,18 @@ function compactFramedBody(content: LLMMessage["content"]): LLMMessage["content"
     (!part.text.includes(boundary) && sanitizeToolResultText(part.text) === part.text)) ? body : undefined;
 }
 
+/**
+ * The sanitizer of Light's workspace-data frame for one text: runtime reminder and authority-shaped tags
+ * neutralized, hidden characters replaced, and both data boundaries broken up. Also used for workspace file
+ * names that the runtime sends itself (prompts/attachments/messages.ts).
+ */
+export function sanitizeLightWorkspaceText(text: string): string {
+  return sanitizeToolResultText(text).split(LIGHT_WORKSPACE_DATA_BOUNDARY).join("A G E N C _ D A T A");
+}
+
 function sanitizeCompactContent(content: LLMMessage["content"]): LLMMessage["content"] {
-  const sanitize = (text: string) => sanitizeToolResultText(text)
-    .split(LIGHT_WORKSPACE_DATA_BOUNDARY).join("A G E N C _ D A T A");
-  return typeof content === "string" ? sanitize(content) : content.map(part =>
-    part.type === "text" ? { ...part, text: sanitize(part.text) } : part);
+  return typeof content === "string" ? sanitizeLightWorkspaceText(content) : content.map(part =>
+    part.type === "text" ? { ...part, text: sanitizeLightWorkspaceText(part.text) } : part);
 }
 
 function canonicalFramedBody(

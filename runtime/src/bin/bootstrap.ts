@@ -735,6 +735,10 @@ let ordinarySubmitModulesPreload: Promise<void> | undefined;
  * authority, in its order. Once per process; a module that fails to load fails
  * again where the submit imports it.
  */
+/** Paragraph, list, quote, table, heading and code: the rules a final answer exercises. */
+const MARKDOWN_LEXER_WARMUP_SAMPLE =
+  "Done.\n\n- item\n\n> note\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n# Title\n\n`code` and **bold**\n";
+
 export function preloadOrdinarySubmitModules(): Promise<void> {
   return ordinarySubmitModulesPreload ??= new Promise<void>((resolve) => {
     setImmediate(resolve);
@@ -745,6 +749,27 @@ export function preloadOrdinarySubmitModules(): Promise<void> {
       () => import("../utils/cronTasks.js"),
       () => import("../services/mcp/types.js").then(({ McpJsonConfigSchema }) => {
         McpJsonConfigSchema().safeParse({ mcpServers: {} });
+      }),
+      // V8 compiles a regular expression on its first two tests. The
+      // memory-request pattern is large (about 10 ms to compile); the
+      // product-help ones are small. Compile them here instead of in the first
+      // request's attachment pass. They are pure tests of an empty string.
+      () => import("../prompts/attachments/memory-on-request.js").then(({ asksAboutMemory }) => {
+        asksAboutMemory("");
+        asksAboutMemory("");
+      }),
+      () => import("../prompts/attachments/product-help.js").then(({ asksAboutUndo, asksAboutInstructionFiles }) => {
+        for (let pass = 0; pass < 2; pass += 1) {
+          asksAboutUndo("");
+          asksAboutInstructionFiles("");
+        }
+      }),
+      // The continuation and completion checks lex every final answer as
+      // Markdown, and the first lex compiles the lexer's rules (about 7 ms,
+      // on the path to the finished turn). Lex a small sample of the common
+      // block types twice here instead.
+      () => import("marked").then(({ Lexer }) => {
+        for (let pass = 0; pass < 2; pass += 1) Lexer.lex(MARKDOWN_LEXER_WARMUP_SAMPLE);
       }),
     ]) {
       try {

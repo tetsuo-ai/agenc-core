@@ -34,14 +34,51 @@ export const LIGHT_ACCEPTANCE_REVIEW =
 export const LIGHT_MISSING_CHECK_TOOLS =
   "Install or build tools a check needs if allowed; report the check unavailable only after that fails or is denied.";
 
+/**
+ * Interactive Light working rules (round 4 job spd, from the receipts of the 0.19.26 release race on DeepSeek Flash
+ * and gpt-6-luna). Light lost wall time to work the request did not need: a model call before the change on tool
+ * versions, git status or git history; one long patch planned in full before anything was written; more general code
+ * than the request needed; and new edits and checks after the requested checks had passed. General working
+ * principles, not task hints. They go to interactive sessions without the task limits (GPT and the default models)
+ * and cost no tokens: the head and the default finish paragraph say the old sentences shorter, so each such prompt is
+ * no longer in o200k tokens than 0.19.26's. Sessions with the task limits (DeepSeek, QwenCloud Qwen3.8) and every
+ * DeepSeek model keep the 0.19.26 prompt: in job spd's race-task A/B these rules cut gpt-6-luna's wall time on the
+ * long, server and two-turn tasks but cost DeepSeek Flash calls, output and reasoning. Unattended Light keeps its own
+ * rules: environment checks, one patch per change and the acceptance review.
+ */
+export const LIGHT_READ_FIRST = "Read files before editing; FileRead, cat, sed -n and head count.";
+export const LIGHT_LOOKUPS = "Search only for missing context; check tool versions or git state only when needed.";
+export const LIGHT_PATCH_SIZE = "Edit and create files with apply_patch; split a large change into a few patches.";
+const LIGHT_READ_AND_SEARCH =
+  "Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change.";
+
+/**
+ * Interactive DeepSeek Light (round 4 job dsw). In the race receipts DeepSeek Flash spent a model call on
+ * `pytest --version`, `node --version`, `git status` or `git log` after reading the files in about a third of the long
+ * and python cells ("check pytest availability", "examine git history for clues"). Replayed at that point
+ * (jobs/dsw/replay), this sentence cut such probes from 12 of 32 responses to 3 of 32. A general working principle,
+ * not a task hint; a missing tool still shows in the check itself (LIGHT_MISSING_CHECK_TOOLS). Unattended DeepSeek
+ * Light keeps its environment checks; abliteration.ai's models keep their head (tools/light-profile.ts
+ * lightUsesDeepSeekWorkRules).
+ */
+export const LIGHT_DEEPSEEK_PROBES =
+  "Run checks directly instead of first probing tool versions or availability, and do not search git history for the intended behavior.";
+
 /** Light's default finish rules: deliver, check, report. */
 export const LIGHT_FINISH = lightFinish(false);
 
-function lightFinish(glmBatchedSteps: boolean): string {
-  const failureHandling = glmBatchedSteps
-    ? "fix all failures you can diagnose before retrying"
-    : "diagnose the first failure and fix its cause before retrying";
-  return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. ${LIGHT_COMPUTE_FROM_DATA} Briefly report results and stop. ${LIGHT_MISSING_CHECK_TOOLS}`;
+/** The default finish rules a DeepSeek model gets with the task limits off: the 0.19.26 wording. */
+export const LIGHT_DEEPSEEK_FINISH = lightFinish(false, false);
+
+function lightFinish(glmBatchedSteps: boolean, interactiveRules = true): string {
+  if (!interactiveRules) {
+    const failureHandling = glmBatchedSteps
+      ? "fix all failures you can diagnose before retrying"
+      : "diagnose the first failure and fix its cause before retrying";
+    return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. ${LIGHT_COMPUTE_FROM_DATA} Briefly report results and stop. ${LIGHT_MISSING_CHECK_TOOLS}`;
+  }
+  const failureHandling = glmBatchedSteps ? "fix all failures you can diagnose" : "fix the first failure's cause";
+  return `Complete requested files, exports and error cases with the simplest code. ${LIGHT_KEEP_BEHAVIOR} ${LIGHT_COMPUTE_FROM_DATA} Run required and change-relevant checks after final edits; ${failureHandling}, then rerun. Once they pass, report briefly and stop without rework. ${LIGHT_MISSING_CHECK_TOOLS}`;
 }
 
 /**
@@ -86,19 +123,29 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * Every Light request resends this head, so it holds only what applies to every request. With
  * Edit and Write the editing rules live in those tools' descriptions ("Keep oldText short and
  * unique", "Create/replace complete files"); apply_patch's description has no batching rule, so
- * GPT sessions keep theirs here. Greetings and questions about AgenC are answered without tools;
- * the undo paths arrive with a message that asks about them (prompts/attachments/product-help.ts).
+ * sessions that edit with apply_patch keep theirs here: a few patches for a large change in
+ * interactive sessions without the task limits (LIGHT_PATCH_SIZE), one patch per change otherwise. Greetings and
+ * questions about AgenC are answered without tools; the undo paths arrive with a message that asks
+ * about them (prompts/attachments/product-help.ts).
  */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false): string {
-  const editing = editsWithApplyPatch
-    ? " Edit and create files with apply_patch; put all hunks of one change in one patch." +
-      (statesTaskLimits ? " When their contents are known, include the task's source, tests and requested documentation in the same patch." : "")
-    : "";
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false): string {
+  // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
+  // keep the 0.19.26 prompt, interactive DeepSeek with one more sentence on probes (LIGHT_DEEPSEEK_PROBES).
+  const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
+  const reading = interactiveRules
+    ? ` ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}`
+    : ` ${LIGHT_READ_AND_SEARCH}` + (deepseekWorkRules && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
+  const editing = !editsWithApplyPatch
+    ? ""
+    : interactiveRules
+      ? ` ${LIGHT_PATCH_SIZE}`
+      : " Edit and create files with apply_patch; put all hunks of one change in one patch." +
+        (statesTaskLimits ? " When their contents are known, include the task's source, tests and requested documentation in the same patch." : "");
   const finishing = nonInteractive
     ? lightUnattendedFinish(glmBatchedSteps, !statesTaskLimits || limitedComputesFromData)
-    : statesTaskLimits ? lightLimitedFinish(glmBatchedSteps, limitedComputesFromData) : lightFinish(glmBatchedSteps);
+    : statesTaskLimits ? lightLimitedFinish(glmBatchedSteps, limitedComputesFromData) : lightFinish(glmBatchedSteps, interactiveRules);
   return [
-    "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. Put independent tool calls in one response; omit default arguments. Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change." + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
+    "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. Put independent tool calls in one response; omit default arguments." + reading + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
     ...(glmBatchedSteps ? [LIGHT_GLM_BATCHED_STEPS] : []),
     ...(customStyle ? [] : [finishing]),
     ...(nonInteractive && customStyle ? [LIGHT_ACCEPTANCE_REVIEW] : []),

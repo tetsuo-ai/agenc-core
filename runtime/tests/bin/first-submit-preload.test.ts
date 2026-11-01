@@ -10,6 +10,7 @@ const evaluated = vi.hoisted(() => ({
   modelFacingTools: 0,
   cronTasks: 0,
   mcpParses: [] as unknown[],
+  patternTests: [] as string[],
 }));
 
 vi.mock("../../src/session/run-turn.js", async (importOriginal) => {
@@ -49,13 +50,49 @@ vi.mock("../../src/services/mcp/types.js", async (importOriginal) => {
   };
 });
 
+vi.mock("../../src/prompts/attachments/memory-on-request.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/prompts/attachments/memory-on-request.js")>();
+  return {
+    ...actual,
+    asksAboutMemory: (text: string) => {
+      evaluated.patternTests.push(`memory:${text}`);
+      return actual.asksAboutMemory(text);
+    },
+  };
+});
+vi.mock("../../src/prompts/attachments/product-help.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/prompts/attachments/product-help.js")>();
+  return {
+    ...actual,
+    asksAboutUndo: (text: string) => {
+      evaluated.patternTests.push(`undo:${text}`);
+      return actual.asksAboutUndo(text);
+    },
+    asksAboutInstructionFiles: (text: string) => {
+      evaluated.patternTests.push(`instructions:${text}`);
+      return actual.asksAboutInstructionFiles(text);
+    },
+  };
+});
+
+vi.mock("marked", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("marked")>();
+  class CountingLexer extends actual.Lexer {
+    static override lex(src: string, options?: Parameters<typeof actual.Lexer.lex>[1]) {
+      evaluated.patternTests.push(`markdown:${src.length > 0 ? "sample" : ""}`);
+      return actual.Lexer.lex(src, options);
+    }
+  }
+  return { ...actual, Lexer: CountingLexer };
+});
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("first-submit preload", () => {
   it("loads the first-submit modules once per process and runs no startup effect", async () => {
     const { preloadOrdinarySubmitModules } = await import("../../src/bin/bootstrap.js");
     const tools = await import("../../src/bin/model-facing-tools.js");
-    const before = { ...evaluated, mcpParses: [...evaluated.mcpParses] };
+    const before = { ...evaluated, mcpParses: [...evaluated.mcpParses], patternTests: [...evaluated.patternTests] };
     const first = preloadOrdinarySubmitModules();
     expect(preloadOrdinarySubmitModules()).toBe(first);
     await first;
@@ -66,8 +103,19 @@ describe("first-submit preload", () => {
     expect(evaluated.mcpParses.slice(before.mcpParses.length)).toEqual([{ mcpServers: {} }]);
     expect(tools.resumeInterruptedAgentJobs).not.toHaveBeenCalled();
     expect(tools.startCronSchedulerRunner).not.toHaveBeenCalled();
+    // The first request's attachment patterns are compiled (two tests each, so
+    // V8 also tiers them up), on an empty string only; the Markdown lexer lexes
+    // a sample twice.
+    const tested = evaluated.patternTests.slice(before.patternTests.length);
+    expect(tested.filter((entry) => entry === "memory:")).toHaveLength(2);
+    expect(tested.filter((entry) => entry === "undo:")).toHaveLength(2);
+    expect(tested.filter((entry) => entry === "instructions:")).toHaveLength(2);
+    // The Markdown lexer needs real content to compile its rules.
+    expect(tested.filter((entry) => entry === "markdown:sample")).toHaveLength(2);
+    expect(tested.filter((entry) => !entry.startsWith("markdown:")).every((entry) => entry.endsWith(":"))).toBe(true);
     // A second call neither loads nor parses again.
     await preloadOrdinarySubmitModules();
     expect(evaluated.mcpParses.length).toBe(before.mcpParses.length + 1);
+    expect(evaluated.patternTests.length).toBe(before.patternTests.length + tested.length);
   });
 });
