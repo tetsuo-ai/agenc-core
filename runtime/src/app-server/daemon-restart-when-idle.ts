@@ -43,6 +43,7 @@
  * for a TUI that stopped waiting for it, before the pending record goes.
  */
 
+import { activeAgenCDaemonRestartFollows } from "./daemon-restart-follow-retention.js";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -1285,7 +1286,7 @@ export async function publishAgenCDaemonRestartResult(
     } catch {
       existing = null;
     }
-    const next = addAgenCDaemonRestartResult(existing, result);
+    const next = addAgenCDaemonRestartResult(existing, result, activeAgenCDaemonRestartFollows(daemonHome));
     if (next !== null) writeDurableAtomicFileSync(path, `${path}.${process.pid}.${randomUUID()}.tmp`, next);
   } catch (error) {
     logLine(daemonHome, `the end of request ${result.requestId} could not be recorded (${formatCleanupError(error)})`, new Date());

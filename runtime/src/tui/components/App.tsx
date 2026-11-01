@@ -133,6 +133,7 @@ import {
   type UpdateRelaunchRequest,
 } from "../update-relaunch-state.js";
 import { useUpdateFollow } from "../hooks/useUpdateFollow.js";
+import { updateFollowNotification } from "../update-follow-notification.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
 import { useInputCapture, useKeybindings } from "../keybindings/useKeybinding.js";
 import { useRegisterOverlay } from "../context/overlayContext.js";
@@ -4608,13 +4609,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     agencHome,
     relaunch: (request: UpdateRelaunchRequest) => requestUpdateRelaunchRef.current(request),
     // The switch this window waited for is not going to happen: say why.
-    notify: (notice: UpdateNotice) => addNotification({
-      key: "agenc-update",
-      text: notice.text,
-      ...(notice.kind === "error" ? { color: "error" as const } : {}),
-      priority: "high",
-      timeoutMs: 30_000,
-    }),
+    notify: (notice: UpdateNotice) => addNotification(updateFollowNotification(notice)),
   });
   const isLocalJSXCommandActive = toolJSX?.isLocalJSXCommand === true;
   const localCommandPopupRef = useRef(toolJSX);

@@ -159,7 +159,7 @@ export function isAgenCDaemonRestartRequestId(value: unknown): value is string {
  * process before either clears the pending record. A deferral is not an end.
  */
 export const AGENC_DAEMON_RESTART_RESULTS_FILENAME = "daemon-restart-results.json";
-/** The results file keeps the ends of this many requests. */
+/** The results file keeps this many recent requests plus active follows. */
 export const AGENC_DAEMON_RESTART_RESULTS_KEPT = 8;
 
 export interface AgenCDaemonRestartResult {
@@ -182,7 +182,7 @@ export function parseAgenCDaemonRestartResults(text: string): AgenCDaemonRestart
   const record = value as { readonly schemaVersion?: unknown; readonly results?: unknown } | null;
   if (record?.schemaVersion !== 2 || !Array.isArray(record.results)) return [];
   const results: AgenCDaemonRestartResult[] = [];
-  for (const entry of record.results.slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT)) {
+  for (const entry of record.results) {
     const item = entry as Partial<Record<keyof AgenCDaemonRestartResult, unknown>> | null;
     if (!isAgenCDaemonRestartRequestId(item?.requestId) || typeof item?.finishedAt !== "string") continue;
     const outcome = parseAgenCDaemonRestartOutcome(JSON.stringify(item.outcome ?? null));
@@ -206,10 +206,21 @@ export function parseAgenCDaemonRestartResults(text: string): AgenCDaemonRestart
 export function addAgenCDaemonRestartResult(
   existing: string | null,
   result: AgenCDaemonRestartResult,
+  retainedRequestIds: ReadonlySet<string> = new Set(),
 ): string | null {
   const entries = parseAgenCDaemonRestartResults(existing ?? "");
   if (entries.some((entry) => entry.requestId === result.requestId && entry.continuedBy === undefined)) return null;
   const kept = entries.filter((entry) => entry.requestId !== result.requestId);
-  const results = [...kept, result].slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT);
+  const candidates = [...kept, result];
+  const byId = new Map(candidates.map(entry => [entry.requestId, entry]));
+  const retained = new Set(retainedRequestIds);
+  // A sleeping follower still points at its original request. Keep every
+  // successor link, including a successor whose end has not arrived yet.
+  for (const id of retained) {
+    const successor = byId.get(id)?.continuedBy;
+    if (successor !== undefined) retained.add(successor);
+  }
+  const recent = new Set(candidates.slice(-AGENC_DAEMON_RESTART_RESULTS_KEPT));
+  const results = candidates.filter(entry => recent.has(entry) || retained.has(entry.requestId));
   return `${JSON.stringify({ schemaVersion: 2, results }, null, 2)}\n`;
 }
