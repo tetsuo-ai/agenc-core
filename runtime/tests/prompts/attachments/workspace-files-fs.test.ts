@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const hooks = vi.hoisted(() => ({
   beforeRead: undefined as undefined | ((dir: string) => void | Promise<void>),
+  /** Directory entries handed to the code under test, by readdir or one at a time by opendir. */
+  delivered: 0,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -17,16 +19,34 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ...actual,
     readdir: async (target: string, options?: unknown) => {
       await hooks.beforeRead?.(String(target));
-      return actual.readdir(target, options as never);
+      const result = await actual.readdir(target, options as never);
+      hooks.delivered += (result as unknown[]).length;
+      return result;
     },
     opendir: async (target: string, options?: unknown) => {
       await hooks.beforeRead?.(String(target));
-      return actual.opendir(target, options as never);
+      const dir = await actual.opendir(target, options as never);
+      return {
+        path: dir.path,
+        read: async () => {
+          const entry = await dir.read();
+          if (entry !== null) hooks.delivered += 1;
+          return entry;
+        },
+        close: () => dir.close(),
+        async *[Symbol.asyncIterator]() {
+          for await (const entry of dir) {
+            hooks.delivered += 1;
+            yield entry;
+          }
+        },
+      };
     },
   };
 });
 
-const { listWorkspaceFiles } = await import("../../../src/prompts/attachments/workspace-files.js");
+const { listWorkspaceFiles, workspaceFilesProducer } = await import("../../../src/prompts/attachments/workspace-files.js");
+const { getAttachmentTrackingState } = await import("../../../src/session/attachment-state.js");
 
 let root: string;
 let outside: string;
@@ -52,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   hooks.beforeRead = undefined;
+  hooks.delivered = 0;
   rmSync(root, { recursive: true, force: true });
   rmSync(outside, { recursive: true, force: true });
 });
@@ -85,5 +106,52 @@ describe("workspace listing under a changing filesystem", () => {
     const listing = await listWorkspaceFiles(root);
     expect(swapped).toBe(true);
     expect(listing.entries.join("\n")).not.toContain("private.txt");
+  });
+});
+
+describe("bounded work", () => {
+  function producerOpts() {
+    return {
+      sessionKey: {},
+      lightMode: true,
+      lightWorkspaceFiles: true,
+      turnProvenance: { turnId: "turn-1", rootHumanTurn: { turnId: "turn-1", text: "Fix it." } },
+      userInput: "Fix it.",
+      loadedTools: [],
+      messages: [{ role: "user" as const, content: "Fix it." }],
+      permissionContext: { mode: "bypassPermissions" } as never,
+      cwd: root,
+      subagentDepth: 0,
+      signal: new AbortController().signal,
+      agencHome: path.join(root, ".agenc-home"),
+    };
+  }
+
+  test("a stalled read never holds the first request past the deadline; the listing is left out", async () => {
+    hooks.beforeRead = (dir) => {
+      if (dir === root || dir.endsWith(path.basename(root))) return new Promise((resolve) => setTimeout(resolve, 3_000));
+      return undefined;
+    };
+    const opts = producerOpts();
+    const started = Date.now();
+    const result = await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey));
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(result).toEqual([]);
+  });
+
+  test("a huge folder is read one entry at a time up to the inspection cap", async () => {
+    for (let i = 0; i < 3_000; i += 1) writeFileSync(path.join(root, `f${String(i).padStart(4, "0")}.txt`), "");
+    const listing = await listWorkspaceFiles(root);
+    expect(listing.truncated).toBe(true);
+    expect(listing.entries.length).toBeLessThanOrEqual(50);
+    expect(hooks.delivered).toBeLessThanOrEqual(1_000);
+  });
+
+  test("many folders: a bounded number is read and the listing stays within 50 names", async () => {
+    for (let i = 0; i < 100; i += 1) write(root, `d${String(i).padStart(3, "0")}/x.txt`);
+    const listing = await listWorkspaceFiles(root);
+    expect(listing.entries.length).toBeLessThanOrEqual(50);
+    // The root's 104 entries plus at most 64 folders of one file each.
+    expect(hooks.delivered).toBeLessThanOrEqual(100 + 4 + 64);
   });
 });

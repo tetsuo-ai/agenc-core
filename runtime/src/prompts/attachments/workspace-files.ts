@@ -14,7 +14,7 @@
  */
 
 import type { Dirent } from "node:fs";
-import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, opendir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -26,6 +26,15 @@ export const WORKSPACE_FILES_MAX_DEPTH = 3;
 export const WORKSPACE_FILES_MAX_ENTRIES = 50;
 /** Most folders one listing reads, so a large tree costs a bounded walk. */
 export const WORKSPACE_FILES_MAX_DIRS = 64;
+/** Most folders waiting to be read; a folder found beyond this is named, not expanded. */
+export const WORKSPACE_FILES_MAX_QUEUED = 64;
+/** Most directory entries one listing looks at, read one at a time, so a huge folder costs a bounded read. */
+export const WORKSPACE_FILES_MAX_INSPECTED = 1_000;
+/**
+ * The listing is optional: if checking the folder and walking it take longer than this, the first request
+ * goes without it, and a slow or stalled read cannot hold the request back any longer.
+ */
+export const WORKSPACE_FILES_DEADLINE_MS = 200;
 
 /** Shown with a trailing slash and never expanded. */
 const NOT_EXPANDED: ReadonlySet<string> = new Set([
@@ -119,18 +128,41 @@ export async function listableWorkspace(
  * a link replaced after its parent was listed, or whose parent became a link, is dropped (undefined), so a
  * swap during the walk cannot lead the listing outside the workspace.
  */
+interface WalkBudget {
+  inspected: number;
+  readonly signal?: AbortSignal;
+}
+
 async function readContainedDirectory(
   expected: string,
+  budget: WalkBudget,
   identity?: DirectoryIdentity,
-): Promise<Dirent[] | undefined> {
+): Promise<{ readonly children: Dirent[]; readonly complete: boolean } | undefined> {
   try {
     const before = await lstat(expected);
     if (!before.isDirectory()) return undefined;
     if (identity !== undefined && !sameDirectory(identity, before)) return undefined;
     if ((await realpath(expected)) !== expected) return undefined;
-    const children = await readdir(expected, { withFileTypes: true });
+    // One entry at a time, so the inspection cap and an abort stop the read itself.
+    const children: Dirent[] = [];
+    let complete = true;
+    const dir = await opendir(expected);
+    try {
+      for (;;) {
+        if (budget.signal?.aborted === true || budget.inspected >= WORKSPACE_FILES_MAX_INSPECTED) {
+          complete = false;
+          break;
+        }
+        const child = await dir.read();
+        if (child === null) break;
+        budget.inspected += 1;
+        children.push(child);
+      }
+    } finally {
+      await dir.close().catch(() => undefined);
+    }
     const after = await lstat(expected);
-    return after.isDirectory() && sameDirectory(before, after) ? children : undefined;
+    return after.isDirectory() && sameDirectory(before, after) ? { children, complete } : undefined;
   } catch {
     return undefined;
   }
@@ -150,19 +182,25 @@ export async function listWorkspaceFiles(
   const entries: string[] = [];
   let truncated = false;
   let dirsRead = 0;
+  const budget: WalkBudget = { inspected: 0, ...(signal !== undefined ? { signal } : {}) };
   const queue: Array<{ readonly rel: string; readonly depth: number }> = [{ rel: "", depth: 1 }];
   outer: while (queue.length > 0) {
-    if (signal?.aborted === true) break;
-    const { rel, depth } = queue.shift()!;
+    if (signal?.aborted === true) {
+      truncated = true;
+      break;
+    }
     if (dirsRead >= WORKSPACE_FILES_MAX_DIRS) {
       truncated = true;
       break;
     }
+    const { rel, depth } = queue.shift()!;
     dirsRead += 1;
-    const children = rel.length === 0
-      ? await readContainedDirectory(root.path, root)
-      : await readContainedDirectory(path.join(root.path, rel));
-    if (children === undefined) continue;
+    const read = rel.length === 0
+      ? await readContainedDirectory(root.path, budget, root)
+      : await readContainedDirectory(path.join(root.path, rel), budget);
+    if (read === undefined) continue;
+    const children = read.children;
+    if (!read.complete) truncated = true;
     children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const child of children) {
       if (entries.length >= WORKSPACE_FILES_MAX_ENTRIES) {
@@ -171,7 +209,8 @@ export async function listWorkspaceFiles(
       }
       const name = rel.length > 0 ? `${rel}/${child.name}` : child.name;
       if (child.isDirectory()) {
-        if (NOT_EXPANDED.has(child.name) || depth >= WORKSPACE_FILES_MAX_DEPTH) {
+        if (NOT_EXPANDED.has(child.name) || depth >= WORKSPACE_FILES_MAX_DEPTH ||
+            queue.length >= WORKSPACE_FILES_MAX_QUEUED) {
           entries.push(`${name}/`);
         } else {
           queue.push({ rel: name, depth: depth + 1 });
@@ -180,6 +219,8 @@ export async function listWorkspaceFiles(
       }
       entries.push(name);
     }
+    // The inspection cap or an abort stopped this read: what is still queued is named, not expanded.
+    if (!read.complete) break;
   }
   // Folders still queued when the walk stopped are named, not expanded.
   for (const { rel } of queue) {
@@ -207,10 +248,43 @@ export const workspaceFilesProducer: AttachmentProducer = async (opts, trackingS
     return [];
   }
   trackingState.workspaceFilesSent = true;
-  // Only the validated canonical directory is enumerated, never the spelling the session started with.
-  const workspace = await listableWorkspace(opts.cwd);
-  if (workspace === undefined) return [];
-  const listing = await listWorkspaceFiles(workspace, opts.signal);
-  if (listing.entries.length === 0) return [];
+  const listing = await withinDeadline(opts.cwd, opts.signal);
+  if (listing === undefined || listing.entries.length === 0) return [];
   return [{ kind: "workspace_files", entries: listing.entries, truncated: listing.truncated }];
 };
+
+/**
+ * The checks and the walk under WORKSPACE_FILES_DEADLINE_MS. When the deadline passes (or the turn is
+ * aborted) the result is undefined at once and the walk is told to stop; a read already in progress
+ * finishes in the background and its result is dropped.
+ */
+async function withinDeadline(cwd: string, turnSignal: AbortSignal): Promise<WorkspaceFileListing | undefined> {
+  const stop = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const expired = new Promise<undefined>((resolve) => {
+    const end = () => {
+      stop.abort();
+      resolve(undefined);
+    };
+    timer = setTimeout(end, WORKSPACE_FILES_DEADLINE_MS);
+    timer.unref?.();
+    onAbort = end;
+    if (turnSignal.aborted) end();
+    else turnSignal.addEventListener("abort", end, { once: true });
+  });
+  const walk = (async () => {
+    // Only the validated canonical directory is enumerated, never the spelling the session started with.
+    const workspace = await listableWorkspace(cwd);
+    if (workspace === undefined || stop.signal.aborted) return undefined;
+    const listing = await listWorkspaceFiles(workspace, stop.signal);
+    return stop.signal.aborted ? undefined : listing;
+  })().catch(() => undefined);
+  try {
+    return await Promise.race([walk, expired]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort !== undefined) turnSignal.removeEventListener("abort", onAbort);
+    stop.abort();
+  }
+}

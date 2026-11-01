@@ -21,7 +21,7 @@ import { renderUntrustedWorkspaceData } from "../untrusted-workspace-content.js"
 import { formatContextPressureReminder } from "../../utils/messages.js";
 import { sanitizeSystemReminderContent } from "./system-reminder-sanitizer.js";
 import { LIGHT_WORKSPACE_DATA_BOUNDARY, sanitizeLightWorkspaceText } from "../../tools/untrusted-tool-result-framing.js";
-import { WORKSPACE_FILES_MAX_DEPTH, WORKSPACE_FILES_MAX_ENTRIES } from "./workspace-files.js";
+import { WORKSPACE_FILES_MAX_DEPTH } from "./workspace-files.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS } from "../product-help.js";
 import type { Attachment } from "./types.js";
 import { relevantMemoryFingerprint } from "./relevant-memory-fingerprint.js";
@@ -458,7 +458,7 @@ function renderWorkspaceFiles(attachment: Extract<Attachment, { kind: "workspace
     LIGHT_WORKSPACE_DATA_BOUNDARY,
     ...names,
     LIGHT_WORKSPACE_DATA_BOUNDARY,
-    ...(attachment.truncated ? [`Only the first ${WORKSPACE_FILES_MAX_ENTRIES} names are listed.`] : []),
+    ...(attachment.truncated ? ["More names exist than are listed."] : []),
   ].join("\n");
 }
 
