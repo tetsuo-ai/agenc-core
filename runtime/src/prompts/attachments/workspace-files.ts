@@ -15,7 +15,7 @@
  * @module
  */
 
-import { constants, type Dirent } from "node:fs";
+import { constants } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -254,32 +254,56 @@ export async function listableWorkspace(
   return (await insideGitWorkTree(root.path, signal)) ? root : undefined;
 }
 
-/**
- * One folder of the walk, read only while it is the same real directory at its expected canonical place:
- * just before the read it must not be a link and must resolve to exactly that place (the root: to the
- * validated identity), and just after the read it must still have the same device and inode. A folder that
- * a link replaced after its parent was listed, or whose parent became a link, is dropped (undefined), so a
- * swap during the walk cannot lead the listing outside the workspace.
- */
 interface WalkBudget {
   inspected: number;
   readonly signal?: AbortSignal;
 }
 
-async function readContainedDirectory(
-  expected: string,
+/** A folder entry; a folder that may be expanded carries the identity a later read must find. */
+interface WalkEntry {
+  readonly name: string;
+  readonly folder: boolean;
+  readonly identity?: Pick<DirectoryIdentity, "dev" | "ino">;
+}
+
+/** Where the entries of an open directory descriptor can be read by path (Linux, macOS); elsewhere none. */
+function descriptorDirectory(fd: number): string | undefined {
+  if (process.platform === "linux") return `/proc/self/fd/${fd}`;
+  if (process.platform === "darwin") return `/dev/fd/${fd}`;
+  return undefined;
+}
+
+/**
+ * One folder of the walk, read through a pinned descriptor: the folder is opened without following a link
+ * (O_DIRECTORY | O_NOFOLLOW), the open descriptor must be a directory with the expected device and inode (the
+ * validated root's, or what the parent's read found for that entry), and the entries are read through the
+ * descriptor itself, so a folder swapped and restored around the open cannot put another directory's names in
+ * the listing. Folder entries that may be expanded get their identity from inside the pinned folder. Undefined
+ * (the folder is dropped) on any mismatch or failure, and on a platform without these flags or a descriptor
+ * path, where no listing is sent at all. Every handle is closed.
+ */
+async function readPinnedDirectory(
+  target: string,
+  expected: Pick<DirectoryIdentity, "dev" | "ino">,
   budget: WalkBudget,
-  identity?: DirectoryIdentity,
-): Promise<{ readonly children: Dirent[]; readonly complete: boolean } | undefined> {
+  expandable: boolean,
+): Promise<{ readonly children: WalkEntry[]; readonly complete: boolean } | undefined> {
+  const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW } = constants;
+  if (O_DIRECTORY === undefined || O_NOFOLLOW === undefined || budget.signal?.aborted === true) return undefined;
+  let handle;
   try {
-    const before = await lstat(expected);
-    if (!before.isDirectory()) return undefined;
-    if (identity !== undefined && !sameDirectory(identity, before)) return undefined;
-    if ((await realpath(expected)) !== expected) return undefined;
+    handle = await open(target, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    const info = await handle.stat();
+    const pinned = descriptorDirectory(handle.fd);
+    if (!info.isDirectory() || !sameDirectory(expected, info) || pinned === undefined) return undefined;
     // One entry at a time, so the inspection cap and an abort stop the read itself.
-    const children: Dirent[] = [];
+    const children: WalkEntry[] = [];
     let complete = true;
-    const dir = await opendir(expected);
+    const dir = await opendir(pinned);
     try {
       for (;;) {
         if (budget.signal?.aborted === true || budget.inspected >= WORKSPACE_FILES_MAX_INSPECTED) {
@@ -289,21 +313,33 @@ async function readContainedDirectory(
         const child = await dir.read();
         if (child === null) break;
         budget.inspected += 1;
-        children.push(child);
+        if (!child.isDirectory()) {
+          children.push({ name: child.name, folder: false });
+        } else if (!expandable || NOT_EXPANDED.has(child.name)) {
+          children.push({ name: child.name, folder: true });
+        } else {
+          const entry = await lstat(path.join(pinned, child.name)).catch(() => undefined);
+          children.push(entry === undefined
+            ? { name: child.name, folder: true }
+            : entry.isDirectory()
+              ? { name: child.name, folder: true, identity: { dev: entry.dev, ino: entry.ino } }
+              : { name: child.name, folder: false });
+        }
       }
     } finally {
       await dir.close().catch(() => undefined);
     }
-    const after = await lstat(expected);
-    return after.isDirectory() && sameDirectory(before, after) ? { children, complete } : undefined;
+    return { children, complete };
   } catch {
     return undefined;
+  } finally {
+    await handle.close().catch(() => undefined);
   }
 }
 
 /**
  * Breadth-first names under the workspace, nearest levels first, then sorted. Symbolic links are listed,
- * never followed. Unreadable folders, and folders that change under the walk, are skipped. A path is first
+ * never followed. Unreadable folders, and folders that change under the walk, are skipped (readPinnedDirectory). A path is first
  * resolved to its canonical directory; one that cannot be resolved lists nothing.
  */
 export async function listWorkspaceFiles(
@@ -316,7 +352,8 @@ export async function listWorkspaceFiles(
   let truncated = false;
   let dirsRead = 0;
   const budget: WalkBudget = { inspected: 0, ...(signal !== undefined ? { signal } : {}) };
-  const queue: Array<{ readonly rel: string; readonly depth: number }> = [{ rel: "", depth: 1 }];
+  const queue: Array<{ readonly rel: string; readonly depth: number; readonly identity: Pick<DirectoryIdentity, "dev" | "ino"> }> =
+    [{ rel: "", depth: 1, identity: root }];
   outer: while (queue.length > 0) {
     if (signal?.aborted === true) {
       truncated = true;
@@ -326,11 +363,14 @@ export async function listWorkspaceFiles(
       truncated = true;
       break;
     }
-    const { rel, depth } = queue.shift()!;
+    const { rel, depth, identity } = queue.shift()!;
     dirsRead += 1;
-    const read = rel.length === 0
-      ? await readContainedDirectory(root.path, budget, root)
-      : await readContainedDirectory(path.join(root.path, rel), budget);
+    const read = await readPinnedDirectory(
+      rel.length === 0 ? root.path : path.join(root.path, rel),
+      identity,
+      budget,
+      depth < WORKSPACE_FILES_MAX_DEPTH,
+    );
     if (read === undefined) continue;
     const children = read.children;
     if (!read.complete) truncated = true;
@@ -341,12 +381,11 @@ export async function listWorkspaceFiles(
         break outer;
       }
       const name = rel.length > 0 ? `${rel}/${child.name}` : child.name;
-      if (child.isDirectory()) {
-        if (NOT_EXPANDED.has(child.name) || depth >= WORKSPACE_FILES_MAX_DEPTH ||
-            queue.length >= WORKSPACE_FILES_MAX_QUEUED) {
+      if (child.folder) {
+        if (child.identity === undefined || queue.length >= WORKSPACE_FILES_MAX_QUEUED) {
           entries.push(`${name}/`);
         } else {
-          queue.push({ rel: name, depth: depth + 1 });
+          queue.push({ rel: name, depth: depth + 1, identity: child.identity });
         }
         continue;
       }

@@ -126,36 +126,71 @@ afterEach(() => {
   rmSync(outside, { recursive: true, force: true });
 });
 
+/** Runs `before` (and then `after`) around the first open or read of a path that ends with `suffix`. */
+function aroundFirst(suffix: string, before: (target: string) => void, after: (target: string) => void = () => undefined): () => boolean {
+  let state: "waiting" | "inside" | "done" = "waiting";
+  const enter = (target: string) => {
+    if (state === "waiting" && target.endsWith(suffix)) {
+      state = "inside";
+      before(target);
+    }
+  };
+  const leave = (target: string) => {
+    if (state === "inside" && target.endsWith(suffix)) {
+      state = "done";
+      after(target);
+    }
+  };
+  hooks.beforeRead = enter;
+  hooks.beforeOpen = enter;
+  hooks.afterRead = leave;
+  hooks.afterOpen = leave;
+  return () => state !== "waiting";
+}
+
 describe("workspace listing under a changing filesystem", () => {
   test("drops a queued folder that a link replaced before it was read", async () => {
-    let swapped = false;
-    hooks.beforeRead = (dir) => {
-      if (!swapped && dir.endsWith(`${path.sep}src`)) {
-        swapped = true;
-        renameSync(dir, `${dir}-moved`);
-        symlinkSync(outside, dir);
-      }
-    };
+    const swapped = aroundFirst(`${path.sep}src`, (dir) => {
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    });
     const listing = await listWorkspaceFiles(root);
-    expect(swapped).toBe(true);
+    expect(swapped()).toBe(true);
     expect(listing.entries.join("\n")).not.toContain("secret.txt");
     expect(listing.entries).toEqual(expect.arrayContaining(["README.md", "test/cli.test.js"]));
   });
 
   test("drops a folder whose parent became a link while the walk was under way", async () => {
-    let swapped = false;
-    hooks.beforeRead = (dir) => {
-      // Reading test/ comes after src/ was listed and before src/deep/ is read.
-      if (!swapped && dir.endsWith(`${path.sep}test`)) {
-        swapped = true;
-        renameSync(path.join(root, "src"), path.join(root, "src-moved"));
-        symlinkSync(outside, path.join(root, "src"));
-      }
-    };
+    // Reading test/ comes after src/ was listed and before src/deep/ is read.
+    const swapped = aroundFirst(`${path.sep}test`, () => {
+      renameSync(path.join(root, "src"), path.join(root, "src-moved"));
+      symlinkSync(outside, path.join(root, "src"));
+    });
     const listing = await listWorkspaceFiles(root);
-    expect(swapped).toBe(true);
+    expect(swapped()).toBe(true);
     expect(listing.entries.join("\n")).not.toContain("private.txt");
   });
+
+  test.each(["link", "folder"] as const)(
+    "a folder swapped for an outside %s and restored around its open leaks no outside name",
+    async (kind) => {
+      const swapped = aroundFirst(`${path.sep}src`, (dir) => {
+        renameSync(dir, `${dir}-moved`);
+        if (kind === "link") symlinkSync(outside, dir);
+        else renameSync(outside, dir);
+      }, (dir) => {
+        if (kind === "link") rmSync(dir);
+        else renameSync(dir, outside);
+        renameSync(`${dir}-moved`, dir);
+      });
+      const listing = await listWorkspaceFiles(root);
+      expect(swapped()).toBe(true);
+      const text = listing.entries.join("\n");
+      expect(text).not.toContain("secret.txt");
+      expect(text).not.toContain("private.txt");
+      expect(listing.entries).toEqual(expect.arrayContaining(["README.md", "test/cli.test.js"]));
+    },
+  );
 });
 
 describe("bounded work", () => {
@@ -177,10 +212,10 @@ describe("bounded work", () => {
   }
 
   test("a stalled read never holds the first request past the deadline; the listing is left out", async () => {
-    hooks.beforeRead = (dir) => {
-      if (dir === root || dir.endsWith(path.basename(root))) return new Promise((resolve) => setTimeout(resolve, 3_000));
-      return undefined;
-    };
+    const stall = (target: string) =>
+      target === root || target.endsWith(path.basename(root)) ? new Promise<void>((resolve) => setTimeout(resolve, 3_000)) : undefined;
+    hooks.beforeRead = stall;
+    hooks.beforeOpen = stall;
     const opts = producerOpts();
     const started = Date.now();
     const result = await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey));
