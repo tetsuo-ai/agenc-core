@@ -942,6 +942,7 @@ describe("native count selection, identity, and caching", () => {
     );
 
     const countTokens = vi.fn(async () => completeCount(40));
+    const countCapability = capability(countTokens);
     const service = new TokenAccountingService();
     const base = accountingRequest("identity", {
       endpointIdentity: "https://alice:one@api.example/v1?key=one",
@@ -951,10 +952,10 @@ describe("native count selection, identity, and caching", () => {
       endpointIdentity: "https://bob:two@API.EXAMPLE/v1/?key=two#ignored",
       modelRevision: "model-r1",
     });
-    await service.count(base, { capability: capability(countTokens) });
+    await service.count(base, { capability: countCapability });
     expect(
       (await service.count(sameCanonical, {
-        capability: capability(countTokens),
+        capability: countCapability,
       })).cacheStatus,
     ).toBe("hit");
 
@@ -1009,7 +1010,7 @@ describe("native count selection, identity, and caching", () => {
     ];
     for (const variant of variants) {
       await service.count(variant.request ?? base, {
-        capability: variant.capability ?? capability(countTokens),
+        capability: variant.capability ?? countCapability,
       });
     }
     expect(countTokens).toHaveBeenCalledTimes(1 + variants.length);

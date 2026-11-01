@@ -373,6 +373,9 @@ credential home and connection settings resolve together.
   provider's sign-in refresh and discovery. Requests a tool makes through the
   session's own provider instance (`web_fetch` prompt extraction, token
   counting) use exactly the connection that session's model calls use.
+  Native token-count caches and in-flight counts stay within one provider
+  instance. A child with its own provider, a different transport, or a
+  replacement provider after key rotation gets a fresh count.
   The transport is the session's own proxy (`HTTPS_PROXY`, `NO_PROXY`), client
   certificate and key (`AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`) and CA trust,
   from the same environment its endpoint and key come from; it carries the
