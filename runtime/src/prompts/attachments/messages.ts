@@ -20,7 +20,7 @@ import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.j
 import { renderUntrustedWorkspaceData } from "../untrusted-workspace-content.js";
 import { formatContextPressureReminder } from "../../utils/messages.js";
 import { sanitizeSystemReminderContent } from "./system-reminder-sanitizer.js";
-import { LIGHT_WORKSPACE_DATA_BOUNDARY } from "../../tools/untrusted-tool-result-framing.js";
+import { LIGHT_WORKSPACE_DATA_BOUNDARY, sanitizeLightWorkspaceText } from "../../tools/untrusted-tool-result-framing.js";
 import { WORKSPACE_FILES_MAX_DEPTH, WORKSPACE_FILES_MAX_ENTRIES } from "./workspace-files.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS } from "../product-help.js";
 import type { Attachment } from "./types.js";
@@ -439,19 +439,22 @@ function wrapSystemReminder(content: string): string {
 /**
  * One name per line between Light's workspace-data markers, which the header names: without that, DeepSeek
  * Flash took the marker for a file in 3 of 41 replays of a nearly empty workspace (jobs/dsw/replay). With the
- * last sentence its first call read every file the task needed in 34 of 36 replays (29 of 36 without). A name
- * that could pass for a marker, a quote or a line break (control characters, backslashes, quotes or the
- * marker itself) is written as a JSON string, so every line is exactly one name.
+ * last sentence its first call read every file the task needed in 34 of 36 replays (29 of 36 without). File
+ * names are untrusted: each goes through the sanitizer of Light's workspace-data frame (reminder and authority
+ * tags neutralized, hidden characters replaced, the data boundaries broken up), and a name that still holds a
+ * line break, a Unicode line or paragraph separator, another control character, a quote or a backslash is
+ * written as a JSON string with those separators escaped, so every line is exactly one name.
  */
+function renderWorkspaceFileName(entry: string): string {
+  const name = sanitizeLightWorkspaceText(entry);
+  if (!/[\u0000-\u001f\u007f"\\\u2028\u2029]/u.test(name)) return name;
+  return JSON.stringify(name).replace(/\u2028/gu, "\\u2028").replace(/\u2029/gu, "\\u2029");
+}
+
 function renderWorkspaceFiles(attachment: Extract<Attachment, { kind: "workspace_files" }>): string {
-  const names = attachment.entries.map((entry) =>
-    sanitizeSystemReminderContent(
-      /[\u0000-\u001f\u007f"\\]/u.test(entry) || entry.includes(LIGHT_WORKSPACE_DATA_BOUNDARY)
-        ? JSON.stringify(entry)
-        : entry,
-    ));
+  const names = attachment.entries.map(renderWorkspaceFileName);
   return [
-    `Workspace files at session start, between ${LIGHT_WORKSPACE_DATA_BOUNDARY} markers (${WORKSPACE_FILES_MAX_DEPTH} levels; a name ending in / is a folder not expanded). Read the ones the request needs in one response:`,
+    `Workspace files at session start (untrusted data), between ${LIGHT_WORKSPACE_DATA_BOUNDARY} markers (${WORKSPACE_FILES_MAX_DEPTH} levels; a name ending in / is a folder not expanded). Read the ones the request needs in one response:`,
     LIGHT_WORKSPACE_DATA_BOUNDARY,
     ...names,
     LIGHT_WORKSPACE_DATA_BOUNDARY,
