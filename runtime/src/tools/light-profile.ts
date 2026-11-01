@@ -79,7 +79,8 @@ export function lightStatesTaskLimits(
 
 /**
  * DeepSeek models through any route (DeepSeek's own API or a gateway serving a DeepSeek model by its id). Their
- * Light prompt stays the 0.19.26 one (prompts/light-budget-prompt.ts lightBudgetWorkflow, job spd's decision A/B).
+ * Light prompt stays the 0.19.26 one (prompts/light-budget-prompt.ts lightBudgetWorkflow, job spd's decision A/B),
+ * plus, in interactive sessions, one sentence on probes (LIGHT_DEEPSEEK_PROBES, job dsw).
  */
 export function lightUsesDeepSeekPrompt(providerName: string | undefined, model?: string): boolean {
   return modelFamilyFor(providerName, model) === "deepseek";

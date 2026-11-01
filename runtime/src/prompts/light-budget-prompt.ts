@@ -52,6 +52,17 @@ export const LIGHT_PATCH_SIZE = "Edit and create files with apply_patch; split a
 const LIGHT_READ_AND_SEARCH =
   "Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change.";
 
+/**
+ * Interactive DeepSeek Light (round 4 job dsw). In the race receipts DeepSeek Flash spent a model call on
+ * `pytest --version`, `node --version`, `git status` or `git log` after reading the files in about a third of the long
+ * and python cells ("check pytest availability", "examine git history for clues"). Replayed at that point
+ * (jobs/dsw/replay), this sentence cut such probes from 12 of 32 responses to 3 of 32. A general working principle,
+ * not a task hint; a missing tool still shows in the check itself (LIGHT_MISSING_CHECK_TOOLS). Unattended DeepSeek
+ * Light keeps its environment checks.
+ */
+export const LIGHT_DEEPSEEK_PROBES =
+  "Run checks directly instead of first probing tool versions or availability, and do not search git history for the intended behavior.";
+
 /** Light's default finish rules: deliver, check, report. */
 export const LIGHT_FINISH = lightFinish(false);
 
@@ -118,9 +129,11 @@ export const LIGHT_GLM_BATCHED_STEPS =
  */
 export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false): string {
   // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
-  // keep the 0.19.26 prompt.
+  // keep the 0.19.26 prompt, interactive DeepSeek with one more sentence on probes (LIGHT_DEEPSEEK_PROBES).
   const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
-  const reading = interactiveRules ? ` ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}` : ` ${LIGHT_READ_AND_SEARCH}`;
+  const reading = interactiveRules
+    ? ` ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}`
+    : ` ${LIGHT_READ_AND_SEARCH}` + (deepseekModel && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
   const editing = !editsWithApplyPatch
     ? ""
     : interactiveRules
