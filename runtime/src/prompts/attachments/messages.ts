@@ -438,7 +438,8 @@ function wrapSystemReminder(content: string): string {
 
 /**
  * One name per line between Light's workspace-data markers, which the header names: without that, DeepSeek
- * Flash took the marker for a file in 3 of 41 replays of a nearly empty workspace (jobs/dsw/replay). A name
+ * Flash took the marker for a file in 3 of 41 replays of a nearly empty workspace (jobs/dsw/replay). With the
+ * last sentence its first call read every file the task needed in 34 of 36 replays (29 of 36 without). A name
  * that could pass for a marker, a quote or a line break (control characters, backslashes, quotes or the
  * marker itself) is written as a JSON string, so every line is exactly one name.
  */
@@ -450,7 +451,7 @@ function renderWorkspaceFiles(attachment: Extract<Attachment, { kind: "workspace
         : entry,
     ));
   return [
-    `Workspace files at session start, between ${LIGHT_WORKSPACE_DATA_BOUNDARY} markers (${WORKSPACE_FILES_MAX_DEPTH} levels; a name ending in / is a folder not expanded):`,
+    `Workspace files at session start, between ${LIGHT_WORKSPACE_DATA_BOUNDARY} markers (${WORKSPACE_FILES_MAX_DEPTH} levels; a name ending in / is a folder not expanded). Read the ones the request needs in one response:`,
     LIGHT_WORKSPACE_DATA_BOUNDARY,
     ...names,
     LIGHT_WORKSPACE_DATA_BOUNDARY,
