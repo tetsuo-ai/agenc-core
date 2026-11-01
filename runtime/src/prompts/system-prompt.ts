@@ -43,7 +43,7 @@ import {
   lightBudgetActions,
   LIGHT_BUDGET_DEADLINE,
 } from "./light-budget-prompt.js";
-import { lightEditsWithApplyPatch, lightStatesTaskLimits, lightUsesGlmTuning, lightUsesQwenTuning } from "../tools/light-profile.js";
+import { lightEditsWithApplyPatch, lightStatesTaskLimits, lightUsesDeepSeekPrompt, lightUsesGlmTuning, lightUsesQwenTuning } from "../tools/light-profile.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -1270,6 +1270,7 @@ export async function assembleSystemPrompt(
           lightUsesGlmTuning(envInfoInputs.provider, envInfoInputs.model),
           session.services?.runtimeOptions?.nonInteractive === true,
           lightUsesQwenTuning(envInfoInputs.provider, envInfoInputs.model),
+          lightUsesDeepSeekPrompt(envInfoInputs.provider, envInfoInputs.model),
         ),
         lightBudgetSystem(),
         lightBudgetActions(),

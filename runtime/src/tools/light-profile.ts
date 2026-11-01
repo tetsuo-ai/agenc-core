@@ -77,6 +77,14 @@ export function lightStatesTaskLimits(
   return modelFamilyFor(providerName, model) === "deepseek" || lightUsesQwenTuning(providerName, model);
 }
 
+/**
+ * DeepSeek models through any route (DeepSeek's own API or a gateway serving a DeepSeek model by its id). Their
+ * Light prompt stays the 0.19.26 one (prompts/light-budget-prompt.ts lightBudgetWorkflow, job spd's decision A/B).
+ */
+export function lightUsesDeepSeekPrompt(providerName: string | undefined, model?: string): boolean {
+  return modelFamilyFor(providerName, model) === "deepseek";
+}
+
 /** DeepSeek, abliteration.ai Large V2 and QwenCloud Qwen3.8 Light sessions use batch Edit (#3163). */
 export function lightUsesBatchEdit(providerName: string | undefined, model?: string): boolean {
   return modelFamilyFor(providerName, model) === "deepseek" || lightUsesGlmTuning(providerName, model) ||

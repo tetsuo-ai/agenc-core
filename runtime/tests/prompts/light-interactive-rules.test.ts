@@ -4,13 +4,16 @@
  * planned in full before anything was written, more general code than the request needed, and new edits and checks
  * after the requested checks had passed. Interactive Light heads now say to check those only when a step depends on
  * them, to write the simplest code that meets the request, and to stop reworking and rechecking once the checks
- * pass; GPT sessions, which edit with apply_patch, write a large change as a few patches. DeepSeek keeps one patch per
- * change. Unattended Light, standard mode and the other providers' editing rules stay as they were.
+ * pass; GPT sessions, which edit with apply_patch, write a large change as a few patches. DeepSeek models keep the
+ * 0.19.26 prompt (the race-task A/B: these rules cost DeepSeek Flash calls, output and reasoning). Unattended Light,
+ * standard mode and the other providers' editing rules stay as they were.
  */
 import { describe, expect, test } from "vitest";
 import type { Session } from "../../src/session/session.js";
 import { assembleSystemPromptSnapshot } from "../../src/prompts/system-prompt.js";
 import {
+  LIGHT_DEEPSEEK_FINISH,
+  LIGHT_DEEPSEEK_LIMITED_FINISH,
   LIGHT_DIRECT_START,
   LIGHT_FINISH,
   LIGHT_LIMITED_FINISH,
@@ -29,11 +32,17 @@ function count(text: string, part: string): number {
 async function head(
   provider: string,
   model: string,
-  options: { profile?: "light" | "standard"; nonInteractive?: boolean; outputStyle?: { name: string; prompt: string } } = {},
+  options: {
+    profile?: "light" | "standard"; nonInteractive?: boolean; outputStyle?: { name: string; prompt: string };
+    env?: Record<string, string>;
+  } = {},
 ) {
   const profile = options.profile ?? "light";
   const session = {
-    services: { runtimeOptions: { lightMode: profile === "light", nonInteractive: options.nonInteractive === true }, providerEnvironment: {} },
+    services: {
+      runtimeOptions: { lightMode: profile === "light", nonInteractive: options.nonInteractive === true },
+      providerEnvironment: options.env ?? {},
+    },
   } as unknown as Session;
   return (await assembleSystemPromptSnapshot({
     profile, ctx: mkCtx(), session, provider, promptIdentity: { provider, model }, outputStyle: options.outputStyle,
@@ -42,7 +51,6 @@ async function head(
 
 describe("interactive Light working rules", () => {
   test.each([
-    ["deepseek", "deepseek-flash", "one"],
     ["openai", "gpt-6-luna", "few"],
     ["openrouter", "openai/gpt-6-luna", "few"],
     ["anthropic", "claude-haiku-5-5", "none"],
@@ -52,10 +60,28 @@ describe("interactive Light working rules", () => {
     expect(count(prompt, LIGHT_DIRECT_START)).toBe(1);
     // The rule follows the instruction to search only for context the change needs.
     expect(prompt).toContain(`Search only for missing context needed for the change. ${LIGHT_DIRECT_START}`);
-    // GPT writes a large change as a few patches; DeepSeek keeps one patch per change with source, tests and docs.
+    // GPT writes a large change as a few patches.
     expect(count(prompt, LIGHT_PATCH_SIZE)).toBe(patches === "few" ? 1 : 0);
-    expect(count(prompt, ONE_PATCH)).toBe(patches === "one" ? 1 : 0);
-    expect(count(prompt, SAME_PATCH)).toBe(patches === "one" ? 1 : 0);
+    expect(prompt).not.toContain(ONE_PATCH);
+  });
+
+  test.each([
+    ["deepseek", "deepseek-flash"],
+    ["openrouter", "deepseek/deepseek-v4.1-flash-1017"],
+    ["ollama-cloud", "deepseek-v4.1-flash:1017"],
+  ])("DeepSeek through %s (%s) keeps the 0.19.26 head, with the task limits on or off", async (provider, model) => {
+    const limited = await head(provider, model);
+    const unlimited = await head(provider, model, { env: { AGENC_LIGHT_TASK_LIMITS: "0" } });
+    for (const prompt of [limited, unlimited]) {
+      expect(prompt).not.toContain(LIGHT_DIRECT_START);
+      expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
+      expect(prompt).not.toContain("do not rework");
+      expect(prompt).not.toContain("with the simplest code that meets the request");
+    }
+    expect(limited).toContain(LIGHT_DEEPSEEK_LIMITED_FINISH);
+    expect(unlimited).toContain(LIGHT_DEEPSEEK_FINISH);
+    expect(unlimited).toContain("Repeat for new edits, failures or unresolved concerns");
+    if (model === "deepseek-flash") expect(count(limited, ONE_PATCH) + count(limited, SAME_PATCH)).toBe(2);
   });
 
   test("a custom output style keeps the head rules and replaces only the finish paragraph", async () => {
