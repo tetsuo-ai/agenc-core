@@ -145,21 +145,11 @@ function createHomeContext(
   });
 }
 
-/**
- * The last successful POSIX account lookup, for the effective uid it was made under. Every home
- * resolution (several per tool call in the daemon) asked userInfo() again, a passwd file or NSS
- * read of 0.2 to 0.5 ms; a process's effective uid does not change under it. A failed lookup is
- * never kept, so resolution still fails closed until one succeeds.
- */
-let lastPosixAccount: { readonly euid: number; readonly account: string } | undefined;
-
 function resolveSecureStorageAccount(platform: NodeJS.Platform): string {
   // DPAPI is already bound to CurrentUser. A fixed account label avoids
   // adding renameable username data to the Windows credential identity.
   if (platform === "win32") return "current-user";
 
-  const euid = process.geteuid?.();
-  if (lastPosixAccount !== undefined && lastPosixAccount.euid === euid) return lastPosixAccount.account;
   try {
     // POSIX usernames can change through account rename or NSS. The numeric
     // uid is the durable operating-system account identity. Explicit retired
@@ -168,9 +158,7 @@ function resolveSecureStorageAccount(platform: NodeJS.Platform): string {
     if (!Number.isSafeInteger(uid) || uid < 0) {
       throw new Error(`invalid uid ${JSON.stringify(uid)}`);
     }
-    const account = `uid:${uid}`;
-    if (euid !== undefined) lastPosixAccount = { euid, account };
-    return account;
+    return `uid:${uid}`;
   } catch (cause) {
     throw new SecureStorageAccountResolutionError(
       "Unable to resolve the operating-system account for native secure storage; refusing to construct an unstable credential identity.",
