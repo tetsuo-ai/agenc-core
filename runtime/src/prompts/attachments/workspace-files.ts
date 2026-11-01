@@ -64,6 +64,14 @@ export interface WorkspaceFileListing {
   readonly truncated: boolean;
 }
 
+/**
+ * Read through a call, so each check sees the signal's current state: an abort can land during any await, and
+ * a property read would be narrowed away after the first check.
+ */
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
 /** Most bytes read from a `.git` file, which holds one `gitdir:` line. */
 const GIT_FILE_MAX_BYTES = 4_096;
 
@@ -75,7 +83,7 @@ const GIT_FILE_MAX_BYTES = 4_096;
  */
 async function readSmallRegularFile(target: string, max: number, signal?: AbortSignal): Promise<string | undefined> {
   const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants;
-  if (signal?.aborted === true || O_NOFOLLOW === undefined || O_NONBLOCK === undefined) return undefined;
+  if (isAborted(signal) || O_NOFOLLOW === undefined || O_NONBLOCK === undefined) return undefined;
   let handle;
   try {
     handle = await open(target, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
@@ -84,7 +92,7 @@ async function readSmallRegularFile(target: string, max: number, signal?: AbortS
   }
   try {
     const info = await handle.stat();
-    if (!info.isFile() || info.size > max || signal?.aborted === true) return undefined;
+    if (!info.isFile() || info.size > max || isAborted(signal)) return undefined;
     const buffer = Buffer.alloc(max);
     const { bytesRead } = await handle.read(buffer, 0, max, 0);
     return buffer.subarray(0, bytesRead).toString("utf8");
@@ -102,7 +110,7 @@ const GIT_HEAD = /^(?:ref: refs\/\S+|[0-9a-f]{40}|[0-9a-f]{64})\r?\n?$/u;
 
 /** lstat without following a link: "missing", the stats, or undefined for any other failure. */
 async function lstatOrMissing(target: string, signal?: AbortSignal): Promise<Awaited<ReturnType<typeof lstat>> | "missing" | undefined> {
-  if (signal?.aborted === true) return undefined;
+  if (isAborted(signal)) return undefined;
   try {
     return await lstat(target);
   } catch (error) {
@@ -187,7 +195,7 @@ async function insideGitWorkTree(cwd: string, signal?: AbortSignal): Promise<boo
   if (cwd.split(path.sep).includes(".git")) return false;
   let dir = cwd;
   for (;;) {
-    if (signal?.aborted === true) return false;
+    if (isAborted(signal)) return false;
     const marker = path.join(dir, ".git");
     try {
       const info = await lstat(marker);
@@ -206,10 +214,10 @@ async function insideGitWorkTree(cwd: string, signal?: AbortSignal): Promise<boo
 
 /** The canonical directory behind `target` (every link resolved), or undefined when that fails. */
 async function canonicalDirectory(target: string, signal?: AbortSignal): Promise<DirectoryIdentity | undefined> {
-  if (signal?.aborted === true) return undefined;
+  if (isAborted(signal)) return undefined;
   try {
     const real = await realpath(target);
-    if (signal?.aborted === true) return undefined;
+    if (isAborted(signal)) return undefined;
     const info = await lstat(real);
     return info.isDirectory() ? { path: real, dev: info.dev, ino: info.ino } : undefined;
   } catch {
@@ -243,7 +251,7 @@ export async function listableWorkspace(
   const homeDir = home.length > 0 ? await canonicalDirectory(home, signal) : undefined;
   if (homeDir === undefined) return undefined;
   for (let dir = homeDir.path; ; dir = path.dirname(dir)) {
-    if (signal?.aborted === true) return undefined;
+    if (isAborted(signal)) return undefined;
     try {
       if (sameDirectory(root, await lstat(dir))) return undefined;
     } catch {
@@ -289,7 +297,7 @@ async function readPinnedDirectory(
   expandable: boolean,
 ): Promise<{ readonly children: WalkEntry[]; readonly complete: boolean } | undefined> {
   const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW } = constants;
-  if (O_DIRECTORY === undefined || O_NOFOLLOW === undefined || budget.signal?.aborted === true) return undefined;
+  if (O_DIRECTORY === undefined || O_NOFOLLOW === undefined || isAborted(budget.signal)) return undefined;
   let handle;
   try {
     handle = await open(target, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
@@ -306,7 +314,7 @@ async function readPinnedDirectory(
     const dir = await opendir(pinned);
     try {
       for (;;) {
-        if (budget.signal?.aborted === true || budget.inspected >= WORKSPACE_FILES_MAX_INSPECTED) {
+        if (isAborted(budget.signal) || budget.inspected >= WORKSPACE_FILES_MAX_INSPECTED) {
           complete = false;
           break;
         }
@@ -355,7 +363,7 @@ export async function listWorkspaceFiles(
   const queue: Array<{ readonly rel: string; readonly depth: number; readonly identity: Pick<DirectoryIdentity, "dev" | "ino"> }> =
     [{ rel: "", depth: 1, identity: root }];
   outer: while (queue.length > 0) {
-    if (signal?.aborted === true) {
+    if (isAborted(signal)) {
       truncated = true;
       break;
     }
@@ -432,7 +440,7 @@ export const workspaceFilesProducer: AttachmentProducer = async (opts, trackingS
  */
 async function withinDeadline(cwd: string, turnSignal: AbortSignal): Promise<WorkspaceFileListing | undefined> {
   // An aborted turn starts no filesystem work at all.
-  if (turnSignal.aborted) return undefined;
+  if (isAborted(turnSignal)) return undefined;
   const stop = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
@@ -444,15 +452,15 @@ async function withinDeadline(cwd: string, turnSignal: AbortSignal): Promise<Wor
     timer = setTimeout(end, WORKSPACE_FILES_DEADLINE_MS);
     timer.unref?.();
     onAbort = end;
-    if (turnSignal.aborted) end();
+    if (isAborted(turnSignal)) end();
     else turnSignal.addEventListener("abort", end, { once: true });
   });
   const walk = (async () => {
     // Only the validated canonical directory is enumerated, never the spelling the session started with.
     const workspace = await listableWorkspace(cwd, homedir(), stop.signal);
-    if (workspace === undefined || stop.signal.aborted) return undefined;
+    if (workspace === undefined || isAborted(stop.signal)) return undefined;
     const listing = await listWorkspaceFiles(workspace, stop.signal);
-    return stop.signal.aborted ? undefined : listing;
+    return isAborted(stop.signal) ? undefined : listing;
   })().catch(() => undefined);
   try {
     return await Promise.race([walk, expired]);
