@@ -66,9 +66,11 @@ describe("DaemonElicitationRequests", () => {
     expect(requests.begin("event:20", 20)).toBeUndefined();
     expect(requests.begin("event:30", 30)).toBeUndefined();
     expect(requests.begin("event:25", 25)).toBeDefined();
-    // Newer than the set: the daemon published it after the set was taken.
+    // The bridge must refresh authority after receiving either request.
+    expect(requests.begin("event:31", 31)).toBeUndefined();
+    expect(requests.begin("ephemeral_1", undefined)).toBeUndefined();
+    requests.reconcile(requests.mark(), 31, new Set(["event:31", "ephemeral_1"]));
     expect(requests.begin("event:31", 31)).toBeDefined();
-    // Without a sequence the set proves nothing.
     expect(requests.begin("ephemeral_1", undefined)).toBeDefined();
   });
 
@@ -97,19 +99,19 @@ describe("DaemonElicitationRequests", () => {
     expect(requests.remembered).toBe(2);
 
     requests.reconcile(requests.mark(), 9, new Set());
-    expect(requests.remembered).toBe(2);
+    expect(requests.remembered).toBe(0);
     expect(requests.begin("event:10", 10)).toBeUndefined();
 
     requests.reconcile(requests.mark(), 10, new Set());
-    // The sequence rule covers it now; only the unsequenced one is kept.
-    expect(requests.remembered).toBe(1);
+    // Fresh authority covers both sequenced and unjournaled replays.
+    expect(requests.remembered).toBe(0);
     expect(requests.begin("event:10", 10)).toBeUndefined();
     expect(requests.begin("ephemeral_1", undefined)).toBeUndefined();
   });
 
   it("applies the latest pending set, also one with a lower sequence after a daemon restart", () => {
     const requests = new DaemonElicitationRequests();
-    requests.reconcile(requests.mark(), 20, new Set());
+    requests.reconcile(requests.mark(), 25, new Set(["event:25"]));
     const lost = requests.begin("event:25", 25)!;
 
     // The restarted daemon's journal ends at 10 and its session waits for event:5.
@@ -132,10 +134,10 @@ describe("DaemonElicitationRequests", () => {
     expect(before.signal.aborted).toBe(true);
     expect(requests.unacknowledged).toEqual([]);
     expect(after.signal.aborted).toBe(false);
-    // Without a sequence nothing else covers them, so they stay remembered.
+    // Fresh authority prevents old unjournaled requests from reopening.
     expect(requests.begin("sub-3", undefined)).toBeUndefined();
     expect(requests.begin("sub-4", undefined)).toBeUndefined();
-    expect(requests.remembered).toBe(2);
+    expect(requests.remembered).toBe(0);
   });
 
   it("keeps an answer that failed to send and sends it again while it is pending", async () => {
@@ -168,6 +170,7 @@ describe("DaemonElicitationRequests", () => {
     expect(requests.unacknowledged).toEqual([]);
     expect(requests.reconcile(requests.mark(), 12, new Set(["event:10"]))).toEqual([]);
 
+    requests.reconcile(requests.mark(), 20, new Set(["event:20"]));
     const settledPrompt = requests.begin("event:20", 20)!;
     await requests.deliver("event:20", settledPrompt, failed);
     // The pending set no longer lists it: another client answered it.
@@ -224,4 +227,32 @@ describe("DaemonElicitationRequests", () => {
     expect(requests.begin("event:12", 12)).toBeUndefined();
     expect(requests.reconcile(requests.mark(), 20, new Set(["event:11"]))).toEqual([]);
   });
+  it("bounds settled retention under 100,000 sequenced and unjournaled closes", () => {
+    const requests = new DaemonElicitationRequests();
+    for (let i = 1; i <= 100_000; i += 1) {
+      requests.close(`uuid:${i}`, i % 2 === 0 ? i : undefined);
+      if (requests.remembered >= 128) requests.reconcile(requests.mark(), i, new Set());
+      expect(requests.remembered).toBeLessThan(128);
+    }
+    requests.reconcile(requests.mark(), 100_000, new Set());
+    expect(requests.remembered).toBe(0);
+    expect(requests.begin("uuid:1", undefined)).toBeUndefined();
+    expect(requests.begin("uuid:2", 2)).toBeUndefined();
+  });
+
+  it("runtime loss clears prompts, answers and settlements without preventing future authority", async () => {
+    const requests = new DaemonElicitationRequests();
+    const prompt = requests.begin("old-open", 10)!;
+    const answered = requests.begin("old-answer", 11)!;
+    await requests.deliver("old-answer", answered, failed);
+    requests.close("old-close", 12);
+    requests.reset();
+    expect(prompt.signal.aborted).toBe(true);
+    expect(requests.unacknowledged).toEqual([]);
+    expect(requests.remembered).toBe(0);
+    requests.reconcile(requests.mark(), 10, new Set(["new-uuid"]));
+    expect(requests.begin("old-open", 10)).toBeUndefined();
+    expect(requests.begin("new-uuid", 10)).toBeDefined();
+  });
+
 });

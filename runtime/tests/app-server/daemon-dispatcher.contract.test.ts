@@ -1387,10 +1387,10 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
 
     const oldInitialize = await oldConnection.dispatch(
-      request("old-init", "initialize", { protocol: { version: "1.34.0" } }),
+      request("old-init", "initialize", { protocol: { version: "1.35.0" } }),
     );
     const currentInitialize = await currentConnection.dispatch(
-      request("current-init", "initialize", { protocol: { version: "1.35.0" } }),
+      request("current-init", "initialize", { protocol: { version: "1.36.0" } }),
     );
     expect(daemonMethodCapabilities(oldInitialize)["elicitation.pending"]).toBe(false);
     expect(daemonMethodCapabilities(currentInitialize)["elicitation.pending"]).toBe(true);

@@ -16,9 +16,9 @@
  * sending fails, the next reconcile sends it again while the request is still
  * pending. Answered and closed occurrences are remembered (a request delivered
  * again never reopens) until a pending set shows them settled at or below its
- * sequence, after which the sequence rule covers them. Occurrences without a
- * sequence (the session did not journal them) are remembered until the event
- * stream ends.
+ * sequence. Every request is checked against a fresh pending set before
+ * display, so even unjournaled settlements can be pruned without reopening
+ * an old replay.
  */
 
 interface Known {
@@ -56,7 +56,7 @@ export class DaemonElicitationRequests {
   /**
    * Returns the signal for a request to show, or undefined when it must not
    * be shown: it is shown or being answered already, it was answered or
-   * closed, or the last pending set proves it is no longer pending.
+   * closed, or it is absent from the fresh pending set the bridge requested.
    */
   begin(occurrenceId: string, sequence: number | undefined): AbortController | undefined {
     if (this.#ended) return undefined;
@@ -64,7 +64,7 @@ export class DaemonElicitationRequests {
       this.#shown.has(occurrenceId) ||
       this.#answers.has(occurrenceId) ||
       this.#settled.has(occurrenceId) ||
-      this.#settledBySnapshot(occurrenceId, sequence)
+      (this.#asOfSequence !== undefined && !this.#pendingAtSnapshot.has(occurrenceId))
     ) {
       return undefined;
     }
@@ -153,9 +153,24 @@ export class DaemonElicitationRequests {
       }
     }
     for (const [id, known] of this.#settled) {
-      if (this.#settledBySnapshot(id, known.sequence)) this.#settled.delete(id);
+      if (settled(id, known)) this.#settled.delete(id);
     }
     return resend;
+  }
+
+  /** Every request is checked against a fresh set before the bridge shows it. */
+  isPending(occurrenceId: string): boolean {
+    return this.#pendingAtSnapshot.has(occurrenceId);
+  }
+
+  /** The daemon definitively lost this runtime. Future snapshots can start anew. */
+  reset(): void {
+    for (const prompt of this.#shown.values()) prompt.controller.abort();
+    this.#shown.clear();
+    this.#answers.clear();
+    this.#settled.clear();
+    this.#pendingAtSnapshot = new Set();
+    this.#asOfSequence = undefined;
   }
 
   /** Sends a kept answer again. Returns the error when it failed again. */
@@ -178,19 +193,7 @@ export class DaemonElicitationRequests {
   /** The event stream ended: no answer can reach the daemon through it. */
   closeAll(): void {
     this.#ended = true;
-    for (const prompt of this.#shown.values()) prompt.controller.abort();
-    this.#shown.clear();
-    this.#answers.clear();
-  }
-
-  /** Not pending at or below the last set's sequence: a replay can never reopen it. */
-  #settledBySnapshot(occurrenceId: string, sequence: number | undefined): boolean {
-    return (
-      this.#asOfSequence !== undefined &&
-      sequence !== undefined &&
-      sequence <= this.#asOfSequence &&
-      !this.#pendingAtSnapshot.has(occurrenceId)
-    );
+    this.reset();
   }
 
   #tick(): number {

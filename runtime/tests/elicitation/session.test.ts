@@ -665,7 +665,7 @@ describe("Session elicitation close notices", () => {
   ): { readonly requestEventId: string; readonly requestEventSeq: number } {
     const request = events.filter((event) => event.msg.type === type)[nth];
     expect(request?.seq).toEqual(expect.any(Number));
-    expect(request?.eventId).toBe(`event:${request?.seq}`);
+    expect(request?.eventId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
     return { requestEventId: request!.eventId!, requestEventSeq: request!.seq! };
   }
 
@@ -927,4 +927,82 @@ describe("Session elicitation close notices", () => {
     expect(none.asOfSequence).toBe(session.eventLog.lastSeq);
     unsubscribe();
   });
+  it("rejects an answer for an earlier occurrence after the address is replaced", async () => {
+    const { session, unsubscribe } = await startedSession();
+    const stop = new AbortController();
+    const first = session.requestMcpElicitation("srv", 7, FORM_REQUEST, stop.signal);
+    await flush();
+    const oldId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    stop.abort();
+    await first;
+    const replacement = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    const newId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    expect(await session.notifyMcpElicitationResponse("srv", 7, { action: "decline" }, oldId)).toBe(false);
+    expect(session.pendingElicitationSnapshot().pending[0]!.eventId).toBe(newId);
+    expect(await session.notifyMcpElicitationResponse("srv", 7, { action: "accept" }, newId)).toBe(true);
+    await expect(replacement).resolves.toEqual({ action: "accept" });
+    unsubscribe();
+  });
+
+  it("fences a delayed user answer inside the turn lock after replacement", async () => {
+    const { session, unsubscribe } = await startedSession();
+    const stop = new AbortController();
+    const first = session.requestUserInput("call-1", USER_INPUT_ARGS, stop.signal);
+    await flush();
+    const oldId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    const withState = session.withActiveTurnState.bind(session);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(session, "withActiveTurnState").mockImplementationOnce(async (fn) => {
+      await held;
+      return withState(fn);
+    });
+    // The old response is already in delivery, but has not acquired the lock.
+    const delayed = session.notifyUserInputResponse("call-1", null, oldId);
+    stop.abort();
+    await first;
+    const replacement = session.requestUserInput("call-1", USER_INPUT_ARGS);
+    await flush();
+    const newId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    release();
+    expect(await delayed).toBe(false);
+    expect(await session.notifyUserInputResponse("call-1", null, newId)).toBe(true);
+    await replacement;
+    unsubscribe();
+  });
+
+  it("never reuses an occurrence identity when a fresh runtime reuses journal sequences", async () => {
+    const a = await startedSession();
+    const b = await startedSession();
+    const first = a.session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    const second = b.session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    const old = a.session.pendingElicitationSnapshot().pending[0]!;
+    const fresh = b.session.pendingElicitationSnapshot().pending[0]!;
+    expect(old.sequence).toBe(fresh.sequence);
+    expect(old.eventId).not.toBe(fresh.eventId);
+    expect(await b.session.notifyMcpElicitationResponse("srv", 7, { action: "decline" }, old.eventId)).toBe(false);
+    await a.session.notifyMcpElicitationResponse("srv", 7, { action: "cancel" });
+    await b.session.notifyMcpElicitationResponse("srv", 7, { action: "cancel" });
+    await Promise.all([first, second]);
+    a.unsubscribe(); b.unsubscribe();
+  });
+
+  it("withdrawing a replaced entry cannot delete the replacement resolver", async () => {
+    const { session, unsubscribe } = await startedSession();
+    const stop = new AbortController();
+    const first = session.requestMcpElicitation("srv", 7, FORM_REQUEST, stop.signal);
+    await flush();
+    const oldId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    const second = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    const newId = session.pendingElicitationSnapshot().pending.find((entry) => entry.eventId !== oldId)!.eventId;
+    stop.abort();
+    await first;
+    expect(await session.notifyMcpElicitationResponse("srv", 7, { action: "decline" }, newId)).toBe(true);
+    await expect(second).resolves.toEqual({ action: "decline" });
+    unsubscribe();
+  });
+
 });

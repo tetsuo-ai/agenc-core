@@ -58,7 +58,7 @@ describe("daemon elicitation response dispatch", () => {
     });
   });
 
-  it("routes elicitation.pending to the agent manager for a 1.35 client", async () => {
+  it("routes elicitation.pending to the agent manager for a 1.36 client", async () => {
     const pendingElicitations = vi.fn(async (params: ElicitationPendingParams) => ({
       sessionId: params.sessionId,
       asOfSequence: 41,
@@ -81,7 +81,7 @@ describe("daemon elicitation response dispatch", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: "init",
       method: "initialize",
-      params: { protocol: { version: "1.35.0" } },
+      params: { protocol: { version: "1.36.0" } },
     });
     expect(initialized).toMatchObject({
       result: {

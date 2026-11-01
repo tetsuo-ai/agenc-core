@@ -405,7 +405,7 @@ Never retry after admission may have arrived.
 | `thread/realtime/start` / `thread/realtime/appendAudio` / `thread/realtime/appendText` / `thread/realtime/stop` / `thread/realtime/listVoices`                              | Realtime voice/thread. `start` is advertised `false` (fail-closed)                                                 |
 | `tool.approve` / `tool.deny` / `tool.cancel`                                                                | Permission settlement                                                                                              |
 | `elicitation.respond`                                                                                       | User-input / MCP elicitation reply                                                                                 |
-| `elicitation.pending`                                                                                       | List the elicitation requests the session still waits for, and the event sequence the list is current at (protocol 1.35) |
+| `elicitation.pending`                                                                                       | List the elicitation requests the session still waits for, and the event sequence the list is current at (protocol 1.36) |
 | `permission.list`                                                                                           | List pending / granted permissions                                                                                 |
 | `project.trustStatus` / `project.trust`                                                                     | Read or record trust for the project root a session started in `cwd` would use. See [Project trust](#project-trust) (protocol 1.16) |
 | `fs.fuzzy_search`                                                                                           | Workspace fuzzy file search                                                                                        |
@@ -1253,8 +1253,8 @@ When a user-input or MCP elicitation request stops being pending,
 `event.session_event` carries an `elicitation_closed` event. Its payload names
 the closed request by its occurrence: `requestEventId` is the `eventId` of the
 `event.user_input_request` or `event.mcp_elicitation_request` notification
-that asked, which is the request event's journal id and the same in live
-delivery and in replay, and `requestEventSeq` is that notification's
+that asked. It is an opaque UUID, retained in the journal and unchanged in
+live delivery and replay, and `requestEventSeq` is that notification's
 `sequence` when it has one. The payload also carries the address
 `elicitation.respond` uses (`kind`, `requestId`, and `serverName` for
 `kind: "mcp"`), the `turnId`, and `outcome`: `answered` when a client answered
@@ -1264,6 +1264,11 @@ stopped, or the session ended). A client that still shows that request closes
 it and sends no answer: `elicitation.respond` for a closed request fails with
 `INVALID_ARGUMENT` because nothing is pending. A later request that reuses the
 same `requestId`, even in the same turn, is another occurrence and stays open.
+Clients using `elicitation.pending` include `requestEventId` in
+`elicitation.respond`. The daemon validates it while consuming the pending
+resolver, so a delayed answer cannot resolve a replacement at the same address.
+New occurrences receive new UUIDs even if recovery loses the journal tail and
+reuses sequence numbers. Legacy clients can still answer by address.
 
 The event is live only. It is not written to the run journal and carries no
 `sequence` of its own, so `run.replay` never returns it; AgenC 0.19.25 and
@@ -1277,17 +1282,26 @@ request the session still waits for, as
 `{ eventId, sequence?, kind, requestId, serverName?, turnId }`, and the
 session event sequence the list is current at. A request whose `sequence` is
 at or below `asOfSequence` and is not listed is no longer pending. The TUI
-asks when it attaches and after every reconnect, before it shows a replayed
-request. It closes a shown form or question that is no longer pending at
+asks when it attaches, after every reconnect, and after receiving each request
+before showing it. The last check also rejects old unjournaled replays. It
+refreshes after batches of 128 settled occurrences and prunes covered records,
+including unjournaled ones, so a continuously connected client does not retain
+its entire elicitation history. Failed pending queries keep requests behind
+the readiness barrier and retry every 250 ms. Definitive runtime loss
+(`AGENT_NOT_FOUND` or `BACKGROUND_RUNNER_UNAVAILABLE`) clears forms and retained
+answers. It closes a shown form or question that is no longer pending at
 whatever field it shows, never shows a request that is no longer pending, and
 keeps an answer that failed to reach the daemon, sending it again while the
 request is still pending.
 
-Only a client that negotiated protocol 1.35 or newer sees
+Only a client that negotiated protocol 1.36 or newer sees
 `elicitation.pending` advertised and receives `elicitation_closed`. An older
 client sees the method advertised `false`, gets `METHOD_NOT_FOUND`, and never
 receives the event. A TUI attached to a daemon that does not advertise the
-method shows and answers elicitations as AgenC 0.19.25 did.
+method shows and answers elicitations as AgenC 0.19.25 did, without occurrence
+fields or pending queries. The standard daemon startup compatibility check
+replaces an older incompatible daemon before attaching; it does not send new
+protocol messages to a daemon that cannot negotiate them.
 
 ## Startup and restored sessions
 

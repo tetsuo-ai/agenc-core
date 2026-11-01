@@ -3492,6 +3492,7 @@ export class AgenCDaemonAgentManager {
         ? { serverName: params.serverName }
         : {}),
       response: params.response,
+      ...(params.requestEventId !== undefined ? { requestEventId: params.requestEventId } : {}),
     });
     if (!resolved) {
       throw new AgenCDaemonAgentLifecycleError(

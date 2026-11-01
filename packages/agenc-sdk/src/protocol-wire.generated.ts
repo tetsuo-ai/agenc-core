@@ -69,7 +69,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.35.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.36.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -1306,6 +1306,8 @@ export interface ToolCancelParams extends JsonObject {
 }
 
 export interface ElicitationRespondParams extends JsonObject {
+    /** Exact request occurrence. Required from clients using elicitation.pending. */
+    readonly requestEventId?: string;
     readonly sessionId: string;
     readonly requestId: RequestId;
     readonly kind: "request_user_input" | "mcp";

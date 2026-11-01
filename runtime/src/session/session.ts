@@ -6210,10 +6210,11 @@ export class Session {
         resolveResponse = resolve;
       },
     );
+    const requestEventId = randomUUID();
+    const respond = (response: unknown): void => resolveResponse?.(response as RequestUserInputResponse | null);
+    this.elicitationResponderIds.set(respond, requestEventId);
     await current.turnState.with((ts) => {
-      ts.pendingUserInput.set(requestId, (response) =>
-        resolveResponse?.(response as RequestUserInputResponse | null),
-      );
+      ts.pendingUserInput.set(requestId, respond);
     });
     const abortWaiter = waitForAbortSignal([
       signal,
@@ -6223,7 +6224,7 @@ export class Session {
     const cleanup = async (): Promise<void> => {
       abortWaiter.cleanup();
       await current.turnState.with((ts) => {
-        ts.pendingUserInput.delete(requestId);
+        if (ts.pendingUserInput.get(requestId) === respond) ts.pendingUserInput.delete(requestId);
       });
     };
     if (abortWaiter.aborted) {
@@ -6233,6 +6234,7 @@ export class Session {
     const occurrence = this.publishElicitationRequest(
       { type: "request_user_input", payload: event },
       { kind: "request_user_input", requestId, turnId },
+      requestEventId,
     );
     let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
@@ -6252,11 +6254,18 @@ export class Session {
   async notifyUserInputResponse(
     requestId: string,
     response: RequestUserInputResponse | null,
+    requestEventId?: string,
   ): Promise<boolean> {
     const resolver = await this.withActiveTurnState((ts) => {
       const pending = ts.pendingUserInput.get(requestId);
+      // Validate under the same lock that consumes the resolver. A snapshot
+      // before delivery cannot prevent replacement while a response waits.
+      if (requestEventId !== undefined &&
+          (pending === undefined || this.elicitationResponderIds.get(pending) !== requestEventId)) return undefined;
       if (pending !== undefined) {
         ts.pendingUserInput.delete(requestId);
+        const occurrenceId = this.elicitationResponderIds.get(pending);
+        if (occurrenceId !== undefined) this.pendingElicitationOccurrences.delete(occurrenceId);
       }
       return pending;
     });
@@ -6321,10 +6330,11 @@ export class Session {
     const responsePromise = new Promise<McpElicitationResponse>((resolve) => {
       resolveResponse = resolve;
     });
+    const requestEventId = randomUUID();
+    const respond = (response: unknown): void => resolveResponse?.(response as McpElicitationResponse);
+    this.elicitationResponderIds.set(respond, requestEventId);
     await current.turnState.with((ts) => {
-      ts.pendingElicitations.set(key, (response) =>
-        resolveResponse?.(response as McpElicitationResponse),
-      );
+      ts.pendingElicitations.set(key, respond);
     });
     const releasePause = this.beginOutOfBandElicitationPause();
     const abortWaiter = waitForAbortSignal([
@@ -6336,7 +6346,7 @@ export class Session {
       abortWaiter.cleanup();
       releasePause();
       await current.turnState.with((ts) => {
-        ts.pendingElicitations.delete(key);
+        if (ts.pendingElicitations.get(key) === respond) ts.pendingElicitations.delete(key);
       });
     };
     if (abortWaiter.aborted) {
@@ -6346,6 +6356,7 @@ export class Session {
     const occurrence = this.publishElicitationRequest(
       { type: "mcp_elicitation_request", payload: event },
       { kind: "mcp", requestId, serverName, turnId },
+      requestEventId,
     );
     let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
@@ -6366,12 +6377,19 @@ export class Session {
     serverName: string,
     requestId: McpRequestId,
     response: McpElicitationResponse,
+    requestEventId?: string,
   ): Promise<boolean> {
     const key = mcpElicitationPendingKey(serverName, requestId);
     const resolver = await this.withActiveTurnState((ts) => {
       const pending = ts.pendingElicitations.get(key);
+      // Validate under the same lock that consumes the resolver. A snapshot
+      // before delivery cannot prevent replacement while a response waits.
+      if (requestEventId !== undefined &&
+          (pending === undefined || this.elicitationResponderIds.get(pending) !== requestEventId)) return undefined;
       if (pending !== undefined) {
         ts.pendingElicitations.delete(key);
+        const occurrenceId = this.elicitationResponderIds.get(pending);
+        if (occurrenceId !== undefined) this.pendingElicitationOccurrences.delete(occurrenceId);
       }
       return pending;
     });
@@ -6385,6 +6403,7 @@ export class Session {
    * occurrence. `elicitation.pending` reports them, so a client that missed a
    * close (it was detached, or the daemon restarted) can reconcile.
    */
+  private readonly elicitationResponderIds = new WeakMap<object, string>();
   private readonly pendingElicitationOccurrences = new Map<string, ElicitationOccurrence>();
 
   /**
@@ -6410,14 +6429,19 @@ export class Session {
   private publishElicitationRequest(
     msg: Extract<EventMsg, { type: "request_user_input" | "mcp_elicitation_request" }>,
     address: Omit<ElicitationOccurrence, "eventId" | "sequence">,
+    requestEventId: string = randomUUID(),
   ): ElicitationOccurrence {
-    const published = this.emit({ id: this.nextInternalSubId(), msg });
+    // Opaque identities cannot be reallocated when recovery loses a journal
+    // tail. The envelope id preserves this identity in unjournaled fork turns.
+    const prepared = this.prepareEmit({ id: requestEventId, eventId: requestEventId, msg });
+    const published = prepared.event;
     const occurrence: ElicitationOccurrence = {
       eventId: published.eventId ?? published.id,
       ...(published.seq !== undefined ? { sequence: published.seq } : {}),
       ...address,
     };
     this.pendingElicitationOccurrences.set(occurrence.eventId, occurrence);
+    prepared.publish();
     return occurrence;
   }
 

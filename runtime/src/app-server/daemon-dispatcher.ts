@@ -319,7 +319,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "routine.session.prepare.respond": 17,
   // Also gates the live elicitation_closed session events that name
   // requests by occurrence (requiredMethodCapabilityForSessionEvent).
-  "elicitation.pending": 35,
+  "elicitation.pending": 36,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -5376,7 +5376,7 @@ function validateElicitationRespondParams(
 ): ElicitationRespondParams {
   const validated = validateObjectShape(params, {
     methodName: "elicitation.respond",
-    stringFields: ["sessionId", "kind", "serverName"],
+    stringFields: ["sessionId", "kind", "serverName", "requestEventId"],
     objectFields: ["response"],
     valueFields: ["requestId"],
   });

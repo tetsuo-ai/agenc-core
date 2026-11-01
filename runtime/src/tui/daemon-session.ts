@@ -2960,6 +2960,16 @@ function subscribeToDaemonEvents(
   // again. Runs one at a time; a request made meanwhile runs once more after.
   let reconciling: Promise<void> | null = null;
   let reconcileAgain = false;
+  let cancelRetryWait: (() => void) | undefined;
+  const retryWait = (): Promise<void> => new Promise((resolve) => {
+    const timer = setTimeout(done, 250);
+    function done(): void {
+      clearTimeout(timer);
+      cancelRetryWait = undefined;
+      resolve();
+    }
+    cancelRetryWait = done;
+  });
   const reconcileElicitations = (): Promise<void> => {
     if (closed || occurrences() === undefined) return Promise.resolve();
     if (reconciling !== null) {
@@ -2974,12 +2984,24 @@ function subscribeToDaemonEvents(
         let snapshot: AgenCDaemonResultByMethod["elicitation.pending"];
         try {
           snapshot = await client.request("elicitation.pending", { sessionId });
-        } catch {
-          // Asked again on the next reconnect or failed delivery.
+        } catch (error) {
+          if (closed) return;
+          if (isRecoveredWithoutRuntimeError(error) ||
+              (error instanceof AgenCDaemonResponseError && isJsonObject(error.data) &&
+               error.data.code === "AGENT_NOT_FOUND")) {
+            elicitationOccurrences.reset();
+            return;
+          }
+          // Preserve readiness until authority is available, without spinning
+          // on a disconnected transport or requiring another reconnect event.
+          await retryWait();
+          reconcileAgain = true;
           continue;
         }
         if (closed) return;
         if (!Number.isSafeInteger(snapshot.asOfSequence) || !Array.isArray(snapshot.pending)) {
+          await retryWait();
+          reconcileAgain = true;
           continue;
         }
         const resend = elicitationOccurrences.reconcile(
@@ -3027,7 +3049,7 @@ function subscribeToDaemonEvents(
         occurrences: occurrences(),
         envelope,
         ready: pendingSetReady,
-        reconcile: () => void reconcileElicitations(),
+        reconcile: reconcileElicitations,
       },
     );
   };
@@ -3136,6 +3158,7 @@ function subscribeToDaemonEvents(
     closed = true;
     pendingApprovals.close();
     elicitationOccurrences.closeAll();
+    cancelRetryWait?.();
     releasePendingSet?.();
     unsubscribeSession();
     unsubscribeRealtime?.();
@@ -3286,7 +3309,7 @@ interface DaemonElicitationBridge {
   readonly envelope: DaemonEventEnvelope;
   /** Settles once the first pending set is applied. */
   readonly ready: Promise<void>;
-  readonly reconcile: () => void;
+  readonly reconcile: () => Promise<void>;
 }
 
 /**
@@ -3310,7 +3333,12 @@ async function bridgeDaemonElicitation<Response>(
 ): Promise<void> {
   const send = async (response: Response): Promise<void> => {
     try {
-      await client.request("elicitation.respond", options.respondParams(response));
+      await client.request("elicitation.respond", {
+        ...options.respondParams(response),
+        ...(bridge.occurrences !== undefined && bridge.envelope.eventId !== undefined
+          ? { requestEventId: bridge.envelope.eventId }
+          : {}),
+      });
     } catch (error) {
       emitDaemonDeliveryFailureNotice(cb, options.noticeId, "elicitation.respond", error);
       throw error;
@@ -3325,16 +3353,21 @@ async function bridgeDaemonElicitation<Response>(
     return;
   }
   await bridge.ready;
+  // Query after receipt, including replays. UUIDs fence recovery generations;
+  // this check also covers unjournaled requests after tombstone pruning.
+  await bridge.reconcile();
+  if (!occurrences.isPending(occurrenceId)) return;
   const prompt = occurrences.begin(occurrenceId, envelope.sequence);
   if (prompt === undefined) return;
   const response = await options.ask(prompt.signal);
   if (options.settledLocally?.(response) === true) {
     occurrences.close(occurrenceId, envelope.sequence);
+    if (occurrences.remembered >= 128) void bridge.reconcile();
     return;
   }
   const delivery = await occurrences.deliver(occurrenceId, prompt, () => send(response));
   // Kept for a retry: a reconcile sends it again while it is still pending.
-  if (delivery.status === "failed") bridge.reconcile();
+  if (delivery.status === "failed" || occurrences.remembered >= 128) void bridge.reconcile();
 }
 
 async function maybeBridgeDaemonElicitation(
@@ -3351,6 +3384,7 @@ async function maybeBridgeDaemonElicitation(
   if (event.type === "elicitation_closed") {
     if (bridge.occurrences !== undefined && typeof payload.requestEventId === "string") {
       bridge.occurrences.close(payload.requestEventId, eventSequence(payload.requestEventSeq));
+      if (bridge.occurrences.remembered >= 128) void bridge.reconcile();
     }
     return;
   }

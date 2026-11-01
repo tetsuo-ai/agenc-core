@@ -4598,7 +4598,8 @@ describe("AgenC TUI daemon session adapter", () => {
       }
       const eventId = [...this.waiting].find((id) => {
         const occurrence = this.occurrences.get(id)!;
-        return occurrence.kind === params.kind &&
+        return (params.requestEventId === undefined || id === params.requestEventId) &&
+          occurrence.kind === params.kind &&
           occurrence.requestId === params.requestId &&
           occurrence.serverName === params.serverName;
       });
@@ -4712,6 +4713,7 @@ describe("AgenC TUI daemon session adapter", () => {
   }
 
   const ADA_36 = {
+    requestEventId: expect.any(String),
     sessionId: "session_1",
     requestId: 7,
     kind: "mcp",
@@ -4913,7 +4915,7 @@ describe("AgenC TUI daemon session adapter", () => {
       await flush();
 
       expect(harness.everShown()).toEqual([expect.objectContaining({ requestId: 8 })]);
-      expect(harness.pendingQueries()).toBe(1);
+      expect(harness.pendingQueries()).toBeGreaterThanOrEqual(1);
     } finally {
       harness.dispose();
     }
@@ -5009,6 +5011,73 @@ describe("AgenC TUI daemon session adapter", () => {
     }
   });
 
+
+  it("holds readiness on transient pending failure and retries without reconnect", async () => {
+    const daemon = new ElicitationDaemon();
+    const form = daemon.form();
+    const pending = daemon.pending.bind(daemon);
+    let unavailable = true;
+    daemon.pending = async () => {
+      if (unavailable) throw new Error("temporary query failure");
+      return pending();
+    };
+    const harness = daemonElicitationHarness({ daemon });
+    try {
+      harness.emit(form.notification);
+      await flush();
+      expect(harness.shown()).toBeNull();
+      unavailable = false;
+      await vi.waitFor(() => expect(harness.shown()).not.toBeNull());
+      expect(harness.pendingQueries()).toBeGreaterThan(1);
+    } finally { harness.dispose(); }
+  });
+
+  it.each(["BACKGROUND_RUNNER_UNAVAILABLE", "AGENT_NOT_FOUND"])("closes obsolete forms after definitive %s on reconnect", async (code) => {
+    const daemon = new ElicitationDaemon();
+    const harness = daemonElicitationHarness({ daemon });
+    try {
+      const form = daemon.form();
+      harness.emit(form.notification);
+      await flush();
+      expect(harness.shown()).not.toBeNull();
+      daemon.pending = async () => { throw new AgenCDaemonResponseError({ code: -32000, message: "no runtime", data: { code } }); };
+      harness.client.emitConnection({ status: "reconnecting" });
+      harness.client.emitConnection({ status: "connected" });
+      await flush();
+      expect(harness.shown()).toBeNull();
+      expect(harness.responses()).toEqual([]);
+    } finally { harness.dispose(); }
+  });
+
+  it("sends the occurrence identity with an answer", async () => {
+    const daemon = new ElicitationDaemon();
+    const harness = daemonElicitationHarness({ daemon });
+    try {
+      const form = daemon.form();
+      harness.emit(form.notification);
+      await flush();
+      harness.answer("Ada", "36");
+      await flush();
+      expect(harness.responses()).toEqual([{ ...ADA_36, requestEventId: form.eventId }]);
+    } finally { harness.dispose(); }
+  });
+
+  it("refreshes authority during sustained successful close traffic", async () => {
+    const daemon = new ElicitationDaemon();
+    const harness = daemonElicitationHarness({ daemon });
+    try {
+      await flush();
+      const initialQueries = harness.pendingQueries();
+      for (let i = 0; i < 1024; i += 1) {
+        const form = daemon.unjournaledForm("turn_1", i);
+        harness.emit(daemon.close(form.eventId));
+        if (i % 128 === 127) await flush();
+      }
+      expect(harness.pendingQueries()).toBeGreaterThan(initialQueries);
+      expect(harness.shown()).toBeNull();
+    } finally { harness.dispose(); }
+  });
+
   it("with an older daemon, shows and answers elicitations as 0.19.25 did", async () => {
     const harness = daemonElicitationHarness();
     try {
@@ -5037,7 +5106,8 @@ describe("AgenC TUI daemon session adapter", () => {
       harness.answer("36");
       await flush();
       expect(harness.shown()).toBeNull();
-      expect(harness.responses()).toEqual([ADA_36]);
+      const { requestEventId: _identity, ...legacyAnswer } = ADA_36;
+      expect(harness.responses()).toEqual([legacyAnswer]);
       expect(harness.pendingQueries()).toBe(0);
     } finally {
       harness.dispose();
