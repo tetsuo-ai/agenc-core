@@ -35,6 +35,8 @@ beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), "agenc-ws-files-"));
   mkdirSync(path.join(root, ".git"));
   write(".git/HEAD", "ref: refs/heads/main\n");
+  mkdirSync(path.join(root, ".git", "objects"));
+  mkdirSync(path.join(root, ".git", "refs"));
   write(".gitignore");
   write("README.md");
   write("package.json", "{}\n");
@@ -143,12 +145,55 @@ describe("workspace file listing", () => {
       expect(await listableWorkspace(path.join(root, ".git"), home)).toBeFalsy();
       mkdirSync(path.join(root, ".git", "refs"), { recursive: true });
       expect(await listableWorkspace(path.join(root, ".git", "refs"), home)).toBeFalsy();
-      // A linked worktree: a .git file naming a directory that holds HEAD.
-      make("main/.git/worktrees/wt", { HEAD: "ref: refs/heads/wt\n" });
+      // A linked worktree: a .git file naming a directory that holds HEAD and points at the common directory.
+      make("main/.git/worktrees/wt", { HEAD: "ref: refs/heads/wt\n", commondir: "../..\n" });
+      make("main/.git/objects");
+      make("main/.git/refs");
       writeFileSync(path.join(repos, "main", ".git", "HEAD"), "ref: refs/heads/main\n");
       const worktree = make("wt", { ".git": "gitdir: ../main/.git/worktrees/wt\n", "a.txt": "" });
       expect(await listableWorkspace(worktree, home)).toBeTruthy();
       expect(await listableWorkspace(path.join(repos, "main"), home)).toBeTruthy();
+    } finally {
+      rmSync(repos, { recursive: true, force: true });
+    }
+  });
+
+  test("validates the metadata without running git: HEAD, objects and refs, commondir, core.bare", async () => {
+    const repos = mkdtempSync(path.join(tmpdir(), "agenc-ws-meta-"));
+    const repo = (rel: string, files: Record<string, string>, dirs: readonly string[] = ["objects", "refs"]): string => {
+      const dir = path.join(repos, rel);
+      for (const sub of dirs) mkdirSync(path.join(dir, ".git", sub), { recursive: true });
+      mkdirSync(path.join(dir, ".git"), { recursive: true });
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(path.dirname(path.join(dir, ".git", name)), { recursive: true });
+        writeFileSync(path.join(dir, ".git", name), text);
+      }
+      return dir;
+    };
+    try {
+      expect(await listableWorkspace(repo("empty-head", { HEAD: "" }), home)).toBeFalsy();
+      expect(await listableWorkspace(repo("no-objects", { HEAD: "ref: refs/heads/main\n" }, ["refs"]), home)).toBeFalsy();
+      expect(await listableWorkspace(repo("no-refs", { HEAD: "ref: refs/heads/main\n" }, ["objects"]), home)).toBeFalsy();
+      expect(await listableWorkspace(repo("bad-head", { HEAD: "hello\n" }), home)).toBeFalsy();
+      expect(await listableWorkspace(repo("short-id", { HEAD: "abc123\n" }), home)).toBeFalsy();
+      expect(await listableWorkspace(repo("bare", { HEAD: "ref: refs/heads/main\n", config: "[core]\n\tbare = true\n" }), home)).toBeFalsy();
+      expect(await listableWorkspace(repo("bare-key", { HEAD: "ref: refs/heads/main\n", config: "[core]\n\tbare\n" }), home)).toBeFalsy();
+      expect(await listableWorkspace(repo("ok", { HEAD: "ref: refs/heads/main\n", config: "[core]\n\tbare = false\n" }), home)).toBeTruthy();
+      expect(await listableWorkspace(repo("sha1", { HEAD: `${"a".repeat(40)}\n` }), home)).toBeTruthy();
+      expect(await listableWorkspace(repo("sha256", { HEAD: `${"b".repeat(64)}\n` }), home)).toBeTruthy();
+      // A linked worktree whose commondir names a directory without objects.
+      repo("lonely", { HEAD: "ref: refs/heads/main\n" }, []);
+      mkdirSync(path.join(repos, "lonely", ".git", "worktrees", "wt"), { recursive: true });
+      writeFileSync(path.join(repos, "lonely", ".git", "worktrees", "wt", "HEAD"), "ref: refs/heads/wt\n");
+      writeFileSync(path.join(repos, "lonely", ".git", "worktrees", "wt", "commondir"), "../..\n");
+      mkdirSync(path.join(repos, "lonely-wt"));
+      writeFileSync(path.join(repos, "lonely-wt", ".git"), "gitdir: ../lonely/.git/worktrees/wt\n");
+      expect(await listableWorkspace(path.join(repos, "lonely-wt"), home)).toBeFalsy();
+      // A submodule: a .git file naming a full git directory.
+      repo("super", { HEAD: "ref: refs/heads/main\n", "modules/sub/HEAD": "ref: refs/heads/main\n" }, ["objects", "refs", "modules/sub/objects", "modules/sub/refs"]);
+      mkdirSync(path.join(repos, "super", "sub"));
+      writeFileSync(path.join(repos, "super", "sub", ".git"), "gitdir: ../.git/modules/sub\n");
+      expect(await listableWorkspace(path.join(repos, "super", "sub"), home)).toBeTruthy();
     } finally {
       rmSync(repos, { recursive: true, force: true });
     }

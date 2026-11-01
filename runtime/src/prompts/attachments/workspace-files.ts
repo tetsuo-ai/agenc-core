@@ -16,7 +16,7 @@
  */
 
 import { constants, type Dirent } from "node:fs";
-import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
+import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -67,15 +67,6 @@ export interface WorkspaceFileListing {
 /** Most bytes read from a `.git` file, which holds one `gitdir:` line. */
 const GIT_FILE_MAX_BYTES = 4_096;
 
-async function isFile(target: string, signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted === true) return false;
-  try {
-    return (await stat(target)).isFile();
-  } catch {
-    return false;
-  }
-}
-
 /**
  * A small regular file, read through a descriptor opened without following a link and without blocking (a FIFO
  * swapped in for the file would otherwise hold a filesystem worker until a writer appears): the descriptor must
@@ -104,6 +95,81 @@ async function readSmallRegularFile(target: string, max: number, signal?: AbortS
   }
 }
 
+/** Most bytes read from a repository config. */
+const GIT_CONFIG_MAX_BYTES = 65_536;
+/** HEAD: a symbolic ref under refs/, or a SHA-1 or SHA-256 object id. */
+const GIT_HEAD = /^(?:ref: refs\/\S+|[0-9a-f]{40}|[0-9a-f]{64})\r?\n?$/u;
+
+/** lstat without following a link: "missing", the stats, or undefined for any other failure. */
+async function lstatOrMissing(target: string, signal?: AbortSignal): Promise<Awaited<ReturnType<typeof lstat>> | "missing" | undefined> {
+  if (signal?.aborted === true) return undefined;
+  try {
+    return await lstat(target);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : undefined;
+  }
+}
+
+/** Whether a git config text sets core.bare to true (the last setting wins; a bare key means true). */
+export function gitConfigSetsBare(text: string): boolean {
+  let section = "";
+  let bare = false;
+  for (const raw of text.split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith("#") || line.startsWith(";")) continue;
+    const header = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"(?:[^"\\]|\\.)*")?\s*\]/u.exec(line);
+    if (header !== null) {
+      section = header[1]!.toLowerCase();
+      continue;
+    }
+    if (section !== "core") continue;
+    const entry = /^bare\s*(?:=\s*([^#;]*))?(?:[#;].*)?$/iu.exec(line);
+    if (entry !== null) bare = ["true", "yes", "on", "1"].includes((entry[1] ?? "true").trim().toLowerCase());
+  }
+  return bare;
+}
+
+/** false when a config is absent or does not make the repository bare; true when it does; undefined when unreadable. */
+async function configMakesBare(config: string, signal?: AbortSignal): Promise<boolean | undefined> {
+  const info = await lstatOrMissing(config, signal);
+  if (info === "missing") return false;
+  if (info === undefined) return undefined;
+  const text = await readSmallRegularFile(config, GIT_CONFIG_MAX_BYTES, signal);
+  return text === undefined ? undefined : gitConfigSetsBare(text);
+}
+
+async function isRealDirectory(target: string, signal?: AbortSignal): Promise<boolean> {
+  const info = await lstatOrMissing(target, signal);
+  return info !== undefined && info !== "missing" && info.isDirectory();
+}
+
+/**
+ * Whether `gitDir` is the metadata of a repository with a work tree, checked without running git (a repository's
+ * config can make git run programs): HEAD is a symbolic ref under refs/ or an object id; objects/ and refs/ are
+ * directories there, or in the common directory that a linked worktree's commondir names; and the config that
+ * applies (the repository's, or a linked worktree's config.worktree) does not set core.bare. Anything malformed or
+ * unreadable is not a work tree.
+ */
+async function validGitDir(gitDir: string, signal?: AbortSignal): Promise<boolean> {
+  const head = await readSmallRegularFile(path.join(gitDir, "HEAD"), GIT_FILE_MAX_BYTES, signal);
+  if (head === undefined || !GIT_HEAD.test(head)) return false;
+  let common = gitDir;
+  const commondir = path.join(gitDir, "commondir");
+  const commondirInfo = await lstatOrMissing(commondir, signal);
+  if (commondirInfo === undefined) return false;
+  if (commondirInfo !== "missing") {
+    const target = (await readSmallRegularFile(commondir, GIT_FILE_MAX_BYTES, signal))?.trim();
+    if (target === undefined || target.length === 0 || /[\r\n]/u.test(target)) return false;
+    common = path.resolve(gitDir, target);
+  }
+  if (!(await isRealDirectory(path.join(common, "objects"), signal)) ||
+      !(await isRealDirectory(path.join(common, "refs"), signal))) {
+    return false;
+  }
+  const config = common === gitDir ? path.join(gitDir, "config") : path.join(gitDir, "config.worktree");
+  return (await configMakesBare(config, signal)) === false;
+}
+
 /** The `gitdir:` target of a `.git` file, resolved against the folder that holds it. */
 async function gitFileTarget(gitFile: string, signal?: AbortSignal): Promise<string | undefined> {
   const text = await readSmallRegularFile(gitFile, GIT_FILE_MAX_BYTES, signal);
@@ -113,9 +179,9 @@ async function gitFileTarget(gitFile: string, signal?: AbortSignal): Promise<str
 
 /**
  * The folder belongs to a git work tree, by its metadata and without running git: the nearest `.git` above
- * it (the folder itself included) is a directory that holds HEAD, or a file whose `gitdir:` line names a
- * directory that holds HEAD, as linked worktrees and submodules have. An empty or broken marker, a link, or a
- * folder inside the metadata itself (any `.git` part of the path) is not a work tree.
+ * it (the folder itself included) is valid git metadata (validGitDir), either the directory itself or the one a
+ * `.git` file's `gitdir:` line names, as linked worktrees and submodules have. An empty or broken marker, a link,
+ * or a folder inside the metadata itself (any `.git` part of the path) is not a work tree.
  */
 async function insideGitWorkTree(cwd: string, signal?: AbortSignal): Promise<boolean> {
   if (cwd.split(path.sep).includes(".git")) return false;
@@ -125,10 +191,10 @@ async function insideGitWorkTree(cwd: string, signal?: AbortSignal): Promise<boo
     const marker = path.join(dir, ".git");
     try {
       const info = await lstat(marker);
-      if (info.isDirectory()) return await isFile(path.join(marker, "HEAD"), signal);
+      if (info.isDirectory()) return await validGitDir(marker, signal);
       if (!info.isFile()) return false;
       const target = await gitFileTarget(marker, signal);
-      return target !== undefined && await isFile(path.join(target, "HEAD"), signal);
+      return target !== undefined && await validGitDir(target, signal);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
     }

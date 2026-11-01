@@ -104,6 +104,8 @@ beforeEach(() => {
   outside = mkdtempSync(path.join(tmpdir(), "agenc-ws-outside-"));
   mkdirSync(path.join(root, ".git"));
   write(root, ".git/HEAD", "ref: refs/heads/main\n");
+  mkdirSync(path.join(root, ".git", "objects"));
+  mkdirSync(path.join(root, ".git", "refs"));
   write(root, "README.md");
   write(root, "src/cli.js");
   write(root, "src/deep/inner.js");
