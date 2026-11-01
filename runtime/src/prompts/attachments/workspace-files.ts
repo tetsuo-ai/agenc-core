@@ -133,10 +133,11 @@ function sameDirectory(
 }
 
 /**
- * The canonical directory a listing may describe, or undefined: a git work tree that is not the home folder,
- * not the filesystem root, not a folder that holds the home folder, and no alias of any of them (directories
- * compare by device and inode after every link is resolved, so a second spelling or a bind mount of the home
- * folder is the home folder). Anything that cannot be resolved, the home folder included, describes nothing.
+ * The canonical directory a listing may describe, or undefined: a git work tree that is neither the home
+ * folder nor any folder above it, the filesystem root included. Directories compare by device and inode, never
+ * by spelling: a canonical path need not be unique (a bind mount of /home is another canonical path of the
+ * folder that holds the home folder). Anything that cannot be resolved, the home folder or one of its
+ * ancestors included, describes nothing.
  */
 export async function listableWorkspace(
   cwd: string,
@@ -147,9 +148,15 @@ export async function listableWorkspace(
   const filesystemRoot = await canonicalDirectory(path.parse(root.path).root);
   if (filesystemRoot === undefined || sameDirectory(root, filesystemRoot)) return undefined;
   const homeDir = home.length > 0 ? await canonicalDirectory(home) : undefined;
-  if (homeDir === undefined || sameDirectory(root, homeDir)) return undefined;
-  const prefix = root.path.endsWith(path.sep) ? root.path : `${root.path}${path.sep}`;
-  if (homeDir.path.startsWith(prefix)) return undefined;
+  if (homeDir === undefined) return undefined;
+  for (let dir = homeDir.path; ; dir = path.dirname(dir)) {
+    try {
+      if (sameDirectory(root, await lstat(dir))) return undefined;
+    } catch {
+      return undefined;
+    }
+    if (path.dirname(dir) === dir) break;
+  }
   return (await insideGitWorkTree(root.path)) ? root : undefined;
 }
 

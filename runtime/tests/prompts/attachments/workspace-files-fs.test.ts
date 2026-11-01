@@ -9,23 +9,64 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const hooks = vi.hoisted(() => ({
   beforeRead: undefined as undefined | ((dir: string) => void | Promise<void>),
+  afterRead: undefined as undefined | ((dir: string) => void | Promise<void>),
+  beforeOpen: undefined as undefined | ((target: string) => void | Promise<void>),
+  afterOpen: undefined as undefined | ((target: string) => void | Promise<void>),
+  /** Paths under this prefix act like a bind mount: realpath keeps them and lstat sees the directory behind them. */
+  alias: undefined as undefined | string,
+  /** Filesystem calls made by the code under test. */
+  calls: 0,
   /** Directory entries handed to the code under test, by readdir or one at a time by opendir. */
   delivered: 0,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const aliased = (target: unknown) => hooks.alias !== undefined &&
+    (String(target) === hooks.alias || String(target).startsWith(`${hooks.alias}/`));
   return {
     ...actual,
+    realpath: async (target: string, options?: unknown) => {
+      hooks.calls += 1;
+      return aliased(target) ? String(target) : actual.realpath(target, options as never);
+    },
+    lstat: async (target: string, options?: unknown) => {
+      hooks.calls += 1;
+      return aliased(target) ? actual.stat(target, options as never) : actual.lstat(target, options as never);
+    },
+    stat: async (target: string, options?: unknown) => {
+      hooks.calls += 1;
+      return actual.stat(target, options as never);
+    },
+    open: async (target: string, flags?: unknown, mode?: unknown) => {
+      hooks.calls += 1;
+      await hooks.beforeOpen?.(String(target));
+      try {
+        return await actual.open(target, flags as never, mode as never);
+      } finally {
+        await hooks.afterOpen?.(String(target));
+      }
+    },
     readdir: async (target: string, options?: unknown) => {
+      hooks.calls += 1;
       await hooks.beforeRead?.(String(target));
-      const result = await actual.readdir(target, options as never);
-      hooks.delivered += (result as unknown[]).length;
-      return result;
+      try {
+        const result = await actual.readdir(target, options as never);
+        hooks.delivered += (result as unknown[]).length;
+        return result;
+      } finally {
+        await hooks.afterRead?.(String(target));
+      }
     },
     opendir: async (target: string, options?: unknown) => {
+      hooks.calls += 1;
       await hooks.beforeRead?.(String(target));
-      const dir = await actual.opendir(target, options as never);
+      let dir;
+      try {
+        dir = await actual.opendir(target, options as never);
+      } finally {
+        await hooks.afterRead?.(String(target));
+      }
       return {
         path: dir.path,
         read: async () => {
@@ -45,7 +86,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const { listWorkspaceFiles, workspaceFilesProducer } = await import("../../../src/prompts/attachments/workspace-files.js");
+const { listableWorkspace, listWorkspaceFiles, workspaceFilesProducer } = await import("../../../src/prompts/attachments/workspace-files.js");
 const { getAttachmentTrackingState } = await import("../../../src/session/attachment-state.js");
 
 let root: string;
@@ -72,6 +113,11 @@ beforeEach(() => {
 
 afterEach(() => {
   hooks.beforeRead = undefined;
+  hooks.afterRead = undefined;
+  hooks.beforeOpen = undefined;
+  hooks.afterOpen = undefined;
+  hooks.alias = undefined;
+  hooks.calls = 0;
   hooks.delivered = 0;
   rmSync(root, { recursive: true, force: true });
   rmSync(outside, { recursive: true, force: true });
@@ -153,5 +199,23 @@ describe("bounded work", () => {
     expect(listing.entries.length).toBeLessThanOrEqual(50);
     // The root's 104 entries plus at most 64 folders of one file each.
     expect(hooks.delivered).toBeLessThanOrEqual(100 + 4 + 64);
+  });
+});
+
+describe("home folder ancestors", () => {
+  test("refuses another canonical path of a folder above the home folder, as a bind mount gives", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), "agenc-ws-bind-"));
+    try {
+      write(base, "real/alice/private.txt");
+      write(base, "real/.git/HEAD", "ref: refs/heads/main\n");
+      mkdirSync(path.join(base, "real/.git/objects"));
+      mkdirSync(path.join(base, "real/.git/refs"));
+      symlinkSync(path.join(base, "real"), path.join(base, "mounted"));
+      hooks.alias = path.join(base, "mounted");
+      expect(await listableWorkspace(path.join(base, "mounted"), path.join(base, "real", "alice"))).toBeFalsy();
+      expect(await listableWorkspace(path.join(base, "real"), path.join(base, "real", "alice"))).toBeFalsy();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
