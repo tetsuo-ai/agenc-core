@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { itWhen } from "../../helpers/platform-registration.js";
+
 const hooks = vi.hoisted(() => ({
   beforeRead: undefined as undefined | ((dir: string) => void | Promise<void>),
   afterRead: undefined as undefined | ((dir: string) => void | Promise<void>),
@@ -125,6 +127,11 @@ const { getAttachmentTrackingState } = await import("../../../src/session/attach
 
 /** The listing is Linux only; every other platform omits it. */
 const linux = process.platform === "linux";
+// Registered only where they run: the hermetic release run requires zero skipped tests.
+const onLinux = itWhen(linux);
+function describeOnLinux(name: string, fn: () => void): void {
+  if (linux) describe(name, fn);
+}
 
 let root: string;
 let outside: string;
@@ -203,7 +210,7 @@ function aroundFirst(suffix: string, before: (target: string) => void, after: (t
   return () => state !== "waiting";
 }
 
-describe.runIf(linux)("workspace listing under a changing filesystem", () => {
+describeOnLinux("workspace listing under a changing filesystem", () => {
   test("drops a queued folder that a link replaced before it was read", async () => {
     const swapped = aroundFirst(`${path.sep}src`, (dir) => {
       renameSync(dir, `${dir}-moved`);
@@ -248,7 +255,7 @@ describe.runIf(linux)("workspace listing under a changing filesystem", () => {
   );
 });
 
-describe.runIf(linux)("bounded work", () => {
+describeOnLinux("bounded work", () => {
   function producerOpts() {
     return {
       sessionKey: {},
@@ -351,14 +358,14 @@ describe("platforms", () => {
     }
   });
 
-  test.runIf(linux)("lists on Linux", async () => {
+  onLinux("lists on Linux", async () => {
     const opts = producerOptions();
     const result = await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey));
     expect(result).toEqual([expect.objectContaining({ kind: "workspace_files", entries: expect.arrayContaining(["README.md"]) })]);
   });
 });
 
-describe.runIf(linux)("abort during each operation", () => {
+describeOnLinux("abort during each operation", () => {
   const CLEANUP = new Set(["dir.close", "fh.close"]);
   test.each([
     ["the canonicalization", "realpath", ""],
