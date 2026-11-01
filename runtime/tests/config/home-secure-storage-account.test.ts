@@ -51,3 +51,31 @@ test("Windows uses its DPAPI CurrentUser identity without a username lookup", as
     ).secureStorageAccount,
   ).toBe("current-user");
 });
+
+test("a successful POSIX account lookup is reused for the same effective uid; a failure is never kept", async () => {
+  vi.resetModules();
+  let calls = 0;
+  let fail = true;
+  vi.doMock("node:os", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:os")>();
+    return {
+      ...actual,
+      userInfo: () => {
+        calls += 1;
+        if (fail) throw new Error("OS account lookup failed");
+        return { ...actual.userInfo(), uid: 4242 };
+      },
+    };
+  });
+  const { resolveHomeContext, SecureStorageAccountResolutionError } = await import("../../src/config/home.js");
+  const resolve = () => resolveHomeContext({ AGENC_HOME: join(root, "cached-home") }, { platformHome: root, platform: "linux" });
+  expect(resolve).toThrow(SecureStorageAccountResolutionError);
+  expect(resolve).toThrow(SecureStorageAccountResolutionError);
+  expect(calls).toBe(2);
+  fail = false;
+  expect(resolve().secureStorageAccount).toBe("uid:4242");
+  expect(resolve().secureStorageAccount).toBe("uid:4242");
+  expect(resolve().secureStorageAccount).toBe("uid:4242");
+  // One lookup after the failures, then none: the daemon resolves its home several times per tool call.
+  expect(calls).toBe(3);
+});
