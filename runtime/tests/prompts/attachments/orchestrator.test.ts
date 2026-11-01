@@ -47,6 +47,7 @@ describe("attachments orchestrator", () => {
       "instructionUpdateProducer",
       "criticalReminderProducer",
       "productHelpProducer",
+      "workspaceFilesProducer",
       "memoryOnRequestProducer",
       "outputStyleProducer",
       "relevantMemoriesProducer",

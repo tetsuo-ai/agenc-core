@@ -54,6 +54,7 @@ import { admitReasoningCapSample, clearReasoningCapPolicyForTransition } from ".
 
 import { isWorkflowApprovalSession, workflowApprovalFailureFromMetadata } from "../permissions/approval-failure.js";
 import { isLightPrintRun } from "../prompts/light-print.js";
+import { lightListsWorkspaceFiles } from "../tools/light-profile.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -992,6 +993,7 @@ async function prepareSamplingRequestBoundary(
       ? { memoryOnRequest: () => resolveMemoryOnRequest(session, ctx.cwd) }
       : {}),
     lightInstructionFilesLoaded: state.modelInstructions.includes(LIGHT_LOADED_INSTRUCTIONS_NOTE),
+    ...(lightWorkspaceFilesFor(session, ctx) ? { lightWorkspaceFiles: true } : {}),
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the
@@ -4704,3 +4706,18 @@ export type {
   PlanSegment,
   PlanTurnItem,
 } from "./plan-mode.js";
+
+/**
+ * Interactive Light on a DeepSeek model, by the session's own model binding (a delegated child's turn
+ * config can name the root model): the first message carries the workspace's file names
+ * (prompts/attachments/workspace-files.ts).
+ */
+function lightWorkspaceFilesFor(session: Session, ctx: TurnContext): boolean {
+  const options = session.services.runtimeOptions;
+  if (options?.lightMode !== true || options.nonInteractive === true) return false;
+  const binding = session.providerService?.current();
+  return lightListsWorkspaceFiles(
+    binding?.provider ?? session.services.provider.name,
+    binding?.model ?? ctx.modelInfo.slug ?? ctx.config.model,
+  );
+}

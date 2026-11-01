@@ -85,6 +85,15 @@ export function lightUsesDeepSeekPrompt(providerName: string | undefined, model?
   return modelFamilyFor(providerName, model) === "deepseek";
 }
 
+/**
+ * Interactive Light sessions on a DeepSeek model (any route) get the workspace's file names with the first
+ * message of the conversation (prompts/attachments/workspace-files.ts): DeepSeek Flash otherwise spent its
+ * first call of most race tasks on a listing. Other models keep the session start they were measured with.
+ */
+export function lightListsWorkspaceFiles(providerName: string | undefined, model?: string): boolean {
+  return modelFamilyFor(providerName, model) === "deepseek";
+}
+
 /** DeepSeek, abliteration.ai Large V2 and QwenCloud Qwen3.8 Light sessions use batch Edit (#3163). */
 export function lightUsesBatchEdit(providerName: string | undefined, model?: string): boolean {
   return modelFamilyFor(providerName, model) === "deepseek" || lightUsesGlmTuning(providerName, model) ||

@@ -47,6 +47,7 @@ import { lspDiagnosticsProducer } from "./lsp-diagnostics.js";
 import { mcpResourcesProducer } from "./mcp-resources.js";
 import { relevantMemoriesProducer } from "./relevant-memories.js";
 import { skillListingProducer } from "./skill-listing.js";
+import { workspaceFilesProducer } from "./workspace-files.js";
 import type { Attachment } from "./types.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import type { AdmittedMemorySelector } from "../../memory/recall-contract.js";
@@ -100,6 +101,11 @@ export interface GetAttachmentsOptions {
    * which says they are AgenC's and already in the prompt.
    */
   readonly lightInstructionFilesLoaded?: boolean;
+  /**
+   * Interactive DeepSeek Light: the first message of the conversation carries the workspace's file
+   * names (prompts/attachments/workspace-files.ts, tools/light-profile.ts lightListsWorkspaceFiles).
+   */
+  readonly lightWorkspaceFiles?: boolean;
   /**
    * Exact turn identity plus the authoritative root-human turn currently
    * bound to the session. The root turn can be absent or belong to another
@@ -239,6 +245,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   instructionUpdateProducer,
   criticalReminderProducer,
   productHelpProducer,
+  workspaceFilesProducer,
   memoryOnRequestProducer,
   outputStyleProducer,
   //

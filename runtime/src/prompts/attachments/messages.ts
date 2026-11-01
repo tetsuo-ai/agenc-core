@@ -20,6 +20,8 @@ import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.j
 import { renderUntrustedWorkspaceData } from "../untrusted-workspace-content.js";
 import { formatContextPressureReminder } from "../../utils/messages.js";
 import { sanitizeSystemReminderContent } from "./system-reminder-sanitizer.js";
+import { LIGHT_WORKSPACE_DATA_BOUNDARY } from "../../tools/untrusted-tool-result-framing.js";
+import { WORKSPACE_FILES_MAX_DEPTH, WORKSPACE_FILES_MAX_ENTRIES } from "./workspace-files.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_PATHS } from "../product-help.js";
 import type { Attachment } from "./types.js";
 import { relevantMemoryFingerprint } from "./relevant-memory-fingerprint.js";
@@ -117,6 +119,9 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     }
     case "product_help": {
       return userContextMessage(wrapSystemReminder(PRODUCT_HELP[attachment.topic]));
+    }
+    case "workspace_files": {
+      return userContextMessage(wrapSystemReminder(renderWorkspaceFiles(attachment)));
     }
     case "memory_on_request": {
       return userContextMessage(wrapSystemReminder(sanitizeSystemReminderContent(attachment.content)));
@@ -429,6 +434,27 @@ function userContextMessage(text: string): LLMMessage {
 
 function wrapSystemReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`;
+}
+
+/**
+ * One name per line between Light's workspace-data markers. A name that could pass for a marker, a
+ * quote or a line break (control characters, backslashes, quotes or the marker itself) is written as
+ * a JSON string, so every line is exactly one name.
+ */
+function renderWorkspaceFiles(attachment: Extract<Attachment, { kind: "workspace_files" }>): string {
+  const names = attachment.entries.map((entry) =>
+    sanitizeSystemReminderContent(
+      /[\u0000-\u001f\u007f"\\]/u.test(entry) || entry.includes(LIGHT_WORKSPACE_DATA_BOUNDARY)
+        ? JSON.stringify(entry)
+        : entry,
+    ));
+  return [
+    `Workspace files at session start (${WORKSPACE_FILES_MAX_DEPTH} levels; a name ending in / is a folder not expanded):`,
+    LIGHT_WORKSPACE_DATA_BOUNDARY,
+    ...names,
+    LIGHT_WORKSPACE_DATA_BOUNDARY,
+    ...(attachment.truncated ? [`Only the first ${WORKSPACE_FILES_MAX_ENTRIES} names are listed.`] : []),
+  ].join("\n");
 }
 
 function renderNestedMemoryAttachment(
