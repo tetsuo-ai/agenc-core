@@ -103,7 +103,7 @@ test("compact descriptions retain retrieval, mutation and process lifecycle cons
   expect(description("Edit")).toContain("FileRead first");
   expect(description("Edit")).toContain("replace_all replaces every match (default false)");
   expect(description("Write")).toContain("existing files require FileRead first");
-  expect(description("exec_command")).toContain("Long jobs: background=true, never & or nohup; leftovers stop on return");
+  expect(description("exec_command")).toContain("Long jobs: background=true; leftovers stop on return");
   expect(description("write_stdin")).toContain("input requires initial tty=true");
   // What a yielded session offers is said where it appears: write_stdin loads on a yield.
   expect(description("write_stdin")).toContain("kill_process stops it");
@@ -162,7 +162,7 @@ test("GPT-family Light sessions start with apply_patch instead of Edit and Write
   const shell = providerRegistry("openai").toLLMTools().find(t => t.function.name === "exec_command")!;
   // Editing must refer to this session's available catalog, which starts with
   // apply_patch and has not discovered the Edit/Write aliases.
-  expect(shell.function.description).toContain("use a listed editing tool for source changes");
+  expect(shell.function.description).toContain("edit via edit tools");
   expect(shell.function.description).not.toContain("require Edit/Write");
   // The shell retains the same execution contract across providers.
   expect(shell).toEqual(providerRegistry("deepseek").toLLMTools().find(t => t.function.name === "exec_command"));
@@ -348,7 +348,7 @@ test("the registry reports compact presentation for standard deferral only", () 
 test("initial Light shell summaries carry no server guidance", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
   const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
-  expect(shell.function.description).toBe("Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach. Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.");
+  expect(shell.function.description).toBe("Inspect/test/build; edit via edit tools, rm/mv for delete/rename. Call tools, never print placeholders. Long jobs: background=true; leftovers stop on return. Linux sandbox: run servers and clients in one command; background jobs have private loopback. Lasting services need detach. Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.");
   registry.discoverToolNames?.(["write_stdin", "exec_command"]);
   const tools = registry.toLLMTools();
   expect(tools.find(t => t.function.name === "write_stdin")!.function.description).toBe("Continue exec_command's session_id; kill_process stops it. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.");

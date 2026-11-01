@@ -291,3 +291,33 @@ describe("persistent unified exec lifecycle", () => {
     await expect(run()).rejects.toThrow(/durable/);
   });
 });
+
+// The guidance fallback deliberately retains private loopback. Keep a live
+// background listener during both probes so ECONNREFUSED cannot mean it exited.
+it("isolates a background server from later commands and other conversations", async () => {
+  const local = { ...policy, preference: "require" as const, network: { allowLocalBinding: true } };
+  const start = `node -e 'const http=require("node:http");const s=http.createServer((q,r)=>r.end("private-listener"));s.listen(18761,"127.0.0.1",()=>http.get("http://127.0.0.1:18761",r=>{let b="";r.on("data",x=>b+=x);r.on("end",()=>console.log("READY "+b));}))'`;
+  const first = manager.createOwnerLifetime("server-owner");
+  const second = manager.createOwnerLifetime("other-owner");
+  const one = { ownerId: "server-owner", ownerBinding: first.bind(), runtimeSandbox: local };
+  const two = { ownerId: "other-owner", ownerBinding: second.bind(), runtimeSandbox: local };
+  const live = await run(start, { ...one, startInBackground: true });
+  expect(live.session_id).toBeDefined();
+  let output = live.stdout;
+  for (let attempt = 0; attempt < 10 && !output.includes("READY private-listener"); attempt++) {
+    const polled = await manager.writeStdin({ session_id: live.session_id!, chars: "", yield_time_ms: 100, ownerId: one.ownerId });
+    output += polled.stdout;
+  }
+  expect(output).toContain("READY private-listener");
+  const client = "curl --noproxy '*' -fs --max-time 2 http://127.0.0.1:18761";
+  for (const owner of [one, two]) {
+    const probe = await run(client, owner);
+    expect(probe.exitCode).toBe(7);
+    expect(manager.listOwnedProcesses({ ownerId: one.ownerId }).some(p => p.status === "running")).toBe(true);
+  }
+  const together = await run(`${start} >local.log 2>&1 & pid=$!; trap 'kill "$pid"; wait "$pid" 2>/dev/null' EXIT; for i in {1..50}; do ${client} && exit 0; sleep 0.1; done; exit 1`, { ...one, yield_time_ms: 10_000 });
+  expect(together.exitCode).toBe(0);
+  expect(together.stdout).toBe("private-listener");
+  await first.prepareForDurableClose();
+  expect(manager.listOwnedProcesses({ ownerId: one.ownerId }).every(p => p.status !== "running")).toBe(true);
+}, 20_000);

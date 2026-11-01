@@ -25,7 +25,7 @@ const descriptions: Readonly<Record<string, string>> = {
   FileRead: "Read text/images/PDFs/notebooks; authorizes edits. Prefer 1-based offset/limit line windows: default 2000 lines, cap 25000 tokens. Display-only numbers are sparse unless dense_line_numbers. PDFs >10 pages require pages (e.g. 1-5), max 20/read. Empty files warn; directories fail. Successful edits need no reread.",
   Edit: "FileRead first. Replace shortest unique exact old_string with new_string, preserving indentation, omitting unchanged context/display numbers. replace_all replaces every match (default false). Prefer existing files; create only as needed. Emojis only on request.",
   Write: "Create/replace complete files; existing files require FileRead first. Use Edit for partial changes. Documentation/emojis only on request.",
-  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach.",
+  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Batch bounded independent reads. Yielded session_id exposes write_stdin; kill_process stops it. Long jobs: background=true; leftovers stop on return. Linux sandbox: run servers and clients in one command; background jobs have private loopback. Lasting services need detach.",
   write_stdin: "Continue exec_command's session_id. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
   Glob: "Find file paths by glob, newest modification first. Skip gitignored/build/vendor files unless includeIgnored=true.",
   Grep: "Search with packaged ripgrep, not shell grep/rg; escape literal braces. output_mode: files_with_matches (default paths), content (lines), count. Context/line numbers apply to content. multiline matches across lines with dot-all. Skip ignored/build/vendor files unless includeIgnored=true. Missing ripgrep: agenc doctor, reinstall same version; no fallback.",
@@ -134,7 +134,7 @@ const LIGHT_SESSION_FIELDS: Readonly<Record<string, Readonly<Record<string, unkn
  * yields one.
  */
 const LIGHT_SESSION_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  exec_command: "Workspace inspection/tests/builds; use a listed editing tool for source changes, delete/rename use rm/mv. Call tools directly, not printed placeholders/commentary. Long jobs: background=true, never & or nohup; leftovers stop on return. Lasting services need detach.",
+  exec_command: "Inspect/test/build; edit via edit tools, rm/mv for delete/rename. Call tools, never print placeholders. Long jobs: background=true; leftovers stop on return. Linux sandbox: run servers and clients in one command; background jobs have private loopback. Lasting services need detach.",
   write_stdin: "Continue exec_command's session_id; kill_process stops it. Empty chars polls; input requires initial tty=true. Include command newlines; match the session's sandbox_permissions.",
 };
 

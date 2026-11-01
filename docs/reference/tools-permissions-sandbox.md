@@ -239,7 +239,13 @@ skipped, and a command the scan cannot parse runs as before.
 `background: true` starts the command as a tracked session: the call returns
 after about a second with its `session_id`, `write_stdin` polls it,
 `kill_process` stops it, and session end stops it. It works inside the
-sandbox and cannot be combined with `detach`. Every live session of a
+sandbox and cannot be combined with `detach`. Linux sandbox commands have
+private network namespaces: a server started with `background: true` is not
+reachable over loopback from later commands, even in the same conversation.
+For server checks, start the server with `&`, poll readiness in a bounded loop,
+run its clients, then stop it in the same command. Background sessions remain
+useful for builds and other long jobs whose results are files or output.
+Every live session of a
 conversation counts toward a ceiling of 8, ordinary yields included, and the
 ceiling acts at two points only: a `background: true` start is refused before
 it spawns, and a command that reaches its `timeoutMs` is stopped as before.

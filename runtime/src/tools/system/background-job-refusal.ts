@@ -485,7 +485,8 @@ export function unwaitedBackgroundJobMessage(job: UnwaitedBackgroundJob): string
   const preview = text.length > JOB_PREVIEW_CHARS ? `${text.slice(0, JOB_PREVIEW_CHARS - 3)}...` : text;
   const form = job.kind === "trailing" ? "a trailing &" : job.kind === "disown" ? "& disown" : `${job.kind} ... &`;
   return `This command has not started: its job \`${preview}\` (${form}) would be stopped when the command returns. ` +
-    "Run that job as its own exec_command with background: true, without & or nohup: it keeps running as a session " +
+    "Linux sandbox: run servers and clients in one command; background jobs have private loopback. Start the server with & and run its readiness check and clients before the command returns. " +
+    "Run other long jobs as their own exec_command with background: true, without & or nohup: it keeps running as a session " +
     "(write_stdin polls it, kill_process stops it, a later result reports its end). " +
     "A service that must outlive this session needs detach: true where allowed.";
 }

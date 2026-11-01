@@ -156,7 +156,28 @@ describe("Light schema", () => {
     const properties = lean.function.parameters.properties as Record<string, { description?: string }>;
     expect(Object.keys(properties).sort()).toEqual(["background", "cmd", "timeoutMs", "workdir"]);
     expect(properties.timeoutMs!.description).not.toContain("Hard timeout");
-    expect(lean.function.description).toContain("Long jobs: background=true, never & or nohup");
+    expect(lean.function.description).toContain("Long jobs: background=true");
     expect(properties.background).toEqual({ type: "boolean" });
+  });
+});
+
+
+describe("Linux sandbox server guidance", () => {
+  test("every exec schema keeps server checks in one command", () => {
+    for (const lightMode of [true, false]) {
+      const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode });
+      const schema = registry.toLLMTools().find(tool => tool.function.name === "exec_command")!;
+      expect(schema.function.description).toContain("Linux sandbox");
+      expect(schema.function.description).toContain("servers and clients in one command");
+      expect(schema.function.description).toContain("private loopback");
+    }
+    expect(createUnboundExecCommandTool().description).toContain("servers and clients in one command");
+  });
+
+  test("a refused shell job explains the server exception before recommending background", () => {
+    const failure = tools().exec.preflight!({ cmd: "nohup node server.js >server.log 2>&1 &" });
+    expect(failure!.message).toContain("servers and clients in one command");
+    expect(failure!.message.indexOf("Linux sandbox")).toBeLessThan(failure!.message.indexOf("background: true"));
+    expect(tools().exec.preflight!({ cmd: "node server.js & pid=$!; curl localhost:3000; kill $pid" })).toBeNull();
   });
 });
