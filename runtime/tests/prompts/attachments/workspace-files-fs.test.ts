@@ -89,8 +89,28 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const { listableWorkspace, listWorkspaceFiles, workspaceFilesProducer } = await import("../../../src/prompts/attachments/workspace-files.js");
 const { getAttachmentTrackingState } = await import("../../../src/session/attachment-state.js");
 
+/** The listing is Linux only; every other platform omits it. */
+const linux = process.platform === "linux";
+
 let root: string;
 let outside: string;
+
+function producerOptions(signal: AbortSignal = new AbortController().signal) {
+  return {
+    sessionKey: {},
+    lightMode: true,
+    lightWorkspaceFiles: true,
+    turnProvenance: { turnId: "turn-1", rootHumanTurn: { turnId: "turn-1", text: "Fix it." } },
+    userInput: "Fix it.",
+    loadedTools: [],
+    messages: [{ role: "user" as const, content: "Fix it." }],
+    permissionContext: { mode: "bypassPermissions" } as never,
+    cwd: root,
+    subagentDepth: 0,
+    signal,
+    agencHome: path.join(root, ".agenc-home"),
+  };
+}
 
 function write(base: string, rel: string, text = "x\n"): void {
   const file = path.join(base, rel);
@@ -147,7 +167,7 @@ function aroundFirst(suffix: string, before: (target: string) => void, after: (t
   return () => state !== "waiting";
 }
 
-describe("workspace listing under a changing filesystem", () => {
+describe.runIf(linux)("workspace listing under a changing filesystem", () => {
   test("drops a queued folder that a link replaced before it was read", async () => {
     const swapped = aroundFirst(`${path.sep}src`, (dir) => {
       renameSync(dir, `${dir}-moved`);
@@ -192,7 +212,7 @@ describe("workspace listing under a changing filesystem", () => {
   );
 });
 
-describe("bounded work", () => {
+describe.runIf(linux)("bounded work", () => {
   function producerOpts() {
     return {
       sessionKey: {},
@@ -278,5 +298,26 @@ describe("cancellation", () => {
     hooks.calls = 0;
     expect(await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey))).toEqual([]);
     expect(hooks.calls).toBe(0);
+  });
+});
+
+describe("platforms", () => {
+  test.each(["darwin", "win32", "freebsd"])("omits the listing on %s before any filesystem work", async (platform) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    try {
+      const opts = producerOptions();
+      hooks.calls = 0;
+      expect(await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey))).toEqual([]);
+      expect(hooks.calls).toBe(0);
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
+  });
+
+  test.runIf(linux)("lists on Linux", async () => {
+    const opts = producerOptions();
+    const result = await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey));
+    expect(result).toEqual([expect.objectContaining({ kind: "workspace_files", entries: expect.arrayContaining(["README.md"]) })]);
   });
 });

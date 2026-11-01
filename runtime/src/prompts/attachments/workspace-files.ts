@@ -9,15 +9,16 @@
  * folder AgenC started in, which the model could list with its own first call anyway; that folder is
  * refused when it is the home folder, the filesystem root or any folder above the home folder (compared by
  * identity). Names only, never contents; folders that hold dependencies, caches or version control are shown
- * but not expanded. Folders are read through pinned, identity-checked descriptors; the walk is bounded in
- * entries, folders and time, and is left out after a short deadline. The names are untrusted workspace data,
+ * but not expanded. Linux only: folders are read through pinned, identity-checked descriptors via
+ * /proc/self/fd, and every other platform omits the listing. The walk is bounded in entries, folders and time,
+ * and is left out after a short deadline. The names are untrusted workspace data,
  * sanitized and framed like Light's workspace tool results (messages.ts).
  *
  * @module
  */
 
 import { constants } from "node:fs";
-import { lstat, open, opendir, realpath } from "node:fs/promises";
+import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -135,11 +136,13 @@ interface WalkEntry {
   readonly identity?: Pick<DirectoryIdentity, "dev" | "ino">;
 }
 
-/** Where the entries of an open directory descriptor can be read by path (Linux, macOS); elsewhere none. */
+/**
+ * Where the entries of an open directory descriptor can be read by path, and its entries looked up: Linux's
+ * /proc/self/fd only. macOS's /dev/fd does not look up names below a descriptor, so every platform but Linux
+ * omits the listing.
+ */
 function descriptorDirectory(fd: number): string | undefined {
-  if (process.platform === "linux") return `/proc/self/fd/${fd}`;
-  if (process.platform === "darwin") return `/dev/fd/${fd}`;
-  return undefined;
+  return process.platform === "linux" ? `/proc/self/fd/${fd}` : undefined;
 }
 
 /**
@@ -148,8 +151,8 @@ function descriptorDirectory(fd: number): string | undefined {
  * validated root's, or what the parent's read found for that entry), and the entries are read through the
  * descriptor itself, so a folder swapped and restored around the open cannot put another directory's names in
  * the listing. Folder entries that may be expanded get their identity from inside the pinned folder. Undefined
- * (the folder is dropped) on any mismatch or failure, and on a platform without these flags or a descriptor
- * path, where no listing is sent at all. Every handle is closed.
+ * (the folder is dropped) on any mismatch or failure, and off Linux or where /proc/self/fd does not lead back to
+ * the pinned folder, where no listing is sent at all. Every handle is closed.
  */
 async function readPinnedDirectory(
   target: string,
@@ -169,6 +172,8 @@ async function readPinnedDirectory(
     const info = await handle.stat();
     const pinned = descriptorDirectory(handle.fd);
     if (!info.isDirectory() || !sameDirectory(expected, info) || pinned === undefined) return undefined;
+    // The descriptor path must lead to the pinned directory itself; anything else (no /proc) lists nothing.
+    if (!sameDirectory(info, await stat(pinned))) return undefined;
     // One entry at a time, so the inspection cap and an abort stop the read itself.
     const children: WalkEntry[] = [];
     let complete = true;
@@ -276,7 +281,10 @@ export async function listWorkspaceFiles(
 }
 
 export const workspaceFilesProducer: AttachmentProducer = async (opts, trackingState) => {
-  if (opts.lightWorkspaceFiles !== true || trackingState.workspaceFilesSent === true) return [];
+  // Linux only (descriptorDirectory); elsewhere the listing is omitted before any filesystem work.
+  if (opts.lightWorkspaceFiles !== true || trackingState.workspaceFilesSent === true || process.platform !== "linux") {
+    return [];
+  }
   // Only the human's first message of a conversation; a synthetic follow-up, a delegated child turn or
   // a resumed conversation gets nothing.
   const provenance = opts.turnProvenance;
