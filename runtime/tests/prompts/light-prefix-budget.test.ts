@@ -53,7 +53,8 @@ async function lightPrefix(provider: "deepseek" | "openai") {
 
 describe("Light fixed prefix budget", () => {
   test.each([
-    ["deepseek", 4_050, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
+    // DeepSeek head 4,050 -> 4,150 on purpose: job dsw's probe sentence (LIGHT_DEEPSEEK_PROBES), measured in its A/B.
+    ["deepseek", 4_150, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
     ["openai", 3_600, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
   ] as const)("%s: head and tool schemas stay within budget and byte-stable", async (provider, headBudget, toolsBudget, names) => {
     const first = await lightPrefix(provider);
