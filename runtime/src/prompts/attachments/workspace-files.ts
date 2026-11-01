@@ -11,7 +11,7 @@
  * identity). Names only, never contents; folders that hold dependencies, caches or version control are shown
  * but not expanded. Linux only: folders are read through pinned, identity-checked descriptors via
  * /proc/self/fd, and every other platform omits the listing. The walk is bounded in entries, folders and time,
- * and is left out after a short deadline. The names are untrusted workspace data,
+ * stops on abort before any further filesystem work, and is left out after a short deadline. The names are untrusted workspace data,
  * sanitized and framed like Light's workspace tool results (messages.ts).
  *
  * @module
@@ -168,12 +168,16 @@ async function readPinnedDirectory(
   } catch {
     return undefined;
   }
+  // After every await, an abort stops the read before any further filesystem work but the closes.
   try {
+    if (isAborted(budget.signal)) return undefined;
     const info = await handle.stat();
     const pinned = descriptorDirectory(handle.fd);
     if (!info.isDirectory() || !sameDirectory(expected, info) || pinned === undefined) return undefined;
+    if (isAborted(budget.signal)) return undefined;
     // The descriptor path must lead to the pinned directory itself; anything else (no /proc) lists nothing.
     if (!sameDirectory(info, await stat(pinned))) return undefined;
+    if (isAborted(budget.signal)) return undefined;
     // One entry at a time, so the inspection cap and an abort stop the read itself.
     const children: WalkEntry[] = [];
     let complete = true;
@@ -192,6 +196,10 @@ async function readPinnedDirectory(
         } else if (!expandable || NOT_EXPANDED.has(child.name)) {
           children.push({ name: child.name, folder: true });
         } else {
+          if (isAborted(budget.signal)) {
+            complete = false;
+            break;
+          }
           const entry = await lstat(path.join(pinned, child.name)).catch(() => undefined);
           children.push(entry === undefined
             ? { name: child.name, folder: true }
@@ -220,7 +228,7 @@ export async function listWorkspaceFiles(
   workspace: DirectoryIdentity | string,
   signal?: AbortSignal,
 ): Promise<WorkspaceFileListing> {
-  const root = typeof workspace === "string" ? await canonicalDirectory(workspace) : workspace;
+  const root = typeof workspace === "string" ? await canonicalDirectory(workspace, signal) : workspace;
   if (root === undefined) return { entries: [], truncated: false };
   const entries: string[] = [];
   let truncated = false;

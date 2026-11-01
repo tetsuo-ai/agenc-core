@@ -16,36 +16,65 @@ const hooks = vi.hoisted(() => ({
   alias: undefined as undefined | string,
   /** Filesystem calls made by the code under test. */
   calls: 0,
+  /** Every operation started, in order, with its target. */
+  log: [] as Array<{ readonly op: string; readonly target: string }>,
+  /** Called as each operation starts (after it is logged). */
+  onStart: undefined as undefined | ((op: string, target: string) => void),
   /** Directory entries handed to the code under test, by readdir or one at a time by opendir. */
   delivered: 0,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const start = (op: string, target: unknown) => {
+    hooks.log.push({ op, target: String(target) });
+    hooks.onStart?.(op, String(target));
+  };
   const aliased = (target: unknown) => hooks.alias !== undefined &&
     (String(target) === hooks.alias || String(target).startsWith(`${hooks.alias}/`));
   return {
     ...actual,
     realpath: async (target: string, options?: unknown) => {
       hooks.calls += 1;
+      start("realpath", target);
       return aliased(target) ? String(target) : actual.realpath(target, options as never);
     },
     lstat: async (target: string, options?: unknown) => {
       hooks.calls += 1;
+      start("lstat", target);
       return aliased(target) ? actual.stat(target, options as never) : actual.lstat(target, options as never);
     },
     stat: async (target: string, options?: unknown) => {
       hooks.calls += 1;
+      start("stat", target);
       return actual.stat(target, options as never);
     },
     open: async (target: string, flags?: unknown, mode?: unknown) => {
       hooks.calls += 1;
+      start("open", target);
       await hooks.beforeOpen?.(String(target));
+      let handle;
       try {
-        return await actual.open(target, flags as never, mode as never);
+        handle = await actual.open(target, flags as never, mode as never);
       } finally {
         await hooks.afterOpen?.(String(target));
       }
+      const opened = handle;
+      return {
+        fd: opened.fd,
+        stat: (...args: unknown[]) => {
+          start("fh.stat", target);
+          return opened.stat(...(args as []));
+        },
+        read: (...args: unknown[]) => {
+          start("fh.read", target);
+          return opened.read(...(args as [Buffer]));
+        },
+        close: () => {
+          start("fh.close", target);
+          return opened.close();
+        },
+      };
     },
     readdir: async (target: string, options?: unknown) => {
       hooks.calls += 1;
@@ -60,6 +89,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
     opendir: async (target: string, options?: unknown) => {
       hooks.calls += 1;
+      start("opendir", target);
       await hooks.beforeRead?.(String(target));
       let dir;
       try {
@@ -70,11 +100,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       return {
         path: dir.path,
         read: async () => {
+          start("dir.read", target);
           const entry = await dir.read();
           if (entry !== null) hooks.delivered += 1;
           return entry;
         },
-        close: () => dir.close(),
+        close: () => {
+          start("dir.close", target);
+          return dir.close();
+        },
         async *[Symbol.asyncIterator]() {
           for await (const entry of dir) {
             hooks.delivered += 1;
@@ -141,6 +175,8 @@ afterEach(() => {
   hooks.alias = undefined;
   hooks.calls = 0;
   hooks.delivered = 0;
+  hooks.log = [];
+  hooks.onStart = undefined;
   rmSync(root, { recursive: true, force: true });
   rmSync(outside, { recursive: true, force: true });
 });
@@ -319,5 +355,31 @@ describe("platforms", () => {
     const opts = producerOptions();
     const result = await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey));
     expect(result).toEqual([expect.objectContaining({ kind: "workspace_files", entries: expect.arrayContaining(["README.md"]) })]);
+  });
+});
+
+describe.runIf(linux)("abort during each operation", () => {
+  const CLEANUP = new Set(["dir.close", "fh.close"]);
+  test.each([
+    ["the canonicalization", "realpath", ""],
+    ["the folder open", "open", ""],
+    ["the descriptor stat", "fh.stat", ""],
+    ["the /proc check", "stat", "/proc/self/fd/"],
+    ["the opendir", "opendir", "/proc/self/fd/"],
+    ["an entry read", "dir.read", "/proc/self/fd/"],
+    ["a child lookup", "lstat", "/proc/self/fd/"],
+  ])("aborting during %s starts nothing further but closes", async (_label, op, prefix) => {
+    const controller = new AbortController();
+    let abortedAt = -1;
+    hooks.onStart = (started, target) => {
+      if (abortedAt < 0 && started === op && target.startsWith(prefix)) {
+        abortedAt = hooks.log.length - 1;
+        controller.abort();
+      }
+    };
+    await listWorkspaceFiles(root, controller.signal);
+    expect(abortedAt).toBeGreaterThanOrEqual(0);
+    const after = hooks.log.slice(abortedAt + 1).map((entry) => entry.op);
+    expect(after.filter((started) => !CLEANUP.has(started))).toEqual([]);
   });
 });
