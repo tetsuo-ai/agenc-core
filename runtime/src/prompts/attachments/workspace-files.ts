@@ -6,11 +6,12 @@
  * anything: about 1.25 s of provider time plus a command each, and the listing's output then rode along in
  * every later request. With the names already in front of it, DeepSeek read the files it needed in its first
  * call (replay pilot, jobs/dsw/replay). The listing is taken once, when the conversation starts, from the
- * canonical folder the user opened, only when it is a git work tree by its metadata and is neither the home
- * folder nor the filesystem root (compared by identity). Names only, never contents; folders that hold
- * dependencies, caches or version control are shown but not expanded. The walk re-checks every folder around
- * its read, is bounded in entries, folders and time, and is left out after a short deadline. The names are
- * untrusted workspace data, sanitized and framed like Light's workspace tool results (messages.ts).
+ * folder AgenC started in, which the model could list with its own first call anyway; that folder is
+ * refused when it is the home folder, the filesystem root or any folder above the home folder (compared by
+ * identity). Names only, never contents; folders that hold dependencies, caches or version control are shown
+ * but not expanded. Folders are read through pinned, identity-checked descriptors; the walk is bounded in
+ * entries, folders and time, and is left out after a short deadline. The names are untrusted workspace data,
+ * sanitized and framed like Light's workspace tool results (messages.ts).
  *
  * @module
  */
@@ -72,146 +73,6 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
 }
 
-/** Most bytes read from a `.git` file, which holds one `gitdir:` line. */
-const GIT_FILE_MAX_BYTES = 4_096;
-
-/**
- * A small regular file, read through a descriptor opened without following a link and without blocking (a FIFO
- * swapped in for the file would otherwise hold a filesystem worker until a writer appears): the descriptor must
- * be a regular file of at most `max` bytes, and at most that much is read. Undefined for anything else, or where
- * the platform lacks those open flags.
- */
-async function readSmallRegularFile(target: string, max: number, signal?: AbortSignal): Promise<string | undefined> {
-  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants;
-  if (isAborted(signal) || O_NOFOLLOW === undefined || O_NONBLOCK === undefined) return undefined;
-  let handle;
-  try {
-    handle = await open(target, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
-  } catch {
-    return undefined;
-  }
-  try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.size > max || isAborted(signal)) return undefined;
-    const buffer = Buffer.alloc(max);
-    const { bytesRead } = await handle.read(buffer, 0, max, 0);
-    return buffer.subarray(0, bytesRead).toString("utf8");
-  } catch {
-    return undefined;
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
-
-/** Most bytes read from a repository config. */
-const GIT_CONFIG_MAX_BYTES = 65_536;
-/** HEAD: a symbolic ref under refs/, or a SHA-1 or SHA-256 object id. */
-const GIT_HEAD = /^(?:ref: refs\/\S+|[0-9a-f]{40}|[0-9a-f]{64})\r?\n?$/u;
-
-/** lstat without following a link: "missing", the stats, or undefined for any other failure. */
-async function lstatOrMissing(target: string, signal?: AbortSignal): Promise<Awaited<ReturnType<typeof lstat>> | "missing" | undefined> {
-  if (isAborted(signal)) return undefined;
-  try {
-    return await lstat(target);
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : undefined;
-  }
-}
-
-/** Whether a git config text sets core.bare to true (the last setting wins; a bare key means true). */
-export function gitConfigSetsBare(text: string): boolean {
-  let section = "";
-  let bare = false;
-  for (const raw of text.split(/\r?\n/u)) {
-    const line = raw.trim();
-    if (line.length === 0 || line.startsWith("#") || line.startsWith(";")) continue;
-    const header = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"(?:[^"\\]|\\.)*")?\s*\]/u.exec(line);
-    if (header !== null) {
-      section = header[1]!.toLowerCase();
-      continue;
-    }
-    if (section !== "core") continue;
-    const entry = /^bare\s*(?:=\s*([^#;]*))?(?:[#;].*)?$/iu.exec(line);
-    if (entry !== null) bare = ["true", "yes", "on", "1"].includes((entry[1] ?? "true").trim().toLowerCase());
-  }
-  return bare;
-}
-
-/** false when a config is absent or does not make the repository bare; true when it does; undefined when unreadable. */
-async function configMakesBare(config: string, signal?: AbortSignal): Promise<boolean | undefined> {
-  const info = await lstatOrMissing(config, signal);
-  if (info === "missing") return false;
-  if (info === undefined) return undefined;
-  const text = await readSmallRegularFile(config, GIT_CONFIG_MAX_BYTES, signal);
-  return text === undefined ? undefined : gitConfigSetsBare(text);
-}
-
-async function isRealDirectory(target: string, signal?: AbortSignal): Promise<boolean> {
-  const info = await lstatOrMissing(target, signal);
-  return info !== undefined && info !== "missing" && info.isDirectory();
-}
-
-/**
- * Whether `gitDir` is the metadata of a repository with a work tree, checked without running git (a repository's
- * config can make git run programs): HEAD is a symbolic ref under refs/ or an object id; objects/ and refs/ are
- * directories there, or in the common directory that a linked worktree's commondir names; and the config that
- * applies (the repository's, or a linked worktree's config.worktree) does not set core.bare. Anything malformed or
- * unreadable is not a work tree.
- */
-async function validGitDir(gitDir: string, signal?: AbortSignal): Promise<boolean> {
-  const head = await readSmallRegularFile(path.join(gitDir, "HEAD"), GIT_FILE_MAX_BYTES, signal);
-  if (head === undefined || !GIT_HEAD.test(head)) return false;
-  let common = gitDir;
-  const commondir = path.join(gitDir, "commondir");
-  const commondirInfo = await lstatOrMissing(commondir, signal);
-  if (commondirInfo === undefined) return false;
-  if (commondirInfo !== "missing") {
-    const target = (await readSmallRegularFile(commondir, GIT_FILE_MAX_BYTES, signal))?.trim();
-    if (target === undefined || target.length === 0 || /[\r\n]/u.test(target)) return false;
-    common = path.resolve(gitDir, target);
-  }
-  if (!(await isRealDirectory(path.join(common, "objects"), signal)) ||
-      !(await isRealDirectory(path.join(common, "refs"), signal))) {
-    return false;
-  }
-  const config = common === gitDir ? path.join(gitDir, "config") : path.join(gitDir, "config.worktree");
-  return (await configMakesBare(config, signal)) === false;
-}
-
-/** The `gitdir:` target of a `.git` file, resolved against the folder that holds it. */
-async function gitFileTarget(gitFile: string, signal?: AbortSignal): Promise<string | undefined> {
-  const text = await readSmallRegularFile(gitFile, GIT_FILE_MAX_BYTES, signal);
-  const match = text === undefined ? null : /^gitdir:[ \t]*(\S.*?)[ \t]*$/mu.exec(text);
-  return match?.[1] === undefined ? undefined : path.resolve(path.dirname(gitFile), match[1]);
-}
-
-/**
- * The folder belongs to a git work tree, by its metadata and without running git: the nearest `.git` above
- * it (the folder itself included) is valid git metadata (validGitDir), either the directory itself or the one a
- * `.git` file's `gitdir:` line names, as linked worktrees and submodules have. An empty or broken marker, a link,
- * or a folder inside the metadata itself (any `.git` part of the path) is not a work tree.
- */
-async function insideGitWorkTree(cwd: string, signal?: AbortSignal): Promise<boolean> {
-  if (cwd.split(path.sep).includes(".git")) return false;
-  let dir = cwd;
-  for (;;) {
-    if (isAborted(signal)) return false;
-    const marker = path.join(dir, ".git");
-    try {
-      const info = await lstat(marker);
-      if (info.isDirectory()) return await validGitDir(marker, signal);
-      if (!info.isFile()) return false;
-      const target = await gitFileTarget(marker, signal);
-      return target !== undefined && await validGitDir(target, signal);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return false;
-    dir = parent;
-  }
-}
-
 /** The canonical directory behind `target` (every link resolved), or undefined when that fails. */
 async function canonicalDirectory(target: string, signal?: AbortSignal): Promise<DirectoryIdentity | undefined> {
   if (isAborted(signal)) return undefined;
@@ -233,8 +94,8 @@ function sameDirectory(
 }
 
 /**
- * The canonical directory a listing may describe, or undefined: a git work tree that is neither the home
- * folder nor any folder above it, the filesystem root included. Directories compare by device and inode, never
+ * The canonical directory a listing may describe, or undefined: the folder AgenC started in, unless it is the
+ * home folder or any folder above it, the filesystem root included. Directories compare by device and inode, never
  * by spelling: a canonical path need not be unique (a bind mount of /home is another canonical path of the
  * folder that holds the home folder). Anything that cannot be resolved, the home folder or one of its
  * ancestors included, describes nothing.
@@ -259,7 +120,7 @@ export async function listableWorkspace(
     }
     if (path.dirname(dir) === dir) break;
   }
-  return (await insideGitWorkTree(root.path, signal)) ? root : undefined;
+  return root;
 }
 
 interface WalkBudget {
