@@ -6,15 +6,17 @@
  * anything: about 1.25 s of provider time plus a command each, and the listing's output then rode along in
  * every later request. With the names already in front of it, DeepSeek read the files it needed in its first
  * call (replay pilot, jobs/dsw/replay). The listing is taken once, when the conversation starts, from the
- * folder the user opened, only when that folder belongs to a git work tree and is neither the home folder nor
- * the filesystem root, by identity. Names only, never contents; folders that hold dependencies, caches or version control
- * are shown but not expanded. The names are workspace data, framed like Light's workspace tool results.
+ * canonical folder the user opened, only when it is a git work tree by its metadata and is neither the home
+ * folder nor the filesystem root (compared by identity). Names only, never contents; folders that hold
+ * dependencies, caches or version control are shown but not expanded. The walk re-checks every folder around
+ * its read, is bounded in entries, folders and time, and is left out after a short deadline. The names are
+ * untrusted workspace data, sanitized and framed like Light's workspace tool results (messages.ts).
  *
  * @module
  */
 
 import type { Dirent } from "node:fs";
-import { lstat, opendir, realpath, stat } from "node:fs/promises";
+import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -62,20 +64,50 @@ export interface WorkspaceFileListing {
   readonly truncated: boolean;
 }
 
-async function exists(target: string): Promise<boolean> {
+/** Most bytes read from a `.git` file, which holds one `gitdir:` line. */
+const GIT_FILE_MAX_BYTES = 4_096;
+
+async function isFile(target: string): Promise<boolean> {
   try {
-    await stat(target);
-    return true;
+    return (await stat(target)).isFile();
   } catch {
     return false;
   }
 }
 
-/** The folder belongs to a git work tree: it or one of its parents holds `.git`. */
+/** The `gitdir:` target of a `.git` file, resolved against the folder that holds it. */
+async function gitFileTarget(gitFile: string): Promise<string | undefined> {
+  const handle = await open(gitFile, "r");
+  try {
+    const buffer = Buffer.alloc(GIT_FILE_MAX_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, GIT_FILE_MAX_BYTES, 0);
+    const match = /^gitdir:[ \t]*(\S.*?)[ \t]*$/mu.exec(buffer.subarray(0, bytesRead).toString("utf8"));
+    return match?.[1] === undefined ? undefined : path.resolve(path.dirname(gitFile), match[1]);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * The folder belongs to a git work tree, by its metadata and without running git: the nearest `.git` above
+ * it (the folder itself included) is a directory that holds HEAD, or a file whose `gitdir:` line names a
+ * directory that holds HEAD, as linked worktrees and submodules have. An empty or broken marker, a link, or a
+ * folder inside the metadata itself (any `.git` part of the path) is not a work tree.
+ */
 async function insideGitWorkTree(cwd: string): Promise<boolean> {
+  if (cwd.split(path.sep).includes(".git")) return false;
   let dir = cwd;
   for (;;) {
-    if (await exists(path.join(dir, ".git"))) return true;
+    const marker = path.join(dir, ".git");
+    try {
+      const info = await lstat(marker);
+      if (info.isDirectory()) return await isFile(path.join(marker, "HEAD"));
+      if (!info.isFile()) return false;
+      const target = await gitFileTarget(marker);
+      return target !== undefined && await isFile(path.join(target, "HEAD"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
     const parent = path.dirname(dir);
     if (parent === dir) return false;
     dir = parent;

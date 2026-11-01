@@ -122,6 +122,38 @@ describe("workspace file listing", () => {
     }
   });
 
+  test("needs valid git metadata: a .git folder with HEAD, or a .git file pointing at one; never the metadata itself", async () => {
+    const repos = mkdtempSync(path.join(tmpdir(), "agenc-ws-git-"));
+    const make = (rel: string, files: Record<string, string> = {}): string => {
+      const dir = path.join(repos, rel);
+      mkdirSync(dir, { recursive: true });
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+        writeFileSync(path.join(dir, name), text);
+      }
+      return dir;
+    };
+    try {
+      // Markers that prove nothing.
+      expect(await listableWorkspace(make("empty-file", { ".git": "" }), home)).toBeFalsy();
+      expect(await listableWorkspace(make("empty-dir/.git/objects"), home)).toBeFalsy();
+      expect(await listableWorkspace(path.join(repos, "empty-dir"), home)).toBeFalsy();
+      expect(await listableWorkspace(make("dangling", { ".git": "gitdir: ../nowhere/.git\n" }), home)).toBeFalsy();
+      // Inside a valid repository's metadata.
+      expect(await listableWorkspace(path.join(root, ".git"), home)).toBeFalsy();
+      mkdirSync(path.join(root, ".git", "refs"), { recursive: true });
+      expect(await listableWorkspace(path.join(root, ".git", "refs"), home)).toBeFalsy();
+      // A linked worktree: a .git file naming a directory that holds HEAD.
+      make("main/.git/worktrees/wt", { HEAD: "ref: refs/heads/wt\n" });
+      writeFileSync(path.join(repos, "main", ".git", "HEAD"), "ref: refs/heads/main\n");
+      const worktree = make("wt", { ".git": "gitdir: ../main/.git/worktrees/wt\n", "a.txt": "" });
+      expect(await listableWorkspace(worktree, home)).toBeTruthy();
+      expect(await listableWorkspace(path.join(repos, "main"), home)).toBeTruthy();
+    } finally {
+      rmSync(repos, { recursive: true, force: true });
+    }
+  });
+
   test("compares the home folder and the filesystem root by identity and fails closed", async () => {
     const links = mkdtempSync(path.join(tmpdir(), "agenc-ws-links-"));
     try {
