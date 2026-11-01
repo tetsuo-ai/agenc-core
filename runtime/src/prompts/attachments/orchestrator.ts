@@ -103,7 +103,7 @@ export interface GetAttachmentsOptions {
   readonly lightInstructionFilesLoaded?: boolean;
   /**
    * Interactive DeepSeek Light: the first message of the conversation carries the workspace's file
-   * names (prompts/attachments/workspace-files.ts, tools/light-profile.ts lightListsWorkspaceFiles).
+   * names (prompts/attachments/workspace-files.ts, tools/light-profile.ts lightUsesDeepSeekWorkRules).
    */
   readonly lightWorkspaceFiles?: boolean;
   /**

@@ -58,7 +58,8 @@ const LIGHT_READ_AND_SEARCH =
  * and python cells ("check pytest availability", "examine git history for clues"). Replayed at that point
  * (jobs/dsw/replay), this sentence cut such probes from 12 of 32 responses to 3 of 32. A general working principle,
  * not a task hint; a missing tool still shows in the check itself (LIGHT_MISSING_CHECK_TOOLS). Unattended DeepSeek
- * Light keeps its environment checks.
+ * Light keeps its environment checks; abliteration.ai's models keep their head (tools/light-profile.ts
+ * lightUsesDeepSeekWorkRules).
  */
 export const LIGHT_DEEPSEEK_PROBES =
   "Run checks directly instead of first probing tool versions or availability, and do not search git history for the intended behavior.";
@@ -127,13 +128,13 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * questions about AgenC are answered without tools; the undo paths arrive with a message that asks
  * about them (prompts/attachments/product-help.ts).
  */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false): string {
   // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
   // keep the 0.19.26 prompt, interactive DeepSeek with one more sentence on probes (LIGHT_DEEPSEEK_PROBES).
   const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
   const reading = interactiveRules
     ? ` ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}`
-    : ` ${LIGHT_READ_AND_SEARCH}` + (deepseekModel && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
+    : ` ${LIGHT_READ_AND_SEARCH}` + (deepseekWorkRules && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
   const editing = !editsWithApplyPatch
     ? ""
     : interactiveRules

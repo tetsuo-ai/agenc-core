@@ -48,6 +48,8 @@ describe("DeepSeek Light probes", () => {
     ["openai", "gpt-6-luna", {}],
     ["openai", "gpt-6-luna", { env: { AGENC_LIGHT_TASK_LIMITS: "1" } }],
     ["qwen-token-plan", "qwen3.8-max", {}],
+    ["abliteration", "abliterated-model-large-flash", {}],
+    ["abliteration", "abliterated-model-large-v2", {}],
     ["anthropic", "claude-haiku-5-5", {}],
   ])("%s (%s, %j) does not get it", async (provider, model, options) => {
     expect(await head(provider, model, options)).not.toContain(LIGHT_DEEPSEEK_PROBES);

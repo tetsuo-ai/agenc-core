@@ -18,7 +18,7 @@ import {
   workspaceFilesProducer,
 } from "../../../src/prompts/attachments/workspace-files.js";
 import { getAttachmentTrackingState } from "../../../src/session/attachment-state.js";
-import { lightListsWorkspaceFiles } from "../../../src/tools/light-profile.js";
+import { lightUsesDeepSeekWorkRules } from "../../../src/tools/light-profile.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../../fixtures.js";
 
 let root: string;
@@ -166,11 +166,13 @@ describe("workspace files producer", () => {
     expect(text.split("\n").filter((line) => line === "AGENC_DATA")).toHaveLength(2);
   });
 
-  test("follows the model family: DeepSeek on any route, nothing else", () => {
-    expect(lightListsWorkspaceFiles("deepseek", "deepseek-flash")).toBe(true);
-    expect(lightListsWorkspaceFiles("deepseek", "deepseek-pro")).toBe(true);
-    expect(lightListsWorkspaceFiles("openai", "gpt-6-luna")).toBe(false);
-    expect(lightListsWorkspaceFiles("anthropic", "claude-opus-5-5")).toBe(false);
+  test("follows the model family: DeepSeek on its own API or a gateway, not abliteration.ai, nothing else", () => {
+    expect(lightUsesDeepSeekWorkRules("deepseek", "deepseek-flash")).toBe(true);
+    expect(lightUsesDeepSeekWorkRules("deepseek", "deepseek-pro")).toBe(true);
+    expect(lightUsesDeepSeekWorkRules("openrouter", "deepseek/deepseek-v4.1-flash-1017")).toBe(true);
+    expect(lightUsesDeepSeekWorkRules("abliteration", "abliterated-model-large-flash")).toBe(false);
+    expect(lightUsesDeepSeekWorkRules("openai", "gpt-6-luna")).toBe(false);
+    expect(lightUsesDeepSeekWorkRules("anthropic", "claude-opus-5-5")).toBe(false);
   });
 });
 
