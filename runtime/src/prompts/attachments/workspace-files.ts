@@ -15,7 +15,7 @@
  * @module
  */
 
-import type { Dirent } from "node:fs";
+import { constants, type Dirent } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -67,7 +67,8 @@ export interface WorkspaceFileListing {
 /** Most bytes read from a `.git` file, which holds one `gitdir:` line. */
 const GIT_FILE_MAX_BYTES = 4_096;
 
-async function isFile(target: string): Promise<boolean> {
+async function isFile(target: string, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted === true) return false;
   try {
     return (await stat(target)).isFile();
   } catch {
@@ -75,17 +76,39 @@ async function isFile(target: string): Promise<boolean> {
   }
 }
 
-/** The `gitdir:` target of a `.git` file, resolved against the folder that holds it. */
-async function gitFileTarget(gitFile: string): Promise<string | undefined> {
-  const handle = await open(gitFile, "r");
+/**
+ * A small regular file, read through a descriptor opened without following a link and without blocking (a FIFO
+ * swapped in for the file would otherwise hold a filesystem worker until a writer appears): the descriptor must
+ * be a regular file of at most `max` bytes, and at most that much is read. Undefined for anything else, or where
+ * the platform lacks those open flags.
+ */
+async function readSmallRegularFile(target: string, max: number, signal?: AbortSignal): Promise<string | undefined> {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants;
+  if (signal?.aborted === true || O_NOFOLLOW === undefined || O_NONBLOCK === undefined) return undefined;
+  let handle;
   try {
-    const buffer = Buffer.alloc(GIT_FILE_MAX_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, GIT_FILE_MAX_BYTES, 0);
-    const match = /^gitdir:[ \t]*(\S.*?)[ \t]*$/mu.exec(buffer.subarray(0, bytesRead).toString("utf8"));
-    return match?.[1] === undefined ? undefined : path.resolve(path.dirname(gitFile), match[1]);
-  } finally {
-    await handle.close();
+    handle = await open(target, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+  } catch {
+    return undefined;
   }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > max || signal?.aborted === true) return undefined;
+    const buffer = Buffer.alloc(max);
+    const { bytesRead } = await handle.read(buffer, 0, max, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** The `gitdir:` target of a `.git` file, resolved against the folder that holds it. */
+async function gitFileTarget(gitFile: string, signal?: AbortSignal): Promise<string | undefined> {
+  const text = await readSmallRegularFile(gitFile, GIT_FILE_MAX_BYTES, signal);
+  const match = text === undefined ? null : /^gitdir:[ \t]*(\S.*?)[ \t]*$/mu.exec(text);
+  return match?.[1] === undefined ? undefined : path.resolve(path.dirname(gitFile), match[1]);
 }
 
 /**
@@ -94,17 +117,18 @@ async function gitFileTarget(gitFile: string): Promise<string | undefined> {
  * directory that holds HEAD, as linked worktrees and submodules have. An empty or broken marker, a link, or a
  * folder inside the metadata itself (any `.git` part of the path) is not a work tree.
  */
-async function insideGitWorkTree(cwd: string): Promise<boolean> {
+async function insideGitWorkTree(cwd: string, signal?: AbortSignal): Promise<boolean> {
   if (cwd.split(path.sep).includes(".git")) return false;
   let dir = cwd;
   for (;;) {
+    if (signal?.aborted === true) return false;
     const marker = path.join(dir, ".git");
     try {
       const info = await lstat(marker);
-      if (info.isDirectory()) return await isFile(path.join(marker, "HEAD"));
+      if (info.isDirectory()) return await isFile(path.join(marker, "HEAD"), signal);
       if (!info.isFile()) return false;
-      const target = await gitFileTarget(marker);
-      return target !== undefined && await isFile(path.join(target, "HEAD"));
+      const target = await gitFileTarget(marker, signal);
+      return target !== undefined && await isFile(path.join(target, "HEAD"), signal);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
     }
@@ -115,9 +139,11 @@ async function insideGitWorkTree(cwd: string): Promise<boolean> {
 }
 
 /** The canonical directory behind `target` (every link resolved), or undefined when that fails. */
-async function canonicalDirectory(target: string): Promise<DirectoryIdentity | undefined> {
+async function canonicalDirectory(target: string, signal?: AbortSignal): Promise<DirectoryIdentity | undefined> {
+  if (signal?.aborted === true) return undefined;
   try {
     const real = await realpath(target);
+    if (signal?.aborted === true) return undefined;
     const info = await lstat(real);
     return info.isDirectory() ? { path: real, dev: info.dev, ino: info.ino } : undefined;
   } catch {
@@ -142,14 +168,16 @@ function sameDirectory(
 export async function listableWorkspace(
   cwd: string,
   home: string = homedir(),
+  signal?: AbortSignal,
 ): Promise<DirectoryIdentity | undefined> {
-  const root = await canonicalDirectory(cwd);
+  const root = await canonicalDirectory(cwd, signal);
   if (root === undefined) return undefined;
-  const filesystemRoot = await canonicalDirectory(path.parse(root.path).root);
+  const filesystemRoot = await canonicalDirectory(path.parse(root.path).root, signal);
   if (filesystemRoot === undefined || sameDirectory(root, filesystemRoot)) return undefined;
-  const homeDir = home.length > 0 ? await canonicalDirectory(home) : undefined;
+  const homeDir = home.length > 0 ? await canonicalDirectory(home, signal) : undefined;
   if (homeDir === undefined) return undefined;
   for (let dir = homeDir.path; ; dir = path.dirname(dir)) {
+    if (signal?.aborted === true) return undefined;
     try {
       if (sameDirectory(root, await lstat(dir))) return undefined;
     } catch {
@@ -157,7 +185,7 @@ export async function listableWorkspace(
     }
     if (path.dirname(dir) === dir) break;
   }
-  return (await insideGitWorkTree(root.path)) ? root : undefined;
+  return (await insideGitWorkTree(root.path, signal)) ? root : undefined;
 }
 
 /**
@@ -298,6 +326,8 @@ export const workspaceFilesProducer: AttachmentProducer = async (opts, trackingS
  * finishes in the background and its result is dropped.
  */
 async function withinDeadline(cwd: string, turnSignal: AbortSignal): Promise<WorkspaceFileListing | undefined> {
+  // An aborted turn starts no filesystem work at all.
+  if (turnSignal.aborted) return undefined;
   const stop = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
@@ -314,7 +344,7 @@ async function withinDeadline(cwd: string, turnSignal: AbortSignal): Promise<Wor
   });
   const walk = (async () => {
     // Only the validated canonical directory is enumerated, never the spelling the session started with.
-    const workspace = await listableWorkspace(cwd);
+    const workspace = await listableWorkspace(cwd, homedir(), stop.signal);
     if (workspace === undefined || stop.signal.aborted) return undefined;
     const listing = await listWorkspaceFiles(workspace, stop.signal);
     return stop.signal.aborted ? undefined : listing;

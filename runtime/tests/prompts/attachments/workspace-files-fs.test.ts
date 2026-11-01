@@ -2,7 +2,8 @@
  * The workspace file listing under a changing or slow filesystem: folders swapped for links during the walk,
  * and reads that stall or return very large folders.
  */
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -217,5 +218,60 @@ describe("home folder ancestors", () => {
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
+  });
+});
+
+describe("git metadata reads", () => {
+  test("a .git pointer swapped for a FIFO before it is opened does not block the check", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), "agenc-ws-fifo-"));
+    const gitFile = path.join(base, "wt", ".git");
+    write(base, "wt/.git", "gitdir: ../main/.git/worktrees/wt\n");
+    let swapped = false;
+    hooks.beforeOpen = (target) => {
+      if (!swapped && target === gitFile) {
+        swapped = true;
+        rmSync(gitFile);
+        execFileSync("mkfifo", [gitFile]);
+      }
+    };
+    try {
+      const result = await Promise.race([
+        listableWorkspace(path.join(base, "wt"), root),
+        new Promise((resolve) => setTimeout(() => resolve("blocked"), 1_000)),
+      ]);
+      expect(swapped).toBe(true);
+      expect(result).not.toBe("blocked");
+      expect(result).toBeFalsy();
+    } finally {
+      // Release a reader that an open without O_NONBLOCK would have left waiting for a writer.
+      try {
+        closeSync(openSync(gitFile, constants.O_WRONLY | constants.O_NONBLOCK));
+      } catch {
+        // no reader was waiting
+      }
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("an aborted turn starts no filesystem work", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const opts = {
+      sessionKey: {},
+      lightMode: true,
+      lightWorkspaceFiles: true,
+      turnProvenance: { turnId: "turn-1", rootHumanTurn: { turnId: "turn-1", text: "Fix it." } },
+      userInput: "Fix it.",
+      loadedTools: [],
+      messages: [{ role: "user" as const, content: "Fix it." }],
+      permissionContext: { mode: "bypassPermissions" } as never,
+      cwd: root,
+      subagentDepth: 0,
+      signal: controller.signal,
+      agencHome: path.join(root, ".agenc-home"),
+    };
+    hooks.calls = 0;
+    expect(await workspaceFilesProducer(opts, getAttachmentTrackingState(opts.sessionKey))).toEqual([]);
+    expect(hooks.calls).toBe(0);
   });
 });
