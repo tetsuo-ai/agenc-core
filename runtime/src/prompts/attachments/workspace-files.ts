@@ -7,13 +7,13 @@
  * every later request. With the names already in front of it, DeepSeek read the files it needed in its first
  * call (replay pilot, jobs/dsw/replay). The listing is taken once, when the conversation starts, from the
  * folder the user opened, only when that folder belongs to a git work tree and is neither the home folder nor
- * the filesystem root. Names only, never contents; folders that hold dependencies, caches or version control
+ * the filesystem root, by identity. Names only, never contents; folders that hold dependencies, caches or version control
  * are shown but not expanded. The names are workspace data, framed like Light's workspace tool results.
  *
  * @module
  */
 
-import { readdir, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -40,6 +40,13 @@ const NOT_EXPANDED: ReadonlySet<string> = new Set([
   ".turbo",
 ]);
 
+/** A directory by identity: its canonical path and its device and inode numbers. */
+export interface DirectoryIdentity {
+  readonly path: string;
+  readonly dev: number;
+  readonly ino: number;
+}
+
 export interface WorkspaceFileListing {
   readonly entries: readonly string[];
   readonly truncated: boolean;
@@ -65,15 +72,40 @@ async function insideGitWorkTree(cwd: string): Promise<boolean> {
   }
 }
 
+/** The canonical directory behind `target` (every link resolved), or undefined when that fails. */
+async function canonicalDirectory(target: string): Promise<DirectoryIdentity | undefined> {
+  try {
+    const real = await realpath(target);
+    const info = await lstat(real);
+    return info.isDirectory() ? { path: real, dev: info.dev, ino: info.ino } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameDirectory(a: DirectoryIdentity, b: DirectoryIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
 /**
- * Whether a folder is a project the listing may describe: a git work tree, but not the home folder or
- * the filesystem root (a session opened there would send names the request may not be about).
+ * The canonical directory a listing may describe, or undefined: a git work tree that is not the home folder,
+ * not the filesystem root, not a folder that holds the home folder, and no alias of any of them (directories
+ * compare by device and inode after every link is resolved, so a second spelling or a bind mount of the home
+ * folder is the home folder). Anything that cannot be resolved, the home folder included, describes nothing.
  */
-export async function listableWorkspace(cwd: string, home: string = homedir()): Promise<boolean> {
-  const resolved = path.resolve(cwd);
-  if (resolved === path.parse(resolved).root) return false;
-  if (home.length > 0 && resolved === path.resolve(home)) return false;
-  return insideGitWorkTree(resolved);
+export async function listableWorkspace(
+  cwd: string,
+  home: string = homedir(),
+): Promise<DirectoryIdentity | undefined> {
+  const root = await canonicalDirectory(cwd);
+  if (root === undefined) return undefined;
+  const filesystemRoot = await canonicalDirectory(path.parse(root.path).root);
+  if (filesystemRoot === undefined || sameDirectory(root, filesystemRoot)) return undefined;
+  const homeDir = home.length > 0 ? await canonicalDirectory(home) : undefined;
+  if (homeDir === undefined || sameDirectory(root, homeDir)) return undefined;
+  const prefix = root.path.endsWith(path.sep) ? root.path : `${root.path}${path.sep}`;
+  if (homeDir.path.startsWith(prefix)) return undefined;
+  return (await insideGitWorkTree(root.path)) ? root : undefined;
 }
 
 /**
@@ -146,8 +178,10 @@ export const workspaceFilesProducer: AttachmentProducer = async (opts, trackingS
     return [];
   }
   trackingState.workspaceFilesSent = true;
-  if (!(await listableWorkspace(opts.cwd))) return [];
-  const listing = await listWorkspaceFiles(opts.cwd, opts.signal);
+  // Only the validated canonical directory is enumerated, never the spelling the session started with.
+  const workspace = await listableWorkspace(opts.cwd);
+  if (workspace === undefined) return [];
+  const listing = await listWorkspaceFiles(workspace.path, opts.signal);
   if (listing.entries.length === 0) return [];
   return [{ kind: "workspace_files", entries: listing.entries, truncated: listing.truncated }];
 };

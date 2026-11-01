@@ -2,7 +2,7 @@
  * Interactive DeepSeek Light sessions get the workspace's file names once, with the first message of the
  * conversation; every other session's requests stay as they were.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -22,6 +22,7 @@ import { lightUsesDeepSeekWorkRules } from "../../../src/tools/light-profile.js"
 import { drain, mkCtx, mkProvider, mkSession } from "../../fixtures.js";
 
 let root: string;
+let home: string;
 
 function write(rel: string, text = "x\n"): void {
   const file = path.join(root, rel);
@@ -30,6 +31,7 @@ function write(rel: string, text = "x\n"): void {
 }
 
 beforeEach(() => {
+  home = mkdtempSync(path.join(tmpdir(), "agenc-ws-home-"));
   root = mkdtempSync(path.join(tmpdir(), "agenc-ws-files-"));
   mkdirSync(path.join(root, ".git"));
   write(".git/HEAD", "ref: refs/heads/main\n");
@@ -46,6 +48,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   rmSync(root, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 function makeOpts(partial?: Partial<GetAttachmentsOptions>): GetAttachmentsOptions {
@@ -107,15 +110,38 @@ describe("workspace file listing", () => {
   });
 
   test("describes git work trees only, never the home folder or the filesystem root", async () => {
-    expect(await listableWorkspace(root, "/nonexistent-home")).toBe(true);
-    expect(await listableWorkspace(path.join(root, "src"), "/nonexistent-home")).toBe(true);
-    expect(await listableWorkspace(root, root)).toBe(false);
-    expect(await listableWorkspace(path.parse(root).root, "/nonexistent-home")).toBe(false);
+    expect(await listableWorkspace(root, home)).toBeTruthy();
+    expect(await listableWorkspace(path.join(root, "src"), home)).toBeTruthy();
+    expect(await listableWorkspace(root, root)).toBeFalsy();
+    expect(await listableWorkspace(path.parse(root).root, home)).toBeFalsy();
     const plain = mkdtempSync(path.join(tmpdir(), "agenc-ws-plain-"));
     try {
-      expect(await listableWorkspace(plain, "/nonexistent-home")).toBe(false);
+      expect(await listableWorkspace(plain, home)).toBeFalsy();
     } finally {
       rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  test("compares the home folder and the filesystem root by identity and fails closed", async () => {
+    const links = mkdtempSync(path.join(tmpdir(), "agenc-ws-links-"));
+    try {
+      // A second spelling of the home folder is the home folder, whichever side carries it.
+      symlinkSync(root, path.join(links, "home-alias"));
+      expect(await listableWorkspace(root, path.join(links, "home-alias"))).toBeFalsy();
+      expect(await listableWorkspace(path.join(links, "home-alias"), root)).toBeFalsy();
+      symlinkSync(path.parse(root).root, path.join(links, "root-alias"));
+      expect(await listableWorkspace(path.join(links, "root-alias"), home)).toBeFalsy();
+      // A folder that holds the home folder would list names inside it.
+      expect(await listableWorkspace(root, path.join(root, "src"))).toBeFalsy();
+      // Nothing that cannot be resolved is described: the folder, or the home folder to compare with.
+      expect(await listableWorkspace(path.join(root, "missing"), home)).toBeFalsy();
+      expect(await listableWorkspace(root, path.join(links, "no-such-home"))).toBeFalsy();
+      expect(await listableWorkspace(root, "")).toBeFalsy();
+      // The canonical directory is what gets enumerated.
+      symlinkSync(root, path.join(links, "project-alias"));
+      expect((await listableWorkspace(path.join(links, "project-alias"), home))?.path).toBe(realpathSync(root));
+    } finally {
+      rmSync(links, { recursive: true, force: true });
     }
   });
 });
