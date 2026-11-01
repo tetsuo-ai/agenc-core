@@ -13,6 +13,7 @@
  * @module
  */
 
+import type { Dirent } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -83,7 +84,10 @@ async function canonicalDirectory(target: string): Promise<DirectoryIdentity | u
   }
 }
 
-function sameDirectory(a: DirectoryIdentity, b: DirectoryIdentity): boolean {
+function sameDirectory(
+  a: Pick<DirectoryIdentity, "dev" | "ino">,
+  b: Pick<DirectoryIdentity, "dev" | "ino">,
+): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
 
@@ -109,13 +113,40 @@ export async function listableWorkspace(
 }
 
 /**
- * Breadth-first names under `cwd`, nearest levels first, then sorted. Symbolic links are listed, never
- * followed. Unreadable folders are skipped.
+ * One folder of the walk, read only while it is the same real directory at its expected canonical place:
+ * just before the read it must not be a link and must resolve to exactly that place (the root: to the
+ * validated identity), and just after the read it must still have the same device and inode. A folder that
+ * a link replaced after its parent was listed, or whose parent became a link, is dropped (undefined), so a
+ * swap during the walk cannot lead the listing outside the workspace.
+ */
+async function readContainedDirectory(
+  expected: string,
+  identity?: DirectoryIdentity,
+): Promise<Dirent[] | undefined> {
+  try {
+    const before = await lstat(expected);
+    if (!before.isDirectory()) return undefined;
+    if (identity !== undefined && !sameDirectory(identity, before)) return undefined;
+    if ((await realpath(expected)) !== expected) return undefined;
+    const children = await readdir(expected, { withFileTypes: true });
+    const after = await lstat(expected);
+    return after.isDirectory() && sameDirectory(before, after) ? children : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Breadth-first names under the workspace, nearest levels first, then sorted. Symbolic links are listed,
+ * never followed. Unreadable folders, and folders that change under the walk, are skipped. A path is first
+ * resolved to its canonical directory; one that cannot be resolved lists nothing.
  */
 export async function listWorkspaceFiles(
-  cwd: string,
+  workspace: DirectoryIdentity | string,
   signal?: AbortSignal,
 ): Promise<WorkspaceFileListing> {
+  const root = typeof workspace === "string" ? await canonicalDirectory(workspace) : workspace;
+  if (root === undefined) return { entries: [], truncated: false };
   const entries: string[] = [];
   let truncated = false;
   let dirsRead = 0;
@@ -128,12 +159,10 @@ export async function listWorkspaceFiles(
       break;
     }
     dirsRead += 1;
-    let children;
-    try {
-      children = await readdir(path.join(cwd, rel), { withFileTypes: true });
-    } catch {
-      continue;
-    }
+    const children = rel.length === 0
+      ? await readContainedDirectory(root.path, root)
+      : await readContainedDirectory(path.join(root.path, rel));
+    if (children === undefined) continue;
     children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const child of children) {
       if (entries.length >= WORKSPACE_FILES_MAX_ENTRIES) {
@@ -181,7 +210,7 @@ export const workspaceFilesProducer: AttachmentProducer = async (opts, trackingS
   // Only the validated canonical directory is enumerated, never the spelling the session started with.
   const workspace = await listableWorkspace(opts.cwd);
   if (workspace === undefined) return [];
-  const listing = await listWorkspaceFiles(workspace.path, opts.signal);
+  const listing = await listWorkspaceFiles(workspace, opts.signal);
   if (listing.entries.length === 0) return [];
   return [{ kind: "workspace_files", entries: listing.entries, truncated: listing.truncated }];
 };
