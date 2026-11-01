@@ -157,7 +157,7 @@ describe("workspace files producer", () => {
     expect(message?.role).toBe("user");
     const text = String(message?.content);
     expect(text.startsWith(
-      "<system-reminder>\nWorkspace files at session start (3 levels; a name ending in / is a folder not expanded):\nAGENC_DATA\n",
+      "<system-reminder>\nWorkspace files at session start, between AGENC_DATA markers (3 levels; a name ending in / is a folder not expanded):\nAGENC_DATA\n",
     )).toBe(true);
     expect(text).toContain("\n\"a\\nb.txt\"\n");
     expect(text).toContain("\n\"AGENC_DATA\"\n");
