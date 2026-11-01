@@ -80,6 +80,7 @@ import {
   serializeProviderToolArguments,
 } from "../../wire/shared.js";
 import { ThinkTagStreamFilter } from "../../wire/think-tags.js";
+import { HarmonyLeakHold, withoutHarmonyAnalysisCalls } from "../../wire/harmony-leak.js";
 import { ReasoningDetailsAccumulator } from "../../wire/reasoning-details.js";
 import {
   advertisedResponsesToolNames,
@@ -2298,6 +2299,8 @@ export class OpenAIProvider implements LLMProvider {
       // filter reroutes those spans to the same hidden channel so the
       // transcript never shows literal tags.
       const thinkFilter = new ThinkTagStreamFilter();
+      // A gpt-oss call some hosts send as harmony text is held, not shown.
+      const harmonyHold = new HarmonyLeakHold(requestModel);
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
       let sawFinishReason = false;
@@ -2434,7 +2437,8 @@ export class OpenAIProvider implements LLMProvider {
             const split = thinkFilter.push(contentDelta);
             if (split.text.length > 0) {
               content += split.text;
-              onChunk({ content: split.text, done: false });
+              const shown = harmonyHold.push(split.text);
+              onChunk({ content: shown, done: false });
             }
             if (split.reasoning.length > 0) {
               reasoningContent += split.reasoning;
@@ -2663,7 +2667,8 @@ export class OpenAIProvider implements LLMProvider {
       const filterTail = thinkFilter.flush();
       if (filterTail.text.length > 0) {
         content += filterTail.text;
-        onChunk({ content: filterTail.text, done: false });
+        const shown = harmonyHold.push(filterTail.text);
+        if (shown.length > 0) onChunk({ content: shown, done: false });
       }
       if (filterTail.reasoning.length > 0) {
         reasoningContent += filterTail.reasoning;
@@ -2680,14 +2685,23 @@ export class OpenAIProvider implements LLMProvider {
       const includeToolCalls =
         finishReason === "stop" || finishReason === "tool_calls";
       let toolCallRecovery: LLMResponse["toolCallRecovery"];
+      // gpt-oss analysis that a host parsed into an extra call is reasoning.
+      const harmonyCalls = withoutHarmonyAnalysisCalls(
+        requestModel,
+        Array.from(toolCallAccumulator.values()),
+        requestOptions.tools.map((tool) => tool.function.name),
+      );
+      if (harmonyCalls.analysis.length > 0) {
+        reasoningContent += (reasoningContent.length > 0 ? "\n" : "") + harmonyCalls.analysis;
+      }
       const toolCalls = includeToolCalls
-        ? Array.from(toolCallAccumulator.values()).flatMap((toolCall) => {
+        ? harmonyCalls.calls.flatMap((toolCall) => {
           const validation = validateToolCallDetailed(toolCall);
           // Admit correction only for a solitary, advertised native call.
           // A conversational preamble does not make its arguments valid.
           // Never expose the rejected arguments as an executable tool call.
           if (validation.failure?.code === "invalid_json" &&
-              toolCallAccumulator.size === 1 && finishReason === "tool_calls" &&
+              harmonyCalls.calls.length === 1 && finishReason === "tool_calls" &&
               toolCall.name.length <= 256 && /^[A-Za-z0-9_.:-]+$/.test(toolCall.name) &&
               requestOptions.tools.some(tool => tool.function.name === toolCall.name)) {
             toolCallRecovery = { source: "native", reason: "invalid_arguments",
@@ -2766,6 +2780,11 @@ export class OpenAIProvider implements LLMProvider {
           { discardedReasoningContent, conflictingReasoningModel, responseHeaders: response.headers },
         ),
       );
+      // Held text that did not become a tool call is the answer after all.
+      const heldText = harmonyHold.flush();
+      if (heldText.length > 0 && parsed.content.length > 0) {
+        onChunk({ content: heldText, done: false });
+      }
       onChunk({
         content: "",
         done: true,
