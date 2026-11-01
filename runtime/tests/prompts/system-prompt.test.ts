@@ -66,7 +66,7 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
-import { LIGHT_ACCEPTANCE_REVIEW, LIGHT_COMPUTE_FROM_DATA, LIGHT_DEEPSEEK_FINISH, LIGHT_DEEPSEEK_LIMITED_FINISH, LIGHT_FINISH, LIGHT_LIMITED_FINISH, LIGHT_MISSING_CHECK_TOOLS } from "./light-budget-prompt.js";
+import { LIGHT_ACCEPTANCE_REVIEW, LIGHT_COMPUTE_FROM_DATA, LIGHT_DEEPSEEK_FINISH, LIGHT_FINISH, LIGHT_LIMITED_FINISH, LIGHT_MISSING_CHECK_TOOLS } from "./light-budget-prompt.js";
 import { AGENC_INSTRUCTION_FILE, AGENC_UNDO_GUIDANCE, AGENC_UNDO_PATHS } from "./product-help.js";
 import { LIGHT_LOADED_INSTRUCTIONS_NOTE } from "./live-instructions.js";
 import { LIGHT_TASK_LIMITS_ENV } from "../tools/light-profile.js";
@@ -1590,9 +1590,7 @@ describe("Light finish rules per provider", () => {
 
   test("DeepSeek states scope, rerun and report limits in place of the default finish rules", async () => {
     const deepseek = await head("deepseek");
-    // DeepSeek models keep the 0.19.26 wording (no rework clause; job spd's decision A/B).
-    expect(deepseek).toContain(LIGHT_DEEPSEEK_LIMITED_FINISH);
-    expect(deepseek).not.toContain(LIGHT_LIMITED_FINISH);
+    expect(deepseek).toContain(LIGHT_LIMITED_FINISH);
     expect(deepseek).not.toContain(LIGHT_FINISH);
     for (const rule of [
       "Do what was asked and no more",

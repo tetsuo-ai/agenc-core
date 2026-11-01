@@ -13,11 +13,11 @@ import type { Session } from "../../src/session/session.js";
 import { assembleSystemPromptSnapshot } from "../../src/prompts/system-prompt.js";
 import {
   LIGHT_DEEPSEEK_FINISH,
-  LIGHT_DEEPSEEK_LIMITED_FINISH,
-  LIGHT_DIRECT_START,
   LIGHT_FINISH,
   LIGHT_LIMITED_FINISH,
+  LIGHT_LOOKUPS,
   LIGHT_PATCH_SIZE,
+  LIGHT_READ_FIRST,
   lightBudgetWorkflow,
 } from "../../src/prompts/light-budget-prompt.js";
 import { mkCtx } from "../fixtures.js";
@@ -57,9 +57,10 @@ describe("interactive Light working rules", () => {
     ["openrouter", "z-ai/glm-5.3", "none"],
   ])("the %s (%s) head checks versions and git state only when needed; apply_patch patches: %s", async (provider, model, patches) => {
     const prompt = await head(provider, model);
-    expect(count(prompt, LIGHT_DIRECT_START)).toBe(1);
-    // The rule follows the instruction to search only for context the change needs.
-    expect(prompt).toContain(`Search only for missing context needed for the change. ${LIGHT_DIRECT_START}`);
+    expect(count(prompt, LIGHT_LOOKUPS)).toBe(1);
+    // The shorter reading and search sentences replace the 0.19.26 ones.
+    expect(prompt).toContain(`omit default arguments. ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}`);
+    expect(prompt).not.toContain("Read a known file before editing it");
     // GPT writes a large change as a few patches.
     expect(count(prompt, LIGHT_PATCH_SIZE)).toBe(patches === "few" ? 1 : 0);
     expect(prompt).not.toContain(ONE_PATCH);
@@ -73,12 +74,13 @@ describe("interactive Light working rules", () => {
     const limited = await head(provider, model);
     const unlimited = await head(provider, model, { env: { AGENC_LIGHT_TASK_LIMITS: "0" } });
     for (const prompt of [limited, unlimited]) {
-      expect(prompt).not.toContain(LIGHT_DIRECT_START);
+      expect(prompt).not.toContain(LIGHT_LOOKUPS);
       expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
-      expect(prompt).not.toContain("do not rework");
-      expect(prompt).not.toContain("with the simplest code that meets the request");
+      expect(prompt).not.toContain("without rework");
+      expect(prompt).not.toContain("with the simplest code");
+      expect(prompt).toContain("Read a known file before editing it: FileRead, or cat, sed -n or head of that file.");
     }
-    expect(limited).toContain(LIGHT_DEEPSEEK_LIMITED_FINISH);
+    expect(limited).toContain(LIGHT_LIMITED_FINISH);
     expect(unlimited).toContain(LIGHT_DEEPSEEK_FINISH);
     expect(unlimited).toContain("Repeat for new edits, failures or unresolved concerns");
     if (model === "deepseek-flash") expect(count(limited, ONE_PATCH) + count(limited, SAME_PATCH)).toBe(2);
@@ -86,7 +88,7 @@ describe("interactive Light working rules", () => {
 
   test("a custom output style keeps the head rules and replaces only the finish paragraph", async () => {
     const styled = await head("openai", "gpt-6-luna", { outputStyle: { name: "custom", prompt: "STYLE_SENTINEL" } });
-    expect(count(styled, LIGHT_DIRECT_START)).toBe(1);
+    expect(count(styled, LIGHT_LOOKUPS)).toBe(1);
     expect(count(styled, LIGHT_PATCH_SIZE)).toBe(1);
     expect(styled).not.toContain(LIGHT_FINISH);
   });
@@ -96,7 +98,7 @@ describe("interactive Light working rules", () => {
     ["openai", "gpt-6-luna", false],
   ])("unattended Light on %s keeps one patch per change and its environment checks", async (provider, model, limits) => {
     const prompt = await head(provider, model, { nonInteractive: true });
-    expect(prompt).not.toContain(LIGHT_DIRECT_START);
+    expect(prompt).not.toContain(LIGHT_LOOKUPS);
     expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
     expect(count(prompt, ONE_PATCH)).toBe(1);
     expect(count(prompt, SAME_PATCH)).toBe(limits ? 1 : 0);
@@ -105,30 +107,39 @@ describe("interactive Light working rules", () => {
 
   test.each([["deepseek", "deepseek-flash"], ["openai", "gpt-6-luna"]])("standard mode on %s receives none of them", async (provider, model) => {
     const prompt = await head(provider, model, { profile: "standard" });
-    expect(prompt).not.toContain(LIGHT_DIRECT_START);
+    expect(prompt).not.toContain(LIGHT_LOOKUPS);
     expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
     expect(prompt).not.toContain("do not rework");
   });
 
-  test("the default finish paragraph asks for the simplest sufficient code and ends once the checks pass", () => {
+  test("the default finish paragraph asks for the simplest code and ends once the checks pass", () => {
     for (const finish of [LIGHT_FINISH, lightBudgetWorkflow(false, false, false, true)]) {
-      expect(count(finish, "with the simplest code that meets the request")).toBe(1);
-      expect(count(finish, "Once the checks pass, do not rework or recheck working code; briefly report results and stop.")).toBe(1);
-      expect(count(finish, "rerun them only after new edits or failures")).toBe(1);
+      expect(count(finish, "with the simplest code.")).toBe(1);
+      expect(count(finish, "Once they pass, report briefly and stop without rework.")).toBe(1);
+      expect(count(finish, "then rerun.")).toBe(1);
       // An unresolved concern after passing checks is no longer a reason to check again.
       expect(finish).not.toContain("unresolved concerns");
     }
   });
 
-  test("the limited finish paragraph also rules out rework of what passed", () => {
+  test("the task-limits paragraph and its heads keep the 0.19.26 wording (DeepSeek, Qwen3.8, or the switch)", async () => {
     for (const finish of [LIGHT_LIMITED_FINISH, lightBudgetWorkflow(false, false, true, true)]) {
-      expect(count(finish, "do not rework or re-verify what already passed")).toBe(1);
-      expect(count(finish, "Try the simplest approach first without going in circles.")).toBe(1);
+      expect(count(finish, "do not re-verify what already passed")).toBe(1);
+      expect(finish).not.toContain("do not rework");
+    }
+    const gptWithLimits = await head("openai", "gpt-6-luna", { env: { AGENC_LIGHT_TASK_LIMITS: "1" } });
+    expect(gptWithLimits).toContain(LIGHT_LIMITED_FINISH);
+    for (const prompt of [await head("qwen-token-plan", "qwen3.8-max"), gptWithLimits]) {
+      expect(count(prompt, "do not re-verify what already passed")).toBe(1);
+      expect(prompt).not.toContain("do not rework");
+      expect(prompt).not.toContain(LIGHT_LOOKUPS);
+      expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
+      expect(prompt).toContain("Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change.");
     }
   });
 
   test("the rules stay general: they name no task, file, language, value or option", () => {
-    for (const rule of [LIGHT_DIRECT_START, LIGHT_PATCH_SIZE, LIGHT_FINISH, LIGHT_LIMITED_FINISH]) {
+    for (const rule of [LIGHT_READ_FIRST, LIGHT_LOOKUPS, LIGHT_PATCH_SIZE, LIGHT_FINISH, LIGHT_LIMITED_FINISH]) {
       for (const word of ["done", "default", "pending", "filter", "flag", "CLI", "true", "false", "README", "node", "npm",
         "python", "pytest", "copy", "server", "csv"]) {
         expect(rule.toLowerCase().includes(word.toLowerCase()), `${word} in ${rule.slice(0, 40)}`).toBe(false);

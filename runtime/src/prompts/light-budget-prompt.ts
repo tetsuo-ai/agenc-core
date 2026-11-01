@@ -38,16 +38,19 @@ export const LIGHT_MISSING_CHECK_TOOLS =
  * Interactive Light working rules (round 4 job spd, from the receipts of the 0.19.26 release race on DeepSeek Flash
  * and gpt-6-luna). Light lost wall time to work the request did not need: a model call before the change on tool
  * versions, git status or git history; one long patch planned in full before anything was written; more general code
- * than the request needed; and new edits and checks after the requested checks had passed. The two finish
- * paragraphs carry the last two (LIGHT_FINISH, LIGHT_LIMITED_FINISH). General working principles, not task hints.
- * LIGHT_PATCH_SIZE goes to sessions without the task limits (GPT). DeepSeek models get none of these rules and keep
- * the 0.19.26 prompt (LIGHT_DEEPSEEK_FINISH, LIGHT_DEEPSEEK_LIMITED_FINISH): in job spd's race-task A/B they cut
- * gpt-6-luna's wall time on the long, server and two-turn tasks, but cost DeepSeek Flash calls, output and reasoning.
- * Unattended Light keeps its own rules: environment checks, one patch per change and the acceptance review.
+ * than the request needed; and new edits and checks after the requested checks had passed. General working
+ * principles, not task hints. They go to interactive sessions without the task limits (GPT and the default models)
+ * and cost no tokens: the head and the default finish paragraph say the old sentences shorter, so each such prompt is
+ * no longer in o200k tokens than 0.19.26's. Sessions with the task limits (DeepSeek, QwenCloud Qwen3.8) and every
+ * DeepSeek model keep the 0.19.26 prompt: in job spd's race-task A/B these rules cut gpt-6-luna's wall time on the
+ * long, server and two-turn tasks but cost DeepSeek Flash calls, output and reasoning. Unattended Light keeps its own
+ * rules: environment checks, one patch per change and the acceptance review.
  */
-export const LIGHT_DIRECT_START = "Check tool versions, git status or history only when a step depends on them.";
-export const LIGHT_PATCH_SIZE =
-  "Edit and create files with apply_patch; write a small change as one patch and a large one as a few patches of related files.";
+export const LIGHT_READ_FIRST = "Read files before editing; FileRead, cat, sed -n and head count.";
+export const LIGHT_LOOKUPS = "Search only for missing context; check tool versions or git state only when needed.";
+export const LIGHT_PATCH_SIZE = "Edit and create files with apply_patch; split a large change into a few patches.";
+const LIGHT_READ_AND_SEARCH =
+  "Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change.";
 
 /** Light's default finish rules: deliver, check, report. */
 export const LIGHT_FINISH = lightFinish(false);
@@ -56,13 +59,14 @@ export const LIGHT_FINISH = lightFinish(false);
 export const LIGHT_DEEPSEEK_FINISH = lightFinish(false, false);
 
 function lightFinish(glmBatchedSteps: boolean, interactiveRules = true): string {
-  const failureHandling = glmBatchedSteps
-    ? "fix all failures you can diagnose before retrying"
-    : "diagnose the first failure and fix its cause before retrying";
   if (!interactiveRules) {
+    const failureHandling = glmBatchedSteps
+      ? "fix all failures you can diagnose before retrying"
+      : "diagnose the first failure and fix its cause before retrying";
     return `Complete requested files, exports and error cases. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; ${failureHandling}. ${LIGHT_COMPUTE_FROM_DATA} Briefly report results and stop. ${LIGHT_MISSING_CHECK_TOOLS}`;
   }
-  return `Complete requested files, exports and error cases with the simplest code that meets the request. ${LIGHT_KEEP_BEHAVIOR} Run required and change-relevant checks once after final edits; rerun them only after new edits or failures, and ${failureHandling}. ${LIGHT_COMPUTE_FROM_DATA} Once the checks pass, do not rework or recheck working code; briefly report results and stop. ${LIGHT_MISSING_CHECK_TOOLS}`;
+  const failureHandling = glmBatchedSteps ? "fix all failures you can diagnose" : "fix the first failure's cause";
+  return `Complete requested files, exports and error cases with the simplest code. ${LIGHT_KEEP_BEHAVIOR} ${LIGHT_COMPUTE_FROM_DATA} Run required and change-relevant checks after final edits; ${failureHandling}, then rerun. Once they pass, report briefly and stop without rework. ${LIGHT_MISSING_CHECK_TOOLS}`;
 }
 
 /**
@@ -72,19 +76,15 @@ function lightFinish(glmBatchedSteps: boolean, interactiveRules = true): string 
  */
 export const LIGHT_LIMITED_FINISH = lightLimitedFinish(false);
 
-/** The limited finish rules DeepSeek models get: the 0.19.26 wording, without the rework clause. */
-export const LIGHT_DEEPSEEK_LIMITED_FINISH = lightLimitedFinish(false, false, false);
-
 /**
  * `computeFromData` keeps LIGHT_COMPUTE_FROM_DATA in the limited paragraph (QwenCloud Qwen3.8, which has no
  * measured habit of computing totals with a command); DeepSeek's paragraph stays without it.
  */
-function lightLimitedFinish(glmBatchedSteps: boolean, computeFromData = false, interactiveRules = true): string {
+function lightLimitedFinish(glmBatchedSteps: boolean, computeFromData = false): string {
   const failureHandling = glmBatchedSteps
     ? "fixing all failures you can diagnose"
     : "fixing the first failure's cause";
-  const passed = interactiveRules ? "do not rework or re-verify what already passed" : "do not re-verify what already passed";
-  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. ${LIGHT_KEEP_BEHAVIOR} Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and ${passed}. ${computeFromData ? `${LIGHT_COMPUTE_FROM_DATA} ` : ""}${LIGHT_MISSING_CHECK_TOOLS} When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
+  return `Do what was asked and no more: every requested file, export and stated error case, but no extra features, refactors, configurability or comments, and no handling for cases that cannot happen. ${LIGHT_KEEP_BEHAVIOR} Try the simplest approach first without going in circles. After the last edit, run the required and change-relevant checks and read their output; rerun them only after new edits or failures, ${failureHandling}, and do not re-verify what already passed. ${computeFromData ? `${LIGHT_COMPUTE_FROM_DATA} ` : ""}${LIGHT_MISSING_CHECK_TOOLS} When the change is made and verified, stop and report the outcome and the check that passed in one or two sentences; the user sees your tool calls and edits, so list changes only when asked.`;
 }
 
 /** Consolidate finish rules so the unattended review does not repeat them. */
@@ -117,22 +117,21 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * about them (prompts/attachments/product-help.ts).
  */
 export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false): string {
-  // Interactive sessions get the working rules above; DeepSeek models keep the 0.19.26 prompt.
-  const interactiveRules = !nonInteractive && !deepseekModel;
-  const start = interactiveRules ? ` ${LIGHT_DIRECT_START}` : "";
+  // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
+  // keep the 0.19.26 prompt.
+  const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
+  const reading = interactiveRules ? ` ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}` : ` ${LIGHT_READ_AND_SEARCH}`;
   const editing = !editsWithApplyPatch
     ? ""
-    : interactiveRules && !statesTaskLimits
+    : interactiveRules
       ? ` ${LIGHT_PATCH_SIZE}`
       : " Edit and create files with apply_patch; put all hunks of one change in one patch." +
         (statesTaskLimits ? " When their contents are known, include the task's source, tests and requested documentation in the same patch." : "");
   const finishing = nonInteractive
     ? lightUnattendedFinish(glmBatchedSteps, !statesTaskLimits || limitedComputesFromData)
-    : statesTaskLimits
-      ? lightLimitedFinish(glmBatchedSteps, limitedComputesFromData, interactiveRules)
-      : lightFinish(glmBatchedSteps, interactiveRules);
+    : statesTaskLimits ? lightLimitedFinish(glmBatchedSteps, limitedComputesFromData) : lightFinish(glmBatchedSteps, interactiveRules);
   return [
-    "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. Put independent tool calls in one response; omit default arguments. Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change." + start + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
+    "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. Put independent tool calls in one response; omit default arguments." + reading + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
     ...(glmBatchedSteps ? [LIGHT_GLM_BATCHED_STEPS] : []),
     ...(customStyle ? [] : [finishing]),
     ...(nonInteractive && customStyle ? [LIGHT_ACCEPTANCE_REVIEW] : []),

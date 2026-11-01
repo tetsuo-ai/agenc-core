@@ -83,13 +83,14 @@ keep the mode they started with. The status line shows `standard` for a
 standard session and no label for Light. Swarm teammates are started with the
 leader's mode.
 
-Interactive Light sessions (the TUI) of models other than DeepSeek ask the
-model to check tool versions and git state only when a step needs them, to
-write the simplest code that meets the request, and to stop reworking and
-rechecking once the requested checks pass; GPT models, which edit with
-apply_patch, write a large change as a few patches. DeepSeek models keep the
-0.19.26 guidance. Print-mode runs keep their own guidance: environment checks,
-one patch per change and an acceptance review.
+Interactive Light sessions (the TUI) without the task limits (GPT and the other
+models except DeepSeek and QwenCloud Qwen3.8) ask the model to check tool
+versions and git state only when needed, to write the simplest code, and to
+stop without rework once the checks pass; GPT models, which edit with
+apply_patch, split a large change into a few patches. The wording is shorter
+than before, so these prompts are not longer. DeepSeek models and sessions with
+the task limits keep the 0.19.26 guidance. Print-mode runs keep their own
+guidance: environment checks, one patch per change and an acceptance review.
 
 ### Status line
 
