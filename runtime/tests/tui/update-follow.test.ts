@@ -12,6 +12,7 @@ import {
   type AgenCDaemonRestartOutcome,
   type AgenCDaemonRestartResult,
 } from "../../src/app-server/daemon-restart-outcome.js";
+import { activeAgenCDaemonRestartFollows } from "../../src/app-server/daemon-restart-follow-retention.js";
 import { publishAgenCDaemonRestartResult } from "../../src/app-server/daemon-restart-when-idle.js";
 import { runUpdateRelaunch, type UpdateRelaunchDeps } from "../../src/bin/update-relaunch.js";
 import {
@@ -28,6 +29,8 @@ import {
   getPendingUpdateFollow,
   resetUpdateRelaunchStateForTestingOnly,
   setPendingUpdateFollow,
+  setPendingUpdateRelaunch,
+  consumePendingUpdateRelaunch,
   type UpdateFollow,
   type UpdateNotice,
   type UpdateRelaunchRequest,
@@ -161,6 +164,35 @@ describe("following the daemon after the update stopped waiting for its restart"
     setPendingUpdateFollow(follow);
     return follow!;
   }
+
+  it("releases an earlier deferred follow when a manual retry successfully replaces the process", async () => {
+    await updateWhoseRestartStillRuns();
+    await publishAgenCDaemonRestartResult(home, ended(MINE, failed()));
+    expect([...activeAgenCDaemonRestartFollows(home)]).toEqual([MINE]);
+    // The menu accepts a replacement relaunch before unmounting the TUI.
+    setPendingUpdateRelaunch(request);
+    const next = consumePendingUpdateRelaunch()!;
+    const execve = vi.fn();
+    const reopen = vi.fn(async () => 0);
+    await runUpdateRelaunch(next, {
+      agencHome: home, pid: process.pid, platform: "linux", env: {},
+      newRequestId: () => OTHER,
+      runDaemonStep: async () => ({ status: "not-running" }),
+      execve, chdir: () => {}, reopen,
+      markerName: AGENC_UPDATE_RELAUNCH_ENV, encodeMarker: encodeUpdateRelaunchMarker,
+      write: () => {},
+    });
+    expect(execve).toHaveBeenCalledOnce();
+    expect(reopen).not.toHaveBeenCalled();
+    expect(getPendingUpdateFollow()).toBeNull();
+    expect(activeAgenCDaemonRestartFollows(home).size).toBe(0);
+    // execve keeps the PID alive, so ordinary publication must prune the old result.
+    for (let index = 0; index < 8; index++) {
+      await publishAgenCDaemonRestartResult(home, ended(`new-result-${index}`, { status: "not-running" }));
+    }
+    expect(readDaemonRestartResults(home)).toHaveLength(8);
+    expect(readDaemonRestartResults(home).some(result => result.requestId === MINE)).toBe(false);
+  });
 
   it("reports a restart that fails after the update stopped waiting, then stops following", async () => {
     await updateWhoseRestartStillRuns();
