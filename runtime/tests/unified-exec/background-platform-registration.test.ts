@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 // Collect the real test modules without running their process fixtures. This
 // checks unsupported-platform discovery on every CI host, including Linux.
@@ -52,5 +52,26 @@ test.each(["linux", "darwin", "win32"])("background process fixtures register on
       stdio: ["pipe", "pipe", "pipe"],
     });
     expect(JSON.parse(output), file).toHaveLength(platform === "win32" ? 0 : count);
+  }
+});
+
+
+test.each(["linux", "darwin", "win32"])("default discovery excludes empty process-fixture files (%s)", async (platform) => {
+  vi.resetModules();
+  const originalProcess = process;
+  vi.stubGlobal("process", new Proxy(originalProcess, {
+    get(target, property) {
+      return property === "platform" ? platform : Reflect.get(target, property);
+    },
+  }));
+  try {
+    const { createAgenCVitestConfig } = await import("../../vitest.config.js");
+    const excluded = createAgenCVitestConfig().test!.exclude!;
+    for (const file of ["quiet-poll-process-state.test.ts", "session-end-oom.test.ts"]) {
+      expect(excluded.includes(`tests/unified-exec/${file}`)).toBe(platform === "win32");
+    }
+  } finally {
+    vi.unstubAllGlobals();
+    vi.resetModules();
   }
 });
