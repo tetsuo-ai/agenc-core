@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
+import { buildFilteredRegistry, TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH } from "../../../src/agents/run-agent.js";
 import { buildToolRegistry } from "../../../src/tool-registry.js";
 import { QuickJsCodeModeService } from "../../../src/tools/code-mode/service.js";
 import { EXEC_HARD_TIMEOUT_ENV, execHardTimeoutEnabled } from "../../../src/tools/system/exec-timeout-mode.js";
@@ -124,4 +125,18 @@ describe("the hard-timeout wording on every surface", () => {
     expect(timeoutDescription(standard.built))
       .toBe("Wait limit in ms. A command still running then is not stopped: it keeps running as a session (session_id).");
   });
+});
+
+
+test.each([true, false])("Light child discovery keeps canonical timeout wording (hard=%s)", async (hard) => {
+  const session = sessionWith({ configured: hard });
+  const parent = registry(session, true);
+  const child = buildFilteredRegistry(parent.built, {
+    childConversationId: "timeout-child", lightMode: true,
+    unadmittedDispatchOverride: TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+  });
+  await child.dispatch({ id: "discover-exec", name: "system.searchTools", arguments: '{"select":"exec_command"}' });
+  expect(timeoutDescription(child)).toBe(hard
+    ? "Hard timeout in ms: a command still running then is stopped."
+    : "Wait limit in ms. A command still running then is not stopped: it keeps running as a session (session_id).");
 });

@@ -1106,8 +1106,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         },
         timeoutMs: {
           type: "number",
-          description:
-            "Wait limit in ms. A command still running then is not stopped: it keeps running as a session (session_id).",
+          get description(): string {
+            return config?.hardTimeout?.() === true
+              ? "Hard timeout in ms: a command still running then is stopped."
+              : "Wait limit in ms. A command still running then is not stopped: it keeps running as a session (session_id).";
+          },
         },
         background: {
           type: "boolean",
