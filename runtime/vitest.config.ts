@@ -168,6 +168,12 @@ export const DARWIN_ONLY_DEFAULT_TEST_FILES = Object.freeze([
   "tests/sandbox/engine/seatbelt-chromium.darwin.test.ts",
 ]);
 
+/** Whole-file process-table and POSIX signal fixtures have no Windows tests. */
+export const POSIX_PROCESS_DEFAULT_TEST_FILES = Object.freeze([
+  "tests/unified-exec/quiet-poll-process-state.test.ts",
+  "tests/unified-exec/session-end-oom.test.ts",
+]);
+
 /**
  * Tests that may contact a provider, browser, or chain are never discovered by
  * the default suite. `HookProgressMessage.live.parity.test.ts` deliberately
@@ -192,6 +198,7 @@ export const DEFAULT_TEST_EXCLUDE = Object.freeze([
   ...CROSS_REPO_TEST_INCLUDE,
   ...NATIVE_TEST_INCLUDE,
   ...(process.platform === "darwin" ? [] : DARWIN_ONLY_DEFAULT_TEST_FILES),
+  ...(["linux", "darwin"].includes(process.platform) ? [] : POSIX_PROCESS_DEFAULT_TEST_FILES),
   ...KERNEL_TEST_INCLUDE,
   ...POWERSHELL_TEST_INCLUDE,
 ]);
