@@ -4767,6 +4767,43 @@ describe("AgenC TUI daemon session adapter", () => {
     }
   });
 
+  it.each([0, 1, 2, 3, 4, 5, 6, 7, 8])("refreshes authority for a request arriving at reconciliation cleanup (microtask %s)", async (depth) => {
+    const daemon = new ElicitationDaemon();
+    const harness = daemonElicitationHarness({ daemon });
+    try {
+      await flush();
+      const original = harness.client.request.bind(harness.client);
+      let injected = false;
+      Object.assign(harness.client, {
+        request: (method: string, ...args: unknown[]) => {
+          if (method === "elicitation.pending" && !injected) {
+            injected = true;
+            const snapshot = { sessionId: "session_1", asOfSequence: daemon.sequence, pending: [] };
+            const schedule = (remaining: number): void => {
+              queueMicrotask(() => {
+                if (remaining > 0) schedule(remaining - 1);
+                else harness.emit(daemon.form().notification);
+              });
+            };
+            schedule(depth);
+            return Promise.resolve(snapshot);
+          }
+          return (original as (...params: unknown[]) => unknown)(method, ...args);
+        },
+      });
+      harness.client.emitConnection({ status: "connected" });
+      await flush();
+      expect(injected).toBe(true);
+      expect(harness.shown()).toMatchObject({ kind: "mcp-form", index: 0 });
+      harness.answer("Ada", "36");
+      await flush();
+      expect(daemon.waiting.size).toBe(0);
+      expect(harness.responses()).toEqual([ADA_36]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
   it("shows a request that reuses an answered request id in the same turn", async () => {
     const daemon = new ElicitationDaemon();
     const harness = daemonElicitationHarness({ daemon });
