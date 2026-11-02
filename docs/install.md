@@ -327,7 +327,8 @@ version instead of reporting a failure.
 
 A TUI that updates itself gives its restart a request id. The restart step and
 its waiting process write how that request ended to
-`<AGENC_HOME>/daemon-restart-results.json`, which keeps the last 8 requests,
+`<AGENC_HOME>/daemon-restart-results.json`, which keeps the last 8 requests
+plus the results and successor links needed by active TUI follows,
 before they clear the pending record (a deferral is not an end). A TUI that
 follows the update after a busy daemon or a `still-running` result reads only
 its own request's end there, never by time. It switches when the daemon runs
@@ -335,7 +336,13 @@ the new version, and follows a newer request that replaced its own. It stops
 following, keeps running its version and says why when its restart failed or
 was skipped (with the reason), when the daemon moved to a newer version, or
 after about 13 hours on Linux (the 12 hours of a waiting process plus twice the
-update's wait). Quit AgenC and start it again to use the installed version.
+update's wait). Before handing off the restart, the TUI registers its request
+in `<AGENC_HOME>/daemon-restart-follows/`. A suspended TUI keeps its unread
+result. Its final notice immediately replaces the earlier waiting notice,
+including after suspension. Ending the follow releases retention; the next result publication
+also removes registrations owned by dead processes. Older clients that do
+not register still have the eight-result limit, and restart writers from older
+runtimes do not honor these registrations. Quit AgenC and start it again to use the installed version.
 
 Only a daemon started from `<AGENC_HOME>/runtime/` is restarted. The Desktop
 app runs its own bundled runtime in its own home, so its daemon is never

@@ -430,6 +430,9 @@ credential home and connection settings resolve together.
   provider's sign-in refresh and discovery. Requests a tool makes through the
   session's own provider instance (`web_fetch` prompt extraction, token
   counting) use exactly the connection that session's model calls use.
+  Native token-count caches and in-flight counts stay within one provider
+  instance. A child with its own provider, a different transport, or a
+  replacement provider after key rotation gets a fresh count.
   The transport is the session's own proxy (`HTTPS_PROXY`, `NO_PROXY`), client
   certificate and key (`AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`) and CA trust,
   from the same environment its endpoint and key come from; it carries the
@@ -605,7 +608,7 @@ prefix once instead of the tool catalog of every request.
 | Name | Notes |
 | --- | --- |
 | `StructuredOutput` | Schema-bound when session has `outputSchema`; otherwise deferred passthrough |
-| `exec` | Code-mode JS exec. Registered only when `AGENC_CODE_MODE` is `1`/`true`/`on` **and** `quickjs-emscripten` loads (from the runtime install, whatever the daemon's working directory). Then advertised. Not deferred-discoverable when off. REPL is gone. A script's nested tool calls run in the session and turn that started it, never in another session's turn (a parent and its sub-agents share the code-mode runtime), and are refused once that turn has ended; one still running then is cancelled, and a result it returns anyway is dropped (nothing shown, the script gets the refusal). Sub-agent scripts cannot run nested tools yet. |
+| `exec` | Code-mode JS exec. Registered only when `AGENC_CODE_MODE` is `1`/`true`/`on` **and** `quickjs-emscripten` loads (from the runtime install, whatever the daemon's working directory). Then advertised. Not deferred-discoverable when off. REPL is gone. A script's nested tool calls run in the session and turn that started it, never in another session's turn (a parent and its sub-agents share the code-mode runtime), and are refused once that turn has ended; one still running then is cancelled, and a result it returns anyway is dropped (nothing shown, the script gets the refusal). Sub-agent scripts can call their permitted read-only, idempotent tools with object arguments, through the child's own permissions, sandbox restrictions and budget admission. Nested calls requiring approval or side effects remain refused. |
 | `wait` | Code-mode wait (same enablement as `exec`) |
 
 ### Default-visible vs deferred (high level)

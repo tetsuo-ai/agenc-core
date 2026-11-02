@@ -24,6 +24,7 @@ export type LLMToolCall = any;
 
 export interface ToolDispatchResult {
   readonly content: string;
+  readonly codeModeResult?: unknown;
   readonly contentItems?: readonly FunctionCallOutputContentItem[];
   readonly isError?: boolean;
   readonly metadata?: Record<string, unknown>;
@@ -36,6 +37,7 @@ export interface ToolDispatchResult {
 }
 
 export interface ToolRegistry {
+  dispatchCodeModeNestedTool?(call: import("../../tool-registry.js").CodeModeNestedToolDispatch): Promise<ToolDispatchResult>;
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;

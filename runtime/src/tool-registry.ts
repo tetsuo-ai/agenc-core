@@ -153,6 +153,8 @@ export interface ToolDispatchResult {
 }
 
 export interface CodeModeNestedToolDispatch {
+  /** The originating turn; required for a child's ordinary tool pipeline. */
+  readonly turn?: import("./session/turn-context.js").TurnContext;
   readonly id: string;
   readonly name: string;
   readonly input?: unknown;

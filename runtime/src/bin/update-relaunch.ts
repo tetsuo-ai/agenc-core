@@ -17,6 +17,7 @@
  * fresh instead of exiting.
  */
 
+import { retainAgenCDaemonRestartFollow } from "../app-server/daemon-restart-follow-retention.js";
 import { randomUUID } from "node:crypto";
 import type { AgenCDaemonRestartOutcome } from "../app-server/daemon-restart-outcome.js";
 import type {
@@ -118,6 +119,8 @@ export function updateRelaunchEnvironment(
 }
 
 export interface UpdateRelaunchDeps {
+  /** Canonical home in production; absent only in isolated callers/tests. */
+  readonly agencHome?: string;
   readonly pid: number;
   readonly platform: NodeJS.Platform;
   readonly env: NodeJS.ProcessEnv;
@@ -159,12 +162,15 @@ export async function runUpdateRelaunch(
   const since = (deps.now ?? (() => performance.now()))();
   const requestId = (deps.newRequestId ?? randomUUID)();
   let outcome: AgenCDaemonRestartOutcome;
+  let releaseRetention: (() => void) | undefined;
   try {
+    if (deps.agencHome !== undefined) releaseRetention = retainAgenCDaemonRestartFollow(deps.agencHome, requestId);
     outcome = await deps.runDaemonStep(request, updateDaemonStepArgs(request, deps.pid, requestId));
   } catch (error) {
     outcome = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
   }
   const decision = decideUpdateRelaunch(outcome, request);
+  if (decision.kind === "exec" || decision.follow === undefined) releaseRetention?.();
   if (decision.kind === "stay") {
     const followRequest = decision.followVersion === undefined
       ? request
@@ -175,8 +181,9 @@ export async function runUpdateRelaunch(
       decision.follow === undefined
         ? null
         // A deferral that joined another request's pending restart follows that one.
-        : { request: followRequest, when: decision.follow, since, requestId: outcome.requestId ?? requestId },
-    );
+        : { request: followRequest, when: decision.follow, since, requestId: outcome.requestId ?? requestId,
+            ...(releaseRetention === undefined ? {} : { releaseRetention }) },
+    ).catch(error => { releaseRetention?.(); throw error; });
   }
   const args = updateRelaunchArgs(request);
   try {
