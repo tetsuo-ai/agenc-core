@@ -63,6 +63,8 @@ let pendingFollow: UpdateFollow | null = null;
 let relaunchedVersion: string | null = null;
 
 export function setPendingUpdateRelaunch(request: UpdateRelaunchRequest): void {
+  // A successful exec keeps our PID but discards the old follow callback.
+  setPendingUpdateFollow(null);
   pendingRelaunch = request;
 }
 
