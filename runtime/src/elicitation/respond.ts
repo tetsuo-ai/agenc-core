@@ -26,17 +26,20 @@ export interface SessionElicitationResponseParams {
   readonly requestId: McpRequestId;
   readonly serverName?: string;
   readonly response: unknown;
+  readonly requestEventId?: string;
 }
 
 export interface SessionElicitationResponder {
   notifyUserInputResponse(
     requestId: string,
     response: RequestUserInputResponse | null,
+    requestEventId?: string,
   ): Promise<boolean>;
   notifyMcpElicitationResponse(
     serverName: string,
     requestId: McpRequestId,
     response: McpElicitationResponse,
+    requestEventId?: string,
   ): Promise<boolean>;
 }
 
@@ -251,6 +254,7 @@ export async function respondToSessionElicitation(
     return session.notifyUserInputResponse(
       String(params.requestId),
       normalizeRequestUserInputResponse(params.response),
+      ...(params.requestEventId === undefined ? [] : [params.requestEventId]),
     );
   }
   if (typeof params.serverName !== "string" || params.serverName.length === 0) {
@@ -260,5 +264,6 @@ export async function respondToSessionElicitation(
     params.serverName,
     params.requestId,
     normalizeMcpElicitationResponse(params.response),
+    ...(params.requestEventId === undefined ? [] : [params.requestEventId]),
   );
 }

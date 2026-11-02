@@ -649,3 +649,360 @@ describe("Session elicitation pending responders", () => {
     unsubscribe();
   });
 });
+
+describe("Session elicitation close notices", () => {
+  function closedEvents(events: readonly Event[]): unknown[] {
+    return events
+      .filter((event) => event.msg.type === "elicitation_closed")
+      .map((event) => event.msg.payload);
+  }
+
+  /** The identity of the nth request event of this type: what a close names. */
+  function occurrenceOf(
+    events: readonly Event[],
+    type: "mcp_elicitation_request" | "request_user_input",
+    nth = 0,
+  ): { readonly requestEventId: string; readonly requestEventSeq: number } {
+    const request = events.filter((event) => event.msg.type === type)[nth];
+    expect(request?.seq).toEqual(expect.any(Number));
+    expect(request?.eventId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    return { requestEventId: request!.eventId!, requestEventSeq: request!.seq! };
+  }
+
+  async function startedSession(): Promise<{
+    readonly session: Session;
+    readonly events: Event[];
+    readonly unsubscribe: () => void;
+  }> {
+    const session = buildSession();
+    const events: Event[] = [];
+    const unsubscribe = session.eventLog.subscribe((event) => events.push(event));
+    await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
+    return { session, events, unsubscribe };
+  }
+
+  it("announces an MCP elicitation the MCP server cancelled before any answer", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const serverCancel = new AbortController();
+    const pending = session.requestMcpElicitation(
+      "srv",
+      7,
+      FORM_REQUEST,
+      serverCancel.signal,
+    );
+    await flush();
+    expect(closedEvents(events)).toEqual([]);
+
+    serverCancel.abort("server cancelled");
+
+    await expect(pending).resolves.toBeNull();
+    expect(closedEvents(events)).toEqual([
+      {
+        ...occurrenceOf(events, "mcp_elicitation_request"),
+        kind: "mcp",
+        requestId: 7,
+        serverName: "srv",
+        turnId: "turn-1",
+        outcome: "withdrawn",
+      },
+    ]);
+    await expect(
+      session.notifyMcpElicitationResponse("srv", 7, { action: "accept" }),
+    ).resolves.toBe(false);
+    unsubscribe();
+  });
+
+  it("announces an answered MCP elicitation once", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const pending = session.requestMcpElicitation("srv", "mcp-1", FORM_REQUEST);
+    await flush();
+
+    await expect(
+      session.notifyMcpElicitationResponse("srv", "mcp-1", { action: "decline" }),
+    ).resolves.toBe(true);
+
+    await expect(pending).resolves.toEqual({ action: "decline" });
+    expect(closedEvents(events)).toEqual([
+      {
+        ...occurrenceOf(events, "mcp_elicitation_request"),
+        kind: "mcp",
+        requestId: "mcp-1",
+        serverName: "srv",
+        turnId: "turn-1",
+        outcome: "answered",
+      },
+    ]);
+    unsubscribe();
+  });
+
+  it("announces a request_user_input withdrawn by its tool call", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const toolCall = new AbortController();
+    const pending = session.requestUserInput(
+      "call-1",
+      USER_INPUT_ARGS,
+      toolCall.signal,
+    );
+    await flush();
+
+    toolCall.abort("interrupted");
+
+    await expect(pending).resolves.toBeNull();
+    expect(closedEvents(events)).toEqual([
+      {
+        ...occurrenceOf(events, "request_user_input"),
+        kind: "request_user_input",
+        requestId: "call-1",
+        turnId: "turn-1",
+        outcome: "withdrawn",
+      },
+    ]);
+    unsubscribe();
+  });
+
+  it("announces a request_user_input answered with a null response as answered", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const pending = session.requestUserInput("call-1", USER_INPUT_ARGS);
+    await flush();
+
+    await expect(session.notifyUserInputResponse("call-1", null)).resolves.toBe(true);
+
+    await expect(pending).resolves.toBeNull();
+    expect(closedEvents(events)).toEqual([
+      {
+        ...occurrenceOf(events, "request_user_input"),
+        kind: "request_user_input",
+        requestId: "call-1",
+        turnId: "turn-1",
+        outcome: "answered",
+      },
+    ]);
+    unsubscribe();
+  });
+
+  it("announces direct-resolver requests as answered or withdrawn", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const renderer = installElicitationResolvers(session, () => {});
+    try {
+      const answered = session.requestUserInput("call-1", USER_INPUT_ARGS);
+      await flush();
+      expect(renderer.submit("Yes")).toBe(true);
+      await expect(answered).resolves.toEqual({
+        answers: { choice: { answers: ["Yes"] } },
+      });
+
+      const serverCancel = new AbortController();
+      const withdrawn = session.requestMcpElicitation(
+        "srv",
+        "mcp-2",
+        FORM_REQUEST,
+        serverCancel.signal,
+      );
+      await flush();
+      serverCancel.abort("server cancelled");
+      await expect(withdrawn).resolves.toBeNull();
+
+      expect(closedEvents(events)).toEqual([
+        {
+          ...occurrenceOf(events, "request_user_input"),
+          kind: "request_user_input",
+          requestId: "call-1",
+          turnId: "turn-1",
+          outcome: "answered",
+        },
+        {
+          ...occurrenceOf(events, "mcp_elicitation_request"),
+          kind: "mcp",
+          requestId: "mcp-2",
+          serverName: "srv",
+          turnId: "turn-1",
+          outcome: "withdrawn",
+        },
+      ]);
+    } finally {
+      renderer.cleanup();
+      unsubscribe();
+    }
+  });
+
+  it("announces nothing for a request that was never published", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const alreadyStopped = new AbortController();
+    alreadyStopped.abort("interrupted");
+
+    await expect(
+      session.requestMcpElicitation("srv", "mcp-1", FORM_REQUEST, alreadyStopped.signal),
+    ).resolves.toBeNull();
+    await expect(
+      session.requestUserInput("call-1", USER_INPUT_ARGS, alreadyStopped.signal),
+    ).resolves.toBeNull();
+
+    expect(
+      events.filter((event) =>
+        event.msg.type === "mcp_elicitation_request" ||
+        event.msg.type === "request_user_input" ||
+        event.msg.type === "elicitation_closed",
+      ),
+    ).toEqual([]);
+    unsubscribe();
+  });
+
+  it("names each occurrence of a request id reused in the same turn", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    const first = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    await session.notifyMcpElicitationResponse("srv", 7, { action: "decline" });
+    await expect(first).resolves.toEqual({ action: "decline" });
+    const second = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+
+    const firstOccurrence = occurrenceOf(events, "mcp_elicitation_request", 0);
+    const secondOccurrence = occurrenceOf(events, "mcp_elicitation_request", 1);
+    expect(secondOccurrence.requestEventId).not.toBe(firstOccurrence.requestEventId);
+    expect(session.pendingElicitationSnapshot().pending).toEqual([
+      {
+        eventId: secondOccurrence.requestEventId,
+        sequence: secondOccurrence.requestEventSeq,
+        kind: "mcp",
+        requestId: 7,
+        serverName: "srv",
+        turnId: "turn-1",
+      },
+    ]);
+
+    await session.notifyMcpElicitationResponse("srv", 7, { action: "accept", content: { name: "x" } });
+    await expect(second).resolves.toMatchObject({ action: "accept" });
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({ ...firstOccurrence, outcome: "answered" }),
+      expect.objectContaining({ ...secondOccurrence, outcome: "answered" }),
+    ]);
+    unsubscribe();
+  });
+
+  it("lists the pending occurrences with the sequence the set was taken at", async () => {
+    const { session, events, unsubscribe } = await startedSession();
+    expect(session.pendingElicitationSnapshot()).toEqual({
+      asOfSequence: session.eventLog.lastSeq,
+      pending: [],
+    });
+    const toolCall = new AbortController();
+    const question = session.requestUserInput("call-1", USER_INPUT_ARGS, toolCall.signal);
+    const form = session.requestMcpElicitation("srv", "mcp-1", FORM_REQUEST);
+    await flush();
+    const questionOccurrence = occurrenceOf(events, "request_user_input");
+    const formOccurrence = occurrenceOf(events, "mcp_elicitation_request");
+
+    const both = session.pendingElicitationSnapshot();
+    expect(both.asOfSequence).toBe(session.eventLog.lastSeq);
+    expect(both.asOfSequence).toBeGreaterThanOrEqual(formOccurrence.requestEventSeq);
+    expect(both.pending).toEqual([
+      {
+        eventId: questionOccurrence.requestEventId,
+        sequence: questionOccurrence.requestEventSeq,
+        kind: "request_user_input",
+        requestId: "call-1",
+        turnId: "turn-1",
+      },
+      {
+        eventId: formOccurrence.requestEventId,
+        sequence: formOccurrence.requestEventSeq,
+        kind: "mcp",
+        requestId: "mcp-1",
+        serverName: "srv",
+        turnId: "turn-1",
+      },
+    ]);
+
+    await session.notifyMcpElicitationResponse("srv", "mcp-1", { action: "decline" });
+    await form;
+    expect(session.pendingElicitationSnapshot().pending.map((entry) => entry.eventId)).toEqual([
+      questionOccurrence.requestEventId,
+    ]);
+
+    toolCall.abort("interrupted");
+    await expect(question).resolves.toBeNull();
+    const none = session.pendingElicitationSnapshot();
+    expect(none.pending).toEqual([]);
+    // The set is taken after each close: a client compares requests to it.
+    expect(none.asOfSequence).toBe(session.eventLog.lastSeq);
+    unsubscribe();
+  });
+  it("rejects an answer for an earlier occurrence after the address is replaced", async () => {
+    const { session, unsubscribe } = await startedSession();
+    const stop = new AbortController();
+    const first = session.requestMcpElicitation("srv", 7, FORM_REQUEST, stop.signal);
+    await flush();
+    const oldId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    stop.abort();
+    await first;
+    const replacement = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    const newId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    expect(await session.notifyMcpElicitationResponse("srv", 7, { action: "decline" }, oldId)).toBe(false);
+    expect(session.pendingElicitationSnapshot().pending[0]!.eventId).toBe(newId);
+    expect(await session.notifyMcpElicitationResponse("srv", 7, { action: "accept" }, newId)).toBe(true);
+    await expect(replacement).resolves.toEqual({ action: "accept" });
+    unsubscribe();
+  });
+
+  it("fences a delayed user answer inside the turn lock after replacement", async () => {
+    const { session, unsubscribe } = await startedSession();
+    const stop = new AbortController();
+    const first = session.requestUserInput("call-1", USER_INPUT_ARGS, stop.signal);
+    await flush();
+    const oldId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    const withState = session.withActiveTurnState.bind(session);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(session, "withActiveTurnState").mockImplementationOnce(async (fn) => {
+      await held;
+      return withState(fn);
+    });
+    // The old response is already in delivery, but has not acquired the lock.
+    const delayed = session.notifyUserInputResponse("call-1", null, oldId);
+    stop.abort();
+    await first;
+    const replacement = session.requestUserInput("call-1", USER_INPUT_ARGS);
+    await flush();
+    const newId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    release();
+    expect(await delayed).toBe(false);
+    expect(await session.notifyUserInputResponse("call-1", null, newId)).toBe(true);
+    await replacement;
+    unsubscribe();
+  });
+
+  it("never reuses an occurrence identity when a fresh runtime reuses journal sequences", async () => {
+    const a = await startedSession();
+    const b = await startedSession();
+    const first = a.session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    const second = b.session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    const old = a.session.pendingElicitationSnapshot().pending[0]!;
+    const fresh = b.session.pendingElicitationSnapshot().pending[0]!;
+    expect(old.sequence).toBe(fresh.sequence);
+    expect(old.eventId).not.toBe(fresh.eventId);
+    expect(await b.session.notifyMcpElicitationResponse("srv", 7, { action: "decline" }, old.eventId)).toBe(false);
+    await a.session.notifyMcpElicitationResponse("srv", 7, { action: "cancel" });
+    await b.session.notifyMcpElicitationResponse("srv", 7, { action: "cancel" });
+    await Promise.all([first, second]);
+    a.unsubscribe(); b.unsubscribe();
+  });
+
+  it("withdrawing a replaced entry cannot delete the replacement resolver", async () => {
+    const { session, unsubscribe } = await startedSession();
+    const stop = new AbortController();
+    const first = session.requestMcpElicitation("srv", 7, FORM_REQUEST, stop.signal);
+    await flush();
+    const oldId = session.pendingElicitationSnapshot().pending[0]!.eventId;
+    const second = session.requestMcpElicitation("srv", 7, FORM_REQUEST);
+    await flush();
+    const newId = session.pendingElicitationSnapshot().pending.find((entry) => entry.eventId !== oldId)!.eventId;
+    stop.abort();
+    await first;
+    expect(await session.notifyMcpElicitationResponse("srv", 7, { action: "decline" }, newId)).toBe(true);
+    await expect(second).resolves.toEqual({ action: "decline" });
+    unsubscribe();
+  });
+
+});

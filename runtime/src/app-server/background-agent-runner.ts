@@ -173,7 +173,9 @@ import type {
   SessionGoalResult,
   SessionStatusLineExecuteParams,
   SessionStatusLineExecuteResult,
+  ElicitationPendingResult,
 } from "./protocol/index.js";
+import type { ElicitationOccurrence } from "../elicitation/types.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
 import type { AgenCRealtimeCallClientLike } from "./realtime-transport.js";
 import type {
@@ -5239,6 +5241,28 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.lastActiveAt = this.#now();
     }
     return { cancelled: true, activeTurnId: expectedTurnId };
+  }
+
+  async pendingElicitations(
+    agentId: string,
+  ): Promise<{
+    readonly asOfSequence: ElicitationPendingResult["asOfSequence"];
+    readonly pending: ElicitationPendingResult["pending"];
+  } | null> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return null;
+    const session = active.bootstrap.session as {
+      readonly pendingElicitationSnapshot?: () => {
+        readonly asOfSequence: number;
+        readonly pending: readonly ElicitationOccurrence[];
+      };
+    };
+    const snapshot = session.pendingElicitationSnapshot?.();
+    if (snapshot === undefined) return null;
+    return {
+      asOfSequence: snapshot.asOfSequence,
+      pending: snapshot.pending.map((occurrence) => ({ ...occurrence })),
+    };
   }
 
   async respondToElicitation(

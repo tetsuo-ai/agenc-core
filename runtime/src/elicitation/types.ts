@@ -204,3 +204,41 @@ export interface McpElicitationCompleteEvent {
   readonly serverName: string;
   readonly elicitationId: string;
 }
+
+/**
+ * One published `request_user_input` or `mcp_elicitation_request`. Its
+ * `eventId` is the request event's own id, the same in live delivery and in
+ * replay, so a client can tell this request from any other at the same
+ * `elicitation.respond` address.
+ */
+export interface ElicitationOccurrence {
+  readonly eventId: string;
+  /** The request event's sequence; absent when the session did not journal it. */
+  readonly sequence?: number;
+  readonly kind: "request_user_input" | "mcp";
+  readonly requestId: McpRequestId;
+  /** Set for MCP requests. */
+  readonly serverName?: string;
+  readonly turnId: string;
+}
+
+/**
+ * A request the session published is no longer pending, so a client that
+ * still shows it can close it. `requestEventId` and `requestEventSeq` name
+ * the request's occurrence, as `permission_decision` names its request.
+ */
+export interface ElicitationClosedEvent {
+  readonly requestEventId: string;
+  readonly requestEventSeq?: number;
+  readonly kind: "request_user_input" | "mcp";
+  readonly requestId: McpRequestId;
+  /** Set for MCP requests. */
+  readonly serverName?: string;
+  readonly turnId: string;
+  /**
+   * `answered`: a client answered it. `withdrawn`: the session stopped
+   * waiting first, because the MCP server cancelled the request, the tool
+   * call or turn stopped, or the session ended.
+   */
+  readonly outcome: "answered" | "withdrawn";
+}

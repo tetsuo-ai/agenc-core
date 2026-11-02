@@ -372,8 +372,9 @@ describe("I-8 emitError helper", () => {
 
 describe("I-26 forward-compat + schema version", () => {
   test("KNOWN_EVENT_TYPES contains all known variants", () => {
-    expect(KNOWN_EVENT_TYPES.size).toBe(88);
+    expect(KNOWN_EVENT_TYPES.size).toBe(89);
     expect(isKnownEventType("entered_review_mode")).toBe(true);
+    expect(isKnownEventType("elicitation_closed")).toBe(true);
     expect(isKnownEventType("run_suspended")).toBe(true);
     expect(isKnownEventType("run_resumed")).toBe(true);
     expect(isKnownEventType("session_usage")).toBe(true);

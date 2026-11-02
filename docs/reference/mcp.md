@@ -529,6 +529,18 @@ Session-owned managers can route `sampling/createMessage` through the active
 runtime provider. Connections without a runtime session return a graceful
 unavailable result. Host roots are advertised per the MCP connection.
 
+### Elicitation
+
+Session-owned clients advertise form and URL elicitation. The TUI shows a
+form one field at a time and checks each value against the field's schema
+before it moves on. Escape or Ctrl+C cancels the request. If the server
+cancels its request first (`notifications/cancelled`, which the MCP
+TypeScript SDK sends on its own after its default 60 second request timeout),
+or the turn stops, the TUI closes the form at whatever field it shows and the
+prompt takes input again. Attached daemon clients learn this from the
+`elicitation_closed` session event, and a client that was away asks
+`elicitation.pending` when it reconnects ([daemon.md](daemon.md)).
+
 ## Inbound server
 
 Two related layers:
