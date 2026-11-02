@@ -1,7 +1,7 @@
 import { constants, type Stats } from "node:fs";
 import { lstat, open, stat, statfs, type FileHandle } from "node:fs/promises";
 import { basename } from "node:path";
-import { WorkspaceFileMutationPreEffectConflictError } from "./file-mutation-evidence.js";
+import { WorkspaceFileMutationPreEffectConflictError, WorkspacePathIdentityChangedError } from "./file-mutation-evidence.js";
 import { WorkspaceMutationError } from "./mutation-error.js";
 
 interface DirectoryIdentity {
@@ -66,7 +66,7 @@ export class LinuxBoundFileCreate {
   }
 
   async #failure(path: string, name: string, error: unknown): Promise<never> {
-    if (error instanceof WorkspaceFileMutationPreEffectConflictError) throw error;
+    if (error instanceof WorkspaceFileMutationPreEffectConflictError || error instanceof WorkspacePathIdentityChangedError) throw error;
     // Match the helper's diagnostics, describing its equivalent held cwd,
     // never the daemon cwd or a public ancestor that may have been exchanged.
     const parts: string[] = [];
@@ -86,7 +86,7 @@ export class LinuxBoundFileCreate {
   }
 
   async #create(path: string, name: string, content: Buffer, onEffectStart?: () => void): Promise<DirectoryIdentity> {
-    if (!matches(await this.directory.stat(), this.identity)) throw new Error("bound directory identity changed");
+    if (!matches(await this.directory.stat(), this.identity)) throw new WorkspacePathIdentityChangedError(path);
     let target: FileHandle;
     // Preserve the helper's conservative effect boundary. EEXIST alone proves
     // the attempted exclusive syscall did not touch the competing target.

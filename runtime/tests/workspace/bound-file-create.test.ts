@@ -1,6 +1,6 @@
 import * as childProcess from "node:child_process";
 import * as filesystem from "node:fs/promises";
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -13,7 +13,7 @@ vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return { ...actual, statfs: vi.fn(actual.statfs) };
 });
-const { captureWorkspaceFilePathTransactionGuard } = await import("../../src/workspace/file-mutation-transaction.js");
+const { captureWorkspaceFilePathTransactionGuard, executeWorkspaceFileMutation, workspaceMutationNoEffectEvidence } = await import("../../src/workspace/file-mutation-transaction.js");
 type Guard = Awaited<ReturnType<typeof captureWorkspaceFilePathTransactionGuard>>;
 let root: string;
 let guards: Guard[];
@@ -73,6 +73,32 @@ describe.skipIf(process.platform !== "linux")("Linux descriptor-bound file creat
       });
       expect(await readFile(target, "utf8")).toBe(kind === "file" ? "competitor" : "outside");
     }
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+  });
+
+  test("a changed parent mode retains proved pre-effect refusal", async () => {
+    const parent = join(root, "parent");
+    await mkdir(parent, { mode: 0o700 });
+    const target = join(parent, "new.txt");
+    let failure: unknown;
+    try {
+      await executeWorkspaceFileMutation({
+        path: target,
+        afterText: "new bytes",
+        writeUsesBoundMutation: true,
+        write: async (_assertCurrentPathState, _targetExisted, boundMutation) => {
+          await chmod(parent, 0o500);
+          await boundMutation.writeContent(Buffer.from("new bytes"));
+        },
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      await chmod(parent, 0o700);
+    }
+    expect(workspaceMutationNoEffectEvidence(failure)).toBe("pre_effect");
+    expect(failure).toMatchObject({ name: "WorkspacePathIdentityChangedError", code: "PATH_IDENTITY_CHANGED" });
+    await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
     expect(childProcess.spawn).not.toHaveBeenCalled();
   });
 

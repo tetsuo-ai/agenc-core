@@ -1,5 +1,15 @@
 import { WorkspaceMutationError } from "./mutation-error.js";
 
+export class WorkspacePathIdentityChangedError extends WorkspaceMutationError {
+  constructor(path: string) {
+    super(
+      "PATH_IDENTITY_CHANGED",
+      `Workspace path identity changed or its content no longer matches before the write to ${path}; no filesystem mutation was authorized.`,
+    );
+    this.name = "WorkspacePathIdentityChangedError";
+  }
+}
+
 export class WorkspaceFileMutationPreEffectConflictError extends WorkspaceMutationError {
   constructor(path: string) {
     super(
