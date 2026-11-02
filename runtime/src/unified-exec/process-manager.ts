@@ -82,6 +82,14 @@ import { withWritableGoBuildCache } from "./go-build-cache.js";
 import { withNetworkRetryDefaults } from "./network-retry-defaults.js";
 import { withNpmUpdateCheckWhereRecordable } from "./npm-update-check.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
+import type { SessionEndNotice, TakeSessionEndNoticesRequest } from "./types.js";
+import {
+  checkSessionProcesses,
+  formatSessionProcessReport,
+  type SessionProcessCheck,
+} from "./process-state.js";
+import { readOomKillCount } from "../utils/resource-limits.js";
+import { constants as osConstants } from "node:os";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 /**
@@ -132,6 +140,60 @@ const PTY_ARGV0_EXECVE_SCRIPT =
   "}" +
   "execve(program, [argv0, ...args], process.env);";
 
+/**
+ * A poll of a session that has printed nothing for this long reports what
+ * its processes are doing (state, CPU time, members that exited).
+ */
+const QUIET_PROCESS_STATE_AFTER_MS = 60_000;
+/**
+ * Live background sessions one owner may hold. Past it a timeout stops the
+ * command again and a background start is refused: on a one-CPU container
+ * every extra job slows the agent's own commands. Ordinary yields count
+ * toward it but are never refused or stopped by it; `maxProcesses` bounds
+ * them, as before.
+ */
+const DEFAULT_MAX_BACKGROUND_SESSIONS = 8;
+/** End notices no result has carried yet, across owners; the oldest go first. */
+const MAX_PENDING_END_NOTICES = 32;
+
+/** onTimeout "background": the limit, when it passed, and whether a result said so. */
+interface TimeLimitState {
+  readonly ms: number;
+  reachedAt?: number;
+  reported: boolean;
+  readonly reached: Promise<"limit">;
+  readonly markReached: () => void;
+}
+
+function createTimeLimit(ms: number): TimeLimitState {
+  let markReached: () => void = () => {};
+  const reached = new Promise<"limit">((resolveReached) => {
+    markReached = () => resolveReached("limit");
+  });
+  const state: TimeLimitState = {
+    ms,
+    reported: false,
+    reached,
+    markReached: () => {
+      state.reachedAt ??= Date.now();
+      markReached();
+    },
+  };
+  return state;
+}
+
+/** The signal behind an exit: the exit's own, or a shell's 128+N status. */
+function exitSignalName(state: { readonly exitCode: number | null; readonly signal?: string | number | null }): string | undefined {
+  const fromNumber = (value: number): string | undefined =>
+    Object.entries(osConstants.signals).find(([, number]) => number === value)?.[0];
+  if (typeof state.signal === "string" && state.signal.length > 0) return state.signal;
+  if (typeof state.signal === "number" && state.signal > 0) return fromNumber(state.signal);
+  if (state.exitCode !== null && state.exitCode > 128 && state.exitCode < 160) {
+    return fromNumber(state.exitCode - 128);
+  }
+  return undefined;
+}
+
 type ExitState = {
   readonly exitCode: number | null;
   readonly signal?: string | number | null;
@@ -165,11 +227,14 @@ export class ProcessOutputBuffer {
    * assert the O(pending) work is amortized rather than run on every append.
    */
   collapseCountForTest = 0;
+  /** When the process last wrote anything (creation time until it does). */
+  lastOutputAt = Date.now();
 
   constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS) {}
 
   append(stream: UnifiedExecStream, chunk: string): void {
     if (chunk.length === 0) return;
+    this.lastOutputAt = Date.now();
     this.outputBytes += Buffer.byteLength(chunk);
     this.outputTail = chunk.length >= TASK_OUTPUT_TAIL_CHARS
       ? chunk.slice(-TASK_OUTPUT_TAIL_CHARS)
@@ -379,6 +444,32 @@ interface ProcessEntry {
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
+  /** onTimeout "background": the time limit that leaves the command running. */
+  timeLimit?: TimeLimitState;
+  /**
+   * The timeout passed with the owner at its background-session limit, so
+   * the command was stopped as a hard timeout; the limit it met.
+   */
+  timeoutStoppedAtSessionLimit?: number;
+  /** A model-facing result showed this session's exit: no end notice is due. */
+  endReported?: boolean;
+  /** The cgroup OOM-kill count when the session went to the background (Linux). */
+  oomKillsWhenBackgrounded?: number;
+  /** The last quiet-poll process check, for CPU deltas and exited members. */
+  processCheck?: SessionProcessCheck;
+  /** The slot this background start holds until it is a live session. */
+  backgroundReservation?: BackgroundStartReservation;
+}
+
+/** A background start's slot, held from admission until it is a live session or has failed. */
+interface BackgroundStartReservation {
+  readonly ownerId: string | undefined;
+}
+
+/** An ended background session whose notice no result has carried yet. */
+interface PendingEndNotice {
+  readonly entry: ProcessEntry;
+  readonly notice: SessionEndNotice;
 }
 
 interface OwnerLifetimeState {
@@ -530,6 +621,9 @@ function createResult(params: {
     readonly pid?: number;
     readonly logPath: string;
   };
+  readonly timeoutBackgroundedMs?: number;
+  readonly timeoutStoppedAtSessionLimit?: number;
+  readonly processState?: string;
 }): ExecCommandToolOutput {
   // max_output_tokens bounds the whole result, so stdout and stderr share it.
   const [stdout, stderr] = truncateHeadTailTogether(
@@ -559,6 +653,10 @@ function createResult(params: {
       : {}),
     ...(params.residualProcessesObserved === true ? { residual_processes_observed: true } : {}),
     ...(params.commandOutcome === undefined ? {} : { command_outcome: params.commandOutcome }),
+    ...(params.timeoutBackgroundedMs === undefined ? {} : { timeout_backgrounded_ms: params.timeoutBackgroundedMs }),
+    ...(params.timeoutStoppedAtSessionLimit === undefined
+      ? {} : { timeout_stopped_at_session_limit: params.timeoutStoppedAtSessionLimit }),
+    ...(params.processState === undefined ? {} : { process_state: params.processState }),
     ...(params.detached !== undefined
       ? {
           detached: true,
@@ -687,6 +785,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
   /** Namespaces a launch is starting in; a concurrent launch takes another one. */
   private readonly sessionSandboxesInUse = new Set<SessionSandbox>();
+  private readonly maxBackgroundSessions: number;
+  private readonly quietProcessStateAfterMs: number;
+  /** Background starts admitted and not yet live sessions (see execCommand). */
+  private readonly backgroundStartReservations = new Set<BackgroundStartReservation>();
+  private pendingEndNotices: PendingEndNotice[] = [];
   /**
    * Run in an idle warm namespace of the slot: the first pool member that is
    * neither running a command nor taken by a concurrent launch. A member that
@@ -751,6 +854,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   constructor(options: UnifiedExecManagerOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
+    this.maxBackgroundSessions = Math.max(0, Math.floor(
+      options.maxBackgroundSessions ?? DEFAULT_MAX_BACKGROUND_SESSIONS,
+    ));
+    this.quietProcessStateAfterMs = options.quietProcessStateAfterMs ?? QUIET_PROCESS_STATE_AFTER_MS;
     this.env = options.env === undefined
       ? undefined
       : Object.freeze({ ...options.env });
@@ -880,6 +987,40 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         `too many live unified exec processes (${this.processes.size}/${this.maxProcesses})`,
       );
     }
+    let reservation: BackgroundStartReservation | undefined;
+    if (request.startInBackground === true) {
+      const ownerId = normalizeOwnerId(request.ownerId);
+      const live = this.liveBackgroundSessionCount(ownerId);
+      if (live >= this.maxBackgroundSessions) {
+        throw new UnifiedExecError(
+          "process_limit",
+          `This command has not started: ${live} background sessions of this conversation are still running, ` +
+            "the limit. Stop one with kill_process (list_processes shows them) or wait for one to end.",
+        );
+      }
+      // Admission is synchronous, but a start becomes a session only after it
+      // has spawned and waited: its slot is held from here, so a concurrent
+      // start cannot take the same last slot.
+      reservation = { ownerId };
+      this.backgroundStartReservations.add(reservation);
+    }
+    try {
+      return await this.launchCommand(request, sandboxAuthorityGeneration, reservation);
+    } finally {
+      if (reservation !== undefined) this.backgroundStartReservations.delete(reservation);
+    }
+  }
+
+  /**
+   * execCommand after admission: spawn, wait up to the yield, and return the
+   * result or a live session. A held background-start slot passes to the
+   * session when the command is still running at the end of the wait.
+   */
+  private async launchCommand(
+    request: ExecCommandRequest,
+    sandboxAuthorityGeneration: number,
+    reservation: BackgroundStartReservation | undefined,
+  ): Promise<ExecCommandToolOutput> {
     const tty = request.tty === true;
     if (tty && hasCurrentWorkspaceOperationLifetime()) {
       throw new UnifiedExecError(
@@ -962,6 +1103,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       signal: request.__abortSignal,
       sandboxAuthorityGeneration,
     });
+    if (reservation !== undefined) entry.backgroundReservation = reservation;
     const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
     void entry.exitPromise.then(
       releaseWorkspaceOperation,
@@ -983,8 +1125,22 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? Math.min(request.timeoutMs, this.maxTimeoutMs)
         : null;
     if (explicitTimeoutMs !== null) {
+      // onTimeout "background": the limit ends the wait, not the command.
+      // The command stays in its containment as a tracked session; only the
+      // owner's background-session limit turns the limit back into a kill.
+      if (request.onTimeout === "background") entry.timeLimit = createTimeLimit(explicitTimeoutMs);
       entry.hardTimeout = setTimeout(() => {
         if (entry.exitState !== null) return;
+        if (entry.timeLimit !== undefined) {
+          // A stop already asked for (kill_process, an abort) proceeds as is.
+          if (entry.stopRequested) return;
+          const live = this.liveBackgroundSessionCount(entry.ownerId, entry);
+          if (live < this.maxBackgroundSessions) {
+            entry.timeLimit.markReached();
+            return;
+          }
+          entry.timeoutStoppedAtSessionLimit = live;
+        }
         entry.hardTimeoutExpired = true;
         this.forceTerminate(entry);
       }, explicitTimeoutMs);
@@ -1018,6 +1174,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       return collected;
     }
     entry.backgrounded = true;
+    // A live session now, counted as one: its held start slot is released.
+    if (reservation !== undefined) this.backgroundStartReservations.delete(reservation);
+    // The baseline for the end notice's out-of-memory flag (Linux cgroups).
+    entry.oomKillsWhenBackgrounded = readOomKillCount();
     return {
       ...collected,
       process_id: processId,
@@ -2008,6 +2168,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       entry.detachUpstreamAbort?.();
       entry.detachUpstreamAbort = undefined;
       entry.resolveExit(state);
+      this.queueSessionEndNotice(entry);
     };
 
     // gaphunt3 #44: capture the upstream-abort listener and a disposer so it can
@@ -2421,9 +2582,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           ? deadline.signal
           : AbortSignal.any([options.signal, deadline.signal]),
       });
+      // A background time limit that passes during this wait ends it now,
+      // the way the old kill did, but the command keeps running.
+      const timeLimit = entry.timeLimit?.reachedAt === undefined
+        ? entry.timeLimit?.reached
+        : undefined;
       const outcome = await Promise.race([
         timeout,
         entry.exitPromise.then(() => "exit" as const),
+        ...(timeLimit === undefined ? [] : [timeLimit]),
       ]);
       if (
         outcome === "timeout" &&
@@ -2436,7 +2603,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         // the exit, bounded like the abort path below.
         await Promise.race([entry.exitPromise, delay(1_000)]);
       }
-      timedOut = outcome === "timeout" && entry.exitState === null;
+      timedOut = outcome !== "exit" && entry.exitState === null;
     } catch (error) {
       if (isAbortError(error)) {
         this.forceTerminate(entry);
@@ -2451,6 +2618,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       deadline.abort();
     }
 
+    // A quiet session's process sample can take a moment (macOS runs ps), so
+    // it is taken before the output is drained and the state is read: output
+    // or an exit that arrives during the sample belongs to this result, and
+    // nothing below awaits.
+    const sample = entry.exitState === null && entry.hardTimeoutExpired !== true && !entry.stopRequested
+      ? await this.sampleQuietProcessState(entry)
+      : undefined;
+    // An exit during the sample ended the wait as an exit, not at the yield.
+    if (entry.exitState !== null) timedOut = false;
     const chunks = entry.output.drain();
     for (const chunk of chunks) {
       options.onProgress?.({
@@ -2467,12 +2643,25 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       .filter((chunk) => chunk.stream === "stderr")
       .map((chunk) => chunk.chunk)
       .join("");
+    // This result shows the exit, so no separate end notice is due.
+    if (entry.exitState !== null) entry.endReported = true;
+    const running = entry.exitState === null && entry.hardTimeoutExpired !== true;
+    const timeLimit = entry.timeLimit;
+    const reportTimeLimit = running && !entry.stopRequested &&
+      timeLimit?.reachedAt !== undefined && !timeLimit.reported;
+    if (reportTimeLimit) timeLimit!.reported = true;
+    // The sample describes a session that is still running and still quiet;
+    // only then does it become the baseline of the next check.
+    let processState: string | undefined;
+    if (sample !== undefined && running && !entry.stopRequested && chunks.length === 0) {
+      entry.processCheck = sample.check;
+      processState = sample.line;
+    }
     return createResult({
       stdout,
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,
-      processId: entry.exitState === null && entry.hardTimeoutExpired !== true
-        ? entry.processId : undefined,
+      processId: running ? entry.processId : undefined,
       durationMs: (entry.endedAt ?? Date.now()) - entry.startedAt,
       timedOut: entry.hardTimeoutExpired === true || timedOut,
       maxOutputTokens: options.maxOutputTokens,
@@ -2481,7 +2670,89 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(entry.residualProcessesTerminated === true
         ? { residualProcessesTerminated: true }
         : {}),
+      ...(reportTimeLimit ? { timeoutBackgroundedMs: timeLimit!.ms } : {}),
+      ...(entry.hardTimeoutExpired === true && entry.timeoutStoppedAtSessionLimit !== undefined
+        ? { timeoutStoppedAtSessionLimit: entry.timeoutStoppedAtSessionLimit }
+        : {}),
+      ...(processState !== undefined ? { processState } : {}),
     });
+  }
+
+  /**
+   * One line on what a running session that has printed nothing for
+   * {@link QUIET_PROCESS_STATE_AFTER_MS} is doing, with the check it came
+   * from, or undefined (not quiet long enough, no process reader on this
+   * platform, or the root is gone). The caller keeps the check as the next
+   * baseline only when it uses the line. Observation only: nothing here
+   * signals, adopts or proves anything.
+   */
+  private async sampleQuietProcessState(
+    entry: ProcessEntry,
+  ): Promise<{ readonly line: string; readonly check: SessionProcessCheck } | undefined> {
+    const quietMs = Date.now() - entry.output.lastOutputAt;
+    if (quietMs < this.quietProcessStateAfterMs) return undefined;
+    try {
+      const report = await checkSessionProcesses(entry.stored.process.pid, entry.processCheck);
+      if (report === undefined) return undefined;
+      return { line: formatSessionProcessReport(report, quietMs), check: report.check };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Live background sessions of `ownerId`, other than `except`, including
+   * background starts admitted but not yet running as sessions.
+   */
+  private liveBackgroundSessionCount(ownerId: string | undefined, except?: ProcessEntry): number {
+    let live = 0;
+    for (const entry of this.processes.values()) {
+      if (entry === except || !entry.backgrounded || entry.exitState !== null || entry.stopRequested) continue;
+      if (isProcessOwnedBy({ entryOwnerId: entry.ownerId, requestOwnerId: ownerId })) live += 1;
+    }
+    for (const reservation of this.backgroundStartReservations) {
+      if (reservation === except?.backgroundReservation) continue;
+      if (isProcessOwnedBy({ entryOwnerId: reservation.ownerId, requestOwnerId: ownerId })) live += 1;
+    }
+    return live;
+  }
+
+  /**
+   * Queue the end notice of a background session nobody stopped. A session
+   * the model, the user, an abort or session end stopped gets none: the stop
+   * was asked for. A result that shows the exit cancels it (`endReported`).
+   */
+  private queueSessionEndNotice(entry: ProcessEntry): void {
+    if (!entry.backgrounded || entry.stopRequested || entry.exitState === null) return;
+    const signal = exitSignalName(entry.exitState);
+    const killed = signal === "SIGKILL";
+    const oomNow = killed && entry.oomKillsWhenBackgrounded !== undefined ? readOomKillCount() : undefined;
+    const notice: SessionEndNotice = {
+      sessionId: entry.processId,
+      command: entry.command,
+      exitCode: entry.exitState.exitCode,
+      ...(signal !== undefined ? { signal } : {}),
+      ...(oomNow !== undefined && oomNow > entry.oomKillsWhenBackgrounded! ? { outOfMemory: true } : {}),
+      durationMs: (entry.endedAt ?? Date.now()) - entry.startedAt,
+    };
+    this.pendingEndNotices.push({ entry, notice });
+    if (this.pendingEndNotices.length > MAX_PENDING_END_NOTICES) this.pendingEndNotices.shift();
+  }
+
+  /**
+   * Drain the requester's pending end notices. Another owner's stay queued;
+   * one whose exit a result already showed is dropped.
+   */
+  takeSessionEndNotices(request: TakeSessionEndNoticesRequest = {}): SessionEndNotice[] {
+    const ownerId = normalizeOwnerId(request.ownerId);
+    const taken: SessionEndNotice[] = [];
+    const kept: PendingEndNotice[] = [];
+    for (const pending of this.pendingEndNotices) {
+      if (!isProcessOwnedBy({ entryOwnerId: pending.entry.ownerId, requestOwnerId: ownerId })) kept.push(pending);
+      else if (pending.entry.endReported !== true) taken.push(pending.notice);
+    }
+    this.pendingEndNotices = kept;
+    return taken;
   }
 
   private forceTerminate(entry: ProcessEntry): void {
