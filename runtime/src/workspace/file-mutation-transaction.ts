@@ -1,4 +1,4 @@
-import { WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, markWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
+import { WorkspacePathIdentityChangedError, WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, markWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
 export { WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, type WorkspaceMutationNoEffectEvidence, markWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence, describeWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
 import { constants } from "node:fs";
 import type { BigIntStats, Stats } from "node:fs";
@@ -92,15 +92,6 @@ export interface WorkspaceFilePathTransactionGuard {
   readonly dispose: () => Promise<void>;
 }
 
-class WorkspacePathIdentityChangedError extends WorkspaceMutationError {
-  constructor(path: string) {
-    super(
-      "PATH_IDENTITY_CHANGED",
-      `Workspace path identity changed or its content no longer matches before the write to ${path}; no filesystem mutation was authorized.`,
-    );
-    this.name = "WorkspacePathIdentityChangedError";
-  }
-}
 
 export class WorkspaceFileMutationPathBindingUnavailableError extends WorkspaceMutationError {
   constructor(path: string, cause?: unknown) {
