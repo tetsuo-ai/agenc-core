@@ -977,6 +977,7 @@ async function relaunchAfterUpdate(
     execve?: (file: string, args: readonly string[], env: NodeJS.ProcessEnv) => never;
   }).execve;
   return runUpdateRelaunch(request, {
+    agencHome,
     pid: process.pid,
     platform: process.platform,
     env: userRuntimeEnvironment(process.env),

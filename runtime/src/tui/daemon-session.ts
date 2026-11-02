@@ -120,6 +120,7 @@ import { takePlanApprovalChoice } from "./plan-approval-choice.js";
 import { createWorkflowApprovalControls, type WorkflowApprovalControls } from "./workflow-approval-controls.js";
 import { buildDaemonApprovalCtx, daemonFileWritePreview } from "./daemon-approval-context.js";
 import { DaemonApprovalRequests } from "./daemon-approval-requests.js";
+import { DaemonElicitationRequests } from "./daemon-elicitation-requests.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import {
   createRealtimeTuiControls,
@@ -2943,10 +2944,96 @@ function subscribeToDaemonEvents(
   let closed = false;
   let lostTurnProbe: Promise<void> | null = null;
   const pendingApprovals = new DaemonApprovalRequests(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
+  const elicitationOccurrences = new DaemonElicitationRequests();
+  // Only a daemon that advertises `elicitation.pending` names elicitations by
+  // occurrence and sends `elicitation_closed`. With an older daemon the bridge
+  // shows and answers them as 0.19.25 did.
+  const occurrences = (): DaemonElicitationRequests | undefined =>
+    client.supportsMethod?.("elicitation.pending") === true
+      ? elicitationOccurrences
+      : undefined;
   const emit = (event: unknown): void => {
     if (!closed) cb(event);
   };
-  const deliver = (event: JsonObject): void => {
+  // Applies the daemon's pending set: closes prompts that are no longer
+  // pending (a close this client missed while away) and sends kept answers
+  // again. Runs one at a time; a request made meanwhile runs once more after.
+  let reconciling: Promise<void> | null = null;
+  let reconcileAgain = false;
+  let cancelRetryWait: (() => void) | undefined;
+  const retryWait = (): Promise<void> => new Promise((resolve) => {
+    const timer = setTimeout(done, 250);
+    function done(): void {
+      clearTimeout(timer);
+      cancelRetryWait = undefined;
+      resolve();
+    }
+    cancelRetryWait = done;
+  });
+  const reconcileElicitations = (): Promise<void> => {
+    if (closed || occurrences() === undefined) return Promise.resolve();
+    if (reconciling !== null) {
+      reconcileAgain = true;
+      return reconciling;
+    }
+    const run = async (): Promise<void> => {
+      try {
+        do {
+          reconcileAgain = false;
+          // Everything this client knows of now was published before the daemon reads its set.
+          const mark = elicitationOccurrences.mark();
+          let snapshot: AgenCDaemonResultByMethod["elicitation.pending"];
+          try {
+            snapshot = await client.request("elicitation.pending", { sessionId });
+          } catch (error) {
+            if (closed) return;
+            if (isRecoveredWithoutRuntimeError(error) ||
+                (error instanceof AgenCDaemonResponseError && isJsonObject(error.data) &&
+                 error.data.code === "AGENT_NOT_FOUND")) {
+              elicitationOccurrences.reset();
+              return;
+            }
+            // Preserve readiness until authority is available, without spinning
+            // on a disconnected transport or requiring another reconnect event.
+            await retryWait();
+            reconcileAgain = true;
+            continue;
+          }
+          if (closed) return;
+          if (!Number.isSafeInteger(snapshot.asOfSequence) || !Array.isArray(snapshot.pending)) {
+            await retryWait();
+            reconcileAgain = true;
+            continue;
+          }
+          const resend = elicitationOccurrences.reconcile(
+            mark,
+            snapshot.asOfSequence,
+            new Set(snapshot.pending.map((entry) => entry.eventId)),
+          );
+          // A failure is reported by the send itself and kept for the next run.
+          for (const occurrenceId of resend) {
+            await elicitationOccurrences.resend(occurrenceId);
+          }
+        } while (reconcileAgain && !closed);
+      } catch {
+        // Delivery failures are already reported and retained for a retry.
+      } finally {
+        // Release ownership in the same microtask as the loop's final check.
+        // A caller arriving after that check must start and await a new read.
+        reconciling = null;
+      }
+    };
+    // Install ownership before run can complete, including a synchronous RPC error.
+    reconciling = Promise.resolve().then(run);
+    return reconciling;
+  };
+  // Requests wait for a pending set taken after they could have been
+  // replayed: the first one on attach, and a new one after each reconnect.
+  // So a request answered or withdrawn while this client was away is never
+  // shown, even when its close was sent to another client.
+  let pendingSetReady = reconcileElicitations();
+  let releasePendingSet: (() => void) | undefined;
+  const deliver = (event: JsonObject, envelope: DaemonEventEnvelope): void => {
     if (closed) return;
     emit(event);
     void maybeBridgeDaemonApproval(
@@ -2963,6 +3050,12 @@ function subscribeToDaemonEvents(
       session,
       event,
       emit,
+      {
+        occurrences: occurrences(),
+        envelope,
+        ready: pendingSetReady,
+        reconcile: reconcileElicitations,
+      },
     );
   };
   const unsubscribeSession = client.subscribeToSessionEvents(
@@ -2983,15 +3076,16 @@ function subscribeToDaemonEvents(
         transcriptSnapshot !== undefined &&
         daemonTranscriptSnapshotCoversEvent(transcriptSnapshot, event, transcriptEvent)
       ) return;
+      const envelope = daemonEventEnvelope(event);
       if (runtimeSettingsReconciler === undefined) {
-        deliver(transcriptEvent);
+        deliver(transcriptEvent, envelope);
       } else if (replayingInitialEvents) {
         runtimeSettingsReconciler.acceptInitial(transcriptEvent, () =>
-          deliver(transcriptEvent),
+          deliver(transcriptEvent, envelope),
         );
       } else {
         runtimeSettingsReconciler.acceptLive(transcriptEvent, () =>
-          deliver(transcriptEvent),
+          deliver(transcriptEvent, envelope),
         );
       }
     },
@@ -3053,10 +3147,24 @@ function subscribeToDaemonEvents(
       emit(event);
     }
     if (state.status === "disconnected") settleTurnIfDaemonLostIt();
+    if (state.status === "connected") {
+      // Back after a reconnect: closes sent while this client was away are
+      // not replayed to it, so ask the daemon what is still pending.
+      const release = releasePendingSet;
+      releasePendingSet = undefined;
+      void reconcileElicitations().then(release);
+    } else if (releasePendingSet === undefined) {
+      pendingSetReady = new Promise<void>((resolve) => {
+        releasePendingSet = resolve;
+      });
+    }
   });
   return () => {
     closed = true;
     pendingApprovals.close();
+    elicitationOccurrences.closeAll();
+    cancelRetryWait?.();
+    releasePendingSet?.();
     unsubscribeSession();
     unsubscribeRealtime?.();
     unsubscribeConnection?.();
@@ -3176,16 +3284,115 @@ async function maybeBridgeDaemonApproval(
   }
 }
 
+/** The journal identity a session notification carries, when it has one. */
+interface DaemonEventEnvelope {
+  readonly eventId?: string;
+  readonly sequence?: number;
+}
+
+function daemonEventEnvelope(event: JsonObject): DaemonEventEnvelope {
+  const params = event.params;
+  if (!isJsonObject(params)) return {};
+  const { eventId, sequence } = params;
+  return {
+    ...(typeof eventId === "string" && eventId.length > 0 ? { eventId } : {}),
+    ...(typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0
+      ? { sequence }
+      : {}),
+  };
+}
+
+function eventSequence(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+interface DaemonElicitationBridge {
+  /** Set only when the daemon names elicitations by occurrence. */
+  readonly occurrences: DaemonElicitationRequests | undefined;
+  readonly envelope: DaemonEventEnvelope;
+  /** Settles once the first pending set is applied. */
+  readonly ready: Promise<void>;
+  readonly reconcile: () => Promise<void>;
+}
+
+/**
+ * Shows one daemon elicitation and sends its answer. With a daemon that names
+ * requests by occurrence (`elicitation.pending`), the request is shown once,
+ * closes when the daemon says it is no longer pending, and its answer is kept
+ * until the daemon takes it. Otherwise the request is shown and answered as
+ * 0.19.25 did.
+ */
+async function bridgeDaemonElicitation<Response>(
+  client: AgenCDaemonTuiClient,
+  cb: (event: unknown) => void,
+  bridge: DaemonElicitationBridge,
+  options: {
+    readonly noticeId: string;
+    readonly ask: (signal?: AbortSignal) => Promise<Response>;
+    readonly respondParams: (response: Response) => ElicitationRespondParams;
+    /** The prompt settled without an answer to send (a completed URL flow). */
+    readonly settledLocally?: (response: Response) => boolean;
+  },
+): Promise<void> {
+  const send = async (response: Response): Promise<void> => {
+    try {
+      await client.request("elicitation.respond", {
+        ...options.respondParams(response),
+        ...(bridge.occurrences !== undefined && bridge.envelope.eventId !== undefined
+          ? { requestEventId: bridge.envelope.eventId }
+          : {}),
+      });
+    } catch (error) {
+      emitDaemonDeliveryFailureNotice(cb, options.noticeId, "elicitation.respond", error);
+      throw error;
+    }
+  };
+  const { occurrences, envelope } = bridge;
+  const occurrenceId = envelope.eventId;
+  if (occurrences === undefined || occurrenceId === undefined) {
+    const response = await options.ask();
+    if (options.settledLocally?.(response) === true) return;
+    await send(response).catch(() => undefined);
+    return;
+  }
+  await bridge.ready;
+  // Query after receipt, including replays. UUIDs fence recovery generations;
+  // this check also covers unjournaled requests after tombstone pruning.
+  await bridge.reconcile();
+  if (!occurrences.isPending(occurrenceId)) return;
+  const prompt = occurrences.begin(occurrenceId, envelope.sequence);
+  if (prompt === undefined) return;
+  const response = await options.ask(prompt.signal);
+  if (options.settledLocally?.(response) === true) {
+    occurrences.close(occurrenceId, envelope.sequence);
+    if (occurrences.remembered >= 128) void bridge.reconcile();
+    return;
+  }
+  const delivery = await occurrences.deliver(occurrenceId, prompt, () => send(response));
+  // Kept for a retry: a reconcile sends it again while it is still pending.
+  if (delivery.status === "failed" || occurrences.remembered >= 128) void bridge.reconcile();
+}
+
 async function maybeBridgeDaemonElicitation(
   client: AgenCDaemonTuiClient,
   sessionId: string,
   session: AgenCTuiBridgeSession,
   event: unknown,
   cb: (event: unknown) => void,
+  bridge: DaemonElicitationBridge,
 ): Promise<void> {
   if (!isJsonObject(event) || typeof event.type !== "string") return;
   const payload = event.payload;
   if (!isJsonObject(payload)) return;
+  if (event.type === "elicitation_closed") {
+    if (bridge.occurrences !== undefined && typeof payload.requestEventId === "string") {
+      bridge.occurrences.close(payload.requestEventId, eventSequence(payload.requestEventSeq));
+      if (bridge.occurrences.remembered >= 128) void bridge.reconcile();
+    }
+    return;
+  }
   if (
     event.type === "request_user_input" &&
     typeof payload.callId === "string" &&
@@ -3194,48 +3401,35 @@ async function maybeBridgeDaemonElicitation(
   ) {
     const resolver = session.services.requestUserInputResolver;
     if (resolver === undefined) return;
-    let response: RequestUserInputResponse | null;
-    try {
-      response = await resolver.request({
-        requestId:
-          typeof payload.requestId === "string"
-            ? payload.requestId
-            : payload.callId,
-        callId: payload.callId,
-        turnId: payload.turnId,
-        questions: jsonObjectArray(
-          payload.questions,
-        ) as unknown as RequestUserInputEvent["questions"],
-        ...(isJsonObject(payload.clientAction)
-          ? {
-              clientAction: payload.clientAction as unknown as NonNullable<
-                RequestUserInputEvent["clientAction"]
-              >,
-            }
-          : {}),
-      });
-    } catch {
-      response = null;
-    }
     const requestId =
       typeof payload.requestId === "string"
         ? payload.requestId
         : payload.callId;
-    try {
-      await client.request("elicitation.respond", {
+    const request: RequestUserInputEvent = {
+      requestId,
+      callId: payload.callId,
+      turnId: payload.turnId,
+      questions: jsonObjectArray(
+        payload.questions,
+      ) as unknown as RequestUserInputEvent["questions"],
+      ...(isJsonObject(payload.clientAction)
+        ? {
+            clientAction: payload.clientAction as unknown as NonNullable<
+              RequestUserInputEvent["clientAction"]
+            >,
+          }
+        : {}),
+    };
+    await bridgeDaemonElicitation(client, cb, bridge, {
+      noticeId: requestId,
+      ask: (signal) => resolver.request(request, signal).catch(() => null),
+      respondParams: (response) => ({
         sessionId,
         requestId,
         kind: "request_user_input",
         response: (response ?? { action: "cancel" }) as unknown as JsonObject,
-      } satisfies ElicitationRespondParams);
-    } catch (error) {
-      emitDaemonDeliveryFailureNotice(
-        cb,
-        requestId,
-        "elicitation.respond",
-        error,
-      );
-    }
+      }),
+    });
     return;
   }
   if (
@@ -3248,32 +3442,30 @@ async function maybeBridgeDaemonElicitation(
   ) {
     const resolver = session.services.mcpElicitationResolver;
     if (resolver === undefined) return;
-    const response = await resolver
-      .request({
-        serverName: payload.serverName,
-        requestId: payload.requestId,
-        turnId: payload.turnId,
-        request:
-          payload.request as unknown as McpElicitationRequestEvent["request"],
-      })
-      .catch((): McpElicitationResponse => ({ action: "cancel" }));
-    if (isMcpUrlCompletionResponse(response)) return;
-    try {
-      await client.request("elicitation.respond", {
+    const serverName = payload.serverName;
+    const requestId = payload.requestId;
+    const request: McpElicitationRequestEvent = {
+      serverName,
+      requestId,
+      turnId: payload.turnId,
+      request:
+        payload.request as unknown as McpElicitationRequestEvent["request"],
+    };
+    await bridgeDaemonElicitation(client, cb, bridge, {
+      noticeId: String(requestId),
+      ask: (signal) =>
+        resolver
+          .request(request, signal)
+          .catch((): McpElicitationResponse => ({ action: "cancel" })),
+      respondParams: (response) => ({
         sessionId,
-        requestId: payload.requestId,
+        requestId,
         kind: "mcp",
-        serverName: payload.serverName,
+        serverName,
         response: (response ?? { action: "cancel" }) as unknown as JsonObject,
-      } satisfies ElicitationRespondParams);
-    } catch (error) {
-      emitDaemonDeliveryFailureNotice(
-        cb,
-        String(payload.requestId),
-        "elicitation.respond",
-        error,
-      );
-    }
+      }),
+      settledLocally: (response) => isMcpUrlCompletionResponse(response),
+    });
   }
 }
 

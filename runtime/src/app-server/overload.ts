@@ -44,6 +44,8 @@ const DAEMON_PREEMPTIVE_METHODS = new Set<string>([
   "tool.approve",
   "tool.deny",
   "elicitation.respond",
+  // A client reconciles its prompts while a turn streams on the connection.
+  "elicitation.pending",
 ]);
 
 const DAEMON_PRIORITY_METHODS = new Set<string>([

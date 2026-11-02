@@ -1052,11 +1052,67 @@ describe("strict canonical journal contract", () => {
     }
   });
 
+  it("accepts elicitation_closed payloads, so a later release can journal them", () => {
+    expect(
+      isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "event:40",
+        requestEventSeq: 40,
+        kind: "mcp",
+        requestId: 7,
+        serverName: "profile",
+        turnId: "turn-1",
+        outcome: "withdrawn",
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "sub-9",
+        kind: "request_user_input",
+        requestId: "call-1",
+        turnId: "turn-1",
+        outcome: "answered",
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "event:40",
+        kind: "mcp",
+        requestId: 7,
+        turnId: "turn-1",
+        outcome: "closed",
+      }),
+    ).toBe(false);
+    // A close names the request event it closes.
+    expect(
+      isCanonicalEventPayload("elicitation_closed", {
+        kind: "mcp",
+        requestId: 7,
+        turnId: "turn-1",
+        outcome: "withdrawn",
+      }),
+    ).toBe(false);
+    expect(
+      isCanonicalEventPayload("elicitation_closed", {
+        requestEventId: "event:40",
+        requestEventSeq: -1,
+        kind: "mcp",
+        requestId: 7,
+        turnId: "turn-1",
+        outcome: "withdrawn",
+      }),
+    ).toBe(false);
+  });
+
   it("keeps an exhaustive fail-closed schema for every known event discriminant", () => {
-    expect(KNOWN_EVENT_TYPES.size).toBe(88);
+    expect(KNOWN_EVENT_TYPES.size).toBe(89);
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual([...KNOWN_EVENT_TYPES].sort());
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual(
-      expect.arrayContaining(["run_suspended", "run_resumed", "session_usage"]),
+      expect.arrayContaining([
+        "run_suspended",
+        "run_resumed",
+        "session_usage",
+        "elicitation_closed",
+      ]),
     );
     const eventsWithoutRequiredFields = new Set([
       "context_compacted",

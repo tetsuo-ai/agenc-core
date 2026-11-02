@@ -225,12 +225,16 @@ export function createCodeModeTools(
 ): readonly Tool[] {
   const execTool: Tool = {
     name: CODE_MODE_EXEC_TOOL_NAME,
-    description: buildExecToolDescription(
-      codeModeToolDefinitionsFromTools(
-        opts.descriptionTools ?? opts.getEnabledTools(),
-        { stringArgumentFields: opts.stringArgumentFields },
-      ),
-    ),
+    // Built when read: a nested tool's description can follow the session
+    // (exec_command's hard-timeout switch, spawn_agent's live pairs).
+    get description(): string {
+      return buildExecToolDescription(
+        codeModeToolDefinitionsFromTools(
+          opts.descriptionTools ?? opts.getEnabledTools(),
+          { stringArgumentFields: opts.stringArgumentFields },
+        ),
+      );
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,

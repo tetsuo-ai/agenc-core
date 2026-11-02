@@ -135,7 +135,7 @@ describe("the next request presents the escalation fields a notice asks for", ()
     const registry = buildToolRegistry({
       workspaceRoot: root, requireAdmission: false, unifiedExecManager: mockManager(execOutput(GIT_DENIED, 128)), ...shape,
     });
-    expect(fieldsOf(registry)).toEqual(["cmd", "timeoutMs", "workdir"]);
+    expect(fieldsOf(registry)).toEqual(["background", "cmd", "timeoutMs", "workdir"]);
     const exec = registry.tools.find((tool) => tool.name === "exec_command")!;
     const result = await exec.execute(callArgs({ cmd: "git switch -c chore/comet-docs && git commit -m docs" }, bypass));
     expect(fieldsOf(registry)).toEqual(expect.arrayContaining(["cmd", "justification", "sandbox_permissions"]));
@@ -188,7 +188,7 @@ describe("the next request presents the escalation fields a notice asks for", ()
       const exec = registry.tools.find((tool) => tool.name === "exec_command")!;
       const result = await exec.execute(callArgs({ cmd: "run it" }, options));
       expect(result.content).not.toContain('sandbox_permissions="require_escalated"');
-      expect(fieldsOf(registry), JSON.stringify(options)).toEqual(["cmd", "timeoutMs", "workdir"]);
+      expect(fieldsOf(registry), JSON.stringify(options)).toEqual(["background", "cmd", "timeoutMs", "workdir"]);
     }
   });
 
@@ -215,11 +215,11 @@ describe("the next request presents the escalation fields a notice asks for", ()
       lightMode: true,
       unadmittedDispatchOverride: TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
     });
-    expect(fieldsOf(child)).toEqual(["cmd", "timeoutMs", "workdir"]);
+    expect(fieldsOf(child)).toEqual(["background", "cmd", "timeoutMs", "workdir"]);
     const exec = child.tools.find((tool) => tool.name === "exec_command")!;
     const result = await exec.execute(callArgs({ cmd: "git switch -c chore/comet-docs" }, bypass));
     expect(fieldsOf(child)).toContain("sandbox_permissions");
-    expect(fieldsOf(parent)).toEqual(["cmd", "timeoutMs", "workdir"]);
+    expect(fieldsOf(parent)).toEqual(["background", "cmd", "timeoutMs", "workdir"]);
     expect(result.content).toContain(SANDBOX_GIT_WRITE_DENIED_WITHOUT_ASKING);
   });
 });

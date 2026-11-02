@@ -45,6 +45,24 @@ describe("respondToSessionElicitation", () => {
     expect(session.notifyUserInputResponse).toHaveBeenCalledWith("call-1", null);
   });
 
+
+  it("forwards occurrence fences to both session responders", async () => {
+    const session = {
+      notifyUserInputResponse: vi.fn().mockResolvedValue(false),
+      notifyMcpElicitationResponse: vi.fn().mockResolvedValue(false),
+    };
+    await expect(respondToSessionElicitation(session, {
+      kind: "request_user_input", requestId: "reused", requestEventId: "uuid-old",
+      response: { action: "cancel" },
+    })).resolves.toBe(false);
+    expect(session.notifyUserInputResponse).toHaveBeenCalledWith("reused", null, "uuid-old");
+    await expect(respondToSessionElicitation(session, {
+      kind: "mcp", serverName: "srv", requestId: 7, requestEventId: "uuid-new",
+      response: { action: "decline" },
+    })).resolves.toBe(false);
+    expect(session.notifyMcpElicitationResponse).toHaveBeenCalledWith("srv", 7, { action: "decline" }, "uuid-new");
+  });
+
   it("strictly normalizes a typed Ledger client result without requiring answers", () => {
     expect(
       normalizeRequestUserInputResponse({

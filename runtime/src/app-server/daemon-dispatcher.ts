@@ -172,6 +172,7 @@ import {
   type DaemonInstanceIdentity,
   type DaemonShutdownParams,
   type DaemonShutdownIfIdleParams,
+  type ElicitationPendingParams,
   type ElicitationRespondParams,
   type FuzzyFileSearchParams,
   type InitializeParams,
@@ -316,6 +317,9 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "project.trustStatus": 16,
   "project.trust": 16,
   "routine.session.prepare.respond": 17,
+  // Also gates the live elicitation_closed session events that name
+  // requests by occurrence (requiredMethodCapabilityForSessionEvent).
+  "elicitation.pending": 36,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -439,6 +443,7 @@ function buildServerCapabilities(
     "tool.deny": hasMethod(agentManager, "denyTool"),
     "tool.cancel": hasMethod(agentManager, "cancelTool"),
     "elicitation.respond": hasMethod(agentManager, "respondToElicitation"),
+    "elicitation.pending": hasMethod(agentManager, "pendingElicitations"),
     "permission.list": hasMethod(agentManager, "listPermissions"),
     // Same gate as remote.*: trust widens what sessions may do in a project.
     "project.trustStatus":
@@ -606,6 +611,7 @@ export interface AgenCDaemonDispatcherOptions {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
+    readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
@@ -752,6 +758,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
+    readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
@@ -2037,6 +2044,15 @@ export class AgenCDaemonJsonRpcDispatcher {
         if (unbound !== undefined) return unbound;
         return successResponse(id, await this.#agentManager.respondToElicitation(validated));
       }
+      case "elicitation.pending": {
+        if (this.#agentManager.pendingElicitations === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        const validated = validateElicitationPendingParams(params);
+        const unbound = await this.#approverBindingError(id, connection, method, validated.sessionId);
+        if (unbound !== undefined) return unbound;
+        return successResponse(id, await this.#agentManager.pendingElicitations(validated));
+      }
       case "permission.list":
         if (this.#agentManager.listPermissions === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -2311,6 +2327,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     method:
       | "tool.approve"
       | "elicitation.respond"
+      | "elicitation.pending"
       | "session.mcp.addServer"
       | "session.mcp.reconnectServer"
       | "session.mcp.enableServer"
@@ -3238,9 +3255,18 @@ function parseProtocolVersion(
 function requiredMethodCapabilityForSessionEvent(
   event: JsonObject,
 ): AgenCDaemonKnownMethod | undefined {
-  return event.method === "event.mcp_status_changed"
-    ? "session.mcp.status"
-    : undefined;
+  if (event.method === "event.mcp_status_changed") return "session.mcp.status";
+  // A client reconciles closes against elicitation.pending; an older one
+  // would only drop the unknown session event type.
+  if (
+    event.method === "event.session_event" &&
+    isPlainJsonObject(event.params) &&
+    isPlainJsonObject(event.params.event) &&
+    event.params.event.type === "elicitation_closed"
+  ) {
+    return "elicitation.pending";
+  }
+  return undefined;
 }
 
 function cloneJsonObject(value: JsonObject | undefined): JsonObject {
@@ -5350,7 +5376,7 @@ function validateElicitationRespondParams(
 ): ElicitationRespondParams {
   const validated = validateObjectShape(params, {
     methodName: "elicitation.respond",
-    stringFields: ["sessionId", "kind", "serverName"],
+    stringFields: ["sessionId", "kind", "serverName", "requestEventId"],
     objectFields: ["response"],
     valueFields: ["requestId"],
   });
@@ -5373,6 +5399,17 @@ function validateElicitationRespondParams(
     throw invalidParams("elicitation.respond requires response");
   }
   return validated as ElicitationRespondParams;
+}
+
+function validateElicitationPendingParams(
+  params: JsonObject,
+): ElicitationPendingParams {
+  const validated = validateObjectShape(params, {
+    methodName: "elicitation.pending",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "elicitation.pending", "sessionId");
+  return validated as ElicitationPendingParams;
 }
 
 function validatePermissionListParams(

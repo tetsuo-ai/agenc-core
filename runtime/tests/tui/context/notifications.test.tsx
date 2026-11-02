@@ -1,4 +1,5 @@
 import { PassThrough } from "node:stream";
+import { updateFollowNotification } from "../../../src/tui/update-follow-notification.js";
 
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -424,6 +425,34 @@ describe("notification context", () => {
         currentText: null,
         queue: [],
         queueTexts: [],
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test("a resumed update follow replaces its still-visible waiting notice and keeps the final outcome visible", async () => {
+    const harness = await renderNotificationsHarness();
+    vi.useFakeTimers();
+    try {
+      harness.api().addNotification(textNotification("agenc-update", "Installed; waiting for the daemon", {
+        priority: "high", timeoutMs: 30_000,
+      }));
+      harness.api().addNotification(textNotification("daemon-process-refresh-error", "Daemon disconnected", {
+        priority: "high",
+      }));
+      // Suspension can leave the initial notice current when the follow's
+      // terminal result arrives, before its old timeout has run.
+      harness.api().addNotification(updateFollowNotification({ kind: "error", text: "Could not move: restart failed" }));
+      expect(snapshotNotifications(harness.state())).toMatchObject({
+        current: "agenc-update", currentText: "Could not move: restart failed",
+        queue: ["daemon-process-refresh-error"],
+      });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(snapshotNotifications(harness.state()).currentText).toBe("Could not move: restart failed");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(snapshotNotifications(harness.state())).toMatchObject({
+        current: "daemon-process-refresh-error", queue: [],
       });
     } finally {
       await harness.dispose();

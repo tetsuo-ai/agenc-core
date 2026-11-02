@@ -1,4 +1,4 @@
-import { WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, markWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
+import { WorkspacePathIdentityChangedError, WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, markWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
 export { WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, type WorkspaceMutationNoEffectEvidence, markWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence, describeWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
 import { constants } from "node:fs";
 import type { BigIntStats, Stats } from "node:fs";
@@ -19,6 +19,7 @@ import {
 } from "node:path";
 
 import { WorkspaceMutationError } from "./mutation-error.js";
+import { LinuxBoundFileCreate } from "./linux-bound-file-create.js";
 import { windowsCommandLineUtf16CodeUnits } from "../utils/supervisedProcess.js";
 import { issueBoundReadOnlyCwdCapability, type BoundReadOnlyCwdCapability } from "../sandbox/bound-readonly-cwd.js";
 import { boundReadOnlyBwrapFailedToStart, prepareBoundReadOnlyBwrapLaunch, type BoundReadOnlyBwrapLaunch } from "../sandbox/linux-launcher/bound-bwrap.js";
@@ -91,15 +92,6 @@ export interface WorkspaceFilePathTransactionGuard {
   readonly dispose: () => Promise<void>;
 }
 
-class WorkspacePathIdentityChangedError extends WorkspaceMutationError {
-  constructor(path: string) {
-    super(
-      "PATH_IDENTITY_CHANGED",
-      `Workspace path identity changed or its content no longer matches before the write to ${path}; no filesystem mutation was authorized.`,
-    );
-    this.name = "WorkspacePathIdentityChangedError";
-  }
-}
 
 export class WorkspaceFileMutationPathBindingUnavailableError extends WorkspaceMutationError {
   constructor(path: string, cause?: unknown) {
@@ -4655,8 +4647,25 @@ export async function captureWorkspaceFilePathTransactionGuard(
       }
     : null;
   let directoryHelper: BoundDirectoryHelper | undefined;
+  let fileCreateBinding: Promise<LinuxBoundFileCreate | undefined> | undefined;
+  let disposed = false;
+
+  const assertActive = (): void => {
+    if (disposed) throw new Error("workspace file transaction guard is disposed");
+  };
+  const bindFileCreate = (): Promise<LinuxBoundFileCreate | undefined> => {
+    assertActive();
+    // Missing ancestors still need the helper's checked directory walk.
+    if (!parentIdentity.targetExisted) return Promise.resolve(undefined);
+    return fileCreateBinding ??= LinuxBoundFileCreate.bind(parentIdentity.expectedPath, {
+      dev: parentIdentity.anchorDev,
+      ino: parentIdentity.anchorIno,
+      mode: parentIdentity.anchorMode,
+    });
+  };
 
   const ensureDirectoryHelper = async (): Promise<BoundDirectoryHelper> => {
+    assertActive();
     if (directoryHelper !== undefined) return directoryHelper;
     try {
       // Successful startup is also the platform capability probe: the child
@@ -4677,7 +4686,9 @@ export async function captureWorkspaceFilePathTransactionGuard(
     expected: WorkspaceFilePathExpectedState,
     operation: "write" | "remove",
   ): Promise<void> => {
+    assertActive();
     if (operation === "write" && expected.kind === "content") return;
+    if (operation === "write" && await bindFileCreate() !== undefined) return;
     await ensureDirectoryHelper();
   };
 
@@ -4686,7 +4697,13 @@ export async function captureWorkspaceFilePathTransactionGuard(
     content: Buffer,
     onEffectStart?: () => void,
   ): Promise<void> => {
+    assertActive();
     if (expected.kind === "missing") {
+      const binding = await bindFileCreate();
+      if (binding !== undefined) {
+        currentTargetIdentity = await binding.create(identity.expectedPath, content, onEffectStart);
+        return;
+      }
       const helper = await ensureDirectoryHelper();
       const createdIdentity = await helper.mutate({
         pathIdentity: identity,
@@ -4736,6 +4753,7 @@ export async function captureWorkspaceFilePathTransactionGuard(
     expected: WorkspaceFilePathExpectedState,
     onEffectStart?: () => void,
   ): Promise<void> => {
+    assertActive();
     if (expected.kind !== "content" || currentTargetIdentity === null) {
       throw new WorkspacePathIdentityChangedError(identity.expectedPath);
     }
@@ -4817,6 +4835,8 @@ export async function captureWorkspaceFilePathTransactionGuard(
     writeBoundContent,
     removeBoundEntry,
     dispose: async () => {
+      disposed = true;
+      await (await fileCreateBinding)?.dispose();
       await directoryHelper?.dispose();
     },
   };

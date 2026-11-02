@@ -222,6 +222,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'USER_TYPE',
   // advertised tool set (a test that needs it sets it explicitly)
   'AGENC_DEFER_RARE_TOOLS',
+  // exec_command timeout behavior (a test that needs it sets it explicitly)
+  'AGENC_EXEC_HARD_TIMEOUT',
   // endpoints and subprocess/service activation
   'AGENC_BACKEND_URL',
   'AGENC_DAEMON_URL',

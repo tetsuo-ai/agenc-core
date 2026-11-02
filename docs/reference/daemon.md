@@ -214,7 +214,8 @@ busy one alone until it is idle, through one waiting process. One such
 restart runs at a time in a home; a second one waits for it and says so on
 stderr. `--downgrade` (passed by `agenc update --pin`) lets it move a newer
 daemon down to this version. How each restart request ended is kept in
-`<AGENC_HOME>/daemon-restart-results.json` (the last 8, by request id) for a
+`<AGENC_HOME>/daemon-restart-results.json` (the last 8 plus active follows and
+their successor links, by request id) for a
 TUI that follows the update.
 The idle check, its bounds and the `--json` result are described in
 [Daemon restart after an update](../install.md#daemon-restart-after-an-update).
@@ -405,6 +406,7 @@ Never retry after admission may have arrived.
 | `thread/realtime/start` / `thread/realtime/appendAudio` / `thread/realtime/appendText` / `thread/realtime/stop` / `thread/realtime/listVoices`                              | Realtime voice/thread. `start` is advertised `false` (fail-closed)                                                 |
 | `tool.approve` / `tool.deny` / `tool.cancel`                                                                | Permission settlement                                                                                              |
 | `elicitation.respond`                                                                                       | User-input / MCP elicitation reply                                                                                 |
+| `elicitation.pending`                                                                                       | List the elicitation requests the session still waits for, and the event sequence the list is current at (protocol 1.36) |
 | `permission.list`                                                                                           | List pending / granted permissions                                                                                 |
 | `project.trustStatus` / `project.trust`                                                                     | Read or record trust for the project root a session started in `cwd` would use. See [Project trust](#project-trust) (protocol 1.16) |
 | `fs.fuzzy_search`                                                                                           | Workspace fuzzy file search                                                                                        |
@@ -597,8 +599,8 @@ task that may only call a few tools from one MCP server, sends:
   policy is refused; naming one for a session that had none restricts it from
   then on. Stored policy that cannot be read fails the restore instead of
   bringing the session back unrestricted.
-- For a session with a `toolPolicy`, `tool.approve` and `elicitation.respond`
-  must arrive on a connection that holds a client attached to that session,
+- For a session with a `toolPolicy`, `tool.approve`, `elicitation.respond` and
+  `elicitation.pending` must arrive on a connection that holds a client attached to that session,
   the same rule `session.resolveToolCall` has. Another connection gets
   `SESSION_NOT_ATTACHED`. `agent.create` does not attach: attach with
   `agent.attach` or `session.attach` on the connection that will answer
@@ -1221,9 +1223,9 @@ outside ordinary session attachment:
 Generic SDK clients advertise no such capabilities by default. Conversation
 messages and transcripts remain attachment-bound.
 
-`tool.approve`, `tool.deny`, and `elicitation.respond` are preemptive dispatch
-methods: they run outside the ordinary per-connection FIFO so they can unblock
-its head request. They are not overload-exempt. `request.cancel` and other
+`tool.approve`, `tool.deny`, `elicitation.respond`, and `elicitation.pending`
+are preemptive dispatch methods: they run outside the ordinary per-connection
+FIFO so they can unblock its head request. They are not overload-exempt. `request.cancel` and other
 control messages keep their existing overload-control semantics.
 
 `tool.approve` accepts `allowAllToolsForSession: true` only with
@@ -1247,6 +1249,60 @@ disable bypass entirely. See
 `elicitation.respond.clientResult` carry typed client-only interactions. The
 current Ledger action is documented in
 [`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
+
+When a user-input or MCP elicitation request stops being pending,
+`event.session_event` carries an `elicitation_closed` event. Its payload names
+the closed request by its occurrence: `requestEventId` is the `eventId` of the
+`event.user_input_request` or `event.mcp_elicitation_request` notification
+that asked. It is an opaque UUID, retained in the journal and unchanged in
+live delivery and replay, and `requestEventSeq` is that notification's
+`sequence` when it has one. The payload also carries the address
+`elicitation.respond` uses (`kind`, `requestId`, and `serverName` for
+`kind: "mcp"`), the `turnId`, and `outcome`: `answered` when a client answered
+it, `withdrawn` when the session stopped waiting first (the MCP server
+cancelled the request, for example on its own timeout, the tool call or turn
+stopped, or the session ended). A client that still shows that request closes
+it and sends no answer: `elicitation.respond` for a closed request fails with
+`INVALID_ARGUMENT` because nothing is pending. A later request that reuses the
+same `requestId`, even in the same turn, is another occurrence and stays open.
+Clients using `elicitation.pending` include `requestEventId` in
+`elicitation.respond`. The daemon validates it while consuming the pending
+resolver, so a delayed answer cannot resolve a replacement at the same address.
+New occurrences receive new UUIDs even if recovery loses the journal tail and
+reuses sequence numbers. Legacy clients can still answer by address.
+
+The event is live only. It is not written to the run journal and carries no
+`sequence` of its own, so `run.replay` never returns it; AgenC 0.19.25 and
+older cannot read a journal that holds an event type they do not know. The
+journal reader already accepts the type, so a later release can start storing
+it. The daemon keeps session events for a later client only while no client
+is attached, so a client that was away while another stayed attached never
+receives the close. `elicitation.pending` covers that case. For
+`{ sessionId }` it returns `{ sessionId, asOfSequence, pending }`: every
+request the session still waits for, as
+`{ eventId, sequence?, kind, requestId, serverName?, turnId }`, and the
+session event sequence the list is current at. A request whose `sequence` is
+at or below `asOfSequence` and is not listed is no longer pending. The TUI
+asks when it attaches, after every reconnect, and after receiving each request
+before showing it. The last check also rejects old unjournaled replays. It
+refreshes after batches of 128 settled occurrences and prunes covered records,
+including unjournaled ones, so a continuously connected client does not retain
+its entire elicitation history. Failed pending queries keep requests behind
+the readiness barrier and retry every 250 ms. Definitive runtime loss
+(`AGENT_NOT_FOUND` or `BACKGROUND_RUNNER_UNAVAILABLE`) clears forms and retained
+answers. It closes a shown form or question that is no longer pending at
+whatever field it shows, never shows a request that is no longer pending, and
+keeps an answer that failed to reach the daemon, sending it again while the
+request is still pending.
+
+Only a client that negotiated protocol 1.36 or newer sees
+`elicitation.pending` advertised and receives `elicitation_closed`. An older
+client sees the method advertised `false`, gets `METHOD_NOT_FOUND`, and never
+receives the event. A TUI attached to a daemon that does not advertise the
+method shows and answers elicitations as AgenC 0.19.25 did, without occurrence
+fields or pending queries. The standard daemon startup compatibility check
+replaces an older incompatible daemon before attaching; it does not send new
+protocol messages to a daemon that cannot negotiate them.
 
 ## Startup and restored sessions
 

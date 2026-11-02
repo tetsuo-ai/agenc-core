@@ -1,3 +1,4 @@
+import type { TurnContext } from "../../session/turn-context.js";
 import type { Session } from "../../session/session.js";
 import type { ToolRegistry } from "../../tool-registry.js";
 import {
@@ -34,6 +35,7 @@ async function invokeNestedCodeModeTool(
   call: CodeModeNestedToolCall,
   signal: AbortSignal,
   turn: object,
+  context?: TurnContext,
 ): Promise<unknown> {
   if (
     call.toolName === CODE_MODE_EXEC_TOOL_NAME ||
@@ -53,6 +55,7 @@ async function invokeNestedCodeModeTool(
     name: call.toolName,
     input: call.input,
     abortSignal: signal,
+    ...(context === undefined ? {} : { turn: context }),
   });
   // A call that settles after its turn ended publishes nothing: the session
   // would file its display result under the turn running now, and its stop
@@ -129,6 +132,7 @@ function emitMissingCodeModeServiceWarning(session: CodeModeWorkerSession): void
 
 export function startCodeModeTurnWorker(
   session: CodeModeWorkerSession,
+  context?: TurnContext,
 ): CodeModeTurnWorker {
   // This turn's token: nested-call results and stops are scoped to it.
   const turn = {};
@@ -144,7 +148,7 @@ export function startCodeModeTurnWorker(
     // stay in the session that started it.
     owner: session,
     invokeTool: (call: CodeModeNestedToolCall, signal: AbortSignal) =>
-      invokeNestedCodeModeTool(session, call, signal, turn),
+      invokeNestedCodeModeTool(session, call, signal, turn, context),
     notify: ({ callId, text }) => {
       if (isCurrentCodeModeTurn(session, turn)) emitCodeModeNotify(session, callId, text);
     },

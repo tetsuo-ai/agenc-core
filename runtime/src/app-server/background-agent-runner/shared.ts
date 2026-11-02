@@ -62,6 +62,7 @@ import type {
   SessionShellExecuteResult,
   SessionStatusLineExecuteParams,
   SessionStatusLineExecuteResult,
+  ElicitationPendingResult,
 } from "../protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "../realtime.js";
 import type { AgenCRealtimeCallClientLike } from "../realtime-transport.js";
@@ -694,6 +695,13 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentElicitationResponseParams,
   ): Promise<boolean>;
+  /** The live session's pending elicitation requests, or null without one. */
+  pendingElicitations?(
+    agentId: string,
+  ): Promise<{
+    readonly asOfSequence: ElicitationPendingResult["asOfSequence"];
+    readonly pending: ElicitationPendingResult["pending"];
+  } | null>;
   listPermissions?(agentId: string): Promise<PermissionListResult | null>;
   /**
    * The CURRENT permission mode in a runnable agent's own permission

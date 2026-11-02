@@ -273,6 +273,28 @@ export interface ProviderNativeTokenCountResult {
   readonly modelRevision?: string;
 }
 
+// A native counter closes over one provider's credentials and transport. Its
+// stable object identity is a conservative authority boundary: even equivalent
+// provider instances do not share estimates. Weak keys retain no providers or
+// secrets; only the opaque id enters the digest. Replacing a provider on key
+// rotation also replaces its capability and therefore its cache partition.
+const tokenCounterIds = new WeakMap<ProviderTokenCountCapability, number>();
+let nextTokenCounterId = 0;
+
+function tokenCounterIdentity(capability: ProviderTokenCountCapability | undefined): number | null {
+  if (capability === undefined) return null;
+  let id = tokenCounterIds.get(capability);
+  if (id === undefined) {
+    id = ++nextTokenCounterId;
+    tokenCounterIds.set(capability, id);
+  }
+  return id;
+}
+
+/**
+ * Keep this object stable for one provider authority. A different credential,
+ * transport or provider instance must own a different capability object.
+ */
 export interface ProviderTokenCountCapability {
   /** Pure in-process counters may opt into advisory prompt preflight. */
   readonly runsLocally?: true;
@@ -1316,6 +1338,8 @@ function prepareAccountingRequest(
       return digest ??= createHash("sha256")
         .update(TOKEN_ACCOUNTING_DIGEST_DOMAIN)
         .update(canonicalJsonText(cacheIdentityParts), "utf8")
+        // Authority scopes the cache, never the serialized prompt or its size.
+        .update(capability === undefined ? "" : `\0counter:${tokenCounterIdentity(capability)}`)
         .digest("hex");
     },
     fallback: conservativeFallbackResult(

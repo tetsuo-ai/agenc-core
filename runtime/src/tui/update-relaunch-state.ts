@@ -39,6 +39,8 @@ export interface UpdateNotice {
  * (`daemon`, when other work held the daemon restart back).
  */
 export interface UpdateFollow {
+  /** Release the original request and successor-chain retention when consumed. */
+  readonly releaseRetention?: () => void;
   readonly request: UpdateRelaunchRequest;
   readonly when: "idle" | "daemon";
   /**
@@ -61,6 +63,8 @@ let pendingFollow: UpdateFollow | null = null;
 let relaunchedVersion: string | null = null;
 
 export function setPendingUpdateRelaunch(request: UpdateRelaunchRequest): void {
+  // A successful exec keeps our PID but discards the old follow callback.
+  setPendingUpdateFollow(null);
   pendingRelaunch = request;
 }
 
@@ -87,6 +91,7 @@ export function consumePendingUpdateNotice(): UpdateNotice | null {
 }
 
 export function setPendingUpdateFollow(follow: UpdateFollow | null): void {
+  if (pendingFollow?.releaseRetention !== follow?.releaseRetention) pendingFollow?.releaseRetention?.();
   pendingFollow = follow;
 }
 
@@ -135,7 +140,7 @@ export function takeUpdateRelaunchMarker(env: NodeJS.ProcessEnv = process.env): 
 export function resetUpdateRelaunchStateForTestingOnly(): void {
   pendingRelaunch = null;
   pendingNotice = null;
-  pendingFollow = null;
+  setPendingUpdateFollow(null);
   relaunchedVersion = null;
   tuiAttachmentIds = [];
 }

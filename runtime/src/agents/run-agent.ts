@@ -1,3 +1,4 @@
+import { dispatchChildCodeModeTool } from "../tools/code-mode/child-dispatch.js";
 import { runtimeOptionsForChildSession } from "../one-shot-fast-mode.js";
 import { childSessionAuthority } from "../session/session-authority.js";
 import { isEffectReviewRequired, waitForEffectReview } from "../session/effect-review-gate.js";
@@ -2479,6 +2480,10 @@ export function buildFilteredRegistry(
       getDiscoveredToolNames: () => discoveredToolNames,
       discoverToolNames,
     } : {}),
+    async dispatchCodeModeNestedTool(call): Promise<ToolDispatchResult> {
+      if (unavailable.has(call.name)) return unavailableToolResult(call.name);
+      return dispatchChildCodeModeTool(call, wrappedByName.get(call.name), opts.getSession?.());
+    },
     async dispatch(toolCall): Promise<ToolDispatchResult> {
       if (unavailable.has(toolCall.name)) {
         return unavailableToolResult(toolCall.name);

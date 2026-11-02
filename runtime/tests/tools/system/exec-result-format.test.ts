@@ -329,3 +329,12 @@ test("a fixed-wait check still running gets the server guidance once, without th
   const noted = `${yielded}\n${SERVER_CHECK_RUNNING_NOTE}`;
   expect(compactExecExitFooter(noted)).toBe(noted);
 });
+
+
+test("residue notes do not steer Linux sandbox servers into an unreachable background session", () => {
+  for (const note of [RESIDUAL_PROCESSES_NOTE, RESIDUAL_PROCESSES_NOTE_WITHOUT_SERVER_GUIDANCE]) {
+    expect(note).toContain("servers and clients in one command");
+    expect(note).toContain("private loopback");
+    expect(note).not.toContain("a server too:");
+  }
+});

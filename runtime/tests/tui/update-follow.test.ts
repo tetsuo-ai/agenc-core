@@ -12,6 +12,7 @@ import {
   type AgenCDaemonRestartOutcome,
   type AgenCDaemonRestartResult,
 } from "../../src/app-server/daemon-restart-outcome.js";
+import { activeAgenCDaemonRestartFollows } from "../../src/app-server/daemon-restart-follow-retention.js";
 import { publishAgenCDaemonRestartResult } from "../../src/app-server/daemon-restart-when-idle.js";
 import { runUpdateRelaunch, type UpdateRelaunchDeps } from "../../src/bin/update-relaunch.js";
 import {
@@ -28,6 +29,8 @@ import {
   getPendingUpdateFollow,
   resetUpdateRelaunchStateForTestingOnly,
   setPendingUpdateFollow,
+  setPendingUpdateRelaunch,
+  consumePendingUpdateRelaunch,
   type UpdateFollow,
   type UpdateNotice,
   type UpdateRelaunchRequest,
@@ -133,6 +136,7 @@ describe("following the daemon after the update stopped waiting for its restart"
     let stepArgs: readonly string[] = [];
     const deps: UpdateRelaunchDeps = {
       pid: 4321,
+      agencHome: home,
       platform: "linux",
       env: {},
       now: () => SINCE,
@@ -155,11 +159,40 @@ describe("following the daemon after the update stopped waiting for its restart"
     };
     await runUpdateRelaunch(request, deps);
     expect(stepArgs).toEqual(["--requester-pid", "4321", "--request-id", MINE]);
-    expect(follow).toEqual({ request, when: "daemon", since: SINCE, requestId: MINE });
+    expect(follow).toEqual({ request, when: "daemon", since: SINCE, requestId: MINE, releaseRetention: expect.any(Function) });
     // The reopened TUI picks the follow up.
     setPendingUpdateFollow(follow);
     return follow!;
   }
+
+  it("releases an earlier deferred follow when a manual retry successfully replaces the process", async () => {
+    await updateWhoseRestartStillRuns();
+    await publishAgenCDaemonRestartResult(home, ended(MINE, failed()));
+    expect([...activeAgenCDaemonRestartFollows(home)]).toEqual([MINE]);
+    // The menu accepts a replacement relaunch before unmounting the TUI.
+    setPendingUpdateRelaunch(request);
+    const next = consumePendingUpdateRelaunch()!;
+    const execve = vi.fn();
+    const reopen = vi.fn(async () => 0);
+    await runUpdateRelaunch(next, {
+      agencHome: home, pid: process.pid, platform: "linux", env: {},
+      newRequestId: () => OTHER,
+      runDaemonStep: async () => ({ status: "not-running" }),
+      execve, chdir: () => {}, reopen,
+      markerName: AGENC_UPDATE_RELAUNCH_ENV, encodeMarker: encodeUpdateRelaunchMarker,
+      write: () => {},
+    });
+    expect(execve).toHaveBeenCalledOnce();
+    expect(reopen).not.toHaveBeenCalled();
+    expect(getPendingUpdateFollow()).toBeNull();
+    expect(activeAgenCDaemonRestartFollows(home).size).toBe(0);
+    // execve keeps the PID alive, so ordinary publication must prune the old result.
+    for (let index = 0; index < 8; index++) {
+      await publishAgenCDaemonRestartResult(home, ended(`new-result-${index}`, { status: "not-running" }));
+    }
+    expect(readDaemonRestartResults(home)).toHaveLength(8);
+    expect(readDaemonRestartResults(home).some(result => result.requestId === MINE)).toBe(false);
+  });
 
   it("reports a restart that fails after the update stopped waiting, then stops following", async () => {
     await updateWhoseRestartStillRuns();
@@ -213,7 +246,7 @@ describe("following the daemon after the update stopped waiting for its restart"
     expect(readDaemonRestartResults(home).find((result) => result.requestId === MINE)?.continuedBy).toBeUndefined();
   });
 
-  it("known limit: eight newer ends before the next poll evict an unread one, and the follow falls back to its deadline", async () => {
+  it("keeps a suspended follow's unread failure through eight newer ends", async () => {
     await updateWhoseRestartStillRuns();
     rmSync(join(home, "daemon-runtime.json"), { force: true });
     pending(false);
@@ -221,9 +254,12 @@ describe("following the daemon after the update stopped waiting for its restart"
     for (let n = 0; n < AGENC_DAEMON_RESTART_RESULTS_KEPT; n += 1) {
       await publishAgenCDaemonRestartResult(home, ended(`4a1b2c3d-0000-4000-9000-${String(n).padStart(12, "0")}`, failed("0.19.27")));
     }
-    expect(check(SINCE + 60_000)).toBe("wait");
-    expect(check(SINCE + DEADLINE)).toBe("stop");
-    expect(notices.at(-1)?.text).toContain("within 13 hours");
+    expect(check(SINCE + 60_000)).toBe("stop");
+    expect(notices.at(-1)?.text).toContain("the daemon stopped but did not start again");
+    expect(notices.at(-1)?.kind).toBe("error");
+    // Consuming the result releases retention; the next publication prunes it.
+    await publishAgenCDaemonRestartResult(home, ended("newer-end-after-read", failed()));
+    expect(readDaemonRestartResults(home).some(result => result.requestId === MINE)).toBe(false);
   });
 
   it("does not relaunch between a restart's stop and its end: no daemon and nothing pending is not enough", async () => {
@@ -259,7 +295,7 @@ describe("following the daemon after the update stopped waiting for its restart"
       toVersion: "0.19.26",
     }, { continuedBy: OTHER }));
     expect(check(SINCE + 60_000)).toBe("continue");
-    expect(getPendingUpdateFollow()).toEqual({ request, when: "daemon", since: SINCE, requestId: OTHER });
+    expect(getPendingUpdateFollow()).toEqual({ request, when: "daemon", since: SINCE, requestId: OTHER, releaseRetention: expect.any(Function) });
     expect(check(SINCE + 62_000)).toBe("wait");
     // That request's restart then succeeds.
     await publishAgenCDaemonRestartResult(home, ended(OTHER, { status: "restarted", toVersion: "0.19.26", pid: 5 }));

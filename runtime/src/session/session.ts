@@ -235,6 +235,8 @@ import type {
 import type { LifecycleHookRegistry } from "../llm/hooks/registry.js";
 import type { HookResultMessage } from "../types/message.js";
 import type {
+  ElicitationClosedEvent,
+  ElicitationOccurrence,
   McpElicitationRequestEvent,
   McpElicitationRequest,
   McpElicitationResponse,
@@ -1023,6 +1025,31 @@ function waitForAbortSignal(signals: readonly (AbortSignal | undefined)[]): {
     }
   });
   return { aborted: false, promise, cleanup };
+}
+
+/**
+ * Waits for a client's answer or the abort waiter, and says whether the abort
+ * came first. The value cannot tell: an answer can be null, and a resolver
+ * told about the abort (`onAbort`) settles because of it.
+ */
+async function answerOrWithdrawal<T>(
+  answer: Promise<T>,
+  abort: Promise<null>,
+  onAbort?: () => void,
+): Promise<{ readonly withdrawn: boolean; readonly value: T | null }> {
+  let first: "answer" | "abort" | undefined;
+  const value = await Promise.race([
+    answer.then((answered) => {
+      first ??= "answer";
+      return answered;
+    }),
+    abort.then(() => {
+      first ??= "abort";
+      onAbort?.();
+      return null;
+    }),
+  ]);
+  return { withdrawn: first === "abort", value };
 }
 
 function mcpElicitationPendingKey(
@@ -6156,25 +6183,24 @@ export class Session {
         return null;
       }
       const resolverAbort = new AbortController();
-      const abortPromise = abortWaiter.promise.then((result) => {
-        resolverAbort.abort("elicitation_cancelled");
-        return result;
-      });
-      this.emit({
-        id: this.nextInternalSubId(),
-        msg: {
-          type: "request_user_input",
-          payload: event,
-        },
-      });
+      const occurrence = this.publishElicitationRequest(
+        { type: "request_user_input", payload: event },
+        { kind: "request_user_input", requestId, turnId },
+      );
+      let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
       try {
-        return await Promise.race([
+        const settled = await answerOrWithdrawal(
           directResolver.request(event, resolverAbort.signal),
-          abortPromise,
-        ]);
+          abortWaiter.promise,
+          () => resolverAbort.abort("elicitation_cancelled"),
+        );
+        if (!settled.withdrawn) outcome = "answered";
+        return settled.value;
       } finally {
         resolverAbort.abort("elicitation_settled");
         abortWaiter.cleanup();
+        this.pendingElicitationOccurrences.delete(occurrence.eventId);
+        this.emitElicitationClosed(occurrence, outcome);
       }
     }
     let resolveResponse:
@@ -6184,10 +6210,11 @@ export class Session {
         resolveResponse = resolve;
       },
     );
+    const requestEventId = randomUUID();
+    const respond = (response: unknown): void => resolveResponse?.(response as RequestUserInputResponse | null);
+    this.elicitationResponderIds.set(respond, requestEventId);
     await current.turnState.with((ts) => {
-      ts.pendingUserInput.set(requestId, (response) =>
-        resolveResponse?.(response as RequestUserInputResponse | null),
-      );
+      ts.pendingUserInput.set(requestId, respond);
     });
     const abortWaiter = waitForAbortSignal([
       signal,
@@ -6197,35 +6224,48 @@ export class Session {
     const cleanup = async (): Promise<void> => {
       abortWaiter.cleanup();
       await current.turnState.with((ts) => {
-        ts.pendingUserInput.delete(requestId);
+        if (ts.pendingUserInput.get(requestId) === respond) ts.pendingUserInput.delete(requestId);
       });
     };
     if (abortWaiter.aborted) {
       await cleanup();
       return null;
     }
-    this.emit({
-      id: this.nextInternalSubId(),
-      msg: {
-        type: "request_user_input",
-        payload: event,
-      },
-    });
+    const occurrence = this.publishElicitationRequest(
+      { type: "request_user_input", payload: event },
+      { kind: "request_user_input", requestId, turnId },
+      requestEventId,
+    );
+    let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
-      return await Promise.race([responsePromise, abortWaiter.promise]);
+      const settled = await answerOrWithdrawal(
+        responsePromise,
+        abortWaiter.promise,
+      );
+      if (!settled.withdrawn) outcome = "answered";
+      return settled.value;
     } finally {
+      this.pendingElicitationOccurrences.delete(occurrence.eventId);
       await cleanup();
+      this.emitElicitationClosed(occurrence, outcome);
     }
   }
 
   async notifyUserInputResponse(
     requestId: string,
     response: RequestUserInputResponse | null,
+    requestEventId?: string,
   ): Promise<boolean> {
     const resolver = await this.withActiveTurnState((ts) => {
       const pending = ts.pendingUserInput.get(requestId);
+      // Validate under the same lock that consumes the resolver. A snapshot
+      // before delivery cannot prevent replacement while a response waits.
+      if (requestEventId !== undefined &&
+          (pending === undefined || this.elicitationResponderIds.get(pending) !== requestEventId)) return undefined;
       if (pending !== undefined) {
         ts.pendingUserInput.delete(requestId);
+        const occurrenceId = this.elicitationResponderIds.get(pending);
+        if (occurrenceId !== undefined) this.pendingElicitationOccurrences.delete(occurrenceId);
       }
       return pending;
     });
@@ -6264,26 +6304,25 @@ export class Session {
         return null;
       }
       const resolverAbort = new AbortController();
-      const abortPromise = abortWaiter.promise.then((result) => {
-        resolverAbort.abort("elicitation_cancelled");
-        return result;
-      });
-      this.emit({
-        id: this.nextInternalSubId(),
-        msg: {
-          type: "mcp_elicitation_request",
-          payload: event,
-        },
-      });
+      const occurrence = this.publishElicitationRequest(
+        { type: "mcp_elicitation_request", payload: event },
+        { kind: "mcp", requestId, serverName, turnId },
+      );
+      let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
       try {
-        return await Promise.race([
+        const settled = await answerOrWithdrawal(
           directResolver.request(event, resolverAbort.signal),
-          abortPromise,
-        ]);
+          abortWaiter.promise,
+          () => resolverAbort.abort("elicitation_cancelled"),
+        );
+        if (!settled.withdrawn) outcome = "answered";
+        return settled.value;
       } finally {
         resolverAbort.abort("elicitation_settled");
         abortWaiter.cleanup();
         releasePause();
+        this.pendingElicitationOccurrences.delete(occurrence.eventId);
+        this.emitElicitationClosed(occurrence, outcome);
       }
     }
     let resolveResponse:
@@ -6291,10 +6330,11 @@ export class Session {
     const responsePromise = new Promise<McpElicitationResponse>((resolve) => {
       resolveResponse = resolve;
     });
+    const requestEventId = randomUUID();
+    const respond = (response: unknown): void => resolveResponse?.(response as McpElicitationResponse);
+    this.elicitationResponderIds.set(respond, requestEventId);
     await current.turnState.with((ts) => {
-      ts.pendingElicitations.set(key, (response) =>
-        resolveResponse?.(response as McpElicitationResponse),
-      );
+      ts.pendingElicitations.set(key, respond);
     });
     const releasePause = this.beginOutOfBandElicitationPause();
     const abortWaiter = waitForAbortSignal([
@@ -6306,24 +6346,30 @@ export class Session {
       abortWaiter.cleanup();
       releasePause();
       await current.turnState.with((ts) => {
-        ts.pendingElicitations.delete(key);
+        if (ts.pendingElicitations.get(key) === respond) ts.pendingElicitations.delete(key);
       });
     };
     if (abortWaiter.aborted) {
       await cleanup();
       return null;
     }
-    this.emit({
-      id: this.nextInternalSubId(),
-      msg: {
-        type: "mcp_elicitation_request",
-        payload: event,
-      },
-    });
+    const occurrence = this.publishElicitationRequest(
+      { type: "mcp_elicitation_request", payload: event },
+      { kind: "mcp", requestId, serverName, turnId },
+      requestEventId,
+    );
+    let outcome: ElicitationClosedEvent["outcome"] = "withdrawn";
     try {
-      return await Promise.race([responsePromise, abortWaiter.promise]);
+      const settled = await answerOrWithdrawal(
+        responsePromise,
+        abortWaiter.promise,
+      );
+      if (!settled.withdrawn) outcome = "answered";
+      return settled.value;
     } finally {
+      this.pendingElicitationOccurrences.delete(occurrence.eventId);
       await cleanup();
+      this.emitElicitationClosed(occurrence, outcome);
     }
   }
 
@@ -6331,18 +6377,119 @@ export class Session {
     serverName: string,
     requestId: McpRequestId,
     response: McpElicitationResponse,
+    requestEventId?: string,
   ): Promise<boolean> {
     const key = mcpElicitationPendingKey(serverName, requestId);
     const resolver = await this.withActiveTurnState((ts) => {
       const pending = ts.pendingElicitations.get(key);
+      // Validate under the same lock that consumes the resolver. A snapshot
+      // before delivery cannot prevent replacement while a response waits.
+      if (requestEventId !== undefined &&
+          (pending === undefined || this.elicitationResponderIds.get(pending) !== requestEventId)) return undefined;
       if (pending !== undefined) {
         ts.pendingElicitations.delete(key);
+        const occurrenceId = this.elicitationResponderIds.get(pending);
+        if (occurrenceId !== undefined) this.pendingElicitationOccurrences.delete(occurrenceId);
       }
       return pending;
     });
     if (resolver === undefined) return false;
     resolver(response);
     return true;
+  }
+
+  /**
+   * Requests this session published that still wait for an answer, by
+   * occurrence. `elicitation.pending` reports them, so a client that missed a
+   * close (it was detached, or the daemon restarted) can reconcile.
+   */
+  private readonly elicitationResponderIds = new WeakMap<object, string>();
+  private readonly pendingElicitationOccurrences = new Map<string, ElicitationOccurrence>();
+
+  /**
+   * The requests still pending and the event sequence the set is current at:
+   * a request event at or below `asOfSequence` that is not listed is no
+   * longer pending.
+   */
+  pendingElicitationSnapshot(): {
+    readonly asOfSequence: number;
+    readonly pending: readonly ElicitationOccurrence[];
+  } {
+    return {
+      asOfSequence: this.eventLog.lastSeq,
+      pending: [...this.pendingElicitationOccurrences.values()],
+    };
+  }
+
+  /**
+   * Publishes a request event and records it as pending under its
+   * occurrence: the event's own id, or its envelope id when the journal is
+   * suspended and the event gets no id or sequence.
+   */
+  private publishElicitationRequest(
+    msg: Extract<EventMsg, { type: "request_user_input" | "mcp_elicitation_request" }>,
+    address: Omit<ElicitationOccurrence, "eventId" | "sequence">,
+    requestEventId: string = randomUUID(),
+  ): ElicitationOccurrence {
+    // Opaque identities cannot be reallocated when recovery loses a journal
+    // tail. The envelope id preserves this identity in unjournaled fork turns.
+    const prepared = this.prepareEmit({ id: requestEventId, eventId: requestEventId, msg });
+    const published = prepared.event;
+    const occurrence: ElicitationOccurrence = {
+      eventId: published.eventId ?? published.id,
+      ...(published.seq !== undefined ? { sequence: published.seq } : {}),
+      ...address,
+    };
+    this.pendingElicitationOccurrences.set(occurrence.eventId, occurrence);
+    prepared.publish();
+    return occurrence;
+  }
+
+  /**
+   * Tells clients that a request this session published is no longer
+   * pending, so one that still shows it can close it. A daemon client has no
+   * other way to learn that the session stopped waiting.
+   *
+   * Live only, never journaled: AgenC 0.19.25 and older refuse a canonical
+   * journal that holds an event type they do not know, so writing this one
+   * would break a rollback. Readers already accept it (KNOWN_EVENT_TYPES and
+   * the journal schema), so a later release can start storing it.
+   */
+  private emitElicitationClosed(
+    occurrence: ElicitationOccurrence,
+    outcome: ElicitationClosedEvent["outcome"],
+  ): void {
+    const { eventId, sequence, ...address } = occurrence;
+    this.publishLiveOnly({
+      type: "elicitation_closed",
+      payload: {
+        requestEventId: eventId,
+        ...(sequence !== undefined ? { requestEventSeq: sequence } : {}),
+        ...address,
+        outcome,
+      },
+    });
+  }
+
+  /**
+   * Publishes an event to EventLog subscribers (the daemon's client bridge
+   * among them) in order with every other publication, without appending it
+   * to the canonical journal. It gets no sequence, so run.replay never
+   * returns it; daemon clients that attach later still receive it from the
+   * detached-session buffer.
+   */
+  private publishLiveOnly(msg: EventMsg): void {
+    const queue = this.writeBehind;
+    // A failed persistence queue keeps every later publication.
+    if (queue.hasFailed) return;
+    if (queue.draining) queue.drain();
+    const event: Event = { id: this.nextInternalSubId(), msg };
+    const publish = (): void => {
+      this.eventLog.publish(event, (published) => {
+        this.txEvent.send(published);
+      });
+    };
+    if (!queue.defer("event-publication", publish)) queue.observe(publish);
   }
 
   private beginOutOfBandElicitationPause(): () => void {
