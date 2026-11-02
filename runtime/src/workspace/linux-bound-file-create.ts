@@ -1,7 +1,8 @@
 import { constants, type Stats } from "node:fs";
-import { open, stat, statfs, type FileHandle } from "node:fs/promises";
+import { lstat, open, stat, statfs, type FileHandle } from "node:fs/promises";
 import { basename } from "node:path";
 import { WorkspaceFileMutationPreEffectConflictError } from "./file-mutation-evidence.js";
+import { WorkspaceMutationError } from "./mutation-error.js";
 
 interface DirectoryIdentity {
   readonly dev: number;
@@ -57,11 +58,31 @@ export class LinuxBoundFileCreate {
     if (name === "" || name === "." || name === ".." || name.includes("\0")) {
       return Promise.reject(new Error("invalid exclusive create basename"));
     }
-    const task = this.#create(path, name, content, onEffectStart);
+    const task = this.#create(path, name, content, onEffectStart).catch(error => this.#failure(path, name, error));
     this.#pending.add(task);
     // Both handlers settle successfully; no orphan rejected finally promise.
     void task.then(() => this.#pending.delete(task), () => this.#pending.delete(task));
     return task;
+  }
+
+  async #failure(path: string, name: string, error: unknown): Promise<never> {
+    if (error instanceof WorkspaceFileMutationPreEffectConflictError) throw error;
+    // Match the helper's diagnostics, describing its equivalent held cwd,
+    // never the daemon cwd or a public ancestor that may have been exchanged.
+    const parts: string[] = [];
+    try { parts.push(`uid=${process.getuid!()} gid=${process.getgid!()}`); } catch { /* Best effort. */ }
+    const errno = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (["EACCES", "EPERM", "EROFS", "ENOSPC"].includes(errno ?? "")) {
+      const describe = (label: string, info: Stats): void => {
+        parts.push(`${label} mode=0${(info.mode & 0o7777).toString(8)} owner=${info.uid}:${info.gid}`);
+      };
+      try { describe("target", await lstat(`${this.descriptorPath}/${name}`)); } catch { /* Missing target. */ }
+      try { describe("cwd", await this.directory.stat()); } catch { /* Best effort. */ }
+    }
+    const message = (error instanceof Error ? error.message : String(error))
+      .replaceAll(`${this.descriptorPath}/${name}`, name);
+    throw new WorkspaceMutationError("MUTATION_AUDIT_FAILED",
+      `The identity-bound filesystem helper could not safely access ${path}: ${message}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`);
   }
 
   async #create(path: string, name: string, content: Buffer, onEffectStart?: () => void): Promise<DirectoryIdentity> {
