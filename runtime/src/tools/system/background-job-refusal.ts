@@ -408,6 +408,8 @@ interface CommandWord {
   readonly word: string | undefined;
   /** It sets variables or redirects without running a command. */
   readonly bare: boolean;
+  /** Even a builtin can feed a FIFO/socket or produce a file through redirection. */
+  readonly redirected: boolean;
 }
 
 /** The command a simple command runs: `!`, `time`, variable assignments and redirections are skipped. */
@@ -431,7 +433,7 @@ function commandWord(text: string): CommandWord {
     }
   }
   const word = tokens[index];
-  return { word: word === undefined ? undefined : word.split("/").pop(), bare };
+  return { word: word === undefined ? undefined : word.split("/").pop(), bare, redirected: /[<>]/u.test(text) };
 }
 
 /** `nohup` or `setsid` as the job's command, for the refusal's wording. */
@@ -463,7 +465,7 @@ export function findUnwaitedBackgroundJob(cmd: string): UnwaitedBackgroundJob | 
       disowned = false;
       continue;
     }
-    if (words.some(({ word, bare }) => word === undefined ? bare : !NO_WORK_COMMANDS.has(word))) {
+    if (words.some(({ word, bare, redirected }) => redirected || (word === undefined ? bare : !NO_WORK_COMMANDS.has(word)))) {
       last = index;
     } else if (words.some(({ word }) => word === "disown")) {
       disowned = true;

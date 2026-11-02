@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // The cgroup OOM-kill counter (Linux only in production) is driven by the
 // test, so the out-of-memory flag of a session end notice is checked on
-// every platform with a real process that dies by SIGKILL.
+// Linux and macOS with a real process that dies by SIGKILL.
 const oomKills = vi.hoisted(() => ({ count: 0 as number | undefined }));
 vi.mock("../../src/utils/resource-limits.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/utils/resource-limits.js")>()),
@@ -19,6 +19,9 @@ afterEach(async () => {
   oomKills.count = 0;
   await pool.closeAll();
 });
+
+// Register only where process tables and POSIX signal fixtures are supported.
+if (process.platform === "linux" || process.platform === "darwin") {
 
 describe("session end notices: out of memory", () => {
   it("names the signal and flags an out-of-memory kill the cgroup counted", async () => {
@@ -47,3 +50,4 @@ describe("session end notices: out of memory", () => {
     expect(notice!.outOfMemory).toBeUndefined();
   });
 });
+}

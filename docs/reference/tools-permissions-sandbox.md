@@ -233,7 +233,8 @@ work is a background job followed by nothing but `echo`, `printf`, `true`,
 cleanup above a moment after it starts. Everything else runs as before: a job
 followed by real work (`server & sleep 1; curl ...`, a test run, a `wait`)
 serves it, and nested forms are not judged even when their job trails; the
-cleanup stops what is left and the result says so. Only POSIX shells are
+cleanup stops what is left and the result says so. Commands with redirections after the job are treated as potentially useful work, including
+redirected builtins that feed a FIFO or socket. Only POSIX shells are
 scanned; quoted text, comments, here-document bodies and here-strings are
 skipped, and a command the scan cannot parse runs as before.
 `background: true` starts the command as a tracked session: the call returns

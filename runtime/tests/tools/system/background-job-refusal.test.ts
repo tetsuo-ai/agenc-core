@@ -18,6 +18,11 @@ import {
 // is trailing but nested, which the rule lets run on purpose: the cleanup stops
 // it and the result says so.
 const CASES: readonly (readonly [command: string, refused: UnwaitedBackgroundJob["kind"] | undefined, why: string])[] = [
+  ["mkfifo request; cat request & printf 'hello\\n' >request; sleep 1", undefined, "redirected producer feeds a waiting reader"],
+  ["server & printf 'GET / HTTP/1.0\\r\\n\\r\\n' >/dev/tcp/127.0.0.1/8080", undefined, "redirected builtin is a same-command client"],
+  ["server & >request echo hello", undefined, "leading functional redirection"],
+  ["server & : >ready", undefined, "redirection itself does work"],
+  ["server & echo 'literal > text'", "trailing", "quoted redirection is not functional"],
   // Flat lists whose last real work is a background job: refused.
   ["nohup python3 train.py > /tmp/log 2>&1 &", "nohup", "nothing after it"],
   ["cat > /tmp/exp.py <<'EOF'\nimport os & sys\nx = a & b\nEOF\nnohup python3 /tmp/exp.py A '{\"dim\":50}' > /tmp/expA.log 2>&1 &\nnohup python3 /tmp/exp.py B > /tmp/expB.log 2>&1 &\necho started", "nohup", "train-fasttext Chi3Pzn: only echo after the second job"],
@@ -26,7 +31,7 @@ const CASES: readonly (readonly [command: string, refused: UnwaitedBackgroundJob
   ["python3 a.py & python3 b.py &", "trailing", "the second job is last"],
   ["python train.py 2>&1 | tee train.log &", "trailing", "a backgrounded pipeline"],
   ["sleep 30 &", "trailing", "a job is a candidate whatever it runs"],
-  ["./server &\necho $! > pid", "trailing", "echo is no work"],
+  ["./server &\necho $! > pid", undefined, "accepted false negative: redirected output can do work"],
   ["python a.py & # started", "trailing", "a comment is nothing"],
   ["./server & disown", "disown", "disown is no work"],
   ["FOO=1 /usr/bin/nohup ./job &", "nohup", "assignment and path"],

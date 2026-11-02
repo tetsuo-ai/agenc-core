@@ -22,6 +22,9 @@ const { UnifiedExecProcessManager } = await import("../../src/unified-exec/proce
 // `python3 analysis.py 2>&1 | tail -40` for 1240 s after the python parent
 // had died. Real processes on Linux (/proc) and Darwin (ps).
 
+// Register only where process tables and POSIX signal fixtures are supported.
+if (process.platform === "linux" || process.platform === "darwin") {
+
 describe("quiet polls", () => {
   const managers: InstanceType<typeof UnifiedExecProcessManager>[] = [];
   afterEach(async () => {
@@ -70,3 +73,4 @@ describe("quiet polls", () => {
     expect(started.process_state).toBeUndefined();
   });
 });
+}
