@@ -2977,49 +2977,54 @@ function subscribeToDaemonEvents(
       return reconciling;
     }
     const run = async (): Promise<void> => {
-      do {
-        reconcileAgain = false;
-        // Everything this client knows of now was published before the daemon reads its set.
-        const mark = elicitationOccurrences.mark();
-        let snapshot: AgenCDaemonResultByMethod["elicitation.pending"];
-        try {
-          snapshot = await client.request("elicitation.pending", { sessionId });
-        } catch (error) {
-          if (closed) return;
-          if (isRecoveredWithoutRuntimeError(error) ||
-              (error instanceof AgenCDaemonResponseError && isJsonObject(error.data) &&
-               error.data.code === "AGENT_NOT_FOUND")) {
-            elicitationOccurrences.reset();
-            return;
+      try {
+        do {
+          reconcileAgain = false;
+          // Everything this client knows of now was published before the daemon reads its set.
+          const mark = elicitationOccurrences.mark();
+          let snapshot: AgenCDaemonResultByMethod["elicitation.pending"];
+          try {
+            snapshot = await client.request("elicitation.pending", { sessionId });
+          } catch (error) {
+            if (closed) return;
+            if (isRecoveredWithoutRuntimeError(error) ||
+                (error instanceof AgenCDaemonResponseError && isJsonObject(error.data) &&
+                 error.data.code === "AGENT_NOT_FOUND")) {
+              elicitationOccurrences.reset();
+              return;
+            }
+            // Preserve readiness until authority is available, without spinning
+            // on a disconnected transport or requiring another reconnect event.
+            await retryWait();
+            reconcileAgain = true;
+            continue;
           }
-          // Preserve readiness until authority is available, without spinning
-          // on a disconnected transport or requiring another reconnect event.
-          await retryWait();
-          reconcileAgain = true;
-          continue;
-        }
-        if (closed) return;
-        if (!Number.isSafeInteger(snapshot.asOfSequence) || !Array.isArray(snapshot.pending)) {
-          await retryWait();
-          reconcileAgain = true;
-          continue;
-        }
-        const resend = elicitationOccurrences.reconcile(
-          mark,
-          snapshot.asOfSequence,
-          new Set(snapshot.pending.map((entry) => entry.eventId)),
-        );
-        // A failure is reported by the send itself and kept for the next run.
-        for (const occurrenceId of resend) {
-          await elicitationOccurrences.resend(occurrenceId);
-        }
-      } while (reconcileAgain && !closed);
-    };
-    reconciling = run()
-      .catch(() => undefined)
-      .finally(() => {
+          if (closed) return;
+          if (!Number.isSafeInteger(snapshot.asOfSequence) || !Array.isArray(snapshot.pending)) {
+            await retryWait();
+            reconcileAgain = true;
+            continue;
+          }
+          const resend = elicitationOccurrences.reconcile(
+            mark,
+            snapshot.asOfSequence,
+            new Set(snapshot.pending.map((entry) => entry.eventId)),
+          );
+          // A failure is reported by the send itself and kept for the next run.
+          for (const occurrenceId of resend) {
+            await elicitationOccurrences.resend(occurrenceId);
+          }
+        } while (reconcileAgain && !closed);
+      } catch {
+        // Delivery failures are already reported and retained for a retry.
+      } finally {
+        // Release ownership in the same microtask as the loop's final check.
+        // A caller arriving after that check must start and await a new read.
         reconciling = null;
-      });
+      }
+    };
+    // Install ownership before run can complete, including a synchronous RPC error.
+    reconciling = Promise.resolve().then(run);
     return reconciling;
   };
   // Requests wait for a pending set taken after they could have been
