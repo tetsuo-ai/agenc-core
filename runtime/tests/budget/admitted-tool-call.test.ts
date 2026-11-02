@@ -108,7 +108,13 @@ describe("runAdmittedToolCall", () => {
       const root = await mkdtemp(join(tmpdir(), "agenc-process-settlement-"));
       const manager = new UnifiedExecProcessManager({ cwd: root });
       const state = toolHarness();
-      const exec = bindExplicitDangerBoundary(createExecCommandTool({ cwd: root, unifiedExecManager: manager }));
+      const exec = bindExplicitDangerBoundary(createExecCommandTool({
+        cwd: root,
+        unifiedExecManager: manager,
+        // timeoutMs is a wait limit by default. This case exercises settlement
+        // after the explicit hard-timeout switch actually stops the process.
+        hardTimeout: () => termination === "timeout",
+      }));
       const poll = bindExplicitDangerBoundary(createWriteStdinTool({ cwd: root, unifiedExecManager: manager }));
       const invoke = (tool: Tool, callId: string, args: Record<string, unknown>) => runAdmittedToolCall({
         session: state.session, turnId: "turn-1", callId, tool, args,
