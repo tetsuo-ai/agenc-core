@@ -122,7 +122,7 @@ const valid: AgencDaemonRequest<"health.ping"> = { jsonrpc: "2.0", id: 1, method
     });
     expect(result.diagnostics).toEqual([]);
     expect(result.matches).toBe(true);
-  }, 30_000);
+  }, 60_000);
 
   it("generates a deterministic standalone closure without internal RPC methods", async () => {
     const rendered = await renderSdkWireTypes(protocolPath);

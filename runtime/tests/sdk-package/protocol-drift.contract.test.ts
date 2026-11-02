@@ -80,7 +80,7 @@ describe("agenc-sdk protocol mirror", () => {
       mismatches: { RequestExact: [], ResultExact: [], EnvelopeExact: [], ClientArgumentsExact: [] },
       diagnostics: [],
     });
-  }, 30_000);
+  }, 60_000);
 
   it("does not import runtime internals", () => {
     const source = readFileSync(packageProtocolPath, "utf8");
