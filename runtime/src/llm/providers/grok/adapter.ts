@@ -2686,7 +2686,6 @@ export class GrokProvider implements LLMProvider {
     }
 
     if (allowedToolNames.length === 0) {
-      console.warn("[GrokProvider] Tool allowlist resolved to empty set: all tools suppressed for this call");
       return {
         tools: [],
         chars: 0,
@@ -2760,9 +2759,8 @@ export class GrokProvider implements LLMProvider {
       // executor can decide to abort, retry without tools, or surface a
       // clear error to the operator. The previous behavior shipped under
       // `fallback_full_catalog_no_matches` is removed.
-      console.warn(
-        `[GrokProvider] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog: suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
-      );
+      // Keep projection pure, including pre-admission validation. The caller
+      // receives the structured resolution code without logging supplied names.
       return {
         tools: [],
         chars: 0,
