@@ -71,7 +71,7 @@ import {
   type ChatCompletionsCapabilityHints,
 } from "../../wire/capability-gating.js";
 import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
-import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { createProviderToolNameWireLookup, decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { parseProviderJson } from "../../wire/parse-json.js";
 import {
   coerceUsage,
@@ -1112,6 +1112,14 @@ export class OpenAIProvider implements LLMProvider {
       toolsRequested: tools.length > 0,
       api: responsesApi ? "responses" : "chat_completions",
     });
+    const toolChoicePolicy = responsesApi
+      ? this.responsesContractOptions(model).toolChoicePolicy
+      : this.chatCapabilityHints(model).toolChoicePolicy;
+    // Validate only the catalog the wire will advertise, without projecting
+    // the conversation a second time for ordinary text requests.
+    if (!(toolChoicePolicy === "auto_only" && options.toolChoice === "none")) {
+      createProviderToolNameWireLookup(tools.map((tool) => tool.function.name));
+    }
     if (responsesApi) return;
     const hints = this.chatCapabilityHints(model);
     const exceedsToolLimit = hints.maxToolDefinitions !== undefined && tools.length > hints.maxToolDefinitions;

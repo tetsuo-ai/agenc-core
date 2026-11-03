@@ -2235,7 +2235,12 @@ export class GrokProvider implements LLMProvider {
 
 
   validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
-    if (options.structuredOutput?.enabled === false || !options.structuredOutput?.schema) return;
+    if (options.structuredOutput?.enabled === false || !options.structuredOutput?.schema) {
+      // Tool conversion can reject ambiguous names even without a schema.
+      // Reuse selection so multi-agent omission and native routing stay exact.
+      this.resolveResponseTools(options.toolRouting?.allowedToolNames, options.toolChoice, options.tools);
+      return;
+    }
     // This owns vision routing and the attached native/client tool selection.
     // Do not consult or change the continuation chain during local preflight.
     this.buildRequestPlan(messages, options, { disableIncremental: true });

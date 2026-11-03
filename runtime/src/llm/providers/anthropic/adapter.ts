@@ -43,7 +43,7 @@ import {
   readAnthropicThinkingTokenDetails,
   withAnthropicProcessedTokenTotal,
 } from "../../wire/messages-anthropic.js";
-import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { createProviderToolNameWireLookup, decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
 import {
   assertProviderStructuredOutputCompatibility,
@@ -550,6 +550,7 @@ export class AnthropicProvider implements LLMProvider {
       providerName: this.name, model, structuredOutput: options.structuredOutput,
       toolsRequested: tools.length > 0, api: "messages",
     });
+    createProviderToolNameWireLookup(tools.map((tool) => tool.function.name));
     if (options.structuredOutput?.enabled !== false && options.structuredOutput?.schema) {
       // Reuse the wire builder's reserved-tool/schema checks. Ordinary text
       // turns do not need a second history projection at admission.
