@@ -7,6 +7,7 @@ vi.mock("../../src/budget/admitted-model-call.js", () => ({
 }));
 
 import { createAdmittedMemorySelector } from "../../src/memory/admitted-selector.js";
+import { LLMCapabilityError } from "../../src/llm/errors.js";
 import {
   MAX_MEMORY_SELECTOR_MS,
   type MemorySelectorRequest,
@@ -76,6 +77,15 @@ afterEach(() => {
 });
 
 describe("C3a admitted memory selector", () => {
+  it("remembers a deterministic capability rejection discovered during admission", async () => {
+    runAdmittedModelCall.mockRejectedValue(new LLMCapabilityError("grok", "request_features", "local feature rejection"));
+    const currentSession = session();
+    for (let round = 0; round < 2; round++) {
+      await expect(createAdmittedMemorySelector(currentSession).select(REQUEST, new AbortController().signal))
+        .resolves.toMatchObject({ kind: "unavailable", diagnostic: "local_provider_capability_rejection" });
+    }
+    expect(runAdmittedModelCall).toHaveBeenCalledOnce();
+  });
   it("routes the structured request through the admitted call with frozen bounds", async () => {
     runAdmittedModelCall.mockResolvedValueOnce(
       response({ selected_candidate_ids: ["candidate-1"] }),

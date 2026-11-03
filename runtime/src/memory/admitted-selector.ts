@@ -60,6 +60,27 @@ const UNSUPPORTED_SELECTOR = Object.freeze({
   diagnostic: "local_provider_capability_rejection" as const,
 });
 
+function rememberIncompatibleSelector(
+  session: Session, provider: LLMProvider, model: string,
+): AdmittedMemorySelectorResult {
+  let providers = incompatibleSelectors.get(session);
+  if (providers === undefined) {
+    providers = new WeakMap();
+    incompatibleSelectors.set(session, providers);
+  }
+  let models = providers.get(provider);
+  if (models === undefined) { models = new Set(); providers.set(provider, models); }
+  models.add(model);
+  session.emit?.({
+    id: session.nextInternalSubId(),
+    msg: { type: "warning", payload: {
+      cause: "local_provider_capability_rejection",
+      message: "Memory selector structured output is unavailable for this provider and model. Using deterministic lexical recall for this session.",
+    } },
+  });
+  return UNSUPPORTED_SELECTOR;
+}
+
 export function createAdmittedMemorySelector(
   session: Session,
 ): AdmittedMemorySelector {
@@ -117,22 +138,7 @@ async function selectWithAdmission(
   } catch (error) {
     throwIfMemoryRecallAborted(signal);
     if (!(error instanceof LLMCapabilityError)) return { kind: "unavailable" };
-    let providers = incompatibleSelectors.get(session);
-    if (providers === undefined) {
-      providers = new WeakMap();
-      incompatibleSelectors.set(session, providers);
-    }
-    let models = providers.get(provider);
-    if (models === undefined) { models = new Set(); providers.set(provider, models); }
-    models.add(model);
-    session.emit?.({
-      id: session.nextInternalSubId(),
-      msg: { type: "warning", payload: {
-        cause: "local_provider_capability_rejection",
-        message: "Memory selector structured output is unavailable for this provider and model. Using deterministic lexical recall for this session.",
-      } },
-    });
-    return UNSUPPORTED_SELECTOR;
+    return rememberIncompatibleSelector(session, provider, model);
   }
 
   const call = runAdmittedModelCall({
@@ -173,6 +179,9 @@ async function selectWithAdmission(
     if (signal.aborted) {
       void call.catch(() => undefined);
       throw signal.reason ?? error;
+    }
+    if (error instanceof LLMCapabilityError) {
+      return rememberIncompatibleSelector(session, provider, model);
     }
     return { kind: "unavailable" };
   }
