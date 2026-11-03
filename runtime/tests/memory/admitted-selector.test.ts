@@ -6,6 +6,8 @@ vi.mock("../../src/budget/admitted-model-call.js", () => ({
   runAdmittedModelCall,
 }));
 
+import { GrokProvider } from "../../src/llm/providers/grok/adapter.js";
+import type { Session } from "../../src/session/session.js";
 import { createAdmittedMemorySelector } from "../../src/memory/admitted-selector.js";
 import { LLMCapabilityError } from "../../src/llm/errors.js";
 import {
@@ -86,6 +88,17 @@ describe("C3a admitted memory selector", () => {
     }
     expect(runAdmittedModelCall).toHaveBeenCalledOnce();
   });
+  it("suppresses configured native tools before schema selection and admission", async () => {
+    const current = session() as unknown as Session;
+    Object.assign(current.services, { provider: new GrokProvider({
+      apiKey: "fixture", model: "grok-4.5", webSearch: true,
+    }) });
+    runAdmittedModelCall.mockResolvedValueOnce(response({ selected_candidate_ids: ["candidate-1"] }));
+    await expect(createAdmittedMemorySelector(current).select(REQUEST, new AbortController().signal))
+      .resolves.toEqual({ kind: "selected", candidateIds: ["candidate-1"] });
+    expect(runAdmittedModelCall.mock.calls[0]?.[0].options.toolRouting).toEqual({ allowedToolNames: [] });
+  });
+
   it("routes the structured request through the admitted call with frozen bounds", async () => {
     runAdmittedModelCall.mockResolvedValueOnce(
       response({ selected_candidate_ids: ["candidate-1"] }),

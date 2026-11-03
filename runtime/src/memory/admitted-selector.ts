@@ -119,6 +119,7 @@ async function selectWithAdmission(
     contextWindowTokens: MEMORY_SELECTOR_CONTEXT_WINDOW_TOKENS,
     maxOutputTokens: MAX_MEMORY_SELECTOR_OUTPUT_TOKENS,
     tools: [],
+    toolRouting: { allowedToolNames: [] },
     parallelToolCalls: false,
     structuredOutput: {
       enabled: true,

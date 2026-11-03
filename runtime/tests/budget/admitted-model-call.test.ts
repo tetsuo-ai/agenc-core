@@ -527,13 +527,13 @@ describe("runAdmittedModelCall", () => {
 
     await callOptions(
       state,
-      { maxOutputTokens: 200 },
+      { maxOutputTokens: 200, contextWindowTokens: 100_000 },
       async () => response(),
     );
 
     expect(countTokens).toHaveBeenCalledOnce();
     expect(state.acquire).toHaveBeenCalledWith(
-      expect.objectContaining({ maxInputTokens: 23 }),
+      expect.objectContaining({ maxInputTokens: 100_000 }),
       undefined,
     );
   });

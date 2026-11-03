@@ -318,7 +318,7 @@ function maximumTokenCostUsd(
   entry: Readonly<ModelCostEntry> | null,
   inputTokens: number,
   outputTokens: number,
-  options: LLMChatOptions,
+  serverTools: readonly string[],
 ): number | null {
   if (entry === null) return null;
   const worstInputRate = Math.max(
@@ -334,7 +334,6 @@ function maximumTokenCostUsd(
   const tokenCost =
     (inputTokens / 1_000) * worstInputRate +
     (outputTokens / 1_000) * worstOutputRate;
-  const serverTools = paidServerToolNames(options);
   if (
     serverTools.some((name) => name !== "web_search" && name !== "x_search")
   ) {
@@ -363,11 +362,11 @@ function usageCostUsd(
   model: string,
   provider: string,
   usage: LLMResponse["usage"],
-  options: LLMChatOptions,
+  serverTools: readonly string[],
 ): { costUsd: number; costEstimated?: boolean } | null {
   const entry = pricedEntry(model, provider);
   if (
-    paidServerToolNames(options).some(
+    serverTools.some(
       (name) => name !== "web_search" && name !== "x_search",
     )
   ) {
@@ -422,21 +421,20 @@ function usageCostUsd(
 }
 
 
-function hasUnboundedPaidServerTool(options: LLMChatOptions): boolean {
-  return paidServerToolNames(options).length > 0;
-}
-
-function paidServerToolNames(options: LLMChatOptions): readonly string[] {
+function paidServerToolNames(
+  options: LLMChatOptions,
+  nativeTools: readonly Readonly<Record<string, unknown>>[],
+): readonly string[] {
   const paidNames = new Set([
-    "web_search",
-    "x_search",
-    "code_interpreter",
-    "file_search",
-    "mcp",
+    "web_search", "x_search", "code_interpreter", "file_search", "mcp",
   ]);
-  return (options.toolRouting?.allowedToolNames ?? []).filter((name) =>
-    paidNames.has(name),
-  );
+  // Native definitions include defaults selected without an allowlist and
+  // normalize named MCP servers to their billable tool type. Keep explicit
+  // routing guards for providers whose native catalogs are not projected here.
+  return [...new Set([
+    ...(options.toolRouting?.allowedToolNames ?? []),
+    ...nativeTools.map((tool) => tool.toolType),
+  ].filter((name): name is string => typeof name === "string" && paidNames.has(name)))];
 }
 
 function cancellationAfterDispatch(signal: AbortSignal): Error | undefined {
@@ -744,6 +742,7 @@ export async function runAdmittedModelCall(
     providerFactoryOptions.extra ?? {},
     accountingProjection.options,
   );
+  const paidServerTools = paidServerToolNames(accountingProjection.options, providerNativeTools);
   const tokenCountCapability = params.provider.tokenCountCapability;
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,
@@ -827,12 +826,12 @@ export async function runAdmittedModelCall(
   // estimate. This only widens the reservation; the authoritative reported
   // usage is still what gets charged at reconciliation.
   const maxInputTokens =
-    hasUnboundedPaidServerTool(accountingProjection.options) &&
+    paidServerTools.length > 0 &&
     contextWindowTokens > countedInputTokens
       ? contextWindowTokens
       : countedInputTokens;
   const unboundedPaidServerTool =
-    hasHardCostCap && hasUnboundedPaidServerTool(accountingProjection.options);
+    hasHardCostCap && paidServerTools.length > 0;
   const reservedRates = reservationRates(
     effectiveModel,
     pricingProvider,
@@ -845,7 +844,7 @@ export async function runAdmittedModelCall(
     reservedRates,
     maxInputTokens,
     admittedMaxOutputTokens,
-    accountingProjection.options,
+    paidServerTools,
   );
   const denialReason =
     accountingFailureReason ??
@@ -1051,7 +1050,7 @@ export async function runAdmittedModelCall(
       // A managed call is billed in AgenC credits, never at what the upstream
       // provider charged the gateway.
       requestedProvider === "agenc" ? withoutProviderCharge(usage) : usage,
-      accountingProjection.options,
+      paidServerTools,
     );
     if (actualPrice === null) {
       if (hasHardCostCap) {
