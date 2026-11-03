@@ -506,7 +506,9 @@ function createDelegateProvider(
     model: reviewerModel,
     tools: [],
     toolRouting: { allowedToolNames: [] },
-    toolChoice: "none",
+    // The empty catalog and allowlist suppress external tools. A provider may
+    // implement the requested schema with its own internal output tool.
+    toolChoice: structuredOutput !== undefined ? "auto" : "none",
     parallelToolCalls: false,
     ...(structuredOutput !== undefined ? { structuredOutput } : {}),
   });
