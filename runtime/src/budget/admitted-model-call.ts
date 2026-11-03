@@ -43,6 +43,7 @@ import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import {
   isLLMPreGenerationRejection,
+  LLMCapabilityError,
   LLMContextWindowExceededError,
   LLMManagedAdmissionError,
 } from "../llm/errors.js";
@@ -568,6 +569,37 @@ export async function runAdmittedModelCall(
     requestedProvider,
   );
 
+  const recordLocalRejection = async (error: unknown): Promise<void> => {
+    if (!(error instanceof LLMCapabilityError)) return;
+    // Never persist request text, arbitrary adapter messages or credentials in
+    // this diagnostic. The capability is a closed, local classification.
+    params.session.emit?.({
+      id: `${params.stepId}:capability`,
+      msg: { type: "warning", payload: {
+        cause: "local_provider_capability_rejection",
+        message: `Local provider capability rejection (${error.capability}); no model request was dispatched.`,
+      } },
+    });
+    if (client === undefined) return;
+    try {
+      const rejectedLease = await client.acquire({
+        stepId: params.stepId, kind: "model_turn",
+        ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
+        ...(params.parentRunId !== undefined ? { parentRunId: params.parentRunId } : {}),
+        ...(params.parentScopeId !== undefined ? { parentScopeId: params.parentScopeId } : {}),
+        model: requestedModel, provider: requestedProvider,
+        maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0,
+        denialReason: "local_provider_capability_rejection",
+      }, params.signal);
+      // Embedders must honor denialReason. Remain fail-closed even if an old
+      // client incorrectly grants this explicitly rejected request.
+      try { client.void(rejectedLease.reservation.reservationId, "local_provider_capability_rejection"); }
+      finally { client.acknowledgeCompletion(rejectedLease.reservation.reservationId); }
+    } catch (denial) {
+      if (!(denial instanceof AdmissionDeniedError)) throw denial;
+    }
+  };
+
   const stagedFallbackEvent =
     params.fallback === undefined
       ? undefined
@@ -602,6 +634,7 @@ export async function runAdmittedModelCall(
         // recovery authority. Preserve the profile error as the primary cause.
       }
     }
+    await recordLocalRejection(error);
     throw error;
   }
   const routedProvider = profile?.provider?.trim();
@@ -694,6 +727,12 @@ export async function runAdmittedModelCall(
     },
     contextWindowTokens,
   );
+  try {
+    await params.provider.validateRequest?.(params.messages, accountingOptions);
+  } catch (error) {
+    await recordLocalRejection(error);
+    throw error;
+  }
   const providerNativeTools = providerNativeToolsForAccounting(
     params.provider,
     effectiveProvider,

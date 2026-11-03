@@ -174,6 +174,25 @@ export class LLMProviderError extends RuntimeError {
   }
 }
 
+/** A deterministic request feature rejection by a local adapter capability gate.
+ * This type alone is not proof of zero usage. Admission must observe it before
+ * invoking the provider, never infer a refund from an exception after dispatch.
+ */
+export class LLMCapabilityError extends LLMProviderError {
+  constructor(
+    providerName: string,
+    public readonly capability:
+      | "structured_output"
+      | "structured_output_with_tools"
+      | "reasoning_effort"
+      | "request_features",
+    message: string,
+  ) {
+    super(providerName, message, 400);
+    this.name = "LLMCapabilityError";
+  }
+}
+
 /**
  * The provider could not load the model at all (not enough memory, a runner
  * that exits while loading). Asking again gets the same answer, so the turn

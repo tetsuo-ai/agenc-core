@@ -2,7 +2,7 @@ import type {
   LLMCompactionDiagnostics,
   LLMStructuredOutputRequest,
 } from "./types.js";
-import { LLMProviderError } from "./errors.js";
+import { LLMCapabilityError } from "./errors.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
 import {
@@ -71,10 +71,10 @@ export function assertXaiStructuredOutputToolCompatibility(input: {
   if (supportsXaiStructuredOutputsWithTools(input.model)) {
     return;
   }
-  throw new LLMProviderError(
+  throw new LLMCapabilityError(
     input.providerName,
+    "structured_output_with_tools",
     `xAI structured outputs with tools require a Grok 4 model; requested ${input.model ?? "unknown model"}`,
-    400,
   );
 }
 
@@ -94,10 +94,10 @@ export function assertProviderStructuredOutputCompatibility(input: {
     api: input.api,
   });
   if (mode === "unsupported") {
-    throw new LLMProviderError(
+    throw new LLMCapabilityError(
       input.providerName,
+      "structured_output",
       `${input.providerName} structured outputs are not supported by ${input.model ?? "unknown model"}`,
-      400,
     );
   }
   const provider = normalizeProviderIdentity(
@@ -113,10 +113,10 @@ export function assertProviderStructuredOutputCompatibility(input: {
     });
   }
   if (provider === "cerebras" && input.toolsRequested) {
-    throw new LLMProviderError(
+    throw new LLMCapabilityError(
       input.providerName,
+      "structured_output_with_tools",
       "Cerebras does not support combining structured outputs with function tools",
-      400,
     );
   }
   if (
@@ -125,10 +125,10 @@ export function assertProviderStructuredOutputCompatibility(input: {
     resolveModelCapabilityHints({ provider, model: input.model })
       ?.supportsStructuredOutputWithTools !== true
   ) {
-    throw new LLMProviderError(
+    throw new LLMCapabilityError(
       input.providerName,
+      "structured_output_with_tools",
       "Kimi structured outputs with function tools are not enabled without a verified combined wire contract. Run tools first, then request the final schema with tools: [].",
-      400,
     );
   }
 }
@@ -157,9 +157,9 @@ export function assertXaiReasoningEffortCompatibility(input: {
   if (supportsXaiReasoningEffortParam(input.model)) {
     return;
   }
-  throw new LLMProviderError(
+  throw new LLMCapabilityError(
     input.providerName,
+    "reasoning_effort",
     `xAI reasoning_effort is not supported by ${input.model ?? "unknown model"}. Remove reasoningEffort from the llm config or switch to Grok 4.3, Grok 4.5, Grok 4.6, or a Grok 4.20 multi-agent variant.`,
-    400,
   );
 }
