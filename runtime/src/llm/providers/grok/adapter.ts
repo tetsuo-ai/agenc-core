@@ -2271,6 +2271,17 @@ export class GrokProvider implements LLMProvider {
     };
   }
 
+  projectRequestForAccounting(messages: readonly LLMMessage[], options: LLMChatOptions) {
+    const plan = this.buildRequestPlan(messages, options, { disableIncremental: true });
+    const attachedTools = new Set(Array.isArray(plan.params.tools) ? plan.params.tools : []);
+    // The configured catalog and vision routing decide what is actually sent,
+    // even when a request overrides the model. Preserve that exact selection.
+    const providerNativeTools = this.providerNativeTools
+      .filter(({ payload }) => attachedTools.has(payload))
+      .map(({ name, toolType, payload }) => ({ name, toolType, payload }));
+    return { messages, options, providerNativeTools };
+  }
+
   private buildRequestPlan(
     messages: readonly LLMMessage[],
     options?: LLMChatOptions,

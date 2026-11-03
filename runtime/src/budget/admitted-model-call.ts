@@ -128,7 +128,11 @@ export function projectProviderAccountingRequest(
   provider: LLMProvider,
   messages: readonly LLMMessage[],
   options: LLMChatOptions,
-): { readonly messages: readonly LLMMessage[]; readonly options: LLMChatOptions } {
+): {
+  readonly messages: readonly LLMMessage[];
+  readonly options: LLMChatOptions;
+  readonly providerNativeTools?: readonly Readonly<Record<string, unknown>>[];
+} {
   return provider.projectRequestForAccounting?.(messages, options) ?? { messages, options };
 }
 
@@ -424,6 +428,7 @@ function usageCostUsd(
 function paidServerToolNames(
   options: LLMChatOptions,
   nativeTools: readonly Readonly<Record<string, unknown>>[],
+  actualCatalogKnown = false,
 ): readonly string[] {
   const paidNames = new Set([
     "web_search", "x_search", "code_interpreter", "file_search", "mcp",
@@ -432,7 +437,7 @@ function paidServerToolNames(
   // normalize named MCP servers to their billable tool type. Keep explicit
   // routing guards for providers whose native catalogs are not projected here.
   return [...new Set([
-    ...(options.toolRouting?.allowedToolNames ?? []),
+    ...(actualCatalogKnown ? [] : options.toolRouting?.allowedToolNames ?? []),
     ...nativeTools.map((tool) => tool.toolType),
   ].filter((name): name is string => typeof name === "string" && paidNames.has(name)))];
 }
@@ -735,14 +740,18 @@ export async function runAdmittedModelCall(
     throw error;
   }
   const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
-  const providerNativeTools = providerNativeToolsForAccounting(
+  const providerNativeTools = accountingProjection.providerNativeTools ?? providerNativeToolsForAccounting(
     params.provider,
     effectiveProvider,
     effectiveModel,
     providerFactoryOptions.extra ?? {},
     accountingProjection.options,
   );
-  const paidServerTools = paidServerToolNames(accountingProjection.options, providerNativeTools);
+  const paidServerTools = paidServerToolNames(
+    accountingProjection.options,
+    providerNativeTools,
+    accountingProjection.providerNativeTools !== undefined,
+  );
   const tokenCountCapability = params.provider.tokenCountCapability;
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,

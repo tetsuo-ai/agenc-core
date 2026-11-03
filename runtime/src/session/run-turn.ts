@@ -1726,10 +1726,10 @@ async function preparedRequestContextPressure(
       ? { providerExecutionHandle: profile.providerExecutionHandle }
       : {}),
   }, window);
-  const providerNativeTools = providerNativeToolsForAccounting(
-    provider, providerName, model, factoryOptions.extra ?? {}, accountingOptions,
-  );
   const accountingProjection = projectProviderAccountingRequest(provider, request.input, accountingOptions);
+  const providerNativeTools = accountingProjection.providerNativeTools ?? providerNativeToolsForAccounting(
+    provider, providerName, model, factoryOptions.extra ?? {}, accountingProjection.options,
+  );
   const safetyBufferTokens = Math.max(0, Math.floor(profile?.contextSafetyBufferTokens ?? 0));
   const inputTokenLimit = Math.max(0, window - Math.min(maxOutputTokens, MIN_ADMISSIBLE_OUTPUT_TOKENS) -
     safetyBufferTokens);

@@ -1130,7 +1130,12 @@ export interface LLMProvider {
   projectRequestForAccounting?(
     messages: readonly LLMMessage[],
     options: LLMChatOptions,
-  ): { readonly messages: readonly LLMMessage[]; readonly options: LLMChatOptions };
+  ): {
+    readonly messages: readonly LLMMessage[];
+    readonly options: LLMChatOptions;
+    /** Actual attached native tools; an empty array means none are sent. */
+    readonly providerNativeTools?: readonly Readonly<Record<string, unknown>>[];
+  };
   /** Optional startup hook for providers with session/socket prewarm support. */
   prewarmStartup?(
     params: LLMProviderStartupPrewarmParams,
