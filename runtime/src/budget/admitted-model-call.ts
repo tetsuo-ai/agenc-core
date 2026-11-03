@@ -731,15 +731,16 @@ export async function runAdmittedModelCall(
     },
     contextWindowTokens,
   );
+  let accountingProjection: ReturnType<typeof projectProviderAccountingRequest>;
   try {
     await params.provider.validateRequest?.(params.messages, accountingOptions);
+    accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
   } catch (error) {
-    // The validator contract itself proves no model dispatch, including a
-    // local builder's TypeError. Never apply this inference around invoke().
+    // Validation and pure accounting projection prove no model dispatch,
+    // including a local builder's TypeError. Never infer this around invoke().
     await recordLocalRejection(error, true);
     throw error;
   }
-  const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
   const providerNativeTools = accountingProjection.providerNativeTools ?? providerNativeToolsForAccounting(
     params.provider,
     effectiveProvider,

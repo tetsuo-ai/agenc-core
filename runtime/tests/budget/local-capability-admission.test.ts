@@ -32,7 +32,7 @@ function fixture(validateRequest: () => void) {
     options: { maxOutputTokens: 100 }, stepId: "aux:1", model: "deepseek-flash",
     providerName: "deepseek", invoke,
   });
-  return { ...state, emit, invoke, run };
+  return { ...state, provider, emit, invoke, run };
 }
 
 describe("local capability admission boundary", () => {
@@ -65,8 +65,9 @@ describe("local capability admission boundary", () => {
     expect(state.reconcile).not.toHaveBeenCalled();
   });
 
-  it("retains a sanitized zero-dispatch diagnostic for an untyped local validator rejection", async () => {
-    const state = fixture(() => { throw new TypeError("untrusted request body"); });
+  it.each(["validateRequest", "projectRequestForAccounting"] as const)("retains a sanitized zero-dispatch diagnostic for an untyped local %s rejection", async (phase) => {
+    const state = fixture(() => undefined);
+    state.provider[phase] = () => { throw new TypeError("untrusted request body"); };
     await expect(state.run()).rejects.toThrow("untrusted request body");
     expect(state.acquire).toHaveBeenCalledWith(expect.objectContaining({
       denialReason: "local_provider_capability_rejection", maxInputTokens: 0,
