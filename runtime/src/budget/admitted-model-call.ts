@@ -733,14 +733,14 @@ export async function runAdmittedModelCall(
     await recordLocalRejection(error);
     throw error;
   }
+  const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
   const providerNativeTools = providerNativeToolsForAccounting(
     params.provider,
     effectiveProvider,
     effectiveModel,
     providerFactoryOptions.extra ?? {},
-    accountingOptions,
+    accountingProjection.options,
   );
-  const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
   const tokenCountCapability = params.provider.tokenCountCapability;
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,
@@ -756,9 +756,9 @@ export async function runAdmittedModelCall(
     configurationRevision: oneShotFastModeActive() && tokenCountCapability === undefined
       ? UNCACHED_CONFIGURATION_REVISION
       : createTokenAccountingConfigurationRevision({
-      systemPrompt: accountingOptions.systemPrompt ?? "",
-      tools: accountingOptions.tools ?? [],
-      temperature: accountingOptions.temperature ?? null,
+      systemPrompt: accountingProjection.options.systemPrompt ?? "",
+      tools: accountingProjection.options.tools ?? [],
+      temperature: accountingProjection.options.temperature ?? null,
       providerNativeTools,
       contextWindowTokens,
       maxOutputTokens,
@@ -824,25 +824,25 @@ export async function runAdmittedModelCall(
   // estimate. This only widens the reservation; the authoritative reported
   // usage is still what gets charged at reconciliation.
   const maxInputTokens =
-    hasUnboundedPaidServerTool(accountingOptions) &&
+    hasUnboundedPaidServerTool(accountingProjection.options) &&
     contextWindowTokens > countedInputTokens
       ? contextWindowTokens
       : countedInputTokens;
   const unboundedPaidServerTool =
-    hasHardCostCap && hasUnboundedPaidServerTool(accountingOptions);
+    hasHardCostCap && hasUnboundedPaidServerTool(accountingProjection.options);
   const reservedRates = reservationRates(
     effectiveModel,
     pricingProvider,
     maxInputTokens,
     admittedMaxOutputTokens,
-    accountingOptions,
+    accountingProjection.options,
     providerFactoryOptions,
   );
   const maximumCost = maximumTokenCostUsd(
     reservedRates,
     maxInputTokens,
     admittedMaxOutputTokens,
-    accountingOptions,
+    accountingProjection.options,
   );
   const denialReason =
     accountingFailureReason ??
@@ -1048,7 +1048,7 @@ export async function runAdmittedModelCall(
       // A managed call is billed in AgenC credits, never at what the upstream
       // provider charged the gateway.
       requestedProvider === "agenc" ? withoutProviderCharge(usage) : usage,
-      params.options,
+      accountingProjection.options,
     );
     if (actualPrice === null) {
       if (hasHardCostCap) {
