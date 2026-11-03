@@ -25,6 +25,7 @@ import type {
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
 import {
+  LLMCapabilityError,
   LLMAuthenticationError,
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
@@ -1100,16 +1101,39 @@ export class OpenAIProvider implements LLMProvider {
     return true;
   }
 
-  validateRequest(_messages: readonly LLMMessage[], options: LLMChatOptions): void {
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
     const model = options.model?.trim() || this.config.model;
     const tools = options.tools ?? this.config.tools ?? [];
+    const responsesApi = this.usesResponsesApi(model, tools, options);
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,
       model,
       structuredOutput: options.structuredOutput,
       toolsRequested: tools.length > 0,
-      api: this.usesResponsesApi(model, tools, options) ? "responses" : "chat_completions",
+      api: responsesApi ? "responses" : "chat_completions",
     });
+    if (responsesApi) return;
+    const hints = this.chatCapabilityHints(model);
+    const exceedsToolLimit = hints.maxToolDefinitions !== undefined && tools.length > hints.maxToolDefinitions;
+    const hasUnsupportedImage = hints.acceptsDirectImageInput === false && messages.some((message) =>
+      message.role !== "tool" && Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url"));
+    // The matrix also has local image, payload-size, and tool-count gates.
+    // Reuse their exact wire projection only on those affected requests;
+    // ordinary text calls do not need another prompt serialization.
+    if (!hints.imageInputContract && !exceedsToolLimit && !hasUnsupportedImage) return;
+    try {
+      buildChatCompletionsRequest({ model, messages, tools, options,
+        maxTokens: this.resolveRequestMaxTokens(options),
+        maxTokenField: this.resolveChatCompletionsMaxTokenField(model),
+        providerCapabilityHints: hints,
+        sharedPrefixTail: sessionSharedPrefixTail() });
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) {
+        throw new LLMCapabilityError(this.name, "request_features", error.message);
+      }
+      throw error;
+    }
   }
 
   async chat(
