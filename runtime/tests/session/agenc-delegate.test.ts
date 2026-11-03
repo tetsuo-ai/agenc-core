@@ -1362,6 +1362,44 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     expect(observedOptions?.toolChoice).toBe("none");
   });
 
+  it("uses the same complete reviewer request for preflight, accounting, and dispatch", async () => {
+    const schema = { type: "object", properties: { outcome: { type: "string" } }, required: ["outcome"] };
+    let dispatchedOptions: LLMChatOptions | undefined;
+    const validateRequest = vi.fn();
+    const projectRequestForAccounting = vi.fn((messages, options) => ({ messages, options }));
+    const getExecutionProfile = vi.fn(async () => ({ provider: "scripted-provider", model: "reviewer-5",
+      usageReporting: "authoritative" as const, supportsMaxOutputTokens: true }));
+    const tokenCountCapability = { capabilityVersion: "test", adapterRevision: "test", countTokens: vi.fn() };
+    const parentProvider = Object.assign(mkScriptedProvider({ content: "ok",
+      onChat: (_messages, options) => { dispatchedOptions = options; },
+    }), { validateRequest, projectRequestForAccounting, getExecutionProfile, tokenCountCapability });
+    const session = mkSession(parentProvider);
+    const req = { ...mkOneShotRequest(session), finalOutputJsonSchema: schema };
+    const thread = await spawnAgenCDelegateThread(session, req, "reviewer-5", mkModelInfo("reviewer-5"), new AbortController());
+    try {
+      const provider = thread.childSession.services.provider;
+      const input: LLMMessage[] = [{ role: "user", content: "review" }];
+      const options: LLMChatOptions = { model: "wrong-parent", maxOutputTokens: 64,
+        tools: [{ type: "function", function: { name: "unavailable", description: "unavailable", parameters: {} } }] };
+      expect(provider.validateRequest).toBeTypeOf("function");
+      await provider.getExecutionProfile?.(options);
+      await provider.validateRequest!(input, options);
+      const projected = provider.projectRequestForAccounting?.(input, options);
+      await provider.chat(input, options);
+      expect(dispatchedOptions).toMatchObject({ model: "reviewer-5", tools: [],
+        toolRouting: { allowedToolNames: [] }, toolChoice: "none", parallelToolCalls: false,
+        structuredOutput: { schema: { type: "json_schema", name: "review_output", schema } } });
+      expect(validateRequest).toHaveBeenCalledWith(input, dispatchedOptions);
+      expect(projectRequestForAccounting).toHaveBeenCalledWith(input, dispatchedOptions);
+      expect(getExecutionProfile).toHaveBeenCalledWith(dispatchedOptions);
+      expect(projected?.options).toEqual(dispatchedOptions);
+      expect(provider.tokenCountCapability).toBe(tokenCountCapability);
+    } finally {
+      await thread.shutdown("test complete");
+      await session.shutdown();
+    }
+  });
+
   it("preserves factory extras while adding the child sandbox broker", async () => {
     const schema = {
       type: "object",
