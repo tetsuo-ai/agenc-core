@@ -2,10 +2,13 @@ import { Buffer } from "node:buffer";
 
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
+import { LLMCapabilityError } from "../llm/errors.js";
+import { resolveProviderStructuredOutputMode } from "../llm/structured-output.js";
 import type {
   LLMMessage,
   LLMResponse,
   LLMStructuredOutputSchema,
+  LLMProvider,
 } from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import {
@@ -48,6 +51,15 @@ const SELECTOR_TIMEOUT = Symbol("memory-selector-timeout");
 const MEMORY_SELECTOR_CONTEXT_WINDOW_TOKENS =
   MAX_MEMORY_SELECTOR_INPUT_TOKENS + MAX_MEMORY_SELECTOR_OUTPUT_TOKENS;
 
+// The attachment producer can recreate selectors each round. Retain only the
+// deterministic result, scoped to the session, provider instance and model so
+// a provider/model switch gets a fresh capability check.
+const incompatibleSelectors = new WeakMap<Session, WeakMap<LLMProvider, Set<string>>>();
+const UNSUPPORTED_SELECTOR = Object.freeze({
+  kind: "unavailable" as const,
+  diagnostic: "local_provider_capability_rejection" as const,
+});
+
 export function createAdmittedMemorySelector(
   session: Session,
 ): AdmittedMemorySelector {
@@ -68,6 +80,9 @@ async function selectWithAdmission(
   const model =
     providerOptions.model?.trim() || session.modelInfo.slug.trim() || "unknown";
   const providerName = provider.name?.trim() || "unknown";
+  if (incompatibleSelectors.get(session)?.get(provider)?.has(model)) {
+    return UNSUPPORTED_SELECTOR;
+  }
   const controller = new AbortController();
   const timeoutReason = new DOMException(
     "Memory selector deadline crossed",
@@ -89,6 +104,36 @@ async function selectWithAdmission(
       schema: MEMORY_SELECTOR_SCHEMA,
     },
   } as const;
+
+  try {
+    if (provider.validateRequest !== undefined) {
+      await provider.validateRequest(messages, { ...options, model });
+    } else if (!(["responses", "chat_completions", "messages"] as const).some(
+      (api) => resolveProviderStructuredOutputMode({ provider: providerName, model, api }) !== "unsupported",
+    )) {
+      throw new LLMCapabilityError(providerName, "structured_output", "Memory selector structured output is unavailable");
+    }
+    throwIfMemoryRecallAborted(signal);
+  } catch (error) {
+    throwIfMemoryRecallAborted(signal);
+    if (!(error instanceof LLMCapabilityError)) return { kind: "unavailable" };
+    let providers = incompatibleSelectors.get(session);
+    if (providers === undefined) {
+      providers = new WeakMap();
+      incompatibleSelectors.set(session, providers);
+    }
+    let models = providers.get(provider);
+    if (models === undefined) { models = new Set(); providers.set(provider, models); }
+    models.add(model);
+    session.emit?.({
+      id: session.nextInternalSubId(),
+      msg: { type: "warning", payload: {
+        cause: "local_provider_capability_rejection",
+        message: "Memory selector structured output is unavailable for this provider and model. Using deterministic lexical recall for this session.",
+      } },
+    });
+    return UNSUPPORTED_SELECTOR;
+  }
 
   const call = runAdmittedModelCall({
     session,

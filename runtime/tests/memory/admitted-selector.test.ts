@@ -32,10 +32,10 @@ function session(): never {
   let subId = 0;
   return {
     conversationId: "conversation",
-    modelInfo: { slug: "test-model", contextWindow: 100_000 },
+    modelInfo: { slug: "grok-4.5", contextWindow: 100_000 },
     services: {
       provider: {
-        name: "test-provider",
+        name: "grok",
         chat: vi.fn(),
       },
     },
