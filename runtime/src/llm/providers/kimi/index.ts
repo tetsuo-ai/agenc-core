@@ -9,6 +9,7 @@ import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
+import { LLMCapabilityError } from "../../errors.js";
 
 export type KimiProviderConfig = OpenAIProviderConfig;
 
@@ -61,6 +62,20 @@ export class KimiProvider extends OpenAIProvider {
     });
     this.configuredKimiModel = config.model;
     this.configuredMaxTokens = config.maxTokens;
+  }
+
+  override validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    let effectiveOptions: LLMChatOptions;
+    try {
+      assertKimiChatModel(options.model);
+      effectiveOptions = this.withKimiDefaults(options);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new LLMCapabilityError(this.name, "request_features", error.message);
+      }
+      throw error;
+    }
+    super.validateRequest(messages, effectiveOptions);
   }
 
   override async chat(

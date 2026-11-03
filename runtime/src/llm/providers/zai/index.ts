@@ -1,5 +1,6 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
+import { LLMCapabilityError } from "../../errors.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -93,6 +94,20 @@ class ZaiBaseProvider extends OpenAIProvider {
     });
     this.zaiProviderName = providerName;
     this.defaultTemperature = config.temperature;
+  }
+
+  override validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    const effectiveOptions = this.withDefaultTemperature(options);
+    try {
+      assertZaiChatModel(this.zaiProviderName, effectiveOptions?.model);
+      assertZaiTemperature(this.zaiProviderName, effectiveOptions?.temperature);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new LLMCapabilityError(this.name, "request_features", error.message);
+      }
+      throw error;
+    }
+    super.validateRequest(messages, effectiveOptions ?? {});
   }
 
   override async chat(
