@@ -569,15 +569,16 @@ export async function runAdmittedModelCall(
     requestedProvider,
   );
 
-  const recordLocalRejection = async (error: unknown): Promise<void> => {
-    if (!(error instanceof LLMCapabilityError)) return;
+  const recordLocalRejection = async (error: unknown, localValidation = false): Promise<void> => {
+    if (!(error instanceof LLMCapabilityError) && !localValidation) return;
+    const capability = error instanceof LLMCapabilityError ? error.capability : "request_features";
     // Never persist request text, arbitrary adapter messages or credentials in
     // this diagnostic. The capability is a closed, local classification.
     params.session.emit?.({
       id: `${params.stepId}:capability`,
       msg: { type: "warning", payload: {
         cause: "local_provider_capability_rejection",
-        message: `Local provider capability rejection (${error.capability}); no model request was dispatched.`,
+        message: `Local provider capability rejection (${capability}); no model request was dispatched.`,
       } },
     });
     if (client === undefined) return;
@@ -730,7 +731,9 @@ export async function runAdmittedModelCall(
   try {
     await params.provider.validateRequest?.(params.messages, accountingOptions);
   } catch (error) {
-    await recordLocalRejection(error);
+    // The validator contract itself proves no model dispatch, including a
+    // local builder's TypeError. Never apply this inference around invoke().
+    await recordLocalRejection(error, true);
     throw error;
   }
   const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);

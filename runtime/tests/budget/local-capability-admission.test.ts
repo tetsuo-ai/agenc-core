@@ -65,6 +65,20 @@ describe("local capability admission boundary", () => {
     expect(state.reconcile).not.toHaveBeenCalled();
   });
 
+  it("retains a sanitized zero-dispatch diagnostic for an untyped local validator rejection", async () => {
+    const state = fixture(() => { throw new TypeError("untrusted request body"); });
+    await expect(state.run()).rejects.toThrow("untrusted request body");
+    expect(state.acquire).toHaveBeenCalledWith(expect.objectContaining({
+      denialReason: "local_provider_capability_rejection", maxInputTokens: 0,
+      maxOutputTokens: 0, maxCostUsd: 0,
+    }), undefined);
+    expect(state.emit).toHaveBeenCalledOnce();
+    expect(JSON.stringify(state.emit.mock.calls)).not.toContain("untrusted request body");
+    expect(state.invoke).not.toHaveBeenCalled();
+    expect(state.markDispatched).not.toHaveBeenCalled();
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+  });
+
   it("never treats an error class raised after dispatch as proof of zero usage", async () => {
     const state = fixture(() => undefined);
     state.invoke.mockImplementation(async () => rejectCapability());
