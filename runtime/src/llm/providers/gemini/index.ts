@@ -14,6 +14,7 @@ import {
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import {
+  LLMCapabilityError,
   LLMInvalidResponseError,
   LLMProviderError,
   LLMStreamTruncatedError,
@@ -794,7 +795,7 @@ function geminiToolNames(tools: readonly LLMTool[]): ReadonlyMap<string, string>
     const wire = geminiWireToolName(canonical);
     const previous = lookup.get(wire);
     if (previous !== undefined && previous !== canonical) {
-      throw new LLMProviderError("gemini", `Tool-name collision on ${wire}`);
+      throw new LLMCapabilityError("gemini", "request_features", `Tool-name collision on ${wire}`);
     }
     lookup.set(wire, canonical);
   }
@@ -812,8 +813,9 @@ function projectGeminiHistoryToolNames(messages: readonly LLMMessage[]): LLMMess
 }
 
 function geminiSchemaError(path: string, detail: string): never {
-  throw new LLMProviderError(
+  throw new LLMCapabilityError(
     "gemini",
+    "request_features",
     `Gemini cannot preserve schema at ${path}: ${detail}`,
   );
 }
@@ -3542,6 +3544,15 @@ export class GeminiProvider implements LLMProvider {
       countTokens: (request: TokenAccountingRequest, signal: AbortSignal) =>
         this.countRequestTokens(request, signal),
     });
+  }
+
+  validateRequest(_messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    const model = options.model?.trim() || this.config.model;
+    const tools = options.tools ?? this.config.tools ?? [];
+    const capabilities = geminiResponseJsonSchemaCapabilities(this.config.endpointPlan, model);
+    geminiToolNames(tools);
+    geminiTools(tools, capabilities);
+    geminiGenerationConfig(model, options, this.config.maxTokens, capabilities, true);
   }
 
   private async countRequestTokens(

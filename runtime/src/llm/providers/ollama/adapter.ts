@@ -43,6 +43,7 @@ import {
 } from "./tool-choice.js";
 import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
 import {
+  LLMCapabilityError,
   LLMInvalidResponseError,
   LLMModelLoadError,
   LLMProviderError,
@@ -628,10 +629,20 @@ export class OllamaProvider implements LLMProvider {
     this.compactionConfig = resolveLLMCompactionConfig(undefined);
   }
 
+  validateRequest(_messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    if (options.structuredOutput?.enabled !== false && options.structuredOutput?.schema) {
+      throw new LLMCapabilityError(this.name, "structured_output",
+        "The Ollama adapter does not implement structured output requests");
+    }
+    const tools = this.selectTools(options.toolRouting?.allowedToolNames, options.tools ?? this.tools).tools;
+    resolveOllamaToolChoice(options.toolChoice, createOllamaToolNameProjection(tools));
+  }
+
   async chat(
     messages: LLMMessage[],
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    this.validateRequest(messages, options ?? {});
     const client = await this.ensureClient();
     options = await this.pinExecution(options);
     const requestTools = options?.tools ? [...options.tools] : this.tools;
@@ -735,6 +746,7 @@ export class OllamaProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    this.validateRequest(messages, options ?? {});
     const client = await this.ensureClient();
     options = await this.pinExecution(options);
     const requestTools = options?.tools ? [...options.tools] : this.tools;

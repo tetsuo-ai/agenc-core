@@ -38,7 +38,7 @@ import {
 } from "../../../sandbox/execution-broker.js";
 import { registerSandboxExecutionLifecycleParticipant } from "../../../sandbox/execution-lifecycle.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
-import { LLMProviderError } from "../../errors.js";
+import { LLMCapabilityError, LLMProviderError } from "../../errors.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -200,6 +200,13 @@ export class GrokAcpProvider implements LLMProvider {
     }
   }
 
+  validateRequest(_messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    if (options.structuredOutput?.enabled !== false && options.structuredOutput?.schema) {
+      throw new LLMCapabilityError(this.name, "structured_output",
+        "Grok ACP does not implement structured output requests");
+    }
+  }
+
   async chat(
     messages: LLMMessage[],
     options?: LLMChatOptions,
@@ -280,6 +287,7 @@ export class GrokAcpProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const model = options?.model?.trim() || this.config.model;
     try {
+      this.validateRequest(messages, options ?? {});
       // Validate and reject unsupported authority-preserving invocations before
       // starting an ACP subprocess or session. Flattening three user-role
       // channels into one prompt would erase the authenticated authority split.

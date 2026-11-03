@@ -1100,6 +1100,18 @@ export class OpenAIProvider implements LLMProvider {
     return true;
   }
 
+  validateRequest(_messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    const model = options.model?.trim() || this.config.model;
+    const tools = options.tools ?? this.config.tools ?? [];
+    assertProviderStructuredOutputCompatibility({
+      providerName: this.name,
+      model,
+      structuredOutput: options.structuredOutput,
+      toolsRequested: tools.length > 0,
+      api: this.usesResponsesApi(model, tools, options) ? "responses" : "chat_completions",
+    });
+  }
+
   async chat(
     messages: LLMMessage[],
     options?: LLMChatOptions,

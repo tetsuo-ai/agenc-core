@@ -37,6 +37,7 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import {
+  LLMCapabilityError,
   LLMInvalidResponseError,
   LLMProviderError,
   LLMStreamTruncatedError,
@@ -425,7 +426,9 @@ function buildToolConfig(
     typeof toolChoice === "object" &&
     !tools.some((tool) => tool.function.name === toolChoice.name)
   ) {
-    throw new Error(
+    throw new LLMCapabilityError(
+      BEDROCK_PROVIDER_ID,
+      "request_features",
       `amazon-bedrock provider toolChoice references unavailable tool: ${toolChoice.name}`,
     );
   }
@@ -522,12 +525,20 @@ function claudeConverseContract(
   };
 }
 
+function assertBedrockStructuredOutput(options: LLMChatOptions | undefined): void {
+  if (options?.structuredOutput?.enabled !== false && options?.structuredOutput?.schema) {
+    throw new LLMCapabilityError(BEDROCK_PROVIDER_ID, "structured_output",
+      "The Amazon Bedrock adapter does not implement structured output requests");
+  }
+}
+
 function buildRequest(
   config: BedrockProviderConfig,
   model: string,
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
 ): BedrockRequest {
+  assertBedrockStructuredOutput(options);
   validateAgentInvocationMessageSequence(messages);
   const contract = claudeConverseContract(model, options, config.modelOverrides);
   const built = buildMessages(messages);
@@ -1141,6 +1152,13 @@ export class BedrockProvider implements LLMProvider {
       countTokens: (request: TokenAccountingRequest, signal: AbortSignal) =>
         this.countRequestTokens(request, signal),
     });
+  }
+
+  validateRequest(_messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    assertBedrockStructuredOutput(options);
+    const model = firstNonEmpty(options.model, this.config.model) ?? "";
+    const contract = claudeConverseContract(model, options, this.config.modelOverrides);
+    buildToolConfig(requestTools(this.config, options), options.toolChoice, contract.forbidForcedToolChoice);
   }
 
   private async countRequestTokens(

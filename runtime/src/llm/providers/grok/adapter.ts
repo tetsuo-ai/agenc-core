@@ -2234,6 +2234,13 @@ export class GrokProvider implements LLMProvider {
   }
 
 
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    if (options.structuredOutput?.enabled === false || !options.structuredOutput?.schema) return;
+    // This owns vision routing and the attached native/client tool selection.
+    // Do not consult or change the continuation chain during local preflight.
+    this.buildRequestPlan(messages, options, { disableIncremental: true });
+  }
+
   async getExecutionProfile() {
     return (
       await resolveContextWindowProfile({

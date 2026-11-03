@@ -543,6 +543,22 @@ export class AnthropicProvider implements LLMProvider {
     return true;
   }
 
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    const model = options.model?.trim() || this.config.model;
+    const tools = options.tools ?? this.config.tools ?? [];
+    assertProviderStructuredOutputCompatibility({
+      providerName: this.name, model, structuredOutput: options.structuredOutput,
+      toolsRequested: tools.length > 0, api: "messages",
+    });
+    if (options.structuredOutput?.enabled !== false && options.structuredOutput?.schema) {
+      // Reuse the wire builder's reserved-tool/schema checks. Ordinary text
+      // turns do not need a second history projection at admission.
+      buildAnthropicMessagesRequest({ model, messages, tools, options,
+        maxTokens: resolveMaxTokens(options, this.config.maxTokens),
+        contextManagement: this.config.contextManagement });
+    }
+  }
+
   async chat(
     messages: LLMMessage[],
     options?: LLMChatOptions,
