@@ -319,7 +319,7 @@ function parseToolArguments(toolCall: LLMToolCall): Record<string, unknown> {
   } catch {
     // Fall through to the provider-specific error below.
   }
-  throw new Error(
+  throw new LLMCapabilityError(BEDROCK_PROVIDER_ID, "request_features",
     `amazon-bedrock provider cannot replay malformed tool call arguments for ${toolCall.name}`,
   );
 }
@@ -366,7 +366,7 @@ function bedrockContentForMessage(message: LLMMessage): readonly BedrockContentB
     });
   }
   if (content.length === 0) {
-    throw new Error(
+    throw new LLMCapabilityError(BEDROCK_PROVIDER_ID, "request_features",
       `amazon-bedrock provider cannot serialize unsupported ${message.role} message content`,
     );
   }
@@ -1154,11 +1154,11 @@ export class BedrockProvider implements LLMProvider {
     });
   }
 
-  validateRequest(_messages: readonly LLMMessage[], options: LLMChatOptions): void {
-    assertBedrockStructuredOutput(options);
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
     const model = firstNonEmpty(options.model, this.config.model) ?? "";
-    const contract = claudeConverseContract(model, options, this.config.modelOverrides);
-    buildToolConfig(requestTools(this.config, options), options.toolChoice, contract.forbidForcedToolChoice);
+    // The pure Converse projection owns replay and content checks as well as
+    // tool/schema validation. It does not count tokens or resolve credentials.
+    buildRequest(this.config, model, messages, options);
   }
 
   private async countRequestTokens(
