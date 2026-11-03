@@ -43,7 +43,7 @@ export async function runConfiguredSearchProviders(options: {
     const providerEnvironment = provider.name === 'custom' && options.endpoint !== undefined
       ? { ...environment, WEB_SEARCH_API: options.endpoint }
       : environment
-    if (!provider.isConfigured(providerEnvironment)) {
+    if (!provider.isConfigured(providerEnvironment) && !provider.selectableWithoutKey) {
       throw new Error(`Search provider "${provider.name}" is not configured; set its API key or custom endpoint`)
     }
     try {
