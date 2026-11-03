@@ -2956,7 +2956,8 @@ function geminiGenerationConfig(
     config.thinkingConfig = { thinkingLevel: level };
   }
   const structuredSchema = options?.structuredOutput?.schema;
-  if (options?.structuredOutput?.enabled || structuredSchema) {
+  if (options?.structuredOutput?.enabled !== false &&
+      (options?.structuredOutput?.enabled || structuredSchema)) {
     config.responseMimeType = "application/json";
     if (structuredSchema) {
       config.responseJsonSchema = compileGeminiSchema(
