@@ -929,8 +929,7 @@ describe("assembleSystemPrompt", () => {
   test.each(["standard", "light"] as const)(
     "the %s session tail states cgroup CPU and memory limits only when one applies",
     async (profile) => {
-      const line = "Resource limits (cgroup): 1 CPU, 4 GiB memory; nproc shows 24 and free shows 32 GiB. " +
-        "Size thread counts, parallel jobs and builds to these limits.";
+      const line = "Resource limits (cgroup): 1 CPU, 4 GiB memory; nproc/free can show host totals.";
       setResourceLimitsLineForTesting(line);
       const limited = await assembleSystemPromptSnapshot({ profile, session: fakeSession, ctx: fakeCtx() });
       setResourceLimitsLineForTesting(null);

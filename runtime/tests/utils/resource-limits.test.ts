@@ -48,8 +48,7 @@ describe("cgroup v2", () => {
     const limits = readResourceLimits(options);
     expect(limits).toEqual({ cpuLimit: 1, memoryLimitBytes: 4 * GIB, hostCpus: 24, hostMemoryBytes: 32 * GIB });
     expect(formatResourceLimitsLine(limits)).toBe(
-      "Resource limits (cgroup): 1 CPU, 4 GiB memory; nproc shows 24 and free shows 32 GiB. " +
-        "Size thread counts, parallel jobs and builds to these limits.",
+      "Resource limits (cgroup): 1 CPU, 4 GiB memory; nproc/free can show host totals.",
     );
   });
 
@@ -58,8 +57,7 @@ describe("cgroup v2", () => {
     write("memory.max", `${512 * 2 ** 20}\n`);
     const limits = readResourceLimits({ ...host, cgroupRoot: root, procSelfCgroup: "0::/\n" });
     expect(formatResourceLimitsLine(limits)).toBe(
-      "Resource limits (cgroup): 1.5 CPUs, 512 MiB memory; nproc shows 24 and free shows 32 GiB. " +
-        "Size thread counts, parallel jobs and builds to these limits.",
+      "Resource limits (cgroup): 1.5 CPUs, 512 MiB memory; nproc/free can show host totals.",
     );
   });
 
@@ -275,9 +273,23 @@ describe("cgroup v1 and other platforms", () => {
 });
 
 describe("environment note", () => {
+  test.each([
+    { cpuLimit: 1.5, facts: ["1.5 CPUs", "nproc"] },
+    { memoryLimitBytes: 512 * 2 ** 20, facts: ["512 MiB memory", "free"] },
+    { cpuLimit: 2, memoryLimitBytes: 6 * GIB, facts: ["2 CPUs", "6 GiB memory", "nproc", "free"] },
+  ])("keeps quota facts in a compact, host-independent prompt: $facts", ({ facts, ...quota }) => {
+    const line = formatResourceLimitsLine({ ...host, ...quota });
+    expect(line).not.toBeNull();
+    for (const fact of facts) expect(line).toContain(fact);
+    expect(line).toContain("cgroup");
+    // Repeated on every model call; host capacity is not the usable quota.
+    expect(line!.length).toBeLessThanOrEqual(100);
+    expect(formatResourceLimitsLine({ ...host, ...quota, hostCpus: 96, hostMemoryBytes: 512 * GIB })).toBe(line);
+    expect(line).toContain("host");
+  });
+
   test("carries the limits line when a limit applies and nothing otherwise", () => {
-    const line = "Resource limits (cgroup): 1 CPU, 4 GiB memory; nproc shows 24 and free shows 32 GiB. " +
-      "Size thread counts, parallel jobs and builds to these limits.";
+    const line = "Resource limits (cgroup): 1 CPU, 4 GiB memory; nproc/free can show host totals.";
     setResourceLimitsLineForTesting(line);
     expect(buildEnvInfoSection({ model: "deepseek-flash", cwd: root })).toContain(line);
     setResourceLimitsLineForTesting(null);
