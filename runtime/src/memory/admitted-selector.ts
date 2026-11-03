@@ -127,7 +127,11 @@ async function selectWithAdmission(
     },
   } as const;
 
-  try {
+  const boundary = selectorBoundary(signal, controller, timeoutReason);
+  // The one visible deadline covers both capability validation and the model
+  // request. A validator may ignore abort, but its late result cannot admit work.
+  const call = (async () => {
+    throwIfMemoryRecallAborted(controller.signal);
     if (provider.validateRequest !== undefined) {
       await provider.validateRequest(messages, { ...options, model });
     } else if (!(["responses", "chat_completions", "messages"] as const).some(
@@ -135,27 +139,21 @@ async function selectWithAdmission(
     )) {
       throw new LLMCapabilityError(providerName, "structured_output", "Memory selector structured output is unavailable");
     }
-    throwIfMemoryRecallAborted(signal);
-  } catch (error) {
-    throwIfMemoryRecallAborted(signal);
-    if (!(error instanceof LLMCapabilityError)) return { kind: "unavailable" };
-    return rememberIncompatibleSelector(session, provider, model);
-  }
-
-  const call = runAdmittedModelCall({
-    session,
-    provider,
-    messages,
-    options,
-    stepId: `memory-selector:${session.nextInternalSubId()}`,
-    sessionId: session.conversationId,
-    parentScopeId: "memory-selector",
-    model,
-    providerName,
-    signal: controller.signal,
-    invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
-  });
-  const boundary = selectorBoundary(signal, controller, timeoutReason);
+    throwIfMemoryRecallAborted(controller.signal);
+    return runAdmittedModelCall({
+      session,
+      provider,
+      messages,
+      options,
+      stepId: `memory-selector:${session.nextInternalSubId()}`,
+      sessionId: session.conversationId,
+      parentScopeId: "memory-selector",
+      model,
+      providerName,
+      signal: controller.signal,
+      invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
+    });
+  })();
 
   try {
     const response = await Promise.race([call, boundary.promise]);
@@ -181,6 +179,7 @@ async function selectWithAdmission(
       void call.catch(() => undefined);
       throw signal.reason ?? error;
     }
+    if (controller.signal.reason === timeoutReason) return { kind: "timeout" };
     if (error instanceof LLMCapabilityError) {
       return rememberIncompatibleSelector(session, provider, model);
     }
@@ -210,6 +209,7 @@ function selectorBoundary(
       reject(reason);
     };
     signal.addEventListener("abort", abortListener, { once: true });
+    if (signal.aborted) abortListener();
   });
   return {
     promise,
