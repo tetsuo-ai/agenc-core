@@ -188,6 +188,31 @@ describe("parseDeepSeekSearchResults", () => {
   });
 });
 
+const STREAM_CHUNK_BYTES = 64 * 1024;
+/** The Search API response cap in runDeepSeekSearch. */
+const DEEPSEEK_SEARCH_MAX_RESPONSE_BYTES = 2_000_000;
+
+/** A body far over the cap that counts the chunks pulled from it and notes its cancel. */
+function oversizedStream(totalBytes: number) {
+  const chunk = new Uint8Array(STREAM_CHUNK_BYTES).fill(0x20);
+  const totalChunks = Math.ceil(totalBytes / STREAM_CHUNK_BYTES);
+  const state = { pulled: 0, totalChunks, cancelled: false };
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (state.pulled >= totalChunks) {
+        controller.close();
+        return;
+      }
+      state.pulled += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { body, state };
+}
+
 describe("runDeepSeekSearch", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -319,5 +344,19 @@ describe("runDeepSeekSearch", () => {
     });
     controller.abort(reason);
     await expect(running).rejects.toBe(reason);
+  });
+
+  it.each([
+    { status: 200, reason: "response too large" },
+    { status: 500, reason: "HTTP 500" },
+  ])("stops reading an HTTP $status body once it passes the cap", async ({ status, reason }) => {
+    const { body, state } = oversizedStream(DEEPSEEK_SEARCH_MAX_RESPONSE_BYTES * 4);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status })));
+    await expect(
+      runDeepSeekSearch({ endpoint: "https://api.deepseek.com/v1/tools/search", apiKey: "k", query: "q", count: 3 }),
+    ).resolves.toEqual({ kind: "failed", reason, billed: false });
+    expect(state.pulled).toBeLessThan(state.totalChunks);
+    expect(state.pulled).toBeLessThanOrEqual(Math.ceil(DEEPSEEK_SEARCH_MAX_RESPONSE_BYTES / STREAM_CHUNK_BYTES) + 2);
+    expect(state.cancelled).toBe(true);
   });
 });
