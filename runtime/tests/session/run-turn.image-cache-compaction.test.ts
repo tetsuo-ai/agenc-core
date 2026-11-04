@@ -1,11 +1,24 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
-import { CONTEXT_IMAGE_BUDGET_ENV } from "../../src/session/query-image-budget.js";
+import { CONTEXT_IMAGE_BUDGET_ENV, unseenImageSourcesRemovedByCompaction } from "../../src/session/query-image-budget.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 import { attachCompactionSession, createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
 
 afterEach(() => { vi.unstubAllEnvs(); setAutoCompactImplForTests(null); });
+
+test("unseen image recovery identifies only the missing FileRead path", () => {
+  const messages: LLMMessage[] = [
+    { role: "assistant", content: "", toolCalls: [
+      { id: "read-1", name: "FileRead", arguments: '{"file_path":"/work/first.png"}' },
+      { id: "read-2", name: "FileRead", arguments: '{"file_path":"/work/current.png"}' },
+    ] },
+    { role: "tool", toolCallId: "read-1", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,first" } }] },
+    { role: "tool", toolCallId: "read-2", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,current" } }] },
+  ];
+  expect(unseenImageSourcesRemovedByCompaction({}, messages, messages.slice(0, 2)))
+    .toEqual(['"/work/current.png"']);
+});
 
 test.each(["deepseek", "local-test"])("%s: only a prefix-cache route compacts before evicting a sent image", async modelProviderId => {
   vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "180");

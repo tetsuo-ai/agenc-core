@@ -47,15 +47,35 @@ export function resetSentContextImages(session: object): void {
 }
 
 /** A durable replacement can omit a new image before the model sees it. */
-export function countUnseenImagesRemovedByCompaction(
+export function unseenImageSourcesRemovedByCompaction(
   session: object,
   prepared: readonly LLMMessage[],
   replacement: readonly LLMMessage[],
-): number {
+): string[] {
   const retained = contextImageUrls(replacement);
-  return [...contextImageUrls(prepared)].filter(url =>
+  const missing = new Set([...contextImageUrls(prepared)].filter(url =>
     !sentImages.get(session)?.has(url) && !retained.has(url),
-  ).length;
+  ));
+  const calls = new Map(prepared.flatMap(message => message.toolCalls ?? []).map(call => [call.id, call]));
+  const sources: string[] = [];
+  for (const message of prepared) {
+    if (!Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type !== "image_url" || !missing.delete(part.image_url.url)) continue;
+      const call = message.toolCallId === undefined ? undefined : calls.get(message.toolCallId);
+      let source = "the newly attached image";
+      if (call?.name === "FileRead") {
+        try {
+          const args: unknown = JSON.parse(call.arguments);
+          if (args !== null && typeof args === "object" && "file_path" in args && typeof args.file_path === "string") {
+            source = JSON.stringify(args.file_path);
+          }
+        } catch { /* A missing source still needs a read-again notice. */ }
+      }
+      sources.push(source);
+    }
+  }
+  return sources;
 }
 
 export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;

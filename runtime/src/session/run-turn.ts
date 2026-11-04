@@ -116,7 +116,7 @@ import {
   CONTEXT_IMAGE_BUDGET_ENV,
   boundContextImageBytes,
   rememberSentContextImages,
-  countUnseenImagesRemovedByCompaction,
+  unseenImageSourcesRemovedByCompaction,
   resetSentContextImages,
   wasContextImageSent,
   resolveContextImageBudgetBytes,
@@ -3939,14 +3939,16 @@ async function* runTurnKernelInner(
             state.contextImageBudgetRequiresCompaction = false;
             persistNewResponseItems();
             if (await compactPreparedRequest(true)) {
-              const unseenImages = countUnseenImagesRemovedByCompaction(session, request.input, state.messages);
+              const unseenImageSources = unseenImageSourcesRemovedByCompaction(session, request.input, state.messages);
+              const unseenImages = unseenImageSources.length;
               if (unseenImages > 0) {
                 // Keep durable redaction intact. The model must obtain fresh
                 // evidence instead of assuming the removed image was seen.
                 state.messages.push({
                   role: "user",
                   content: `Compaction removed ${unseenImages} new ${unseenImages === 1 ? "image before you could inspect it" : "images before you could inspect them"}. ` +
-                    "Read or capture the current images again before relying on their contents or claiming visual verification.",
+                    `Missing image sources: ${unseenImageSources.join(", ")}. ` +
+                    "Read or capture only these missing images again before relying on their contents or claiming visual verification. Do not repeat images you already inspected.",
                   runtimeOnly: { mergeBoundary: "user_context" },
                 });
                 persistNewResponseItems();
