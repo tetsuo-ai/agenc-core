@@ -5550,6 +5550,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   #installSessionEventLogBridge(active: ActiveBackgroundAgent): () => void {
     const unsubscribeChildReviews = subscribeChildEffectReviews(active.bootstrap.session, () => {
+      // Cancelling a parent aborts its children, whose unknown outcomes then
+      // land after this agent stopped accepting review traffic.
+      if (!isRunnableActiveAgent(active)) return;
       this.#publishEffectReviews(active);
     });
     const unsubscribeCompact = subscribeToCompactionProgress(active.bootstrap.session, (progress) => {
