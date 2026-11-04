@@ -164,8 +164,10 @@ test("GPT-family Light sessions start with apply_patch instead of Edit and Write
   // apply_patch and has not discovered the Edit/Write aliases.
   expect(shell.function.description).toContain("edit via edit tools");
   expect(shell.function.description).not.toContain("require Edit/Write");
-  // The shell retains the same execution contract across providers.
-  expect(shell).toEqual(providerRegistry("deepseek").toLLMTools().find(t => t.function.name === "exec_command"));
+  // Presentation may expose fields earlier to protect DeepSeek's prefix;
+  // both routes still execute against the same canonical schema.
+  expect(providerRegistry("openai").tools.find(t => t.name === "exec_command")!.inputSchema)
+    .toEqual(providerRegistry("deepseek").tools.find(t => t.name === "exec_command")!.inputSchema);
 });
 
 test("other providers keep Edit and Write, and Edit stays discoverable for GPT sessions", () => {

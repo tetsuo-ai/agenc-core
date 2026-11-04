@@ -86,6 +86,8 @@ Provider references checked on 2026-09-10:
 - https://api-docs.deepseek.com/quick_start/pricing/
 - https://api-docs.deepseek.com/quick_start/agent_integrations/oh_my_pi/
 
+Native DeepSeek Light sessions publish the full core tool schemas and the `write_stdin` and `kill_process` companions from the first request. Selecting a core tool or yielding a shell process therefore keeps the tool catalog stable for prompt caching. Disabled tools stay disabled, and execution permissions are unchanged. Loading a genuinely new tool can still change the catalog and incur a cold cache boundary.
+
 ## Web search
 
 In a `deepseek` session the WebSearch tool searches through DeepSeek's Search
