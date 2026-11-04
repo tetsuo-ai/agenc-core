@@ -25,6 +25,23 @@
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
+// Only the previous admitted image set is retained, bounded by the wire
+// budget. A session key avoids mixing concurrent conversations or turns.
+const sentImages = new WeakMap<object, ReadonlySet<string>>();
+
+export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
+  sentImages.set(session, new Set(messages.flatMap(message => Array.isArray(message.content)
+    ? message.content.flatMap(part => part.type === "image_url" ? [part.image_url.url] : []) : [])));
+}
+
+export function wasContextImageSent(session: object, part: LLMContentPart): boolean {
+  return part.type === "image_url" && sentImages.get(session)?.has(part.image_url.url) === true;
+}
+
+export function resetSentContextImages(session: object): void {
+  sentImages.delete(session);
+}
+
 export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
 export const OMITTED_IMAGE_TEXT =
@@ -107,6 +124,7 @@ function replayImageBudget(
 export function boundContextImageBytes(
   messages: readonly LLMMessage[],
   budgetBytes: number,
+  onOmit?: (part: LLMContentPart) => void,
 ): BoundedImageQuery {
   const sizes = inlineImageSizes(messages);
   const totalBytes = sizes.reduce((total, bytes) => total + bytes, 0);
@@ -123,6 +141,7 @@ export function boundContextImageBytes(
       if (bytes === 0 || toOmit === 0) return part;
       toOmit -= 1;
       changed = true;
+      onOmit?.(part);
       return withheldImagePlaceholder(
         part,
         bytes > budgetBytes ? OVERSIZED_IMAGE_TEXT : OMITTED_IMAGE_TEXT,

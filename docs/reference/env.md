@@ -128,12 +128,13 @@ OAuth sign-in. Neither explicit selection silently obtains managed credentials.
 These values are captured with the session environment and do not delete saved
 credentials or change another session's selection.
 
-`AGENC_DEEPSEEK_REASONING_ONLY_REPLAY` (boolean-like, off by default)
+`AGENC_DEEPSEEK_REASONING_ONLY_REPLAY` (boolean-like, on by default)
 preserves matching native DeepSeek reasoning-only assistant messages when
 tools are available and thinking is enabled. This includes output-cap
 reasoning after thinking-off recovery. It increases replay input, is included in token
 admission, and can change model strategy or reach a task budget sooner.
-See [Direct DeepSeek](../providers/deepseek-direct.md) for the experiment.
+Set it to `0` to disable retention for diagnostics.
+See [Direct DeepSeek](../providers/deepseek-direct.md) for the replay contract.
 
 `AGENC_WEB_SEARCH` accepts `auto` or `on` and overrides the saved top-level
 `web_search` setting controlled by the Web search row in `/model` and

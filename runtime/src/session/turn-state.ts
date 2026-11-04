@@ -275,6 +275,9 @@ export interface PendingAdmissionFallback {
  *   (all other 20 names map 1:1 — see AgenC-inventory.md §1)
  */
 export interface TurnState {
+  /** A byte-budget projection would remove an image from the last sent prefix. */
+  contextImageBudgetRequiresCompaction?: boolean;
+
   // ── Phase 1 — prepare context (AgenC query.ts:268-459) ───────
   /** Full conversation history including user + assistant + tool turns.
    *  AgenC query.ts:272 (State.messages).

@@ -115,6 +115,9 @@ import {
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
   boundContextImageBytes,
+  rememberSentContextImages,
+  resetSentContextImages,
+  wasContextImageSent,
   resolveContextImageBudgetBytes,
 } from "./query-image-budget.js";
 import {
@@ -861,9 +864,13 @@ function projectSamplingImages(
   const imageBudgetBytes = resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
   );
+  state.contextImageBudgetRequiresCompaction = false;
   const boundedImages = boundContextImageBytes(
     state.messagesForQuery,
     imageBudgetBytes,
+    part => {
+      if (wasContextImageSent(session, part)) state.contextImageBudgetRequiresCompaction = true;
+    },
   );
   if (boundedImages.omitted > 0) {
     state.messagesForQuery = boundedImages.messages;
@@ -1332,6 +1339,7 @@ async function runSamplingRequest(
     }
     if (admitted !== true) prepared = { ...prepared, request: admitted };
   }
+  rememberSentContextImages(session, prepared.request.input);
   const samplingContext = prepared.samplingContext;
   const previousSample = state.reasoningCapPolicy?.sample;
   const samplingModel = skillInvocationRequestModel(session, samplingContext) ??
@@ -3919,6 +3927,20 @@ async function* runTurnKernelInner(
               throw new PreparedCompactionFailure(compactFailureError(error));
             }
           };
+          // Removing an image already sent would invalidate every cached token
+          // after it. Reduce history at an explicit durable boundary first.
+          // First-send omissions (including individually oversized images) do
+          // not need compaction. If an indivisible retained unit cannot shrink,
+          // the existing byte cap remains the final safety backstop.
+          if (state.contextImageBudgetRequiresCompaction && session.rolloutStore != null) {
+            state.contextImageBudgetRequiresCompaction = false;
+            persistNewResponseItems();
+            if (await compactPreparedRequest(true)) {
+              resetSentContextImages(session);
+              session.bindProviderConversation();
+              return false;
+            }
+          }
           let pressure: Promise<PreparedRequestContextPressure> | undefined;
           const requestPressure = () => pressure ??= preparedRequestContextPressure(
             request, session, ctx, signal, requestedModel,
