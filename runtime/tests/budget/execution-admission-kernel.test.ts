@@ -1839,4 +1839,16 @@ describe("observation capacity without durable admission", () => {
     closed.release();
     expect(() => client.tryAcquireObservation!(observationInput)).toThrow();
   });
+  it("rejects invalid per-call deadlines the same way acquire does", () => {
+    const value = kernel("observation-deadline");
+    const client = bind(value, "reader");
+    const invalid = { ...observationInput, deadlineAt: "not-a-timestamp" };
+    expect(() => client.acquire({ ...invalid, stepId: "write-1" })).toThrow(
+      "request.deadlineAt must be an ISO timestamp",
+    );
+    expect(() => client.tryAcquireObservation!(invalid)).toThrow(
+      "request.deadlineAt must be an ISO timestamp",
+    );
+    expect(value.activeCount).toBe(0);
+  });
 });

@@ -632,8 +632,11 @@ export class ExecutionAdmissionRepository {
 
   /** Read-only eligibility probe; observations have no usage or durable job. */
   observationDenial(request: RuntimeAdmissionRequest): string | undefined {
+    const deadlineAt = request.deadlineAt === undefined
+      ? undefined
+      : normalizeTimestamp(request.deadlineAt, "request.deadlineAt");
     return this.#ancestorDenial(request)?.reason ??
-      (request.deadlineAt !== undefined && request.deadlineAt <= this.#timestamp()
+      (deadlineAt !== undefined && deadlineAt <= this.#timestamp()
         ? "deadline_expired" : undefined);
   }
 
