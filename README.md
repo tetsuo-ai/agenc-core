@@ -9,6 +9,8 @@ Our goal is to multiply model capability per dollar of inference. AgenC is an
 open source framework that improves how any model plans, uses tools and checks
 its work.
 
+AgenC won the [Pump.fun Build in Public Solana Hackathon](https://agenc.ag/news/build-in-public-hackathon).
+
 AgenC Core is a coding agent for your terminal. It works with any model
 provider.
 
