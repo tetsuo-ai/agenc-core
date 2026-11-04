@@ -130,8 +130,8 @@ credentials or change another session's selection.
 
 `AGENC_DEEPSEEK_REASONING_ONLY_REPLAY` (boolean-like, on by default)
 preserves matching native DeepSeek reasoning-only assistant messages when
-tools are available and thinking is enabled. This includes output-cap
-reasoning after thinking-off recovery. It increases replay input, is included in token
+tools are available. This includes output-cap reasoning during and after
+thinking-off recovery. It increases replay input, is included in token
 admission, and can change model strategy or reach a task budget sooner.
 Set it to `0` to disable retention for diagnostics.
 See [Direct DeepSeek](../providers/deepseek-direct.md) for the replay contract.

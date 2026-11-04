@@ -38,6 +38,23 @@ describe("native DeepSeek reasoning-only replay", () => {
     });
   });
 
+  test("a recovery thinking toggle retains the same reasoning history prefix", async () => {
+    await scoped(undefined, async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("ok")(model));
+      const provider = new DeepSeekProvider({ apiKey: "test", model, fetchImpl });
+      await provider.chat([user, cap], opts);
+      await provider.chat([user, cap, recovery], { ...opts, disableThinkingForRecovery: true });
+      await provider.chat([user, cap, recovery, { role: "assistant", content: "Continue." },
+        { role: "user", content: "Finish." }], opts);
+      for (let index = 1; index < 3; index++) {
+        const before = bodyAt(fetchImpl, index - 1).messages as unknown[];
+        const after = bodyAt(fetchImpl, index).messages as unknown[];
+        expect(JSON.stringify(after.slice(0, before.length))).toBe(JSON.stringify(before));
+      }
+      expect(bodyAt(fetchImpl, 1)).toMatchObject({ thinking: { type: "disabled" } });
+    });
+  });
+
   test.each([undefined, "0", "false", "1"])("retains capped reasoning by default unless disabled: %s", async flag => {
     await scoped(flag, async () => {
       const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("ok")(model));
@@ -76,7 +93,7 @@ describe("native DeepSeek reasoning-only replay", () => {
       expect(runMaxOutputTokensRecovery({ state, session })).toEqual({ kind: "continuation" });
       const history = state.messages.map(m => responseItemToLlmMessage(JSON.parse(JSON.stringify(llmMessageToDurableResponseItem(m)))));
       const action = await provider.chat(history, { ...opts, disableThinkingForRecovery: true });
-      expect(JSON.stringify(bodyAt(fetchImpl, 1))).not.toContain(thought);
+      expect(JSON.stringify(bodyAt(fetchImpl, 1))).toContain(thought);
       expect(action.providerReasoningContent).toBe("");
       await provider.chat([...history, { role: "assistant", content: action.content, toolCalls: action.toolCalls,
         providerReasoningContent: action.providerReasoningContent, providerReasoningProvenance: action.providerReasoningProvenance },
@@ -123,6 +140,7 @@ describe("native DeepSeek reasoning-only replay", () => {
     const withoutTools = { ...request, options: { ...opts, tools: [] } };
     expect(scoped("1", () => estimateTokenAccountingRequest(withoutTools))).toEqual(scoped("0", () => estimateTokenAccountingRequest(withoutTools)));
     const disabled = { ...request, options: { ...opts, disableThinkingForRecovery: true as const } };
-    expect(scoped("1", () => estimateTokenAccountingRequest(disabled))).toEqual(scoped("0", () => estimateTokenAccountingRequest(disabled)));
+    expect(scoped("1", () => estimateTokenAccountingRequest(disabled)).inputTokens)
+      .toBeGreaterThan(scoped("0", () => estimateTokenAccountingRequest(disabled)).inputTokens + 1000);
   });
 });

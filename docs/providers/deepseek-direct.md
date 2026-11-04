@@ -27,7 +27,7 @@ not remove an earlier reasoning message from the cached prefix. This follows
 [DeepSeek's reasoning replay contract](https://api-docs.deepseek.com/guides/thinking_mode/).
 `AGENC_DEEPSEEK_REASONING_ONLY_REPLAY=0` disables this retention for diagnostics.
 Only matching provider and model provenance permits retention; returned text
-is replayed unchanged. Thinking-off recovery omits this additional replay.
+is replayed unchanged, including during thinking-off recovery.
 Token admission counts retained reasoning. The session captures the switch
 at ingress rather than reading mutable process environment during a turn.
 
