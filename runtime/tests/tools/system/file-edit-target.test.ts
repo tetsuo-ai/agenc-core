@@ -43,6 +43,11 @@ test("hook echo or file_path redirect maps back to batch path without leaking fi
     .toEqual({ edits: batch.edits, path: "/repo/other.txt" });
 });
 
+test("a hook replacement that keeps the target only in file_path keeps the batch path", () => {
+  expect(toolInputFromHook("Edit", batch, { edits: batch.edits, file_path: batch.path }))
+    .toEqual(batch);
+});
+
 test("a hook that changes path keeps that change and other tools keep updatedInput", () => {
   const moved = { path: "/repo/moved.txt", edits: batch.edits, file_path: "/repo/hook.txt" };
   expect(toolInputFromHook("Edit", batch, moved)).toEqual({
