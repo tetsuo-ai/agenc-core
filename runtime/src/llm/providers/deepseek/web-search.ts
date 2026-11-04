@@ -13,6 +13,7 @@
  * @module
  */
 
+import { readBodyBounded, type BoundedBody } from "../shared/bounded-body.js";
 import {
   clip,
   deepSeekHttpFailureReason,
@@ -41,7 +42,7 @@ export const DEEPSEEK_SEARCH_MAX_QUERY_CHARS = 128;
 export const DEEPSEEK_SEARCH_SUMMARY_MAX_CHARS = 600;
 
 const DEEPSEEK_SEARCH_TIMEOUT_MS = 30_000;
-const DEEPSEEK_SEARCH_MAX_RESPONSE_CHARS = 2_000_000;
+const DEEPSEEK_SEARCH_MAX_RESPONSE_BYTES = 2_000_000;
 const MIN_QUERY_CHARS_WITH_DOMAIN_OPERATORS = 24;
 
 /**
@@ -217,7 +218,7 @@ export async function runDeepSeekSearch(
     billed: false,
   });
   let status: number;
-  let body: string;
+  let body: BoundedBody;
   try {
     const response = await fetch(request.endpoint, {
       ...(request.fetchOptions ?? {}),
@@ -237,19 +238,17 @@ export async function runDeepSeekSearch(
       }),
     } as RequestInit);
     status = response.status;
-    body = await response.text();
+    body = await readBodyBounded(response, DEEPSEEK_SEARCH_MAX_RESPONSE_BYTES, signal);
   } catch (error) {
     request.signal?.throwIfAborted();
     if (timeout.aborted) return failed(deepSeekTimeoutReason(timeoutMs));
     return failed(deepSeekRequestFailureReason(error, request.apiKey));
   }
-  if (status !== 200) return failed(deepSeekHttpFailureReason(status, body, request.apiKey));
-  if (body.length > DEEPSEEK_SEARCH_MAX_RESPONSE_CHARS) {
-    return failed("response too large");
-  }
+  if (status !== 200) return failed(deepSeekHttpFailureReason(status, body.text, request.apiKey));
+  if (body.overflow) return failed("response too large");
   let parsed: ReturnType<typeof parseDeepSeekSearchResults>;
   try {
-    parsed = parseDeepSeekSearchResults(JSON.parse(body));
+    parsed = parseDeepSeekSearchResults(JSON.parse(body.text));
   } catch {
     parsed = undefined;
   }

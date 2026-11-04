@@ -26,6 +26,8 @@
  * @module
  */
 
+import { readBodyBounded } from "./shared/bounded-body.js";
+
 export const OLLAMA_WEB_SEARCH_URL = "https://ollama.com/api/web_search";
 export const OLLAMA_WEB_FETCH_URL = "https://ollama.com/api/web_fetch";
 /** Ollama search tariff observed through GET /api/usage, 2026-10-21. */
@@ -50,7 +52,7 @@ export const GATEWAY_SEARCH_MAX_OUTPUT_TOKENS = 256;
 
 const SNIPPET_MAX_CHARS = 600;
 const TIMEOUT_MS = 30_000;
-const MAX_RESPONSE_CHARS = 4_000_000;
+const MAX_RESPONSE_BYTES = 4_000_000;
 
 export interface GatewaySearchHit {
   readonly title: string;
@@ -129,6 +131,7 @@ async function postJson(
   options: Pick<CallOptions, "signal" | "fetchImpl" | "fetchOptions">,
 ): Promise<{ readonly status: number; readonly json?: unknown; readonly reason?: string }> {
   const timeout = AbortSignal.timeout(TIMEOUT_MS);
+  const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]);
   try {
     const response = await (options.fetchImpl ?? fetch)(url, {
       ...(options.fetchOptions ?? {}),
@@ -136,10 +139,11 @@ async function postJson(
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify(body),
       redirect: "error",
-      signal: options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]),
+      signal,
     });
-    const raw = await response.text();
-    if (raw.length > MAX_RESPONSE_CHARS) return { status: response.status, reason: "response too large" };
+    const bounded = await readBodyBounded(response, MAX_RESPONSE_BYTES, signal);
+    if (bounded.overflow) return { status: response.status, reason: "response too large" };
+    const raw = bounded.text;
     let json: unknown;
     try {
       json = JSON.parse(raw);
