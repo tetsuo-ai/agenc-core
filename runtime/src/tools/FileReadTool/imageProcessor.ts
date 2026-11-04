@@ -3,13 +3,13 @@ import type { Buffer } from 'buffer'
 import { isInBundledMode } from '../../utils/bundledMode.js'
 
 export type SharpInstance = {
-  metadata(): Promise<{ width: number; height: number; pages?: number; format: string }>
+  metadata(): Promise<{ width: number; height: number; pages?: number; hasAlpha?: boolean; format: string }>
   resize(
     width: number,
     height: number,
     options?: { fit?: string; withoutEnlargement?: boolean },
   ): SharpInstance
-  jpeg(options?: { quality?: number }): SharpInstance
+  jpeg(options?: { quality?: number; chromaSubsampling?: string }): SharpInstance
   png(options?: {
     compressionLevel?: number
     palette?: boolean

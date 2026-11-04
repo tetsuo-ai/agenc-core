@@ -1,3 +1,4 @@
+import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, expect, test, vi } from "vitest";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
@@ -20,7 +21,7 @@ test("unseen image recovery identifies only the missing FileRead path", () => {
     .toEqual(['"/work/current.png"']);
 });
 
-test.each(["deepseek", "local-test"])("%s: only a prefix-cache route compacts before evicting a sent image", async modelProviderId => {
+test.each(["deepseek", "local-test"])("%s: image pressure never compacts or rewrites a sent image", async modelProviderId => {
   vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "180");
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
   const first: LLMMessage = { role: "user", content: [{ type: "text", text: "First screenshot" }, { type: "image_url", image_url: { url: png } }] };
@@ -43,10 +44,11 @@ test.each(["deepseek", "local-test"])("%s: only a prefix-cache route compacts be
   try {
     await drain(runTurn(session, ctx, first.content));
     await drain(runTurn(session, ctx, second.content));
-    const expectedCompactions = modelProviderId === "deepseek" ? 1 : 0;
+    const expectedCompactions = 0;
     expect(compactions).toBe(expectedCompactions);
     expect(requests).toHaveLength(2);
-    expect(JSON.stringify(requests[1]).includes("image omitted:")).toBe(expectedCompactions === 0);
+    expect(JSON.stringify(requests[1]!.slice(0, requests[0]!.length))).toBe(JSON.stringify(requests[0]));
+    expect(JSON.stringify(requests[1])).toContain("not inspected");
     await drain(runTurn(session, ctx, "Continue without another screenshot."));
     expect(compactions).toBe(expectedCompactions);
     expect(requests).toHaveLength(3);
@@ -71,7 +73,9 @@ test("an unseen image omitted by durable compaction gets one stable read-again n
   } }));
   try {
     await drain(runTurn(session, ctx, [{ type: "image_url", image_url: { url: first } }]));
-    await drain(runTurn(session, ctx, [{ type: "image_url", image_url: { url: current } }]));
+    Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
+    installPreparedCompactionPressure(provider, request => JSON.stringify(request.messages).includes("Natural pressure") ? 18_130 : 100);
+    await drain(runTurn(session, ctx, [{ type: "text", text: "Natural pressure. ".repeat(400) }, { type: "image_url", image_url: { url: current } }]));
     expect(requests).toHaveLength(2);
     const afterCompact = JSON.stringify(requests[1]);
     expect(afterCompact).toContain("Compaction removed 1 new image before you could inspect it");

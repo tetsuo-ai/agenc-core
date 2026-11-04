@@ -172,7 +172,34 @@ interface CompressedImageResult {
  * Extracted from FileReadTool's readImage function
  * Resizes image buffer to meet size and dimension constraints
  */
+/** Normalize once at ingestion; historical requests reuse these exact bytes.
+ * Keep the inspection resolution and alpha, and avoid repeatedly sending
+ * photographic PNG payloads when a high-quality JPEG is much smaller.
+ */
 export async function maybeResizeAndDownsampleImageBuffer(
+  imageBuffer: Buffer,
+  originalSize: number,
+  ext: string,
+): Promise<ResizeResult> {
+  const resized = await resizeAndValidateImageBuffer(imageBuffer, originalSize, ext)
+  if (resized.buffer.length <= 64 * 1024) return resized
+  const sharp = await getImageProcessor()
+  const metadata = await sharp(resized.buffer).metadata()
+  // Preserve transparency and animation. Small line-art PNGs already passed
+  // above; 4:4:4 avoids color fringing on small screenshot text.
+  if (metadata.hasAlpha !== false || (metadata.pages ?? 1) > 1) return resized
+  try {
+    const jpeg = await sharp(resized.buffer).jpeg({ quality: 85, chromaSubsampling: '4:4:4' }).toBuffer()
+    return jpeg.length < resized.buffer.length
+      ? { ...resized, buffer: jpeg, mediaType: 'jpeg' }
+      : resized
+  } catch {
+    // The original has already been fully decoded and bounded.
+    return resized
+  }
+}
+
+async function resizeAndValidateImageBuffer(
   imageBuffer: Buffer,
   originalSize: number,
   ext: string,

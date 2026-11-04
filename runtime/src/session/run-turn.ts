@@ -114,11 +114,8 @@ import {
 } from "../phases/continuation-nudge.js";
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
-  boundContextImageBytes,
+  admitContextImageBytes,
   rememberSentContextImages,
-  unseenImageSourcesRemovedByCompaction,
-  resetSentContextImages,
-  wasContextImageSent,
   resolveContextImageBudgetBytes,
 } from "./query-image-budget.js";
 import {
@@ -291,7 +288,6 @@ import {
   boundInMemoryToolResultContent,
   getAgenCPreparedTerminal,
   prepareAgenCTurnContext,
-  preservesQueryPrefix,
 } from "./run-turn-query-messages.js";
 import {
   extractLastUserText,
@@ -866,15 +862,7 @@ function projectSamplingImages(
   const imageBudgetBytes = resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
   );
-  state.contextImageBudgetRequiresCompaction = false;
-  const preservePrefix = preservesQueryPrefix(ctx.modelProviderId ?? session.services.provider.name);
-  const boundedImages = boundContextImageBytes(
-    state.messagesForQuery,
-    imageBudgetBytes,
-    part => {
-      if (preservePrefix && wasContextImageSent(session, part)) state.contextImageBudgetRequiresCompaction = true;
-    },
-  );
+  const boundedImages = admitContextImageBytes(state.messagesForQuery, imageBudgetBytes);
   if (boundedImages.omitted > 0) {
     state.messagesForQuery = boundedImages.messages;
     const tracked = state as TurnState & { contextImagesOmitted?: number };
@@ -890,7 +878,7 @@ function projectSamplingImages(
               `${boundedImages.omitted} inline image(s) left out of the request: ` +
               `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
               `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
-              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
+              `${Math.round(boundedImages.retainedBytes / 1024)} KB retained without changing earlier images`,
           },
         },
       });
@@ -2595,7 +2583,7 @@ async function assertSeedUserPromptFits(
   const imagePolicy = modelImagePolicy(session, ctx, state,
     session.services.configStore?.current() ?? ctx.config as AgenCConfig);
   const visible = withholdImagesForModel(seedMessages, imagePolicy, rejectedImagesFor(session, imagePolicy.route));
-  const bounded = boundContextImageBytes(visible.messages, resolveContextImageBudgetBytes(
+  const bounded = admitContextImageBytes(visible.messages, resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
   ));
   state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
@@ -3930,35 +3918,6 @@ async function* runTurnKernelInner(
               throw new PreparedCompactionFailure(compactFailureError(error));
             }
           };
-          // Removing an image already sent would invalidate every cached token
-          // after it. Reduce history at an explicit durable boundary first.
-          // First-send omissions (including individually oversized images) do
-          // not need compaction. If an indivisible retained unit cannot shrink,
-          // the existing byte cap remains the final safety backstop.
-          if (state.contextImageBudgetRequiresCompaction && session.rolloutStore != null) {
-            state.contextImageBudgetRequiresCompaction = false;
-            persistNewResponseItems();
-            if (await compactPreparedRequest(true)) {
-              const unseenImageSources = unseenImageSourcesRemovedByCompaction(session, request.input, state.messages);
-              const unseenImages = unseenImageSources.length;
-              if (unseenImages > 0) {
-                // Keep durable redaction intact. The model must obtain fresh
-                // evidence instead of assuming the removed image was seen.
-                state.messages.push({
-                  role: "user",
-                  content: `Compaction removed ${unseenImages} new ${unseenImages === 1 ? "image before you could inspect it" : "images before you could inspect them"}. ` +
-                    `Missing image sources: ${unseenImageSources.join(", ")}. ` +
-                    "Read or capture only these missing images again before relying on their contents or claiming visual verification. Do not repeat images you already inspected.",
-                  runtimeOnly: { mergeBoundary: "user_context" },
-                });
-                persistNewResponseItems();
-                emitTurnCheckpoint("iteration", { force: true });
-              }
-              resetSentContextImages(session);
-              session.bindProviderConversation();
-              return false;
-            }
-          }
           let pressure: Promise<PreparedRequestContextPressure> | undefined;
           const requestPressure = () => pressure ??= preparedRequestContextPressure(
             request, session, ctx, signal, requestedModel,

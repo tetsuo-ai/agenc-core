@@ -1,24 +1,7 @@
-/**
- * Byte budget for inline images in the query projection.
- *
- * Tool results and pasted content carry screenshots as base64 data URLs.
- * Providers count an image as a few hundred tokens, so the token accounting
- * never sees a problem, but the wire body does: a GUI-driven session on
- * Terminal-Bench reached 54 screenshots (10.8 MB of a 11.1 MB request), and
- * every full-history resend after that was refused by the provider. The
- * durable history keeps every image; only what the model is shown on the
- * wire is bounded, to a contiguous suffix of the newest inline images.
- *
- * Which images are left out is decided by replaying the history's images
- * from oldest to newest, so every projection of one append-only history
- * agrees byte for byte. Images accumulate until they exceed the budget; the
- * oldest are then left out in one batch, down to half the budget, never the
- * newest image. Between two batches nothing moves, so the provider's cached
- * prefix breaks once per batch instead of on every new image, as it did when
- * each request kept the newest images up to the full budget. An image larger
- * than the whole budget is left out with every older image rather than
- * showing an older screen in place of a newer one.
- *
+/** Inline-image admission is replayed in chronological order. Once an image
+ * or omission has been sent, later images cannot alter that prefix. Natural
+ * compaction replaces history and starts a fresh budget. Images are already
+ * normalized by their ingestion paths, never by this request projection.
  * @module
  */
 
@@ -36,10 +19,6 @@ function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
 
 export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
   sentImages.set(session, contextImageUrls(messages));
-}
-
-export function wasContextImageSent(session: object, part: LLMContentPart): boolean {
-  return part.type === "image_url" && sentImages.get(session)?.has(part.image_url.url) === true;
 }
 
 export function resetSentContextImages(session: object): void {
@@ -80,10 +59,9 @@ export function unseenImageSourcesRemovedByCompaction(
 
 export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
-export const OMITTED_IMAGE_TEXT =
-  "[image omitted: an earlier screenshot is no longer in context; capture or read it again if it is still needed]";
-export const OVERSIZED_IMAGE_TEXT =
-  "[image omitted: this image exceeds the inline image request limit; resize it or capture a smaller version before sending it again]";
+export const UNINSPECTED_IMAGE_TEXT =
+  "[image not inspected: this newly attached image exceeds the remaining inline image budget. " +
+  "Do not claim visual verification. Read or capture it again after context compaction, or use a smaller crop.]";
 
 /** `0` disables the budget; an unset or malformed value uses the default. */
 export function resolveContextImageBudgetBytes(
@@ -116,71 +94,42 @@ export interface BoundedImageQuery {
   readonly totalBytes: number;
 }
 
-/** Sizes of the inline images, oldest first. */
-function inlineImageSizes(messages: readonly LLMMessage[]): number[] {
-  const sizes: number[] = [];
-  for (const message of messages) {
-    if (!Array.isArray(message.content)) continue;
-    for (const part of message.content) {
-      const bytes = inlineImageBytes(part);
-      if (bytes > 0) sizes.push(bytes);
-    }
-  }
-  return sizes;
-}
-
-/**
- * How many of the oldest images are left out, and the bytes of the rest,
- * replayed over `sizes` from oldest to newest as the module comment
- * describes.
+/** First-admission policy for an epoch. A later image can never evict an
+ * earlier image or change an earlier omission. Natural compaction supplies
+ * a new history and therefore a fresh budget without an extra summary call.
  */
-function replayImageBudget(
-  sizes: readonly number[],
-  budgetBytes: number,
-): { readonly omitted: number; readonly retainedBytes: number } {
-  const target = Math.floor(budgetBytes / 2);
-  let omitted = 0;
-  let retainedBytes = 0;
-  for (const [index, bytes] of sizes.entries()) {
-    if (bytes > budgetBytes) {
-      omitted = index + 1;
-      retainedBytes = 0;
-      continue;
-    }
-    retainedBytes += bytes;
-    if (retainedBytes <= budgetBytes) continue;
-    while (omitted < index && retainedBytes > target) {
-      retainedBytes -= sizes[omitted]!;
-      omitted += 1;
-    }
-  }
-  return { omitted, retainedBytes };
-}
-
-export function boundContextImageBytes(
+export function admitContextImageBytes(
   messages: readonly LLMMessage[],
   budgetBytes: number,
-  onOmit?: (part: LLMContentPart) => void,
 ): BoundedImageQuery {
-  const sizes = inlineImageSizes(messages);
-  const totalBytes = sizes.reduce((total, bytes) => total + bytes, 0);
-  if (budgetBytes <= 0 || totalBytes <= budgetBytes) {
-    return { messages: [...messages], omitted: 0, retainedBytes: totalBytes, totalBytes };
-  }
-  const { omitted, retainedBytes } = replayImageBudget(sizes, budgetBytes);
-  let toOmit = omitted;
+  let retainedBytes = 0;
+  let totalBytes = 0;
+  let omitted = 0;
+  const calls = new Map(messages.flatMap(message => message.toolCalls ?? []).map(call => [call.id, call]));
   const out = messages.map((message): LLMMessage => {
-    if (toOmit === 0 || !Array.isArray(message.content)) return message;
+    if (!Array.isArray(message.content)) return message;
     let changed = false;
     const parts = message.content.map((part): LLMContentPart => {
       const bytes = inlineImageBytes(part);
-      if (bytes === 0 || toOmit === 0) return part;
-      toOmit -= 1;
+      totalBytes += bytes;
+      if (bytes === 0) return part;
+      if (budgetBytes <= 0 || retainedBytes + bytes <= budgetBytes) {
+        retainedBytes += bytes;
+        return part;
+      }
+      omitted++;
       changed = true;
-      onOmit?.(part);
-      return withheldImagePlaceholder(
-        part,
-        bytes > budgetBytes ? OVERSIZED_IMAGE_TEXT : OMITTED_IMAGE_TEXT,
+      let source = "this newly attached image";
+      const call = message.toolCallId === undefined ? undefined : calls.get(message.toolCallId);
+      if (call?.name === "FileRead") {
+        try {
+          const args: unknown = JSON.parse(call.arguments);
+          if (args !== null && typeof args === "object" && "file_path" in args && typeof args.file_path === "string") source = JSON.stringify(args.file_path);
+        } catch { /* The generic notice still identifies an unseen image. */ }
+      }
+      return withheldImagePlaceholder(part,
+        `[image not inspected: ${source} exceeds the remaining inline image budget. ` +
+        "Do not claim visual verification. Read or capture it again after context compaction, or use a smaller crop.]",
       );
     });
     return changed ? { ...message, content: parts } : message;

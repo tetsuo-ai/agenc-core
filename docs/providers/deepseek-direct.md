@@ -88,7 +88,7 @@ Provider references checked on 2026-09-10:
 
 Native DeepSeek Light sessions publish the full core tool schemas and the `write_stdin` and `kill_process` companions from the first request. Selecting a core tool or yielding a shell process therefore keeps the tool catalog stable for prompt caching. Disabled tools stay disabled, and execution permissions are unchanged. Loading a genuinely new tool can still change the catalog and incur a cold cache boundary.
 
-When the image budget would evict a previously sent screenshot, the session compacts first to keep the intervening request history stable. If that compaction removes a new image before the model sees it, the next request asks the model to read or capture it again before claiming visual verification. Durable secret redaction remains in effect.
+Images are normalized when read or attached, preserving inspection resolution up to 1568 pixels and using a smaller high-quality encoding where possible. Images already admitted stay unchanged until natural compaction. If the 6 MiB image budget fills first, a stable notice identifies each new image that was not inspected and asks for a smaller crop or a reread after compaction. Image pressure does not trigger an extra summary call. If natural compaction removes an unseen image, its recovery notice names the missing source. Durable secret redaction remains in effect.
 
 ## Web search
 
