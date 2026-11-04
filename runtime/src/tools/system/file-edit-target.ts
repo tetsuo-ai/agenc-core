@@ -30,8 +30,9 @@ export function hookToolInput(toolName: string, input: Record<string, unknown>):
 
 /**
  * Maps a PreToolUse hook's updatedInput back to the batch Edit schema. `file_path` exists only in the
- * hook-facing view: a hook that echoes it, or redirects the edit through it, must not make the call
- * fail strict validation. A hook that changes `path` itself keeps that change.
+ * hook-facing view: a hook that echoes it, names the target only through it, or redirects the edit
+ * through it must not make the call fail strict validation. A hook that changes `path` itself keeps
+ * that change.
  */
 export function toolInputFromHook(
   toolName: string,
@@ -40,8 +41,7 @@ export function toolInputFromHook(
 ): Record<string, unknown> {
   if (!isBatchEditInput(toolName, original) || !Object.hasOwn(updated, "file_path")) return updated;
   const { file_path: hookPath, ...rest } = updated;
-  if (typeof hookPath === "string" && hookPath !== original.path &&
-    (rest.path === undefined || rest.path === original.path)) {
+  if (typeof hookPath === "string" && (rest.path === undefined || rest.path === original.path)) {
     return { ...rest, path: hookPath };
   }
   return rest;
