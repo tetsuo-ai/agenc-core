@@ -41,6 +41,15 @@ export function existingAgenCHomeIdentity(requested) {
   }
 }
 
+function writableDirectoryError(label, path, mode) {
+  const permissions = (mode & 0o7777).toString(8).padStart(4, "0");
+  const quotedPath = "'" + path.replaceAll("'", "'\\''") + "'";
+  return new Error(
+    `${label} is group/world writable: ${path} (permissions ${permissions})\n` +
+    `To fix, run: chmod go-w ${quotedPath}`,
+  );
+}
+
 function ensureAccountRegistryPath(accountHome, segments, uid) {
   const canonicalHome = realpathSync(accountHome);
   const homeStat = lstatSync(canonicalHome);
@@ -51,7 +60,7 @@ function ensureAccountRegistryPath(accountHome, segments, uid) {
     throw new Error(`account home has the wrong owner: ${canonicalHome}`);
   }
   if (uid !== undefined && (homeStat.mode & 0o022) !== 0) {
-    throw new Error(`account home is group/world writable: ${canonicalHome}`);
+    throw writableDirectoryError("account home", canonicalHome, homeStat.mode);
   }
   let current = canonicalHome;
   for (let index = 0; index < segments.length; index += 1) {
@@ -70,7 +79,7 @@ function ensureAccountRegistryPath(accountHome, segments, uid) {
         throw new Error(`activation lock registry path has the wrong owner: ${current}`);
       }
       if ((stat.mode & 0o022) !== 0) {
-        throw new Error(`activation lock registry path is group/world writable: ${current}`);
+        throw writableDirectoryError("activation lock registry path", current, stat.mode);
       }
       // AgenC-owned components are private. Do not rewrite conventional
       // account directories such as .local/state or Library/Application Support.
