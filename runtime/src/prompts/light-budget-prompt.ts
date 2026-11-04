@@ -128,7 +128,7 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * questions about AgenC are answered without tools; the undo paths arrive with a message that asks
  * about them (prompts/attachments/product-help.ts).
  */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false, writesWithApplyPatch = false): string {
   // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
   // keep the 0.19.26 prompt, interactive DeepSeek with one more sentence on probes (LIGHT_DEEPSEEK_PROBES).
   const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
@@ -137,6 +137,9 @@ export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = 
     : ` ${LIGHT_READ_AND_SEARCH}` + (deepseekWorkRules && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
   const editing = !editsWithApplyPatch
     ? ""
+    : writesWithApplyPatch
+      ? " Use Write for new files and full rewrites; apply_patch for partial changes, all hunks of one change together." +
+        (statesTaskLimits ? " Include known source, tests and requested documentation together." : "")
     : interactiveRules
       ? ` ${LIGHT_PATCH_SIZE}`
       : " Edit and create files with apply_patch; put all hunks of one change in one patch." +

@@ -83,7 +83,10 @@ describe("interactive Light working rules", () => {
     expect(limited).toContain(LIGHT_LIMITED_FINISH);
     expect(unlimited).toContain(LIGHT_DEEPSEEK_FINISH);
     expect(unlimited).toContain("Repeat for new edits, failures or unresolved concerns");
-    if (model === "deepseek-flash") expect(count(limited, ONE_PATCH) + count(limited, SAME_PATCH)).toBe(2);
+    if (model === "deepseek-flash") {
+      expect(limited).toContain("all hunks of one change together");
+      expect(limited).toContain("Include known source, tests and requested documentation together.");
+    }
   });
 
   test("a custom output style keeps the head rules and replaces only the finish paragraph", async () => {
@@ -100,8 +103,14 @@ describe("interactive Light working rules", () => {
     const prompt = await head(provider, model, { nonInteractive: true });
     expect(prompt).not.toContain(LIGHT_LOOKUPS);
     expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
-    expect(count(prompt, ONE_PATCH)).toBe(1);
-    expect(count(prompt, SAME_PATCH)).toBe(limits ? 1 : 0);
+    if (provider === "deepseek") {
+      expect(prompt).toContain("Use Write for new files and full rewrites");
+      expect(prompt).toContain("all hunks of one change together");
+      expect(prompt).toContain("Include known source, tests and requested documentation together.");
+    } else {
+      expect(count(prompt, ONE_PATCH)).toBe(1);
+      expect(count(prompt, SAME_PATCH)).toBe(limits ? 1 : 0);
+    }
     expect(prompt).not.toContain("do not rework");
   });
 
