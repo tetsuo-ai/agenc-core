@@ -185,9 +185,11 @@ export async function maybeResizeAndDownsampleImageBuffer(
   if (resized.buffer.length <= 64 * 1024) return resized
   const sharp = await getImageProcessor()
   const metadata = await sharp(resized.buffer).metadata()
-  // Preserve transparency and animation. Small line-art PNGs already passed
+  // Preserve transparency, animation and EXIF display orientation.
+  // Small line-art PNGs already passed
   // above; 4:4:4 avoids color fringing on small screenshot text.
-  if (metadata.hasAlpha !== false || (metadata.pages ?? 1) > 1) return resized
+  if (metadata.hasAlpha !== false || (metadata.pages ?? 1) > 1 ||
+      (metadata.orientation !== undefined && metadata.orientation !== 1)) return resized
   try {
     const jpeg = await sharp(resized.buffer).jpeg({ quality: 85, chromaSubsampling: '4:4:4' }).toBuffer()
     return jpeg.length < resized.buffer.length

@@ -117,3 +117,21 @@ it("normalizes a detailed screenshot once before creating the tool result", asyn
   expect(normalized.length).toBeLessThan(300_000);
   expect((await sharp(normalized).metadata()).width).toBeLessThanOrEqual(1568);
 });
+
+it("preserves display orientation when normalizing an in-limit photo", async () => {
+  const sharp = (await import("sharp")).default;
+  const pixels = Buffer.alloc(960 * 600 * 3);
+  let seed = 71;
+  for (let i = 0; i < pixels.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    pixels[i] = seed >>> 24;
+  }
+  const original = await sharp(pixels, { raw: { width: 960, height: 600, channels: 3 } })
+    .withMetadata({ orientation: 6 }).jpeg({ quality: 100 }).toBuffer();
+  const file = join(root, "rotated.jpg");
+  await writeFile(file, original);
+  const result = await createFileReadTool({ allowedPaths: [root] }).execute({ file_path: file });
+  const encoded = emittedImageBase64(result as { contentItems?: Array<{ type: string; image_url?: string }> });
+  expect(encoded).toBeTruthy();
+  expect((await sharp(Buffer.from(encoded!, "base64")).metadata()).orientation).toBe(6);
+});
