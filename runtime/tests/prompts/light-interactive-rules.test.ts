@@ -70,7 +70,7 @@ describe("interactive Light working rules", () => {
     ["deepseek", "deepseek-flash"],
     ["openrouter", "deepseek/deepseek-v4.1-flash-1017"],
     ["ollama-cloud", "deepseek-v4.1-flash:1017"],
-  ])("DeepSeek through %s (%s) keeps the 0.19.26 head, with the task limits on or off", async (provider, model) => {
+  ])("DeepSeek through %s (%s) keeps its finish rules, with the task limits on or off", async (provider, model) => {
     const limited = await head(provider, model);
     const unlimited = await head(provider, model, { env: { AGENC_LIGHT_TASK_LIMITS: "0" } });
     for (const prompt of [limited, unlimited]) {
@@ -78,7 +78,9 @@ describe("interactive Light working rules", () => {
       expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
       expect(prompt).not.toContain("without rework");
       expect(prompt).not.toContain("with the simplest code");
-      expect(prompt).toContain("Read a known file before editing it: FileRead, or cat, sed -n or head of that file.");
+      expect(prompt).toContain(provider === "deepseek" && model === "deepseek-flash"
+        ? "Read the file before editing: FileRead, cat, sed -n or head."
+        : "Read a known file before editing it: FileRead, or cat, sed -n or head of that file.");
     }
     expect(limited).toContain(LIGHT_LIMITED_FINISH);
     expect(unlimited).toContain(LIGHT_DEEPSEEK_FINISH);

@@ -30,6 +30,8 @@ test("native Flash exposes whole-file Write alongside the partial-change editor"
   });
   expect(head.staticPrefix).toContain("Use Write for new files and full rewrites;");
   expect(head.staticPrefix).toContain("apply_patch for partial changes, all hunks of one change together.");
+  expect(head.staticPrefix).toContain("Read all needed files and screenshots in the same response, with multiple FileRead calls. Group independent checks likewise;");
+  expect(head.staticPrefix).toContain("Read the file before editing: FileRead, cat, sed -n or head. Search only for missing context.");
   expect(head.staticPrefix).not.toContain("Edit and create files with apply_patch");
 });
 

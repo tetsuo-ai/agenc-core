@@ -93,7 +93,8 @@ describe("Light fixed prefix budget", () => {
       "Investigate unfamiliar files, branches, configuration and locks before deleting/overwriting",
       "preserve others' work and resolve conflicts without discarding changes",
       // one round trip for independent calls
-      "Put independent tool calls in one response; omit default arguments",
+      "Read all needed files and screenshots in the same response, with multiple FileRead calls",
+      "Group independent checks likewise; omit default arguments",
       // secrets, honesty and scope
       "Write secure code; protect secrets", "Do not weaken tests or requirements, conceal failures or claim unverified work",
       "Leave files the user asks to preserve unchanged", "If existing tests must be preserved, add new cases in separate files",

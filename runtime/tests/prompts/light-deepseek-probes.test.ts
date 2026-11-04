@@ -38,7 +38,10 @@ describe("DeepSeek Light probes", () => {
     for (const env of [{}, { AGENC_LIGHT_TASK_LIMITS: "0" }]) {
       const prompt = await head(provider, model, { env });
       expect(count(prompt, LIGHT_DEEPSEEK_PROBES)).toBe(1);
-      expect(prompt).toContain(`Search only for missing context needed for the change. ${LIGHT_DEEPSEEK_PROBES} `);
+      const search = provider === "deepseek" && model === "deepseek-flash"
+        ? "Search only for missing context."
+        : "Search only for missing context needed for the change.";
+      expect(prompt).toContain(`${search} ${LIGHT_DEEPSEEK_PROBES} `);
     }
   });
 
