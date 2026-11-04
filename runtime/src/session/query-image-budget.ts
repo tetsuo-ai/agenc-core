@@ -29,9 +29,13 @@ import { withheldImagePlaceholder } from "./query-image-withheld.js";
 // budget. A session key avoids mixing concurrent conversations or turns.
 const sentImages = new WeakMap<object, ReadonlySet<string>>();
 
+function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
+  return new Set(messages.flatMap(message => Array.isArray(message.content)
+    ? message.content.flatMap(part => part.type === "image_url" ? [part.image_url.url] : []) : []));
+}
+
 export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
-  sentImages.set(session, new Set(messages.flatMap(message => Array.isArray(message.content)
-    ? message.content.flatMap(part => part.type === "image_url" ? [part.image_url.url] : []) : [])));
+  sentImages.set(session, contextImageUrls(messages));
 }
 
 export function wasContextImageSent(session: object, part: LLMContentPart): boolean {
@@ -40,6 +44,18 @@ export function wasContextImageSent(session: object, part: LLMContentPart): bool
 
 export function resetSentContextImages(session: object): void {
   sentImages.delete(session);
+}
+
+/** A durable replacement can omit a new image before the model sees it. */
+export function countUnseenImagesRemovedByCompaction(
+  session: object,
+  prepared: readonly LLMMessage[],
+  replacement: readonly LLMMessage[],
+): number {
+  const retained = contextImageUrls(replacement);
+  return [...contextImageUrls(prepared)].filter(url =>
+    !sentImages.get(session)?.has(url) && !retained.has(url),
+  ).length;
 }
 
 export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;

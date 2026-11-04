@@ -40,3 +40,31 @@ test.each(["deepseek", "local-test"])("%s: only a prefix-cache route compacts be
     expect(JSON.stringify(requests[2]!.slice(0, requests[1]!.length))).toBe(JSON.stringify(requests[1]));
   } finally { session.mountRolloutStore(null); harness.close(); }
 });
+
+test("an unseen image omitted by durable compaction gets one stable read-again notice", async () => {
+  vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "180");
+  const first = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+  const current = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  const requests: LLMMessage[][] = [];
+  const provider = mkProvider({ content: "checked" }, { onChatStream: messages => requests.push(messages) });
+  const harness = createCompactionTransactionHarness([]);
+  const { session } = mkSession({ provider });
+  const ctx = mkCtx({ modelProviderId: "deepseek" });
+  attachCompactionSession(session, harness);
+  setAutoCompactImplForTests(async () => ({ wasCompacted: true, compactionResult: {
+    message: "Previous screenshot inspected.", replacementHistory: [
+      { role: "user", content: "Previous screenshot inspected. [omitted: secret redaction would have altered this binary payload]" },
+    ],
+  } }));
+  try {
+    await drain(runTurn(session, ctx, [{ type: "image_url", image_url: { url: first } }]));
+    await drain(runTurn(session, ctx, [{ type: "image_url", image_url: { url: current } }]));
+    expect(requests).toHaveLength(2);
+    const afterCompact = JSON.stringify(requests[1]);
+    expect(afterCompact).toContain("Compaction removed 1 new image before you could inspect it");
+    expect(afterCompact).not.toContain(current);
+    await drain(runTurn(session, ctx, "Continue."));
+    expect(JSON.stringify(requests[2]!.slice(0, requests[1]!.length))).toBe(afterCompact);
+    expect(JSON.stringify(requests[2]).match(/Compaction removed 1 new image/g)).toHaveLength(1);
+  } finally { session.mountRolloutStore(null); harness.close(); }
+});

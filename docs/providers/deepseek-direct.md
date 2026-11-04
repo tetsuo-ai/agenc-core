@@ -88,6 +88,8 @@ Provider references checked on 2026-09-10:
 
 Native DeepSeek Light sessions publish the full core tool schemas and the `write_stdin` and `kill_process` companions from the first request. Selecting a core tool or yielding a shell process therefore keeps the tool catalog stable for prompt caching. Disabled tools stay disabled, and execution permissions are unchanged. Loading a genuinely new tool can still change the catalog and incur a cold cache boundary.
 
+When the image budget would evict a previously sent screenshot, the session compacts first to keep the intervening request history stable. If that compaction removes a new image before the model sees it, the next request asks the model to read or capture it again before claiming visual verification. Durable secret redaction remains in effect.
+
 ## Web search
 
 In a `deepseek` session the WebSearch tool searches through DeepSeek's Search

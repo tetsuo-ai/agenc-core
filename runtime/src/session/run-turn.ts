@@ -116,6 +116,7 @@ import {
   CONTEXT_IMAGE_BUDGET_ENV,
   boundContextImageBytes,
   rememberSentContextImages,
+  countUnseenImagesRemovedByCompaction,
   resetSentContextImages,
   wasContextImageSent,
   resolveContextImageBudgetBytes,
@@ -3938,6 +3939,19 @@ async function* runTurnKernelInner(
             state.contextImageBudgetRequiresCompaction = false;
             persistNewResponseItems();
             if (await compactPreparedRequest(true)) {
+              const unseenImages = countUnseenImagesRemovedByCompaction(session, request.input, state.messages);
+              if (unseenImages > 0) {
+                // Keep durable redaction intact. The model must obtain fresh
+                // evidence instead of assuming the removed image was seen.
+                state.messages.push({
+                  role: "user",
+                  content: `Compaction removed ${unseenImages} new ${unseenImages === 1 ? "image before you could inspect it" : "images before you could inspect them"}. ` +
+                    "Read or capture the current images again before relying on their contents or claiming visual verification.",
+                  runtimeOnly: { mergeBoundary: "user_context" },
+                });
+                persistNewResponseItems();
+                emitTurnCheckpoint("iteration", { force: true });
+              }
               resetSentContextImages(session);
               session.bindProviderConversation();
               return false;
