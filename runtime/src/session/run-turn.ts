@@ -290,6 +290,7 @@ import {
   boundInMemoryToolResultContent,
   getAgenCPreparedTerminal,
   prepareAgenCTurnContext,
+  preservesQueryPrefix,
 } from "./run-turn-query-messages.js";
 import {
   extractLastUserText,
@@ -865,11 +866,12 @@ function projectSamplingImages(
     session.services.userShell?.childEnvironment ?? process.env,
   );
   state.contextImageBudgetRequiresCompaction = false;
+  const preservePrefix = preservesQueryPrefix(ctx.modelProviderId ?? session.services.provider.name);
   const boundedImages = boundContextImageBytes(
     state.messagesForQuery,
     imageBudgetBytes,
     part => {
-      if (wasContextImageSent(session, part)) state.contextImageBudgetRequiresCompaction = true;
+      if (preservePrefix && wasContextImageSent(session, part)) state.contextImageBudgetRequiresCompaction = true;
     },
   );
   if (boundedImages.omitted > 0) {

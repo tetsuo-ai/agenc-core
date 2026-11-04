@@ -7,7 +7,7 @@ import { attachCompactionSession, createCompactionTransactionHarness } from "../
 
 afterEach(() => { vi.unstubAllEnvs(); setAutoCompactImplForTests(null); });
 
-test("evicting a sent image crosses one explicit compaction boundary, then reuses the new prefix", async () => {
+test.each(["deepseek", "local-test"])("%s: only a prefix-cache route compacts before evicting a sent image", async modelProviderId => {
   vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "180");
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
   const first: LLMMessage = { role: "user", content: [{ type: "text", text: "First screenshot" }, { type: "image_url", image_url: { url: png } }] };
@@ -16,6 +16,7 @@ test("evicting a sent image crosses one explicit compaction boundary, then reuse
   const provider = mkProvider({ content: "checked" }, { onChatStream: messages => requests.push(messages) });
   const harness = createCompactionTransactionHarness([]);
   const { session } = mkSession({ provider });
+  const ctx = mkCtx({ modelProviderId });
   attachCompactionSession(session, harness);
   let compactions = 0;
   setAutoCompactImplForTests(async () => {
@@ -27,13 +28,14 @@ test("evicting a sent image crosses one explicit compaction boundary, then reuse
     } };
   });
   try {
-    await drain(runTurn(session, mkCtx(), first.content));
-    await drain(runTurn(session, mkCtx(), second.content));
-    expect(compactions).toBe(1);
+    await drain(runTurn(session, ctx, first.content));
+    await drain(runTurn(session, ctx, second.content));
+    const expectedCompactions = modelProviderId === "deepseek" ? 1 : 0;
+    expect(compactions).toBe(expectedCompactions);
     expect(requests).toHaveLength(2);
-    expect(JSON.stringify(requests[1])).not.toContain("image omitted:");
-    await drain(runTurn(session, mkCtx(), "Continue without another screenshot."));
-    expect(compactions).toBe(1);
+    expect(JSON.stringify(requests[1]).includes("image omitted:")).toBe(expectedCompactions === 0);
+    await drain(runTurn(session, ctx, "Continue without another screenshot."));
+    expect(compactions).toBe(expectedCompactions);
     expect(requests).toHaveLength(3);
     expect(JSON.stringify(requests[2]!.slice(0, requests[1]!.length))).toBe(JSON.stringify(requests[1]));
   } finally { session.mountRolloutStore(null); harness.close(); }
