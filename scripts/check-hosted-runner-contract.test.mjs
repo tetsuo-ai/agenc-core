@@ -125,15 +125,17 @@ const ROLLOUT_FEED =
   "https://gist.githubusercontent.com/hosted-runners-images-bot/79267492faab096d04cdd25ce7014cec/raw/";
 
 const RELEASE_INDEX_PAGE =
-  /^https:\/\/api\.github\.com\/repos\/actions\/runner-images\/releases\?per_page=100&page=(\d+)$/u;
+  /^https:\/\/api\.github\.com\/repos\/actions\/runner-images\/releases\?per_page=(100|1)&page=(\d+)$/u;
 
 /**
  * `releases` is the first index page; `laterPages` are pages 2, 3 and so on.
- * Requested index pages are recorded in `fetch.indexPages`.
+ * Requested index pages are recorded in `fetch.indexPages`, and single
+ * entries read on their own (`per_page=1`) by position in `fetch.indexItems`.
  */
 function fixtureFetch(toolchain, releases = fixtureReleaseIndex(), rolloutFeeds = {}, laterPages = []) {
   const pages = [releases, ...laterPages];
   const indexPages = [];
+  const indexItems = [];
   const bodies = new Map();
   for (const [file, text] of Object.entries(rolloutFeeds)) {
     bodies.set(`${ROLLOUT_FEED}${file}`, text);
@@ -147,10 +149,19 @@ function fixtureFetch(toolchain, releases = fixtureReleaseIndex(), rolloutFeeds 
     }
   }
   const fetchImpl = async (url) => {
-    const page = RELEASE_INDEX_PAGE.exec(url)?.[1];
-    if (page !== undefined) {
-      indexPages.push(Number(page));
-      const text = JSON.stringify(pages[Number(page) - 1] ?? []);
+    const index = RELEASE_INDEX_PAGE.exec(url);
+    if (index !== null) {
+      const page = Number(index[2]);
+      let body;
+      if (index[1] === "1") {
+        indexItems.push(page);
+        const entry = pages[Math.floor((page - 1) / 100)]?.[(page - 1) % 100];
+        body = entry === undefined ? [] : [entry];
+      } else {
+        indexPages.push(page);
+        body = pages[page - 1] ?? [];
+      }
+      const text = JSON.stringify(body);
       return new Response(text, {
         status: 200,
         headers: { "Content-Length": String(Buffer.byteLength(text)) },
@@ -164,6 +175,7 @@ function fixtureFetch(toolchain, releases = fixtureReleaseIndex(), rolloutFeeds 
     });
   };
   fetchImpl.indexPages = indexPages;
+  fetchImpl.indexItems = indexItems;
   return fetchImpl;
 }
 
@@ -423,4 +435,56 @@ test("still rejects a release repeated on one page or changed on the next", asyn
     }),
     /official runner release index duplicated macos-15-arm64\/20260727\.0256/u,
   );
+});
+
+/**
+ * Serves the first index page from `before` and every later index read from
+ * `after`, as if the release list changed right after page 1 was read.
+ */
+function changedAfterFirstPage(before, after) {
+  let pageReads = 0;
+  const fetchImpl = async (url, init) => {
+    if (RELEASE_INDEX_PAGE.exec(url)?.[1] === "100") pageReads += 1;
+    return pageReads <= 1 ? before(url, init) : after(url, init);
+  };
+  fetchImpl.indexPages = before.indexPages;
+  fetchImpl.laterIndexPages = after.indexPages;
+  fetchImpl.indexItems = after.indexItems;
+  return fetchImpl;
+}
+
+// A release deleted between two page reads shifts the list up by one: the
+// first entry of page 2 slides into the last slot of page 1, already read.
+test("reads the index again when a release is deleted between page reads", async () => {
+  const toolchain = fixtureToolchain();
+  const [arm64, intel, windows] = fixtureReleaseIndex();
+  const deleted = otherImageReleases(1)[0];
+  const rest = [arm64, windows, ...otherImageReleases(97, 1), intel, ...otherImageReleases(99, 98)];
+  const before = fixtureFetch(toolchain, [deleted, ...rest.slice(0, 99)], {}, [rest.slice(99)]);
+  const after = fixtureFetch(toolchain, rest.slice(0, 100), {}, [rest.slice(100)]);
+  const fetchImpl = changedAfterFirstPage(before, after);
+  const verified = await verifyHostedRunnerInventories({ toolchain, fetchImpl });
+  assert.deepEqual(
+    verified.map(({ target }) => target),
+    ["darwin-arm64", "darwin-x64", "win-x64"],
+  );
+  assert.deepEqual(fetchImpl.indexPages, [1]);
+  assert.deepEqual(fetchImpl.laterIndexPages, [2, 1]);
+  assert.deepEqual(fetchImpl.indexItems, [100]);
+});
+
+test("gives up when the index keeps changing between page reads", async () => {
+  const toolchain = fixtureToolchain();
+  const [arm64, intel, windows] = fixtureReleaseIndex();
+  const firstPage = [arm64, windows, ...otherImageReleases(98)];
+  const pages = fixtureFetch(toolchain, firstPage, {}, [[intel]]);
+  const shifted = fixtureFetch(toolchain, [arm64, windows, ...otherImageReleases(97, 1), intel]);
+  const fetchImpl = async (url, init) =>
+    RELEASE_INDEX_PAGE.exec(url)?.[1] === "1" ? shifted(url, init) : pages(url, init);
+  await assert.rejects(
+    verifyHostedRunnerInventories({ toolchain, fetchImpl }),
+    /official runner release index kept changing while its pages were read/u,
+  );
+  assert.deepEqual(pages.indexPages, [1, 2, 1, 2, 1, 2]);
+  assert.deepEqual(shifted.indexItems, [100, 100, 100]);
 });

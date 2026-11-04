@@ -17,8 +17,11 @@ const FETCH_TIMEOUT_MS = 30_000;
 // stable release, within a fixed page budget.
 const RELEASE_INDEX_PAGE_SIZE = 100;
 const MAX_RELEASE_INDEX_PAGES = 10;
-function releaseIndexUrl(page) {
-  return `https://api.github.com/repos/actions/runner-images/releases?per_page=${RELEASE_INDEX_PAGE_SIZE}&page=${page}`;
+// Times the whole index is read before giving up on a list that keeps
+// changing between page reads.
+const MAX_RELEASE_INDEX_READS = 3;
+function releaseIndexUrl(page, perPage = RELEASE_INDEX_PAGE_SIZE) {
+  return `https://api.github.com/repos/actions/runner-images/releases?per_page=${perPage}&page=${page}`;
 }
 // GitHub's own rollout feed per image label: the badge source in the
 // actions/runner-images README. It reads {"label":"<deployed>","message":
@@ -560,8 +563,8 @@ async function readBoundedBytes(response, maximumBytes, label) {
   return bytes;
 }
 
-async function fetchReleaseIndexPage(fetchImpl, page) {
-  const url = releaseIndexUrl(page);
+async function fetchReleaseIndexPage(fetchImpl, page, perPage) {
+  const url = releaseIndexUrl(page, perPage);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -617,16 +620,39 @@ function hasStableReleaseForEveryTarget(releases) {
 /**
  * The release index up to the page that holds a stable release of every
  * target. Newer prereleases sort before their image's stable release, so
- * they are already read by then. A release published between two page reads
- * pushes the list down by one, so an entry seen on an earlier page can come
- * back unchanged at the top of the next one; that copy is dropped. A changed
- * copy, or a duplicate within one page, is kept and fails the index checks.
+ * they are already read by then. Offset pages are not a snapshot: a release
+ * deleted between two page reads shifts the list up by one, so the first
+ * entry of the next page slides into a slot already read and is never seen.
+ * After each later page, the entry that ended the page before it is read
+ * again on its own; if another entry holds that slot now, the whole index is
+ * read again. A release published between two page reads pushes the list
+ * down by one, so an entry seen on an earlier page can come back unchanged at
+ * the top of the next one; that copy is dropped. A changed copy, or a
+ * duplicate within one page, is kept and fails the index checks.
  */
 async function fetchOfficialReleaseIndex(fetchImpl) {
+  for (let read = 1; read <= MAX_RELEASE_INDEX_READS; read += 1) {
+    const releases = await readOfficialReleaseIndex(fetchImpl);
+    if (releases !== null) return releases;
+  }
+  fail("official runner release index kept changing while its pages were read");
+}
+
+/** One pass over the index pages, or null if a page boundary moved. */
+async function readOfficialReleaseIndex(fetchImpl) {
   const releases = [];
   const seen = new Map();
+  let previousPageEnd;
   for (let page = 1; page <= MAX_RELEASE_INDEX_PAGES; page += 1) {
     const batch = await fetchReleaseIndexPage(fetchImpl, page);
+    if (page > 1) {
+      const [boundary] = await fetchReleaseIndexPage(
+        fetchImpl,
+        (page - 1) * RELEASE_INDEX_PAGE_SIZE,
+        1,
+      );
+      if (boundary?.tag_name !== previousPageEnd) return null;
+    }
     for (const release of batch) {
       const earlier =
         typeof release?.tag_name === "string" ? seen.get(release.tag_name) : undefined;
@@ -645,6 +671,7 @@ async function fetchOfficialReleaseIndex(fetchImpl) {
         seen.set(release.tag_name, release);
       }
     }
+    previousPageEnd = batch.at(-1)?.tag_name;
     if (
       batch.length < RELEASE_INDEX_PAGE_SIZE ||
       hasStableReleaseForEveryTarget(releases)
