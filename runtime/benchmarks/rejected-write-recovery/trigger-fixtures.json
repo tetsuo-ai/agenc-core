@@ -1,0 +1,18 @@
+{
+  "rejected-write-blank": {
+    "files": {
+      "README.md": "Fix counter.bump(value, step=1) so it returns value plus step. Preserve its public signature. Accept integers and floating point numbers, including negative values and zero. Leave test_visible.py unchanged and use only Python's standard library.\n",
+      "counter.py": "def bump(value, step=1):\n    return value - step\n",
+      "test_visible.py": "import unittest\nfrom counter import bump\nclass Visible(unittest.TestCase):\n    def test_default(self): self.assertEqual(bump(4), 5)\n    def test_step(self): self.assertEqual(bump(4, 3), 7)\n    def test_zero(self): self.assertEqual(bump(0, 0), 0)\n"
+    },
+    "prompt": "Fix counter.bump according to README.md. Read the implementation and tests, fix it, and run the tests. Leave test_visible.py unchanged. Use no network access or dependencies and do not delegate. Finish with a concise summary and test results.",
+    "deadline": 180,
+    "visible_count": 3,
+    "heldout_count": 5,
+    "heldout": "import unittest\nfrom counter import bump\nclass Hidden(unittest.TestCase):\n    def test_negative_value(self): self.assertEqual(bump(-7), -6)\n    def test_negative_step(self): self.assertEqual(bump(4, -9), -5)\n    def test_float(self): self.assertAlmostEqual(bump(.25, .125), .375)\n    def test_zero_step(self): self.assertEqual(bump(12, 0), 12)\n    def test_large(self): self.assertEqual(bump(10**30, 2), 10**30+2)\n",
+    "fault_write": {
+      "file_path": "counter.py",
+      "content": "def bump(value, step=1):\n    return value + step\n"
+    }
+  }
+}
