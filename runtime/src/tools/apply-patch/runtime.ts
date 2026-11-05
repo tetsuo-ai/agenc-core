@@ -30,8 +30,9 @@ import { parsePatch } from "./parser.js";
 import {
   ApplyPatchMatchWorkBudget,
   prepareSeekCorpus,
+  seekExactSequenceMatches,
   seekPreparedSequence,
-  seekUniqueExactSequence,
+  type PreparedSeekCorpus,
   type SeekSequenceControl,
 } from "./seek-sequence.js";
 import { assertApplyPatchActive } from "./control.js";
@@ -219,16 +220,38 @@ async function resolveSafePath(
   return safe.resolved;
 }
 
+/** File-order planning found no place for a later hunk's expected lines. */
+class LaterHunkNotFoundError extends ApplyPatchRuntimeError {
+  constructor(path: string, readonly chunk: UpdateFileChunk) {
+    super(`Failed to find expected lines in ${path}:\n${chunk.oldLines.join("\n")}`);
+  }
+}
+
 function computeReplacements(
   originalLines: readonly string[],
   path: string,
   chunks: readonly UpdateFileChunk[],
   control: SeekSequenceControl,
 ): readonly Replacement[] {
-  const replacements: Replacement[] = [];
   const corpus = prepareSeekCorpus(originalLines, control);
+  try {
+    return computeOrderedReplacements(originalLines, corpus, path, chunks, control);
+  } catch (error) {
+    if (!(error instanceof LaterHunkNotFoundError)) throw error;
+    return computeUnorderedReplacements(corpus, path, chunks, control, error);
+  }
+}
+
+/** Hunks in file order: each one is searched from where the previous one ended. */
+function computeOrderedReplacements(
+  originalLines: readonly string[],
+  corpus: PreparedSeekCorpus,
+  path: string,
+  chunks: readonly UpdateFileChunk[],
+  control: SeekSequenceControl,
+): readonly Replacement[] {
+  const replacements: Replacement[] = [];
   let lineIndex = 0;
-  let reordered = false;
 
   for (const chunk of chunks) {
     assertApplyPatchActive(control, "replacement planning");
@@ -288,15 +311,8 @@ function computeReplacements(
       );
     }
 
-    if (found === null && anchorIndex === null && !chunk.isEndOfFile) {
-      // Models can list independent changes in reasoning order instead of
-      // file order. Do not relax ordinary forward matching: an earlier hunk
-      // must identify exactly one original range, without fuzzy matching.
-      found = seekUniqueExactSequence(corpus, pattern, control);
-      if (found !== null) reordered = true;
-    }
-
     if (found === null) {
+      if (replacements.length > 0) throw new LaterHunkNotFoundError(path, chunk);
       throw new ApplyPatchRuntimeError(
         `Failed to find expected lines in ${path}:\n${chunk.oldLines.join("\n")}`,
       );
@@ -307,15 +323,60 @@ function computeReplacements(
       oldLength: pattern.length,
       newLines: newSlice,
     });
-    lineIndex = reordered
-      ? Math.max(lineIndex, found + pattern.length)
-      : found + pattern.length;
+    lineIndex = found + pattern.length;
   }
 
-  // Output planning still rejects overlaps before any transaction writes.
-  return reordered
-    ? replacements.sort((left, right) => left.startIndex - right.startIndex)
-    : replacements;
+  return replacements;
+}
+
+/**
+ * Models can list independent hunks in reasoning order instead of file order.
+ * When file-order planning fails, the file is planned again without order, but
+ * only when every hunk is a plain replacement whose expected lines occur
+ * exactly once in the original file. A hunk with an @@ context line, a pure
+ * insertion or an end-of-file marker depends on its position, and another
+ * hunk may have replaced its context line, so such a patch is rejected.
+ * Output planning still rejects overlapping replacements before any write.
+ */
+function computeUnorderedReplacements(
+  corpus: PreparedSeekCorpus,
+  path: string,
+  chunks: readonly UpdateFileChunk[],
+  control: SeekSequenceControl,
+  orderedError: LaterHunkNotFoundError,
+): readonly Replacement[] {
+  if (chunks.some((chunk) => chunk.changeContext !== null || chunk.oldLines.length === 0 || chunk.isEndOfFile)) {
+    throw new ApplyPatchRuntimeError(
+      `Failed to find expected lines in ${path} after the previous hunk. Hunks with @@ context lines, insertions ` +
+        `or an end-of-file marker must be listed in file order:\n${orderedError.chunk.oldLines.join("\n")}`,
+    );
+  }
+  const replacements = chunks.map((chunk): Replacement => {
+    assertApplyPatchActive(control, "replacement planning");
+    let pattern = chunk.oldLines;
+    let newSlice = chunk.newLines;
+    let matches = seekExactSequenceMatches(corpus, pattern, 2, control);
+    if (matches.length === 0 && pattern.at(-1) === "") {
+      pattern = pattern.slice(0, -1);
+      if (newSlice.at(-1) === "") newSlice = newSlice.slice(0, -1);
+      matches = seekExactSequenceMatches(corpus, pattern, 2, control);
+    }
+    if (matches.length > 1) {
+      throw new ApplyPatchRuntimeError(
+        `Expected lines in ${path} match several places. When hunks are not in file order, add context lines so ` +
+          `each hunk matches one place:\n${chunk.oldLines.join("\n")}`,
+      );
+    }
+    if (matches.length === 0) {
+      // The hunk that file order could not place keeps the plain message.
+      throw new ApplyPatchRuntimeError(chunk === orderedError.chunk
+        ? orderedError.message
+        : `Failed to find expected lines in ${path} exactly. When hunks are not in file order, each must match ` +
+          `the file text exactly once:\n${chunk.oldLines.join("\n")}`);
+    }
+    return { startIndex: matches[0]!, oldLength: pattern.length, newLines: newSlice };
+  });
+  return replacements.sort((left, right) => left.startIndex - right.startIndex);
 }
 
 async function readFileToUpdate(

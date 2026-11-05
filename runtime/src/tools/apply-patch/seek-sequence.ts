@@ -238,19 +238,27 @@ export function seekPreparedSequence(
   return null;
 }
 
-/** Reordering may only use an exact match that identifies one original range. */
-export function seekUniqueExactSequence(
+/**
+ * Start indices of the first `limit` exact occurrences of `pattern`, from the
+ * top of the file. Unordered patch planning needs exactly one.
+ */
+export function seekExactSequenceMatches(
   corpus: PreparedSeekCorpus,
   pattern: readonly string[],
+  limit: number,
   control: SeekSequenceControl = {},
-): number | null {
-  if (pattern.length === 0 || pattern.length > corpus.exact.length) return null;
+): readonly number[] {
+  if (pattern.length === 0 || pattern.length > corpus.exact.length) return [];
   const budget = control.budget ?? new ApplyPatchMatchWorkBudget();
-  const found = findKmp(corpus.exact, pattern, 0, budget, control);
-  if (found === null) return null;
-  return findKmp(corpus.exact, pattern, found + 1, budget, control) === null
-    ? found
-    : null;
+  const matches: number[] = [];
+  let start = 0;
+  while (matches.length < limit) {
+    const found = findKmp(corpus.exact, pattern, start, budget, control);
+    if (found === null) break;
+    matches.push(found);
+    start = found + 1;
+  }
+  return matches;
 }
 
 export function seekSequence(

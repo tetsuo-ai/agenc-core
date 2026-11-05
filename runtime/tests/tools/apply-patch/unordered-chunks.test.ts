@@ -38,3 +38,85 @@ test.each([
   await expect(apply(`@@\n-last\n+LAST\n${earlier}`)).rejects.toThrow();
   expect(await readFile(path, "utf8")).toBe(contents);
 });
+
+
+// 0.19.29 review: once one hunk was placed out of order, later hunks were still matched forward from the furthest
+// point, with whitespace-tolerant matching and no duplicate check, so a patch could land in the wrong place.
+test("rejects an out-of-order patch whose later hunk matches several places", async () => {
+  const contents = "A\ndup\nB\nC\ndup\n";
+  const { path, apply } = await fixture(contents);
+  await expect(apply("@@\n-C\n+C2\n@@\n-A\n+A2\n@@\n-dup\n+dup2")).rejects.toThrow(/match several places/);
+  expect(await readFile(path, "utf8")).toBe(contents);
+});
+
+test("places every out-of-order hunk on its unique exact match, not on an indented copy", async () => {
+  const lines = (...rows: string[]) => `${rows.join("\n")}\n`;
+  const { path, apply } = await fixture(lines(
+    "import * as THREE from 'three';",
+    "export function buildBody(scene) {",
+    "  const mesh = new THREE.Mesh(geo, mat);",
+    "  mesh.castShadow = true;",
+    "  mesh.receiveShadow = true;",
+    "  scene.add(mesh);",
+    "}",
+    "export const VERSION = 1;",
+    "export function buildWheels(scene) {",
+    "  for (const w of wheels) {",
+    "    const mesh = new THREE.Mesh(geo, mat);",
+    "    mesh.castShadow = true;",
+    "    mesh.receiveShadow = true;",
+    "    scene.add(mesh);",
+    "  }",
+    "}",
+  ));
+  await apply([
+    "@@",
+    "-export const VERSION = 1;",
+    "+export const VERSION = 2;",
+    "@@",
+    "-import * as THREE from 'three';",
+    "+import * as THREE from 'three';",
+    "+import { paint } from './paint.js';",
+    "@@",
+    "   mesh.castShadow = true;",
+    "   mesh.receiveShadow = true;",
+    "-  scene.add(mesh);",
+    "+  scene.add(paint(mesh));",
+  ].join("\n"));
+  expect(await readFile(path, "utf8")).toBe(lines(
+    "import * as THREE from 'three';",
+    "import { paint } from './paint.js';",
+    "export function buildBody(scene) {",
+    "  const mesh = new THREE.Mesh(geo, mat);",
+    "  mesh.castShadow = true;",
+    "  mesh.receiveShadow = true;",
+    "  scene.add(paint(mesh));",
+    "}",
+    "export const VERSION = 2;",
+    "export function buildWheels(scene) {",
+    "  for (const w of wheels) {",
+    "    const mesh = new THREE.Mesh(geo, mat);",
+    "    mesh.castShadow = true;",
+    "    mesh.receiveShadow = true;",
+    "    scene.add(mesh);",
+    "  }",
+    "}",
+  ));
+});
+
+test.each([
+  {
+    name: "an anchored insertion that would land in a later duplicate function",
+    contents: "A\nfunction init() {\n  x();\n}\nZ\nfunction init() {\n  y();\n}\n",
+    chunks: "@@\n-Z\n+Z2\n@@\n-A\n+A2\n@@ function init() {\n+  setup();",
+  },
+  {
+    name: "an insertion whose @@ context line another hunk replaces",
+    contents: "a\nb\nctx\nd\n",
+    chunks: "@@ ctx\n+inserted\n@@\n-b\n-ctx\n+B",
+  },
+])("rejects $name without writing", async ({ contents, chunks }) => {
+  const { path, apply } = await fixture(contents);
+  await expect(apply(chunks)).rejects.toThrow(/must be listed in file order/);
+  expect(await readFile(path, "utf8")).toBe(contents);
+});
