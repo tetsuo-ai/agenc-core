@@ -23,7 +23,16 @@ export function sessionGrantScope(opts: {
    * arguments: an MCP tool approved without filesystem-write targets.
    */
   readonly coversAllCalls: boolean;
+  /**
+   * A safety check asked (a protected path or an ambiguous path shape): no
+   * session grant answers or records the call, so approving it for the
+   * session approves this call only.
+   */
+  readonly singleCall?: boolean;
 }): SessionGrantScope {
+  if (opts.singleCall === true) {
+    return { short: "this call only", long: "this call only, protected path" };
+  }
   if (opts.coversAllCalls) {
     return { short: "all calls", long: `any arguments, every ${opts.toolLabel} call` };
   }

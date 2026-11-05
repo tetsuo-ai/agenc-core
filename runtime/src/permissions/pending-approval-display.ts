@@ -1,5 +1,6 @@
 import type { PendingToolApproval } from "../app-server/protocol/index.js";
 import { permissionsMcpNoFsWrites } from "../tools/runtimes/mcp-filesystem-approval.js";
+import { permissionsSingleCall } from "./approval-request-permissions.js";
 import { sessionGrantScope } from "./session-grant-scope.js";
 
 function displayValue(value: unknown): string {
@@ -20,6 +21,7 @@ function sessionGrantLine(request: PendingToolApproval): string | undefined {
     toolLabel: displayValue(request.toolName),
     input: request.input,
     coversAllCalls: permissionsMcpNoFsWrites(request.permissions),
+    singleCall: permissionsSingleCall(request.permissions),
   });
   return `session grant covers ${scope.long}`;
 }

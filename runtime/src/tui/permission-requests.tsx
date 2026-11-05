@@ -845,12 +845,14 @@ function AgenCApprovalOverlay({
           ? "medium-risk approval"
           : "needs approval";
   // Say what a session grant covers: the approval cache keys an MCP tool
-  // approved without filesystem-write targets on the tool alone.
+  // approved without filesystem-write targets on the tool alone, and never
+  // answers or records a call a safety check asked about.
   const sessionScope = sessionGrantScope({
     toolName: toolUseConfirm.tool.name,
     toolLabel: name,
     input: request.input,
     coversAllCalls: request.ctx.sessionGrantCoversAllCalls === true || request.ctx.mcpFilesystemApproval !== undefined,
+    singleCall: request.ctx.safetyCheck === true,
   });
   return (
     <Box flexDirection="column" gap={1}>

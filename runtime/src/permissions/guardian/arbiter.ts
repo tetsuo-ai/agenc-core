@@ -262,7 +262,10 @@ export interface ApprovalCtx {
   /**
    * The permission layer asked because of a safety check: a protected path
    * or an ambiguous path shape. A person answers each such call; a session
-   * grant neither answers nor records it.
+   * grant neither answers nor records it. The journaled request lists the
+   * `single_call` permission for it, from which daemon clients set this
+   * flag to say on the card that approving for the session covers this
+   * call only.
    */
   readonly safetyCheck?: boolean;
   /**
