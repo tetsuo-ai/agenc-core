@@ -1545,6 +1545,30 @@ const APPROVAL_PICKER_CHROME_COLS = 2
 const APPROVAL_SESSION_LABEL_COLS = 26
 /** Columns the session scope's full words need on the row, or it shows its short words. */
 const APPROVAL_SESSION_SCOPE_MIN_COLS = 22
+/** Most rows a shell command takes on the card; a longer one ends in a row naming the full view. */
+const APPROVAL_COMMAND_LINE_CAP = 8
+/**
+ * Columns left unused at the end of each command row, so a card drawn a
+ * little narrower than the terminal still shows every character of a row.
+ */
+export const APPROVAL_COMMAND_SPARE_COLS = 2
+
+/**
+ * The rows a shell command takes `width` columns wide: each of its lines,
+ * wrapped, the first behind the `$ ` prompt glyph and the rest indented
+ * under it. The Enter that ends typed input adds no row. The card and its
+ * full command view both show these rows, so neither drops a character.
+ */
+export function approvalCommandRows(command: string, width: number): string[] {
+  const textWidth = Number.isFinite(width) ? Math.max(1, Math.trunc(width) - 2) : 78
+  const rows: string[] = []
+  for (const line of command.replace(/\r?\n$/u, '').split(/\r?\n/u)) {
+    for (const part of wrapText(line, textWidth, 'wrap').split('\n')) {
+      rows.push(`${rows.length === 0 ? '$' : ' '} ${part}`)
+    }
+  }
+  return rows
+}
 
 /**
  * Decide whether the approval popup can show its embedded `DiffInline` preview
@@ -1588,6 +1612,7 @@ export function ApprovalCard({
   summary,
   command,
   commandIsShell = true,
+  commandFullView = false,
   facts,
   note,
   diffPreview,
@@ -1618,6 +1643,11 @@ export function ApprovalCard({
    * command-card callers are unchanged.
    */
   readonly commandIsShell?: boolean
+  /**
+   * The caller shows the whole shell command on `ctrl+w d`. A command too
+   * long for the card then ends in a row that names that key.
+   */
+  readonly commandFullView?: boolean
   readonly facts: readonly { readonly label: string; readonly value: string; readonly color?: ThemeColor }[]
   readonly note?: string
   readonly confirmLabel: string
@@ -1710,6 +1740,29 @@ export function ApprovalCard({
           ]
         : shown
   }
+  // A shell command shows in full where the card has room: each of its
+  // lines, wrapped. One that does not fit ends in a row saying how much is
+  // hidden and how to see all of it. The rows sit below the picker and stay
+  // within the rows the card has left, so the answer rows never leave it.
+  const commandRows = commandIsShell
+    ? approvalCommandRows(command, viewportColumns - APPROVAL_CARD_CHROME_COLS - APPROVAL_COMMAND_SPARE_COLS)
+    : []
+  const rowsAboveCommand =
+    (draftText !== undefined && (draftText.length > 0 || draftFocused) ? 2 : 0) +
+    (typingWaiting && !draftFocused && !compactActions ? 1 : 0) +
+    (compactActions ? 0 : 1) +
+    (requireTypedConfirmation ? 2 : 3) +
+    (!requireTypedConfirmation && !compactActions ? 3 : 0)
+  const commandRowBudget = Math.max(1, Math.min(APPROVAL_COMMAND_LINE_CAP, popupBodyRows - rowsAboveCommand))
+  const shownCommandRows = commandRows.length > commandRowBudget
+    ? commandRows.slice(0, commandRowBudget - 1)
+    : commandRows
+  const hiddenCommandRows = commandRows.length - shownCommandRows.length
+  const commandMarker = hiddenCommandRows === 0
+    ? undefined
+    : `${shownCommandRows.length === 0
+        ? `$ … ${hiddenCommandRows} lines`
+        : `… +${hiddenCommandRows} more lines`}${commandFullView ? ' · ctrl+w d full command' : ''}`
   return (
     <Popup
       title={title}
@@ -1834,14 +1887,24 @@ export function ApprovalCard({
           <Box marginTop={1} marginBottom={1} flexShrink={0}>
             <ThemedText color="inactive" wrap="truncate-end">
               1·2·3 choose   ↑↓ move   ⏎ confirm   esc {cancelLabel}{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
+              {commandMarker !== undefined && commandFullView ? '   ctrl+w d full command' : ''}
             </ThemedText>
           </Box>
         ) : null}
         {commandIsShell ? (
           // A real shell command (Run/Bash): show it behind the `$ ` prompt glyph.
-          <ThemedText color="text2" wrap="truncate-end">
-            $ {command}
-          </ThemedText>
+          <Box flexDirection="column" flexShrink={0}>
+            {shownCommandRows.map((row, index) => (
+              <ThemedText key={index} color="text2" wrap="truncate-end">
+                {row}
+              </ThemedText>
+            ))}
+            {commandMarker !== undefined ? (
+              <ThemedText color="inactive" wrap="truncate-end">
+                {commandMarker}
+              </ThemedText>
+            ) : null}
+          </Box>
         ) : showPreview || command.trim().length === 0 || command.trim() === '{}' ? null : (
           // A non-shell input (a Write/Edit file_path). Never prefix it with the
           // `$ ` shell-prompt marker — it would misread as a runnable command.
