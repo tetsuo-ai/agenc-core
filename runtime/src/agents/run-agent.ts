@@ -2345,6 +2345,14 @@ export function buildFilteredRegistry(
       function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
     });
   }
+  // What the parent presented in full at spawn without discovery (native
+  // DeepSeek Light's stable core catalog). When the child's own exec yield,
+  // escalation or search loads one of these, its spawn-time form stays and
+  // nothing is announced: the request already carries its full schema, and a
+  // changed entry would break the child's cached prompt.
+  const stableInitial: ReadonlySet<string> = initialTools === undefined
+    ? new Set()
+    : new Set([...base.getStableCatalogToolNames?.() ?? []].filter(name => initialTools.has(name)));
   const discoverToolNames = (names: readonly string[]): void => {
     for (const name of names) {
       if (toolCatalogScope.has(name)) discoveredToolNames.add(name);
@@ -2441,8 +2449,9 @@ export function buildFilteredRegistry(
     if (initialTools !== undefined) {
       return fallbackAdvertisedTools().flatMap(tool => {
         const name = tool.function.name;
-        if (discoveredToolNames.has(name)) return [tool];
         const initial = initialTools.get(name);
+        if (initial !== undefined && stableInitial.has(name)) return [initial];
+        if (discoveredToolNames.has(name)) return [tool];
         return initial === undefined ? [] : [initial];
       });
     }
@@ -2487,6 +2496,10 @@ export function buildFilteredRegistry(
     },
     ...(opts.lightMode === true ? {
       getDiscoveredToolNames: () => discoveredToolNames,
+      getLoadedDeferredToolNames: () => stableInitial.size === 0
+        ? discoveredToolNames
+        : new Set([...discoveredToolNames].filter(name => !stableInitial.has(name))),
+      getStableCatalogToolNames: () => stableInitial,
       discoverToolNames,
     } : {}),
     async dispatchCodeModeNestedTool(call): Promise<ToolDispatchResult> {
