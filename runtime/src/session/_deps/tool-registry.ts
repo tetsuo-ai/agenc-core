@@ -50,6 +50,8 @@ export interface ToolRegistry {
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall, options?: { readonly prepareArguments?: (args: Record<string, unknown>, tool: RuntimeTool) => Record<string, unknown>; readonly advertisedToolNames?: readonly string[]; readonly abortSignal?: AbortSignal }): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  /** Discovered tools the request carries only because they were discovered (deferred-tools notice). */
+  getLoadedDeferredToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
   /** Catalog tools that load through system.searchTools; fixed per session. */
   getDeferredToolNames?(): ReadonlySet<string>;

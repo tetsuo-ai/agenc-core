@@ -183,6 +183,14 @@ export interface ToolRegistry {
     toolCall: CodeModeNestedToolDispatch,
   ): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  /**
+   * Discovered tools that the request carries only because they were
+   * discovered; the deferred-tools notice announces these. A tool the request
+   * already carries without discovery (native DeepSeek Light's stable core
+   * catalog) stays out even after a search, exec yield or escalation loads it.
+   * Callers without it fall back to getDiscoveredToolNames.
+   */
+  getLoadedDeferredToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
   /**
    * Catalog tools a request does not carry until system.searchTools (or the
@@ -1412,7 +1420,7 @@ export function buildToolRegistry(
     return available;
   }
 
-  function visibleSpecs(router?: ToolRouter): readonly ConfiguredToolSpec[] {
+  function visibleSpecs(router?: ToolRouter, includeDiscovered = true): readonly ConfiguredToolSpec[] {
     const specs = (router?.getSpecs() ?? allSpecs()).filter((spec) => spec.unavailable !== true);
     // A restrictive policy may remove discovery itself. Keep its remaining
     // capabilities callable instead of stranding them behind an absent tool.
@@ -1436,7 +1444,7 @@ export function buildToolRegistry(
             // tools in front of the model with no search step; Light mode is
             // the small-model profile that most needs that.
             (deferMcpTools === false && spec.tool.metadata?.source === "mcp" && !isDeferredSpec(spec))
-          : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
+          : !isDeferredSpec(spec)) || (includeDiscovered && discoveredToolNames.has(spec.tool.name)),
     );
   }
 
@@ -1602,6 +1610,15 @@ export function buildToolRegistry(
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;
+    },
+    getLoadedDeferredToolNames(): ReadonlySet<string> {
+      // Elsewhere a discovered initial tool changes form (a lean schema expands),
+      // so its discovery is still announced. The stable DeepSeek catalog presents
+      // its tools in full from the first request; loading one adds nothing new.
+      // Discovery itself is kept, so a later provider switch still carries them.
+      if (!stableDeepSeekCoreCatalog()) return discoveredToolNames;
+      const presented = new Set(visibleSpecs(buildRouter(), false).map((spec) => spec.tool.name));
+      return new Set([...discoveredToolNames].filter((name) => !presented.has(name)));
     },
     getDeferredToolNames(): ReadonlySet<string> {
       return new Set(allSpecs()

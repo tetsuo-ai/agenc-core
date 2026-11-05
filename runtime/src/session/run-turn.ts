@@ -1011,6 +1011,7 @@ async function prepareSamplingRequestBoundary(
     userInput,
     loadedTools: builtTools(session, ctx),
     discoveredToolNames:
+      session.services.registry.getLoadedDeferredToolNames?.() ??
       session.services.registry.getDiscoveredToolNames?.() ?? new Set(),
     messages: state.messagesForQuery,
     permissionContext,

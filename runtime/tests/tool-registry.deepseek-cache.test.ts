@@ -80,3 +80,20 @@ test("native Flash keeps Write and full core schemas stable through discovery", 
   registry.discoverToolNames?.(["Write", "apply_patch", "exec_command", "FileRead", "system.searchTools", "write_stdin", "kill_process"]);
   expect(JSON.stringify(request(registry, continued).tools)).toBe(JSON.stringify(first.tools));
 });
+
+test("loading DeepSeek's published core tools is not a deferred load, and discovery survives a provider switch", () => {
+  let provider = "deepseek";
+  const registry = buildToolRegistry({
+    workspaceRoot: "/tmp", lightMode: true, requireAdmission: false,
+    sandboxExecutionBroker: explicitDangerBroker,
+    getSession: () => ({ services: { provider: { name: provider }, providerService: { current: () => ({ provider }) } } }) as Session,
+  });
+  expect(registry.tools.some(tool => tool.name === "Grep")).toBe(true);
+  expect(registry.toLLMTools().map(tool => tool.function.name)).not.toContain("Grep");
+  registry.discoverToolNames?.(["write_stdin", "kill_process", "exec_command", "Grep"]);
+  expect([...registry.getLoadedDeferredToolNames!()]).toEqual(["Grep"]);
+  expect([...registry.getDiscoveredToolNames!()].sort()).toEqual(["Grep", "exec_command", "kill_process", "write_stdin"]);
+  provider = "openai";
+  expect([...registry.getLoadedDeferredToolNames!()].sort()).toEqual(["Grep", "exec_command", "kill_process", "write_stdin"]);
+  expect(registry.toLLMTools().map(tool => tool.function.name)).toEqual(expect.arrayContaining(["write_stdin", "kill_process", "Grep"]));
+});
