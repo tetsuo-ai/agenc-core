@@ -11,6 +11,7 @@ import {
   DENIED,
 } from "../permissions/review-decision.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
+import { buildDaemonApprovalCtx } from "./daemon-approval-context.js";
 import { createRoot } from "./ink.js";
 import type { PendingRequest } from "./permission-requests.js";
 import { AgenCPermissionOverlay } from "./permission-requests.js";
@@ -109,6 +110,42 @@ function createPendingRequest(
 }
 
 describe("permission request overlay coverage", () => {
+  test.each([
+    ["an MCP tool approved without filesystem-write targets", ["tool.use", "mcp_no_fs_writes"],
+      "2approveforsessioneverymcp.inventory.get_stockcall,anyarguments"],
+    ["a tool whose session grant keys on its arguments", ["tool.use"],
+      "2approveforsessionthisexactactiononly"],
+  ])("labels the session choice for %s by what the grant covers", async (_label, permissions, row) => {
+    const resolved: ReviewDecision[] = [];
+    const toolName = "mcp.inventory.get_stock";
+    const input = { sku: "a-1" };
+    const request: PendingRequest = {
+      id: "request-mcp",
+      ctx: buildDaemonApprovalCtx({ id: "session" }, {
+        callId: "request-mcp", turnId: "turn-1", permissions: [...permissions], input,
+      }, toolName, new AbortController().signal),
+      input,
+      description: "Look up stock",
+      resolve: decision => resolved.push(decision),
+    };
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({ patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream });
+    try {
+      root.render(<AgenCPermissionOverlay request={request} tools={[{ name: toolName }]} />);
+      await sleep();
+      const frame = stripAnsi(extractLastFrame(output())).replace(/[\s│]+/gu, "");
+      expect(frame).toContain(row);
+      if (permissions.length > 1) expect(frame).not.toContain("thisexactactiononly");
+      stdin.write("2");
+      await sleep();
+      expect(resolved).toEqual([APPROVED_FOR_SESSION]);
+    } finally {
+      root.unmount(); stdin.end(); stdout.end(); await sleep();
+    }
+  });
+
   test("requires a deliberate choice after typing, even when Enter follows a pause", async () => {
     const resolved: ReviewDecision[] = [];
     const request = createPendingRequest(decision => resolved.push(decision), {

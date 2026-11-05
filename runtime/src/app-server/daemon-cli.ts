@@ -275,6 +275,7 @@ import {
 
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 import { scheduleDaemonCompileCacheFlush } from "../bin/compile-cache.js";
+import { stopLegacyRemote } from "../bin/remote-state.js";
 import {
   acquireAgenCDaemonLifecycleLock,
   type AgenCDaemonCliHost,
@@ -717,6 +718,9 @@ async function runAgenCDaemonForegroundLocked(
     // when that client's pending delivery backlog trips the per-client cap.
     let destroyEvictedClientConnection:
       ((clientId: string, deliveryKey?: string) => void) | undefined;
+    // Forward declaration as above: lets a reload that turns remote control
+    // off drop phone bridge connections that are already attached.
+    let closeRemoteControlBridgeConnections: (() => void) | undefined;
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
       sessionManager,
       onClientEvicted: (clientId, deliveryKey) => {
@@ -1348,7 +1352,10 @@ async function runAgenCDaemonForegroundLocked(
                 sessionLimit: next.config.agent_max_threads,
               }),
             );
-            if (next.config.remote_control?.enabled !== true) remote?.stop();
+            if (next.config.remote_control?.enabled !== true) {
+              remote?.stop();
+              closeRemoteControlBridgeConnections?.();
+            }
             activeConfig = next.config;
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
@@ -1360,6 +1367,7 @@ async function runAgenCDaemonForegroundLocked(
           if (preparedMcpChange.closePreviousAfterAdoption) {
             await closeReplacedDaemonMcpServer(previousMcpServer, io);
           }
+          revokeLegacyRemotePairing();
           // Open sessions keep the config they started with, except the
           // cross-provider subagent settings: a provider the user turned off
           // must stop taking spawns now, not after a restart. A session that
@@ -1428,6 +1436,19 @@ async function runAgenCDaemonForegroundLocked(
       io.stderr.write("agenc: local routines are unavailable; routine storage was preserved\n");
     }
     const remoteContext = { home: resolveHomeContext({ ...host.env, AGENC_HOME: authStartup.daemonHome }), environment: Object.freeze({ ...host.env }) };
+    // Phone connectors started before remote_control.enabled existed send
+    // only the daemon cookie, never the bridge flag the dispatcher gates on.
+    // They stop when the stop marker changes or pair.json is gone, so revoke
+    // the pairing whenever the owner has not turned remote control on.
+    const revokeLegacyRemotePairing = (): void => {
+      if (activeConfig.remote_control?.enabled === true) return;
+      try {
+        stopLegacyRemote(remoteContext);
+      } catch (error) {
+        io.stderr.write(`agenc: could not revoke the phone remote pairing: ${formatCleanupError(error)}\n`);
+      }
+    };
+    revokeLegacyRemotePairing();
     const assertRemoteControlSession = async (sessionId: string): Promise<void> => {
       const session = await sessionManager.getSession(sessionId);
       if (!session) throw new RemoteError("REMOTE_SESSION_UNAVAILABLE");
@@ -1640,6 +1661,13 @@ async function runAgenCDaemonForegroundLocked(
           closeConnection(connectionKey);
         }
         return;
+      }
+    };
+    closeRemoteControlBridgeConnections = (): void => {
+      for (const [connectionKey, connection] of connections) {
+        if (!connection.remoteControlBridge) continue;
+        socketConnections.get(connectionKey)?.terminate();
+        closeConnection(connectionKey);
       }
     };
     const systemNativePeerCredentialAddonPath =

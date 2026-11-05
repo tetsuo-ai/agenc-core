@@ -104,6 +104,12 @@ import {
   type AgenCBootstrapFunction,
   type AgenCEnsureAgentControlFunction,
 } from "./background-agent-runner.js";
+import {
+  captureRemoteCliRuntimeContext,
+  pairPath,
+  stopMarker,
+  writePairFile,
+} from "../../src/bin/remote-state.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
@@ -4341,6 +4347,70 @@ token_cap = 123
     // is already >= 30s on its own, so the test bound has to clear it.
   }, 90_000);
 
+  it("revokes a pre-upgrade phone pairing at start and on reload while remote control is off", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    // Connectors started before remote_control.enabled existed send only the
+    // daemon cookie, so the daemon cannot tell them from a local client. They
+    // stop when the stop marker changes or pair.json disappears.
+    const remote = captureRemoteCliRuntimeContext({ AGENC_HOME: agencHome });
+    const pair = {
+      pairingId: "legacy-pairing",
+      hostSecret: "legacy-secret",
+      machineName: "fixture",
+      relayUrl: "wss://relay.invalid",
+      backendUrl: "https://backend.invalid",
+      createdAt: "2026-11-01T00:00:00.000Z",
+    };
+    writePairFile(remote, pair);
+    writeFileSync(join(agencHome, "remote", "stopped"), "connector-activation", { mode: 0o600 });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      expect(existsSync(pairPath(remote))).toBe(false);
+      const startMarker = stopMarker(remote);
+      expect(startMarker).not.toBe("connector-activation");
+
+      writePairFile(remote, pair);
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+      expect(existsSync(pairPath(remote))).toBe(false);
+      const reloadMarker = stopMarker(remote);
+      expect(reloadMarker).not.toBe(startMarker);
+
+      await writeFile(
+        join(agencHome, "config.toml"),
+        "config_version = 2\n\n[remote_control]\nenabled = true\n",
+      );
+      writePairFile(remote, pair);
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+      expect(existsSync(pairPath(remote))).toBe(true);
+      expect(stopMarker(remote)).toBe(reloadMarker);
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it("reload gives open sessions their new cross-provider settings and keeps the rest of their config", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -5805,6 +5875,78 @@ backend = "local"
     // Nothing here times the daemon. The bound clears the pid and websocket
     // URL waits back to back.
   }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 0 }));
+
+  it("reload that turns remote control off closes live phone bridge connections", async () => {
+    const agencHome = await tempAgencHome();
+    await writeFile(
+      join(agencHome, "config.toml"),
+      "config_version = 2\n\n[remote_control]\nenabled = true\n",
+    );
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    const sockets: WebSocket[] = [];
+    try {
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      const webSocketUrl = await waitForDaemonWebSocketUrl(
+        io,
+        LOADED_DAEMON_MILESTONE_BUDGET_MS,
+        { running, stderrText: io.stderrText },
+      );
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      const connect = async (id: string, extra: Record<string, unknown>) => {
+        const socket = new WebSocket(webSocketUrl);
+        sockets.push(socket);
+        await once(socket, "open");
+        socket.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            method: "initialize",
+            params: {
+              protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+              authCookie,
+              capabilities: {},
+              ...extra,
+            },
+          }),
+        );
+        await expect(readWebSocketMessage(socket)).resolves.toMatchObject({
+          id,
+          result: { type: "initialized" },
+        });
+        return socket;
+      };
+      const bridge = await connect("bridge", { remoteControlBridge: true });
+      const local = await connect("local", {});
+
+      await writeFile(join(agencHome, "config.toml"), "config_version = 2\n");
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+
+      await Promise.race([waitForWebSocketClose(bridge), delay(2_000)]);
+      expect(bridge.readyState).toBe(WebSocket.CLOSED);
+      local.send(JSON.stringify({ jsonrpc: "2.0", id: "ready", method: "health.ready" }));
+      await expect(readWebSocketMessage(local)).resolves.toMatchObject({
+        id: "ready",
+        result: { ready: true },
+      });
+    } finally {
+      for (const socket of sockets) socket.terminate();
+      signalProcess.emit("SIGTERM");
+      await running.catch(() => {});
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
 
   it("foreground daemon serves read-only state stats to daemon clients", async () => {
     const agencHome = await tempAgencHome();

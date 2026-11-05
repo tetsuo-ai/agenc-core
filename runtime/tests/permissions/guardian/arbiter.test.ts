@@ -95,6 +95,34 @@ describe("guardian arbiter", () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 
+  test("journals an MCP filesystem attestation as a grant of every call of the tool", async () => {
+    const events: Event[] = [];
+    const session = {
+      conversationId: "run-mcp-approval",
+      services: { toolApprovals: new ApprovalStore() },
+      rolloutStore: {
+        readAll: () => events.map((event) => ({ type: "event_msg" as const, payload: event })),
+      },
+      emit: (event: Event): Event => {
+        const stamped = { ...event, eventId: `approval-event-${events.length + 1}`, seq: events.length + 1 };
+        events.push(stamped);
+        return stamped;
+      },
+    } as unknown as ToolInvocation["session"];
+    const ctx = { ...approvalCtx(invocation({ session })), toolName: "mcp.inventory.get_stock" };
+    const resolver = { request: vi.fn(async () => APPROVED) };
+    await requestApproval({ ctx: { ...ctx, mcpFilesystemApproval: {
+      serverName: "inventory", toolName: "get_stock", toolIdentity: "installed-tool-1",
+    } }, args: {}, resolver });
+    await requestApproval({ ctx, args: {}, resolver });
+    // The wire value clients read (tools/runtimes/mcp-filesystem-approval.ts).
+    expect(events.filter((event) => event.msg.type === "request_permissions")
+      .map((event) => (event.msg.payload as { permissions: unknown }).permissions)).toEqual([
+      ["tool.use", "mcp_no_fs_writes"],
+      ["tool.use"],
+    ]);
+  });
+
   test("session file approval covers later edits to that file, preserving tool and policy scope", async () => {
     const store = new ApprovalStore<unknown>();
     const inv = invocation({ services: { toolApprovals: store } });
@@ -114,6 +142,23 @@ describe("guardian arbiter", () => {
     await ask("Write", "README.md", "one");
     await ask("Edit", "README.md", "three", "unless_trusted");
     expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  test("a safety-check ask is never answered or recorded by a session grant", async () => {
+    const store = new ApprovalStore<unknown>();
+    const inv = { ...invocation({ services: { toolApprovals: store } }), toolName: { name: "Edit" } };
+    const request = vi.fn(async () => APPROVED_FOR_SESSION);
+    const ask = (safetyCheck: boolean) =>
+      requestApproval({
+        ctx: { ...approvalCtx(inv), toolName: "Edit", ...(safetyCheck ? { safetyCheck } : {}) },
+        args: { file_path: "README.md", old_string: "one", new_string: "two" },
+        resolver: { request },
+      });
+    expect(await ask(true)).toMatchObject({ source: "resolver" });
+    expect(await ask(false)).toMatchObject({ source: "resolver" });
+    expect(await ask(false)).toMatchObject({ source: "cache" });
+    expect(await ask(true)).toMatchObject({ source: "resolver" });
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   test("simultaneous edits recheck a matching session grant before opening another prompt", async () => {

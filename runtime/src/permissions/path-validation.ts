@@ -238,7 +238,7 @@ function uniquePaths(paths: readonly string[]): string[] {
   return out;
 }
 
-function getPathsForPermissionCheck(filePath: string): readonly string[] {
+export function getPathsForPermissionCheck(filePath: string): readonly string[] {
   const { resolvedPath } = safeResolvePath(filePath);
   const out = uniquePaths([
     filePath.normalize("NFC"),

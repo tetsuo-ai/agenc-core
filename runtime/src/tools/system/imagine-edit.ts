@@ -24,6 +24,7 @@ import {
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
+import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
 import {
@@ -168,10 +169,13 @@ function imageType(bytes: Buffer): "image/png" | "image/jpeg" | "image/webp" | u
 }
 
 /** Read the input image: a regular file inside the workspace, PNG, JPEG or WebP, under 25 MB. */
-async function readWorkspaceImage(
+export async function readWorkspaceImage(
   workspaceRoot: string,
   ref: string,
-): Promise<{ readonly bytes: Buffer; readonly path: string } | { readonly error: string }> {
+): Promise<
+  | { readonly bytes: Buffer; readonly path: string; readonly type: "image/png" | "image/jpeg" | "image/webp" }
+  | { readonly error: string }
+> {
   let root: string;
   let path: string;
   try {
@@ -188,10 +192,11 @@ async function readWorkspaceImage(
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) return { error: "image must be a regular file" };
-    if (stat.size > MAX_INPUT_BYTES) return { error: "image is larger than Venice's 25 MB limit" };
+    if (stat.size > MAX_INPUT_BYTES) return { error: "image is larger than the 25 MB limit" };
     const bytes = await handle.readFile();
-    if (imageType(bytes) === undefined) return { error: "image must be a PNG, JPEG or WebP file" };
-    return { bytes, path };
+    const type = imageType(bytes);
+    if (type === undefined) return { error: "image must be a PNG, JPEG or WebP file" };
+    return { bytes, path, type };
   } finally {
     await handle.close();
   }
@@ -271,6 +276,25 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
       },
       required: ["image"],
       additionalProperties: false,
+    },
+    // The image is read and sent to Venice: the read must pass the same
+    // deny, ask and protected-path rules as FileRead. An allowed read still
+    // waits for this tool's own approval.
+    checkPermissions(input, context) {
+      const args = input as Record<string, unknown>;
+      const ref = stringValue(args.image);
+      if (ref !== undefined) {
+        const decision = checkToolPathPermission({
+          toolName: "ImagineEdit",
+          input: args,
+          path: ref,
+          cwd: opts.workspaceRoot,
+          context: context.getAppState().toolPermissionContext,
+          operationType: "read",
+        });
+        if (decision.behavior !== "allow") return decision;
+      }
+      return { behavior: "passthrough", message: "ImagineEdit sends a workspace image to Venice." };
     },
     execute: async (args) => {
       const signal = args.__abortSignal instanceof AbortSignal ? args.__abortSignal : undefined;

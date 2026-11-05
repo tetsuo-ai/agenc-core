@@ -6,6 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
+import { runOllamaWebFetch } from "../../src/llm/providers/gateway-web-search.js";
 import type { Session } from "../../src/session/session.js";
 import { summarizeWebSearchResult } from "../../src/tui/tool-result-routing.js";
 
@@ -147,6 +148,43 @@ describe("WebSearch with the session provider's own search", () => {
       expect(new Headers((call[1] as RequestInit | undefined)?.headers).get("authorization") ?? "").not.toContain("independent");
     }
     expect(JSON.parse(result.content)).toMatchObject({ source: "duckduckgo_html", provider_search_fallback: expect.stringContaining("401") });
+  });
+
+  it("redacts the session key from the fallback reason before cutting it to length", async () => {
+    const key = `ollama-${"0123456789abcdef".repeat(4)}`;
+    // "HTTP 401: " plus the body is cut at 160 characters: 20 characters into the key.
+    const body = `Unauthorized: invalid bearer token for this route. ${"-".repeat(61)} Received: Bearer ${key}`;
+    expect(body.indexOf(key)).toBe(130);
+    const fetch = vi.fn(async (input: string) => input.includes("ollama.com")
+      ? new Response(body, { status: 401, headers: { "content-type": "text/plain" } })
+      : new Response('<a class="result__a" href="https://example.org/a">Example</a>'));
+    vi.stubGlobal("fetch", fetch);
+    const result = await webSearch(session("ollama-cloud", { apiKey: key, baseURL: "https://ollama.com/v1", model: "kimi-k3" }))
+      .execute({ query: "news" });
+    const fallback = String(JSON.parse(result.content).provider_search_fallback);
+    expect(fallback).toMatch(/^HTTP 401: Unauthorized/);
+    expect(result.content).not.toContain(key.slice(0, 8));
+    expect(fallback).toContain("[REDACTED]");
+
+    const page = await runOllamaWebFetch({ apiKey: key, url: "https://example.org/a",
+      fetchImpl: (async () => new Response(body, { status: 401 })) as unknown as typeof globalThis.fetch });
+    expect(JSON.stringify(page)).not.toContain(key.slice(0, 8));
+    expect("error" in page && page.error).toContain("[REDACTED]");
+  });
+
+  it("redacts the session key from a transport error in the fallback reason", async () => {
+    const key = `ollama-${"0123456789abcdef".repeat(4)}`;
+    const fetch = vi.fn(async (input: string) => {
+      if (input.includes("ollama.com")) throw new Error(`proxy rejected Authorization: Bearer ${key}`);
+      return new Response('<a class="result__a" href="https://example.org/a">Example</a>');
+    });
+    vi.stubGlobal("fetch", fetch);
+    const result = await webSearch(session("ollama-cloud", { apiKey: key, baseURL: "https://ollama.com/v1", model: "kimi-k3" }))
+      .execute({ query: "news" });
+    expect(JSON.parse(result.content)).toMatchObject({
+      source: "duckduckgo_html", provider_search_fallback: "proxy rejected Authorization: Bearer [REDACTED]",
+    });
+    expect(result.content).not.toContain(key.slice(0, 8));
   });
 
   it("has no provider search on the managed route, without a key, or when a search provider is named", async () => {

@@ -562,7 +562,7 @@ function envSplitStringContainsDangerousCommand(command: string): boolean {
     return false;
   }
   const splitCommand = envSplitStringCommand(words, commandIndex + 1);
-  return splitCommand === null ? false : isDangerousShellCommand(splitCommand);
+  return splitCommand === undefined ? false : splitCommand === null || isDangerousShellCommand(splitCommand);
 }
 
 function shellCommandStringContainsDangerousCommand(command: string): boolean {
@@ -896,7 +896,7 @@ function isDownloadProducerCommand(command: string): boolean {
     if (DOWNLOAD_PRODUCER_COMMANDS.has(commandName)) return true;
     if (COMMAND_WRAPPERS.get(commandName)?.kind === "env") {
       const splitCommand = envSplitStringCommand(words, commandIndex + 1);
-      if (splitCommand !== null) return isDownloadProducerCommand(splitCommand);
+      if (splitCommand !== undefined) return splitCommand === null || isDownloadProducerCommand(splitCommand);
     }
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
@@ -912,7 +912,7 @@ function isShellSinkCommand(command: string): boolean {
     if (SHELL_PIPE_SINK_COMMANDS.has(commandName)) return true;
     if (COMMAND_WRAPPERS.get(commandName)?.kind === "env") {
       const splitCommand = envSplitStringCommand(words, commandIndex + 1);
-      if (splitCommand !== null) return isShellSinkCommand(splitCommand);
+      if (splitCommand !== undefined) return splitCommand === null || isShellSinkCommand(splitCommand);
     }
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
@@ -1091,11 +1091,12 @@ function commandIndexAfterWrapper(words: readonly string[], wrapperIndex: number
   return index < args.length ? wrapperIndex + 1 + index : null;
 }
 
-function envSplitStringCommand(words: readonly string[], startIndex: number): string | null {
+/** The command `env -S` runs, as shell text: undefined without -S, null when the split cannot read it. */
+function envSplitStringCommand(words: readonly string[], startIndex: number): string | null | undefined {
   const wrapper = COMMAND_WRAPPERS.get("env")!;
   const args = words.slice(startIndex).map(stripShellQuotes);
   const read = readWrapperOptions(wrapper, args);
-  return read === undefined ? null : wrapperCommandText(wrapper, read, args) ?? null;
+  return read === undefined ? undefined : wrapperCommandText(wrapper, read, args);
 }
 
 function xargsCommandIndex(words: readonly string[], startIndex: number): number | null {
@@ -1478,7 +1479,7 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
     const commandName = normalizedCommandName(words[commandIndex] ?? "");
     if (
       COMMAND_WRAPPERS.get(commandName)?.kind === "env" &&
-      envSplitStringCommand(words, commandIndex + 1) !== null
+      envSplitStringCommand(words, commandIndex + 1) !== undefined
     ) {
       return true;
     }
@@ -1492,7 +1493,7 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
       const args = words.slice(commandIndex + 1).map(stripShellQuotes);
       const read = readWrapperOptions(wrapper, args);
       const script = read && !wrapperOnlyInspects(wrapper, read) ? wrapperCommandText(wrapper, read, args) : undefined;
-      if (script !== undefined) return shellCommandHasShellConstruct(script, depth + 1);
+      if (script !== undefined) return script === null || shellCommandHasShellConstruct(script, depth + 1);
     }
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
@@ -1999,6 +2000,7 @@ function matchedWrappedCommandLabel(command: string, depth: number): string | nu
     if (!read || wrapperOnlyInspects(wrapper, read)) continue;
     const next = wrapperCommandIndex(wrapper, read, args);
     const text = wrapperCommandText(wrapper, read, args);
+    if (text === null) return "env split-string dangerous command";
     if (next >= args.length && text === undefined) continue;
     const script = text ?? formatShellWords(args.slice(next));
     // Re-enter the existing predicates after a finite unwrap. Each call consumes a wrapper.

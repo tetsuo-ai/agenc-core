@@ -8,6 +8,7 @@ import {
   canWritePathWithCwd,
   canWriteRuntimeOwnedPathWithCwd,
   permissionProfileFromRuntimePermissions,
+  physicalWritePathWithCwd,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
   type FileSystemSandboxEntry,
@@ -598,6 +599,34 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target,
+          policy,
+        },
+      );
+    }
+  }
+  // A native file tool writes through the links on its path, so the place a
+  // path the model named leads to must pass as a write naming it would: a
+  // workspace link to .git/hooks/pre-commit is refused like that path. Shell
+  // writes are confined by the platform sandbox; declared targets and the
+  // home exceptions above are runtime-chosen and keep their own checks.
+  if (shellAccess !== null) return;
+  for (const target of writes.targets) {
+    if (
+      (writes.declared ?? []).includes(target) ||
+      !canWritePathWithCwd(profile.fileSystem, target, cwd, sessionTempRoot)
+    ) {
+      continue;
+    }
+    const reached = physicalWritePathWithCwd(profile.fileSystem, target, cwd, sessionTempRoot);
+    if (
+      reached !== target &&
+      !canWritePathWithCwd(profile.fileSystem, reached, cwd, sessionTempRoot)
+    ) {
+      throw new SandboxDeniedError(
+        `sandbox workspace_write blocked write outside workspace: ${reached} (reached through ${target})`,
+        {
+          denial: "filesystem",
+          target: reached,
           policy,
         },
       );

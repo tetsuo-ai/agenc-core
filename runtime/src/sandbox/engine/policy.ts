@@ -514,6 +514,33 @@ export function canWriteRuntimeOwnedPathWithCwd(
   return writableRootsAllow(policy, target, cwd, sessionTempRoot);
 }
 
+/**
+ * Where a write to `target` lands once the links on its path are followed,
+ * spelled under the writable root that holds it (the way the policy spells
+ * its entries), so it can be checked as a write naming it would be. A place
+ * outside every writable root keeps its physical spelling.
+ */
+export function physicalWritePathWithCwd(
+  policy: FileSystemSandboxPolicy,
+  target: string,
+  cwd: string,
+  sessionTempRoot: string,
+): string {
+  const physical = canonicalAuthorityPath(resolvePathAgainstBase(target, cwd));
+  let holder: { readonly root: string; readonly physicalRoot: string } | undefined;
+  for (const entry of resolvedEntriesWithCwd(policy, cwd, sessionTempRoot)) {
+    if (!canWriteAccess(entry.access)) continue;
+    const physicalRoot = canonicalAuthorityPath(entry.path);
+    if (!isWithinAuthorityPath(physical, physicalRoot)) continue;
+    if (holder === undefined || physicalRoot.length > holder.physicalRoot.length) {
+      holder = { root: entry.path, physicalRoot };
+    }
+  }
+  return holder === undefined
+    ? physical
+    : path.join(holder.root, path.relative(holder.physicalRoot, physical));
+}
+
 /** Containment in the writable roots, minus reserved read-only paths. */
 function writableRootsAllow(
   policy: FileSystemSandboxPolicy,

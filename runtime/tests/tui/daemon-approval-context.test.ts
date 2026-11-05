@@ -24,6 +24,18 @@ describe("daemon approval context", () => {
     expect(daemonFileWritePreview({ kind: "other", content: "x" })).toBeUndefined();
   });
 
+  it("marks a session grant that covers every call only when the request names it", () => {
+    const build = (permissions: unknown) => buildDaemonApprovalCtx(
+      { id: "session" },
+      { callId: "call-1", turnId: "turn-1", input: { sku: "a-1" }, ...(permissions === undefined ? {} : { permissions }) },
+      "mcp.inventory.get_stock",
+      new AbortController().signal,
+    );
+    expect(build(["tool.use", "mcp_no_fs_writes"]).sessionGrantCoversAllCalls).toBe(true);
+    expect(build(["tool.use"]).sessionGrantCoversAllCalls).toBeUndefined();
+    expect(build(undefined).sessionGrantCoversAllCalls).toBeUndefined();
+  });
+
   it("builds an approval context with validated payload fields and safe fallbacks", () => {
     const signal = new AbortController().signal;
     const ctx = buildDaemonApprovalCtx(

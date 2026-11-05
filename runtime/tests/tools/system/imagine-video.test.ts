@@ -2,14 +2,17 @@
  * ImagineVideo LIVE tool — text/image-to-video via xAI async API.
  */
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { createImagineVideoTool } from "../../../src/tools/system/imagine-video.js";
 import { createModelFacingTools } from "../../../src/bin/model-facing-tools.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
+import { hasPermissionsToUseToolInner, type ToolEvaluatorContext } from "../../../src/permissions/evaluator.js";
+import { applyPermissionUpdate } from "../../../src/permissions/permission-updates.js";
+import { createEmptyToolPermissionContext } from "../../../src/permissions/types.js";
 import {
   isModelFacingToolRegistered,
   mediaTestHome as testHome,
@@ -1179,5 +1182,70 @@ describe("ImagineVideo execute", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/independent xAI media credential/i);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("ImagineVideo local images", () => {
+  const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  const grokTool = (root: string, fetchImpl: typeof fetch) => createImagineVideoTool({
+    workspaceRoot: root,
+    home: testHome(root),
+    getSession: () => ({ services: { provider: createProvider("grok", {
+      apiKey: "session-key", model: "grok-4.6", baseURL: "https://api.x.ai/v1",
+    }) } }) as unknown as Session,
+    env: {},
+    fetchImpl,
+  });
+
+  it("refuses a local image outside the workspace or one that is not an image before any request", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-video-local-"));
+    const outside = await mkdtemp(join(tmpdir(), "imagine-video-outside-"));
+    // Stands in for ~/.ssh/id_rsa.
+    await writeFile(join(outside, "id_rsa"), "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n");
+    await writeFile(join(outside, "frame.png"), PNG);
+    await writeFile(join(root, "notes.txt"), "not an image");
+    await writeFile(join(root, "notes.png"), "not an image either");
+    const fetchImpl = vi.fn<typeof fetch>();
+    const tool = grokTool(root, fetchImpl);
+    const refused = async (args: Record<string, unknown>) =>
+      String((await tool.execute({ prompt: "x", duration: 3, resolution: "480p", ...args })).content);
+    expect(await refused({ image_url: join(outside, "id_rsa") })).toContain("inside the workspace");
+    expect(await refused({ image_url: join(outside, "frame.png") })).toContain("inside the workspace");
+    expect(await refused({ image_url: `../${basename(outside)}/frame.png` })).toContain("inside the workspace");
+    expect(await refused({ reference_image_urls: [join(outside, "id_rsa")] })).toContain("inside the workspace");
+    expect(await refused({ image_url: "notes.txt" })).toContain("PNG, JPEG or WebP");
+    expect(await refused({ reference_image_urls: ["notes.png"] })).toContain("PNG, JPEG or WebP");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("checks the read permission rules for each local image and still asks for an allowed one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-video-rules-"));
+    await mkdir(join(root, "art"));
+    await mkdir(join(root, "private"));
+    await writeFile(join(root, "art", "frame.png"), PNG);
+    await writeFile(join(root, "private", "id-scan.png"), PNG);
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request_id: "local-frame" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "done", video: { url: "https://vidgen.x.ai/local-frame.mp4" } })))
+      .mockResolvedValueOnce(new Response(Uint8Array.from([0, 0, 0, 24])));
+    const tool = grokTool(root, fetchImpl);
+    let permission = createEmptyToolPermissionContext();
+    const context = { session: {}, getAppState: () => ({ toolPermissionContext: permission, denialTracking: { consecutiveDenials: 0, totalDenials: 0 }, autoModeActive: false }) } as ToolEvaluatorContext;
+    const decide = (args: Record<string, unknown>) => hasPermissionsToUseToolInner(tool, { prompt: "x", ...args }, context);
+    // Without a rule the call still waits for approval: it spends money and sends the image to xAI.
+    expect(await decide({ image_url: "private/id-scan.png" })).toMatchObject({ behavior: "ask" });
+    permission = applyPermissionUpdate(permission, {
+      type: "addRules", destination: "session", behavior: "deny", rules: [{ toolName: "FileRead", ruleContent: `${root}/private/**` }],
+    });
+    expect(await decide({ image_url: "private/id-scan.png" })).toMatchObject({ behavior: "deny" });
+    expect(await decide({ reference_image_urls: ["art/frame.png", join(root, "private", "id-scan.png")] })).toMatchObject({ behavior: "deny" });
+    expect(await decide({ image_url: "art/frame.png" })).toMatchObject({ behavior: "ask" });
+    expect(await decide({ image_url: "https://example.com/frame.png" })).toMatchObject({ behavior: "ask" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const result = await tool.execute({ prompt: "x", image_url: "art/frame.png", duration: 3, resolution: "480p" });
+    expect(result.isError).toBeUndefined();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://api.x.ai/v1/videos/generations");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).image).toEqual({ url: `data:image/png;base64,${PNG.toString("base64")}` });
   });
 });

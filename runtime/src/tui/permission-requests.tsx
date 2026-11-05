@@ -828,6 +828,8 @@ function AgenCApprovalOverlay({
     </Popup>;
   }
   const name = toolLabel(toolUseConfirm);
+  const shownCommand = command.length > 0 ? command : toolUseConfirm.description;
+  const commandIsShell = approvalCommandIsShell(toolUseConfirm);
   // The separate question asked after the sandbox refused an approved call:
   // its title and summary say so, because the reason text below is the first
   // row a short terminal drops.
@@ -847,9 +849,11 @@ function AgenCApprovalOverlay({
         title={`tool · ${name} · ${title}`}
         {...(runsWithoutSandbox ? { summary: `${RUN_WITHOUT_SANDBOX_TITLE} · ${name}` } : {})}
         // Home paths read as ~/..., as in the transcript's tool rows; the
-        // risk checks above still read the input as given.
-        command={abbreviateHomePaths(command.length > 0 ? command : toolUseConfirm.description)}
-        commandIsShell={approvalCommandIsShell(toolUseConfirm)}
+        // risk checks above still read the input as given. A shell command
+        // is shown as given: a shell does not expand a quoted ~ or one after
+        // =, so a shortened command could read as a different command.
+        command={commandIsShell ? shownCommand : abbreviateHomePaths(shownCommand)}
+        commandIsShell={commandIsShell}
         confirmLabel={draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter"}
         facts={[
           { label: "tool", value: name },
@@ -887,10 +891,14 @@ function AgenCApprovalOverlay({
         cancelLabel="stop turn"
         draftText={composerDraft?.text}
         draftFocused={draftFocused}
-        sessionScope={(toolUseConfirm.tool.name === "Write" || toolUseConfirm.tool.name === "Edit") &&
-          fileEditTargetPath(request.input) !== undefined
-          ? `${name} this file only`
-          : "this exact action only"}
+        // Say what a session grant covers: the approval cache keys an MCP
+        // tool approved without filesystem-write targets on the tool alone.
+        sessionScope={request.ctx.sessionGrantCoversAllCalls === true || request.ctx.mcpFilesystemApproval !== undefined
+          ? `every ${name} call, any arguments`
+          : (toolUseConfirm.tool.name === "Write" || toolUseConfirm.tool.name === "Edit") &&
+            fileEditTargetPath(request.input) !== undefined
+            ? `${name} this file only`
+            : "this exact action only"}
       />
     </Box>
   );
