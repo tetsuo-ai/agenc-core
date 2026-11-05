@@ -47,7 +47,11 @@ import {
 } from "../session/runtime-options.js";
 import type { PendingProviderSwitch, Session } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
-import { AGENC_DAEMON_PROTOCOL_VERSION, type JsonObject } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  type JsonObject,
+} from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
@@ -6056,6 +6060,94 @@ backend = "local"
       });
     } finally {
       for (const socket of sockets) socket.terminate();
+      signalProcess.emit("SIGTERM");
+      await running.catch(() => {});
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("reload that turns remote control off closes a phone bridge that is still initializing", async () => {
+    const agencHome = await tempAgencHome();
+    await writeFile(
+      join(agencHome, "config.toml"),
+      "config_version = 2\n\n[remote_control]\nenabled = true\n",
+    );
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    // Hold the bridge's capability registration until the reload is done.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let reached!: () => void;
+    const registering = new Promise<void>((resolve) => { reached = resolve; });
+    const registered: string[] = [];
+    const removed: string[] = [];
+    const realRegister = AgenCDaemonClientMultiplexer.prototype.registerClient;
+    const realRemove = AgenCDaemonClientMultiplexer.prototype.removeClient;
+    vi.spyOn(AgenCDaemonClientMultiplexer.prototype, "registerClient").mockImplementation(
+      async function (this: AgenCDaemonClientMultiplexer, options) {
+        if (options.capabilities?.[AGENC_PENDING_APPROVALS_LIST_CAPABILITY] === true) {
+          reached();
+          await gate;
+          registered.push(options.clientId!);
+        }
+        return realRegister.call(this, options);
+      },
+    );
+    vi.spyOn(AgenCDaemonClientMultiplexer.prototype, "removeClient").mockImplementation(
+      async function (this: AgenCDaemonClientMultiplexer, clientId, deliveryKey) {
+        removed.push(clientId);
+        return realRemove.call(this, clientId, deliveryKey);
+      },
+    );
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let bridge: WebSocket | undefined;
+    try {
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      const webSocketUrl = await waitForDaemonWebSocketUrl(
+        io,
+        LOADED_DAEMON_MILESTONE_BUDGET_MS,
+        { running, stderrText: io.stderrText },
+      );
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      bridge = new WebSocket(webSocketUrl);
+      await once(bridge, "open");
+      const answers: Record<string, unknown>[] = [];
+      bridge.on("message", (data) => answers.push(JSON.parse(data.toString()) as Record<string, unknown>));
+      bridge.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "bridge",
+        method: "initialize",
+        params: {
+          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          authCookie,
+          capabilities: { [AGENC_PENDING_APPROVALS_LIST_CAPABILITY]: true },
+          remoteControlBridge: true,
+        },
+      }));
+      await registering;
+
+      await writeFile(join(agencHome, "config.toml"), "config_version = 2\n");
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+      release();
+
+      await Promise.race([waitForWebSocketClose(bridge), delay(2_000)]);
+      expect(bridge.readyState).toBe(WebSocket.CLOSED);
+      expect(answers.some((answer) => (answer.result as { type?: string } | undefined)?.type === "initialized")).toBe(false);
+      // The registration that finished after the close was taken back.
+      expect(registered).toHaveLength(1);
+      await vi.waitFor(() => expect(removed).toEqual(expect.arrayContaining(registered)), { timeout: 2_000 });
+    } finally {
+      release();
+      bridge?.terminate();
       signalProcess.emit("SIGTERM");
       await running.catch(() => {});
       await rm(agencHome, { recursive: true, force: true });

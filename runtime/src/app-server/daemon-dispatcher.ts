@@ -1021,6 +1021,9 @@ export class AgenCDaemonJsonRpcDispatcher {
             code: "CONNECTION_ALREADY_INITIALIZED",
           });
         }
+        // A bridge is one from its first initialize step: a reload that turns
+        // remote control off closes it during the awaits below as well.
+        connection.remoteControlBridge = params.remoteControlBridge === true;
         try {
           const availableCapabilities = connection.localUnix ? this.#serverCapabilities : {
             ...this.#serverCapabilities,
@@ -1078,7 +1081,12 @@ export class AgenCDaemonJsonRpcDispatcher {
             connection,
             negotiated.state.clientCapabilities,
           );
-          connection.remoteControlBridge = params.remoteControlBridge === true;
+          if (connection.remoteControlBridge && !this.#remoteControlEnabled()) {
+            // Remote control was turned off while this bridge initialized:
+            // drop what it registered instead of leaving it attached.
+            await this.closeConnection(connection).catch(() => {});
+            return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+          }
           connection.markInitialized(negotiated.state);
           return successResponse(id, {
             type: "initialized",
