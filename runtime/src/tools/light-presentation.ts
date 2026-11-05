@@ -76,7 +76,9 @@ function presentProperty(schema: unknown, hint: string | null | undefined): unkn
  * Adapt the earlier Light summaries without hiding accepted arguments. The lean exec_command,
  * FileRead and system.searchTools show their common fields until system.searchTools selects them.
  * `lightSession` marks a Light session's own registry: standard sessions reuse the Light wording
- * for some core tools (standardPresentation) and keep their field hints.
+ * for some core tools (standardPresentation) and keep their field hints. `compactCore` is native
+ * DeepSeek Light's compact core catalog: exec_command with the fields a process session uses, and
+ * write_stdin and kill_process with their common fields (COMPACT_EXEC_FIELDS).
  */
 export function lightPresentation(
   tool: LLMTool,
@@ -87,6 +89,7 @@ export function lightPresentation(
     readonly lightSession?: boolean;
     readonly glmServerChecks?: boolean;
     readonly writeWithApplyPatch?: boolean;
+    readonly compactCore?: boolean;
   } = {},
 ): LLMTool {
   const canonical = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
@@ -101,6 +104,19 @@ export function lightPresentation(
     : described;
   if (options.leanExec === true && tool.function.name === "exec_command") {
     return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
+  }
+  if (options.compactCore === true && tool.function.name === "exec_command") {
+    return withOnlyFields(presented, COMPACT_EXEC_FIELDS, COMPACT_EXEC_POINTER);
+  }
+  if (options.compactCore === true && tool.function.name === "write_stdin") {
+    return withOnlyFields(
+      { ...presented, function: { ...presented.function, description: COMPACT_WRITE_STDIN_DESCRIPTION } },
+      COMPACT_WRITE_STDIN_FIELDS,
+      "",
+    );
+  }
+  if (options.compactCore === true && tool.function.name === "kill_process") {
+    return presentWith(presented, COMPACT_KILL_PROCESS_DESCRIPTION, { session_id: null, session_ids: null, all: null });
   }
   if (options.leanRead === true && tool.function.name === "FileRead") {
     return withOnlyFields(
@@ -261,6 +277,25 @@ const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeou
  */
 const LEAN_EXEC_POINTER =
   " Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.";
+
+/**
+ * Native DeepSeek Light's compact core catalog (tool-registry.ts compactDeepSeekCoreCatalog). DeepSeek
+ * renders the tool list before the conversation, so any change to it re-sends the whole history
+ * uncached; the catalog therefore carries what a process session needs from the first request:
+ * exec_command's lean fields plus yield_time_ms and max_output_tokens, and write_stdin and
+ * kill_process. In 1,060 recorded DeepSeek Light sessions (round 4, 2026-10-25 to 2026-11-05) and the
+ * long three.js runs, exec_command used only these fields and detach (5 calls), write_stdin only
+ * these four and kill_process only session_id; tty, login, shell and the escalation fields were never
+ * used. The rest load through system.searchTools, or with the escalation fields when a sandbox notice
+ * advises a retry, and the registry then presents the full core schemas once for the rest of the session.
+ */
+const COMPACT_EXEC_FIELDS: ReadonlySet<string> = new Set([...LEAN_EXEC_FIELDS, "yield_time_ms", "max_output_tokens"]);
+const COMPACT_EXEC_POINTER = " Advanced fields (tty, login, shell, detach): system.searchTools select:exec_command loads them.";
+const COMPACT_WRITE_STDIN_FIELDS: ReadonlySet<string> = new Set(["session_id", "chars", "yield_time_ms", "max_output_tokens"]);
+const COMPACT_WRITE_STDIN_DESCRIPTION =
+  "Continue exec_command's session_id; kill_process stops it. Empty chars polls; input requires initial tty=true. Include command newlines.";
+const COMPACT_KILL_PROCESS_DESCRIPTION =
+  "Stop sessions exec_command started in this conversation: session_id for one, session_ids for several, all=true for every one still running. Never stop processes by searching the process table for file names or command text: that also matches AgenC's own processes.";
 
 /**
  * The system.searchTools fields a Light session sees until it selects system.searchTools. Of 296

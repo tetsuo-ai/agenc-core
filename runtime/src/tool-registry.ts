@@ -751,6 +751,15 @@ const STANDARD_COMPACT_PRESENTATION: ReadonlySet<string> = new Set([
   "Grep",
 ]);
 
+/**
+ * The core tools native DeepSeek Light first presents in a compact form whose
+ * remaining fields load through system.searchTools. Discovering one of them
+ * (a selection, or exec_command after a sandbox notice advises escalation)
+ * moves the session to the full core schemas. An exec yield discovers
+ * write_stdin and kill_process, which the compact catalog already carries.
+ */
+const COMPACT_CORE_SCHEMA_TOOLS: readonly string[] = ["exec_command", "FileRead", SYSTEM_SEARCH_TOOLS_NAME];
+
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,
 ): ToolRegistry {
@@ -1168,6 +1177,19 @@ export function buildToolRegistry(
   function stableDeepSeekCoreCatalog(): boolean {
     return options.lightMode === true && sessionModelIdentity().provider?.trim().toLowerCase() === "deepseek";
   }
+  /**
+   * The stable catalog starts compact: exec_command, write_stdin and kill_process
+   * with the fields process sessions use, and the lean FileRead and
+   * system.searchTools (light-presentation.ts COMPACT_EXEC_FIELDS). A yield or a
+   * poll leaves it unchanged. Selecting a core tool's schema through
+   * system.searchTools, or a sandbox notice that advises escalation, presents the
+   * full core schemas from then on: one catalog change per session at most. The
+   * compact form needs system.searchTools to load the rest.
+   */
+  function compactDeepSeekCoreCatalog(searchVisible: boolean): boolean {
+    return searchVisible && stableDeepSeekCoreCatalog() &&
+      !COMPACT_CORE_SCHEMA_TOOLS.some((name) => discoveredToolNames.has(name));
+  }
   function usesBatchEdit(): boolean {
     if (options.lightMode !== true) return false;
     const identity = sessionModelIdentity();
@@ -1568,10 +1590,11 @@ export function buildToolRegistry(
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
       const stableCore = stableDeepSeekCoreCatalog();
+      const compactCore = compactDeepSeekCoreCatalog(searchVisible);
       const leanExec = !stableCore && searchVisible && !discoveredToolNames.has("exec_command");
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
-      const leanSearch = !stableCore && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
-      const leanRead = !stableCore && searchVisible && !discoveredToolNames.has("FileRead");
+      const leanSearch = (compactCore || !stableCore) && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
+      const leanRead = (compactCore || (!stableCore && searchVisible)) && !discoveredToolNames.has("FileRead");
       // Native Flash's Write points to apply_patch for partial changes; a tool
       // policy without apply_patch gets the Light Write that Edit sessions use.
       const writeWithApplyPatch = lightUsesDeepSeekWrite(identity.provider, identity.model) &&
@@ -1580,7 +1603,7 @@ export function buildToolRegistry(
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
-          return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true,
+          return lightPresentation(tool, { leanExec, leanSearch, leanRead, compactCore, lightSession: true,
             writeWithApplyPatch,
             glmServerChecks: describesServerChecks() });
         }
