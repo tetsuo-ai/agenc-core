@@ -86,6 +86,24 @@ export function resetSentContextImages(session: object): void {
 }
 
 /**
+ * A forked thread runs its turn on the source session object with its own
+ * history. That turn starts without the source conversation's image evidence,
+ * and the returned function, called when the turn ends, drops the fork's
+ * evidence and puts the source conversation's back. Neither history is then
+ * checked against the other's requests.
+ */
+export function isolateContextImageEvidence(session: object): () => void {
+  const dispatched = dispatchedImages.get(session);
+  const prepared = preparedImages.get(session);
+  resetSentContextImages(session);
+  return () => {
+    resetSentContextImages(session);
+    if (dispatched !== undefined) dispatchedImages.set(session, dispatched);
+    if (prepared !== undefined) preparedImages.set(session, prepared);
+  };
+}
+
+/**
  * Sources of the images a durable replacement removes before the model was
  * shown them or their budget notice: images this process prepared after its
  * last dispatched request and then compacted away. Without a dispatched
