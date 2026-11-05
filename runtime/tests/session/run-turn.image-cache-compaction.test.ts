@@ -4,6 +4,7 @@ import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
+  EVICTED_IMAGE_TEXT,
   OMITTED_IMAGE_TEXT,
   admitContextImageBytes,
   rememberPreparedContextImages,
@@ -74,7 +75,10 @@ test.each(["deepseek", "local-test"])("%s: image pressure never compacts; the cu
     expect(requests).toHaveLength(2);
     // The model sees the screenshot it was just sent; the answered one leaves.
     expect(parts(requests[1]!, "Current screenshot")).toEqual(second.content);
-    expect(parts(requests[1]!, "First screenshot")).toContainEqual({ type: "text", text: OMITTED_IMAGE_TEXT });
+    // Only the turn-aware admission knows the request of its own turn showed it.
+    expect(parts(requests[1]!, "First screenshot")).toContainEqual({
+      type: "text", text: modelProviderId === "deepseek" ? EVICTED_IMAGE_TEXT : OMITTED_IMAGE_TEXT,
+    });
     expect(JSON.stringify(requests[1])).not.toContain("not inspected");
     await drain(runTurn(session, ctx, "Continue without another screenshot."));
     expect(compactions).toBe(0);
@@ -196,7 +200,7 @@ test("compaction after an eviction names only the image no request showed", asyn
   try {
     for (let index = 1; index <= 7; index++) await drain(runTurn(session, ctx, screen(index)));
     expect(requests).toHaveLength(7);
-    expect(JSON.stringify(requests[6]).split(OMITTED_IMAGE_TEXT)).toHaveLength(5);
+    expect(JSON.stringify(requests[6]).split(EVICTED_IMAGE_TEXT)).toHaveLength(5);
     Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
     installPreparedCompactionPressure(provider, request => JSON.stringify(request.messages).includes("Natural pressure") ? 18_130 : 100);
     await drain(runTurn(session, ctx, [{ type: "text", text: "Natural pressure. ".repeat(400) }, ...screen(8)]));

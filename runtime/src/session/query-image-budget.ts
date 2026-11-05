@@ -147,6 +147,13 @@ export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
 export const OMITTED_IMAGE_TEXT =
   "[image omitted: an earlier screenshot is no longer in context; capture or read it again if it is still needed]";
+/**
+ * An image the turn-aware admission leaves out after the request of its own
+ * batch showed it. Reading it again would push out newer images, so a task
+ * that reads every image before it records anything can loop.
+ */
+export const EVICTED_IMAGE_TEXT =
+  "[image omitted: this image was already shown to you in an earlier request and is no longer in context. Record what you need from each image as you go.]";
 export const OVERSIZED_IMAGE_TEXT =
   "[image omitted: this image exceeds the inline image request limit; resize it or capture a smaller version before sending it again]";
 
@@ -361,7 +368,7 @@ export function admitContextImageBytes(
       if (verdict === "kept") return part;
       omitted++;
       changed = true;
-      return withheldImagePlaceholder(part, verdict === "evicted" ? OMITTED_IMAGE_TEXT
+      return withheldImagePlaceholder(part, verdict === "evicted" ? EVICTED_IMAGE_TEXT
         : verdict === "oversized" ? OVERSIZED_IMAGE_TEXT
           : unfitImageText(imageSource(message, calls)));
     });
