@@ -345,6 +345,13 @@ function computeUnorderedReplacements(
   control: SeekSequenceControl,
   orderedError: LaterHunkNotFoundError,
 ): readonly Replacement[] {
+  // No order can place a hunk whose expected lines occur nowhere exactly (a
+  // stale hunk in an in-order patch), so it keeps the file-order error.
+  const failed = orderedError.chunk.oldLines;
+  if (seekExactSequenceMatches(corpus, failed, 1, control).length === 0 &&
+      (failed.at(-1) !== "" || seekExactSequenceMatches(corpus, failed.slice(0, -1), 1, control).length === 0)) {
+    throw orderedError;
+  }
   if (chunks.some((chunk) => chunk.changeContext !== null || chunk.oldLines.length === 0 || chunk.isEndOfFile)) {
     throw new ApplyPatchRuntimeError(
       `Failed to find expected lines in ${path} after the previous hunk. Hunks with @@ context lines, insertions ` +
@@ -356,7 +363,11 @@ function computeUnorderedReplacements(
     let pattern = chunk.oldLines;
     let newSlice = chunk.newLines;
     let matches = seekExactSequenceMatches(corpus, pattern, 2, control);
-    if (matches.length === 0 && pattern.at(-1) === "") {
+    // As in file order, drop a trailing blank line only when the full expected
+    // lines match nowhere, not even with whitespace tolerance; otherwise the
+    // shorter text could land away from the lines the hunk was written for.
+    if (matches.length === 0 && pattern.at(-1) === "" &&
+        seekPreparedSequence(corpus, pattern, 0, false, control) === null) {
       pattern = pattern.slice(0, -1);
       if (newSlice.at(-1) === "") newSlice = newSlice.slice(0, -1);
       matches = seekExactSequenceMatches(corpus, pattern, 2, control);

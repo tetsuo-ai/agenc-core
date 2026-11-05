@@ -120,3 +120,35 @@ test.each([
   await expect(apply(chunks)).rejects.toThrow(/must be listed in file order/);
   expect(await readFile(path, "utf8")).toBe(contents);
 });
+
+
+// 0.19.29 re-review: dropping a trailing blank line placed the shorter text on another exact match even when the
+// full lines matched the intended place with whitespace differences.
+test.each([
+  {
+    name: "a Python method with trailing spaces",
+    contents: "def a():\n    x = 1   \n\ndef b():\n    x = 1\n    return x\n",
+    chunks: "@@\n-    return x\n+    return x + 1\n@@\n-    x = 1\n+    x = 2\n ",
+  },
+  { name: "a minimal file", contents: "x \n\na\nx\ny\nb\n", chunks: "@@\n-b\n+B\n@@\n-x\n " },
+])("rejects a reordered hunk ending in a blank line whose full lines match elsewhere inexactly: $name", async ({ contents, chunks }) => {
+  const { path, apply } = await fixture(contents);
+  await expect(apply(chunks)).rejects.toThrow("Failed to find expected lines");
+  expect(await readFile(path, "utf8")).toBe(contents);
+});
+
+// A stale later hunk in an in-order patch keeps the message the planner gave before out-of-order recovery.
+test.each([
+  { name: "after an inexact earlier hunk", contents: "  alpha\nbeta\ngamma\n", chunks: "@@\n-alpha\n+ALPHA\n@@\n-stale\n+X", stale: "stale" },
+  {
+    name: "under @@ def anchors",
+    contents: "def foo():\n    a = 1\n    b = 2\ndef bar():\n    c = 3\n",
+    chunks: "@@ def foo():\n-    a = 1\n+    a = 10\n@@ def bar():\n-    c = 4\n+    c = 40",
+    stale: "    c = 4",
+  },
+])("keeps the file-order error for a stale later hunk $name", async ({ contents, chunks, stale }) => {
+  const { path, apply } = await fixture(contents);
+  const error = await apply(chunks).then(() => undefined, (rejection: unknown) => rejection as Error);
+  expect(error?.message).toBe(`Failed to find expected lines in ${path}:\n${stale}`);
+  expect(await readFile(path, "utf8")).toBe(contents);
+});
