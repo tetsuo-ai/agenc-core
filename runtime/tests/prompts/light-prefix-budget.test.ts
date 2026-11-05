@@ -17,9 +17,10 @@
  * 2026-11-05 (round 4 jobs cch and cch2, Fcch-8): native DeepSeek Light publishes the full exec_command, FileRead
  * and system.searchTools schemas and the write_stdin and kill_process companions with its first request, because a
  * later catalog change rewrites the cached prefix ahead of the whole history (owner MPV calls 28 and 33 cached
- * 6,784/230,236 and 7,296/234,187 tokens). DeepSeek tools 2,347 to 6,569 characters, measured with its cache:
- * discovery and yield transitions 4.77%/7.12% to 99.21%/98.49% (cch), image-heavy panel fresh input -55.1%
- * against 0.19.28 (cch2). OpenAI is unchanged.
+ * 6,784/230,236 and 7,296/234,187 tokens). Measured with its cache: discovery and yield transitions 4.77%/7.12%
+ * to 99.21%/98.49% (cch), image-heavy panel fresh input -55.1% against 0.19.28 (cch2). Round 4 job rnd adds
+ * whole-file Write (329 characters) and a shorter apply_patch (690 to 359). DeepSeek tools 2,347 to 6,568
+ * characters on the merged catalog; OpenAI is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import type { Session } from "../../src/session/session.js";
@@ -60,8 +61,9 @@ async function lightPrefix(provider: "deepseek" | "openai") {
 describe("Light fixed prefix budget", () => {
   test.each([
     // DeepSeek head 4,050 -> 4,150 on purpose: job dsw's probe sentence (LIGHT_DEEPSEEK_PROBES), measured in its A/B.
-    // DeepSeek tools 2,350 -> 6,600 on purpose: the stable core catalog above (Fcch-8).
-    ["deepseek", 4_150, 6_600, ["system.searchTools", "exec_command", "write_stdin", "kill_process", "FileRead", "apply_patch"]],
+    // DeepSeek tools 2,350 -> 6,568 on purpose: the stable core catalog above (Fcch-8) plus whole-file Write,
+    // measured exactly on the merged catalog. Other providers keep 2,350.
+    ["deepseek", 4_150, 6_568, ["system.searchTools", "exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch"]],
     ["openai", 3_600, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
   ] as const)("%s: head and tool schemas stay within budget and byte-stable", async (provider, headBudget, toolsBudget, names) => {
     const first = await lightPrefix(provider);
@@ -79,8 +81,8 @@ describe("Light fixed prefix budget", () => {
     const { snapshot } = await lightPrefix("deepseek");
     const head = snapshot.staticPrefix;
     expect(head).toContain(LIGHT_LIMITED_FINISH);
-    expect(head).toContain("Edit and create files with apply_patch; put all hunks of one change in one patch.");
-    expect(head).toContain("include the task's source, tests and requested documentation in the same patch");
+    expect(head).toContain("Use Write for new files and full rewrites; apply_patch for partial changes, all hunks of one change together.");
+    expect(head).toContain("Include known source, tests and requested documentation together.");
     // DeepSeek keeps the 0.19.26 head: one patch per change and none of the interactive working rules.
     expect(head).not.toContain(LIGHT_PATCH_SIZE);
     expect(head).not.toContain(LIGHT_LOOKUPS);
@@ -100,7 +102,8 @@ describe("Light fixed prefix budget", () => {
       "Investigate unfamiliar files, branches, configuration and locks before deleting/overwriting",
       "preserve others' work and resolve conflicts without discarding changes",
       // one round trip for independent calls
-      "Put independent tool calls in one response; omit default arguments",
+      "Read all needed files and screenshots in the same response, with multiple FileRead calls",
+      "Group independent checks likewise; omit default arguments",
       // secrets, honesty and scope
       "Write secure code; protect secrets", "Do not weaken tests or requirements, conceal failures or claim unverified work",
       "Leave files the user asks to preserve unchanged", "If existing tests must be preserved, add new cases in separate files",

@@ -86,15 +86,19 @@ export function lightPresentation(
     readonly leanRead?: boolean;
     readonly lightSession?: boolean;
     readonly glmServerChecks?: boolean;
+    readonly writeWithApplyPatch?: boolean;
   } = {},
 ): LLMTool {
   const canonical = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
     ? tool
     : lightPresentationCanonical(tool);
   const sessionTool = options.lightSession === true ? withLightSessionFields(canonical) : canonical;
+  const described = options.lightSession === true && options.writeWithApplyPatch === true
+    ? withWholeFileEditorPresentation(sessionTool)
+    : sessionTool;
   const presented = options.lightSession === true && options.glmServerChecks === true && tool.function.name === "exec_command"
     ? { ...sessionTool, function: { ...sessionTool.function, description: `${sessionTool.function.description} ${LIGHT_GLM_SERVER_CHECKS}` } }
-    : sessionTool;
+    : described;
   if (options.leanExec === true && tool.function.name === "exec_command") {
     return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
   }
@@ -112,6 +116,23 @@ export function lightPresentation(
     );
   }
   return presented;
+}
+
+/** Keep the additional editor within Light's existing schema budget. */
+function withWholeFileEditorPresentation(tool: LLMTool): LLMTool {
+  if (tool.function.name === "Write") {
+    return { ...tool, function: { ...tool.function,
+      description: "Create/replace files; existing files require FileRead first. Use apply_patch for partial changes.",
+    } };
+  }
+  if (tool.function.name !== "apply_patch") return tool;
+  const properties = tool.function.parameters.properties as Record<string, unknown>;
+  return { ...tool, function: { ...tool.function,
+    description: "Patch:\n*** Begin Patch\n...hunks...\n*** End Patch\n*** Add File: path (+lines); *** Update File: path (@@ chunks, optional *** Move to: path); *** Delete File: path.",
+    parameters: { ...tool.function.parameters, properties: {
+      ...properties, input: presentProperty(properties.input, null),
+    } },
+  } };
 }
 
 /**

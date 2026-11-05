@@ -6,12 +6,12 @@ import { buildChatCompletionsRequest } from "../src/llm/wire/chat-completions.js
 import { chatCompletionsCapabilityHintsForProvider } from "../src/llm/wire/capability-gating.js";
 import { explicitDangerBroker, withExplicitDangerBoundary } from "./helpers/explicit-danger-boundary.js";
 
-function fixture(provider = "deepseek", disabled: string[] = []) {
+function fixture(provider = "deepseek", disabled: string[] = [], model?: string) {
   return buildToolRegistry({
     workspaceRoot: "/tmp", lightMode: true, requireAdmission: false,
     sandboxExecutionBroker: explicitDangerBroker,
     toolsConfig: { disabled_tools: disabled },
-    getSession: () => ({ services: { provider: { name: provider } } }) as Session,
+    getSession: () => ({ services: { provider: { name: provider }, providerService: { current: () => ({ provider, model }) } } }) as Session,
     unifiedExecManager: {
       maxTimeoutMs: Infinity,
       execCommand: vi.fn(async () => ({ stdout: "", stderr: "", output: "", exitCode: null,
@@ -68,4 +68,15 @@ test("other providers retain their measured deferred Light profile", () => {
   expect(tools.map(tool => tool.function.name)).not.toContain("write_stdin");
   expect(tools.find(tool => tool.function.name === "exec_command")?.function.parameters.properties)
     .not.toHaveProperty("sandbox_permissions");
+});
+
+
+test("native Flash keeps Write and full core schemas stable through discovery", () => {
+  const registry = fixture("deepseek", [], "deepseek-flash");
+  const first = request(registry, initial);
+  expect(registry.toLLMTools().map(tool => tool.function.name)).toEqual([
+    "system.searchTools", "exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch",
+  ]);
+  registry.discoverToolNames?.(["Write", "apply_patch", "exec_command", "FileRead", "system.searchTools", "write_stdin", "kill_process"]);
+  expect(JSON.stringify(request(registry, continued).tools)).toBe(JSON.stringify(first.tools));
 });

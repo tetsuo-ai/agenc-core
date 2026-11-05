@@ -31,7 +31,7 @@ import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation, withHardTimeoutWording } from "./tools/light-presentation.js";
 import { execHardTimeoutEnabled } from "./tools/system/exec-timeout-mode.js";
 import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
-import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesGlmTuning } from "./tools/light-profile.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesDeepSeekWrite, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -1426,6 +1426,7 @@ export function buildToolRegistry(
         manualWebTool(spec.tool.name) || (options.lightMode === true
           ? (lightEditsWithApplyPatch(lightIdentity.provider, lightIdentity.model)
             ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
+            (spec.tool.name === "Write" && lightUsesDeepSeekWrite(lightIdentity.provider, lightIdentity.model)) ||
             (stableCore && (spec.tool.name === "write_stdin" || spec.tool.name === "kill_process")) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined) ||
             // The plan-mode reminder ends planning with AskUserQuestion or
@@ -1534,6 +1535,7 @@ export function buildToolRegistry(
   let presentationMemo: { router: ToolRouter; discovered: readonly string[];
     provider: string | undefined; planMode: boolean; webSearch: boolean; hardTimeout: boolean; tools: LLMTool[] } | undefined;
   function buildPresentedTools(router: ToolRouter): LLMTool[] {
+      const identity = sessionModelIdentity();
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
       const stableCore = stableDeepSeekCoreCatalog();
@@ -1546,6 +1548,7 @@ export function buildToolRegistry(
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
           return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true,
+            writeWithApplyPatch: lightUsesDeepSeekWrite(identity.provider, identity.model),
             glmServerChecks: describesServerChecks() });
         }
         // Standard sessions with the default deferral send compact wording for

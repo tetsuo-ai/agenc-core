@@ -126,7 +126,7 @@ test("Large V2 batch Edit is Light-only and follows same-provider model switches
 test("native Flash batches a change with apply_patch and retains discoverable editors", () => {
   const session = gatewayOwner("deepseek", "deepseek-flash");
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => session });
-  expect(registry.toLLMTools().map(t => t.function.name).sort()).toEqual(["FileRead", "apply_patch", "exec_command", "kill_process", "system.searchTools", "write_stdin"]);
+  expect(registry.toLLMTools().map(t => t.function.name).sort()).toEqual(["FileRead", "Write", "apply_patch", "exec_command", "kill_process", "system.searchTools", "write_stdin"]);
   registry.discoverToolNames?.(["Edit", "Write"]);
   expect(registry.toLLMTools().map(t => t.function.name)).toEqual(expect.arrayContaining(["apply_patch", "Edit", "Write"]));
   expect(registry.toLLMTools().find(t => t.function.name === "Edit")?.function.parameters.required).toEqual(["path", "edits"]);
