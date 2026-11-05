@@ -96,3 +96,42 @@ describe("FileRead image resize — M-FILE-2", () => {
     expect(width).toBe(64);
   });
 });
+
+
+it("normalizes a detailed screenshot once before creating the tool result", async () => {
+  const sharp = (await import("sharp")).default;
+  const pixels = Buffer.alloc(1920 * 1080 * 3);
+  let seed = 17;
+  for (let i = 0; i < pixels.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    pixels[i] = ((Math.floor(i / 3) % 1920) / 8 + (seed >>> 28)) & 255;
+  }
+  const original = await sharp(pixels, { raw: { width: 1920, height: 1080, channels: 3 } }).png().toBuffer();
+  const file = join(root, "screenshot.png");
+  await writeFile(file, original);
+  const tool = createFileReadTool({ allowedPaths: [root] });
+  const result = await tool.execute({ file_path: file });
+  const encoded = emittedImageBase64(result as { contentItems?: Array<{ type: string; image_url?: string }> });
+  expect(encoded).toBeTruthy();
+  const normalized = Buffer.from(encoded!, "base64");
+  expect(normalized.length).toBeLessThan(300_000);
+  expect((await sharp(normalized).metadata()).width).toBeLessThanOrEqual(1568);
+});
+
+it("preserves display orientation when normalizing an in-limit photo", async () => {
+  const sharp = (await import("sharp")).default;
+  const pixels = Buffer.alloc(960 * 600 * 3);
+  let seed = 71;
+  for (let i = 0; i < pixels.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    pixels[i] = seed >>> 24;
+  }
+  const original = await sharp(pixels, { raw: { width: 960, height: 600, channels: 3 } })
+    .withMetadata({ orientation: 6 }).jpeg({ quality: 100 }).toBuffer();
+  const file = join(root, "rotated.jpg");
+  await writeFile(file, original);
+  const result = await createFileReadTool({ allowedPaths: [root] }).execute({ file_path: file });
+  const encoded = emittedImageBase64(result as { contentItems?: Array<{ type: string; image_url?: string }> });
+  expect(encoded).toBeTruthy();
+  expect((await sharp(Buffer.from(encoded!, "base64")).metadata()).orientation).toBe(6);
+});

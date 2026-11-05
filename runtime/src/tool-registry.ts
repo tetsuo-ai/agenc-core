@@ -1144,6 +1144,15 @@ export function buildToolRegistry(
     }
     return { provider, model };
   }
+  /**
+   * DeepSeek renders the tool catalog before conversation history. Expanding
+   * exec's schema or adding its process companions invalidated 230K-token
+   * prompts in a long session. Publish these small core schemas once; actual
+   * tool availability and execution still follow the configured policy.
+   */
+  function stableDeepSeekCoreCatalog(): boolean {
+    return options.lightMode === true && sessionModelIdentity().provider?.trim().toLowerCase() === "deepseek";
+  }
   function usesBatchEdit(): boolean {
     if (options.lightMode !== true) return false;
     const identity = sessionModelIdentity();
@@ -1411,11 +1420,13 @@ export function buildToolRegistry(
       return specs;
     }
     const lightIdentity = options.lightMode === true ? sessionModelIdentity() : { provider: undefined, model: undefined };
+    const stableCore = stableDeepSeekCoreCatalog();
     return specs.filter(
       (spec) =>
         manualWebTool(spec.tool.name) || (options.lightMode === true
           ? (lightEditsWithApplyPatch(lightIdentity.provider, lightIdentity.model)
             ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
+            (stableCore && (spec.tool.name === "write_stdin" || spec.tool.name === "kill_process")) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined) ||
             // The plan-mode reminder ends planning with AskUserQuestion or
             // ExitPlanMode, so a session in plan mode sees both, as in standard.
@@ -1525,10 +1536,11 @@ export function buildToolRegistry(
   function buildPresentedTools(router: ToolRouter): LLMTool[] {
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
-      const leanExec = searchVisible && !discoveredToolNames.has("exec_command");
+      const stableCore = stableDeepSeekCoreCatalog();
+      const leanExec = !stableCore && searchVisible && !discoveredToolNames.has("exec_command");
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
-      const leanSearch = !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
-      const leanRead = searchVisible && !discoveredToolNames.has("FileRead");
+      const leanSearch = !stableCore && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
+      const leanRead = !stableCore && searchVisible && !discoveredToolNames.has("FileRead");
       const presentBuiltin = (spec: ConfiguredToolSpec): LLMTool => {
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;

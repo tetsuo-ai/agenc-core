@@ -25,17 +25,46 @@ function scoped<T>(value: string | undefined, fn: () => T): T {
     environment: value === undefined ? {} : { AGENC_DEEPSEEK_REASONING_ONLY_REPLAY: value } }, fn);
 }
 
-describe("native DeepSeek reasoning-only replay experiment", () => {
-  test.each([undefined, "0", "false", "1"])("retains capped reasoning only when enabled: %s", async flag => {
+describe("native DeepSeek reasoning-only replay", () => {
+  test("default recovery keeps the earlier request as an exact prefix after a reasoning-only response", async () => {
+    await scoped(undefined, async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("ok")(model));
+      const provider = new DeepSeekProvider({ apiKey: "test", model, fetchImpl });
+      await provider.chat([user, cap], opts);
+      await provider.chat([user, cap, recovery], opts);
+      const before = bodyAt(fetchImpl, 0).messages as unknown[];
+      const after = bodyAt(fetchImpl, 1).messages as unknown[];
+      expect(JSON.stringify(after.slice(0, before.length))).toBe(JSON.stringify(before));
+    });
+  });
+
+  test("a recovery thinking toggle retains the same reasoning history prefix", async () => {
+    await scoped(undefined, async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("ok")(model));
+      const provider = new DeepSeekProvider({ apiKey: "test", model, fetchImpl });
+      await provider.chat([user, cap], opts);
+      await provider.chat([user, cap, recovery], { ...opts, disableThinkingForRecovery: true });
+      await provider.chat([user, cap, recovery, { role: "assistant", content: "Continue." },
+        { role: "user", content: "Finish." }], opts);
+      for (let index = 1; index < 3; index++) {
+        const before = bodyAt(fetchImpl, index - 1).messages as unknown[];
+        const after = bodyAt(fetchImpl, index).messages as unknown[];
+        expect(JSON.stringify(after.slice(0, before.length))).toBe(JSON.stringify(before));
+      }
+      expect(bodyAt(fetchImpl, 1)).toMatchObject({ thinking: { type: "disabled" } });
+    });
+  });
+
+  test.each([undefined, "0", "false", "1"])("retains capped reasoning by default unless disabled: %s", async flag => {
     await scoped(flag, async () => {
-      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(createSuccessfulChatResponse("ok")(model));
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("ok")(model));
       const provider = new DeepSeekProvider({ apiKey: "test", model, fetchImpl });
       const restored = responseItemToLlmMessage(JSON.parse(JSON.stringify(llmMessageToDurableResponseItem(cap))));
       await provider.chat([user, restored, recovery], opts);
       const req = bodyAt(fetchImpl);
       expect(req).toMatchObject({ max_tokens: 8192, reasoning_effort: "high", thinking: { type: "enabled" } });
       const assistants = (req.messages as Record<string, unknown>[]).filter(m => m.role === "assistant");
-      expect(assistants).toEqual(flag === "1" ? [{ role: "assistant", content: "", reasoning_content: thought }] : []);
+      expect(assistants).toEqual(flag === undefined || flag === "1" ? [{ role: "assistant", content: "", reasoning_content: thought }] : []);
       expect(req).not.toHaveProperty("preservesReasoningOnlyMessages");
     });
   });
@@ -64,7 +93,7 @@ describe("native DeepSeek reasoning-only replay experiment", () => {
       expect(runMaxOutputTokensRecovery({ state, session })).toEqual({ kind: "continuation" });
       const history = state.messages.map(m => responseItemToLlmMessage(JSON.parse(JSON.stringify(llmMessageToDurableResponseItem(m)))));
       const action = await provider.chat(history, { ...opts, disableThinkingForRecovery: true });
-      expect(JSON.stringify(bodyAt(fetchImpl, 1))).not.toContain(thought);
+      expect(JSON.stringify(bodyAt(fetchImpl, 1))).toContain(thought);
       expect(action.providerReasoningContent).toBe("");
       await provider.chat([...history, { role: "assistant", content: action.content, toolCalls: action.toolCalls,
         providerReasoningContent: action.providerReasoningContent, providerReasoningProvenance: action.providerReasoningProvenance },
@@ -76,14 +105,14 @@ describe("native DeepSeek reasoning-only replay experiment", () => {
 
   test.each([undefined, { provider: "openai", model }, { provider: "deepseek", model: "deepseek-v4-pro" }])("rejects missing or foreign provenance %j", async origin => {
     await scoped("1", async () => {
-      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(createSuccessfulChatResponse("ok")(model));
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("ok")(model));
       await new DeepSeekProvider({ apiKey: "test", model, fetchImpl }).chat([user, { ...cap, providerReasoningProvenance: origin }, recovery], opts);
       expect(JSON.stringify(bodyAt(fetchImpl))).not.toContain(thought);
     });
   });
 
   test("keeps no-tools and other-provider requests unchanged and fails closed outside authority", async () => {
-    expect(deepSeekReasoningOnlyReplayProvenance("deepseek", model)).toBeUndefined();
+    expect(deepSeekReasoningOnlyReplayProvenance("deepseek", model)).toEqual(provenance);
     await scoped("1", async () => {
       const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("ok")(model));
       await new DeepSeekProvider({ apiKey: "test", model, fetchImpl }).chat([user, cap, recovery], { ...opts, tools: [] });
@@ -111,6 +140,7 @@ describe("native DeepSeek reasoning-only replay experiment", () => {
     const withoutTools = { ...request, options: { ...opts, tools: [] } };
     expect(scoped("1", () => estimateTokenAccountingRequest(withoutTools))).toEqual(scoped("0", () => estimateTokenAccountingRequest(withoutTools)));
     const disabled = { ...request, options: { ...opts, disableThinkingForRecovery: true as const } };
-    expect(scoped("1", () => estimateTokenAccountingRequest(disabled))).toEqual(scoped("0", () => estimateTokenAccountingRequest(disabled)));
+    expect(scoped("1", () => estimateTokenAccountingRequest(disabled)).inputTokens)
+      .toBeGreaterThan(scoped("0", () => estimateTokenAccountingRequest(disabled)).inputTokens + 1000);
   });
 });

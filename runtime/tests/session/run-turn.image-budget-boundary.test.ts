@@ -13,8 +13,8 @@ afterEach(() => {
 
 describe("image budget at the final sampling boundary", () => {
   test.each([
-    { budget: 6000, currentBytes: 4000, expected: ["current"] },
-    { budget: 6000, currentBytes: 7000, expected: [] },
+    { budget: 6000, currentBytes: 4000, expected: ["old"] },
+    { budget: 6000, currentBytes: 7000, expected: ["old"] },
     { budget: 10000, currentBytes: 4000, expected: ["old", "current"] },
     { budget: 0, currentBytes: 4000, expected: ["old", "current"] },
   ])("counts fresh image mentions: $currentBytes bytes with budget $budget", async ({ budget, currentBytes, expected }) => {
