@@ -1,7 +1,7 @@
 import { PassThrough } from 'node:stream'
 
 import React from 'react'
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import Text from '../ink/components/Text.js'
 import { createRoot } from '../ink/root.js'
@@ -20,6 +20,8 @@ type TestStreams = {
 }
 
 const cleanupRoots: Array<() => void> = []
+// React schedules its work with setImmediate, which the fake clock leaves real.
+const realSetImmediate = setImmediate
 
 function createTestStreams(): TestStreams {
   const stdout = new PassThrough()
@@ -35,16 +37,26 @@ function createTestStreams(): TestStreams {
   return { stdin, stdout }
 }
 
-async function waitFor(
-  predicate: () => boolean,
-  timeoutMs = 1_000,
-): Promise<void> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < timeoutMs) {
-    if (predicate()) return
-    await new Promise(resolve => setTimeout(resolve, 5))
+/**
+ * Lets React commit pending work without moving the fake clock. Each test
+ * decides when time passes, so a loaded machine cannot make the minimum
+ * display time elapse early (a 5 ms real wait once outlasted 30 ms).
+ */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 10; turn += 1) {
+    await Promise.resolve()
+    await new Promise(resolve => realSetImmediate(resolve))
   }
-  throw new Error('condition was not met')
+}
+
+/** Starts the fake clock: timers and Date.now() move only with advance(). */
+function useFakeClock(): void {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+}
+
+async function advance(ms: number): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms)
+  await settle()
 }
 
 function MinDisplayProbe({
@@ -89,47 +101,58 @@ async function createHarness(snapshots: string[], minMs = 30) {
 
 afterEach(() => {
   for (const cleanup of cleanupRoots.splice(0)) cleanup()
+  vi.useRealTimers()
 })
 
 describe('useMinDisplayTime', () => {
   test('keeps each value visible until the minimum display time elapses', async () => {
     const snapshots: string[] = []
     const { render } = await createHarness(snapshots)
+    useFakeClock()
 
     render('first')
-    await waitFor(() => snapshots.includes('first'))
+    await settle()
+    expect(snapshots).toEqual(['first'])
 
     render('second')
-    await new Promise(resolve => setTimeout(resolve, 5))
+    await advance(29)
     expect(snapshots).not.toContain('second')
 
-    await waitFor(() => snapshots.includes('second'))
+    await advance(1)
+    expect(snapshots).toEqual(['first', 'second'])
   })
 
   test('cancels a pending delayed value when a newer value arrives', async () => {
     const snapshots: string[] = []
     const { render } = await createHarness(snapshots, 40)
+    useFakeClock()
 
     render('one')
-    await waitFor(() => snapshots.includes('one'))
+    await settle()
+    expect(snapshots).toEqual(['one'])
 
     render('two')
-    await new Promise(resolve => setTimeout(resolve, 5))
+    await advance(5)
     render('three')
+    await advance(34)
+    expect(snapshots).toEqual(['one'])
 
-    await waitFor(() => snapshots.includes('three'))
+    await advance(1)
+    expect(snapshots).toEqual(['one', 'three'])
     expect(snapshots).not.toContain('two')
   })
 
   test('updates immediately once enough time has elapsed', async () => {
     const snapshots: string[] = []
     const { render } = await createHarness(snapshots, 5)
+    useFakeClock()
 
     render('initial')
-    await waitFor(() => snapshots.includes('initial'))
-    await new Promise(resolve => setTimeout(resolve, 10))
+    await settle()
+    await advance(10)
 
     render('later')
-    await waitFor(() => snapshots.includes('later'))
+    await settle()
+    expect(snapshots).toEqual(['initial', 'later'])
   })
 })
