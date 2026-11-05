@@ -5,7 +5,8 @@ import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
 import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
 import { buildChatCompletionsRequest } from "../../src/llm/wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../src/llm/wire/capability-gating.js";
-import { prepareAgenCQueryMessages, preservesQueryPrefix } from "../../src/session/run-turn-query-messages.js";
+import { prepareAgenCQueryMessages } from "../../src/session/run-turn-query-messages.js";
+import { preservesQueryPrefix } from "../../src/session/query-prefix-providers.js";
 import { provisionContentReplacementState } from "../../src/session/_deps/tool-result-storage.js";
 
 function exchange(index: number): LLMMessage[] {

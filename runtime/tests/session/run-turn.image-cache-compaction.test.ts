@@ -1,8 +1,8 @@
 import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, expect, test, vi } from "vitest";
-import type { LLMMessage } from "../../src/llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
-import { CONTEXT_IMAGE_BUDGET_ENV, unseenImageSourcesRemovedByCompaction } from "../../src/session/query-image-budget.js";
+import { CONTEXT_IMAGE_BUDGET_ENV, OMITTED_IMAGE_TEXT, unseenImageSourcesRemovedByCompaction } from "../../src/session/query-image-budget.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 import { attachCompactionSession, createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
 
@@ -21,7 +21,7 @@ test("unseen image recovery identifies only the missing FileRead path", () => {
     .toEqual(['"/work/current.png"']);
 });
 
-test.each(["deepseek", "local-test"])("%s: image pressure never compacts or rewrites a sent image", async modelProviderId => {
+test.each(["deepseek", "local-test"])("%s: image pressure never compacts; the current screenshot replaces the old one in one batch", async modelProviderId => {
   vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "180");
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
   const first: LLMMessage = { role: "user", content: [{ type: "text", text: "First screenshot" }, { type: "image_url", image_url: { url: png } }] };
@@ -41,16 +41,19 @@ test.each(["deepseek", "local-test"])("%s: image pressure never compacts or rewr
       ],
     } };
   });
+  const parts = (messages: readonly LLMMessage[], text: string) =>
+    messages.find(message => JSON.stringify(message.content).includes(text))?.content as LLMContentPart[];
   try {
     await drain(runTurn(session, ctx, first.content));
     await drain(runTurn(session, ctx, second.content));
-    const expectedCompactions = 0;
-    expect(compactions).toBe(expectedCompactions);
+    expect(compactions).toBe(0);
     expect(requests).toHaveLength(2);
-    expect(JSON.stringify(requests[1]!.slice(0, requests[0]!.length))).toBe(JSON.stringify(requests[0]));
-    expect(JSON.stringify(requests[1])).toContain("not inspected");
+    // The model sees the screenshot it was just sent; the answered one leaves.
+    expect(parts(requests[1]!, "Current screenshot")).toEqual(second.content);
+    expect(parts(requests[1]!, "First screenshot")).toContainEqual({ type: "text", text: OMITTED_IMAGE_TEXT });
+    expect(JSON.stringify(requests[1])).not.toContain("not inspected");
     await drain(runTurn(session, ctx, "Continue without another screenshot."));
-    expect(compactions).toBe(expectedCompactions);
+    expect(compactions).toBe(0);
     expect(requests).toHaveLength(3);
     expect(JSON.stringify(requests[2]!.slice(0, requests[1]!.length))).toBe(JSON.stringify(requests[1]));
   } finally { session.mountRolloutStore(null); harness.close(); }

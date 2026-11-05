@@ -13,11 +13,15 @@ afterEach(() => {
 
 describe("image budget at the final sampling boundary", () => {
   test.each([
-    { budget: 6000, currentBytes: 4000, expected: ["old"] },
-    { budget: 6000, currentBytes: 7000, expected: ["old"] },
-    { budget: 10000, currentBytes: 4000, expected: ["old", "current"] },
-    { budget: 0, currentBytes: 4000, expected: ["old", "current"] },
-  ])("counts fresh image mentions: $currentBytes bytes with budget $budget", async ({ budget, currentBytes, expected }) => {
+    { budget: 6000, currentBytes: 4000, expected: ["current"], provider: undefined },
+    { budget: 6000, currentBytes: 7000, expected: [], provider: undefined },
+    { budget: 10000, currentBytes: 4000, expected: ["old", "current"], provider: undefined },
+    { budget: 0, currentBytes: 4000, expected: ["old", "current"], provider: undefined },
+    { budget: 6000, currentBytes: 4000, expected: ["current"], provider: "deepseek" },
+    { budget: 6000, currentBytes: 7000, expected: [], provider: "deepseek" },
+    { budget: 10000, currentBytes: 4000, expected: ["old", "current"], provider: "deepseek" },
+    { budget: 0, currentBytes: 4000, expected: ["old", "current"], provider: "deepseek" },
+  ])("counts fresh image mentions: $currentBytes bytes with budget $budget ($provider)", async ({ budget, currentBytes, expected, provider: modelProviderId }) => {
     vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, String(budget));
     const oldUrl = `data:image/png;base64,${"A".repeat(4000)}`;
     const currentUrl = `data:image/png;base64,${"B".repeat(currentBytes)}`;
@@ -28,8 +32,11 @@ describe("image budget at the final sampling boundary", () => {
     const provider = mkProvider({ content: "checked" }, { onChatStream: (messages) => seen.push(messages) });
     const { session, events, state } = mkSession({ provider, history: [{ role: "user", content: [
       { type: "image_url", image_url: { url: oldUrl } },
-    ] }] });
-    await drain(runTurn(session, mkCtx(), "inspect @current.png"));
+    ] },
+    // A prefix-cache provider owns the current turn's images; the old screen
+    // belongs to an answered earlier turn.
+    ...(modelProviderId === undefined ? [] : [{ role: "assistant" as const, content: "That is the old screen." }])] });
+    await drain(runTurn(session, mkCtx(modelProviderId === undefined ? {} : { modelProviderId }), "inspect @current.png"));
     const urls = seen[0]!.flatMap((message) => Array.isArray(message.content)
       ? message.content.flatMap((part) => part.type === "image_url" ? [part.image_url.url] : []) : []);
     expect(urls.map((url) => url === currentUrl ? "current" : "old")).toEqual(expected);

@@ -4,8 +4,8 @@ import type { LLMMessage } from "../../src/llm/types.js";
 import { runContextCollapseOverflowRecovery } from "../../src/phases/post-sample-recovery.js";
 import type { RuntimeMessage } from "../../src/services/compact/types.js";
 import {
-  admitContextImageBytes,
-  UNINSPECTED_IMAGE_TEXT,
+  boundContextImageBytes,
+  OMITTED_IMAGE_TEXT,
 } from "../../src/session/query-image-budget.js";
 import { withholdImagesForModel } from "../../src/session/query-image-safety.js";
 import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
@@ -129,8 +129,8 @@ describe("a 413 collapse compacts the images history holds, not the request note
     try {
       const state = buildInitialTurnState(mkCtx(), { role: "user", content: "continue" });
       state.messages = [...history];
-      // Room for one image only: the newly returned image is left out.
-      const bounded = admitContextImageBytes(history, IMAGE_URL.length);
+      // Room for the newest image only: the user's older one is left out.
+      const bounded = boundContextImageBytes(history, IMAGE_URL.length);
       expect(bounded.omitted).toBe(1);
       state.messagesForQuery = bounded.messages;
       expect(imageUrls(state.messagesForQuery)).toEqual([IMAGE_URL]);
@@ -142,13 +142,13 @@ describe("a 413 collapse compacts the images history holds, not the request note
 
       expect(recovered).toEqual({ kind: "applied", reason: "context_collapse", tier: "standard" });
       expect(imageUrls(state.messages)).toEqual([IMAGE_URL, IMAGE_URL]);
-      expect(JSON.stringify(state.messages)).not.toContain(UNINSPECTED_IMAGE_TEXT);
+      expect(JSON.stringify(state.messages)).not.toContain(OMITTED_IMAGE_TEXT);
       const commit = harness.store.readAll().findLast(
         (item) => item.type === "compaction_committed",
       );
       const durable = JSON.stringify(commit);
       expect(durable).toContain(IMAGE_URL);
-      expect(durable).not.toContain(UNINSPECTED_IMAGE_TEXT);
+      expect(durable).not.toContain(OMITTED_IMAGE_TEXT);
     } finally {
       harness.close();
     }

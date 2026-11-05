@@ -36,15 +36,7 @@ import {
   type AgenCToolUseContext,
 } from "./agenc-tool-use-context.js";
 import { cloneLLMMessage, finitePositive } from "./run-turn-messages.js";
-
-/** Provider wires whose cached prompt depends on unchanged earlier content. */
-const PREFIX_CACHE_PROVIDERS: ReadonlySet<string> = new Set([
-  "deepseek", "openai", "openai-compatible", "openrouter", "anthropic", "gemini", "grok",
-]);
-
-export function preservesQueryPrefix(provider: string | undefined): boolean {
-  return provider !== undefined && PREFIX_CACHE_PROVIDERS.has(provider.trim().toLowerCase());
-}
+import { preservesQueryPrefix } from "./query-prefix-providers.js";
 
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 
