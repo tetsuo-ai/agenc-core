@@ -31,6 +31,7 @@ import {
   ApplyPatchMatchWorkBudget,
   prepareSeekCorpus,
   seekPreparedSequence,
+  seekUniqueExactSequence,
   type SeekSequenceControl,
 } from "./seek-sequence.js";
 import { assertApplyPatchActive } from "./control.js";
@@ -227,6 +228,7 @@ function computeReplacements(
   const replacements: Replacement[] = [];
   const corpus = prepareSeekCorpus(originalLines, control);
   let lineIndex = 0;
+  let reordered = false;
 
   for (const chunk of chunks) {
     assertApplyPatchActive(control, "replacement planning");
@@ -286,6 +288,14 @@ function computeReplacements(
       );
     }
 
+    if (found === null && anchorIndex === null && !chunk.isEndOfFile) {
+      // Models can list independent changes in reasoning order instead of
+      // file order. Do not relax ordinary forward matching: an earlier hunk
+      // must identify exactly one original range, without fuzzy matching.
+      found = seekUniqueExactSequence(corpus, pattern, control);
+      if (found !== null) reordered = true;
+    }
+
     if (found === null) {
       throw new ApplyPatchRuntimeError(
         `Failed to find expected lines in ${path}:\n${chunk.oldLines.join("\n")}`,
@@ -297,10 +307,15 @@ function computeReplacements(
       oldLength: pattern.length,
       newLines: newSlice,
     });
-    lineIndex = found + pattern.length;
+    lineIndex = reordered
+      ? Math.max(lineIndex, found + pattern.length)
+      : found + pattern.length;
   }
 
-  return replacements;
+  // Output planning still rejects overlaps before any transaction writes.
+  return reordered
+    ? replacements.sort((left, right) => left.startIndex - right.startIndex)
+    : replacements;
 }
 
 async function readFileToUpdate(

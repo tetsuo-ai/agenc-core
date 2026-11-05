@@ -238,6 +238,21 @@ export function seekPreparedSequence(
   return null;
 }
 
+/** Reordering may only use an exact match that identifies one original range. */
+export function seekUniqueExactSequence(
+  corpus: PreparedSeekCorpus,
+  pattern: readonly string[],
+  control: SeekSequenceControl = {},
+): number | null {
+  if (pattern.length === 0 || pattern.length > corpus.exact.length) return null;
+  const budget = control.budget ?? new ApplyPatchMatchWorkBudget();
+  const found = findKmp(corpus.exact, pattern, 0, budget, control);
+  if (found === null) return null;
+  return findKmp(corpus.exact, pattern, found + 1, budget, control) === null
+    ? found
+    : null;
+}
+
 export function seekSequence(
   lines: readonly string[],
   pattern: readonly string[],
