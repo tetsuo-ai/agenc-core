@@ -37,8 +37,8 @@ import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
 // What this process knows about the images of each session's current
 // context epoch, keyed by the session object so concurrent conversations
-// never mix: every image the last dispatched request presented (shown, or
-// named by a budget placeholder), and the images the last prepared
+// never mix: every image a dispatched request of the epoch presented (shown,
+// or named by a budget placeholder), and the images the last prepared
 // projection would show the model or withheld only for this budget. A
 // resumed session or a restarted daemon starts with neither, so it never
 // claims that an image an earlier process sent was left unseen.
@@ -54,10 +54,18 @@ function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
  * The request about to be dispatched presents what its prepared projection
  * showed or named in a budget placeholder, and every image it carries. The
  * dispatched request is a snapshot whose placeholder parts are copies, so the
- * prepared set, not placeholder identity, records the placeholders.
+ * prepared set, not placeholder identity, records the placeholders. The
+ * record keeps what earlier requests of the epoch presented: a request that
+ * withholds an image for its model (a text-only fallback or skill model)
+ * does not make an image the model already saw look unseen. Compaction and a
+ * forked turn start a new record.
  */
 export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
-  dispatchedImages.set(session, new Set([...preparedImages.get(session) ?? [], ...contextImageUrls(messages)]));
+  dispatchedImages.set(session, new Set([
+    ...dispatchedImages.get(session) ?? [],
+    ...preparedImages.get(session) ?? [],
+    ...contextImageUrls(messages),
+  ]));
 }
 
 /**
