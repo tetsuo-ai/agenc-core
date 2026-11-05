@@ -598,8 +598,9 @@ describe("Linux sandbox launcher", () => {
     expect(bindModeForDestination(args, path.join(root, ".git", "hooks"))).toBe("--ro-bind");
     expect(bindModeForDestination(args, path.join(root, ".git", "config"))).toBe("--ro-bind");
     expect(bindModeForDestination(args, path.join(root, ".git", "objects", "info"))).toBe("--ro-bind");
-    // .git itself and its inert data areas are not read-only mounts.
-    expect(bindModeForDestination(args, path.join(root, ".git"))).toBeUndefined();
+    // .git itself and its inert data areas are not read-only mounts; .git is
+    // a writable self-bind anchor so it cannot be renamed and replaced.
+    expect(bindModeForDestination(args, path.join(root, ".git"))).toBe("--bind");
     expect(bindModeForDestination(args, path.join(root, ".git", "refs"))).toBeUndefined();
     expect(args).toContain("--unshare-net");
   });
@@ -643,10 +644,23 @@ describe("Linux sandbox launcher", () => {
       expect(args.some((v, idx) => v === "--ro-bind" && args[idx + 2] === target)).toBe(false);
     }
     // .git and its inert data areas are not read-only.
-    expect(bindModeForDestination(args, path.join(root, ".git"))).toBeUndefined();
-    for (const name of ["refs", "logs", "objects", "HEAD"]) {
+    for (const name of ["refs", "logs", "HEAD"]) {
       expect(bindModeForDestination(args, path.join(root, ".git", name))).toBeUndefined();
     }
+    // The writable parents of read-only carve-outs (.git, .git/objects) are
+    // self-bound before those carve-outs: a mountpoint cannot be renamed, so a
+    // command cannot move .git (or objects) aside and recreate it with its own
+    // config, hooks or alternates outside the read-only mounts.
+    const mountIndex = (mode: string, destination: string) =>
+      args.findIndex((value, idx) => value === mode && args[idx + 1] === destination && args[idx + 2] === destination);
+    const gitAnchor = mountIndex("--bind", path.join(root, ".git"));
+    const objectsAnchor = mountIndex("--bind", path.join(root, ".git", "objects"));
+    expect(gitAnchor).toBeGreaterThan(mountIndex("--bind", root));
+    expect(objectsAnchor).toBeGreaterThan(gitAnchor);
+    for (const name of ["hooks", "config", "info", "branches"]) {
+      expect(mountIndex("--ro-bind", path.join(root, ".git", name))).toBeGreaterThan(gitAnchor);
+    }
+    expect(mountIndex("--ro-bind", path.join(root, ".git", "objects", "info"))).toBeGreaterThan(objectsAnchor);
   });
 
   it("scaffolds narrow aliases before host mounts without binding their parents", () => {

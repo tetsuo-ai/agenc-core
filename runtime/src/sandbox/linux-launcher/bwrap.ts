@@ -614,6 +614,16 @@ function appendWritableRoot(
       anchors.add(ancestor);
     }
   }
+  // A narrowed `.git` is a writable directory holding read-only carve-outs.
+  // Anchor it (and `objects` above `objects/info`) the same way, so the
+  // command cannot move it aside and recreate it with its own config/hooks.
+  for (const subpath of root.readOnlySubpaths) {
+    for (let ancestor = path.dirname(subpath);
+      isWithinDotGit(root.root, ancestor);
+      ancestor = path.dirname(ancestor)) {
+      if (!coveredByReadOnlyDirectory(ancestor) && fs.existsSync(ancestor)) anchors.add(ancestor);
+    }
+  }
   for (const ancestor of [...anchors].sort((a, b) => a.length - b.length)) appendBindIfExists(args, ancestor);
   const handledProtectedNames = new Set<string>();
   for (const subpath of root.readOnlySubpaths) {
