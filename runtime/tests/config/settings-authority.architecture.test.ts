@@ -59,6 +59,7 @@ const explicitLegacyTestBoundary = new Set([
   "config/retired-config-surface-authority.test.ts",
   // Retired paths remain protected security targets.
   "permissions/path-validation.test.ts",
+  "tools/runtimes/sandbox-linked-file-writes.test.ts",
   "utils/agencUiSurfaces.test.ts",
   // This test necessarily spells the forbidden patterns it enforces.
   "config/settings-authority.architecture.test.ts",
