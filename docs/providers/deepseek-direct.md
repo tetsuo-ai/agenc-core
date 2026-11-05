@@ -20,21 +20,16 @@ for messages with matching provider and model provenance. Tool arguments
 must finish streaming before execution. `deepseek-flash` accepts image
 input; `deepseek-v4-pro` does not.
 
-`AGENC_DEEPSEEK_REASONING_ONLY_REPLAY=1` is an experimental, default-off
-switch for the native provider. With tools available and thinking enabled, it preserves
-provider-owned assistant reasoning whose visible body is empty, including a
-reasoning-only output-cap response followed by recovery and re-enabled thinking. Generic message
-normalization otherwise drops that empty assistant message. Only matching
-provider and model provenance permits retention; the returned text is sent
-unchanged as `reasoning_content`. Thinking-off recovery omits this additional
-replay because a four-call acceptance probe found that the provider did not
-count its reasoning text as input in that mode. Effort, output caps,
-tool validation and retry limits keep their existing behavior. Token
-admission includes the retained reasoning. The extra input may exhaust task
-budgets sooner, and retained partial reasoning may reinforce a mistaken plan.
-This is a continuity experiment, with no measured solve-preserving benefit.
-The session captures the switch at ingress; it does not read mutable process
-environment during a turn.
+Native tool-enabled requests retain matching provider-owned reasoning even
+when the visible assistant body is empty. This includes output-cap responses
+followed by recovery and re-enabled thinking, so appending a continuation does
+not remove an earlier reasoning message from the cached prefix. This follows
+[DeepSeek's reasoning replay contract](https://api-docs.deepseek.com/guides/thinking_mode/).
+`AGENC_DEEPSEEK_REASONING_ONLY_REPLAY=0` disables this retention for diagnostics.
+Only matching provider and model provenance permits retention; returned text
+is replayed unchanged, including during thinking-off recovery.
+Token admission counts retained reasoning. The session captures the switch
+at ingress rather than reading mutable process environment during a turn.
 
 On Node, native DeepSeek uses HTTP/1.1 through the existing dispatcher without
 changing its TLS or proxy policy. The HTTP/2 fetch path can queue a POST body
@@ -90,6 +85,10 @@ Provider references checked on 2026-09-10:
 - https://api-docs.deepseek.com/guides/thinking_mode/
 - https://api-docs.deepseek.com/quick_start/pricing/
 - https://api-docs.deepseek.com/quick_start/agent_integrations/oh_my_pi/
+
+Native DeepSeek Light sessions publish the full core tool schemas and the `write_stdin` and `kill_process` companions from the first request. Selecting a core tool or yielding a shell process therefore keeps the tool catalog stable for prompt caching. Disabled tools stay disabled, and execution permissions are unchanged. Loading a genuinely new tool can still change the catalog and incur a cold cache boundary.
+
+Images are normalized when read or attached, preserving inspection resolution up to 1568 pixels and using a smaller high-quality encoding where possible. Images already admitted stay unchanged until natural compaction. If the 6 MiB image budget fills first, a stable notice identifies each new image that was not inspected and asks for a smaller crop or a reread after compaction. Image pressure does not trigger an extra summary call. If natural compaction removes an unseen image, its recovery notice names the missing source. Durable secret redaction remains in effect.
 
 ## Web search
 

@@ -37,6 +37,15 @@ import {
 } from "./agenc-tool-use-context.js";
 import { cloneLLMMessage, finitePositive } from "./run-turn-messages.js";
 
+/** Provider wires whose cached prompt depends on unchanged earlier content. */
+const PREFIX_CACHE_PROVIDERS: ReadonlySet<string> = new Set([
+  "deepseek", "openai", "openai-compatible", "openrouter", "anthropic", "gemini", "grok",
+]);
+
+export function preservesQueryPrefix(provider: string | undefined): boolean {
+  return provider !== undefined && PREFIX_CACHE_PROVIDERS.has(provider.trim().toLowerCase());
+}
+
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 
 interface AgenCPreparedTerminal {
@@ -69,6 +78,7 @@ async function prepareAgenCTurnContext(
       toolUseContext,
       querySource,
       contentReplacementState: state.contentReplacementState,
+      preservePrefix: preservesQueryPrefix(ctx.modelProviderId ?? session.services.provider.name),
     });
     state.messagesForQuery = prepared.messages;
     state.snipTokensFreed = prepared.snipTokensFreed;
@@ -105,12 +115,24 @@ async function prepareAgenCQueryMessages(params: {
   readonly toolUseContext: { readonly options: Pick<AgenCToolUseContext["options"], "contextWindowTokens"> };
   readonly querySource: string;
   readonly contentReplacementState?: ContentReplacementState;
+  readonly preservePrefix?: boolean;
 }): Promise<{
   readonly messages: LLMMessage[];
   readonly snipTokensFreed: number;
   readonly committed: boolean;
 }> {
   try {
+    if (params.preservePrefix) {
+      // Freeze each result's first-send budget decision. Context reduction
+      // belongs to the admitted durable compaction gate, which measures the
+      // complete prepared request including fresh tool output. Replacing an
+      // older result here invalidates the provider's whole cached suffix.
+      const budgeted = await applyToolResultBudget(params.messages, params.contentReplacementState, {
+        limitChars: resolveToolResultBudgetChars(params.toolUseContext.options.contextWindowTokens),
+        persist: persistOversizedToolResult,
+      });
+      return { messages: projectUncompactedLlmMessages(budgeted.messages), snipTokensFreed: 0, committed: false };
+    }
     if (oneShotFastModeActive() && hasOnlySmallTextToolResults(params.messages)) {
       // The aggregate budget must still freeze new IDs and reapply prior
       // replacements. It supports the flat message shape directly.

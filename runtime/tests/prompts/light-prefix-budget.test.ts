@@ -54,7 +54,10 @@ async function lightPrefix(provider: "deepseek" | "openai") {
 describe("Light fixed prefix budget", () => {
   test.each([
     // DeepSeek head 4,050 -> 4,150 on purpose: job dsw's probe sentence (LIGHT_DEEPSEEK_PROBES), measured in its A/B.
-    ["deepseek", 4_150, 2_350, ["system.searchTools", "exec_command", "FileRead", "Write", "apply_patch"]],
+    // Native DeepSeek deliberately publishes full core schemas once (cch2 Fcch-8),
+    // avoiding measured cache-prefix rewrites on discovery and first process yield.
+    // The combined catalog is exactly 6,568 bytes; other providers retain 2,350.
+    ["deepseek", 4_150, 6_568, ["system.searchTools", "exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch"]],
     ["openai", 3_600, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
   ] as const)("%s: head and tool schemas stay within budget and byte-stable", async (provider, headBudget, toolsBudget, names) => {
     const first = await lightPrefix(provider);

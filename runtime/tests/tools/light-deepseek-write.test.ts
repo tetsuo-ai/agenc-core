@@ -18,7 +18,7 @@ test("native Flash exposes whole-file Write alongside the partial-change editor"
   const { session, registry } = registryFor("deepseek", "deepseek-flash");
   const tools = registry.toLLMTools();
   expect(tools.map(tool => tool.function.name).sort()).toEqual([
-    "FileRead", "Write", "apply_patch", "exec_command", "system.searchTools",
+    "FileRead", "Write", "apply_patch", "exec_command", "kill_process", "system.searchTools", "write_stdin",
   ]);
   const write = tools.find(tool => tool.function.name === "Write")!;
   expect(write.function.description).toContain("existing files require FileRead first");

@@ -7,6 +7,7 @@
  * @module
  */
 
+import { resetSentContextImages, unseenImageSourcesRemovedByCompaction } from "./query-image-budget.js";
 import type { LLMMessage } from "../llm/types.js";
 import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import type { CompactionResult } from "../services/compact/types.js";
@@ -673,16 +674,24 @@ async function runAutoCompact(
         // Replace both the full history view and the per-iteration
         // projection so `prepareContext` (next phase) sees the same
         // post-compact replacement history the rollout recorded.
+        const beforeCompaction = state.messages;
         state.messages = unsentImageTurn
           ? [...compacted, { ...unsentImageTurn }]
-          : compacted;
-        state.messagesForQuery = [...compacted];
+          : [...compacted];
+        const unseenSources = unseenImageSourcesRemovedByCompaction(session, beforeCompaction, state.messages);
+        if (unseenSources.length > 0) {
+          state.messages.push({ role: "user", content:
+            `Compaction removed ${unseenSources.length} new ${unseenSources.length === 1 ? "image before you could inspect it" : "images before you could inspect them"}. ` +
+            `Missing image sources: ${unseenSources.join(", ")}. ` +
+            "Read or capture only these missing images again before relying on their contents or claiming visual verification. Do not repeat images you already inspected.",
+            runtimeOnly: { mergeBoundary: "user_context" },
+          });
+        }
+        resetSentContextImages(session);
+        state.messagesForQuery = [...state.messages];
         // The last sample measured the replaced history. It must not trigger
         // another compaction before the model consumes the retained results.
         state.lastResponseUsage = undefined;
-        if (unsentImageTurn) {
-          state.messagesForQuery.push({ ...unsentImageTurn });
-        }
         // A commit ends the ladder episode: the next decline may climb again.
         state.compactionLadder = undefined;
         unsentImageTurnKept = unsentImageTurn !== undefined;

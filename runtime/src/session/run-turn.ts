@@ -114,7 +114,8 @@ import {
 } from "../phases/continuation-nudge.js";
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
-  boundContextImageBytes,
+  admitContextImageBytes,
+  rememberSentContextImages,
   resolveContextImageBudgetBytes,
 } from "./query-image-budget.js";
 import {
@@ -861,10 +862,7 @@ function projectSamplingImages(
   const imageBudgetBytes = resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
   );
-  const boundedImages = boundContextImageBytes(
-    state.messagesForQuery,
-    imageBudgetBytes,
-  );
+  const boundedImages = admitContextImageBytes(state.messagesForQuery, imageBudgetBytes);
   if (boundedImages.omitted > 0) {
     state.messagesForQuery = boundedImages.messages;
     const tracked = state as TurnState & { contextImagesOmitted?: number };
@@ -880,7 +878,7 @@ function projectSamplingImages(
               `${boundedImages.omitted} inline image(s) left out of the request: ` +
               `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
               `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
-              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
+              `${Math.round(boundedImages.retainedBytes / 1024)} KB retained without changing earlier images`,
           },
         },
       });
@@ -1332,6 +1330,7 @@ async function runSamplingRequest(
     }
     if (admitted !== true) prepared = { ...prepared, request: admitted };
   }
+  rememberSentContextImages(session, prepared.request.input);
   const samplingContext = prepared.samplingContext;
   const previousSample = state.reasoningCapPolicy?.sample;
   const samplingModel = skillInvocationRequestModel(session, samplingContext) ??
@@ -2584,7 +2583,7 @@ async function assertSeedUserPromptFits(
   const imagePolicy = modelImagePolicy(session, ctx, state,
     session.services.configStore?.current() ?? ctx.config as AgenCConfig);
   const visible = withholdImagesForModel(seedMessages, imagePolicy, rejectedImagesFor(session, imagePolicy.route));
-  const bounded = boundContextImageBytes(visible.messages, resolveContextImageBudgetBytes(
+  const bounded = admitContextImageBytes(visible.messages, resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
   ));
   state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
