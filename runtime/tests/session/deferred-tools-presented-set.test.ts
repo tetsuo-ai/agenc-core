@@ -201,3 +201,53 @@ test("an OpenAI Light child's own exec yield still adds and announces both proce
     session.dispose();
   }
 });
+
+function mcpTool(name: string): Tool {
+  return {
+    name,
+    description: `${name} description`,
+    inputSchema: { type: "object", properties: { query: { type: "string" } } },
+    recoveryCategory: "read-only",
+    execute: async () => ({ content: "ok" }),
+  } as unknown as Tool;
+}
+
+test.each([
+  { policy: "deferMcpTools = false", options: { deferMcpTools: false } },
+  { policy: "a policy without system.searchTools", options: { toolsConfig: { disabled_tools: ["system.searchTools"] } } },
+])("native DeepSeek Light announces a presented MCP tool the user names and its server disconnect ($policy)", async ({ options }) => {
+  // 0.19.29 batch re-review NIT 1: the tool is presented without search, so
+  // the stable catalog rule kept it out of both notices; on 0.19.28 the user
+  // naming it announced it (with the call-it-directly nudge) and its server
+  // disconnecting announced the removal.
+  let connected = true;
+  const registry = buildToolRegistry({
+    workspaceRoot: "/tmp", lightMode: true, requireAdmission: false,
+    sandboxExecutionBroker: explicitDangerBroker,
+    mcpToolsProvider: { getTools: () => connected ? [mcpTool("mcp.docs.search")] : [] },
+    getSession: () => ({ services: {
+      provider: { name: "deepseek" },
+      providerService: { current: () => ({ provider: "deepseek", model: "deepseek-flash" }) },
+    } }) as unknown as Session,
+    ...options,
+  });
+  const sessionKey = {};
+  const names = () => registry.toLLMTools().map((tool) => tool.function.name);
+  try {
+    expect(names()).toContain("mcp.docs.search");
+    expect(await notice(registry, sessionKey)).toEqual([]);
+    // run-turn discovers an MCP tool the user's message names.
+    registry.discoverToolNames?.(["mcp.docs.search"]);
+    expect(await notice(registry, sessionKey)).toEqual(added(["mcp.docs.search"]));
+    connected = false;
+    expect(names()).not.toContain("mcp.docs.search");
+    expect(await notice(registry, sessionKey)).toEqual([
+      expect.objectContaining({ kind: "deferred_tools_delta", addedNames: [], removedNames: ["mcp.docs.search"] }),
+    ]);
+    // The stable core tools stay out of the notices whatever loads them.
+    registry.discoverToolNames?.(["write_stdin", "kill_process", "exec_command"]);
+    expect(await notice(registry, sessionKey)).toEqual([]);
+  } finally {
+    _resetAttachmentTrackingStateForTest(sessionKey);
+  }
+});

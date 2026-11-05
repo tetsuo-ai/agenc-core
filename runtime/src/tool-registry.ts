@@ -1455,10 +1455,18 @@ export function buildToolRegistry(
     );
   }
 
-  /** What a stable DeepSeek catalog request carries without discovery; empty elsewhere. */
+  /**
+   * What a stable DeepSeek catalog request carries without discovery; empty
+   * elsewhere. MCP tools that a policy presents without search (deferMcpTools
+   * = false, or no system.searchTools) stay out: as on other providers, the
+   * notice announces one the user names, with its call-it-directly nudge, and
+   * its removal when its server disconnects.
+   */
   function stableCatalogToolNames(): ReadonlySet<string> {
     if (!stableDeepSeekCoreCatalog()) return new Set();
-    return new Set(visibleSpecs(buildRouter(), false).map((spec) => spec.tool.name));
+    return new Set(visibleSpecs(buildRouter(), false)
+      .filter((spec) => spec.tool.metadata?.source !== "mcp")
+      .map((spec) => spec.tool.name));
   }
 
   async function executeConfiguredTool(
