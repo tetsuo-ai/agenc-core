@@ -1277,6 +1277,12 @@ export async function assembleSystemPrompt(
           lightUsesDeepSeekPrompt(envInfoInputs.provider, envInfoInputs.model),
           lightUsesDeepSeekWorkRules(envInfoInputs.provider, envInfoInputs.model),
           lightUsesDeepSeekWrite(envInfoInputs.provider, envInfoInputs.model),
+          // A tool policy can remove an editor (disabled_tools, a session tool
+          // policy, a read-only child); the head then does not name it.
+          {
+            write: opts.enabledToolNames?.has("Write") ?? true,
+            applyPatch: opts.enabledToolNames?.has("apply_patch") ?? true,
+          },
         ),
         lightBudgetSystem(),
         lightBudgetActions(),

@@ -114,6 +114,14 @@ function lightUnattendedFinish(glmBatchedSteps: boolean, computeFromData: boolea
   ].join(" ");
 }
 
+/** Which of the Light head's editors the session's tool policy leaves. */
+export interface LightHeadEditors {
+  readonly write: boolean;
+  readonly applyPatch: boolean;
+}
+
+const ALL_LIGHT_HEAD_EDITORS: LightHeadEditors = { write: true, applyPatch: true };
+
 export const LIGHT_GLM_BATCHED_STEPS =
   "A file listing or grep match does not count as reading a file. Read all files you intend to modify in a single response before editing. Submit source changes, tests and any requested documentation together in one response. If checks show multiple failures, fix each one you can diagnose before running the checks again.";
 
@@ -126,9 +134,10 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * sessions that edit with apply_patch keep theirs here: a few patches for a large change in
  * interactive sessions without the task limits (LIGHT_PATCH_SIZE), one patch per change otherwise. Greetings and
  * questions about AgenC are answered without tools; the undo paths arrive with a message that asks
- * about them (prompts/attachments/product-help.ts).
+ * about them (prompts/attachments/product-help.ts). `editors` says which of Write and apply_patch the
+ * session's tool policy leaves; the head never tells the model to use one the policy removed.
  */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false, writesWithApplyPatch = false): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false, writesWithApplyPatch = false, editors: LightHeadEditors = ALL_LIGHT_HEAD_EDITORS): string {
   // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
   // keep the 0.19.26 prompt, interactive DeepSeek with one more sentence on probes (LIGHT_DEEPSEEK_PROBES).
   const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
@@ -138,11 +147,15 @@ export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = 
   const reading = interactiveRules
     ? ` ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}`
     : ` ${readAndSearch}` + (deepseekWorkRules && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
+  const knownTogether = statesTaskLimits ? " Include known source, tests and requested documentation together." : "";
   const editing = !editsWithApplyPatch
     ? ""
-    : writesWithApplyPatch
-      ? " Use Write for new files and full rewrites; apply_patch for partial changes, all hunks of one change together." +
-        (statesTaskLimits ? " Include known source, tests and requested documentation together." : "")
+    : writesWithApplyPatch && editors.write && editors.applyPatch
+      ? " Use Write for new files and full rewrites; apply_patch for partial changes, all hunks of one change together." + knownTogether
+    : writesWithApplyPatch && editors.write
+      ? " Use Write for new files and full rewrites." + knownTogether
+    : !editors.applyPatch
+      ? ""
     : interactiveRules
       ? ` ${LIGHT_PATCH_SIZE}`
       : " Edit and create files with apply_patch; put all hunks of one change in one patch." +
