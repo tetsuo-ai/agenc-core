@@ -33,15 +33,15 @@
 
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { preservesQueryPrefix } from "./query-prefix-providers.js";
-import { withheldImageOf, withheldImagePlaceholder } from "./query-image-withheld.js";
+import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
 // What this process knows about the images of each session's current
 // context epoch, keyed by the session object so concurrent conversations
-// never mix: every image the last dispatched request carried (shown or
-// replaced by a placeholder), and the images the last prepared projection
-// would show the model or withheld only for this budget. A resumed session
-// or a restarted daemon starts with neither, so it never claims that an
-// image an earlier process sent was left unseen.
+// never mix: every image the last dispatched request presented (shown, or
+// named by a budget placeholder), and the images the last prepared
+// projection would show the model or withheld only for this budget. A
+// resumed session or a restarted daemon starts with neither, so it never
+// claims that an image an earlier process sent was left unseen.
 const dispatchedImages = new WeakMap<object, ReadonlySet<string>>();
 const preparedImages = new WeakMap<object, ReadonlySet<string>>();
 
@@ -50,18 +50,14 @@ function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
     ? message.content.flatMap(part => part.type === "image_url" ? [part.image_url.url] : []) : []));
 }
 
-/** Every image a request carries, including the ones behind a placeholder. */
-function carriedImageUrls(messages: readonly LLMMessage[]): Set<string> {
-  return new Set(messages.flatMap(message => Array.isArray(message.content)
-    ? message.content.flatMap(part => {
-      const image = part.type === "image_url" ? part : withheldImageOf(part);
-      return image?.type === "image_url" ? [image.image_url.url] : [];
-    }) : []));
-}
-
-/** The request about to be dispatched: everything it carries counts as presented. */
+/**
+ * The request about to be dispatched presents what its prepared projection
+ * showed or named in a budget placeholder, and every image it carries. The
+ * dispatched request is a snapshot whose placeholder parts are copies, so the
+ * prepared set, not placeholder identity, records the placeholders.
+ */
 export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
-  dispatchedImages.set(session, carriedImageUrls(messages));
+  dispatchedImages.set(session, new Set([...preparedImages.get(session) ?? [], ...contextImageUrls(messages)]));
 }
 
 /**
@@ -87,6 +83,24 @@ export function rememberPreparedContextImages(
 export function resetSentContextImages(session: object): void {
   dispatchedImages.delete(session);
   preparedImages.delete(session);
+}
+
+/**
+ * A forked thread runs its turn on the source session object with its own
+ * history. That turn starts without the source conversation's image evidence,
+ * and the returned function, called when the turn ends, drops the fork's
+ * evidence and puts the source conversation's back. Neither history is then
+ * checked against the other's requests.
+ */
+export function isolateContextImageEvidence(session: object): () => void {
+  const dispatched = dispatchedImages.get(session);
+  const prepared = preparedImages.get(session);
+  resetSentContextImages(session);
+  return () => {
+    resetSentContextImages(session);
+    if (dispatched !== undefined) dispatchedImages.set(session, dispatched);
+    if (prepared !== undefined) preparedImages.set(session, prepared);
+  };
 }
 
 /**

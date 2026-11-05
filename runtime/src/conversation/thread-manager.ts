@@ -36,6 +36,7 @@ import {
 } from "../session/message-history-conversion.js";
 import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
 import { interruptedToolCallResultContent } from "../session/recovery-tool-result.js";
+import { isolateContextImageEvidence } from "../session/query-image-budget.js";
 export { interruptedToolCallResultContent } from "../session/recovery-tool-result.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import {
@@ -1763,6 +1764,9 @@ class ForkedConversationThread implements ManagedThread {
     );
     const turnAbort = new AbortController();
     this.activeTurnAbort = turnAbort;
+    // The source session's image evidence describes its own requests, not
+    // this fork's history; the fork's turn gets none and leaves none behind.
+    const restoreImageEvidence = isolateContextImageEvidence(this.sourceSessionRef);
     try {
       await this.sourceSessionRef.withRolloutPersistenceSuspended(async () => {
         const ctx = this.sourceSessionRef.newDefaultTurnWithSubId(turnId);
@@ -1812,6 +1816,7 @@ class ForkedConversationThread implements ManagedThread {
       if (this.activeTurnAbort === turnAbort) {
         this.activeTurnAbort = null;
       }
+      restoreImageEvidence();
       await this.sourceSessionRef.state.swap(originalState);
     }
   }
