@@ -152,3 +152,29 @@ test.each([
   expect(error?.message).toBe(`Failed to find expected lines in ${path}:\n${stale}`);
   expect(await readFile(path, "utf8")).toBe(contents);
 });
+
+// rnd re-review note 2: two reordered hunks that change the same lines got the generic "apply_patch produced an
+// invalid or overlapping replacement range" error, which names neither hunk.
+test.each([
+  {
+    name: "a later hunk that repeats an earlier hunk's lines",
+    contents: "first\nmiddle\nlast\n",
+    chunks: "@@\n-last\n+LAST\n@@\n-middle\n-last\n+changed",
+    first: 1, second: 2, firstLines: "line 3", secondLines: "lines 2-3", firstText: "last", secondText: "middle\nlast",
+  },
+  {
+    name: "two hunks around an unrelated one",
+    contents: "a\nb\nc\nd\ne\nf\n",
+    chunks: "@@\n-e\n-f\n+EF\n@@\n-b\n-c\n+BC\n@@\n-a\n+A\n@@\n-c\n-d\n+CD",
+    first: 2, second: 4, firstLines: "lines 2-3", secondLines: "lines 3-4", firstText: "b\nc", secondText: "c\nd",
+  },
+])("names the two out-of-order hunks that change the same lines: $name", async ({ contents, chunks, ...hunks }) => {
+  const { path, apply } = await fixture(contents);
+  const error = await apply(chunks).then(() => undefined, (rejection: unknown) => rejection as Error);
+  expect(error?.message).toBe(
+    `Hunks ${hunks.first} and ${hunks.second} of the update to ${path} change the same lines: hunk ${hunks.first} ` +
+      `expects ${hunks.firstLines} and hunk ${hunks.second} expects ${hunks.secondLines}. Merge them into one hunk.\n` +
+      `Hunk ${hunks.first}:\n${hunks.firstText}\nHunk ${hunks.second}:\n${hunks.secondText}`,
+  );
+  expect(await readFile(path, "utf8")).toBe(contents);
+});
