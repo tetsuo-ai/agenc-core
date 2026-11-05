@@ -15,6 +15,7 @@ const CREDENTIAL_HOME = resolveHomeContext(
 )
 
 let storedAccessToken: string | undefined
+let storedGrantExpiring = false
 let previousAccessTokens = new Set<string>()
 let requiresRelogin = true
 const forceRefreshMock = vi.fn()
@@ -23,6 +24,9 @@ async function importProviderModule() {
   vi.resetModules()
   vi.doMock(credentialsModulePath, () => ({
     readXaiOauthAccessToken: () => storedAccessToken,
+    readXaiOauthCredentials: () =>
+      storedAccessToken === undefined ? undefined : { accessToken: storedAccessToken },
+    xaiOauthTokenIsExpiring: () => storedGrantExpiring,
     isXaiOauthBearer: (_home: unknown, key: string | undefined) =>
       key !== undefined && (key === storedAccessToken || previousAccessTokens.has(key)),
     forceRefreshXaiOauthCredentials: forceRefreshMock,
@@ -51,6 +55,7 @@ async function importProviderModule() {
 
 beforeEach(() => {
   storedAccessToken = undefined
+  storedGrantExpiring = false
   previousAccessTokens = new Set()
   requiresRelogin = true
   forceRefreshMock.mockReset()
@@ -370,6 +375,78 @@ test('a provider re-created from recorded factory options after a refresh carrie
   expect(
     (second as unknown as { oauthCallbacksInstalled: boolean }).oauthCallbacksInstalled,
   ).toBe(true)
+})
+
+test('a sign-in stored after the provider was built replaces its bearer before a single-wire turn', async () => {
+  // Observed 2026-11-04: a TUI session opened on an expired sign-in kept
+  // sending that bearer after /grok-login stored a fresh grant. Admitted
+  // turns run singleWireAttempt, so the in-band 403 refresh never ran, and
+  // the pre-flight acted only on an expiring stored grant: every turn failed
+  // "grok authentication failed (HTTP 403)" until the session restarted.
+  storedAccessToken = 'oauth-bearer-1'
+  forceRefreshMock.mockImplementation(async (_home: unknown, rejected: string) =>
+    rejected === storedAccessToken ? undefined : { accessToken: storedAccessToken })
+  const { createProvider } = await importProviderModule()
+  const { runWithStartupProviderSelection } = await import('../../src/utils/model/providers.js')
+  const provider = createProvider('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  })
+  const sentBearers: string[] = []
+  const client = {
+    apiKey: 'oauth-bearer-1',
+    responses: {
+      create: vi.fn(() => {
+        sentBearers.push(client.apiKey)
+        const data = {
+          id: `resp_${sentBearers.length}`,
+          status: 'completed',
+          incomplete_details: null,
+          model: 'grok-4.5',
+          output_text: 'ok',
+          output: [{
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'ok' }],
+          }],
+          usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+        }
+        return {
+          withResponse: async () => ({
+            data,
+            response: new Response(JSON.stringify(data), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+            request_id: null,
+          }),
+        }
+      }),
+    },
+  }
+  ;(provider as unknown as { client: unknown }).client = client
+  const turn = () => runWithStartupProviderSelection(
+    { provider: 'grok', model: 'grok-4.5', environment: {} },
+    () => provider.chat([{ role: 'user', content: 'hi' }], { singleWireAttempt: true }),
+  )
+
+  // /grok-login stores a fresh grant while the session is open.
+  storedAccessToken = 'oauth-bearer-2'
+  await expect(turn()).resolves.toMatchObject({ content: 'ok' })
+  expect(sentBearers).toEqual(['oauth-bearer-2'])
+  expect(forceRefreshMock).toHaveBeenCalledExactlyOnceWith(CREDENTIAL_HOME, 'oauth-bearer-1')
+
+  // Once adopted, a current grant that is not expiring sends no refresh.
+  await turn()
+  expect(sentBearers).toEqual(['oauth-bearer-2', 'oauth-bearer-2'])
+  expect(forceRefreshMock).toHaveBeenCalledTimes(1)
+
+  // An expiring current grant still refreshes, from the adopted bearer.
+  storedGrantExpiring = true
+  forceRefreshMock.mockResolvedValueOnce({ accessToken: 'oauth-bearer-3' })
+  await turn()
+  expect(sentBearers).toEqual(['oauth-bearer-2', 'oauth-bearer-2', 'oauth-bearer-3'])
+  expect(forceRefreshMock).toHaveBeenLastCalledWith(CREDENTIAL_HOME, 'oauth-bearer-2')
 })
 
 test('a stale OAuth snapshot cannot become a gateway API key', async () => {
