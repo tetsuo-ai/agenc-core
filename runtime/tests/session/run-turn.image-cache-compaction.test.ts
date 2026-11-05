@@ -46,6 +46,57 @@ test("unseen image recovery names only images this process prepared after its la
   expect(unseenImageSourcesRemovedByCompaction(session, messages, [])).toEqual([]);
 });
 
+test("the record of presented images keeps every request since the last compaction", () => {
+  const x: LLMMessage = { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,screen-x" } }] };
+  const text: LLMMessage = { role: "user", content: "Summarize the repository." };
+  const session = {};
+  // A vision request shows X.
+  rememberPreparedContextImages(session, [x], [x], [x]);
+  rememberSentContextImages(session, [x]);
+  // One request goes to a text-only model, whose image policy withholds X.
+  rememberPreparedContextImages(session, [text], [text], [text]);
+  rememberSentContextImages(session, [text]);
+  // Back on a vision model, X is offered again and a compaction drops it
+  // before that request is sent. The model saw X, so it is not named.
+  rememberPreparedContextImages(session, [x], [x], [x]);
+  expect(unseenImageSourcesRemovedByCompaction(session, [x], [])).toEqual([]);
+  // A compaction starts a new record.
+  resetSentContextImages(session);
+  rememberSentContextImages(session, [text]);
+  rememberPreparedContextImages(session, [x], [x], [x]);
+  expect(unseenImageSourcesRemovedByCompaction(session, [x], [])).toEqual(["the newly attached image"]);
+});
+
+test("a request on a text-only model in between does not make a shown image look unseen at compaction", async () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+  const requests: LLMMessage[][] = [];
+  const provider = mkProvider({ content: "checked" }, { onChatStream: messages => requests.push(messages) });
+  Object.assign(provider, { name: "deepseek" });
+  const harness = createCompactionTransactionHarness([]);
+  const { session } = mkSession({ provider });
+  Object.assign(session.config, { model: "deepseek-flash" });
+  const ctx = mkCtx({ modelProviderId: "deepseek" });
+  attachCompactionSession(session, harness);
+  setAutoCompactImplForTests(async () => ({ wasCompacted: true, compactionResult: {
+    message: "Earlier work summarized.", replacementHistory: [{ role: "user", content: "Earlier work summarized." }],
+  } }));
+  try {
+    await drain(runTurn(session, ctx, [{ type: "text", text: "Screen X" }, { type: "image_url", image_url: { url: png } }]));
+    expect(JSON.stringify(requests[0])).toContain(png);
+    // /model to the text-only deepseek-v4-pro for one request, then back.
+    Object.assign(session.config, { model: "deepseek-v4-pro" });
+    await drain(runTurn(session, ctx, "Summarize the repository."));
+    expect(JSON.stringify(requests[1])).not.toContain(png);
+    Object.assign(session.config, { model: "deepseek-flash" });
+    Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
+    installPreparedCompactionPressure(provider, request => JSON.stringify(request.messages).includes("Natural pressure") ? 18_130 : 100);
+    await drain(runTurn(session, ctx, "Natural pressure. ".repeat(400)));
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests[2])).toContain("Earlier work summarized.");
+    expect(JSON.stringify(requests[2])).not.toContain("Compaction removed");
+  } finally { session.mountRolloutStore(null); harness.close(); }
+});
+
 test.each(["deepseek", "local-test"])("%s: image pressure never compacts; the current screenshot replaces the old one in one batch", async modelProviderId => {
   vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "180");
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
