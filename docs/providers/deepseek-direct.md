@@ -88,7 +88,9 @@ Provider references checked on 2026-09-10:
 
 Native DeepSeek Light sessions publish the full core tool schemas and the `write_stdin` and `kill_process` companions from the first request. Selecting a core tool or yielding a shell process therefore keeps the tool catalog stable for prompt caching. Disabled tools stay disabled, and execution permissions are unchanged. Loading a genuinely new tool can still change the catalog and incur a cold cache boundary.
 
-Images are normalized when read or attached, preserving inspection resolution up to 1568 pixels and using a smaller high-quality encoding where possible. Images already admitted stay unchanged until natural compaction. If the 6 MiB image budget fills first, a stable notice identifies each new image that was not inspected and asks for a smaller crop or a reread after compaction. Image pressure does not trigger an extra summary call. If natural compaction removes an unseen image, its recovery notice names the missing source. Durable secret redaction remains in effect.
+Native DeepSeek sessions keep every sent tool result unchanged until compaction instead of clearing older results, so a growing session keeps its cached prefix. Other providers keep clearing old tool output when it grows past a share of the context window.
+
+Images are normalized when read or attached, preserving inspection resolution up to 1568 pixels and using a smaller high-quality encoding where possible. Admitted images stay unchanged while new images fit the 6 MiB image budget. When a new image does not fit, the oldest images leave the request in one batch, down to half the budget, and the new image is sent, so the cached prefix changes once per batch. The current turn's images leave last. Image pressure does not trigger an extra summary call. If natural compaction removes an image before any request showed it to the model, its recovery notice names the missing source. The notice needs that evidence from the running session: a resumed session or a restarted daemon sends none, and neither do images the model cannot view or that are not valid images. Durable secret redaction remains in effect.
 
 ## Web search
 

@@ -5,7 +5,8 @@ import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
 import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
 import { buildChatCompletionsRequest } from "../../src/llm/wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../src/llm/wire/capability-gating.js";
-import { prepareAgenCQueryMessages, preservesQueryPrefix } from "../../src/session/run-turn-query-messages.js";
+import { prepareAgenCQueryMessages } from "../../src/session/run-turn-query-messages.js";
+import { freezesToolResultsUntilCompaction, preservesQueryPrefix } from "../../src/session/query-prefix-providers.js";
 import { provisionContentReplacementState } from "../../src/session/_deps/tool-result-storage.js";
 
 function exchange(index: number): LLMMessage[] {
@@ -47,14 +48,14 @@ async function wireMessages(provider: string, messages: LLMMessage[]): Promise<u
 }
 
 describe("query projection preserves the sent prefix", () => {
-  test.each(["deepseek", "openai-compatible", "anthropic", "gemini"])("%s: text pressure does not replace old tool evidence", async provider => {
+  test.each(["deepseek", "openai-compatible", "anthropic", "gemini"])("%s: a preserved projection keeps the wire prefix byte for byte", async provider => {
     const contentReplacementState = provisionContentReplacementState();
     const source: LLMMessage[] = [{ role: "user", content: "Inspect every log." }];
     let previous: unknown[] = [];
     for (let index = 0; index < 12; index++) {
       source.push(...exchange(index));
       const projected = await prepareAgenCQueryMessages({ messages: source, contentReplacementState,
-        querySource: "test", preservePrefix: preservesQueryPrefix(provider), toolUseContext: { options: { contextWindowTokens: 1_048_576 } } });
+        querySource: "test", preservePrefix: true, toolUseContext: { options: { contextWindowTokens: 1_048_576 } } });
       const wire = await wireMessages(provider, projected.messages);
       expect(JSON.stringify(wire.slice(0, previous.length))).toBe(JSON.stringify(previous));
       expect(projected.messages).toEqual(source);
@@ -75,3 +76,17 @@ describe("query projection preserves the sent prefix", () => {
     }
   });
 });
+
+test("only native DeepSeek keeps sent tool results until durable compaction", () => {
+  expect(freezesToolResultsUntilCompaction("deepseek")).toBe(true);
+  expect(freezesToolResultsUntilCompaction(" DeepSeek ")).toBe(true);
+  for (const provider of ["openai", "openai-compatible", "openrouter", "anthropic", "gemini", "grok", "ollama", undefined]) {
+    expect(freezesToolResultsUntilCompaction(provider)).toBe(false);
+  }
+  // The image budget still treats every prefix-cache wire alike.
+  for (const provider of ["deepseek", "openai", "openai-compatible", "openrouter", "anthropic", "gemini", "grok"]) {
+    expect(preservesQueryPrefix(provider)).toBe(true);
+  }
+  expect(preservesQueryPrefix("ollama")).toBe(false);
+});
+

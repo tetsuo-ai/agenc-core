@@ -29,6 +29,11 @@ export function withheldImagePlaceholder(
   return placeholder;
 }
 
+/** The image part a placeholder stands for, if `part` is one. */
+export function withheldImageOf(part: LLMContentPart): LLMContentPart | undefined {
+  return withheldImageByPlaceholder.get(part);
+}
+
 /**
  * The same messages with every placeholder turned back into the image part
  * it stands for. Messages without one are returned as they are.

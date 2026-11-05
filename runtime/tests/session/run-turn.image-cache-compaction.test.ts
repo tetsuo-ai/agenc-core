@@ -1,14 +1,23 @@
 import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, expect, test, vi } from "vitest";
-import type { LLMMessage } from "../../src/llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
-import { CONTEXT_IMAGE_BUDGET_ENV, unseenImageSourcesRemovedByCompaction } from "../../src/session/query-image-budget.js";
+import {
+  CONTEXT_IMAGE_BUDGET_ENV,
+  OMITTED_IMAGE_TEXT,
+  admitContextImageBytes,
+  rememberPreparedContextImages,
+  rememberSentContextImages,
+  resetSentContextImages,
+  unseenImageSourcesRemovedByCompaction,
+} from "../../src/session/query-image-budget.js";
+import { withheldImagePlaceholder } from "../../src/session/query-image-withheld.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 import { attachCompactionSession, createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
 
 afterEach(() => { vi.unstubAllEnvs(); setAutoCompactImplForTests(null); });
 
-test("unseen image recovery identifies only the missing FileRead path", () => {
+test("unseen image recovery names only images this process prepared after its last dispatch", () => {
   const messages: LLMMessage[] = [
     { role: "assistant", content: "", toolCalls: [
       { id: "read-1", name: "FileRead", arguments: '{"file_path":"/work/first.png"}' },
@@ -17,11 +26,26 @@ test("unseen image recovery identifies only the missing FileRead path", () => {
     { role: "tool", toolCallId: "read-1", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,first" } }] },
     { role: "tool", toolCallId: "read-2", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,current" } }] },
   ];
-  expect(unseenImageSourcesRemovedByCompaction({}, messages, messages.slice(0, 2)))
+  const session = {};
+  // No request of this process: no evidence, so no image is named.
+  expect(unseenImageSourcesRemovedByCompaction(session, messages, [])).toEqual([]);
+  rememberSentContextImages(session, messages.slice(0, 2));
+  rememberPreparedContextImages(session, messages, messages, messages);
+  expect(unseenImageSourcesRemovedByCompaction(session, messages, messages.slice(0, 2)))
     .toEqual(['"/work/current.png"']);
+  // A budget notice still counts as unseen; an undecodable image does not.
+  const budgetNotice = admitContextImageBytes(messages, 1);
+  rememberPreparedContextImages(session, messages, budgetNotice.messages, budgetNotice.messages);
+  expect(unseenImageSourcesRemovedByCompaction(session, messages, [])).toEqual(['"/work/current.png"']);
+  const undecodable = messages.map(message => message.toolCallId === "read-2"
+    ? { ...message, content: [withheldImagePlaceholder((message.content as LLMContentPart[])[0]!, "[not a valid image]")] } : message);
+  rememberPreparedContextImages(session, messages, messages, undecodable);
+  expect(unseenImageSourcesRemovedByCompaction(session, messages, [])).toEqual([]);
+  resetSentContextImages(session);
+  expect(unseenImageSourcesRemovedByCompaction(session, messages, [])).toEqual([]);
 });
 
-test.each(["deepseek", "local-test"])("%s: image pressure never compacts or rewrites a sent image", async modelProviderId => {
+test.each(["deepseek", "local-test"])("%s: image pressure never compacts; the current screenshot replaces the old one in one batch", async modelProviderId => {
   vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "180");
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
   const first: LLMMessage = { role: "user", content: [{ type: "text", text: "First screenshot" }, { type: "image_url", image_url: { url: png } }] };
@@ -41,16 +65,19 @@ test.each(["deepseek", "local-test"])("%s: image pressure never compacts or rewr
       ],
     } };
   });
+  const parts = (messages: readonly LLMMessage[], text: string) =>
+    messages.find(message => JSON.stringify(message.content).includes(text))?.content as LLMContentPart[];
   try {
     await drain(runTurn(session, ctx, first.content));
     await drain(runTurn(session, ctx, second.content));
-    const expectedCompactions = 0;
-    expect(compactions).toBe(expectedCompactions);
+    expect(compactions).toBe(0);
     expect(requests).toHaveLength(2);
-    expect(JSON.stringify(requests[1]!.slice(0, requests[0]!.length))).toBe(JSON.stringify(requests[0]));
-    expect(JSON.stringify(requests[1])).toContain("not inspected");
+    // The model sees the screenshot it was just sent; the answered one leaves.
+    expect(parts(requests[1]!, "Current screenshot")).toEqual(second.content);
+    expect(parts(requests[1]!, "First screenshot")).toContainEqual({ type: "text", text: OMITTED_IMAGE_TEXT });
+    expect(JSON.stringify(requests[1])).not.toContain("not inspected");
     await drain(runTurn(session, ctx, "Continue without another screenshot."));
-    expect(compactions).toBe(expectedCompactions);
+    expect(compactions).toBe(0);
     expect(requests).toHaveLength(3);
     expect(JSON.stringify(requests[2]!.slice(0, requests[1]!.length))).toBe(JSON.stringify(requests[1]));
   } finally { session.mountRolloutStore(null); harness.close(); }
@@ -85,3 +112,63 @@ test("an unseen image omitted by durable compaction gets one stable read-again n
     expect(JSON.stringify(requests[2]).match(/Compaction removed 1 new image/g)).toHaveLength(1);
   } finally { session.mountRolloutStore(null); harness.close(); }
 });
+
+/** Compaction at the first prepared request of a fresh process. */
+async function compactAtFirstRequest(options: {
+  readonly history: LLMMessage[];
+  readonly prompt: LLMContentPart[] | string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly priorTurn?: string;
+}): Promise<LLMMessage[][]> {
+  const requests: LLMMessage[][] = [];
+  const provider = mkProvider({ content: "checked" }, { onChatStream: messages => requests.push(messages) });
+  if (options.provider !== undefined) Object.assign(provider, { name: options.provider });
+  const harness = createCompactionTransactionHarness([]);
+  const { session } = mkSession({ provider, history: options.history,
+    ...(options.model !== undefined ? { modelInfo: { slug: options.model } } : {}) });
+  if (options.model !== undefined) Object.assign(session.config, { model: options.model });
+  const base = mkCtx({ modelProviderId: options.provider ?? "deepseek" });
+  const ctx = mkCtx({ modelProviderId: options.provider ?? "deepseek",
+    modelInfo: { ...base.modelInfo, ...(options.model !== undefined ? { slug: options.model } : {}) } });
+  attachCompactionSession(session, harness);
+  setAutoCompactImplForTests(async () => ({ wasCompacted: true, compactionResult: {
+    message: "Earlier work summarized.", replacementHistory: [{ role: "user", content: "Earlier work summarized." }],
+  } }));
+  try {
+    if (options.priorTurn !== undefined) await drain(runTurn(session, ctx, options.priorTurn));
+    Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
+    installPreparedCompactionPressure(provider, request => JSON.stringify(request.messages).includes("Natural pressure") ? 18_130 : 100);
+    await drain(runTurn(session, ctx, options.prompt));
+  } finally { session.mountRolloutStore(null); harness.close(); }
+  return requests;
+}
+
+test("after a resume, compaction names no image an earlier process already showed", async () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+  // History written by an earlier process: the model inspected the screen.
+  const history: LLMMessage[] = [
+    { role: "user", content: "Check the screen." },
+    { role: "assistant", content: "", toolCalls: [{ id: "read-1", name: "FileRead", arguments: '{"file_path":"/app/shots/01.png"}' }] },
+    { role: "tool", toolCallId: "read-1", toolName: "FileRead", content: [
+      { type: "text", text: "Read image /app/shots/01.png" }, { type: "image_url", image_url: { url: png } },
+    ] },
+    { role: "assistant", content: "The screen looks right." },
+  ];
+  const requests = await compactAtFirstRequest({ history, prompt: "Natural pressure. ".repeat(400) });
+  expect(requests).toHaveLength(1);
+  expect(JSON.stringify(requests)).not.toContain("Compaction removed");
+});
+
+test("a text-only model gets no unseen-image notice for an image it could never receive", async () => {
+  const gif = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  const requests = await compactAtFirstRequest({
+    history: [], provider: "deepseek", model: "deepseek-v4-pro", priorTurn: "Look at the repository.",
+    prompt: [{ type: "text", text: "Natural pressure. ".repeat(400) }, { type: "image_url", image_url: { url: gif } }],
+  });
+  expect(requests).toHaveLength(2);
+  // The model policy kept the image from every request.
+  expect(JSON.stringify(requests)).not.toContain(gif);
+  expect(JSON.stringify(requests[1])).not.toContain("Compaction removed");
+});
+
