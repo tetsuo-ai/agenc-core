@@ -181,6 +181,44 @@ describe("deferredToolsDeltaProducer", () => {
     _resetAttachmentTrackingStateForTest(sessionKey);
   });
 
+  test("a discovered tool the request now presents without discovery is not removed", async () => {
+    const sessionKey = {};
+    const state = getAttachmentTrackingState(sessionKey);
+    const tools = [tool("exec_command"), tool("write_stdin"), tool("kill_process")];
+    await deferredToolsDeltaProducer(makeOpts(sessionKey, [tool("exec_command")], new Set()), state);
+    expect(await deferredToolsDeltaProducer(
+      makeOpts(sessionKey, tools, new Set(["write_stdin", "kill_process"])),
+      state,
+    )).toEqual([expect.objectContaining({ addedNames: ["kill_process", "write_stdin"], removedNames: [] })]);
+    // The catalog now presents both, so they leave the discovery-only set but stay callable.
+    expect(await deferredToolsDeltaProducer(makeOpts(sessionKey, tools, new Set()), state)).toEqual([]);
+    // Back to discovery-only presentation: the model was never told they went away.
+    expect(await deferredToolsDeltaProducer(
+      makeOpts(sessionKey, tools, new Set(["write_stdin", "kill_process"])),
+      state,
+    )).toEqual([]);
+    _resetAttachmentTrackingStateForTest(sessionKey);
+  });
+
+  test("a tool that leaves the request (MCP disconnect) is removed while a presented one stays", async () => {
+    const sessionKey = {};
+    const state = getAttachmentTrackingState(sessionKey);
+    await deferredToolsDeltaProducer(
+      makeOpts(sessionKey, [tool("mcp__docs__search"), tool("write_stdin")], new Set(["mcp__docs__search", "write_stdin"])),
+      state,
+    );
+    expect(await deferredToolsDeltaProducer(makeOpts(sessionKey, [tool("write_stdin")], new Set()), state)).toEqual([
+      {
+        kind: "deferred_tools_delta",
+        addedNames: [],
+        addedLines: [],
+        removedNames: ["mcp__docs__search"],
+      },
+    ]);
+    expect([...(state.lastDeferredToolsSet ?? [])]).toEqual(["write_stdin"]);
+    _resetAttachmentTrackingStateForTest(sessionKey);
+  });
+
   test("tools without discovery flag stay out of the deferred set", async () => {
     const sessionKey = {};
     const state = getAttachmentTrackingState(sessionKey);

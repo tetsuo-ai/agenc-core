@@ -138,14 +138,16 @@ export interface GetAttachmentsOptions {
    */
   readonly loadedTools: readonly LLMTool[];
   /**
-   * Names of deferred tools that have been discovered (loaded into the
-   * visible catalog) via `system.searchTools` so far this session. Drives
-   * the deferred-tools delta producer's diff. Optional — when omitted,
-   * the producer treats the discovered set as empty (matches AgenC
-   * bootstraps with no discovery tool registered).
+   * Names of discovered tools (through `system.searchTools`, an exec yield
+   * or an escalation) that this request carries only because they were
+   * discovered. The deferred-tools delta producer announces these as added;
+   * it reports a tool as removed only when `loadedTools` no longer carries
+   * it. Optional: when omitted, the producer treats the set as empty
+   * (matches AgenC bootstraps with no discovery tool registered).
    *
    * Sourced at the call site from
-   * `session.services.registry.getDiscoveredToolNames?.() ?? new Set()`.
+   * `session.services.registry.getLoadedDeferredToolNames?.()`, then
+   * `getDiscoveredToolNames?.()`, then an empty set.
    */
   readonly discoveredToolNames?: ReadonlySet<string>;
   /**
