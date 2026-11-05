@@ -23,13 +23,12 @@ import type {
   BlockedRequestObserver,
   NetworkPolicyDecider,
 } from "../../sandbox/network-policy.js";
-import {
-  RUN_WITHOUT_SANDBOX_PERMISSION,
-  type AvailableApprovalDecision,
-  type NetworkApprovalContext,
-  type ParsedApprovalCommand,
+import type {
+  AvailableApprovalDecision,
+  NetworkApprovalContext,
+  ParsedApprovalCommand,
 } from "../../sandbox/escalation/approvals.js";
-import { MCP_NO_FS_WRITES_PERMISSION } from "../../tools/runtimes/mcp-filesystem-approval.js";
+import { approvalRequestPermissions } from "../approval-request-permissions.js";
 import type {
   ExecPolicyAmendment,
   NetworkPolicyAmendment,
@@ -757,13 +756,7 @@ function beginDurableApprovalJournal(
             ? { crossProvider: input as unknown as import("../../app-server/protocol/index.js").CrossProviderSpawnDisclosure }
             : {}),
           turnId: opts.ctx.turnId,
-          permissions: opts.ctx.approvalKind === "cross_provider_spawn"
-            ? ["cross_provider_spawn"]
-            : [
-                "tool.use",
-                ...(opts.ctx.runsWithoutSandbox === true ? [RUN_WITHOUT_SANDBOX_PERMISSION] : []),
-                ...(opts.ctx.mcpFilesystemApproval !== undefined ? [MCP_NO_FS_WRITES_PERMISSION] : []),
-              ],
+          permissions: approvalRequestPermissions(opts.ctx),
           ...(opts.ctx.retryReason !== undefined
             ? { reason: opts.ctx.retryReason }
             : {}),

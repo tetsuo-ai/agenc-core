@@ -11,7 +11,8 @@ export interface McpFilesystemApprovalScope {
  * is keyed on the tool alone, so it answers every later call of the tool,
  * whatever its arguments. The approval journal's `request_permissions` event
  * lists it next to `tool.use`, and the daemon's `event.permission_request`
- * passes that list on, so every client can say what a session grant covers.
+ * and pending-request listings pass that list on, so every client can say
+ * what a session grant covers.
  */
 export const MCP_NO_FS_WRITES_PERMISSION = "mcp_no_fs_writes";
 

@@ -1534,6 +1534,17 @@ const APPROVAL_PREVIEW_LINE_CAP = 7
  * only `CONFIRMATION enter` in the facts row and no way to answer).
  */
 const APPROVAL_ESSENTIAL_BODY_ROWS = 6
+/**
+ * Columns an approval card's body loses to its chrome: the popup's border
+ * (2), the popup body's padding (4) and the card's own padding (2).
+ */
+const APPROVAL_CARD_CHROME_COLS = 8
+/** Columns an action row loses to the picker's left border and padding. */
+const APPROVAL_PICKER_CHROME_COLS = 2
+/** Width of `❯ 2  approve for session` and the two spaces before its scope. */
+const APPROVAL_SESSION_LABEL_COLS = 26
+/** Columns the session scope's full words need on the row, or it shows its short words. */
+const APPROVAL_SESSION_SCOPE_MIN_COLS = 22
 
 /**
  * Decide whether the approval popup can show its embedded `DiffInline` preview
@@ -1589,6 +1600,7 @@ export function ApprovalCard({
   draftText,
   draftFocused = false,
   sessionScope = 'allow in this session',
+  sessionScopeShort,
   cancelLabel = 'cancel',
 }: {
   readonly risk: 'low' | 'high'
@@ -1621,7 +1633,13 @@ export function ApprovalCard({
   readonly typingWaiting?: boolean
   readonly draftText?: string
   readonly draftFocused?: boolean
+  /** What the session choice covers, shown after its label where the row has room. */
   readonly sessionScope?: string
+  /**
+   * The few words of `sessionScope` a short or narrow card keeps on the
+   * session row (such as "all calls"). They never give way to the label.
+   */
+  readonly sessionScopeShort?: string
   readonly cancelLabel?: string
 }): React.ReactNode {
   const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
@@ -1651,6 +1669,15 @@ export function ApprovalCard({
   // Three short rows keep every decision visible when the terminal leaves
   // too little room for the summary, descriptions and keyboard legend.
   const compactActions = !requireTypedConfirmation && popupBodyRows < 6
+  const viewportColumns = Number.isFinite(viewport.columns)
+    ? Math.max(1, Math.trunc(viewport.columns))
+    : 80
+  // A short card drops the session choice's full words, and on a narrow one
+  // its label leaves too few columns for them: such a row shows the short
+  // words instead, after a label that gives way to them.
+  const pickerRowColumns = viewportColumns - APPROVAL_CARD_CHROME_COLS - APPROVAL_PICKER_CHROME_COLS
+  const sessionScopeIsShort = sessionScopeShort !== undefined &&
+    (compactActions || pickerRowColumns - APPROVAL_SESSION_LABEL_COLS < APPROVAL_SESSION_SCOPE_MIN_COLS)
   const showNote = note !== undefined && note.length > 0 && popupBodyRows >= 6
   // When the slot is extremely tight, drop the secondary facts grid so the
   // primary action legend + confirm row are never the ones clipped away.
@@ -1765,6 +1792,24 @@ export function ApprovalCard({
               const selected = index === (selectedIndex ?? 0)
               const marker = selected ? '❯ ' : '  '
               const rowText = `${marker}${index + 1}  ${action.label}`
+              if (index === 1 && sessionScopeIsShort) {
+                // What the grant covers stays on the row: the label is cut
+                // first when the row is too narrow for both.
+                return (
+                  <Box key={action.label} flexDirection="row">
+                    <Box flexShrink={1} minWidth={0}>
+                      <ThemedText color={selected ? 'agenc' : 'text2'} bold={selected} wrap="truncate-end">
+                        {rowText}
+                      </ThemedText>
+                    </Box>
+                    <Box flexShrink={0}>
+                      <ThemedText color={selected ? 'agenc' : 'inactive'} bold={selected}>
+                        {` · ${sessionScopeShort}`}
+                      </ThemedText>
+                    </Box>
+                  </Box>
+                )
+              }
               const detailText = compactActions
                 ? (index === 2 ? ` · esc ${cancelLabel}` : '')
                 : `  ${index === 1 ? sessionScope : action.suffix}`

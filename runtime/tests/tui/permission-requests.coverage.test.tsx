@@ -112,7 +112,7 @@ function createPendingRequest(
 describe("permission request overlay coverage", () => {
   test.each([
     ["an MCP tool approved without filesystem-write targets", ["tool.use", "mcp_no_fs_writes"],
-      "2approveforsessioneverymcp.inventory.get_stockcall,anyarguments"],
+      "2approveforsessionanyarguments,everymcp.inventory.get_stockcall"],
     ["a tool whose session grant keys on its arguments", ["tool.use"],
       "2approveforsessionthisexactactiononly"],
   ])("labels the session choice for %s by what the grant covers", async (_label, permissions, row) => {

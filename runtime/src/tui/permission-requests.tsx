@@ -23,7 +23,7 @@ import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
 import { approvalInputText } from "./approval-input-text.js";
 import { abbreviateHomePaths } from "../utils/home-path-display.js";
-import { fileEditTargetPath } from "../tools/system/file-edit-target.js";
+import { sessionGrantScope } from "../permissions/session-grant-scope.js";
 import { Box, useInput, type Key } from "./ink.js";
 import type { InputEvent } from "./ink/events/input-event.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
@@ -842,6 +842,14 @@ function AgenCApprovalOverlay({
         : risk === "medium"
           ? "medium-risk approval"
           : "needs approval";
+  // Say what a session grant covers: the approval cache keys an MCP tool
+  // approved without filesystem-write targets on the tool alone.
+  const sessionScope = sessionGrantScope({
+    toolName: toolUseConfirm.tool.name,
+    toolLabel: name,
+    input: request.input,
+    coversAllCalls: request.ctx.sessionGrantCoversAllCalls === true || request.ctx.mcpFilesystemApproval !== undefined,
+  });
   return (
     <Box flexDirection="column" gap={1}>
       <ApprovalCard
@@ -891,14 +899,8 @@ function AgenCApprovalOverlay({
         cancelLabel="stop turn"
         draftText={composerDraft?.text}
         draftFocused={draftFocused}
-        // Say what a session grant covers: the approval cache keys an MCP
-        // tool approved without filesystem-write targets on the tool alone.
-        sessionScope={request.ctx.sessionGrantCoversAllCalls === true || request.ctx.mcpFilesystemApproval !== undefined
-          ? `every ${name} call, any arguments`
-          : (toolUseConfirm.tool.name === "Write" || toolUseConfirm.tool.name === "Edit") &&
-            fileEditTargetPath(request.input) !== undefined
-            ? `${name} this file only`
-            : "this exact action only"}
+        sessionScope={sessionScope.long}
+        sessionScopeShort={sessionScope.short}
       />
     </Box>
   );
