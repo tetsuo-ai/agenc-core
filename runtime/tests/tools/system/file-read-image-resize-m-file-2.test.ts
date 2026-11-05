@@ -177,3 +177,39 @@ it("normalizes an opaque image that carries an alpha channel, as native macOS sc
   const metadata = await sharp(emitted.bytes).metadata();
   expect([metadata.width, metadata.height, metadata.hasAlpha]).toEqual([960, 600, false]);
 });
+
+it("keeps a transparent image above the size threshold as its lossless PNG", async () => {
+  const sharp = (await import("sharp")).default;
+  // The left half is fully transparent; JPEG would show its stored colors.
+  const original = await rgbaPng((x) => (x < 480 ? 0 : 255));
+  expect(original.length).toBeGreaterThan(64 * 1024);
+  const file = join(root, "overlay.png");
+  await writeFile(file, original);
+  const emitted = await readEmittedImage(file);
+  expect(emitted.mediaType).toBe("image/png");
+  expect(emitted.bytes.equals(original)).toBe(true);
+  const stats = await sharp(emitted.bytes).stats();
+  expect([stats.isOpaque, stats.channels[3]?.min]).toEqual([false, 0]);
+});
+
+it.each(["webp", "gif"] as const)("does not flatten an animated %s above the size threshold to its first frame", async (format) => {
+  const sharp = (await import("sharp")).default;
+  const width = 320;
+  const height = 240;
+  const frames = 4;
+  const pixels = Buffer.alloc(width * height * frames * 3);
+  let seed = 9;
+  for (let i = 0; i < pixels.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    pixels[i] = seed >>> 24;
+  }
+  const strip = sharp(pixels, { raw: { width, height: height * frames, channels: 3, pageHeight: height } });
+  const original = await (format === "webp" ? strip.webp({ quality: 90 }) : strip.gif()).toBuffer();
+  expect(original.length).toBeGreaterThan(64 * 1024);
+  expect((await sharp(original).metadata()).pages).toBe(frames);
+  const file = join(root, `animation.${format}`);
+  await writeFile(file, original);
+  const emitted = await readEmittedImage(file);
+  expect(emitted.mediaType).toBe(`image/${format}`);
+  expect(emitted.bytes.equals(original)).toBe(true);
+});
